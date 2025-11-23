@@ -39,9 +39,50 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   }
 
   async getTreeRoot(database: IDatabase): Promise<DatabaseTreeNode[]> {
+    // Single Database Mode
+    if (database.connection.database) {
+      const dbName = database.connection.database;
+      return [
+        {
+          id: dbName,
+          label: dbName,
+          kind: "database",
+          hasChildren: true,
+          metadata: { dbName },
+        },
+      ];
+    }
+
+    // Cluster Mode: List all databases
+    try {
+      const result = await this.executeQuery(
+        database,
+        `SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;`,
+      );
+      if (!result.success) return [];
+
+      const rows: Array<{ datname: string }> = result.data || [];
+      return rows.map<DatabaseTreeNode>(r => ({
+        id: r.datname,
+        label: r.datname,
+        kind: "database",
+        hasChildren: true,
+        metadata: { dbName: r.datname },
+      }));
+    } catch (error) {
+      console.error("Error listing databases in cluster mode:", error);
+      return [];
+    }
+  }
+
+  private async listSchemas(
+    database: IDatabase,
+    dbName?: string,
+  ): Promise<DatabaseTreeNode[]> {
     const result = await this.executeQuery(
       database,
       `select schema_name from information_schema.schemata order by schema_name;`,
+      { dbName },
     );
     if (!result.success) return [];
     const systemSchemas: Record<string, true> = {
@@ -57,11 +98,11 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       .filter(s => !systemSchemas[s])
       .sort((a, b) => a.localeCompare(b))
       .map<DatabaseTreeNode>(schema => ({
-        id: schema,
+        id: dbName ? `${dbName}.${schema}` : schema,
         label: schema,
         kind: "schema",
         hasChildren: true,
-        metadata: { schema },
+        metadata: { schema, dbName },
       }));
   }
 
@@ -69,32 +110,43 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     database: IDatabase,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]> {
+    // Expanding a Database Node (Cluster Mode)
+    if (parent.kind === "database") {
+      const dbName = parent.metadata?.dbName;
+      return this.listSchemas(database, dbName);
+    }
+
     if (parent.kind !== "schema") return [];
+
     const schema = parent.metadata?.schema || parent.id;
+    const dbName = parent.metadata?.dbName;
     const safeSchema = String(schema).replace(/'/g, "''");
+
     const result = await this.executeQuery(
       database,
       `select table_name, table_type from information_schema.tables where table_schema = '${safeSchema}' order by table_name;`,
+      { dbName },
     );
+
     if (!result.success) return [];
     const rows: Array<{ table_name: string; table_type: string }> =
       result.data || [];
     return rows.map<DatabaseTreeNode>(r => ({
-      id: `${schema}.${r.table_name}`,
+      id: `${dbName ? dbName + "." : ""}${schema}.${r.table_name}`,
       label: r.table_name,
       kind: r.table_type === "VIEW" ? "view" : "table",
       hasChildren: false,
-      metadata: { schema, table: r.table_name },
+      metadata: { schema, table: r.table_name, dbName },
     }));
   }
 
   async executeQuery(
     database: IDatabase,
     query: string,
-    _options?: any,
+    options?: any,
   ): Promise<QueryResult> {
     try {
-      const pool = await this.getConnection(database);
+      const pool = await this.getConnection(database, options?.dbName);
       const result = await pool.query(query);
       return {
         success: true,
@@ -123,6 +175,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       connector = await this._getConnector(database);
 
       const getOpts: any = {};
+      // ... (existing options setup)
       if (conn.instanceConnectionName || conn.instance_connection_name) {
         getOpts.instanceConnectionName =
           conn.instanceConnectionName || conn.instance_connection_name;
@@ -208,7 +261,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       client = new PgClient({
         ...(clientOpts as any),
         user,
-        database: conn.database,
+        database: conn.database || "postgres", // Default to postgres
         password: resolvedAuthType === AuthTypes.IAM ? "" : conn.password,
       });
 
@@ -242,8 +295,11 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     }
   }
 
-  async getConnection(database: IDatabase): Promise<PgPool> {
-    const key = database._id.toString();
+  async getConnection(
+    database: IDatabase,
+    dbNameOverride?: string,
+  ): Promise<PgPool> {
+    const key = `${database._id.toString()}:${dbNameOverride || "default"}`;
     const existingPool = this.pools.get(key);
     if (existingPool) {
       return existingPool;
@@ -327,16 +383,38 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         }
       }
 
+      // Use override if provided, otherwise config, otherwise default to postgres
+      const targetDb = dbNameOverride || conn.database || "postgres";
+
       const pool = new PgPool({
         ...(clientOpts as any),
         user,
-        database: conn.database,
+        database: targetDb,
         password: resolvedAuthType === AuthTypes.IAM ? "" : conn.password, // Empty password for IAM auth
         max: 5,
       });
 
-      this.connectors.set(key, connector);
-      this.pools.set(key, pool); // Store pool reference for cleanup
+      // Only cache if we used the connector we just got
+      // Note: In this simplified driver, we might be creating a new connector instance each time _getConnector is called
+      // ideally we should cache connectors too, but the existing code creates map entries based on databaseId
+      // We need to be careful about key management.
+      // Let's keep the connector in the map keyed by databaseId (shared across pools for same connection)
+      // But wait, this.connectors key is databaseId. If we call this multiple times for different DBs, we overwrite it?
+      // Actually _getConnector creates a NEW connector each time currently (except it returns if found in map? No _getConnector doesn't check map).
+      // Wait, _getConnector logic:
+      // It parses config and returns `new Connector(...)`. It doesn't use `this.connectors`.
+      // `getConnection` sets `this.connectors.set(key, connector)`.
+      // If `key` now includes dbName, we will have multiple connectors for same instance?
+      // Connector is per-instance usually.
+      // Let's adjust `key` logic.
+
+      // Refined logic:
+      // Connector is per database CONFIG (instance), not per DB name.
+      // Pool is per DB name.
+
+      this.connectors.set(database._id.toString(), connector);
+      this.pools.set(key, pool); // key includes dbName
+
       return pool;
     } catch (error) {
       console.error("[CloudSQL] Failed to create connection pool:", error);

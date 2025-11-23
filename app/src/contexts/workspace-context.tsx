@@ -17,6 +17,8 @@ import {
 import { useAuth } from "./auth-context";
 import { useAppStore } from "../store";
 
+import { useSyncJobStore } from "../store/syncJobStore";
+
 interface WorkspaceContextState {
   // State
   workspaces: Workspace[];
@@ -208,6 +210,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const workspace = workspaces.find(ws => ws.id === id);
         if (workspace) {
           setCurrentWorkspace(workspace);
+          // Clear local storage to reset app state for new workspace
+          localStorage.clear();
+
+          // Also reset in-memory store state to prevent leaks if reload is delayed
+          useAppStore.getState().reset();
+          useSyncJobStore.getState().reset();
+
           localStorage.setItem("activeWorkspaceId", id);
           setCurrentWorkspaceId(id);
           // Reload the page to refresh all data with new workspace context

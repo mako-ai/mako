@@ -25,16 +25,13 @@ import {
   FolderOpen as FolderOpenIcon,
   Plus as AddIcon,
   Trash2 as DeleteIcon,
-  HardDrive as ServerIcon,
+  Settings as SettingsIcon,
+  Layers as LayersIcon,
 } from "lucide-react";
 import { useDatabaseExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
-import {
-  useDatabaseStore,
-  CollectionInfo,
-  Server,
-} from "../store/databaseStore";
+import { useDatabaseStore, CollectionInfo } from "../store/databaseStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useDatabaseTreeStore, TreeNode } from "../store/databaseTreeStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -52,25 +49,6 @@ const IconImg = React.memo(
   ),
 );
 IconImg.displayName = "IconImg";
-
-const ServerTypeIcon = React.memo(
-  ({
-    server,
-    typeToIconUrl,
-  }: {
-    server: Server;
-    typeToIconUrl: (type: string) => string | null;
-  }) => {
-    // Try to infer type from contained databases (first db type), fallback to generic
-    const inferredType = server.databases[0]?.type;
-    const iconUrl = inferredType ? typeToIconUrl(inferredType) : null;
-    if (iconUrl) {
-      return <IconImg src={iconUrl} alt={inferredType || "server"} />;
-    }
-    return <ServerIcon />;
-  },
-);
-ServerTypeIcon.displayName = "ServerTypeIcon";
 
 const DatabaseTypeIcon = React.memo(
   ({
@@ -101,7 +79,7 @@ function DatabaseExplorer({
   onCollectionClick,
 }: DatabaseExplorerProps) {
   const {
-    servers: serversMap,
+    databases: databasesMap,
     loading: loadingMap,
     refreshServers,
     initServers,
@@ -119,7 +97,9 @@ function DatabaseExplorer({
   // Don't subscribe to console store - it causes re-renders on every keystroke
   // Use getState() in handlers instead
 
-  const servers = currentWorkspace ? serversMap[currentWorkspace.id] || [] : [];
+  const databases = currentWorkspace
+    ? databasesMap[currentWorkspace.id] || []
+    : [];
   const loading = currentWorkspace ? !!loadingMap[currentWorkspace.id] : false;
   const { types: dbTypes, fetchTypes } = useDatabaseCatalogStore();
 
@@ -137,9 +117,7 @@ function DatabaseExplorer({
     : null;
 
   const {
-    expandedServers,
     expandedDatabases,
-    toggleServer,
     toggleDatabase,
     isDatabaseExpanded,
     expandedNodes,
@@ -147,8 +125,11 @@ function DatabaseExplorer({
   } = useDatabaseExplorerStore();
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [editingDatabaseId, setEditingDatabaseId] = useState<
+    string | undefined
+  >(undefined);
 
-  const refreshServersLocal = async () => {
+  const refreshDatabasesLocal = async () => {
     if (!currentWorkspace) return;
     await refreshServers(currentWorkspace.id);
   };
@@ -173,20 +154,14 @@ function DatabaseExplorer({
 
   useEffect(() => {
     if (!currentWorkspace) return;
-    servers.forEach(s => {
-      s.databases.forEach(db => {
-        const hasNodes = nodes[db.id] && nodes[db.id]["root"];
-        if (!hasNodes) {
-          fetchDatabaseDataLocal(db.id);
-        }
-      });
+    databases.forEach(db => {
+      const hasNodes = nodes[db.id] && nodes[db.id]["root"];
+      if (!hasNodes) {
+        fetchDatabaseDataLocal(db.id);
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [servers, currentWorkspace?.id]);
-
-  const handleServerToggle = (serverId: string) => {
-    toggleServer(serverId);
-  };
+  }, [databases, currentWorkspace?.id]);
 
   const handleDatabaseToggle = (databaseId: string) => {
     toggleDatabase(databaseId);
@@ -206,7 +181,7 @@ function DatabaseExplorer({
 
   const handleRefresh = () => {
     setLoadingData(new Set());
-    refreshServersLocal();
+    refreshDatabasesLocal();
   };
 
   const handleDatabaseCreated = () => {
@@ -240,7 +215,7 @@ function DatabaseExplorer({
   const renderCollectionSkeletonItems = () => {
     return Array.from({ length: 3 }).map((_, index) => (
       <ListItem key={`collection-skeleton-${index}`} disablePadding>
-        <ListItemButton sx={{ py: 0.25, pl: 7.5 }}>
+        <ListItemButton sx={{ py: 0.25, pl: 4 }}>
           <ListItemIcon sx={{ minWidth: 24 }}>
             <Skeleton variant="circular" width={16} height={16} />
           </ListItemIcon>
@@ -259,9 +234,12 @@ function DatabaseExplorer({
   };
 
   const renderNodeSkeleton = (level: number) => {
+    // level is parent level. We are rendering children at level + 1
+    // Formula: 1 + (level + 1) * 1.5 + 2.75 (assuming skeleton mimics leaf)
+    const pl = 1 + (level + 1) * 1.5 + 2.75;
     return Array.from({ length: 3 }).map((_, index) => (
       <ListItem key={`node-skeleton-${index}`} disablePadding>
-        <ListItemButton sx={{ py: 0.25, pl: 3 + (level + 1) * 2 }}>
+        <ListItemButton sx={{ py: 0.25, pl }}>
           <ListItemIcon sx={{ minWidth: 28 }}>
             <Skeleton variant="circular" width={16} height={16} />
           </ListItemIcon>
@@ -302,6 +280,14 @@ function DatabaseExplorer({
           }
         : null,
     );
+  };
+
+  const handleEditDatabase = () => {
+    if (!databaseContextMenu) return;
+    const { databaseId } = databaseContextMenu.item;
+    setEditingDatabaseId(databaseId);
+    setCreateDialogOpen(true);
+    setDatabaseContextMenu(null);
   };
 
   const handleDropDatabase = async () => {
@@ -386,6 +372,8 @@ function DatabaseExplorer({
           ) : (
             <FolderIcon size={18} strokeWidth={1.5} />
           );
+        case "database":
+          return <LayersIcon size={18} strokeWidth={1.5} />;
         case "table":
         case "collection":
           return <CollectionIcon size={18} strokeWidth={1.5} />;
@@ -418,7 +406,7 @@ function DatabaseExplorer({
             }}
             sx={{
               py: 0.25,
-              pl: node.hasChildren ? 0.5 + level * 3 : 0.5 + level * 2,
+              pl: 1 + level * 1.5,
             }}
           >
             <ListItemIcon sx={{ minWidth: 22 }}>
@@ -521,7 +509,7 @@ function DatabaseExplorer({
         <List dense>
           {loading ? (
             renderSkeletonItems()
-          ) : servers.length === 0 ? (
+          ) : databases.length === 0 ? (
             <Box
               sx={{
                 p: 3,
@@ -530,31 +518,41 @@ function DatabaseExplorer({
               }}
             >
               <Typography variant="body2">
-                No servers found in configuration
+                No databases found in configuration
               </Typography>
             </Box>
           ) : (
-            servers.map(server => {
-              const isServerExpanded = expandedServers.has(server.id);
+            databases.map(database => {
+              const isDatabaseExpanded = expandedDatabases.has(database.id);
+              const isLoadingData = loadingData.has(database.id);
+              const dbRootNodes: TreeNode[] =
+                nodes[database.id]?.["root"] || [];
 
               return (
-                <React.Fragment key={server.id}>
-                  {/* Server Level */}
+                <React.Fragment key={database.id}>
+                  {/* Database Level */}
                   <ListItem disablePadding>
                     <ListItemButton
-                      onClick={() => handleServerToggle(server.id)}
-                      sx={{ py: 0.5, pl: 0.5 }}
+                      onClick={() => handleDatabaseToggle(database.id)}
+                      onContextMenu={e =>
+                        handleDatabaseContextMenu(
+                          e,
+                          database.id,
+                          database.displayName,
+                        )
+                      }
+                      sx={{ py: 0.5, pl: 1 }}
                     >
-                      <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
-                        {isServerExpanded ? (
+                      <ListItemIcon sx={{ minWidth: 22 }}>
+                        {isDatabaseExpanded ? (
                           <ChevronDownIcon strokeWidth={1.5} size={20} />
                         ) : (
                           <ChevronRightIcon strokeWidth={1.5} size={20} />
                         )}
                       </ListItemIcon>
                       <ListItemIcon sx={{ minWidth: 24 }}>
-                        <ServerTypeIcon
-                          server={server}
+                        <DatabaseTypeIcon
+                          type={database.type}
                           typeToIconUrl={typeToIconUrl}
                         />
                       </ListItemIcon>
@@ -570,14 +568,13 @@ function DatabaseExplorer({
                           >
                             <Typography
                               variant="body2"
-                              fontWeight="bold"
                               sx={{
                                 overflow: "hidden",
                                 textOverflow: "ellipsis",
                                 whiteSpace: "nowrap",
                               }}
                             >
-                              {server.name}
+                              {database.displayName}
                             </Typography>
                           </Box>
                         }
@@ -585,90 +582,13 @@ function DatabaseExplorer({
                     </ListItemButton>
                   </ListItem>
 
-                  {isServerExpanded && (
+                  {isDatabaseExpanded && (
                     <List dense disablePadding>
-                      {server.databases.map(database => {
-                        const isDatabaseExpanded = expandedDatabases.has(
-                          database.id,
-                        );
-                        const isLoadingData = loadingData.has(database.id);
-                        const dbRootNodes: TreeNode[] =
-                          nodes[database.id]?.["root"] || [];
-
-                        return (
-                          <React.Fragment key={database.id}>
-                            {/* Database Level */}
-                            <ListItem disablePadding>
-                              <ListItemButton
-                                onClick={() =>
-                                  handleDatabaseToggle(database.id)
-                                }
-                                onContextMenu={e =>
-                                  handleDatabaseContextMenu(
-                                    e,
-                                    database.id,
-                                    database.displayName,
-                                  )
-                                }
-                                sx={{ py: 0.5, pl: 2 }}
-                              >
-                                <ListItemIcon sx={{ minWidth: 22 }}>
-                                  {isDatabaseExpanded ? (
-                                    <ChevronDownIcon
-                                      strokeWidth={1.5}
-                                      size={20}
-                                    />
-                                  ) : (
-                                    <ChevronRightIcon
-                                      strokeWidth={1.5}
-                                      size={20}
-                                    />
-                                  )}
-                                </ListItemIcon>
-                                <ListItemIcon sx={{ minWidth: 22 }}>
-                                  <DatabaseTypeIcon
-                                    type={database.type}
-                                    typeToIconUrl={typeToIconUrl}
-                                  />
-                                </ListItemIcon>
-                                <ListItemText
-                                  primary={
-                                    <Box
-                                      sx={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: 1,
-                                        overflow: "hidden",
-                                      }}
-                                    >
-                                      <Typography
-                                        variant="body2"
-                                        sx={{
-                                          overflow: "hidden",
-                                          textOverflow: "ellipsis",
-                                          whiteSpace: "nowrap",
-                                        }}
-                                      >
-                                        {database.displayName}
-                                      </Typography>
-                                    </Box>
-                                  }
-                                />
-                              </ListItemButton>
-                            </ListItem>
-
-                            {isDatabaseExpanded && (
-                              <List dense disablePadding>
-                                {isLoadingData
-                                  ? renderCollectionSkeletonItems()
-                                  : dbRootNodes.map(node =>
-                                      renderNode(database.id, node, 1),
-                                    )}
-                              </List>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
+                      {isLoadingData
+                        ? renderCollectionSkeletonItems()
+                        : dbRootNodes.map(node =>
+                            renderNode(database.id, node, 1),
+                          )}
                     </List>
                   )}
                 </React.Fragment>
@@ -680,8 +600,12 @@ function DatabaseExplorer({
 
       <CreateDatabaseDialog
         open={createDialogOpen}
-        onClose={() => setCreateDialogOpen(false)}
+        onClose={() => {
+          setCreateDialogOpen(false);
+          setEditingDatabaseId(undefined);
+        }}
         onSuccess={handleDatabaseCreated}
+        databaseId={editingDatabaseId}
       />
 
       {/* Context Menu for collection */}
@@ -740,6 +664,21 @@ function DatabaseExplorer({
           },
         }}
       >
+        <MenuItem
+          onClick={handleEditDatabase}
+          sx={{
+            pl: 1,
+            pr: 1,
+            "& .MuiListItemIcon-root": {
+              minWidth: 26,
+            },
+          }}
+        >
+          <ListItemIcon>
+            <SettingsIcon size={18} strokeWidth={1.5} />
+          </ListItemIcon>
+          Edit connection
+        </MenuItem>
         <MenuItem
           onClick={handleDropDatabase}
           sx={{

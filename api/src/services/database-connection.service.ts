@@ -1022,10 +1022,12 @@ export class DatabaseConnectionService {
   private async executeMongoDBQuery(
     database: IDatabase,
     query: any,
-    _options?: any,
+    options?: any,
   ): Promise<QueryResult> {
     const client = (await this.getConnection(database)) as MongoClient;
-    const db = client.db(database.connection.database);
+    // Use database from options (Cluster mode support) or fallback to connection default
+    const dbName = options?.dbName || database.connection.database;
+    const db = client.db(dbName);
 
     try {
       // Handle different MongoDB operations

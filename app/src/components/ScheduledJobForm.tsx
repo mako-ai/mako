@@ -105,7 +105,11 @@ export function ScheduledJobForm({
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
     : null;
-  const databases = useDatabaseStore(state => state.databases);
+  const databasesMap = useDatabaseStore(state => state.databases);
+  const databases = useMemo(
+    () => (currentWorkspace ? databasesMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, databasesMap],
+  );
   const fetchDatabases = useDatabaseStore(state => state.fetchDatabases);
 
   // Note: We no longer rely on static catalog metadata for entities. We fetch

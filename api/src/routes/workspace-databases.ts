@@ -68,7 +68,7 @@ workspaceDatabaseRoutes.get(
           active: true,
           lastConnectedAt: db.lastConnectedAt,
           // Helper fields for easier access (connection object removed for security)
-          displayName: conn.database || db.name || "Unknown Database",
+          displayName: db.name || conn.database || "Unknown Database",
           hostKey,
           hostName,
         };

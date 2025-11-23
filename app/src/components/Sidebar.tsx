@@ -24,6 +24,7 @@ import { useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
+import { useSyncJobStore } from "../store/syncJobStore";
 
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive",
@@ -81,10 +82,17 @@ function Sidebar() {
   const handleLogout = async () => {
     handleUserMenuClose();
     try {
-      // Clear all store data before logout
+      // Clear all local storage to prevent data leaks
+      localStorage.clear();
+
+      // Clear all store data from memory before logout
       useConnectorCatalogStore.getState().clearTypes();
       useConnectorStore.getState().clearDrafts();
-      useConsoleStore.getState().clearAllConsoles();
+      useConsoleStore.getState().clearAllConsoles(); // This triggers actions in appStore, but reset() below is more comprehensive
+
+      // Full store resets
+      useAppStore.getState().reset();
+      useSyncJobStore.getState().reset();
 
       await logout();
     } catch (error) {

@@ -21,24 +21,14 @@ export interface Database {
   hostName: string;
 }
 
-export interface Server {
-  id: string;
-  name: string;
-  description: string;
-  connectionString: string;
-  active: boolean;
-  databases: Database[];
-}
-
 interface DatabaseState {
-  servers: Record<string, Server[]>; // workspaceId => servers array
-  databases: Database[]; // Flat list of all databases for current workspace
+  databases: Record<string, Database[]>; // workspaceId => databases array
   collections: Record<string, CollectionInfo[]>; // databaseId => collections
   views: Record<string, CollectionInfo[]>; // databaseId => views
   loading: Record<string, boolean>; // workspace or database ids
   error: Record<string, string | null>;
-  fetchServers: (workspaceId: string) => Promise<Server[]>;
-  refreshServers: (workspaceId: string) => Promise<Server[]>;
+  fetchServers: (workspaceId: string) => Promise<Database[]>;
+  refreshServers: (workspaceId: string) => Promise<Database[]>;
   initServers: (workspaceId: string) => Promise<void>;
   fetchDatabaseData: (workspaceId: string, databaseId: string) => Promise<void>;
   clearDatabaseData: (workspaceId: string) => void;
@@ -48,8 +38,7 @@ interface DatabaseState {
 
 export const useDatabaseStore = create<DatabaseState>()(
   immer((set, get) => ({
-    servers: {},
-    databases: [],
+    databases: {},
     collections: {},
     views: {},
     loading: {},
@@ -65,33 +54,18 @@ export const useDatabaseStore = create<DatabaseState>()(
           data: Database[];
         }>(`/workspaces/${workspaceId}/databases`);
         if (data.success) {
-          const serverMap = new Map<string, Server>();
-          (data.data as Database[]).forEach(db => {
-            const hostKey = db.hostKey;
-            if (!serverMap.has(hostKey)) {
-              serverMap.set(hostKey, {
-                id: hostKey,
-                name: db.hostName,
-                description: "",
-                connectionString: hostKey,
-                active: true,
-                databases: [],
-              });
-            }
-            const server = serverMap.get(hostKey)!;
-            server.databases.push(db);
-          });
-          const serversData = Array.from(serverMap.values());
-          const allDatabases = serversData.flatMap(s => s.databases);
+          const databases = (data.data as Database[]).sort((a, b) =>
+            a.name.localeCompare(b.name),
+          );
+
           set(state => {
-            state.servers[workspaceId] = serversData;
-            state.databases = allDatabases;
+            state.databases[workspaceId] = databases;
           });
-          return serversData;
+          return databases;
         }
         return [];
       } catch (err: any) {
-        console.error("Failed to fetch servers", err);
+        console.error("Failed to fetch databases", err);
         set(state => {
           state.error[workspaceId] = err?.message || "Failed to fetch";
         });
@@ -108,8 +82,8 @@ export const useDatabaseStore = create<DatabaseState>()(
       return await get().fetchServers(workspaceId);
     },
     initServers: async workspaceId => {
-      const hasServers = !!get().servers[workspaceId];
-      if (!hasServers) {
+      const hasDatabases = !!get().databases[workspaceId];
+      if (!hasDatabases) {
         await get().fetchServers(workspaceId);
       }
     },
@@ -160,10 +134,8 @@ export const useDatabaseStore = create<DatabaseState>()(
      * is fetched again and reflects the latest state on the server.
      */
     clearDatabaseData: (workspaceId: string) => {
-      const serversForWorkspace = get().servers[workspaceId] || [];
-      const dbIdsToClear = serversForWorkspace.flatMap(s =>
-        s.databases.map(db => db.id),
-      );
+      const databasesForWorkspace = get().databases[workspaceId] || [];
+      const dbIdsToClear = databasesForWorkspace.map(db => db.id);
 
       if (dbIdsToClear.length === 0) return;
 
@@ -179,7 +151,7 @@ export const useDatabaseStore = create<DatabaseState>()(
       // This is a simplified method that just ensures we have databases loaded
       // It uses the already loaded databases from fetchServers
       const workspaceId = localStorage.getItem("activeWorkspaceId");
-      if (workspaceId && !get().servers[workspaceId]) {
+      if (workspaceId && !get().databases[workspaceId]) {
         await get().fetchServers(workspaceId);
       }
     },
@@ -190,7 +162,7 @@ export const useDatabaseStore = create<DatabaseState>()(
       );
 
       if (response.success) {
-        // Refresh the servers list to reflect the deletion
+        // Refresh the databases list to reflect the deletion
         await get().refreshServers(workspaceId);
       }
     },
