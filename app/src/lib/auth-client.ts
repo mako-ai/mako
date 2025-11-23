@@ -1,6 +1,7 @@
 /**
  * Authentication client for handling all auth-related API calls
  */
+import { getApiBasePath } from "./api-base-path";
 
 interface LoginCredentials {
   email: string;
@@ -27,10 +28,17 @@ interface AuthResponse {
 }
 
 class AuthClient {
-  private baseUrl: string;
+  private basePath: string;
 
   constructor() {
-    this.baseUrl = import.meta.env.VITE_API_URL || "/api";
+    this.basePath = getApiBasePath(import.meta.env.VITE_API_URL);
+  }
+
+  private buildUrl(path: string): string {
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    return this.basePath === "/"
+      ? normalizedPath
+      : `${this.basePath}${normalizedPath}`;
   }
 
   /**
@@ -58,7 +66,7 @@ class AuthClient {
       throw new Error("Passwords do not match");
     }
 
-    const response = await fetch(`${this.baseUrl}/auth/register`, {
+    const response = await fetch(this.buildUrl("/auth/register"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -78,7 +86,7 @@ class AuthClient {
    * Login user
    */
   async login(credentials: LoginCredentials): Promise<User> {
-    const response = await fetch(`${this.baseUrl}/auth/login`, {
+    const response = await fetch(this.buildUrl("/auth/login"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -95,7 +103,7 @@ class AuthClient {
    * Logout user
    */
   async logout(): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/auth/logout`, {
+    const response = await fetch(this.buildUrl("/auth/logout"), {
       method: "POST",
       credentials: "include",
     });
@@ -108,7 +116,7 @@ class AuthClient {
    */
   async getMe(): Promise<User | null> {
     try {
-      const response = await fetch(`${this.baseUrl}/auth/me`, {
+      const response = await fetch(this.buildUrl("/auth/me"), {
         method: "GET",
         credentials: "include",
       });
@@ -129,7 +137,7 @@ class AuthClient {
    */
   async refresh(): Promise<User | null> {
     try {
-      const response = await fetch(`${this.baseUrl}/auth/refresh`, {
+      const response = await fetch(this.buildUrl("/auth/refresh"), {
         method: "POST",
         credentials: "include",
       });
@@ -149,7 +157,7 @@ class AuthClient {
    * Initiate OAuth login
    */
   initiateOAuth(provider: "google" | "github") {
-    window.location.href = `${this.baseUrl}/auth/${provider}`;
+    window.location.href = this.buildUrl(`/auth/${provider}`);
   }
 }
 
