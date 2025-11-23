@@ -20,6 +20,7 @@ export interface SyncChunkResult {
 export interface SyncChunkOptions {
   dataSourceId: string;
   destinationId: string;
+  destinationDatabaseName?: string;
   entity: string;
   isIncremental: boolean;
   state?: FetchState;
@@ -218,6 +219,7 @@ export async function performSyncChunk(
   const {
     dataSourceId,
     destinationId,
+    destinationDatabaseName,
     entity,
     isIncremental,
     state,
@@ -256,17 +258,30 @@ export async function performSyncChunk(
     }
 
     // Get connection from unified pool
+    const connectionIdentifier = destinationDatabaseName
+      ? `${destinationId}:${destinationDatabaseName}`
+      : destinationId;
+
     const connection = await databaseConnectionService.getConnectionById(
       "destination",
-      destinationId,
+      connectionIdentifier,
       async (id: string) => {
-        const destinationDb = await getDestinationManager().getDestination(id);
+        const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
+        const destinationDb = await getDestinationManager().getDestination(
+          realDestinationId,
+        );
         if (!destinationDb) return null;
 
-        return {
+        const config = {
           connectionString: destinationDb.connection.connection_string,
           database: destinationDb.connection.database,
         } as ConnectionConfig;
+
+        if (destinationDatabaseName) {
+          config.database = destinationDatabaseName;
+        }
+
+        return config;
       },
     );
     db = connection.db;
@@ -439,6 +454,7 @@ export async function performSyncChunk(
 export async function performSync(
   dataSourceId: string,
   destinationId: string,
+  destinationDatabaseName: string | undefined,
   entities: string[] | undefined,
   isIncremental: boolean = false,
   logger?: SyncLogger,
@@ -519,17 +535,30 @@ export async function performSync(
     const startTime = Date.now();
 
     // Get connection from unified pool
+    const connectionIdentifier = destinationDatabaseName
+      ? `${destinationId}:${destinationDatabaseName}`
+      : destinationId;
+
     const connection = await databaseConnectionService.getConnectionById(
       "destination",
-      destinationId,
+      connectionIdentifier,
       async (id: string) => {
-        const destinationDb = await getDestinationManager().getDestination(id);
+        const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
+        const destinationDb = await getDestinationManager().getDestination(
+          realDestinationId,
+        );
         if (!destinationDb) return null;
 
-        return {
+        const config = {
           connectionString: destinationDb.connection.connection_string,
           database: destinationDb.connection.database,
         } as ConnectionConfig;
+
+        if (destinationDatabaseName) {
+          config.database = destinationDatabaseName;
+        }
+
+        return config;
       },
     );
     db = connection.db;

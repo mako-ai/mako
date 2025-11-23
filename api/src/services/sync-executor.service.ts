@@ -32,6 +32,7 @@ export async function performSyncChunk(
 export async function performSync(
   dataSourceId: string,
   destinationDatabaseId: string,
+  destinationDatabaseName: string | undefined,
   entityFilter?: string[],
   isIncremental: boolean = false,
   logger?: SyncLogger,
@@ -44,11 +45,15 @@ export async function performSync(
   }
   logger?.log("info", `Data source: ${dataSourceId}`);
   logger?.log("info", `Destination: ${destinationDatabaseId}`);
+  if (destinationDatabaseName) {
+    logger?.log("info", `Destination Database Name: ${destinationDatabaseName}`);
+  }
 
   try {
     await performSyncOrchestrated(
       dataSourceId,
       destinationDatabaseId,
+      destinationDatabaseName,
       entityFilter,
       isIncremental,
       logger,

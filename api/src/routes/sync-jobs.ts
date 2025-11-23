@@ -42,6 +42,7 @@ syncJobRoutes.get("/", async c => {
           _id: 1,
           workspaceId: 1,
           type: 1,
+          destinationDatabaseName: 1,
           schedule: 1,
           webhookConfig: 1,
           entityFilter: 1,
@@ -145,6 +146,11 @@ syncJobRoutes.post("/", async c => {
       type: jobType,
       dataSourceId: new Types.ObjectId(body.dataSourceId),
       destinationDatabaseId: new Types.ObjectId(body.destinationDatabaseId),
+      destinationDatabaseName:
+        typeof body.destinationDatabaseName === "string" &&
+        body.destinationDatabaseName.trim().length > 0
+          ? body.destinationDatabaseName.trim()
+          : undefined,
       entityFilter: body.entityFilter || [],
       syncMode: body.syncMode || "full",
       enabled: body.enabled !== false,
@@ -260,6 +266,13 @@ syncJobRoutes.put("/:jobId", async c => {
         cron: body.schedule.cron || body.schedule,
         timezone: body.schedule.timezone || job.schedule.timezone,
       };
+    }
+    if (body.destinationDatabaseName !== undefined) {
+      job.destinationDatabaseName =
+        typeof body.destinationDatabaseName === "string" &&
+        body.destinationDatabaseName.trim().length > 0
+          ? body.destinationDatabaseName.trim()
+          : undefined;
     }
     if (body.entityFilter !== undefined) job.entityFilter = body.entityFilter;
     if (body.syncMode) job.syncMode = body.syncMode;

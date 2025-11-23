@@ -48,6 +48,7 @@ const syncJobSchema = z.object({
   workspaceId: z.string(),
   dataSourceId: syncJobDataSourceSchema,
   destinationDatabaseId: syncJobDestinationSchema,
+  destinationDatabaseName: z.string().nullable().optional(),
   type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
   schedule: syncJobScheduleSchema,
   webhookConfig: webhookConfigSchema,

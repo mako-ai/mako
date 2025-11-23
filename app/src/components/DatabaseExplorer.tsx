@@ -33,7 +33,10 @@ import { useWorkspace } from "../contexts/workspace-context";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
 import { useDatabaseStore, CollectionInfo } from "../store/databaseStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
-import { useDatabaseTreeStore, TreeNode } from "../store/databaseTreeStore";
+import {
+  useDatabaseContentStore,
+  TreeNode,
+} from "../store/databaseContentStore";
 import { useConsoleStore } from "../store/consoleStore";
 
 // Removed inline MongoDB icon; icons are served by API per database type
@@ -90,7 +93,7 @@ function DatabaseExplorer({
     fetchChildren,
     nodes,
     loading: treeLoading,
-  } = useDatabaseTreeStore();
+  } = useDatabaseContentStore();
 
   const { currentWorkspace } = useWorkspace();
 

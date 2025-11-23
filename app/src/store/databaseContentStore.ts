@@ -14,7 +14,7 @@ export interface TreeNode {
 
 type NodeKey = string; // e.g., "root" or `${kind}:${id}`
 
-interface DatabaseTreeState {
+interface DatabaseContentState {
   nodes: Record<string, Record<NodeKey, TreeNode[]>>; // dbId -> nodeKey -> children
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
@@ -36,7 +36,7 @@ function makeNodeKey(node?: { id: string; kind: string }): NodeKey {
   return `${node.kind}:${node.id}`;
 }
 
-export const useDatabaseTreeStore = create<DatabaseTreeState>()(
+export const useDatabaseContentStore = create<DatabaseContentState>()(
   persist(
     immer((set, get) => ({
       nodes: {},
@@ -135,7 +135,7 @@ export const useDatabaseTreeStore = create<DatabaseTreeState>()(
       },
     })),
     {
-      name: "database-tree-store",
+      name: "database-content-store",
       partialize: state => ({ nodes: state.nodes }),
     },
   ),
