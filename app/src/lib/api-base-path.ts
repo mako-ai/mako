@@ -30,4 +30,3 @@ export function getApiBasePath(envValue?: string): string {
   const path = normalizePath(envValue);
   return path === "" ? DEFAULT_BASE_PATH : path;
 }
-
