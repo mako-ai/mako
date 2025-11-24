@@ -136,22 +136,21 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=600 \
             --min-instances=1 \
-            --set-env-vars \
-            BASE_URL=${BASE_URL}, \
-            CLIENT_URL=${CLIENT_URL}, \
-            VITE_API_URL=${VITE_API_URL}, \
-            DATABASE_URL=${DATABASE_URL}, \
-            GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}, \
-            GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}, \
-            GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}, \
-            GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}, \
-            INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY}, \
-            INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY}, \
-            SESSION_SECRET=${SESSION_SECRET}, \
-            SESSION_DURATION=${SESSION_DURATION}, \
-            BCRYPT_ROUNDS=${BCRYPT_ROUNDS}, \
-            RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS}, \
-            RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS}, \
-            OPENAI_API_KEY=${OPENAI_API_KEY}, \
-            ENCRYPTION_KEY=${ENCRYPTION_KEY}
+            --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars CLIENT_URL=${CLIENT_URL} \
+            --set-env-vars VITE_API_URL=${VITE_API_URL} \
+            --set-env-vars DATABASE_URL=${DATABASE_URL} \
+            --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
+            --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID} \
+            --set-env-vars GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET} \
+            --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
+            --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
+            --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
+            --set-env-vars SESSION_DURATION=${SESSION_DURATION} \
+            --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
+            --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
+            --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
+            --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
+            --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
             --quiet
