@@ -51,7 +51,11 @@ jobs:
       - name: Lint API
         run: pnpm run --filter api lint
 
-      - name: Build workspaces
+      - name: Build workspaces (Fail Fast Check)
+        # We run this locally first because it's significantly faster than the Docker build.
+        # If this fails, we save time by not attempting the Docker build.
+        # Note: The artifacts produced here are NOT used in the Docker image;
+        # the Dockerfile performs its own fresh build.
         run: pnpm run build
         env:
           BASE_URL: ${{ env.BASE_URL }}
@@ -101,12 +105,6 @@ jobs:
       - name: Clean temporary env.production file
         run: rm -f .env.production
 
-      - name: Render Cloud Run env file
-        run: |
-          cat <<'EOF' > env.dev.yaml
-          ${{ secrets.DEV_ENV_YAML }}
-          EOF
-
       - name: Deploy to Cloud Run (dev)
         run: |
           gcloud run deploy ${SERVICE_NAME} \
@@ -114,9 +112,5 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=600 \
             --min-instances=1 \
-            --env-vars-file env.dev.yaml \
-            --set-env-vars BASE_URL=${BASE_URL},CLIENT_URL=${CLIENT_URL},VITE_API_URL=${VITE_API_URL} \
+            --set-env-vars BASE_URL=${BASE_URL},CLIENT_URL=${CLIENT_URL},VITE_API_URL=${VITE_API_URL},DATABASE_URL=${{ secrets.DEV_DATABASE_URL }} \
             --quiet
-
-      - name: Cleanup env file
-        run: rm -f env.dev.yaml
