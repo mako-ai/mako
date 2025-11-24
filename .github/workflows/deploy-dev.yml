@@ -99,7 +99,6 @@ jobs:
           docker push ${{ steps.image.outputs.latest_tag }}
 
       - name: Clean temporary env.production file
-        if: always()
         run: rm -f .env.production
 
       - name: Render Cloud Run env file
@@ -120,5 +119,4 @@ jobs:
             --quiet
 
       - name: Cleanup env file
-        if: always()
         run: rm -f env.dev.yaml
