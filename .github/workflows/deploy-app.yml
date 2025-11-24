@@ -35,6 +35,10 @@ jobs:
       GCP_SERVICE_ACCOUNT: ${{ github.ref_name == 'master' && secrets.GCP_PROD_SERVICE_ACCOUNT || secrets.GCP_DEV_SERVICE_ACCOUNT }}
       DATABASE_URL: ${{ github.ref_name == 'master' && secrets.PROD_DATABASE_URL || secrets.DEV_DATABASE_URL }}
       VITE_MUI_LICENSE_KEY: ${{ github.ref_name == 'master' && secrets.PROD_VITE_MUI_LICENSE_KEY || secrets.DEV_VITE_MUI_LICENSE_KEY }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GITHUB_CLIENT_ID: ${{ vars.GITHUB_CLIENT_ID }}
+      GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -123,5 +127,5 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=600 \
             --min-instances=1 \
-            --set-env-vars BASE_URL=${BASE_URL},CLIENT_URL=${CLIENT_URL},VITE_API_URL=${VITE_API_URL},DATABASE_URL=${DATABASE_URL} \
+            --set-env-vars BASE_URL=${BASE_URL},CLIENT_URL=${CLIENT_URL},VITE_API_URL=${VITE_API_URL},DATABASE_URL=${DATABASE_URL},GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID},GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --quiet
