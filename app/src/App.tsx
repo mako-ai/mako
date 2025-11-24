@@ -179,12 +179,12 @@ function MainApp() {
               // Try server-provided template first
               let prefill = `db.getCollection("${collection.name}").find({}).limit(500)`;
               try {
-                const { useDatabaseTreeStore } = await import(
-                  "./store/databaseTreeStore"
+                const { useDatabaseContentStore } = await import(
+                  "./store/databaseContentStore"
                 );
                 const workspaceId = localStorage.getItem("activeWorkspaceId");
                 if (workspaceId) {
-                  const tpl = await useDatabaseTreeStore
+                  const tpl = await useDatabaseContentStore
                     .getState()
                     .fetchConsoleTemplate(workspaceId, dbId, {
                       id: collection.name,

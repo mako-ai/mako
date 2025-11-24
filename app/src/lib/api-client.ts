@@ -1,16 +1,17 @@
 /**
  * General API client that handles authentication and error responses
  */
+import { getApiBasePath } from "./api-base-path";
 
 interface ApiRequestOptions extends RequestInit {
   params?: Record<string, string>;
 }
 
 class ApiClient {
-  private baseUrl: string;
+  private basePath: string;
 
   constructor() {
-    this.baseUrl = import.meta.env.VITE_API_URL || "/api";
+    this.basePath = getApiBasePath(import.meta.env.VITE_API_URL);
   }
 
   /**
@@ -24,7 +25,12 @@ class ApiClient {
    * Build URL with query parameters
    */
   private buildUrl(path: string, params?: Record<string, string>): string {
-    const url = new URL(`${this.baseUrl}${path}`, window.location.origin);
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    const fullPath =
+      this.basePath === "/"
+        ? normalizedPath
+        : `${this.basePath}${normalizedPath}`;
+    const url = new URL(fullPath, window.location.origin);
 
     if (params) {
       Object.entries(params).forEach(([key, value]) => {

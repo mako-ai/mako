@@ -63,6 +63,7 @@ interface JobExecution {
   context: {
     dataSourceId: Types.ObjectId;
     destinationDatabaseId: Types.ObjectId;
+    destinationDatabaseName?: string;
     syncMode: "full" | "incremental";
     entityFilter?: string[];
     cronExpression: string;
@@ -348,6 +349,7 @@ export const syncJobFunction = inngest.createFunction(
         {
           dataSourceId: new Types.ObjectId(job.dataSourceId),
           destinationDatabaseId: new Types.ObjectId(job.destinationDatabaseId),
+          destinationDatabaseName: job.destinationDatabaseName,
           syncMode: job.syncMode === "incremental" ? "incremental" : "full",
           entityFilter: job.entityFilter,
           cronExpression: job.schedule?.cron || "N/A",
@@ -598,6 +600,7 @@ export const syncJobFunction = inngest.createFunction(
                 const result = await performSyncChunk({
                   dataSourceId: job.dataSourceId.toString(),
                   destinationId: job.destinationDatabaseId.toString(),
+                  destinationDatabaseName: job.destinationDatabaseName,
                   entity,
                   isIncremental: job.syncMode === "incremental",
                   state,
@@ -725,6 +728,7 @@ export const syncJobFunction = inngest.createFunction(
             await performSync(
               job.dataSourceId.toString(),
               job.destinationDatabaseId.toString(),
+              job.destinationDatabaseName,
               job.entityFilter,
               job.syncMode === "incremental",
               syncLogger,

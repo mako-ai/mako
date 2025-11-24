@@ -48,6 +48,7 @@ const syncJobSchema = z.object({
   workspaceId: z.string(),
   dataSourceId: syncJobDataSourceSchema,
   destinationDatabaseId: syncJobDestinationSchema,
+  destinationDatabaseName: z.string().nullable().optional(),
   type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
   schedule: syncJobScheduleSchema,
   webhookConfig: webhookConfigSchema,
@@ -106,6 +107,7 @@ interface SyncJobStore extends SyncJobStoreState {
   fetchJobHistory: (workspaceId: string, jobId: string) => Promise<void>;
   selectJob: (jobId: string | null) => void;
   clearError: (workspaceId: string) => void;
+  reset: () => void;
 }
 
 const initialState: SyncJobStoreState = {
@@ -405,6 +407,10 @@ export const useSyncJobStore = create<SyncJobStore>()(
         set(state => {
           state.error[workspaceId] = null;
         });
+      },
+
+      reset: () => {
+        set(initialState);
       },
     })),
     {

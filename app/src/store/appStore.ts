@@ -78,51 +78,56 @@ export type AppView = "databases" | "consoles" | "connectors" | "sync-jobs";
  * Initial state     *
  *********************/
 const createDefaultChatId = () => "default-" + Date.now();
-const defaultChatId = createDefaultChatId();
 
-export const initialState: GlobalState = {
-  activeView: "consoles",
-  activeEditorContent: undefined,
-  currentWorkspaceId: null,
-  ui: {
-    leftPane: "databases",
-    loading: {},
-  },
-  explorers: {
-    database: {
-      expandedServers: [],
-      expandedDatabases: [],
-      expandedCollectionGroups: [],
-      expandedViewGroups: [],
-      expandedNodes: [],
+// Initial state factory to ensure fresh dates/IDs
+const getInitialState = (): GlobalState => {
+  const defaultChatId = createDefaultChatId();
+  return {
+    activeView: "consoles",
+    activeEditorContent: undefined,
+    currentWorkspaceId: null,
+    ui: {
+      leftPane: "databases",
+      loading: {},
     },
-    console: {
-      expandedFolders: [],
-    },
-    view: {
-      expandedCollections: [],
-    },
-  },
-  settings: {
-    modelId: "gpt-3.5-turbo",
-  },
-  consoles: {
-    tabs: {},
-    activeTabId: null,
-  },
-  chat: {
-    sessions: {
-      [defaultChatId]: {
-        id: defaultChatId,
-        title: "New Chat",
-        messages: [],
-        attachedContext: [],
-        createdAt: new Date(),
+    explorers: {
+      database: {
+        expandedServers: [],
+        expandedDatabases: [],
+        expandedCollectionGroups: [],
+        expandedViewGroups: [],
+        expandedNodes: [],
+      },
+      console: {
+        expandedFolders: [],
+      },
+      view: {
+        expandedCollections: [],
       },
     },
-    currentChatId: defaultChatId,
-  },
+    settings: {
+      modelId: "gpt-3.5-turbo",
+    },
+    consoles: {
+      tabs: {},
+      activeTabId: null,
+    },
+    chat: {
+      sessions: {
+        [defaultChatId]: {
+          id: defaultChatId,
+          title: "New Chat",
+          messages: [],
+          attachedContext: [],
+          createdAt: new Date(),
+        },
+      },
+      currentChatId: defaultChatId,
+    },
+  };
 };
+
+export const initialState: GlobalState = getInitialState();
 
 /*********************
  * Action definition *
@@ -564,6 +569,7 @@ export const useAppStore = create<
         | { content: string; fileName?: string; language?: string }
         | undefined,
     ) => void;
+    reset: () => void;
   }
 >()(
   persist(
@@ -583,6 +589,7 @@ export const useAppStore = create<
         set(state => {
           state.activeEditorContent = content;
         }),
+      reset: () => set(getInitialState()),
     })),
     {
       name: "app-store",

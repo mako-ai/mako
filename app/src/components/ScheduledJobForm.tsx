@@ -37,6 +37,10 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSyncJobStore } from "../store/syncJobStore";
 import { useDatabaseStore } from "../store/databaseStore";
+import {
+  useDatabaseContentStore,
+  TreeNode,
+} from "../store/databaseContentStore";
 import { apiClient } from "../lib/api-client";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 
@@ -51,6 +55,7 @@ interface ScheduledJobFormProps {
 interface FormData {
   dataSourceId: string;
   destinationDatabaseId: string;
+  destinationDatabaseName?: string;
   schedule: string;
   timezone: string;
   syncMode: "full" | "incremental";
@@ -105,17 +110,25 @@ export function ScheduledJobForm({
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
     : null;
-  const databases = useDatabaseStore(state => state.databases);
+  const databasesMap = useDatabaseStore(state => state.databases);
+  const databases = useMemo(
+    () => (currentWorkspace ? databasesMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, databasesMap],
+  );
   const fetchDatabases = useDatabaseStore(state => state.fetchDatabases);
+  const fetchRoot = useDatabaseContentStore(state => state.fetchRoot);
 
   // Note: We no longer rely on static catalog metadata for entities. We fetch
   // dynamic entities from the backend per-connector endpoint instead.
 
   const [connectors, setConnectors] = useState<any[]>([]);
   const [isLoadingConnectors, setIsLoadingConnectors] = useState(false);
+  const [availableDatabases, setAvailableDatabases] = useState<TreeNode[]>([]);
+  const [isLoadingDatabases, setIsLoadingDatabases] = useState(false);
   const [scheduleMode, setScheduleMode] = useState<"preset" | "custom">(
     "preset",
   );
+  const requiresDestinationDatabaseName = availableDatabases.length > 0;
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Local saved flag for future UX enhancements (snackbar/toast)
@@ -140,11 +153,13 @@ export function ScheduledJobForm({
     formState: { errors },
     reset,
     watch,
+    getValues,
     setValue,
   } = useForm<FormData>({
     defaultValues: {
       dataSourceId: "",
       destinationDatabaseId: "",
+      destinationDatabaseName: "",
       schedule: "0 * * * *", // Default hourly
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
       syncMode: "full",
@@ -156,6 +171,55 @@ export function ScheduledJobForm({
   const watchSchedule = watch("schedule");
   const watchTimezone = watch("timezone");
   const watchDataSourceId = watch("dataSourceId");
+  const watchDestinationDatabaseId = watch("destinationDatabaseId");
+
+  // Fetch available databases when destination changes
+  useEffect(() => {
+    const loadDatabases = async () => {
+      if (!watchDestinationDatabaseId || !currentWorkspace?.id) {
+        setAvailableDatabases([]);
+        setValue("destinationDatabaseName", "");
+        setIsLoadingDatabases(false);
+        return;
+      }
+
+      setAvailableDatabases([]);
+      setIsLoadingDatabases(true);
+      try {
+        const nodes = await fetchRoot(
+          currentWorkspace.id,
+          watchDestinationDatabaseId,
+        );
+        // Filter only for nodes that are actually databases (kind="database")
+        // This indicates a server connection (multi-db) vs a direct database connection
+        const dbNodes = nodes.filter(node => node.kind === "database");
+        setAvailableDatabases(dbNodes);
+        const currentValue = getValues("destinationDatabaseName") || "";
+        if (dbNodes.length === 0) {
+          setValue("destinationDatabaseName", "");
+        } else {
+          const hasCurrent = dbNodes.some(node => node.id === currentValue);
+          if (!hasCurrent) {
+            setValue("destinationDatabaseName", "");
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch databases:", err);
+        setAvailableDatabases([]);
+        setValue("destinationDatabaseName", "");
+      } finally {
+        setIsLoadingDatabases(false);
+      }
+    };
+
+    loadDatabases();
+  }, [
+    watchDestinationDatabaseId,
+    currentWorkspace?.id,
+    fetchRoot,
+    getValues,
+    setValue,
+  ]);
 
   // Fetch connectors
   const fetchDataSources = async (workspaceId: string) => {
@@ -359,6 +423,7 @@ export function ScheduledJobForm({
         const formData: FormData = {
           dataSourceId: (job.dataSourceId as any)._id,
           destinationDatabaseId: (job.destinationDatabaseId as any)._id,
+          destinationDatabaseName: job.destinationDatabaseName || "",
           schedule: job.schedule?.cron || "0 * * * *",
           timezone: job.schedule?.timezone || "UTC",
           syncMode: job.syncMode as "full" | "incremental",
@@ -445,6 +510,15 @@ export function ScheduledJobForm({
       );
       return;
     }
+    if (
+      availableDatabases.length > 0 &&
+      !data.destinationDatabaseName?.trim()
+    ) {
+      setError(
+        "Please select a destination database within the selected server.",
+      );
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
@@ -467,6 +541,7 @@ export function ScheduledJobForm({
         type: "scheduled",
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,
+        destinationDatabaseName: data.destinationDatabaseName?.trim() || null,
         syncMode: data.syncMode,
         enabled: data.enabled,
         entityFilter: data.entityFilter,
@@ -719,6 +794,73 @@ export function ScheduledJobForm({
                   )}
                 />
               </Stack>
+
+              {watchDestinationDatabaseId && (
+                <Box>
+                  {isLoadingDatabases ? (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 2,
+                        py: 1,
+                        px: 0.5,
+                      }}
+                    >
+                      <CircularProgress size={20} />
+                      <Typography variant="body2" color="text.secondary">
+                        Loading databases for this destination...
+                      </Typography>
+                    </Box>
+                  ) : requiresDestinationDatabaseName ? (
+                    <Stack spacing={1}>
+                      <Controller
+                        name="destinationDatabaseName"
+                        control={control}
+                        rules={{
+                          validate: value =>
+                            !requiresDestinationDatabaseName ||
+                            (value && value.trim().length > 0) ||
+                            "Destination database is required for this server",
+                        }}
+                        render={({ field }) => (
+                          <FormControl
+                            fullWidth
+                            error={!!errors.destinationDatabaseName}
+                          >
+                            <InputLabel>Destination Database Name</InputLabel>
+                            <Select
+                              {...field}
+                              label="Destination Database Name"
+                              displayEmpty
+                            >
+                              <MenuItem value="">
+                                <em>Select a database</em>
+                              </MenuItem>
+                              {availableDatabases.map(db => (
+                                <MenuItem key={db.id} value={db.id}>
+                                  {db.label || db.id}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                            <FormHelperText>
+                              {errors.destinationDatabaseName?.message ||
+                                "Select which database inside this server should receive synced data"}
+                            </FormHelperText>
+                          </FormControl>
+                        )}
+                      />
+                      <Alert severity="info" sx={{ mb: 1 }}>
+                        <Typography variant="body2">
+                          This destination is a server/cluster with multiple
+                          databases. Choose the specific database that should
+                          receive the synced records.
+                        </Typography>
+                      </Alert>
+                    </Stack>
+                  ) : null}
+                </Box>
+              )}
 
               {/* Entity Selection */}
               {watchDataSourceId && (

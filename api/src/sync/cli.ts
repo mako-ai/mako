@@ -33,6 +33,7 @@ const consoleLogger: SyncLogger = {
 async function runSync(
   sourceId: string,
   destinationId: string,
+  destinationDatabaseName: string | undefined,
   entities: string[] | undefined,
   isIncremental: boolean = false,
 ) {
@@ -46,6 +47,7 @@ async function runSync(
     await performSync(
       sourceId,
       destinationId,
+      destinationDatabaseName,
       entities,
       isIncremental,
       consoleLogger,
@@ -165,6 +167,16 @@ async function interactiveMode() {
 
     const availableEntities = connector.getAvailableEntities();
 
+    const { destinationDatabaseName } = await inquirer.prompt([
+      {
+        type: "input",
+        name: "destinationDatabaseName",
+        message:
+          "Destination database name (leave blank to use the connection default):",
+        default: "",
+      },
+    ]);
+
     // Prompt for entity selection (multi-select with checkbox)
     const { entities } = await inquirer.prompt([
       {
@@ -227,6 +239,9 @@ async function interactiveMode() {
     console.log(
       `   Destination: ${destinations.find((d: { id: string }) => d.id === destinationId)?.name}`,
     );
+    if (destinationDatabaseName?.trim()) {
+      console.log(`   Destination Database Name: ${destinationDatabaseName.trim()}`);
+    }
     console.log(
       `   Entities: ${selectedEntities ? selectedEntities.join(", ") : "All entities"}`,
     );
@@ -236,6 +251,9 @@ async function interactiveMode() {
 
     // Show equivalent command
     let command = `pnpm run sync -s ${dataSourceId} -d ${destinationId}`;
+    if (destinationDatabaseName?.trim()) {
+      command += ` --destination-db-name ${destinationDatabaseName.trim()}`;
+    }
     if (selectedEntities) {
       selectedEntities.forEach(entity => {
         command += ` -e ${entity}`;
@@ -264,6 +282,9 @@ async function interactiveMode() {
     await runSync(
       dataSourceId,
       destinationId,
+      destinationDatabaseName?.trim()
+        ? destinationDatabaseName.trim()
+        : undefined,
       selectedEntities,
       syncMode === "incremental",
     );
@@ -297,6 +318,10 @@ program
   .option(
     "--incremental",
     "Perform incremental sync (only sync new/updated records)",
+  )
+  .option(
+    "--destination-db-name <name>",
+    "Logical database name when the destination connection serves multiple databases",
   )
   .option("-i, --interactive", "Run in interactive mode")
   .action(async options => {
@@ -337,6 +362,9 @@ program
       await runSync(
         options.source,
         options.destination,
+        options.destinationDbName
+          ? String(options.destinationDbName).trim()
+          : undefined,
         uniqueEntities,
         options.incremental,
       );

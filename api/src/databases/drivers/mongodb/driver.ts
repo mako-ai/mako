@@ -15,25 +15,87 @@ export class MongoDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  async getTreeRoot(_database: IDatabase): Promise<DatabaseTreeNode[]> {
-    return [
-      {
-        id: "collections",
-        label: "Collections",
-        kind: "group",
-        hasChildren: true,
-      },
-      { id: "views", label: "Views", kind: "group", hasChildren: true },
-    ];
+  async getTreeRoot(database: IDatabase): Promise<DatabaseTreeNode[]> {
+    // Single Database Mode
+    if (database.connection.database) {
+      const dbName = database.connection.database;
+      return [
+        {
+          id: dbName,
+          label: dbName,
+          kind: "database",
+          hasChildren: true,
+          metadata: { dbName },
+        },
+      ];
+    }
+
+    // Cluster Mode: List all databases
+    try {
+      const client = await databaseConnectionService.getConnection(database);
+      const adminDb = client.db("admin");
+      const result = await adminDb.admin().listDatabases();
+
+      return (result.databases || [])
+        .map((db: any) => db.name)
+        .sort((a: string, b: string) => a.localeCompare(b))
+        .map(
+          (name: string): DatabaseTreeNode => ({
+            id: name,
+            label: name,
+            kind: "database",
+            hasChildren: true,
+            metadata: { dbName: name },
+          }),
+        );
+    } catch (error) {
+      console.error("Error listing databases in cluster mode:", error);
+      return [];
+    }
   }
 
   async getChildren(
     database: IDatabase,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]> {
-    if (parent.id === "collections") {
+    // Expanding a Database Node (Cluster Mode)
+    if (parent.kind === "database") {
+      const dbName = parent.metadata?.dbName;
+      return [
+        {
+          // Use unique IDs for groups to prevent tree state confusion in frontend
+          id: `collections::${dbName}`,
+          label: "Collections",
+          kind: "group",
+          hasChildren: true,
+          metadata: { dbName },
+        },
+        {
+          id: `views::${dbName}`,
+          label: "Views",
+          kind: "group",
+          hasChildren: true,
+          metadata: { dbName },
+        },
+      ];
+    }
+
+    // Determine which database to target
+    const targetDbName =
+      parent.metadata?.dbName || database.connection.database;
+
+    if (!targetDbName && !database.connection.database) {
+      // Should not happen if properly navigated, but safety check
+      return [];
+    }
+
+    const isCollections =
+      parent.id === "collections" || parent.id.startsWith("collections::");
+    const isViews = parent.id === "views" || parent.id.startsWith("views::");
+
+    if (isCollections) {
       const client = await databaseConnectionService.getConnection(database);
-      const db = client.db(database.connection.database);
+      const db = client.db(targetDbName);
       const collections = await db
         .listCollections({ type: { $ne: "view" } })
         .toArray();
@@ -46,12 +108,14 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             label: name,
             kind: "collection",
             hasChildren: false,
+            metadata: { dbName: targetDbName },
           }),
         );
     }
-    if (parent.id === "views") {
+
+    if (isViews) {
       const client = await databaseConnectionService.getConnection(database);
-      const db = client.db(database.connection.database);
+      const db = client.db(targetDbName);
       const views = await db.listCollections({ type: "view" }).toArray();
       return views
         .map((v: any) => v.name)
@@ -62,6 +126,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             label: name,
             kind: "view",
             hasChildren: false,
+            metadata: { dbName: targetDbName },
           }),
         );
     }

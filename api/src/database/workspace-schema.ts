@@ -323,6 +323,7 @@ export interface ISyncJob extends Document {
   type: "scheduled" | "webhook"; // Required field
   dataSourceId: Types.ObjectId;
   destinationDatabaseId: Types.ObjectId;
+  destinationDatabaseName?: string;
   schedule: {
     cron: string;
     timezone?: string;
@@ -929,6 +930,10 @@ const SyncJobSchema = new Schema<ISyncJob>(
       type: Schema.Types.ObjectId,
       ref: "Database",
       required: true,
+    },
+    destinationDatabaseName: {
+      type: String,
+      required: false,
     },
     schedule: {
       cron: {

@@ -147,8 +147,9 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
         name: "database",
         label: "Database",
         type: "string",
-        required: true,
+        required: false,
         placeholder: "mydb",
+        helperText: "Leave empty to list all databases (Cluster Mode)",
       },
       {
         name: "authType",

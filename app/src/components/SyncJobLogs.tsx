@@ -45,6 +45,7 @@ interface ExecutionHistoryItem {
   context?: {
     dataSourceId: string;
     destinationDatabaseId?: string;
+    destinationDatabaseName?: string;
     syncMode: string;
     entityFilter?: string[];
   };
