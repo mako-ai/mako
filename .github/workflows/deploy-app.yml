@@ -1,21 +1,17 @@
-name: Deploy Dev to Cloud Run
+name: Deploy App to Cloud Run
 
 on:
   push:
     branches:
       - dev
+      - master
   workflow_dispatch:
 
 concurrency:
-  group: dev-cloud-run
+  group: deploy-${{ github.ref_name }}
   cancel-in-progress: true
 
 env:
-  SERVICE_NAME: dev-mako
-  IMAGE_NAME: dev-mako
-  BASE_URL: https://dev-app.mako.ai
-  CLIENT_URL: https://dev-app.mako.ai
-  VITE_API_URL: https://dev-app.mako.ai/api
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   GCP_REGION: ${{ vars.GCP_REGION }}
   GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
@@ -26,7 +22,19 @@ permissions:
 
 jobs:
   build-and-deploy:
+    name: Deploy ${{ github.ref_name == 'master' && 'production' || 'staging' }}
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name == 'master' && 'production' || 'staging' }}
+    env:
+      SERVICE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
+      IMAGE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
+      BASE_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
+      CLIENT_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
+      VITE_API_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai/api' || 'https://dev-app.mako.ai/api' }}
+      GCP_SERVICE_ACCOUNT: ${{ github.ref_name == 'master' && secrets.GCP_PROD_SERVICE_ACCOUNT || secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      DATABASE_URL: ${{ github.ref_name == 'master' && secrets.PROD_DATABASE_URL || secrets.DEV_DATABASE_URL }}
+      VITE_MUI_LICENSE_KEY: ${{ github.ref_name == 'master' && secrets.PROD_VITE_MUI_LICENSE_KEY || secrets.DEV_VITE_MUI_LICENSE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,12 +69,12 @@ jobs:
           BASE_URL: ${{ env.BASE_URL }}
           CLIENT_URL: ${{ env.CLIENT_URL }}
           VITE_API_URL: ${{ env.VITE_API_URL }}
-          VITE_MUI_LICENSE_KEY: ${{ secrets.DEV_VITE_MUI_LICENSE_KEY }}
+          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -85,10 +93,13 @@ jobs:
           echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Create .env.production for Docker build
+        env:
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
         run: |
           cat <<EOF > .env.production
           VITE_API_URL=${VITE_API_URL}
-          VITE_MUI_LICENSE_KEY=${{ secrets.DEV_VITE_MUI_LICENSE_KEY }}
+          VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
           EOF
 
       - name: Build Docker image
@@ -105,12 +116,12 @@ jobs:
       - name: Clean temporary env.production file
         run: rm -f .env.production
 
-      - name: Deploy to Cloud Run (dev)
+      - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${SERVICE_NAME} \
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
             --timeout=600 \
             --min-instances=1 \
-            --set-env-vars BASE_URL=${BASE_URL},CLIENT_URL=${CLIENT_URL},VITE_API_URL=${VITE_API_URL},DATABASE_URL=${{ secrets.DEV_DATABASE_URL }} \
+            --set-env-vars BASE_URL=${BASE_URL},CLIENT_URL=${CLIENT_URL},VITE_API_URL=${VITE_API_URL},DATABASE_URL=${DATABASE_URL} \
             --quiet
