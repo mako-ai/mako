@@ -533,7 +533,7 @@ export class DatabaseConnectionService {
         service_account_json,
         api_base_url,
       );
-      const location = options?.location || dbLocation;
+      const configuredLocation = options?.location || dbLocation;
       const batchSize = Math.max(
         1,
         Math.min(10000, options?.batchSize || 1000),
@@ -545,7 +545,7 @@ export class DatabaseConnectionService {
         useLegacySql: false,
         maxResults: batchSize,
       };
-      if (location) startBody.location = location;
+      if (configuredLocation) startBody.location = configuredLocation;
       let response = await client.post(
         `/projects/${project_id}/queries`,
         startBody,
@@ -553,20 +553,54 @@ export class DatabaseConnectionService {
 
       let data = response.data || {};
       const jobId: string | undefined = data.jobReference?.jobId;
+      // Extract location from job reference - this is critical for multi-region setups
+      // BigQuery returns the actual location where the job was created
+      const jobLocation: string | undefined =
+        data.jobReference?.location || configuredLocation;
       let schema: any = data.schema;
       let pageToken: string | undefined = data.pageToken;
       const rowsAccum: any[] = [];
 
-      // Collect first page
+      // Wait for job completion if not immediately complete
+      // BigQuery may return jobComplete: false for complex/long-running queries
+      const maxWaitMs = 5 * 60 * 1000; // 5 minutes max wait
+      const pollIntervalMs = 1000; // 1 second between polls
+      let waitedMs = 0;
+
+      while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        waitedMs += pollIntervalMs;
+
+        const params: any = { maxResults: batchSize };
+        // Must use the job's actual location for polling
+        if (jobLocation) params.location = jobLocation;
+        response = await client.get(
+          `/projects/${project_id}/queries/${jobId}`,
+          { params },
+        );
+        data = response.data || {};
+        schema = data.schema || schema;
+      }
+
+      if (data.jobComplete === false) {
+        return {
+          success: false,
+          error: `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
+        };
+      }
+
+      // Collect first page of results
       if (Array.isArray(data.rows) && schema) {
         rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
       }
+      pageToken = data.pageToken;
 
-      // Paginate
+      // Paginate through remaining results
       while (pageToken) {
         const params: any = { maxResults: batchSize };
         if (pageToken) params.pageToken = pageToken;
-        if (location) params.location = location;
+        // Must use the job's actual location for pagination
+        if (jobLocation) params.location = jobLocation;
         response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
           { params },
