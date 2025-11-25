@@ -117,12 +117,28 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
             value.trim() !== ""),
       );
 
+      // Calculate column width based on content length
+      const getDisplayLength = (value: unknown): number => {
+        if (value === null || value === undefined) return 4; // "null"
+        if (typeof value === "object") return JSON.stringify(value).length;
+        return String(value).length;
+      };
+
+      // Get max content length from sample (header included)
+      const contentLengths = sampleValues.map(getDisplayLength);
+      const headerLength = key.length;
+      const maxContentLength = Math.max(headerLength, ...contentLengths, 0);
+
+      // Calculate width: ~8px per character + 24px padding, capped at 400px
+      const calculatedWidth = Math.min(
+        Math.max(maxContentLength * 8 + 24, 60), // min 60px
+        400, // max 400px
+      );
+
       return {
         field: key,
         headerName: key,
-        flex: 1,
-        minWidth: 100,
-        maxWidth: 300,
+        width: calculatedWidth,
         align: isNumericColumn ? "right" : "left",
         headerAlign: isNumericColumn ? "right" : "left",
         renderCell: params => {
@@ -369,6 +385,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       >
         {viewMode === "table" ? (
           <DataGridPremium
+            key={results.executedAt}
             rows={rows}
             columns={columns}
             pinnedColumns={{ left: ["__rowIndex"], right: [] }}
@@ -379,8 +396,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
             rowHeight={40}
             style={{
               height: "100%",
-              width: "100%",
-              maxWidth: "100%",
+              width: "auto",
             }}
             sx={{
               "& .MuiDataGrid-cell": {
@@ -389,6 +405,8 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
                   'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
                 overflow: "hidden",
                 textOverflow: "ellipsis",
+                borderRight: "1px solid",
+                borderColor: "divider",
               },
               "& .MuiDataGrid-columnHeaders": {
                 backgroundColor: "background.default",
@@ -403,17 +421,21 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
               "& .MuiDataGrid-root": {
                 overflow: "hidden",
               },
+              "& .MuiDataGrid-row:first-of-type .MuiDataGrid-cell": {
+                borderTop: "none",
+              },
               "& .MuiDataGrid-main": {
                 overflow: "hidden",
-                backgroundColor: "background.paper",
+                backgroundColor: "background.default",
               },
               "& .MuiDataGrid-virtualScroller": {
                 overflow: "auto",
               },
+              "& .MuiDataGrid-virtualScrollerContent": {
+                backgroundColor: "background.paper",
+              },
               borderRadius: 0,
               border: "none",
-              width: "100%",
-              maxWidth: "100%",
             }}
           />
         ) : (

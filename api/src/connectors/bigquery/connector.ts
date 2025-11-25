@@ -298,7 +298,9 @@ export class BigQueryConnector extends BaseConnector {
     if (!def) throw new Error(`Query configuration '${entity}' not found`);
 
     const projectId = this.dataSource.config.project_id as string;
-    const location = this.dataSource.config.location as string | undefined;
+    const configuredLocation = this.dataSource.config.location as
+      | string
+      | undefined;
     const batchSize = Number(
       def.batch_size || options.batchSize || this.getBatchSize(),
     );
@@ -311,6 +313,9 @@ export class BigQueryConnector extends BaseConnector {
     let hasMore = state?.hasMore !== false;
     let pageToken: string | undefined = state?.cursor;
     let jobId: string | undefined = state?.metadata?.jobId;
+    // Track the actual job location from BigQuery response
+    let jobLocation: string | undefined =
+      state?.metadata?.jobLocation || configuredLocation;
     let schema: BigQuerySchema | undefined = state?.metadata?.schema;
     let totalRows: number | undefined = state?.metadata?.totalRows;
 
@@ -318,6 +323,7 @@ export class BigQueryConnector extends BaseConnector {
 
     while (hasMore && iterations < maxIterations) {
       let response: any;
+      let data: any;
 
       if (!jobId) {
         // Start query
@@ -325,20 +331,51 @@ export class BigQueryConnector extends BaseConnector {
           query: def.query,
           useLegacySql: Boolean(def.use_legacy_sql) || false,
           maxResults: batchSize,
-          ...(location ? { location } : {}),
+          ...(configuredLocation ? { location: configuredLocation } : {}),
         };
         response = await client.post(`/projects/${projectId}/queries`, body);
+        data = response.data || {};
+        jobId = data.jobReference?.jobId || jobId;
+        // Extract location from job reference - critical for multi-region setups
+        jobLocation = data.jobReference?.location || configuredLocation;
+
+        // Wait for job completion if not immediately complete
+        // BigQuery may return jobComplete: false for complex/long-running queries
+        const maxWaitMs = 5 * 60 * 1000; // 5 minutes max wait
+        const pollIntervalMs = 1000; // 1 second between polls
+        let waitedMs = 0;
+
+        while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+          await this.sleep(pollIntervalMs);
+          waitedMs += pollIntervalMs;
+
+          const params: JsonRecord = { maxResults: batchSize };
+          // Must use the job's actual location for polling
+          if (jobLocation) params.location = jobLocation;
+          response = await client.get(
+            `/projects/${projectId}/queries/${jobId}`,
+            { params },
+          );
+          data = response.data || {};
+        }
+
+        if (data.jobComplete === false) {
+          throw new Error(
+            `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
+          );
+        }
       } else {
         // Page through existing job results
         const params: JsonRecord = { maxResults: batchSize };
         if (pageToken) params.pageToken = pageToken;
-        if (location) params.location = location;
+        // Must use the job's actual location for pagination
+        if (jobLocation) params.location = jobLocation;
         response = await client.get(`/projects/${projectId}/queries/${jobId}`, {
           params,
         });
+        data = response.data || {};
       }
 
-      const data = response.data || {};
       jobId = data.jobReference?.jobId || jobId;
       schema = (data.schema as BigQuerySchema) || schema;
       if (typeof data.totalRows === "string") {
@@ -364,7 +401,7 @@ export class BigQueryConnector extends BaseConnector {
       totalProcessed: processed,
       hasMore,
       iterationsInChunk: iterations,
-      metadata: { jobId, schema, totalRows },
+      metadata: { jobId, schema, totalRows, jobLocation },
     };
   }
 
