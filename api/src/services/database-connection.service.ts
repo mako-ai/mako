@@ -9,6 +9,7 @@ import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
 import { DatabaseDriver } from "../databases/driver";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
+import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 
 export interface QueryResult {
@@ -76,6 +77,10 @@ export class DatabaseConnectionService {
       "cloudsql-postgres",
       new CloudSQLPostgresDatabaseDriver() as any,
     );
+    this.drivers.set(
+      "cloudflare-d1",
+      new CloudflareD1DatabaseDriver() as any,
+    );
     // Start cleanup interval for MongoDB connections
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
@@ -105,6 +110,10 @@ export class DatabaseConnectionService {
         case "cloudsql-postgres":
           return await (
             this.drivers.get("cloudsql-postgres") as any
+          ).testConnection(database);
+        case "cloudflare-d1":
+          return await (
+            this.drivers.get("cloudflare-d1") as CloudflareD1DatabaseDriver
           ).testConnection(database);
         default:
           return {
@@ -146,6 +155,10 @@ export class DatabaseConnectionService {
           return await this.executeMSSQLQuery(database, query);
         case "bigquery":
           return await this.executeBigQueryQuery(database, query, options);
+        case "cloudflare-d1":
+          return await this.drivers
+            .get("cloudflare-d1")!
+            .executeQuery(database, query, options);
         default:
           return {
             success: false,

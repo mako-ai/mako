@@ -227,6 +227,7 @@ function Editor() {
     tabId: string,
     contentToExecute: string,
     databaseId?: string,
+    queryOptions?: Record<string, any>,
   ) => {
     if (!contentToExecute.trim()) return;
 
@@ -249,6 +250,7 @@ function Editor() {
         currentWorkspace.id,
         databaseId,
         contentToExecute,
+        queryOptions,
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
@@ -517,7 +519,12 @@ function Editor() {
                         dbContentHash={tab.dbContentHash}
                         title={tab.title}
                         onExecute={(content, db) =>
-                          handleConsoleExecute(tab.id, content, db)
+                          handleConsoleExecute(
+                            tab.id,
+                            content,
+                            db,
+                            tab.metadata?.queryOptions,
+                          )
                         }
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)

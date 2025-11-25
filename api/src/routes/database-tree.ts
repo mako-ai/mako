@@ -109,6 +109,14 @@ databaseTreeRoutes.get(
           ? nodeId.split(".")[1]
           : "table_name";
       template = `SELECT * FROM \`${projectId}.${dataset}.${table}\` LIMIT 500;`;
+    } else if (dbType === "cloudflare-d1") {
+      // D1 is SQLite-based
+      const table =
+        metadata?.table ||
+        (typeof nodeId === "string" && nodeId.includes(".")
+          ? nodeId.split(".")[1]
+          : "table_name");
+      template = `SELECT * FROM ${table} LIMIT 500;`;
     } else {
       // Fallback SQL-like template
       template = "SELECT * FROM table_name LIMIT 500;";

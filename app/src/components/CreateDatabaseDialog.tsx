@@ -170,7 +170,12 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
 
   const handleTypeChange = async (newType: string) => {
     setValue("type", newType, { shouldValidate: true, shouldDirty: true });
-    const schema = schemas[newType] || (await fetchSchema(newType));
+    // Always fetch schema if not cached or if cached schema has no fields (failed previous request)
+    const cachedSchema = schemas[newType];
+    const schema =
+      cachedSchema?.fields?.length > 0
+        ? cachedSchema
+        : await fetchSchema(newType, true);
     const defaults: Record<string, any> = {};
     if (schema?.fields) {
       schema.fields.forEach(f => {

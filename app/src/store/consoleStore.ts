@@ -128,6 +128,7 @@ export const useConsoleStore = () => {
     workspaceId: string,
     databaseId: string,
     query: string,
+    options?: Record<string, any>,
   ): Promise<{ success: boolean; data?: any; error?: string }> => {
     try {
       const res = await apiClient.post<{
@@ -136,6 +137,7 @@ export const useConsoleStore = () => {
         error?: string;
       }>(`/workspaces/${workspaceId}/databases/${databaseId}/execute`, {
         query,
+        options,
       });
       return res.success
         ? { success: true, data: (res as any).data }

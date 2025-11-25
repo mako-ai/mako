@@ -113,6 +113,7 @@ function MainApp() {
     filePath?: string,
     consoleId?: string, // Add optional consoleId parameter
     isPlaceholder?: boolean,
+    queryOptions?: Record<string, any>, // Options to pass when executing (e.g., D1 databaseId)
   ) => {
     // For existing consoles, use the server ID as the tab ID
     const tabId = consoleId || generateObjectId();
@@ -154,6 +155,8 @@ function MainApp() {
       databaseId,
       // If placeholder, defer setting filePath so dbContentHash isn't computed
       filePath: isPlaceholder ? undefined : filePath,
+      // Store query execution options (e.g., D1 databaseId for multi-database connections)
+      metadata: queryOptions ? { queryOptions } : undefined,
     });
     setActiveConsole(id);
 
@@ -200,18 +203,27 @@ function MainApp() {
                   prefill = `SELECT * FROM ${collection.name} LIMIT 500;`;
                 }
               }
-              openOrFocusConsoleTab(collection.name, prefill, dbId, [
-                {
-                  id: "collection-" + collection.name,
-                  type: "collection",
-                  title: collection.name,
-                  content: `Collection: ${collection.name}`,
-                  metadata: {
-                    databaseId: dbId,
-                    collectionName: collection.name,
+              openOrFocusConsoleTab(
+                collection.name,
+                prefill,
+                dbId,
+                [
+                  {
+                    id: "collection-" + collection.name,
+                    type: "collection",
+                    title: collection.name,
+                    content: `Collection: ${collection.name}`,
+                    metadata: {
+                      databaseId: dbId,
+                      collectionName: collection.name,
+                    },
                   },
-                },
-              ]);
+                ],
+                undefined, // filePath
+                undefined, // consoleId
+                undefined, // isPlaceholder
+                collection.options, // queryOptions - contains D1 databaseId, MongoDB dbName, etc.
+              );
             }}
           />
         );

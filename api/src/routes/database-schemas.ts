@@ -303,6 +303,37 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
       },
     ],
   },
+  "cloudflare-d1": {
+    fields: [
+      {
+        name: "account_id",
+        label: "Account ID",
+        type: "string",
+        required: true,
+        placeholder: "023e105f4ecef8ad9ca31a8372d0c353",
+        helperText:
+          "Your Cloudflare account ID (found in the URL when logged into the dashboard)",
+      },
+      {
+        name: "api_token",
+        label: "API Token",
+        type: "password",
+        required: true,
+        placeholder: "Your Cloudflare API token",
+        helperText:
+          "Create an API token with D1 Edit permissions at https://dash.cloudflare.com/profile/api-tokens",
+      },
+      {
+        name: "database_id",
+        label: "Database ID (optional)",
+        type: "string",
+        required: false,
+        placeholder: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        helperText:
+          "Leave empty to list all D1 databases in your account, or specify a database UUID to connect directly",
+      },
+    ],
+  },
 };
 
 databaseSchemaRoutes.get("/types", c => {
@@ -325,6 +356,7 @@ databaseSchemaRoutes.get("/types", c => {
     // Default sensible mapping; drivers may override
     if (t === "mongodb") return "mongodb";
     if (t === "bigquery") return "sql";
+    if (t === "cloudflare-d1") return "sql";
     return "sql";
   };
 
@@ -340,7 +372,9 @@ databaseSchemaRoutes.get("/types", c => {
         ? 'db.getCollection("{collection}").find({}).limit(500)'
         : t === "bigquery"
           ? "SELECT * FROM `{project}.{dataset}.{table}` LIMIT 500;"
-          : "SELECT * FROM {table} LIMIT 500;";
+          : t === "cloudflare-d1"
+            ? "SELECT * FROM {table} LIMIT 500;"
+            : "SELECT * FROM {table} LIMIT 500;";
     return { type: t, displayName, consoleLanguage, iconUrl, defaultTemplate };
   });
 
@@ -388,11 +422,25 @@ databaseSchemaRoutes.get("/:type/icon.svg", c => {
 
   for (const p of tryPaths) {
     if (fs.existsSync(p)) {
+      const stat = fs.statSync(p);
+      const etag = `"${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}"`;
+
+      // Check If-None-Match for conditional requests
+      const ifNoneMatch = c.req.header("If-None-Match");
+      if (ifNoneMatch === etag) {
+        return c.body(null, { status: 304 });
+      }
+
       const svgBuffer = fs.readFileSync(p);
+      const isDev = process.env.NODE_ENV !== "production";
       return c.body(svgBuffer, {
         headers: {
           "Content-Type": "image/svg+xml",
-          "Cache-Control": "public, max-age=31536000, immutable",
+          ETag: etag,
+          // In dev: always revalidate. In prod: cache for 1 day but allow revalidation.
+          "Cache-Control": isDev
+            ? "no-cache"
+            : "public, max-age=86400, must-revalidate",
         },
       });
     }
@@ -402,6 +450,7 @@ databaseSchemaRoutes.get("/:type/icon.svg", c => {
   const builtin: Record<string, string> = {
     mongodb: `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="8.738 -5.03622834 17.45992422 39.40619484"><path d="m15.9.087.854 1.604c.192.296.4.558.645.802a22.406 22.406 0 0 1 2.004 2.266c1.447 1.9 2.423 4.01 3.12 6.292.418 1.394.645 2.824.662 4.27.07 4.323-1.412 8.035-4.4 11.12a12.7 12.7 0 0 1 -1.57 1.342c-.296 0-.436-.227-.558-.436a3.589 3.589 0 0 1 -.436-1.255c-.105-.523-.174-1.046-.14-1.586v-.244c-.024-.052-.285-24.052-.181-24.175z" fill="#599636"/><path d="m15.9.034c-.035-.07-.07-.017-.105.017.017.35-.105.662-.296.96-.21.296-.488.523-.767.767-1.55 1.342-2.77 2.963-3.747 4.776-1.3 2.44-1.97 5.055-2.16 7.808-.087.993.314 4.497.627 5.508.854 2.684 2.388 4.933 4.375 6.885.488.47 1.01.906 1.55 1.325.157 0 .174-.14.21-.244a4.78 4.78 0 0 0 .157-.68l.35-2.614z" fill="#6cac48"/><path d="m16.754 28.845c.035-.4.227-.732.436-1.063-.21-.087-.366-.26-.488-.453a3.235 3.235 0 0 1 -.26-.575c-.244-.732-.296-1.5-.366-2.248v-.453c-.087.07-.105.662-.105.75a17.37 17.37 0 0 1 -.314 2.353c-.052.314-.087.627-.28.906 0 .035 0 .07.017.122.314.924.4 1.865.453 2.824v.35c0 .418-.017.33.33.47.14.052.296.07.436.174.105 0 .122-.087.122-.157l-.052-.575v-1.604c-.017-.28.035-.558.07-.82z" fill="#c2bfbf"/></svg>`,
     bigquery: `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17.74 16.32l-1.42 1.42a.42.42 0 0 0 0 .6l3.54 3.54a.42.42 0 0 0 .59 0l1.43-1.43a.42.42 0 0 0 0-.59l-3.54-3.54a.42.42 0 0 0-.6 0" fill="#4285f4"/><path d="M11 2a9 9 0 1 0 9 9 9 9 0 0 0-9-9m0 15.69A6.68 6.68 0 1 1 17.69 11 6.68 6.68 0 0 1 11 17.69" fill="#669df6"/></svg>`,
+    "cloudflare-d1": `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><path fill="#F38020" d="M89.3 62.1c-.5-1.9-1.8-3-3.6-3.2l-42.3-.6c-.2 0-.4-.1-.5-.2-.1-.2-.1-.4 0-.6.1-.2.3-.4.6-.4l42.4-.6c4.8-.2 10-4.2 11.5-9l3.8-12c.1-.4.2-.8.2-1.2 0-.5-.1-1-.3-1.4-4.5-12.6-16.4-21.6-30.5-21.6-14.3 0-26.4 9.2-30.8 22-.5-.1-1.1-.1-1.6-.1-8.3 0-15.1 6.4-15.8 14.6-9.8.8-17.5 8.9-17.5 18.9 0 1.1.1 2.1.3 3.2.1.4.4.7.8.7h82.4c.3 0 .7-.3.8-.6l.6-3.6c.1-1.6-.2-3.4-.5-4.3z"/><path fill="#FAAD3F" d="M101.3 47.4c-.6 0-1.1 0-1.7.1-.2 0-.4.2-.5.4l-1.8 6.3c-.5 1.9-1.8 3-3.6 3.2l-42.3.6c-.2 0-.4.1-.5.2-.1.2-.1.4 0 .6.1.2.3.4.6.4l42.7.6c4.8.2 10 4.2 11.5 9l1.7 5.1c.1.3.4.5.7.4 8.6-2.5 14.9-10.5 14.9-19.9 0-3.9-1.1-7.6-2.9-10.7-2.7 2.2-6.2 3.5-9.9 3.7h-8.9z"/></svg>`,
   };
 
   const svg =
