@@ -385,6 +385,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       >
         {viewMode === "table" ? (
           <DataGridPremium
+            key={results.executedAt}
             rows={rows}
             columns={columns}
             pinnedColumns={{ left: ["__rowIndex"], right: [] }}
@@ -393,9 +394,9 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
             hideFooter
             columnHeaderHeight={40}
             rowHeight={40}
-            disableAutosize
             style={{
               height: "100%",
+              width: "auto",
             }}
             sx={{
               "& .MuiDataGrid-cell": {
@@ -404,6 +405,8 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
                   'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
                 overflow: "hidden",
                 textOverflow: "ellipsis",
+                borderRight: "1px solid",
+                borderColor: "divider",
               },
               "& .MuiDataGrid-columnHeaders": {
                 backgroundColor: "background.default",
@@ -418,12 +421,18 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
               "& .MuiDataGrid-root": {
                 overflow: "hidden",
               },
+              "& .MuiDataGrid-row:first-of-type .MuiDataGrid-cell": {
+                borderTop: "none",
+              },
               "& .MuiDataGrid-main": {
                 overflow: "hidden",
-                backgroundColor: "background.paper",
+                backgroundColor: "background.default",
               },
               "& .MuiDataGrid-virtualScroller": {
                 overflow: "auto",
+              },
+              "& .MuiDataGrid-virtualScrollerContent": {
+                backgroundColor: "background.paper",
               },
               borderRadius: 0,
               border: "none",
