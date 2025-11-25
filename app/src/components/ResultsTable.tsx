@@ -117,12 +117,28 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
             value.trim() !== ""),
       );
 
+      // Calculate column width based on content length
+      const getDisplayLength = (value: unknown): number => {
+        if (value === null || value === undefined) return 4; // "null"
+        if (typeof value === "object") return JSON.stringify(value).length;
+        return String(value).length;
+      };
+
+      // Get max content length from sample (header included)
+      const contentLengths = sampleValues.map(getDisplayLength);
+      const headerLength = key.length;
+      const maxContentLength = Math.max(headerLength, ...contentLengths, 0);
+
+      // Calculate width: ~8px per character + 24px padding, capped at 400px
+      const calculatedWidth = Math.min(
+        Math.max(maxContentLength * 8 + 24, 60), // min 60px
+        400, // max 400px
+      );
+
       return {
         field: key,
         headerName: key,
-        flex: 1,
-        minWidth: 100,
-        maxWidth: 300,
+        width: calculatedWidth,
         align: isNumericColumn ? "right" : "left",
         headerAlign: isNumericColumn ? "right" : "left",
         renderCell: params => {
@@ -377,10 +393,9 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
             hideFooter
             columnHeaderHeight={40}
             rowHeight={40}
+            disableAutosize
             style={{
               height: "100%",
-              width: "100%",
-              maxWidth: "100%",
             }}
             sx={{
               "& .MuiDataGrid-cell": {
@@ -412,8 +427,6 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
               },
               borderRadius: 0,
               border: "none",
-              width: "100%",
-              maxWidth: "100%",
             }}
           />
         ) : (
