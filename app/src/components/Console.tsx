@@ -181,8 +181,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const hasUserSelectedDatabaseRef = useRef(false);
 
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<string>(() => {
-    // Initialize with initialDatabaseId or first database or empty string
-    if (initialDatabaseId) return initialDatabaseId;
+    // Initialize with initialDatabaseId if it exists in databases, otherwise first database or empty string
+    if (initialDatabaseId && databases.some(db => db.id === initialDatabaseId)) {
+      return initialDatabaseId;
+    }
     if (databases.length > 0) return databases[0].id;
     return "";
   });
@@ -326,14 +328,31 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // from constantly "blinking" back to the prop-driven value after every
   // keystroke or parent re-render.
   useEffect(() => {
-    if (!initialDatabaseId) return; // ignore empty values
+    if (!initialDatabaseId) {
+      // If no initialDatabaseId and no selection, use first available database
+      if (!hasUserSelectedDatabaseRef.current && !selectedDatabaseId && databases.length > 0) {
+        setSelectedDatabaseId(databases[0].id);
+      }
+      return; // ignore empty values
+    }
+
+    // Verify that initialDatabaseId exists in the databases array
+    const databaseExists = databases.some(db => db.id === initialDatabaseId);
+    if (!databaseExists) {
+      // If the initialDatabaseId doesn't exist in the databases array,
+      // fall back to the first available database
+      if (databases.length > 0 && !hasUserSelectedDatabaseRef.current) {
+        setSelectedDatabaseId(databases[0].id);
+      }
+      return;
+    }
 
     // If the parent changed the default database (e.g., because we switched
     // files/tabs) and the user hasn't made a manual choice yet, adopt it.
     if (!hasUserSelectedDatabaseRef.current) {
       setSelectedDatabaseId(initialDatabaseId);
     }
-  }, [initialDatabaseId]);
+  }, [initialDatabaseId, databases, selectedDatabaseId]);
 
   // Notify parent whenever selectedDatabaseId changes (with debouncing to prevent loops)
   const handleDatabaseChange = useCallback(
@@ -358,6 +377,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     // Only update content when switching to a different console
     if (consoleId !== lastConsoleIdRef.current) {
       lastConsoleIdRef.current = consoleId;
+      // Reset user selection flag when switching consoles so new console's connectionId can be adopted
+      hasUserSelectedDatabaseRef.current = false;
 
       if (!editorRef.current) {
         // Editor not mounted yet, force remount with new content
@@ -1006,7 +1027,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               variant="standard"
               disableUnderline
               labelId="database-select-label"
-              value={selectedDatabaseId}
+              value={selectedDatabaseId || ""}
               onChange={handleDatabaseSelection}
               disabled={databases.length === 0}
             >
