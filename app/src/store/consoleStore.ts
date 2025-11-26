@@ -149,6 +149,45 @@ export const useConsoleStore = () => {
     }
   };
 
+  const loadConsole = async (
+    workspaceId: string,
+    consoleId: string,
+  ): Promise<{
+    success: boolean;
+    content?: string;
+    connectionId?: string;
+    databaseId?: string;
+    language?: string;
+    id?: string;
+    error?: string;
+  }> => {
+    try {
+      const res = await apiClient.get<{
+        success: boolean;
+        content?: string;
+        connectionId?: string;
+        databaseId?: string;
+        language?: string;
+        id?: string;
+        error?: string;
+      }>(`/workspaces/${workspaceId}/consoles/content`, {
+        id: consoleId,
+      });
+      return res.success
+        ? {
+            success: true,
+            content: res.content,
+            connectionId: res.connectionId,
+            databaseId: res.databaseId,
+            language: res.language,
+            id: res.id,
+          }
+        : { success: false, error: res.error || "Load failed" };
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Load failed" };
+    }
+  };
+
   const saveConsole = async (
     workspaceId: string,
     tabId: string,
@@ -237,6 +276,7 @@ export const useConsoleStore = () => {
     updateConsoleIcon,
     getVersionManager,
     executeQuery: executeQuery,
+    loadConsole: loadConsole,
     saveConsole: saveConsole,
   };
 };
@@ -356,6 +396,46 @@ useConsoleStore.getState = () => {
     return versionManagers.get(consoleId) || null;
   };
 
+  const loadConsole = async (
+    workspaceId: string,
+    consoleId: string,
+  ): Promise<{
+    success: boolean;
+    content?: string;
+    connectionId?: string;
+    databaseId?: string;
+    language?: string;
+    id?: string;
+    error?: string;
+  }> => {
+    try {
+      const { apiClient } = await import("../lib/api-client");
+      const res = await apiClient.get<{
+        success: boolean;
+        content?: string;
+        connectionId?: string;
+        databaseId?: string;
+        language?: string;
+        id?: string;
+        error?: string;
+      }>(`/workspaces/${workspaceId}/consoles/content`, {
+        id: consoleId,
+      });
+      return res.success
+        ? {
+            success: true,
+            content: res.content,
+            connectionId: res.connectionId,
+            databaseId: res.databaseId,
+            language: res.language,
+            id: res.id,
+          }
+        : { success: false, error: res.error || "Load failed" };
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Load failed" };
+    }
+  };
+
   return {
     consoleTabs,
     activeConsoleId: activeTabId,
@@ -371,5 +451,6 @@ useConsoleStore.getState = () => {
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
+    loadConsole,
   };
 };
