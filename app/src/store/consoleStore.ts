@@ -46,6 +46,7 @@ export const useConsoleStore = () => {
         content,
         initialContent: tab.initialContent,
         dbContentHash,
+        connectionId: tab.connectionId,
         databaseId: tab.databaseId,
         filePath: tab.filePath,
         kind: (tab as any).kind || "console",
