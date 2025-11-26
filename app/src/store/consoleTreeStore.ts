@@ -10,7 +10,7 @@ export interface ConsoleEntry {
   content?: string;
   id?: string;
   folderId?: string;
-  databaseId?: string;
+  connectionId?: string; // Associated connection ID (DatabaseConnection ObjectId)
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;

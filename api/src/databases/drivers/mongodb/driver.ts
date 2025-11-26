@@ -3,7 +3,7 @@ import {
   DatabaseDriverMetadata,
   DatabaseTreeNode,
 } from "../../driver";
-import { IDatabase } from "../../../database/workspace-schema";
+import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 
 export class MongoDatabaseDriver implements DatabaseDriver {
@@ -15,7 +15,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  async getTreeRoot(database: IDatabase): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
     // Single Database Mode
     if (database.connection.database) {
       const dbName = database.connection.database;
@@ -25,7 +25,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
           label: dbName,
           kind: "database",
           hasChildren: true,
-          metadata: { dbName },
+          metadata: { databaseName: dbName },
         },
       ];
     }
@@ -45,7 +45,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             label: name,
             kind: "database",
             hasChildren: true,
-            metadata: { dbName: name },
+            metadata: { databaseName: name },
           }),
         );
     } catch (error) {
@@ -55,12 +55,12 @@ export class MongoDatabaseDriver implements DatabaseDriver {
   }
 
   async getChildren(
-    database: IDatabase,
+    database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]> {
     // Expanding a Database Node (Cluster Mode)
     if (parent.kind === "database") {
-      const dbName = parent.metadata?.dbName;
+      const dbName = parent.metadata?.databaseName;
       return [
         {
           // Use unique IDs for groups to prevent tree state confusion in frontend
@@ -68,21 +68,21 @@ export class MongoDatabaseDriver implements DatabaseDriver {
           label: "Collections",
           kind: "group",
           hasChildren: true,
-          metadata: { dbName },
+          metadata: { databaseName: dbName },
         },
         {
           id: `views::${dbName}`,
           label: "Views",
           kind: "group",
           hasChildren: true,
-          metadata: { dbName },
+          metadata: { databaseName: dbName },
         },
       ];
     }
 
     // Determine which database to target
     const targetDbName =
-      parent.metadata?.dbName || database.connection.database;
+      parent.metadata?.databaseName || database.connection.database;
 
     if (!targetDbName && !database.connection.database) {
       // Should not happen if properly navigated, but safety check
@@ -108,7 +108,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             label: name,
             kind: "collection",
             hasChildren: false,
-            metadata: { dbName: targetDbName },
+            metadata: { databaseName: targetDbName },
           }),
         );
     }
@@ -126,14 +126,14 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             label: name,
             kind: "view",
             hasChildren: false,
-            metadata: { dbName: targetDbName },
+            metadata: { databaseName: targetDbName },
           }),
         );
     }
     return [];
   }
 
-  async executeQuery(database: IDatabase, query: string, options?: any) {
+  async executeQuery(database: IDatabaseConnection, query: string, options?: any) {
     return databaseConnectionService.executeQuery(database, query, options);
   }
 }

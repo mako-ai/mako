@@ -46,7 +46,9 @@ export const useConsoleStore = () => {
         content,
         initialContent: tab.initialContent,
         dbContentHash,
+        connectionId: tab.connectionId,
         databaseId: tab.databaseId,
+        databaseName: tab.databaseName,
         filePath: tab.filePath,
         kind: (tab as any).kind || "console",
         icon: tab.icon,
@@ -79,10 +81,21 @@ export const useConsoleStore = () => {
   const findTabByKind = (kind: TabKind) =>
     consoleTabs.find((t: any) => (t as any).kind === kind);
 
-  const updateConsoleDatabase = (id: string, databaseId?: string) => {
+  const updateConsoleConnection = (id: string, connectionId?: string) => {
+    dispatch({
+      type: "UPDATE_CONSOLE_CONNECTION",
+      payload: { id, connectionId },
+    } as any);
+  };
+
+  const updateConsoleDatabase = (
+    id: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => {
     dispatch({
       type: "UPDATE_CONSOLE_DATABASE",
-      payload: { id, databaseId },
+      payload: { id, databaseId, databaseName },
     } as any);
   };
 
@@ -212,6 +225,7 @@ export const useConsoleStore = () => {
     updateConsoleContent,
     setActiveConsole,
     clearAllConsoles,
+    updateConsoleConnection,
     updateConsoleDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
@@ -256,7 +270,9 @@ useConsoleStore.getState = () => {
         content,
         initialContent: tab.initialContent,
         dbContentHash,
+        connectionId: tab.connectionId,
         databaseId: tab.databaseId,
+        databaseName: tab.databaseName,
         filePath: tab.filePath,
         kind: (tab as any).kind || "console",
         icon: tab.icon,
@@ -289,10 +305,21 @@ useConsoleStore.getState = () => {
   const findTabByKind = (kind: TabKind) =>
     consoleTabs.find((t: any) => (t as any).kind === kind);
 
-  const updateConsoleDatabase = (id: string, databaseId?: string) => {
+  const updateConsoleConnection = (id: string, connectionId?: string) => {
+    dispatch({
+      type: "UPDATE_CONSOLE_CONNECTION",
+      payload: { id, connectionId },
+    } as any);
+  };
+
+  const updateConsoleDatabase = (
+    id: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => {
     dispatch({
       type: "UPDATE_CONSOLE_DATABASE",
-      payload: { id, databaseId },
+      payload: { id, databaseId, databaseName },
     } as any);
   };
 
@@ -343,6 +370,7 @@ useConsoleStore.getState = () => {
     updateConsoleContent,
     setActiveConsole,
     clearAllConsoles,
+    updateConsoleConnection,
     updateConsoleDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,

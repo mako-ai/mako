@@ -4,7 +4,7 @@ import {
   requireWorkspace,
   AuthenticatedContext,
 } from "../middleware/workspace.middleware";
-import { Database } from "../database/workspace-schema";
+import { DatabaseConnection } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { databaseRegistry } from "../databases/registry";
 import { DatabaseDriver } from "../databases/driver";
@@ -22,7 +22,7 @@ databaseTreeRoutes.get(
     if (!Types.ObjectId.isValid(databaseId)) {
       return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
-    const database = await Database.findOne({
+    const database = await DatabaseConnection.findOne({
       _id: new Types.ObjectId(databaseId),
       workspaceId: workspace._id,
     });
@@ -63,7 +63,7 @@ databaseTreeRoutes.get(
       return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
 
-    const database = await Database.findOne({
+    const database = await DatabaseConnection.findOne({
       _id: new Types.ObjectId(databaseId),
       workspaceId: workspace._id,
     });

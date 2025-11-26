@@ -3,7 +3,7 @@ import {
   DatabaseDriverMetadata,
   DatabaseTreeNode,
 } from "../../driver";
-import { IDatabase } from "../../../database/workspace-schema";
+import { IDatabaseConnection } from "../../../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
 
 interface D1Connection {
@@ -45,7 +45,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
     };
   }
 
-  private getHttpClient(database: IDatabase): AxiosInstance {
+  private getHttpClient(database: IDatabaseConnection): AxiosInstance {
     const key = database._id.toString();
     const existingClient = this.httpClients.get(key);
     if (existingClient) {
@@ -71,7 +71,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
     return client;
   }
 
-  async getTreeRoot(database: IDatabase): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
     const conn = database.connection as unknown as D1Connection;
 
     // If a specific database_id is configured, show only that database
@@ -82,7 +82,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
           label: conn.database_id,
           kind: "database",
           hasChildren: true,
-          metadata: { databaseId: conn.database_id },
+          metadata: { databaseName: conn.database_id },
         },
       ];
     }
@@ -106,7 +106,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         label: db.name,
         kind: "database",
         hasChildren: true,
-        metadata: { databaseId: db.uuid, databaseName: db.name },
+        metadata: { databaseName: db.uuid }, // UUID is the unique database identifier for D1
       }));
     } catch (error) {
       console.error("Error listing D1 databases:", error);
@@ -115,12 +115,12 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
   }
 
   async getChildren(
-    database: IDatabase,
+    database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]> {
     if (parent.kind !== "database") return [];
 
-    const databaseId = parent.metadata?.databaseId || parent.id;
+    const databaseId = parent.metadata?.databaseName || parent.id;
 
     // Query SQLite master table to get tables
     try {
@@ -143,7 +143,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         label: row.name,
         kind: row.type === "view" ? "view" : "table",
         hasChildren: false,
-        metadata: { databaseId, table: row.name },
+        metadata: { databaseName: databaseId, table: row.name },
       }));
     } catch (error) {
       console.error("Error listing D1 tables:", error);
@@ -152,7 +152,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
   }
 
   async executeQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
     options?: { databaseId?: string },
   ): Promise<D1QueryResult> {
@@ -215,7 +215,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
   }
 
   async testConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     try {
       const conn = database.connection as unknown as D1Connection;
@@ -264,7 +264,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
     }
   }
 
-  async listDatabases(database: IDatabase): Promise<D1Database[]> {
+  async listDatabases(database: IDatabaseConnection): Promise<D1Database[]> {
     try {
       const client = this.getHttpClient(database);
       const databases: D1Database[] = [];

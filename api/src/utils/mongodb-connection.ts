@@ -1,6 +1,6 @@
 import { Db } from "mongodb";
 import dotenv from "dotenv";
-import { Database } from "../database/workspace-schema";
+import { DatabaseConnection } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 
 dotenv.config({ path: "../../.env" });
@@ -27,7 +27,7 @@ class MongoDBConnection {
    */
   public async getDatabase(databaseId: string): Promise<Db> {
     // Get the database config from Database model
-    const dbRecord = await Database.findById(databaseId);
+    const dbRecord = await DatabaseConnection.findById(databaseId);
 
     if (!dbRecord) {
       throw new Error(`Database '${databaseId}' not found in configuration`);
@@ -46,7 +46,7 @@ class MongoDBConnection {
       "datasource",
       databaseId,
       async id => {
-        const ds = await Database.findById(id);
+        const ds = await DatabaseConnection.findById(id);
         if (!ds || !ds.connection.connectionString) return null;
         return {
           connectionString: ds.connection.connectionString,

@@ -2,7 +2,7 @@
 // @ts-ignore – provided at runtime
 import { tool } from "@openai/agents";
 import { Types } from "mongoose";
-import { Database } from "../../database/workspace-schema";
+import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { createConsoleTools, ConsoleData } from "../shared/console-tools";
 
@@ -10,7 +10,7 @@ const listBigQueryDatabases = async (workspaceId: string) => {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
-  const databases = await Database.find({
+  const databases = await DatabaseConnection.find({
     workspaceId: new Types.ObjectId(workspaceId),
   }).sort({ name: 1 });
 
@@ -44,7 +44,7 @@ const listDatasets = async (databaseId: string, workspaceId: string) => {
       "'databaseId' is required and must be a valid database identifier",
     );
   }
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: new Types.ObjectId(databaseId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
@@ -71,7 +71,7 @@ const listTables = async (
   ) {
     throw new Error("Invalid database ID or workspace ID");
   }
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: new Types.ObjectId(databaseId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
@@ -111,7 +111,7 @@ const inspectTable = async (
   ) {
     throw new Error("Invalid database ID or workspace ID");
   }
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: new Types.ObjectId(databaseId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
@@ -150,7 +150,7 @@ const executeBigQuerySql = async (
   ) {
     throw new Error("Invalid database ID or workspace ID");
   }
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: new Types.ObjectId(databaseId),
     workspaceId: new Types.ObjectId(workspaceId),
   });

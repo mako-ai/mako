@@ -3,7 +3,7 @@ import {
   DatabaseDriverMetadata,
   DatabaseTreeNode,
 } from "../../driver";
-import { IDatabase } from "../../../database/workspace-schema";
+import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 
 export class BigQueryDatabaseDriver implements DatabaseDriver {
@@ -15,7 +15,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  async getTreeRoot(database: IDatabase): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
     const datasets =
       await databaseConnectionService.listBigQueryDatasets(database);
     return datasets.map<DatabaseTreeNode>(ds => ({
@@ -28,7 +28,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   }
 
   async getChildren(
-    database: IDatabase,
+    database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]> {
     if (parent.kind !== "dataset") return [];
@@ -54,7 +54,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       }));
   }
 
-  async executeQuery(database: IDatabase, query: string, options?: any) {
+  async executeQuery(database: IDatabaseConnection, query: string, options?: any) {
     return databaseConnectionService.executeQuery(database, query, options);
   }
 }

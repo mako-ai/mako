@@ -91,6 +91,7 @@ function Editor() {
     activeConsoleId,
     removeConsoleTab,
     updateConsoleContent,
+    updateConsoleConnection,
     updateConsoleDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
@@ -518,12 +519,19 @@ function Editor() {
                         initialContent={tab.content}
                         dbContentHash={tab.dbContentHash}
                         title={tab.title}
-                        onExecute={(content, db) =>
+                        onExecute={(content, connectionId, databaseName) =>
                           handleConsoleExecute(
                             tab.id,
                             content,
-                            db,
-                            tab.metadata?.queryOptions,
+                            connectionId,
+                            // Merge tab's queryOptions with dynamically selected databaseName/databaseId
+                            databaseName
+                              ? {
+                                  ...tab.metadata?.queryOptions,
+                                  databaseId: databaseName, // For D1: databaseName is the UUID
+                                  databaseName,
+                                }
+                              : tab.metadata?.queryOptions,
                           )
                         }
                         onSave={(content, currentPath) =>
@@ -552,10 +560,22 @@ function Editor() {
                             },
                           });
                         }}
-                        initialDatabaseId={tab.databaseId}
+                        initialDatabaseId={tab.connectionId}
+                        initialSelectedDatabaseId={
+                          tab.databaseId ||
+                          tab.metadata?.queryOptions?.databaseId ||
+                          tab.metadata?.queryOptions?.databaseName // D1 uses databaseName for UUID
+                        }
+                        initialSelectedDatabaseName={
+                          tab.databaseName ||
+                          tab.metadata?.queryOptions?.databaseLabel
+                        }
                         databases={availableDatabases}
-                        onDatabaseChange={dbId =>
-                          updateConsoleDatabase(tab.id, dbId)
+                        onDatabaseChange={connId =>
+                          updateConsoleConnection(tab.id, connId)
+                        }
+                        onDatabaseNameChange={(dbId, dbName) =>
+                          updateConsoleDatabase(tab.id, dbId, dbName)
                         }
                         filePath={tab.filePath}
                         enableVersionControl={true}

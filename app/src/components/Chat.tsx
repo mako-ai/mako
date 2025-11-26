@@ -715,19 +715,45 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       messageWithContext = `${contextInfo}\n\n${latestMessage}`;
     }
 
+    // Helper to extract database context from console tab
+    const extractDatabaseContext = (tab: any) => {
+      // connectionId = DatabaseConnection MongoDB ObjectId
+      const connectionId = tab?.connectionId;
+      // databaseId = specific database ID (e.g., D1 UUID for cluster mode)
+      const databaseId =
+        tab?.databaseId ||
+        tab?.metadata?.queryOptions?.databaseId;
+      // databaseName = human-readable database name
+      const databaseName =
+        tab?.databaseName ||
+        tab?.metadata?.queryOptions?.databaseName ||
+        tab?.metadata?.queryOptions?.dbName;
+      return { connectionId, databaseId, databaseName };
+    };
+
     // Prepare consoles data for the backend - read current values from store
     const consolesData = attachedContext
       .filter(ctx => ctx.type === "console")
       .map(ctx => {
         const consoleId = ctx.metadata?.consoleId || ctx.id;
-        // Find the current console content from the store
         const currentConsole = consoleTabs.find(tab => tab.id === consoleId);
+        const { connectionId, databaseId, databaseName } =
+          extractDatabaseContext(currentConsole);
 
         return {
           id: consoleId,
           title: currentConsole?.title || ctx.title,
-          content: currentConsole?.content || "", // Use current content from store
-          metadata: ctx.metadata,
+          content: currentConsole?.content || "",
+          // Clean connection context
+          connectionId,
+          databaseId, // D1 database UUID
+          databaseName, // MongoDB/Postgres database name
+          metadata: {
+            connectionId,
+            databaseId,
+            databaseName,
+            queryOptions: currentConsole?.metadata?.queryOptions,
+          },
         };
       });
 
@@ -739,13 +765,22 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       );
 
       if (activeConsole && !isAlreadyAttached) {
-        // Add active console as the first item (so it's the default for read_console)
+        const { connectionId, databaseId, databaseName } =
+          extractDatabaseContext(activeConsole);
+
         consolesData.unshift({
           id: activeConsoleId,
           title: activeConsole.title,
           content: activeConsole.content || "",
+          // Clean connection context
+          connectionId,
+          databaseId, // D1 database UUID
+          databaseName, // MongoDB/Postgres database name
           metadata: {
-            filePath: activeConsole.filePath,
+            connectionId,
+            databaseId,
+            databaseName,
+            queryOptions: activeConsole.metadata?.queryOptions,
           },
         });
       }

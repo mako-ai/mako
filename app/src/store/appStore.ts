@@ -22,7 +22,9 @@ export interface ConsoleTab {
   content: string;
   initialContent: string;
   dbContentHash?: string; // Hash of the content last saved to database
-  databaseId?: string;
+  connectionId?: string; // DatabaseConnection ID (MongoDB ObjectId)
+  databaseId?: string; // Specific database ID (e.g., D1 UUID for cluster mode)
+  databaseName?: string; // Human-readable database name (e.g., D1 database name)
   filePath?: string;
   kind?: "console" | "settings" | "connectors" | "members" | "sync-job-editor";
   isDirty?: boolean; // false/undefined = pristine (replaceable), true = dirty (persistent)
@@ -144,8 +146,16 @@ export type Action =
   | { type: "UPDATE_CONSOLE_DIRTY"; payload: { id: string; isDirty: boolean } }
   | { type: "UPDATE_CONSOLE_ICON"; payload: { id: string; icon: string } }
   | {
+      type: "UPDATE_CONSOLE_CONNECTION";
+      payload: { id: string; connectionId?: string };
+    }
+  | {
       type: "UPDATE_CONSOLE_DATABASE";
-      payload: { id: string; databaseId?: string };
+      payload: {
+        id: string;
+        databaseId?: string;
+        databaseName?: string;
+      };
     }
   | {
       type: "UPDATE_CONSOLE_DB_HASH";
@@ -204,7 +214,9 @@ export const reducer = (state: GlobalState, action: Action): void => {
         content,
         initialContent,
         dbContentHash,
+        connectionId,
         databaseId,
+        databaseName,
         filePath,
         kind,
         icon,
@@ -228,7 +240,9 @@ export const reducer = (state: GlobalState, action: Action): void => {
         content,
         initialContent,
         dbContentHash,
+        connectionId,
         databaseId,
+        databaseName,
         filePath,
         kind: kind || "console",
         isDirty: false, // New tabs start as pristine
@@ -355,9 +369,17 @@ export const reducer = (state: GlobalState, action: Action): void => {
       if (tab) tab.icon = action.payload.icon;
       break;
     }
+    case "UPDATE_CONSOLE_CONNECTION": {
+      const tab = state.consoles.tabs[action.payload.id];
+      if (tab) tab.connectionId = action.payload.connectionId;
+      break;
+    }
     case "UPDATE_CONSOLE_DATABASE": {
       const tab = state.consoles.tabs[action.payload.id];
-      if (tab) tab.databaseId = action.payload.databaseId;
+      if (tab) {
+        tab.databaseId = action.payload.databaseId;
+        tab.databaseName = action.payload.databaseName;
+      }
       break;
     }
     case "UPDATE_CONSOLE_DB_HASH": {

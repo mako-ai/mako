@@ -143,9 +143,10 @@ export interface IWorkspaceInvite extends Document {
 }
 
 /**
- * Database model interface
+ * DatabaseConnection model interface
+ * Represents a saved connection to a database server (may contain multiple databases)
  */
-export interface IDatabase extends Document {
+export interface IDatabaseConnection extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   name: string;
@@ -161,7 +162,7 @@ export interface IDatabase extends Document {
   connection: {
     host?: string;
     port?: number;
-    database?: string;
+    database?: string; // Optional: specific database within the server
     username?: string;
     password?: string;
     connectionString?: string;
@@ -189,6 +190,9 @@ export interface IDatabase extends Document {
   updatedAt: Date;
   lastConnectedAt?: Date;
 }
+
+/** @deprecated Use IDatabaseConnection instead */
+export type IDatabase = IDatabaseConnection;
 
 /**
  * Connector model interface
@@ -573,9 +577,10 @@ WorkspaceInviteSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 WorkspaceInviteSchema.index({ workspaceId: 1, email: 1 });
 
 /**
- * Database Schema
+ * DatabaseConnection Schema
+ * Represents a saved connection to a database server
  */
-const DatabaseSchema = new Schema<IDatabase>(
+const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -620,12 +625,13 @@ const DatabaseSchema = new Schema<IDatabase>(
     timestamps: true,
     toJSON: { getters: true },
     toObject: { getters: true },
+    collection: "databaseconnections",
   },
 );
 
 // Indexes
-DatabaseSchema.index({ workspaceId: 1 });
-DatabaseSchema.index({ workspaceId: 1, name: 1 });
+DatabaseConnectionSchema.index({ workspaceId: 1 });
+DatabaseConnectionSchema.index({ workspaceId: 1, name: 1 });
 
 /**
  * Connector Schema
@@ -678,7 +684,7 @@ const ConnectorSchema = new Schema<IConnector>(
     targetDatabases: [
       {
         type: Schema.Types.ObjectId,
-        ref: "Database",
+        ref: "DatabaseConnection",
       },
     ],
     createdBy: {
@@ -759,7 +765,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     databaseId: {
       type: Schema.Types.ObjectId,
-      ref: "Database",
+      ref: "DatabaseConnection",
       required: false,
     },
     name: {
@@ -930,7 +936,7 @@ const SyncJobSchema = new Schema<ISyncJob>(
     },
     destinationDatabaseId: {
       type: Schema.Types.ObjectId,
-      ref: "Database",
+      ref: "DatabaseConnection",
       required: true,
     },
     destinationDatabaseName: {
@@ -1116,7 +1122,12 @@ export const WorkspaceInvite = mongoose.model<IWorkspaceInvite>(
   "WorkspaceInvite",
   WorkspaceInviteSchema,
 );
-export const Database = mongoose.model<IDatabase>("Database", DatabaseSchema);
+export const DatabaseConnection = mongoose.model<IDatabaseConnection>(
+  "DatabaseConnection",
+  DatabaseConnectionSchema,
+);
+/** @deprecated Use DatabaseConnection instead */
+export const Database = DatabaseConnection;
 export const Connector = mongoose.model<IConnector>(
   "Connector",
   ConnectorSchema,

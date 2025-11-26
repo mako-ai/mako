@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { run as runAgent } from "@openai/agents";
 import { ObjectId } from "mongodb";
 // title generation handled elsewhere; not used here
-import { Chat, Database } from "../database/workspace-schema";
+import { Chat, DatabaseConnection } from "../database/workspace-schema";
 import { createAgent, AgentKind } from "../agent";
 import {
   getOrCreateThreadContext,
@@ -142,9 +142,9 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           : null;
 
         // Get workspace database capabilities for smart selection
-        const workspaceDatabases = await Database.find({
+        const workspaceDatabases = await DatabaseConnection.find({
           workspaceId: new ObjectId(workspaceId),
-        }).select({ type: 1 });
+        }).select({ type: 1, name: 1 });
 
         const workspaceHasMongoDB = workspaceDatabases.some(
           db => db.type === "mongodb",
@@ -156,6 +156,25 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           db => db.type === "postgresql" || db.type === "cloudsql-postgres",
         );
 
+        // Create a map of database IDs to their types for quick lookup
+        const databaseTypeMap = new Map<string, string>();
+        workspaceDatabases.forEach(db => {
+          databaseTypeMap.set(db._id.toString(), db.type);
+        });
+
+        // Enrich consoles with connection type information
+        const enrichedConsoles = (consoles || []).map((c: any) => ({
+          ...c,
+          connectionId: c.metadata?.databaseId || c.connectionId,
+          connectionType:
+            c.connectionType ||
+            c.metadata?.connectionType ||
+            (c.metadata?.databaseId
+              ? databaseTypeMap.get(c.metadata.databaseId)
+              : undefined),
+          databaseName: c.databaseName || c.metadata?.selectedDatabaseName,
+        }));
+
         // Use smart agent selection
         const sessionActiveAgent = (pinned as any)?.activeAgent as
           | AgentKind
@@ -163,7 +182,7 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
         const selectedAgent = selectInitialAgent({
           sessionActiveAgent,
           userMessage: message,
-          consoles,
+          consoles: enrichedConsoles,
           workspaceHasMongoDB,
           workspaceHasBigQuery,
           workspaceHasPostgres,
@@ -174,7 +193,7 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           {
             sessionActiveAgent,
             userMessage: message,
-            consoles,
+            consoles: enrichedConsoles,
             workspaceHasMongoDB,
             workspaceHasBigQuery,
             workspaceHasPostgres,
@@ -193,7 +212,7 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
 
         const agentInstance = createAgent(activeAgent as AgentKind, {
           workspaceId,
-          consoles,
+          consoles: enrichedConsoles,
           preferredConsoleId: effectiveConsoleId,
         });
 

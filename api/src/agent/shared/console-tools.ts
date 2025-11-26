@@ -13,6 +13,10 @@ export interface ConsoleData {
   title: string;
   content: string;
   metadata?: Record<string, any>;
+  // Connection context - populated when console is attached to a database connection
+  connectionId?: string; // ID of the DatabaseConnection
+  connectionType?: string; // "mongodb" | "postgresql" | etc.
+  databaseName?: string; // Specific database name (for cluster mode connections)
 }
 
 export interface ConsoleEvent {
@@ -60,9 +64,7 @@ export const createConsoleTools = (
         typedInput.action === "insert" &&
         (typedInput.position === undefined || typedInput.position === null)
       ) {
-        throw new Error(
-          "position is required when action is set to 'insert'",
-        );
+        throw new Error("position is required when action is set to 'insert'");
       }
 
       const modification: ConsoleModification = {
@@ -87,7 +89,8 @@ export const createConsoleTools = (
 
   const readConsoleTool = tool({
     name: "read_console",
-    description: "Read the contents of the current console editor.",
+    description:
+      "Read the contents of the current console editor. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName) so you know which database to query.",
     parameters: {
       type: "object",
       properties: {
@@ -106,22 +109,50 @@ export const createConsoleTools = (
       const consoleId =
         typedInput.consoleId === null ? undefined : typedInput.consoleId;
 
+      // Helper to build response with connection context
+      const buildResponse = (consoleData: ConsoleData) => {
+        // Extract connection context from console data
+        const connectionId =
+          consoleData.connectionId || consoleData.metadata?.connectionId;
+        const connectionType =
+          consoleData.connectionType || consoleData.metadata?.connectionType;
+
+        // For D1: databaseId is the UUID (sent at top level or in metadata)
+        const databaseId =
+          (consoleData as any).databaseId ||
+          consoleData.metadata?.databaseId ||
+          consoleData.metadata?.queryOptions?.databaseId;
+        // For MongoDB/Postgres: databaseName is the database name
+        const databaseName =
+          (consoleData as any).databaseName ||
+          consoleData.metadata?.databaseName ||
+          consoleData.metadata?.queryOptions?.databaseName ||
+          consoleData.metadata?.queryOptions?.dbName ||
+          consoleData.metadata?.dbName;
+
+        return {
+          success: true,
+          consoleId: consoleData.id,
+          title: consoleData.title,
+          content: consoleData.content || "",
+          // Clean connection context
+          connectionId,
+          connectionType,
+          databaseId, // D1 database UUID (for cluster-mode D1)
+          databaseName, // Database name (for MongoDB/Postgres cluster-mode)
+        };
+      };
+
       // Use explicit consoleId if provided
       if (consoleId) {
-        const console = consolesData.find(c => c.id === consoleId);
-        if (!console) {
+        const consoleData = consolesData.find(c => c.id === consoleId);
+        if (!consoleData) {
           return {
             success: false,
             error: `Console with ID ${consoleId} not found`,
           };
         }
-        return {
-          success: true,
-          consoleId: console.id,
-          title: console.title,
-          content: console.content || "",
-          metadata: console.metadata || {},
-        };
+        return buildResponse(consoleData);
       }
 
       // Otherwise, use preferred console ID if available
@@ -130,26 +161,14 @@ export const createConsoleTools = (
           c => c.id === preferredConsoleId,
         );
         if (preferredConsole) {
-          return {
-            success: true,
-            consoleId: preferredConsole.id,
-            title: preferredConsole.title,
-            content: preferredConsole.content || "",
-            metadata: preferredConsole.metadata || {},
-          };
+          return buildResponse(preferredConsole);
         }
       }
 
       // Fall back to the first (active) console
       if (consolesData.length > 0) {
         const activeConsole = consolesData[0];
-        return {
-          success: true,
-          consoleId: activeConsole.id,
-          title: activeConsole.title,
-          content: activeConsole.content || "",
-          metadata: activeConsole.metadata || {},
-        };
+        return buildResponse(activeConsole);
       }
 
       return {

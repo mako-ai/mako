@@ -4,7 +4,7 @@ import {
   unifiedAuthMiddleware,
   isApiKeyAuth,
 } from "../auth/unified-auth.middleware";
-import { Database, SavedConsole } from "../database/workspace-schema";
+import { DatabaseConnection, SavedConsole } from "../database/workspace-schema";
 import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
@@ -157,7 +157,7 @@ consoleRoutes.post("/", async (c: Context) => {
     let targetDatabaseId = databaseId;
     if (!targetDatabaseId) {
       // Try to get the first database for the workspace, but don't require it
-      const databases = await Database.find({ workspaceId }).limit(1);
+      const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
       if (databases.length > 0) {
         targetDatabaseId = databases[0]._id.toString();
       }
@@ -243,7 +243,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
     let targetDatabaseId = body.databaseId;
     if (!targetDatabaseId) {
       // Try to get the first database for the workspace, but don't require it
-      const databases = await Database.find({ workspaceId }).limit(1);
+      const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
       if (databases.length > 0) {
         targetDatabaseId = databases[0]._id.toString();
       }
@@ -555,7 +555,7 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
     // If console has a database ID, verify it exists and belongs to workspace
     let database = null;
     if (savedConsole.databaseId) {
-      database = await Database.findOne({
+      database = await DatabaseConnection.findOne({
         _id: savedConsole.databaseId,
         workspaceId: new Types.ObjectId(access.workspaceId),
       });
