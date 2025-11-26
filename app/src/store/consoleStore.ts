@@ -79,10 +79,14 @@ export const useConsoleStore = () => {
   const findTabByKind = (kind: TabKind) =>
     consoleTabs.find((t: any) => (t as any).kind === kind);
 
-  const updateConsoleDatabase = (id: string, databaseId?: string) => {
+  const updateConsoleDatabase = (
+    id: string,
+    connectionId?: string,
+    databaseId?: string,
+  ) => {
     dispatch({
       type: "UPDATE_CONSOLE_DATABASE",
-      payload: { id, databaseId },
+      payload: { id, connectionId, databaseId },
     } as any);
   };
 
@@ -150,6 +154,7 @@ export const useConsoleStore = () => {
     tabId: string,
     content: string,
     currentPath?: string,
+    connectionId?: string,
     databaseId?: string,
     isNew?: boolean,
   ): Promise<{
@@ -177,12 +182,23 @@ export const useConsoleStore = () => {
         endpoint = `/workspaces/${workspaceId}/consoles/${path}`;
       }
 
+      // Get current tab to extract connectionId and databaseId if not provided
+      const tab = consoleTabs.find(t => t.id === tabId);
+      const finalConnectionId = connectionId ?? tab?.connectionId;
+      const finalDatabaseId = databaseId ?? tab?.databaseId;
+
       if (method === "POST") {
         const res = await apiClient.post<{
           success: boolean;
           data?: { id: string };
           error?: string;
-        }>(endpoint, { id: tabId, path, content, databaseId });
+        }>(endpoint, {
+          id: tabId,
+          path,
+          content,
+          connectionId: finalConnectionId,
+          databaseId: finalDatabaseId,
+        });
         return res.success
           ? { success: true, path, id: (res as any).data?.id }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -191,7 +207,11 @@ export const useConsoleStore = () => {
           success: boolean;
           data?: any;
           error?: string;
-        }>(endpoint, { content, databaseId });
+        }>(endpoint, {
+          content,
+          connectionId: finalConnectionId,
+          databaseId: finalDatabaseId,
+        });
         return res.success
           ? { success: true, path }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -287,10 +307,14 @@ useConsoleStore.getState = () => {
   const findTabByKind = (kind: TabKind) =>
     consoleTabs.find((t: any) => (t as any).kind === kind);
 
-  const updateConsoleDatabase = (id: string, databaseId?: string) => {
+  const updateConsoleDatabase = (
+    id: string,
+    connectionId?: string,
+    databaseId?: string,
+  ) => {
     dispatch({
       type: "UPDATE_CONSOLE_DATABASE",
-      payload: { id, databaseId },
+      payload: { id, connectionId, databaseId },
     } as any);
   };
 

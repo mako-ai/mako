@@ -120,6 +120,8 @@ export const createConsoleTools = (
           consoleId: console.id,
           title: console.title,
           content: console.content || "",
+          connectionId: console.metadata?.connectionId,
+          databaseId: console.metadata?.databaseId,
           metadata: console.metadata || {},
         };
       }
@@ -135,6 +137,8 @@ export const createConsoleTools = (
             consoleId: preferredConsole.id,
             title: preferredConsole.title,
             content: preferredConsole.content || "",
+            connectionId: preferredConsole.metadata?.connectionId,
+            databaseId: preferredConsole.metadata?.databaseId,
             metadata: preferredConsole.metadata || {},
           };
         }
@@ -148,6 +152,8 @@ export const createConsoleTools = (
           consoleId: activeConsole.id,
           title: activeConsole.title,
           content: activeConsole.content || "",
+          connectionId: activeConsole.metadata?.connectionId,
+          databaseId: activeConsole.metadata?.databaseId,
           metadata: activeConsole.metadata || {},
         };
       }

@@ -262,7 +262,8 @@ export interface ISavedConsole extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   folderId?: Types.ObjectId;
-  databaseId?: Types.ObjectId;
+  connectionId?: Types.ObjectId; // Server/Connection ID
+  databaseId?: string; // Specific Database within Server (string, not ObjectId)
   name: string;
   description?: string;
   code: string;
@@ -754,9 +755,13 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: Schema.Types.ObjectId,
       ref: "ConsoleFolder",
     },
-    databaseId: {
+    connectionId: {
       type: Schema.Types.ObjectId,
       ref: "Database",
+      required: false,
+    },
+    databaseId: {
+      type: String,
       required: false,
     },
     name: {
@@ -818,6 +823,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
 // Indexes
 SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
+SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
 SavedConsoleSchema.index({ databaseId: 1 }, { sparse: true }); // Sparse index since databaseId is optional
 
 /**

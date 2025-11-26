@@ -303,8 +303,9 @@ function Editor() {
         isNew = true;
       }
 
-      // Get the current database ID for the tab
+      // Get the current connectionId and databaseId for the tab
       const currentTab = consoleTabs.find(tab => tab.id === tabId);
+      const connectionId = currentTab?.connectionId;
       const databaseId = currentTab?.databaseId;
 
       const result = await saveConsole(
@@ -312,6 +313,7 @@ function Editor() {
         tabId,
         contentToSave,
         savePath,
+        connectionId,
         databaseId,
         isNew,
       );

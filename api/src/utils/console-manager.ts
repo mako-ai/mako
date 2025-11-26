@@ -131,6 +131,16 @@ export class ConsoleManager {
 
       // Add consoles to appropriate folders or root
       for (const console of consoles) {
+        // Migration: If connectionId is missing but databaseId is a valid ObjectId, treat databaseId as connectionId
+        let connectionId = console.connectionId?.toString();
+        let databaseId = console.databaseId;
+        
+        if (!connectionId && console.databaseId && Types.ObjectId.isValid(console.databaseId)) {
+          // Legacy: databaseId was an ObjectId, treat it as connectionId
+          connectionId = console.databaseId.toString();
+          databaseId = undefined; // Clear databaseId since it was actually a connectionId
+        }
+
         const consoleItem: ConsoleFile = {
           path: console.folderId
             ? `${this.getFolderPath(console.folderId.toString(), folderMap)}/${console.name}`
@@ -139,7 +149,7 @@ export class ConsoleManager {
           content: console.code,
           isDirectory: false,
           id: console._id.toString(),
-          databaseId: console.databaseId?.toString(),
+          databaseId: connectionId, // For backward compatibility, use connectionId as databaseId in ConsoleFile
           language: console.language,
           description: console.description,
           isPrivate: console.isPrivate,
@@ -255,6 +265,7 @@ export class ConsoleManager {
     workspaceId: string,
   ): Promise<{
     content: string;
+    connectionId?: string;
     databaseId?: string;
     language?: string;
     id?: string;
@@ -272,9 +283,20 @@ export class ConsoleManager {
       });
 
       if (savedConsole) {
+        // Migration: If connectionId is missing but databaseId is a valid ObjectId, treat databaseId as connectionId
+        let connectionId = savedConsole.connectionId?.toString();
+        let databaseId = savedConsole.databaseId;
+        
+        if (!connectionId && savedConsole.databaseId && Types.ObjectId.isValid(savedConsole.databaseId)) {
+          // Legacy: databaseId was an ObjectId, treat it as connectionId
+          connectionId = savedConsole.databaseId.toString();
+          databaseId = undefined; // Clear databaseId since it was actually a connectionId
+        }
+
         return {
           content: savedConsole.code,
-          databaseId: savedConsole.databaseId?.toString(),
+          connectionId,
+          databaseId,
           language: savedConsole.language,
           id: savedConsole._id.toString(),
         };
@@ -295,6 +317,7 @@ export class ConsoleManager {
     content: string,
     workspaceId: string,
     userId: string,
+    connectionId?: string,
     databaseId?: string,
     options?: {
       id?: string; // Optional client-provided ID
@@ -330,14 +353,27 @@ export class ConsoleManager {
         }),
       });
 
+      // Handle legacy databaseId (if ObjectId, map to connectionId)
+      let finalConnectionId = connectionId;
+      let finalDatabaseId = databaseId;
+      
+      if (!finalConnectionId && databaseId && Types.ObjectId.isValid(databaseId)) {
+        // Legacy: databaseId is an ObjectId, treat it as connectionId
+        finalConnectionId = databaseId;
+        finalDatabaseId = undefined;
+      }
+
       if (savedConsole) {
         // Update existing console
         savedConsole.code = content;
         savedConsole.updatedAt = new Date();
-        if (databaseId !== undefined) {
-          savedConsole.databaseId = databaseId
-            ? new Types.ObjectId(databaseId)
+        if (finalConnectionId !== undefined) {
+          savedConsole.connectionId = finalConnectionId
+            ? new Types.ObjectId(finalConnectionId)
             : undefined;
+        }
+        if (finalDatabaseId !== undefined) {
+          savedConsole.databaseId = finalDatabaseId || undefined;
         }
         if (options?.description !== undefined) {
           savedConsole.description = options.description;
@@ -353,7 +389,8 @@ export class ConsoleManager {
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
-          databaseId: databaseId ? new Types.ObjectId(databaseId) : undefined,
+          connectionId: finalConnectionId ? new Types.ObjectId(finalConnectionId) : undefined,
+          databaseId: finalDatabaseId || undefined,
           name: consoleName,
           description: options?.description || "",
           code: content,

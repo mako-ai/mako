@@ -22,7 +22,8 @@ export interface ConsoleTab {
   content: string;
   initialContent: string;
   dbContentHash?: string; // Hash of the content last saved to database
-  databaseId?: string;
+  connectionId?: string; // Server/Connection ID
+  databaseId?: string; // Specific Database within Server
   filePath?: string;
   kind?: "console" | "settings" | "connectors" | "members" | "sync-job-editor";
   isDirty?: boolean; // false/undefined = pristine (replaceable), true = dirty (persistent)
@@ -136,9 +137,9 @@ export type Action =
   | { type: "UPDATE_CONSOLE_TITLE"; payload: { id: string; title: string } }
   | { type: "UPDATE_CONSOLE_DIRTY"; payload: { id: string; isDirty: boolean } }
   | { type: "UPDATE_CONSOLE_ICON"; payload: { id: string; icon: string } }
-  | {
+    | {
       type: "UPDATE_CONSOLE_DATABASE";
-      payload: { id: string; databaseId?: string };
+      payload: { id: string; connectionId?: string; databaseId?: string };
     }
   | {
       type: "UPDATE_CONSOLE_DB_HASH";
@@ -349,7 +350,14 @@ export const reducer = (state: GlobalState, action: Action): void => {
     }
     case "UPDATE_CONSOLE_DATABASE": {
       const tab = state.consoles.tabs[action.payload.id];
-      if (tab) tab.databaseId = action.payload.databaseId;
+      if (tab) {
+        if (action.payload.connectionId !== undefined) {
+          tab.connectionId = action.payload.connectionId;
+        }
+        if (action.payload.databaseId !== undefined) {
+          tab.databaseId = action.payload.databaseId;
+        }
+      }
       break;
     }
     case "UPDATE_CONSOLE_DB_HASH": {

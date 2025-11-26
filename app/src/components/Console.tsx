@@ -115,6 +115,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // State to track if there are unsaved changes
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  
+  // Track initial database selection to detect changes
+  const [initialSelectedDatabaseId, setInitialSelectedDatabaseId] = useState<string | undefined>(initialDatabaseId);
 
   // State to track Monaco's undo/redo availability
   const [monacoCanUndo, setMonacoCanUndo] = useState(false);
@@ -153,6 +156,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     if (databases.length > 0) return databases[0].id;
     return "";
   });
+  
+  // Track initial database ID when component mounts or initialDatabaseId changes
+  useEffect(() => {
+    if (initialDatabaseId !== undefined) {
+      setInitialSelectedDatabaseId(initialDatabaseId);
+    }
+  }, [initialDatabaseId]);
 
   // Keep refs of the latest callbacks to avoid stale closures in Monaco commands
   const onExecuteRef = useRef(onExecute);
@@ -246,8 +256,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       if (onDatabaseChange && databaseId) {
         onDatabaseChange(databaseId);
       }
+      // Mark as dirty when database changes
+      const dbChanged = databaseId !== initialSelectedDatabaseId;
+      if (dbChanged) {
+        setHasUnsavedChanges(true);
+      }
     },
-    [onDatabaseChange],
+    [onDatabaseChange, initialSelectedDatabaseId],
   );
 
   useEffect(() => {
@@ -301,15 +316,21 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         if (model) {
           const currentContent = model.getValue();
           const currentContentHash = hashContent(currentContent);
-          const hasChanges = currentContentHash !== dbContentHash;
-          setHasUnsavedChanges(hasChanges);
+          const contentChanged = currentContentHash !== dbContentHash;
+          const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
+          setHasUnsavedChanges(contentChanged || dbChanged);
         }
       } else {
-        // Editor not mounted yet, assume no changes
-        setHasUnsavedChanges(false);
+        // Editor not mounted yet, check only database change
+        const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
+        setHasUnsavedChanges(dbChanged);
       }
+    } else {
+      // No DB hash, check only database change
+      const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
+      setHasUnsavedChanges(dbChanged);
     }
-  }, [dbContentHash]);
+  }, [dbContentHash, selectedDatabaseId, initialSelectedDatabaseId]);
 
   // Apply new initialContent from props when background fetch finishes
   // Only overwrite if the editor is currently showing a placeholder or empty
@@ -328,10 +349,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       // Update unsaved changes flag against DB hash
       if (dbContentHash) {
         const currentContentHash = hashContent(initialContent);
-        const hasChanges = currentContentHash !== dbContentHash;
-        setHasUnsavedChanges(hasChanges);
+        const contentChanged = currentContentHash !== dbContentHash;
+        const dbChanged = selectedDatabaseId !== initialDatabaseId;
+        setHasUnsavedChanges(contentChanged || dbChanged);
       } else {
-        setHasUnsavedChanges(false);
+        const dbChanged = selectedDatabaseId !== initialDatabaseId;
+        setHasUnsavedChanges(dbChanged);
       }
       isProgrammaticUpdateRef.current = false;
     }
@@ -503,9 +526,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         // Check initial content state
         const currentContent = model.getValue();
         const currentContentHash = hashContent(currentContent);
-        const hasChanges =
+        const contentChanged =
           !dbContentHash || currentContentHash !== dbContentHash;
-        setHasUnsavedChanges(hasChanges);
+        const dbChanged = selectedDatabaseId !== initialDatabaseId;
+        setHasUnsavedChanges(contentChanged || dbChanged);
 
         // Save initial version for undo history
         if (enableVersionControl && !hasInitialVersionRef.current) {
@@ -536,8 +560,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
       // Always check if content has changed from DB version (even for undo/redo)
       const currentContentHash = hashContent(content);
-      const hasChanges = !dbContentHash || currentContentHash !== dbContentHash;
-      setHasUnsavedChanges(hasChanges);
+      const contentChanged = !dbContentHash || currentContentHash !== dbContentHash;
+      
+      // Also check if database selection has changed
+      const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
+      
+      setHasUnsavedChanges(contentChanged || dbChanged);
 
       // Update Monaco undo/redo state
       if (editorRef.current) {
@@ -703,9 +731,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
             // Mark as having unsaved changes since AI modified the content
             const currentContentHash = hashContent(savedModifiedContent);
-            const hasChanges =
+            const contentChanged =
               !dbContentHash || currentContentHash !== dbContentHash;
-            setHasUnsavedChanges(hasChanges);
+            const dbChanged = selectedDatabaseId !== initialDatabaseId;
+            setHasUnsavedChanges(contentChanged || dbChanged);
           }
         }
         isProgrammaticUpdateRef.current = false;

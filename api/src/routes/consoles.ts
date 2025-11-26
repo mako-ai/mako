@@ -99,6 +99,7 @@ consoleRoutes.get("/content", async (c: Context) => {
     return c.json({
       success: true,
       content: consoleData.content,
+      connectionId: consoleData.connectionId,
       databaseId: consoleData.databaseId,
       language: consoleData.language,
       id: consoleData.id,
@@ -127,6 +128,7 @@ consoleRoutes.post("/", async (c: Context) => {
       id, // Optional client-provided ID
       path: consolePath,
       content,
+      connectionId,
       databaseId,
       folderId,
       description,
@@ -153,15 +155,14 @@ consoleRoutes.post("/", async (c: Context) => {
       return c.json({ success: false, error: "Content must be a string" }, 400);
     }
 
-    // databaseId is optional - consoles can be saved without being associated with a specific database
+    // connectionId and databaseId are optional - consoles can be saved without being associated with a specific database
+    let targetConnectionId = connectionId;
     let targetDatabaseId = databaseId;
-    if (!targetDatabaseId) {
-      // Try to get the first database for the workspace, but don't require it
-      const databases = await Database.find({ workspaceId }).limit(1);
-      if (databases.length > 0) {
-        targetDatabaseId = databases[0]._id.toString();
-      }
-      // If no databases exist, that's fine - targetDatabaseId will remain undefined
+    
+    // Legacy support: if databaseId is provided but connectionId is not, treat databaseId as connectionId
+    if (!targetConnectionId && databaseId) {
+      targetConnectionId = databaseId;
+      targetDatabaseId = undefined;
     }
 
     const exists = await consoleManager.consoleExists(consolePath, workspaceId);
@@ -177,6 +178,7 @@ consoleRoutes.post("/", async (c: Context) => {
       content,
       workspaceId,
       user.id,
+      targetConnectionId,
       targetDatabaseId,
       {
         id, // Pass client-provided ID
@@ -195,7 +197,8 @@ consoleRoutes.post("/", async (c: Context) => {
           id: savedConsole._id.toString(),
           path: consolePath,
           content,
-          databaseId: targetDatabaseId,
+          connectionId: savedConsole.connectionId?.toString(),
+          databaseId: savedConsole.databaseId,
           language: savedConsole.language,
         },
       },
@@ -239,15 +242,14 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       );
     }
 
-    // databaseId is optional - consoles can be saved without being associated with a specific database
+    // connectionId and databaseId are optional - consoles can be saved without being associated with a specific database
+    let targetConnectionId = body.connectionId;
     let targetDatabaseId = body.databaseId;
-    if (!targetDatabaseId) {
-      // Try to get the first database for the workspace, but don't require it
-      const databases = await Database.find({ workspaceId }).limit(1);
-      if (databases.length > 0) {
-        targetDatabaseId = databases[0]._id.toString();
-      }
-      // If no databases exist, that's fine - targetDatabaseId will remain undefined
+    
+    // Legacy support: if databaseId is provided but connectionId is not, treat databaseId as connectionId
+    if (!targetConnectionId && body.databaseId) {
+      targetConnectionId = body.databaseId;
+      targetDatabaseId = undefined;
     }
 
     const savedConsole = await consoleManager.saveConsole(
@@ -255,6 +257,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       body.content,
       workspaceId,
       user.id,
+      targetConnectionId,
       targetDatabaseId,
       {
         folderId: body.folderId,
@@ -271,7 +274,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         id: savedConsole._id.toString(),
         path: consolePath,
         content: body.content,
-        databaseId: targetDatabaseId,
+        connectionId: savedConsole.connectionId?.toString(),
+        databaseId: savedConsole.databaseId,
         language: savedConsole.language,
       },
     });
@@ -670,30 +674,44 @@ consoleRoutes.get("/list", async (c: Context) => {
       workspaceId: new Types.ObjectId(access.workspaceId),
     })
       .select(
-        "_id name description language databaseId createdAt updatedAt lastExecutedAt executionCount",
+        "_id name description language connectionId databaseId createdAt updatedAt lastExecutedAt executionCount",
       )
-      .populate("databaseId", "name type")
+      .populate("connectionId", "name type")
       .sort({ updatedAt: -1 });
 
     return c.json({
       success: true,
-      consoles: consoles.map(console => ({
-        id: console._id,
-        name: console.name,
-        description: console.description,
-        language: console.language,
-        database: console.databaseId
-          ? {
-              id: console.databaseId._id,
-              name: (console.databaseId as any).name,
-              type: (console.databaseId as any).type,
-            }
-          : null,
-        createdAt: console.createdAt,
-        updatedAt: console.updatedAt,
-        lastExecutedAt: console.lastExecutedAt,
-        executionCount: console.executionCount,
-      })),
+      consoles: consoles.map(console => {
+        // Migration: If connectionId is missing but databaseId is a valid ObjectId, treat databaseId as connectionId
+        let connectionId = console.connectionId;
+        let databaseId = console.databaseId;
+        
+        if (!connectionId && console.databaseId && Types.ObjectId.isValid(console.databaseId)) {
+          // Legacy: databaseId was an ObjectId, treat it as connectionId
+          connectionId = console.databaseId as any;
+          databaseId = undefined;
+        }
+
+        return {
+          id: console._id,
+          name: console.name,
+          description: console.description,
+          language: console.language,
+          connectionId: connectionId ? (connectionId as any)._id?.toString() || connectionId.toString() : undefined,
+          databaseId: databaseId,
+          connection: connectionId
+            ? {
+                id: (connectionId as any)._id?.toString() || connectionId.toString(),
+                name: (connectionId as any).name,
+                type: (connectionId as any).type,
+              }
+            : null,
+          createdAt: console.createdAt,
+          updatedAt: console.updatedAt,
+          lastExecutedAt: console.lastExecutedAt,
+          executionCount: console.executionCount,
+        };
+      }),
       total: consoles.length,
     });
   } catch (error) {
@@ -731,10 +749,20 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const savedConsole = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
       workspaceId: new Types.ObjectId(access.workspaceId),
-    }).populate("databaseId", "name type");
+    }).populate("connectionId", "name type");
 
     if (!savedConsole) {
       return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    // Migration: If connectionId is missing but databaseId is a valid ObjectId, treat databaseId as connectionId
+    let connectionId = savedConsole.connectionId;
+    let databaseId = savedConsole.databaseId;
+    
+    if (!connectionId && savedConsole.databaseId && Types.ObjectId.isValid(savedConsole.databaseId)) {
+      // Legacy: databaseId was an ObjectId, treat it as connectionId
+      connectionId = savedConsole.databaseId as any;
+      databaseId = undefined;
     }
 
     return c.json({
@@ -746,11 +774,13 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
         code: savedConsole.code,
         language: savedConsole.language,
         mongoOptions: savedConsole.mongoOptions,
-        database: savedConsole.databaseId
+        connectionId: connectionId ? (connectionId as any)._id?.toString() || connectionId.toString() : undefined,
+        databaseId: databaseId,
+        connection: connectionId
           ? {
-              id: savedConsole.databaseId._id,
-              name: (savedConsole.databaseId as any).name,
-              type: (savedConsole.databaseId as any).type,
+              id: (connectionId as any)._id?.toString() || connectionId.toString(),
+              name: (connectionId as any).name,
+              type: (connectionId as any).type,
             }
           : null,
         createdAt: savedConsole.createdAt,
