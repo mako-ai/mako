@@ -16,7 +16,8 @@ export interface ConsoleFile {
   children?: ConsoleFile[];
   id?: string; // Database ID for saved consoles
   folderId?: string; // Database ID for folders
-  databaseId?: string; // Associated database ID
+  databaseId?: string; // Legacy: Associated database ID (DatabaseConnection ObjectId)
+  connectionId?: string; // DatabaseConnection ObjectId (the server/connection)
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;
@@ -131,6 +132,10 @@ export class ConsoleManager {
 
       // Add consoles to appropriate folders or root
       for (const console of consoles) {
+        // For backward compatibility: if connectionId doesn't exist, use databaseId
+        const connectionId =
+          console.connectionId?.toString() || console.databaseId?.toString();
+        
         const consoleItem: ConsoleFile = {
           path: console.folderId
             ? `${this.getFolderPath(console.folderId.toString(), folderMap)}/${console.name}`
@@ -139,7 +144,8 @@ export class ConsoleManager {
           content: console.code,
           isDirectory: false,
           id: console._id.toString(),
-          databaseId: console.databaseId?.toString(),
+          databaseId: console.databaseId?.toString(), // Legacy field (DatabaseConnection ObjectId)
+          connectionId, // DatabaseConnection ObjectId
           language: console.language,
           description: console.description,
           isPrivate: console.isPrivate,

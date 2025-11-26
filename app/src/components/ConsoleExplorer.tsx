@@ -169,20 +169,34 @@ function ConsoleExplorer(
         success: boolean;
         content: string;
         connectionId?: string;
+        databaseId?: string; // Legacy field
+        databaseId_new?: string; // Sub-database UUID
         id: string;
       }>(`/workspaces/${currentWorkspace.id}/consoles/content`, {
         id: consoleId,
       });
       if (data && (data as any).success) {
+        // Use connectionId if available, fallback to databaseId for backward compatibility
+        const connectionId = (data as any).connectionId || (data as any).databaseId || node.connectionId;
+        const databaseId_new = (data as any).databaseId_new;
+        
         useConsoleContentStore.getState().set(consoleId, {
           content: (data as any).content,
-          connectionId: (data as any).connectionId || node.connectionId,
+          connectionId,
         });
         // Optionally update tab content if it is still open and was showing stale/placeholder
-        const { updateConsoleContent, updateConsoleFilePath } = (
+        const { updateConsoleContent, updateConsoleFilePath, updateConsoleConnection, updateConsoleDatabase } = (
           await import("../store/consoleStore")
         ).useConsoleStore.getState();
         updateConsoleContent(consoleId, (data as any).content);
+        
+        // Update connectionId and databaseId from API response
+        if (connectionId) {
+          updateConsoleConnection(consoleId, connectionId);
+        }
+        if (databaseId_new !== undefined) {
+          updateConsoleDatabase(consoleId, databaseId_new, undefined);
+        }
 
         // Update the file path so the editor knows this is an existing file
         // This fixes the "Save As" prompt appearing for existing consoles
