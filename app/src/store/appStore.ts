@@ -34,7 +34,13 @@ export interface ConsoleTab {
 
 export interface GlobalState {
   // Backward-compatibility top-level view props
-  activeView?: "databases" | "consoles" | "connectors" | "sync-jobs";
+  activeView?:
+    | "databases"
+    | "consoles"
+    | "connectors"
+    | "sync-jobs"
+    | "settings";
+
   activeEditorContent?: {
     content: string;
     fileName?: string;
@@ -42,7 +48,13 @@ export interface GlobalState {
   };
   currentWorkspaceId?: string | null;
   ui: {
-    leftPane: "databases" | "consoles" | "connectors" | "sync-jobs";
+    leftPane:
+      | "databases"
+      | "consoles"
+      | "connectors"
+      | "sync-jobs"
+      | "settings";
+
     loading: Record<string, boolean>; // keyed by request name
   };
   explorers: {
@@ -74,7 +86,13 @@ export interface GlobalState {
   };
 }
 
-export type AppView = "databases" | "consoles" | "connectors" | "sync-jobs";
+export type AppView =
+  | "databases"
+  | "consoles"
+  | "connectors"
+  | "sync-jobs"
+  | "settings";
+
 
 /*********************
  * Initial state     *
@@ -583,8 +601,9 @@ export const useAppStore = create<
   GlobalState & {
     dispatch: (a: Action) => void;
     setActiveView: (
-      view: "databases" | "consoles" | "connectors" | "sync-jobs",
+      view: "databases" | "consoles" | "connectors" | "sync-jobs" | "settings",
     ) => void;
+
     setCurrentWorkspaceId: (workspaceId: string | null) => void;
     setActiveEditorContent: (
       content:

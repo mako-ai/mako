@@ -234,6 +234,41 @@ export const useConsoleStore = () => {
     getVersionManager,
     executeQuery: executeQuery,
     saveConsole: saveConsole,
+    loadConsole: async (id: string, workspaceId: string) => {
+      // Check if console is already loaded
+      const existing = consoleTabs.find(t => t.id === id);
+      if (existing) {
+        setActiveConsole(id);
+        return;
+      }
+
+      try {
+        // Fetch from API
+        const res = await apiClient.get<{
+          success: boolean;
+          content: string;
+          databaseId?: string;
+          language?: string;
+          id: string;
+          path?: string;
+          name?: string;
+        }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
+
+        if (res.success) {
+          addConsoleTab({
+            id: res.id, // Should match requested ID
+            title: res.name || res.path || "Console",
+            content: res.content || "",
+            initialContent: res.content || "",
+            connectionId: res.databaseId,
+            kind: "console",
+          });
+          setActiveConsole(res.id);
+        }
+      } catch (e) {
+        console.error("Failed to load console", e);
+      }
+    },
   };
 };
 
@@ -377,5 +412,38 @@ useConsoleStore.getState = () => {
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
+    loadConsole: async (id: string, workspaceId: string) => {
+      const existing = consoleTabs.find(t => t.id === id);
+      if (existing) {
+        setActiveConsole(id);
+        return;
+      }
+
+      try {
+        const res = await apiClient.get<{
+          success: boolean;
+          content: string;
+          databaseId?: string;
+          language?: string;
+          id: string;
+          path?: string;
+          name?: string;
+        }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
+
+        if (res.success) {
+          addConsoleTab({
+            id: res.id,
+            title: res.name || res.path || "Console",
+            content: res.content || "",
+            initialContent: res.content || "",
+            connectionId: res.databaseId,
+            kind: "console",
+          });
+          setActiveConsole(res.id);
+        }
+      } catch (e) {
+        console.error("Failed to load console", e);
+      }
+    },
   };
 };

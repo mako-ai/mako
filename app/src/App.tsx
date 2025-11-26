@@ -42,6 +42,8 @@ function InvitePage() {
   );
 }
 
+import { UrlSync } from "./components/UrlSync";
+
 // Main application component (extracted from original App)
 function MainApp() {
   const activeView = useAppStore(s => s.activeView);
@@ -268,6 +270,7 @@ function MainApp() {
 
   return (
     <AuthWrapper>
+      <UrlSync />
       <Box
         sx={{
           display: "flex",
