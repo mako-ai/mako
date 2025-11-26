@@ -308,7 +308,10 @@ function Editor() {
 
       // Get the current database ID for the tab
       const currentTab = consoleTabs.find(tab => tab.id === tabId);
-      const databaseId = currentTab?.databaseId;
+      // Use connectionId (which references the DatabaseConnection) for saving.
+      // databaseId in the tab state might refer to a sub-database UUID (e.g. for D1)
+      // which cannot be stored in the backend's databaseId ObjectId field.
+      const databaseId = currentTab?.connectionId;
 
       const result = await saveConsole(
         currentWorkspace.id,

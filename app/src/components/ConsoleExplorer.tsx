@@ -154,7 +154,13 @@ function ConsoleExplorer(
     const cached = useConsoleContentStore.getState().get(consoleId);
     const initialContent = cached?.content ?? "loading...";
     const connectionId = cached?.connectionId || node.connectionId;
-    onConsoleSelect(node.path, initialContent, connectionId, consoleId, !cached);
+    onConsoleSelect(
+      node.path,
+      initialContent,
+      connectionId,
+      consoleId,
+      !cached,
+    );
 
     // 2) Fetch in background via apiClient and update store
     try {
@@ -173,10 +179,14 @@ function ConsoleExplorer(
           connectionId: (data as any).connectionId || node.connectionId,
         });
         // Optionally update tab content if it is still open and was showing stale/placeholder
-        const { updateConsoleContent } = (
+        const { updateConsoleContent, updateConsoleFilePath } = (
           await import("../store/consoleStore")
         ).useConsoleStore.getState();
         updateConsoleContent(consoleId, (data as any).content);
+
+        // Update the file path so the editor knows this is an existing file
+        // This fixes the "Save As" prompt appearing for existing consoles
+        updateConsoleFilePath(consoleId, node.path);
 
         // Update dbContentHash so pristine/dirty state is correct
         const { hashContent } = await import("../utils/hash");
