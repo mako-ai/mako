@@ -148,12 +148,8 @@ function MainApp() {
 
     // Extract databaseId and databaseName from queryOptions (e.g., for D1 cluster mode)
     // D1 uses databaseName for the UUID, other DBs may use databaseId or dbName
-    const databaseId =
-      queryOptions?.databaseId ||
-      queryOptions?.databaseName; // D1 stores UUID in databaseName
-    const databaseName =
-      queryOptions?.databaseLabel || // Human-readable name if available
-      queryOptions?.dbName;
+    const databaseId = queryOptions?.databaseId || queryOptions?.databaseName; // D1 stores UUID in databaseName
+    const databaseName = queryOptions?.databaseLabel || queryOptions?.dbName; // Human-readable name if available
 
     // Create a new tab with the determined ID
     const id = addConsoleTab({

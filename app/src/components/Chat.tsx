@@ -721,8 +721,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       const connectionId = tab?.connectionId;
       // databaseId = specific database ID (e.g., D1 UUID for cluster mode)
       const databaseId =
-        tab?.databaseId ||
-        tab?.metadata?.queryOptions?.databaseId;
+        tab?.databaseId || tab?.metadata?.queryOptions?.databaseId;
       // databaseName = human-readable database name
       const databaseName =
         tab?.databaseName ||
