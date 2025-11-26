@@ -32,6 +32,7 @@ import {
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useDatabaseStore } from "../store/databaseStore";
 import {
   useMonacoConsole,
   ConsoleModification,
@@ -55,20 +56,16 @@ interface DatabaseConnection {
   hostName: string;
 }
 
-interface DatabaseTreeNode {
-  id: string;
-  label: string;
-  kind: string;
-  hasChildren: boolean;
-  metadata?: Record<string, any>;
-}
-
 interface ConsoleProps {
   consoleId: string;
   initialContent: string;
   dbContentHash?: string;
   title?: string;
-  onExecute: (content: string, databaseId?: string, databaseName?: string) => void;
+  onExecute: (
+    content: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => void;
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
   isExecuting: boolean;
   isSaving?: boolean;
@@ -141,10 +138,20 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const [monacoCanRedo, setMonacoCanRedo] = useState(false);
 
   // State for sub-database selection (cluster mode - second dropdown, e.g., D1 databases)
-  const [selectedSubDbId, setSelectedSubDbId] = useState<string | undefined>(initialSelectedDatabaseId);
-  const [selectedSubDbName, setSelectedSubDbName] = useState<string | undefined>(initialSelectedDatabaseName);
-  const [availableDatabases, setAvailableDatabases] = useState<DatabaseTreeNode[]>([]);
-  const [isLoadingDatabases, setIsLoadingDatabases] = useState(false);
+  const [selectedSubDbId, setSelectedSubDbId] = useState<string | undefined>(
+    initialSelectedDatabaseId,
+  );
+  const [selectedSubDbName, setSelectedSubDbName] = useState<
+    string | undefined
+  >(initialSelectedDatabaseName);
+
+  const fetchDatabasesForConnection = useDatabaseStore(
+    state => state.fetchDatabasesForConnection,
+  );
+  const databasesInConnection = useDatabaseStore(
+    state => state.databasesInConnection,
+  );
+  const loadingStore = useDatabaseStore(state => state.loading);
 
   // Use the Monaco console hook for version management
   const {
@@ -257,37 +264,42 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Fetch available databases when a cluster mode connection is selected
   useEffect(() => {
     const fetchDatabases = async () => {
-      if (!selectedConnection?.isClusterMode || !currentWorkspace?.id || !selectedDatabaseId) {
-        setAvailableDatabases([]);
+      if (
+        !selectedConnection?.isClusterMode ||
+        !currentWorkspace?.id ||
+        !selectedDatabaseId
+      ) {
         return;
       }
 
-      setIsLoadingDatabases(true);
       try {
-        const response = await fetch(
-          `/api/workspaces/${currentWorkspace.id}/databases/${selectedDatabaseId}/tree`,
-          { credentials: "include" }
+        const dbs = await fetchDatabasesForConnection(
+          currentWorkspace.id,
+          selectedDatabaseId,
         );
-        const data = await response.json();
-        if (data.success && data.data) {
-          setAvailableDatabases(data.data);
-          // Auto-select first database if none selected and databases available
-          if (!selectedSubDbId && data.data.length > 0) {
-            const firstDb = data.data[0];
-            setSelectedSubDbId(firstDb.id);
-            setSelectedSubDbName(firstDb.label);
-          }
+
+        // Auto-select first database if none selected and databases available
+        if (!selectedSubDbId && dbs && dbs.length > 0) {
+          const firstDb = dbs[0];
+          setSelectedSubDbId(firstDb.id);
+          setSelectedSubDbName(firstDb.label);
         }
       } catch (err) {
         console.error("Failed to fetch databases for connection:", err);
-        setAvailableDatabases([]);
-      } finally {
-        setIsLoadingDatabases(false);
       }
     };
 
     fetchDatabases();
-  }, [selectedConnection?.isClusterMode, selectedDatabaseId, currentWorkspace?.id]);
+  }, [
+    selectedConnection?.isClusterMode,
+    selectedDatabaseId,
+    currentWorkspace?.id,
+    fetchDatabasesForConnection,
+    selectedSubDbId,
+  ]);
+
+  const availableDatabases = databasesInConnection[selectedDatabaseId] || [];
+  const isLoadingDatabases = loadingStore[`dbs-in:${selectedDatabaseId}`];
 
   // Memoize the default database ID to prevent unnecessary re-calculations
   const defaultDatabaseId = useMemo(() => {
@@ -496,7 +508,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   }, [
     onSave,
     getCurrentEditorContent,
-    filePath,
     isDiffMode,
     modifiedContent,
     onSaveSuccess,
@@ -538,7 +549,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     // Clear sub-database selection when switching connections
     setSelectedSubDbId(undefined);
     setSelectedSubDbName(undefined);
-    setAvailableDatabases([]);
   }, []);
 
   // No need to wrap undo/redo - they will trigger content change which updates hasUnsavedChanges
@@ -1028,13 +1038,15 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                   disableUnderline
                   labelId="database-name-select-label"
                   value={selectedSubDbId || ""}
-                  onChange={(e) => {
+                  onChange={e => {
                     const dbId = e.target.value || undefined;
                     const db = availableDatabases.find(d => d.id === dbId);
                     setSelectedSubDbId(dbId);
                     setSelectedSubDbName(db?.label);
                   }}
-                  disabled={isLoadingDatabases || availableDatabases.length === 0}
+                  disabled={
+                    isLoadingDatabases || availableDatabases.length === 0
+                  }
                   displayEmpty
                 >
                   {isLoadingDatabases ? (
