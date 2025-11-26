@@ -205,7 +205,8 @@ consoleRoutes.post("/", async (c: Context) => {
           id: savedConsole._id.toString(),
           path: consolePath,
           content,
-          databaseId: targetDatabaseId,
+          connectionId: targetConnectionId,
+          databaseId: targetConnectionId, // Legacy field for backward compatibility
           language: savedConsole.language,
         },
       },
@@ -289,7 +290,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         id: savedConsole._id.toString(),
         path: consolePath,
         content: body.content,
-        databaseId: targetDatabaseId,
+        connectionId: targetConnectionId,
+        databaseId: targetConnectionId, // Legacy field for backward compatibility
         language: savedConsole.language,
       },
     });
