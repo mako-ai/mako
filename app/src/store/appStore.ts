@@ -559,6 +559,7 @@ export const useAppStore = create<
         | { content: string; fileName?: string; language?: string }
         | undefined,
     ) => void;
+    reset: () => void;
   }
 >()(
   persist(
@@ -578,6 +579,13 @@ export const useAppStore = create<
         set(state => {
           state.activeEditorContent = content;
         }),
+      reset: () => {
+        set(initialState);
+        // Clear persisted state from localStorage
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("app-store");
+        }
+      },
     })),
     {
       name: "app-store",
