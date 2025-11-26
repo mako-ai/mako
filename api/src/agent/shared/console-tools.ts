@@ -112,17 +112,19 @@ export const createConsoleTools = (
       // Helper to build response with connection context
       const buildResponse = (consoleData: ConsoleData) => {
         // Extract connection context from console data
+        // connectionId = DatabaseConnection MongoDB ObjectId (the server/connection)
         const connectionId =
           consoleData.connectionId || consoleData.metadata?.connectionId;
         const connectionType =
           consoleData.connectionType || consoleData.metadata?.connectionType;
 
-        // For D1: databaseId is the UUID (sent at top level or in metadata)
+        // databaseId = specific database ID (e.g., D1 UUID for cluster mode)
+        // This is different from connectionId - connectionId is the server, databaseId is the specific DB
         const databaseId =
           (consoleData as any).databaseId ||
           consoleData.metadata?.databaseId ||
           consoleData.metadata?.queryOptions?.databaseId;
-        // For MongoDB/Postgres: databaseName is the database name
+        // databaseName = human-readable database name
         const databaseName =
           (consoleData as any).databaseName ||
           consoleData.metadata?.databaseName ||
@@ -136,10 +138,10 @@ export const createConsoleTools = (
           title: consoleData.title,
           content: consoleData.content || "",
           // Clean connection context
-          connectionId,
+          connectionId, // DatabaseConnection ObjectId (server/connection)
           connectionType,
-          databaseId, // D1 database UUID (for cluster-mode D1)
-          databaseName, // Database name (for MongoDB/Postgres cluster-mode)
+          databaseId, // Sub-database UUID (e.g., D1 database UUID for cluster-mode)
+          databaseName, // Human-readable database name
         };
       };
 

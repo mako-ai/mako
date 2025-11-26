@@ -267,7 +267,9 @@ export interface ISavedConsole extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   folderId?: Types.ObjectId;
-  databaseId?: Types.ObjectId;
+  databaseId?: Types.ObjectId; // Legacy: DatabaseConnection ObjectId (kept for backward compatibility)
+  connectionId?: Types.ObjectId; // New: DatabaseConnection ObjectId (copy of databaseId for clarity)
+  databaseId_new?: string; // New: Sub-database UUID (e.g., D1 database UUID for cluster mode)
   name: string;
   description?: string;
   code: string;
@@ -766,6 +768,15 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     databaseId: {
       type: Schema.Types.ObjectId,
       ref: "DatabaseConnection",
+      required: false,
+    },
+    connectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
+      required: false,
+    },
+    databaseId_new: {
+      type: String,
       required: false,
     },
     name: {

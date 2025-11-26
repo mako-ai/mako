@@ -306,20 +306,21 @@ function Editor() {
         isNew = true;
       }
 
-      // Get the current database ID for the tab
+      // Get the current database context for the tab
       const currentTab = consoleTabs.find(tab => tab.id === tabId);
-      // Use connectionId (which references the DatabaseConnection) for saving.
-      // databaseId in the tab state might refer to a sub-database UUID (e.g. for D1)
-      // which cannot be stored in the backend's databaseId ObjectId field.
-      const databaseId = currentTab?.connectionId;
+      // connectionId = DatabaseConnection ObjectId (the server/connection)
+      const connectionId = currentTab?.connectionId;
+      // databaseId = sub-database UUID (e.g., D1 database UUID for cluster mode)
+      const databaseId_new = currentTab?.databaseId;
 
       const result = await saveConsole(
         currentWorkspace.id,
         tabId,
         contentToSave,
         savePath,
-        databaseId,
+        connectionId,
         isNew,
+        databaseId_new,
       );
       if (result.success) {
         // Update file path and title for new files (POST)
@@ -574,12 +575,16 @@ function Editor() {
                           tab.metadata?.queryOptions?.databaseLabel
                         }
                         databases={availableDatabases}
-                        onDatabaseChange={connId =>
-                          updateConsoleConnection(tab.id, connId)
-                        }
-                        onDatabaseNameChange={(dbId, dbName) =>
-                          updateConsoleDatabase(tab.id, dbId, dbName)
-                        }
+                        onDatabaseChange={connId => {
+                          updateConsoleConnection(tab.id, connId);
+                          // Mark as dirty when connection changes
+                          updateConsoleDirty(tab.id, true);
+                        }}
+                        onDatabaseNameChange={(dbId, dbName) => {
+                          updateConsoleDatabase(tab.id, dbId, dbName);
+                          // Mark as dirty when sub-database changes
+                          updateConsoleDirty(tab.id, true);
+                        }}
                         filePath={tab.filePath}
                         enableVersionControl={true}
                       />

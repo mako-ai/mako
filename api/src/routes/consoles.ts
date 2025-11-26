@@ -99,7 +99,9 @@ consoleRoutes.get("/content", async (c: Context) => {
     return c.json({
       success: true,
       content: consoleData.content,
-      databaseId: consoleData.databaseId,
+      databaseId: consoleData.databaseId, // Legacy field
+      connectionId: consoleData.connectionId, // DatabaseConnection ObjectId
+      databaseId_new: consoleData.databaseId_new, // Sub-database UUID
       language: consoleData.language,
       id: consoleData.id,
     });
@@ -153,15 +155,22 @@ consoleRoutes.post("/", async (c: Context) => {
       return c.json({ success: false, error: "Content must be a string" }, 400);
     }
 
-    // databaseId is optional - consoles can be saved without being associated with a specific database
-    let targetDatabaseId = databaseId;
-    if (!targetDatabaseId) {
+    // connectionId (DatabaseConnection ObjectId) and databaseId_new (sub-database UUID) are optional
+    // The body may contain:
+    // - databaseId: legacy field, treated as connectionId
+    // - connectionId: DatabaseConnection ObjectId (the server/connection)
+    // - databaseId_new: sub-database UUID (e.g., D1 database UUID for cluster mode)
+    const connectionId = body.connectionId || databaseId; // Use connectionId if provided, fallback to databaseId for backward compat
+    const databaseId_new = body.databaseId_new; // Sub-database UUID
+    
+    let targetConnectionId = connectionId;
+    if (!targetConnectionId) {
       // Try to get the first database for the workspace, but don't require it
       const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
       if (databases.length > 0) {
-        targetDatabaseId = databases[0]._id.toString();
+        targetConnectionId = databases[0]._id.toString();
       }
-      // If no databases exist, that's fine - targetDatabaseId will remain undefined
+      // If no databases exist, that's fine - targetConnectionId will remain undefined
     }
 
     const exists = await consoleManager.consoleExists(consolePath, workspaceId);
@@ -177,13 +186,14 @@ consoleRoutes.post("/", async (c: Context) => {
       content,
       workspaceId,
       user.id,
-      targetDatabaseId,
+      targetConnectionId,
       {
         id, // Pass client-provided ID
         folderId,
         description,
         language,
         isPrivate,
+        databaseId_new, // Pass sub-database UUID
       },
     );
 
@@ -239,15 +249,22 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       );
     }
 
-    // databaseId is optional - consoles can be saved without being associated with a specific database
-    let targetDatabaseId = body.databaseId;
-    if (!targetDatabaseId) {
+    // connectionId (DatabaseConnection ObjectId) and databaseId_new (sub-database UUID) are optional
+    // The body may contain:
+    // - databaseId: legacy field, treated as connectionId
+    // - connectionId: DatabaseConnection ObjectId (the server/connection)
+    // - databaseId_new: sub-database UUID (e.g., D1 database UUID for cluster mode)
+    const connectionId = body.connectionId || body.databaseId; // Use connectionId if provided, fallback to databaseId for backward compat
+    const databaseId_new = body.databaseId_new; // Sub-database UUID
+    
+    let targetConnectionId = connectionId;
+    if (!targetConnectionId) {
       // Try to get the first database for the workspace, but don't require it
       const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
       if (databases.length > 0) {
-        targetDatabaseId = databases[0]._id.toString();
+        targetConnectionId = databases[0]._id.toString();
       }
-      // If no databases exist, that's fine - targetDatabaseId will remain undefined
+      // If no databases exist, that's fine - targetConnectionId will remain undefined
     }
 
     const savedConsole = await consoleManager.saveConsole(
@@ -255,12 +272,13 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       body.content,
       workspaceId,
       user.id,
-      targetDatabaseId,
+      targetConnectionId,
       {
         folderId: body.folderId,
         description: body.description,
         language: body.language,
         isPrivate: body.isPrivate,
+        databaseId_new, // Pass sub-database UUID
       },
     );
 

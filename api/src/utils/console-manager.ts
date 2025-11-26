@@ -256,6 +256,8 @@ export class ConsoleManager {
   ): Promise<{
     content: string;
     databaseId?: string;
+    connectionId?: string;
+    databaseId_new?: string;
     language?: string;
     id?: string;
   } | null> {
@@ -272,9 +274,16 @@ export class ConsoleManager {
       });
 
       if (savedConsole) {
+        // For backward compatibility: if connectionId doesn't exist, use databaseId
+        const connectionId =
+          savedConsole.connectionId?.toString() ||
+          savedConsole.databaseId?.toString();
+
         return {
           content: savedConsole.code,
-          databaseId: savedConsole.databaseId?.toString(),
+          databaseId: savedConsole.databaseId?.toString(), // Legacy field
+          connectionId, // DatabaseConnection ObjectId
+          databaseId_new: savedConsole.databaseId_new, // Sub-database UUID
           language: savedConsole.language,
           id: savedConsole._id.toString(),
         };
@@ -295,13 +304,14 @@ export class ConsoleManager {
     content: string,
     workspaceId: string,
     userId: string,
-    databaseId?: string,
+    connectionId?: string, // DatabaseConnection ObjectId (renamed from databaseId for clarity)
     options?: {
       id?: string; // Optional client-provided ID
       folderId?: string;
       description?: string;
       language?: "sql" | "javascript" | "mongodb";
       isPrivate?: boolean;
+      databaseId_new?: string; // Sub-database UUID (e.g., D1 database UUID)
     },
   ): Promise<ISavedConsole> {
     try {
@@ -334,11 +344,23 @@ export class ConsoleManager {
         // Update existing console
         savedConsole.code = content;
         savedConsole.updatedAt = new Date();
-        if (databaseId !== undefined) {
-          savedConsole.databaseId = databaseId
-            ? new Types.ObjectId(databaseId)
+        
+        // Update connectionId (DatabaseConnection ObjectId)
+        if (connectionId !== undefined) {
+          savedConsole.connectionId = connectionId
+            ? new Types.ObjectId(connectionId)
+            : undefined;
+          // For backward compatibility, also update databaseId if connectionId is set
+          savedConsole.databaseId = connectionId
+            ? new Types.ObjectId(connectionId)
             : undefined;
         }
+        
+        // Update databaseId_new (sub-database UUID)
+        if (options?.databaseId_new !== undefined) {
+          savedConsole.databaseId_new = options.databaseId_new || undefined;
+        }
+        
         if (options?.description !== undefined) {
           savedConsole.description = options.description;
         }
@@ -353,7 +375,9 @@ export class ConsoleManager {
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
-          databaseId: databaseId ? new Types.ObjectId(databaseId) : undefined,
+          connectionId: connectionId ? new Types.ObjectId(connectionId) : undefined,
+          databaseId: connectionId ? new Types.ObjectId(connectionId) : undefined, // For backward compatibility
+          databaseId_new: options?.databaseId_new,
           name: consoleName,
           description: options?.description || "",
           code: content,

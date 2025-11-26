@@ -165,8 +165,9 @@ export const useConsoleStore = () => {
     tabId: string,
     content: string,
     currentPath?: string,
-    databaseId?: string,
+    connectionId?: string, // DatabaseConnection ObjectId (the server/connection)
     isNew?: boolean,
+    databaseId_new?: string, // Sub-database UUID (e.g., D1 database UUID for cluster mode)
   ): Promise<{
     success: boolean;
     path?: string;
@@ -192,12 +193,25 @@ export const useConsoleStore = () => {
         endpoint = `/workspaces/${workspaceId}/consoles/${path}`;
       }
 
+      // Prepare request body with connectionId and databaseId_new
+      const requestBody: any = {
+        id: tabId,
+        path,
+        content,
+        connectionId, // DatabaseConnection ObjectId
+        databaseId_new, // Sub-database UUID
+      };
+      // For backward compatibility, also include databaseId if connectionId is provided
+      if (connectionId) {
+        requestBody.databaseId = connectionId;
+      }
+
       if (method === "POST") {
         const res = await apiClient.post<{
           success: boolean;
           data?: { id: string };
           error?: string;
-        }>(endpoint, { id: tabId, path, content, databaseId });
+        }>(endpoint, requestBody);
         return res.success
           ? { success: true, path, id: (res as any).data?.id }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -206,7 +220,7 @@ export const useConsoleStore = () => {
           success: boolean;
           data?: any;
           error?: string;
-        }>(endpoint, { content, databaseId });
+        }>(endpoint, { content, connectionId, databaseId_new, databaseId: connectionId });
         return res.success
           ? { success: true, path }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -247,7 +261,9 @@ export const useConsoleStore = () => {
         const res = await apiClient.get<{
           success: boolean;
           content: string;
-          databaseId?: string;
+          databaseId?: string; // Legacy field
+          connectionId?: string; // DatabaseConnection ObjectId
+          databaseId_new?: string; // Sub-database UUID
           language?: string;
           id: string;
           path?: string;
@@ -255,12 +271,15 @@ export const useConsoleStore = () => {
         }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
 
         if (res.success) {
+          // Use connectionId if available, fallback to databaseId for backward compatibility
+          const connectionId = res.connectionId || res.databaseId;
           addConsoleTab({
             id: res.id, // Should match requested ID
             title: res.name || res.path || "Console",
             content: res.content || "",
             initialContent: res.content || "",
-            connectionId: res.databaseId,
+            connectionId, // DatabaseConnection ObjectId
+            databaseId: res.databaseId_new, // Sub-database UUID
             kind: "console",
           });
           setActiveConsole(res.id);
@@ -423,7 +442,9 @@ useConsoleStore.getState = () => {
         const res = await apiClient.get<{
           success: boolean;
           content: string;
-          databaseId?: string;
+          databaseId?: string; // Legacy field
+          connectionId?: string; // DatabaseConnection ObjectId
+          databaseId_new?: string; // Sub-database UUID
           language?: string;
           id: string;
           path?: string;
@@ -431,12 +452,15 @@ useConsoleStore.getState = () => {
         }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
 
         if (res.success) {
+          // Use connectionId if available, fallback to databaseId for backward compatibility
+          const connectionId = res.connectionId || res.databaseId;
           addConsoleTab({
             id: res.id,
             title: res.name || res.path || "Console",
             content: res.content || "",
             initialContent: res.content || "",
-            connectionId: res.databaseId,
+            connectionId, // DatabaseConnection ObjectId
+            databaseId: res.databaseId_new, // Sub-database UUID
             kind: "console",
           });
           setActiveConsole(res.id);
