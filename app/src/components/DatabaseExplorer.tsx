@@ -401,7 +401,7 @@ function DatabaseExplorer({
                 }
               } else {
                 handleCollectionClick(databaseId, {
-                  name: node.id,
+                  name: node.label, // Use label (display name) instead of id for console title
                   type: node.kind,
                   options: node.metadata,
                 } as any);

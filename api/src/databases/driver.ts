@@ -1,4 +1,4 @@
-import { IDatabase } from "../database/workspace-schema";
+import { IDatabaseConnection } from "../database/workspace-schema";
 
 export interface DatabaseTreeNode {
   id: string;
@@ -18,13 +18,13 @@ export interface DatabaseDriverMetadata {
 
 export interface DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata;
-  getTreeRoot(database: IDatabase): Promise<DatabaseTreeNode[]>;
+  getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]>;
   getChildren(
-    database: IDatabase,
+    database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]>;
   executeQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
     options?: any,
   ): Promise<{

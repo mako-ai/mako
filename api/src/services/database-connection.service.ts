@@ -4,11 +4,12 @@ import * as mysql from "mysql2/promise";
 import { Database as SqliteDatabase } from "sqlite3";
 import { open } from "sqlite";
 import { ConnectionPool } from "mssql";
-import { IDatabase } from "../database/workspace-schema";
+import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
 import { DatabaseDriver } from "../databases/driver";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
+import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 
 export interface QueryResult {
@@ -76,6 +77,10 @@ export class DatabaseConnectionService {
       "cloudsql-postgres",
       new CloudSQLPostgresDatabaseDriver() as any,
     );
+    this.drivers.set(
+      "cloudflare-d1",
+      new CloudflareD1DatabaseDriver() as any,
+    );
     // Start cleanup interval for MongoDB connections
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
@@ -86,7 +91,7 @@ export class DatabaseConnectionService {
    * Test database connection
    */
   async testConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     try {
       switch (database.type) {
@@ -106,6 +111,10 @@ export class DatabaseConnectionService {
           return await (
             this.drivers.get("cloudsql-postgres") as any
           ).testConnection(database);
+        case "cloudflare-d1":
+          return await (
+            this.drivers.get("cloudflare-d1") as CloudflareD1DatabaseDriver
+          ).testConnection(database);
         default:
           return {
             success: false,
@@ -124,7 +133,7 @@ export class DatabaseConnectionService {
    * Execute query on database
    */
   async executeQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: any,
     options?: any,
   ): Promise<QueryResult> {
@@ -146,6 +155,10 @@ export class DatabaseConnectionService {
           return await this.executeMSSQLQuery(database, query);
         case "bigquery":
           return await this.executeBigQueryQuery(database, query, options);
+        case "cloudflare-d1":
+          return await this.drivers
+            .get("cloudflare-d1")!
+            .executeQuery(database, query, options);
         default:
           return {
             success: false,
@@ -163,7 +176,7 @@ export class DatabaseConnectionService {
   /**
    * Get database connection
    */
-  async getConnection(database: IDatabase): Promise<any> {
+  async getConnection(database: IDatabaseConnection): Promise<any> {
     const key = database._id.toString();
 
     // For MongoDB, use advanced pooling
@@ -390,7 +403,7 @@ export class DatabaseConnectionService {
 
   // -------------------- BigQuery helpers --------------------
   // Public: list BigQuery datasets (by datasetId)
-  async listBigQueryDatasets(database: IDatabase): Promise<string[]> {
+  async listBigQueryDatasets(database: IDatabaseConnection): Promise<string[]> {
     const { project_id, service_account_json, api_base_url } =
       (database.connection as any) || {};
     if (!project_id || !service_account_json) {
@@ -426,7 +439,7 @@ export class DatabaseConnectionService {
 
   // Public: list BigQuery tables in a dataset
   async listBigQueryTables(
-    database: IDatabase,
+    database: IDatabaseConnection,
     datasetId: string,
   ): Promise<Array<{ name: string; type: string; options: any }>> {
     const { project_id, service_account_json, api_base_url } =
@@ -470,7 +483,7 @@ export class DatabaseConnectionService {
     return out;
   }
   private async testBigQueryConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     try {
       const { project_id, service_account_json, location, api_base_url } =
@@ -507,7 +520,7 @@ export class DatabaseConnectionService {
   }
 
   private async executeBigQueryQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
     options?: { batchSize?: number; location?: string },
   ): Promise<QueryResult> {
@@ -631,7 +644,7 @@ export class DatabaseConnectionService {
 
   // New: list BigQuery datasets and tables via REST (fast, no deprecated auth)
   async listBigQueryDatasetsAndTables(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<Array<{ name: string; type: string; options: any }>> {
     const datasetIds = await this.listBigQueryDatasets(database);
 
@@ -984,7 +997,7 @@ export class DatabaseConnectionService {
 
   // MongoDB specific methods
   private async testMongoDBConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     try {
       const connectionString = this.buildMongoDBConnectionString(database);
@@ -1011,7 +1024,7 @@ export class DatabaseConnectionService {
     }
   }
 
-  private buildMongoDBConnectionString(database: IDatabase): string {
+  private buildMongoDBConnectionString(database: IDatabaseConnection): string {
     const conn = database.connection;
 
     // If connection string is provided, use it directly
@@ -1054,7 +1067,7 @@ export class DatabaseConnectionService {
   }
 
   private async executeMongoDBQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: any,
     options?: any,
   ): Promise<QueryResult> {
@@ -1368,7 +1381,7 @@ export class DatabaseConnectionService {
 
   // PostgreSQL specific methods
   private async testPostgreSQLConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     let client: PgClient | null = null;
     try {
@@ -1399,7 +1412,7 @@ export class DatabaseConnectionService {
   }
 
   private async createPostgreSQLConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<PgClient> {
     const client = new PgClient({
       host: database.connection.host,
@@ -1414,7 +1427,7 @@ export class DatabaseConnectionService {
   }
 
   private async executePostgreSQLQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
   ): Promise<QueryResult> {
     const client = (await this.getConnection(database)) as PgClient;
@@ -1437,7 +1450,7 @@ export class DatabaseConnectionService {
 
   // MySQL specific methods
   private async testMySQLConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     let connection: mysql.Connection | null = null;
     try {
@@ -1467,7 +1480,7 @@ export class DatabaseConnectionService {
   }
 
   private async createMySQLConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<mysql.Connection> {
     const connection = await mysql.createConnection({
       host: database.connection.host,
@@ -1481,7 +1494,7 @@ export class DatabaseConnectionService {
   }
 
   private async executeMySQLQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
   ): Promise<QueryResult> {
     const connection = (await this.getConnection(database)) as mysql.Connection;
@@ -1502,7 +1515,7 @@ export class DatabaseConnectionService {
 
   // SQLite specific methods
   private async testSQLiteConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     try {
       const db = await open({
@@ -1521,7 +1534,7 @@ export class DatabaseConnectionService {
     }
   }
 
-  private async createSQLiteConnection(database: IDatabase): Promise<any> {
+  private async createSQLiteConnection(database: IDatabaseConnection): Promise<any> {
     const db = await open({
       filename: database.connection.database || ":memory:",
       driver: SqliteDatabase,
@@ -1530,7 +1543,7 @@ export class DatabaseConnectionService {
   }
 
   private async executeSQLiteQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
   ): Promise<QueryResult> {
     const db = await this.getConnection(database);
@@ -1550,7 +1563,7 @@ export class DatabaseConnectionService {
 
   // MSSQL specific methods
   private async testMSSQLConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     let pool: ConnectionPool | null = null;
     try {
@@ -1582,7 +1595,7 @@ export class DatabaseConnectionService {
   }
 
   private async createMSSQLConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<ConnectionPool> {
     const pool = new ConnectionPool({
       server: database.connection.host!,
@@ -1600,7 +1613,7 @@ export class DatabaseConnectionService {
   }
 
   private async executeMSSQLQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
   ): Promise<QueryResult> {
     const pool = (await this.getConnection(database)) as ConnectionPool;

@@ -108,11 +108,12 @@ function MainApp() {
   const openOrFocusConsoleTab = (
     title: string,
     content: string,
-    databaseId?: string,
+    connectionId?: string, // DatabaseConnection ID (renamed from databaseId)
     extraContextItems: any[] = [],
     filePath?: string,
     consoleId?: string, // Add optional consoleId parameter
     isPlaceholder?: boolean,
+    queryOptions?: Record<string, any>, // Options to pass when executing (e.g., D1 databaseId)
   ) => {
     // For existing consoles, use the server ID as the tab ID
     const tabId = consoleId || generateObjectId();
@@ -145,15 +146,28 @@ function MainApp() {
       return;
     }
 
+    // Extract databaseId and databaseName from queryOptions (e.g., for D1 cluster mode)
+    // D1 uses databaseName for the UUID, other DBs may use databaseId or dbName
+    const databaseId =
+      queryOptions?.databaseId ||
+      queryOptions?.databaseName; // D1 stores UUID in databaseName
+    const databaseName =
+      queryOptions?.databaseLabel || // Human-readable name if available
+      queryOptions?.dbName;
+
     // Create a new tab with the determined ID
     const id = addConsoleTab({
       id: tabId, // Pass the ID explicitly
       title,
       content,
       initialContent: content,
-      databaseId,
+      connectionId,
+      databaseId, // D1 database UUID or other DB-specific ID
+      databaseName, // Human-readable database name
       // If placeholder, defer setting filePath so dbContentHash isn't computed
       filePath: isPlaceholder ? undefined : filePath,
+      // Store query execution options for backward compatibility
+      metadata: queryOptions ? { queryOptions } : undefined,
     });
     setActiveConsole(id);
 
@@ -200,18 +214,27 @@ function MainApp() {
                   prefill = `SELECT * FROM ${collection.name} LIMIT 500;`;
                 }
               }
-              openOrFocusConsoleTab(collection.name, prefill, dbId, [
-                {
-                  id: "collection-" + collection.name,
-                  type: "collection",
-                  title: collection.name,
-                  content: `Collection: ${collection.name}`,
-                  metadata: {
-                    databaseId: dbId,
-                    collectionName: collection.name,
+              openOrFocusConsoleTab(
+                collection.name,
+                prefill,
+                dbId, // connectionId
+                [
+                  {
+                    id: "collection-" + collection.name,
+                    type: "collection",
+                    title: collection.name,
+                    content: `Collection: ${collection.name}`,
+                    metadata: {
+                      connectionId: dbId,
+                      collectionName: collection.name,
+                    },
                   },
-                },
-              ]);
+                ],
+                undefined, // filePath
+                undefined, // consoleId
+                undefined, // isPlaceholder
+                collection.options, // queryOptions - contains D1 databaseName (UUID), MongoDB dbName, etc.
+              );
             }}
           />
         );
@@ -221,14 +244,14 @@ function MainApp() {
             onConsoleSelect={(
               path,
               content,
-              databaseId,
+              connectionId,
               consoleId,
               isPlaceholder,
             ) => {
               openOrFocusConsoleTab(
                 path,
                 content,
-                databaseId,
+                connectionId,
                 [],
                 path,
                 consoleId,

@@ -2,7 +2,7 @@ import { Db } from "mongodb";
 import * as fs from "fs";
 import * as path from "path";
 import * as dotenv from "dotenv";
-import { Database } from "../database/workspace-schema";
+import { DatabaseConnection } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 
 dotenv.config();
@@ -17,7 +17,7 @@ class QueryRunner {
 
   private async initializePrimaryDatabase() {
     try {
-      const databases = await Database.find({})
+      const databases = await DatabaseConnection.find({})
         .sort({ createdAt: -1 })
         .limit(1);
       if (databases.length > 0) {
@@ -38,7 +38,7 @@ class QueryRunner {
     }
 
     // Get data source configuration
-    const dataSource = await Database.findById(sourceId);
+    const dataSource = await DatabaseConnection.findById(sourceId);
     if (!dataSource) {
       throw new Error(`MongoDB data source '${sourceId}' not found`);
     }
@@ -48,7 +48,7 @@ class QueryRunner {
       "datasource",
       sourceId,
       async id => {
-        const ds = await Database.findById(id);
+        const ds = await DatabaseConnection.findById(id);
         if (!ds || !ds.connection.connectionString) return null;
         return {
           connectionString: ds.connection.connectionString,
@@ -163,7 +163,7 @@ class QueryRunner {
     }[]
   > {
     try {
-      const databases = await Database.find({}).sort({ createdAt: -1 });
+      const databases = await DatabaseConnection.find({}).sort({ createdAt: -1 });
       return databases.map(db => ({
         id: db._id.toString(),
         name: db.name,
@@ -179,7 +179,7 @@ class QueryRunner {
    * Switch the default data source for queries
    */
   async setDefaultDataSource(dataSourceId: string): Promise<void> {
-    const source = await Database.findById(dataSourceId);
+    const source = await DatabaseConnection.findById(dataSourceId);
     if (!source) {
       throw new Error(`MongoDB data source '${dataSourceId}' not found`);
     }

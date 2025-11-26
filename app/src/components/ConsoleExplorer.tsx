@@ -47,7 +47,7 @@ interface ConsoleEntry {
   content?: string; // Added to match potential server object, though not used in rendering tree directly
   id?: string; // Database ID for saved consoles/folders
   folderId?: string; // Database ID for folders
-  databaseId?: string; // Associated database ID
+  connectionId?: string; // Associated connection ID (DatabaseConnection ObjectId)
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;
@@ -153,8 +153,14 @@ function ConsoleExplorer(
     const consoleId = node.id;
     const cached = useConsoleContentStore.getState().get(consoleId);
     const initialContent = cached?.content ?? "loading...";
-    const databaseId = cached?.databaseId || node.databaseId;
-    onConsoleSelect(node.path, initialContent, databaseId, consoleId, !cached);
+    const connectionId = cached?.connectionId || node.connectionId;
+    onConsoleSelect(
+      node.path,
+      initialContent,
+      connectionId,
+      consoleId,
+      !cached,
+    );
 
     // 2) Fetch in background via apiClient and update store
     try {
@@ -162,7 +168,7 @@ function ConsoleExplorer(
       const data = await apiClient.get<{
         success: boolean;
         content: string;
-        databaseId?: string;
+        connectionId?: string;
         id: string;
       }>(`/workspaces/${currentWorkspace.id}/consoles/content`, {
         id: consoleId,
@@ -170,13 +176,17 @@ function ConsoleExplorer(
       if (data && (data as any).success) {
         useConsoleContentStore.getState().set(consoleId, {
           content: (data as any).content,
-          databaseId: (data as any).databaseId || node.databaseId,
+          connectionId: (data as any).connectionId || node.connectionId,
         });
         // Optionally update tab content if it is still open and was showing stale/placeholder
-        const { updateConsoleContent } = (
+        const { updateConsoleContent, updateConsoleFilePath } = (
           await import("../store/consoleStore")
         ).useConsoleStore.getState();
         updateConsoleContent(consoleId, (data as any).content);
+
+        // Update the file path so the editor knows this is an existing file
+        // This fixes the "Save As" prompt appearing for existing consoles
+        updateConsoleFilePath(consoleId, node.path);
 
         // Update dbContentHash so pristine/dirty state is correct
         const { hashContent } = await import("../utils/hash");

@@ -2,7 +2,7 @@
 // @ts-ignore – provided at runtime
 import { Tool, tool } from "@openai/agents";
 import { Types } from "mongoose";
-import { Database } from "../../database/workspace-schema";
+import { DatabaseConnection } from "../../database/workspace-schema";
 import { AgentConfig, AgentRegistration } from "../types";
 import { listAgentRegistrations } from "../registry";
 import { createConsoleTools } from "../shared/console-tools";
@@ -26,7 +26,7 @@ const listAllDatabases = async (workspaceId: string) => {
     throw new Error("Invalid workspace ID");
   }
 
-  const databases = await Database.find({
+  const databases = await DatabaseConnection.find({
     workspaceId: new Types.ObjectId(workspaceId),
   }).sort({ name: 1 });
 

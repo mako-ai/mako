@@ -23,6 +23,7 @@ import { databaseRegistry } from "./databases/registry";
 import { BigQueryDatabaseDriver } from "./databases/drivers/bigquery/driver";
 import { MongoDatabaseDriver } from "./databases/drivers/mongodb/driver";
 import { CloudSQLPostgresDatabaseDriver } from "./databases/drivers/cloudsql-postgres/driver";
+import { CloudflareD1DatabaseDriver } from "./databases/drivers/cloudflare-d1/driver";
 import { syncJobRoutes } from "./routes/sync-jobs";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest } from "./inngest";
@@ -98,6 +99,7 @@ app.route("/api/workspaces/:workspaceId/databases", databaseTreeRoutes);
 databaseRegistry.register(new BigQueryDatabaseDriver());
 databaseRegistry.register(new MongoDatabaseDriver());
 databaseRegistry.register(new CloudSQLPostgresDatabaseDriver());
+databaseRegistry.register(new CloudflareD1DatabaseDriver());
 app.route("/api", webhookRoutes);
 
 // Inngest endpoint

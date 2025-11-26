@@ -3,7 +3,7 @@ import {
   DatabaseDriverMetadata,
   DatabaseTreeNode,
 } from "../../driver";
-import { IDatabase } from "../../../database/workspace-schema";
+import { IDatabaseConnection } from "../../../database/workspace-schema";
 import {
   Connector,
   AuthTypes,
@@ -38,7 +38,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  async getTreeRoot(database: IDatabase): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
     // Single Database Mode
     if (database.connection.database) {
       const dbName = database.connection.database;
@@ -48,7 +48,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
           label: dbName,
           kind: "database",
           hasChildren: true,
-          metadata: { dbName },
+          metadata: { databaseName: dbName },
         },
       ];
     }
@@ -67,7 +67,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         label: r.datname,
         kind: "database",
         hasChildren: true,
-        metadata: { dbName: r.datname },
+        metadata: { databaseName: r.datname },
       }));
     } catch (error) {
       console.error("Error listing databases in cluster mode:", error);
@@ -76,7 +76,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   }
 
   private async listSchemas(
-    database: IDatabase,
+    database: IDatabaseConnection,
     dbName?: string,
   ): Promise<DatabaseTreeNode[]> {
     const result = await this.executeQuery(
@@ -102,24 +102,24 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         label: schema,
         kind: "schema",
         hasChildren: true,
-        metadata: { schema, dbName },
+        metadata: { schema, databaseName: dbName },
       }));
   }
 
   async getChildren(
-    database: IDatabase,
+    database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]> {
     // Expanding a Database Node (Cluster Mode)
     if (parent.kind === "database") {
-      const dbName = parent.metadata?.dbName;
+      const dbName = parent.metadata?.databaseName;
       return this.listSchemas(database, dbName);
     }
 
     if (parent.kind !== "schema") return [];
 
     const schema = parent.metadata?.schema || parent.id;
-    const dbName = parent.metadata?.dbName;
+    const dbName = parent.metadata?.databaseName;
     const safeSchema = String(schema).replace(/'/g, "''");
 
     const result = await this.executeQuery(
@@ -136,12 +136,12 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       label: r.table_name,
       kind: r.table_type === "VIEW" ? "view" : "table",
       hasChildren: false,
-      metadata: { schema, table: r.table_name, dbName },
+      metadata: { schema, table: r.table_name, databaseName: dbName },
     }));
   }
 
   async executeQuery(
-    database: IDatabase,
+    database: IDatabaseConnection,
     query: string,
     options?: any,
   ): Promise<QueryResult> {
@@ -166,7 +166,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   }
 
   async testConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     let connector: Connector | null = null;
     let client: PgClient | null = null;
@@ -296,7 +296,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   }
 
   async getConnection(
-    database: IDatabase,
+    database: IDatabaseConnection,
     dbNameOverride?: string,
   ): Promise<PgPool> {
     const key = `${database._id.toString()}:${dbNameOverride || "default"}`;
@@ -445,7 +445,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     }
   }
 
-  private async _getConnector(database: IDatabase): Promise<Connector> {
+  private async _getConnector(database: IDatabaseConnection): Promise<Connector> {
     const conn = (database.connection as any) || {};
 
     // Debug logging to trace connection config

@@ -5,6 +5,8 @@ import { buildBigQueryAgent } from "./bigquery/agent";
 import { createBigQueryTools } from "./bigquery/tools";
 import { buildPostgresAgent } from "./postgres/agent";
 import { createPostgresTools } from "./postgres/tools";
+import { buildSqliteAgent } from "./sqlite/agent";
+import { createSqliteTools } from "./sqlite/tools";
 
 type RegistrationMap = Map<DatabaseAgentKind, AgentRegistration>;
 
@@ -112,6 +114,40 @@ const coreRegistrations: AgentRegistration[] = [
       "pg_list_tables",
       "list_tables",
       "pg_describe_table",
+      "describe_table",
+    ],
+  },
+  {
+    kind: "sqlite",
+    buildAgent: (config: AgentConfig) =>
+      buildSqliteAgent(
+        config.workspaceId,
+        config.consoles,
+        config.preferredConsoleId,
+      ),
+    createTools: (config: AgentConfig) =>
+      createSqliteTools(
+        config.workspaceId,
+        config.consoles,
+        config.preferredConsoleId,
+      ),
+    metadata: {
+      name: "SQLite Assistant",
+      handoffDescription:
+        "Specialist for SQLite and Cloudflare D1 databases. Use when the task targets SQLite data or D1 databases.",
+      kind: "sqlite",
+    },
+    handoff: {
+      toolName: "transfer_to_sqlite",
+      description:
+        "Transfer the conversation to the SQLite Assistant for SQLite/Cloudflare D1 database-related tasks.",
+    },
+    discoveryToolNames: [
+      "sqlite_list_databases",
+      "list_databases",
+      "sqlite_list_tables",
+      "list_tables",
+      "sqlite_describe_table",
       "describe_table",
     ],
   },

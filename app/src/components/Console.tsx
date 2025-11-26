@@ -32,6 +32,7 @@ import {
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useDatabaseStore } from "../store/databaseStore";
 import {
   useMonacoConsole,
   ConsoleModification,
@@ -39,14 +40,17 @@ import {
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import { hashContent } from "../utils/hash";
 
-interface Database {
+interface DatabaseConnection {
   id: string;
+  connectionId?: string; // Optional for backward compatibility
   name: string;
   description: string;
   database: string;
+  databaseName?: string;
   type: string;
   active: boolean;
   lastConnectedAt?: string;
+  isClusterMode?: boolean; // Optional for backward compatibility
   displayName: string;
   hostKey: string;
   hostName: string;
@@ -57,14 +61,24 @@ interface ConsoleProps {
   initialContent: string;
   dbContentHash?: string;
   title?: string;
-  onExecute: (content: string, databaseId?: string) => void;
+  onExecute: (
+    content: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => void;
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
   isExecuting: boolean;
   isSaving?: boolean;
   onContentChange?: (content: string) => void;
-  databases?: Database[];
+  databases?: DatabaseConnection[];
   initialDatabaseId?: string;
+  initialSelectedDatabaseId?: string; // D1 database UUID for cluster mode
+  initialSelectedDatabaseName?: string; // D1 database human-readable name for cluster mode
   onDatabaseChange?: (databaseId: string) => void;
+  onDatabaseNameChange?: (
+    databaseId: string | undefined,
+    databaseName: string | undefined,
+  ) => void;
   filePath?: string;
   onHistoryClick?: () => void;
   enableVersionControl?: boolean;
@@ -98,7 +112,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onContentChange,
     databases = [],
     initialDatabaseId,
+    initialSelectedDatabaseId,
+    initialSelectedDatabaseName,
     onDatabaseChange,
+    onDatabaseNameChange,
     filePath,
     onHistoryClick,
     enableVersionControl = false,
@@ -119,6 +136,22 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // State to track Monaco's undo/redo availability
   const [monacoCanUndo, setMonacoCanUndo] = useState(false);
   const [monacoCanRedo, setMonacoCanRedo] = useState(false);
+
+  // State for sub-database selection (cluster mode - second dropdown, e.g., D1 databases)
+  const [selectedSubDbId, setSelectedSubDbId] = useState<string | undefined>(
+    initialSelectedDatabaseId,
+  );
+  const [selectedSubDbName, setSelectedSubDbName] = useState<
+    string | undefined
+  >(initialSelectedDatabaseName);
+
+  const fetchDatabasesForConnection = useDatabaseStore(
+    state => state.fetchDatabasesForConnection,
+  );
+  const databasesInConnection = useDatabaseStore(
+    state => state.databasesInConnection,
+  );
+  const loadingStore = useDatabaseStore(state => state.loading);
 
   // Use the Monaco console hook for version management
   const {
@@ -200,11 +233,73 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // Keep a ref of the latest selected database so closures (e.g. Monaco keybindings) always see the up-to-date value
   const selectedDatabaseIdRef = useRef<string>(selectedDatabaseId);
+  const selectedSubDbIdRef = useRef<string | undefined>(selectedSubDbId);
+  const selectedSubDbNameRef = useRef<string | undefined>(selectedSubDbName);
 
   // Whenever selectedDatabaseId changes, update the ref
   useEffect(() => {
     selectedDatabaseIdRef.current = selectedDatabaseId;
   }, [selectedDatabaseId]);
+
+  // Whenever sub-database selection changes, update refs and notify parent
+  useEffect(() => {
+    selectedSubDbIdRef.current = selectedSubDbId;
+    selectedSubDbNameRef.current = selectedSubDbName;
+    if (onDatabaseNameChange) {
+      onDatabaseNameChange(selectedSubDbId, selectedSubDbName);
+    }
+  }, [selectedSubDbId, selectedSubDbName, onDatabaseNameChange]);
+
+  // Sync sub-database selection with initial values when they change
+  useEffect(() => {
+    setSelectedSubDbId(initialSelectedDatabaseId);
+    setSelectedSubDbName(initialSelectedDatabaseName);
+  }, [initialSelectedDatabaseId, initialSelectedDatabaseName]);
+
+  // Get current selected connection to check if it's in cluster mode
+  const selectedConnection = useMemo(() => {
+    return databases.find(db => db.id === selectedDatabaseId);
+  }, [databases, selectedDatabaseId]);
+
+  // Fetch available databases when a cluster mode connection is selected
+  useEffect(() => {
+    const fetchDatabases = async () => {
+      if (
+        !selectedConnection?.isClusterMode ||
+        !currentWorkspace?.id ||
+        !selectedDatabaseId
+      ) {
+        return;
+      }
+
+      try {
+        const dbs = await fetchDatabasesForConnection(
+          currentWorkspace.id,
+          selectedDatabaseId,
+        );
+
+        // Auto-select first database if none selected and databases available
+        if (!selectedSubDbId && dbs && dbs.length > 0) {
+          const firstDb = dbs[0];
+          setSelectedSubDbId(firstDb.id);
+          setSelectedSubDbName(firstDb.label);
+        }
+      } catch (err) {
+        console.error("Failed to fetch databases for connection:", err);
+      }
+    };
+
+    fetchDatabases();
+  }, [
+    selectedConnection?.isClusterMode,
+    selectedDatabaseId,
+    currentWorkspace?.id,
+    fetchDatabasesForConnection,
+    selectedSubDbId,
+  ]);
+
+  const availableDatabases = databasesInConnection[selectedDatabaseId] || [];
+  const isLoadingDatabases = loadingStore[`dbs-in:${selectedDatabaseId}`];
 
   // Memoize the default database ID to prevent unnecessary re-calculations
   const defaultDatabaseId = useMemo(() => {
@@ -382,6 +477,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         onExecuteRef.current(
           content,
           selectedDatabaseIdRef.current || undefined,
+          selectedSubDbIdRef.current, // D1 database UUID for cluster mode
         );
       }
     },
@@ -412,7 +508,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   }, [
     onSave,
     getCurrentEditorContent,
-    filePath,
     isDiffMode,
     modifiedContent,
     onSaveSuccess,
@@ -451,6 +546,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     const newDatabaseId = event.target.value;
     hasUserSelectedDatabaseRef.current = true; // Mark that user has manually selected
     setSelectedDatabaseId(newDatabaseId);
+    // Clear sub-database selection when switching connections
+    setSelectedSubDbId(undefined);
+    setSelectedSubDbName(undefined);
   }, []);
 
   // No need to wrap undo/redo - they will trigger content change which updates hasUnsavedChanges
@@ -897,32 +995,80 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           </IconButton>
         </Box>
 
-        <FormControl
-          size="small"
-          variant="standard"
-          sx={{ minWidth: 80, m: 0, p: 0 }}
-        >
-          <Select
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          {/* Connection selector */}
+          <FormControl
+            size="small"
             variant="standard"
-            disableUnderline
-            labelId="database-select-label"
-            value={selectedDatabaseId}
-            onChange={handleDatabaseSelection}
-            disabled={databases.length === 0}
+            sx={{ minWidth: 80, m: 0, p: 0 }}
           >
-            {databases.length === 0 ? (
-              <MenuItem value="" disabled>
-                No databases available
-              </MenuItem>
-            ) : (
-              databases.map(db => (
-                <MenuItem key={db.id} value={db.id}>
-                  {db.displayName || db.name || "Unknown Database"}
+            <Select
+              variant="standard"
+              disableUnderline
+              labelId="database-select-label"
+              value={selectedDatabaseId}
+              onChange={handleDatabaseSelection}
+              disabled={databases.length === 0}
+            >
+              {databases.length === 0 ? (
+                <MenuItem value="" disabled>
+                  No connections available
                 </MenuItem>
-              ))
-            )}
-          </Select>
-        </FormControl>
+              ) : (
+                databases.map(db => (
+                  <MenuItem key={db.id} value={db.id}>
+                    {db.displayName || db.name || "Unknown Connection"}
+                  </MenuItem>
+                ))
+              )}
+            </Select>
+          </FormControl>
+
+          {/* Database selector (only shown for cluster mode connections) */}
+          {selectedConnection?.isClusterMode && (
+            <>
+              <Divider orientation="vertical" flexItem />
+              <FormControl
+                size="small"
+                variant="standard"
+                sx={{ minWidth: 80, m: 0, p: 0 }}
+              >
+                <Select
+                  variant="standard"
+                  disableUnderline
+                  labelId="database-name-select-label"
+                  value={selectedSubDbId || ""}
+                  onChange={e => {
+                    const dbId = e.target.value || undefined;
+                    const db = availableDatabases.find(d => d.id === dbId);
+                    setSelectedSubDbId(dbId);
+                    setSelectedSubDbName(db?.label);
+                  }}
+                  disabled={
+                    isLoadingDatabases || availableDatabases.length === 0
+                  }
+                  displayEmpty
+                >
+                  {isLoadingDatabases ? (
+                    <MenuItem value="" disabled>
+                      Loading...
+                    </MenuItem>
+                  ) : availableDatabases.length === 0 ? (
+                    <MenuItem value="" disabled>
+                      No databases
+                    </MenuItem>
+                  ) : (
+                    availableDatabases.map(db => (
+                      <MenuItem key={db.id} value={db.id}>
+                        {db.label || db.id}
+                      </MenuItem>
+                    ))
+                  )}
+                </Select>
+              </FormControl>
+            </>
+          )}
+        </Box>
       </Box>
 
       {/* Diff mode action bar - shown below the main toolbar */}

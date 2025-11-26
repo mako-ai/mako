@@ -3,7 +3,7 @@ import {
   SyncJob,
   ISyncJob,
   Connector as DataSource,
-  Database,
+  DatabaseConnection,
 } from "../../database/workspace-schema";
 import {
   performSync,
@@ -23,7 +23,7 @@ async function getJobDisplayName(job: ISyncJob): Promise<string> {
   try {
     const [dataSource, database] = await Promise.all([
       DataSource.findById(job.dataSourceId),
-      Database.findById(job.destinationDatabaseId),
+      DatabaseConnection.findById(job.destinationDatabaseId),
     ]);
 
     const sourceName = dataSource?.name || job.dataSourceId.toString();

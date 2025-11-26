@@ -91,6 +91,7 @@ function Editor() {
     activeConsoleId,
     removeConsoleTab,
     updateConsoleContent,
+    updateConsoleConnection,
     updateConsoleDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
@@ -227,6 +228,7 @@ function Editor() {
     tabId: string,
     contentToExecute: string,
     databaseId?: string,
+    queryOptions?: Record<string, any>,
   ) => {
     if (!contentToExecute.trim()) return;
 
@@ -249,6 +251,7 @@ function Editor() {
         currentWorkspace.id,
         databaseId,
         contentToExecute,
+        queryOptions,
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
@@ -305,7 +308,10 @@ function Editor() {
 
       // Get the current database ID for the tab
       const currentTab = consoleTabs.find(tab => tab.id === tabId);
-      const databaseId = currentTab?.databaseId;
+      // Use connectionId (which references the DatabaseConnection) for saving.
+      // databaseId in the tab state might refer to a sub-database UUID (e.g. for D1)
+      // which cannot be stored in the backend's databaseId ObjectId field.
+      const databaseId = currentTab?.connectionId;
 
       const result = await saveConsole(
         currentWorkspace.id,
@@ -516,8 +522,20 @@ function Editor() {
                         initialContent={tab.content}
                         dbContentHash={tab.dbContentHash}
                         title={tab.title}
-                        onExecute={(content, db) =>
-                          handleConsoleExecute(tab.id, content, db)
+                        onExecute={(content, connectionId, databaseName) =>
+                          handleConsoleExecute(
+                            tab.id,
+                            content,
+                            connectionId,
+                            // Merge tab's queryOptions with dynamically selected databaseName/databaseId
+                            databaseName
+                              ? {
+                                  ...tab.metadata?.queryOptions,
+                                  databaseId: databaseName, // For D1: databaseName is the UUID
+                                  databaseName,
+                                }
+                              : tab.metadata?.queryOptions,
+                          )
                         }
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)
@@ -545,10 +563,22 @@ function Editor() {
                             },
                           });
                         }}
-                        initialDatabaseId={tab.databaseId}
+                        initialDatabaseId={tab.connectionId}
+                        initialSelectedDatabaseId={
+                          tab.databaseId ||
+                          tab.metadata?.queryOptions?.databaseId ||
+                          tab.metadata?.queryOptions?.databaseName // D1 uses databaseName for UUID
+                        }
+                        initialSelectedDatabaseName={
+                          tab.databaseName ||
+                          tab.metadata?.queryOptions?.databaseLabel
+                        }
                         databases={availableDatabases}
-                        onDatabaseChange={dbId =>
-                          updateConsoleDatabase(tab.id, dbId)
+                        onDatabaseChange={connId =>
+                          updateConsoleConnection(tab.id, connId)
+                        }
+                        onDatabaseNameChange={(dbId, dbName) =>
+                          updateConsoleDatabase(tab.id, dbId, dbName)
                         }
                         filePath={tab.filePath}
                         enableVersionControl={true}

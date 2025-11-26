@@ -5,7 +5,7 @@ import {
   requireWorkspaceRole,
   AuthenticatedContext,
 } from "../middleware/workspace.middleware";
-import { Database, IDatabase, SyncJob } from "../database/workspace-schema";
+import { DatabaseConnection, IDatabaseConnection, SyncJob } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
 
@@ -33,12 +33,12 @@ workspaceDatabaseRoutes.get(
     try {
       const workspace = c.get("workspace");
 
-      const databases = await Database.find({
+      const databases = await DatabaseConnection.find({
         workspaceId: workspace._id,
       }).sort({ createdAt: -1 });
 
       // Transform to API response format without connection details for security
-      const transformedDatabases = databases.map((db: IDatabase) => {
+      const transformedDatabases = databases.map((db: IDatabaseConnection) => {
         // Create masked hostKey for grouping per database type
         let hostKey: string;
         let hostName: string;
@@ -59,14 +59,20 @@ workspaceDatabaseRoutes.get(
               : `${db.type.toUpperCase()} (${conn.host || "localhost"})`;
         }
 
+        // Determine if this is a cluster/server connection without a specific database
+        const isClusterMode = !conn.database;
+
         return {
           id: db._id.toString(),
+          connectionId: db._id.toString(), // Explicit connection ID for clarity
           name: db.name,
           description: "",
           database: conn.database,
+          databaseName: conn.database, // Alias for clarity
           type: db.type,
           active: true,
           lastConnectedAt: db.lastConnectedAt,
+          isClusterMode, // true when connection can access multiple databases
           // Helper fields for easier access (connection object removed for security)
           displayName: db.name || conn.database || "Unknown Database",
           hostKey,
@@ -106,7 +112,7 @@ workspaceDatabaseRoutes.get(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await Database.findOne({
+      const database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
@@ -115,13 +121,19 @@ workspaceDatabaseRoutes.get(
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
+      const conn: any = database.connection || {};
+      const isClusterMode = !conn.database;
+
       return c.json({
         success: true,
         data: {
           id: database._id,
+          connectionId: database._id.toString(),
           name: database.name,
           type: database.type,
           connection: database.connection, // Will be decrypted by getter
+          databaseName: conn.database,
+          isClusterMode,
           createdAt: database.createdAt,
           updatedAt: database.updatedAt,
           lastConnectedAt: database.lastConnectedAt,
@@ -162,7 +174,7 @@ workspaceDatabaseRoutes.post(
       }
 
       // Check workspace database limit
-      const databaseCount = await Database.countDocuments({
+      const databaseCount = await DatabaseConnection.countDocuments({
         workspaceId: workspace._id,
       });
       if (databaseCount >= workspace.settings.maxDatabases) {
@@ -175,8 +187,8 @@ workspaceDatabaseRoutes.post(
         );
       }
 
-      // Create database
-      const database = new Database({
+      // Create database connection
+      const database = new DatabaseConnection({
         workspaceId: workspace._id,
         name: body.name,
         type: body.type,
@@ -250,7 +262,7 @@ workspaceDatabaseRoutes.put(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await Database.findOne({
+      const database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
@@ -349,7 +361,7 @@ workspaceDatabaseRoutes.delete(
         );
       }
 
-      const result = await Database.deleteOne({
+      const result = await DatabaseConnection.deleteOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
@@ -395,7 +407,7 @@ workspaceDatabaseRoutes.post(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await Database.findOne({
+      const database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
@@ -444,7 +456,7 @@ workspaceDatabaseRoutes.post(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await Database.findOne({
+      const database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
@@ -492,7 +504,7 @@ workspaceDatabaseRoutes.get(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await Database.findOne({
+      const database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
@@ -574,7 +586,7 @@ workspaceDatabaseRoutes.get(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await Database.findOne({
+      const database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
@@ -662,7 +674,7 @@ workspaceDatabaseRoutes.get(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await Database.findOne({
+      const database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });

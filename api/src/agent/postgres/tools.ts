@@ -2,7 +2,7 @@
 // @ts-ignore – provided at runtime
 import { tool } from "@openai/agents";
 import { Types } from "mongoose";
-import { Database } from "../../database/workspace-schema";
+import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { createConsoleTools, ConsoleData } from "../shared/console-tools";
 
@@ -62,7 +62,7 @@ const fetchPostgresDatabase = async (
   const databaseObjectId = ensureValidObjectId(databaseId, "databaseId");
   const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
 
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: databaseObjectId,
     workspaceId: workspaceObjectId,
   });
@@ -83,7 +83,7 @@ const fetchPostgresDatabase = async (
 const listPostgresDatabases = async (workspaceId: string) => {
   const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
 
-  const databases = await Database.find({
+  const databases = await DatabaseConnection.find({
     workspaceId: workspaceObjectId,
     type: { $in: Array.from(POSTGRES_TYPES) },
   }).sort({ name: 1 });

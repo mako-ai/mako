@@ -2,7 +2,7 @@
 // @ts-ignore – provided at runtime
 import { tool } from "@openai/agents";
 import { Types } from "mongoose";
-import { Database } from "../../database/workspace-schema";
+import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { createConsoleTools, ConsoleData } from "../shared/console-tools";
 
@@ -10,7 +10,7 @@ const listDatabases = async (workspaceId: string) => {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
-  const databases = await Database.find({
+  const databases = await DatabaseConnection.find({
     workspaceId: new Types.ObjectId(workspaceId),
   }).sort({ name: 1 });
 
@@ -35,7 +35,7 @@ const listCollections = async (databaseId: string, workspaceId: string) => {
   ) {
     throw new Error("Invalid database ID or workspace ID");
   }
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: new Types.ObjectId(databaseId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
@@ -78,7 +78,7 @@ const inspectCollection = async (
   ) {
     throw new Error("Invalid database ID or workspace ID");
   }
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: new Types.ObjectId(databaseId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
@@ -126,7 +126,7 @@ const executeQuery = async (
   ) {
     throw new Error("Invalid database ID or workspace ID");
   }
-  const database = await Database.findOne({
+  const database = await DatabaseConnection.findOne({
     _id: new Types.ObjectId(databaseId),
     workspaceId: new Types.ObjectId(workspaceId),
   });

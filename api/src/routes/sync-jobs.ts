@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import {
   SyncJob,
   Connector as DataSource,
-  Database,
+  DatabaseConnection,
   JobExecution,
   WebhookEvent,
 } from "../database/workspace-schema";
@@ -128,7 +128,7 @@ syncJobRoutes.post("/", async c => {
     }
 
     // Validate destination database exists and belongs to workspace
-    const database = await Database.findOne({
+    const database = await DatabaseConnection.findOne({
       _id: new Types.ObjectId(body.destinationDatabaseId),
       workspaceId: new Types.ObjectId(workspaceId),
     });

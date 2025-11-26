@@ -96,6 +96,6 @@ export const useDatabaseCatalogStore = create<CatalogState>()(
         return null;
       },
     })),
-    { name: "database-catalog-store", version: 1 },
+    { name: "database-catalog-store", version: 2 },
   ),
 );
