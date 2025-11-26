@@ -682,13 +682,14 @@ consoleRoutes.get("/list", async (c: Context) => {
     return c.json({
       success: true,
       consoles: consoles.map(console => {
-        // Migration: If connectionId is missing but databaseId is a valid ObjectId, treat databaseId as connectionId
+        // Migration: If connectionId is missing but databaseId is a valid ObjectId string, treat databaseId as connectionId
         let connectionId = console.connectionId;
         let databaseId = console.databaseId;
         
-        if (!connectionId && console.databaseId && Types.ObjectId.isValid(console.databaseId)) {
+        // Check if databaseId is a valid ObjectId string (legacy data)
+        if (!connectionId && databaseId && Types.ObjectId.isValid(databaseId)) {
           // Legacy: databaseId was an ObjectId, treat it as connectionId
-          connectionId = console.databaseId as any;
+          connectionId = databaseId as any;
           databaseId = undefined;
         }
 

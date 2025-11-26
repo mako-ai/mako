@@ -350,15 +350,15 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       if (dbContentHash) {
         const currentContentHash = hashContent(initialContent);
         const contentChanged = currentContentHash !== dbContentHash;
-        const dbChanged = selectedDatabaseId !== initialDatabaseId;
+        const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
         setHasUnsavedChanges(contentChanged || dbChanged);
       } else {
-        const dbChanged = selectedDatabaseId !== initialDatabaseId;
+        const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
         setHasUnsavedChanges(dbChanged);
       }
       isProgrammaticUpdateRef.current = false;
     }
-  }, [initialContent, dbContentHash]);
+  }, [initialContent, dbContentHash, selectedDatabaseId, initialSelectedDatabaseId]);
 
   // Cleanup debounce timeout on unmount
   useEffect(() => {
@@ -528,7 +528,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         const currentContentHash = hashContent(currentContent);
         const contentChanged =
           !dbContentHash || currentContentHash !== dbContentHash;
-        const dbChanged = selectedDatabaseId !== initialDatabaseId;
+        const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
         setHasUnsavedChanges(contentChanged || dbChanged);
 
         // Save initial version for undo history
@@ -550,6 +550,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       onSave,
       dbContentHash,
       saveUserEdit,
+      selectedDatabaseId,
+      initialSelectedDatabaseId,
     ],
   );
 
@@ -628,6 +630,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       saveUserEdit,
       isApplyingModification,
       dbContentHash,
+      selectedDatabaseId,
+      initialSelectedDatabaseId,
     ],
   );
 
@@ -733,7 +737,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             const currentContentHash = hashContent(savedModifiedContent);
             const contentChanged =
               !dbContentHash || currentContentHash !== dbContentHash;
-            const dbChanged = selectedDatabaseId !== initialDatabaseId;
+            const dbChanged = selectedDatabaseId !== initialSelectedDatabaseId;
             setHasUnsavedChanges(contentChanged || dbChanged);
           }
         }

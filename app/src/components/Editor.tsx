@@ -547,10 +547,10 @@ function Editor() {
                             },
                           });
                         }}
-                        initialDatabaseId={tab.databaseId}
+                        initialDatabaseId={tab.connectionId || tab.databaseId}
                         databases={availableDatabases}
                         onDatabaseChange={dbId =>
-                          updateConsoleDatabase(tab.id, dbId)
+                          updateConsoleDatabase(tab.id, dbId, undefined)
                         }
                         filePath={tab.filePath}
                         enableVersionControl={true}
