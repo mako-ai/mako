@@ -50,8 +50,14 @@ interface DatabaseState {
   fetchServers: (workspaceId: string) => Promise<DatabaseConnection[]>;
   refreshServers: (workspaceId: string) => Promise<DatabaseConnection[]>;
   initServers: (workspaceId: string) => Promise<void>;
-  fetchDatabaseData: (workspaceId: string, connectionId: string) => Promise<void>;
-  fetchDatabasesForConnection: (workspaceId: string, connectionId: string) => Promise<DatabaseTreeNode[]>;
+  fetchDatabaseData: (
+    workspaceId: string,
+    connectionId: string,
+  ) => Promise<void>;
+  fetchDatabasesForConnection: (
+    workspaceId: string,
+    connectionId: string,
+  ) => Promise<DatabaseTreeNode[]>;
   clearDatabaseData: (workspaceId: string) => void;
   fetchDatabases: () => Promise<void>;
   deleteDatabase: (workspaceId: string, connectionId: string) => Promise<void>;
@@ -156,7 +162,7 @@ export const useDatabaseStore = create<DatabaseState>()(
      */
     fetchDatabasesForConnection: async (workspaceId, connectionId) => {
       const loadingKey = `dbs-in:${connectionId}`;
-      
+
       // Return cached if available
       const cached = get().databasesInConnection[connectionId];
       if (cached) return cached;
@@ -169,7 +175,7 @@ export const useDatabaseStore = create<DatabaseState>()(
           success: boolean;
           data: DatabaseTreeNode[];
         }>(`/workspaces/${workspaceId}/databases/${connectionId}/tree`);
-        
+
         if (data.success) {
           const nodes = data.data || [];
           set(state => {
@@ -179,7 +185,10 @@ export const useDatabaseStore = create<DatabaseState>()(
         }
         return [];
       } catch (err) {
-        console.error(`Failed to fetch databases for connection ${connectionId}`, err);
+        console.error(
+          `Failed to fetch databases for connection ${connectionId}`,
+          err,
+        );
         return [];
       } finally {
         set(state => {
