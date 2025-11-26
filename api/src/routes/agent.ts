@@ -163,17 +163,38 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
         });
 
         // Enrich consoles with connection type information
-        const enrichedConsoles = (consoles || []).map((c: any) => ({
-          ...c,
-          connectionId: c.metadata?.databaseId || c.connectionId,
-          connectionType:
+        const enrichedConsoles = (consoles || []).map((c: any) => {
+          // connectionId = DatabaseConnection ObjectId (the server/connection)
+          const connectionId = c.connectionId || c.metadata?.connectionId;
+          // databaseId = sub-database UUID (e.g., D1 database UUID for cluster mode)
+          const databaseId = c.databaseId || c.metadata?.databaseId;
+          // databaseName = human-readable database name
+          const databaseName = c.databaseName || c.metadata?.databaseName;
+          
+          // Get connection type from the connectionId (not databaseId)
+          const connectionType =
             c.connectionType ||
             c.metadata?.connectionType ||
-            (c.metadata?.databaseId
-              ? databaseTypeMap.get(c.metadata.databaseId)
-              : undefined),
-          databaseName: c.databaseName || c.metadata?.selectedDatabaseName,
-        }));
+            (connectionId ? databaseTypeMap.get(connectionId) : undefined);
+          
+          return {
+            ...c,
+            id: c.id,
+            title: c.title,
+            content: c.content || "",
+            connectionId, // DatabaseConnection ObjectId
+            databaseId, // Sub-database UUID
+            databaseName, // Human-readable database name
+            connectionType,
+            metadata: {
+              ...c.metadata,
+              connectionId,
+              databaseId,
+              databaseName,
+              connectionType,
+            },
+          };
+        });
 
         // Use smart agent selection
         const sessionActiveAgent = (pinned as any)?.activeAgent as

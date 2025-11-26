@@ -120,6 +120,7 @@ export const createConsoleTools = (
 
         // databaseId = specific database ID (e.g., D1 UUID for cluster mode)
         // This is different from connectionId - connectionId is the server, databaseId is the specific DB
+        // IMPORTANT: Check top-level first, then metadata, but NOT connectionId (they're different!)
         const databaseId =
           (consoleData as any).databaseId ||
           consoleData.metadata?.databaseId ||
@@ -131,6 +132,26 @@ export const createConsoleTools = (
           consoleData.metadata?.queryOptions?.databaseName ||
           consoleData.metadata?.queryOptions?.dbName ||
           consoleData.metadata?.dbName;
+
+        // Debug log to help diagnose issues
+        if (connectionId && databaseId && connectionId === databaseId) {
+          console.warn(
+            "[read_console] WARNING: connectionId and databaseId are the same!",
+            {
+              consoleId: consoleData.id,
+              connectionId,
+              databaseId,
+              consoleData: {
+                connectionId: consoleData.connectionId,
+                metadataConnectionId: consoleData.metadata?.connectionId,
+                topLevelDatabaseId: (consoleData as any).databaseId,
+                metadataDatabaseId: consoleData.metadata?.databaseId,
+                queryOptionsDatabaseId:
+                  consoleData.metadata?.queryOptions?.databaseId,
+              },
+            },
+          );
+        }
 
         return {
           success: true,
