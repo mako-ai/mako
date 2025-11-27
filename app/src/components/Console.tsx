@@ -64,7 +64,7 @@ interface ConsoleProps {
   onExecute: (
     content: string,
     connectionId?: string,
-    databaseName?: string,
+    databaseId?: string, // Sub-database ID for cluster mode (e.g., D1 UUID)
   ) => void;
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
   isExecuting: boolean;
@@ -143,15 +143,22 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // State to track if there are unsaved changes (content only)
   const [hasContentChanges, setHasContentChanges] = useState(false);
-  
+
   // Compute database dirty state from props (comparing current vs saved values)
   const hasDatabaseChanges = useMemo(() => {
     const connectionChanged = connectionId !== savedConnectionId;
     const dbIdChanged = databaseId !== savedDatabaseId;
     const dbNameChanged = databaseName !== savedDatabaseName;
     return connectionChanged || dbIdChanged || dbNameChanged;
-  }, [connectionId, savedConnectionId, databaseId, savedDatabaseId, databaseName, savedDatabaseName]);
-  
+  }, [
+    connectionId,
+    savedConnectionId,
+    databaseId,
+    savedDatabaseId,
+    databaseName,
+    savedDatabaseName,
+  ]);
+
   // Combined dirty state - true if either content or database selection changed
   const hasUnsavedChanges = hasContentChanges || hasDatabaseChanges;
 
@@ -233,16 +240,31 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   }, [connectionId, databaseId]);
 
   // Handler for connection selection change - calls parent callback directly (unidirectional flow)
-  const handleDatabaseSelection = useCallback((event: any) => {
-    const newConnectionId = event.target.value;
-    if (onDatabaseChange) {
-      onDatabaseChange(newConnectionId);
-    }
-    // Clear sub-database selection when switching connections
-    if (onDatabaseNameChange) {
-      onDatabaseNameChange(undefined, undefined);
-    }
-  }, [onDatabaseChange, onDatabaseNameChange]);
+  const handleDatabaseSelection = useCallback(
+    (event: any) => {
+      const newConnectionId = event.target.value;
+      const newConnection = databases.find(db => db.id === newConnectionId);
+
+      if (onDatabaseChange) {
+        onDatabaseChange(newConnectionId);
+      }
+
+      // For non-cluster mode: set databaseName from the connection's database
+      // For cluster mode: clear and let user select from dropdown
+      if (onDatabaseNameChange) {
+        if (
+          newConnection &&
+          !newConnection.isClusterMode &&
+          newConnection.databaseName
+        ) {
+          onDatabaseNameChange(undefined, newConnection.databaseName);
+        } else {
+          onDatabaseNameChange(undefined, undefined);
+        }
+      }
+    },
+    [onDatabaseChange, onDatabaseNameChange, databases],
+  );
 
   // Derived state for databases
   const selectedConnection = useMemo(
@@ -255,8 +277,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     [databasesInConnection, connectionId],
   );
 
-  const isLoadingDatabases =
-    loadingStore[`dbs-in:${connectionId}`] || false;
+  const isLoadingDatabases = loadingStore[`dbs-in:${connectionId}`] || false;
 
   // Fetch sub-databases if needed
   useEffect(() => {

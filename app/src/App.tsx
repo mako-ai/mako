@@ -150,10 +150,15 @@ function MainApp() {
       return;
     }
 
-    // Use explicit databaseId/databaseName if provided, otherwise extract from queryOptions
-    // For D1 cluster mode, queryOptions.databaseName contains the UUID
-    const databaseId = explicitDatabaseId || queryOptions?.databaseId || queryOptions?.databaseName;
-    const databaseName = explicitDatabaseName || queryOptions?.databaseLabel || queryOptions?.dbName;
+    // Use explicit values if provided, otherwise extract from queryOptions (tree node metadata)
+    // databaseId: used for selector value, saving to DB, and API calls (UUID for D1, name for MongoDB/PostgreSQL)
+    // databaseName: used for display in selector (human-readable name, falls back to databaseId)
+    const databaseId =
+      explicitDatabaseId ||
+      queryOptions?.databaseId ||
+      queryOptions?.databaseName;
+    const databaseName =
+      explicitDatabaseName || queryOptions?.databaseName || databaseId;
 
     // Create a new tab with the determined ID
     const id = addConsoleTab({

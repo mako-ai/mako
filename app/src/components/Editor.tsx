@@ -228,8 +228,11 @@ function Editor() {
   const handleConsoleExecute = async (
     tabId: string,
     contentToExecute: string,
-    databaseId?: string,
-    queryOptions?: Record<string, any>,
+    connectionId?: string,
+    options?: {
+      databaseId?: string; // Sub-database ID (e.g., D1 UUID)
+      databaseName?: string; // Sub-database name for cluster mode
+    },
   ) => {
     if (!contentToExecute.trim()) return;
 
@@ -239,8 +242,8 @@ function Editor() {
       return;
     }
 
-    if (!databaseId) {
-      setErrorMessage("No database selected");
+    if (!connectionId) {
+      setErrorMessage("No database connection selected");
       setErrorModalOpen(true);
       return;
     }
@@ -250,9 +253,9 @@ function Editor() {
     try {
       const result = await executeQuery(
         currentWorkspace.id,
-        databaseId,
+        connectionId,
         contentToExecute,
-        queryOptions,
+        options,
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
@@ -309,12 +312,9 @@ function Editor() {
 
       // Get the current connection and database info for the tab
       const currentTab = consoleTabs.find(tab => tab.id === tabId);
-      // connectionId references the DatabaseConnection ObjectId
-      // databaseId is the sub-database UUID (e.g., D1 cluster mode UUID)
-      // databaseName is the human-readable database name
       const connectionId = currentTab?.connectionId;
-      const databaseName = currentTab?.databaseName;
       const databaseId = currentTab?.databaseId;
+      const databaseName = currentTab?.databaseName;
 
       const result = await saveConsole(
         currentWorkspace.id,
@@ -536,20 +536,11 @@ function Editor() {
                         initialContent={tab.content}
                         dbContentHash={tab.dbContentHash}
                         title={tab.title}
-                        onExecute={(content, connectionId, databaseName) =>
-                          handleConsoleExecute(
-                            tab.id,
-                            content,
-                            connectionId,
-                            // Merge tab's queryOptions with dynamically selected databaseName/databaseId
-                            databaseName
-                              ? {
-                                  ...tab.metadata?.queryOptions,
-                                  databaseId: databaseName, // For D1: databaseName is the UUID
-                                  databaseName,
-                                }
-                              : tab.metadata?.queryOptions,
-                          )
+                        onExecute={(content, connectionId, databaseId) =>
+                          handleConsoleExecute(tab.id, content, connectionId, {
+                            databaseId: databaseId || tab.databaseId,
+                            databaseName: tab.databaseName,
+                          })
                         }
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)

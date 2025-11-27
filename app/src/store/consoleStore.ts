@@ -151,18 +151,23 @@ export const useConsoleStore = () => {
 
   const executeQuery = async (
     workspaceId: string,
-    databaseId: string,
+    connectionId: string,
     query: string,
-    options?: Record<string, any>,
+    options?: {
+      databaseName?: string;
+      databaseId?: string;
+    },
   ): Promise<{ success: boolean; data?: any; error?: string }> => {
     try {
       const res = await apiClient.post<{
         success: boolean;
         data: any;
         error?: string;
-      }>(`/workspaces/${workspaceId}/databases/${databaseId}/execute`, {
+      }>(`/workspaces/${workspaceId}/execute`, {
+        connectionId,
         query,
-        options,
+        databaseId: options?.databaseId,
+        databaseName: options?.databaseName,
       });
       return res.success
         ? { success: true, data: (res as any).data }
