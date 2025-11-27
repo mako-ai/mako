@@ -311,14 +311,16 @@ function Editor() {
       // Use connectionId (which references the DatabaseConnection) for saving.
       // databaseId in the tab state might refer to a sub-database UUID (e.g. for D1)
       // which cannot be stored in the backend's databaseId ObjectId field.
-      const databaseId = currentTab?.connectionId;
+      const connectionId = currentTab?.connectionId;
+      const databaseName = currentTab?.databaseName;
 
       const result = await saveConsole(
         currentWorkspace.id,
         tabId,
         contentToSave,
         savePath,
-        databaseId,
+        connectionId,
+        databaseName,
         isNew,
       );
       if (result.success) {
@@ -566,7 +568,7 @@ function Editor() {
                         initialDatabaseId={tab.connectionId}
                         initialSelectedDatabaseId={
                           tab.databaseId ||
-                          tab.metadata?.queryOptions?.databaseId ||
+                          tab.metadata?.queryOptions?.databaseId || // Legacy
                           tab.metadata?.queryOptions?.databaseName // D1 uses databaseName for UUID
                         }
                         initialSelectedDatabaseName={

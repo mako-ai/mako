@@ -165,7 +165,8 @@ export const useConsoleStore = () => {
     tabId: string,
     content: string,
     currentPath?: string,
-    databaseId?: string,
+    connectionId?: string,
+    databaseName?: string,
     isNew?: boolean,
   ): Promise<{
     success: boolean;
@@ -197,7 +198,13 @@ export const useConsoleStore = () => {
           success: boolean;
           data?: { id: string };
           error?: string;
-        }>(endpoint, { id: tabId, path, content, databaseId });
+        }>(endpoint, {
+          id: tabId,
+          path,
+          content,
+          connectionId,
+          databaseName,
+        });
         return res.success
           ? { success: true, path, id: (res as any).data?.id }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -206,7 +213,7 @@ export const useConsoleStore = () => {
           success: boolean;
           data?: any;
           error?: string;
-        }>(endpoint, { content, databaseId });
+        }>(endpoint, { content, connectionId, databaseName });
         return res.success
           ? { success: true, path }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -247,7 +254,9 @@ export const useConsoleStore = () => {
         const res = await apiClient.get<{
           success: boolean;
           content: string;
-          databaseId?: string;
+          connectionId?: string;
+          databaseId?: string; // Backward compatibility
+          databaseName?: string;
           language?: string;
           id: string;
           path?: string;
@@ -260,7 +269,9 @@ export const useConsoleStore = () => {
             title: res.name || res.path || "Console",
             content: res.content || "",
             initialContent: res.content || "",
-            connectionId: res.databaseId,
+            connectionId: res.connectionId || res.databaseId,
+            databaseId: res.databaseId, // For backward compatibility
+            databaseName: res.databaseName,
             kind: "console",
           });
           setActiveConsole(res.id);
@@ -423,7 +434,9 @@ useConsoleStore.getState = () => {
         const res = await apiClient.get<{
           success: boolean;
           content: string;
-          databaseId?: string;
+          connectionId?: string;
+          databaseId?: string; // Backward compatibility
+          databaseName?: string;
           language?: string;
           id: string;
           path?: string;
@@ -436,7 +449,9 @@ useConsoleStore.getState = () => {
             title: res.name || res.path || "Console",
             content: res.content || "",
             initialContent: res.content || "",
-            connectionId: res.databaseId,
+            connectionId: res.connectionId || res.databaseId,
+            databaseId: res.databaseId, // For backward compatibility
+            databaseName: res.databaseName,
             kind: "console",
           });
           setActiveConsole(res.id);

@@ -90,7 +90,7 @@ export const createConsoleTools = (
   const readConsoleTool = tool({
     name: "read_console",
     description:
-      "Read the contents of the current console editor. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName) so you know which database to query.",
+      "Read the contents of the current console editor. Returns console content and the attached database connection information (connectionId, connectionType, databaseName) so you know which database to query.",
     parameters: {
       type: "object",
       properties: {
@@ -112,23 +112,25 @@ export const createConsoleTools = (
       // Helper to build response with connection context
       const buildResponse = (consoleData: ConsoleData) => {
         // Extract connection context from console data
+        // Prioritize connectionId, fall back to databaseId (old schema)
         const connectionId =
-          consoleData.connectionId || consoleData.metadata?.connectionId;
+          consoleData.connectionId ||
+          consoleData.metadata?.connectionId ||
+          (consoleData as any).databaseId;
+
         const connectionType =
           consoleData.connectionType || consoleData.metadata?.connectionType;
 
-        // For D1: databaseId is the UUID (sent at top level or in metadata)
-        const databaseId =
-          (consoleData as any).databaseId ||
-          consoleData.metadata?.databaseId ||
-          consoleData.metadata?.queryOptions?.databaseId;
-        // For MongoDB/Postgres: databaseName is the database name
+        // For D1: databaseName is the UUID
+        // For MongoDB/Postgres: databaseName is the logical database name
         const databaseName =
+          consoleData.databaseName ||
           (consoleData as any).databaseName ||
           consoleData.metadata?.databaseName ||
           consoleData.metadata?.queryOptions?.databaseName ||
           consoleData.metadata?.queryOptions?.dbName ||
-          consoleData.metadata?.dbName;
+          consoleData.metadata?.dbName ||
+          consoleData.metadata?.queryOptions?.databaseId; // Some old D1 consoles might store UUID here
 
         return {
           success: true,
@@ -138,8 +140,7 @@ export const createConsoleTools = (
           // Clean connection context
           connectionId,
           connectionType,
-          databaseId, // D1 database UUID (for cluster-mode D1)
-          databaseName, // Database name (for MongoDB/Postgres cluster-mode)
+          databaseName, // Specific database (logical name or UUID)
         };
       };
 

@@ -63,7 +63,7 @@ interface ConsoleProps {
   title?: string;
   onExecute: (
     content: string,
-    databaseId?: string,
+    connectionId?: string,
     databaseName?: string,
   ) => void;
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
@@ -74,7 +74,7 @@ interface ConsoleProps {
   initialDatabaseId?: string;
   initialSelectedDatabaseId?: string; // D1 database UUID for cluster mode
   initialSelectedDatabaseName?: string; // D1 database human-readable name for cluster mode
-  onDatabaseChange?: (databaseId: string) => void;
+  onDatabaseChange?: (connectionId: string) => void;
   onDatabaseNameChange?: (
     databaseId: string | undefined,
     databaseName: string | undefined,
@@ -119,7 +119,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     filePath,
     onHistoryClick,
     enableVersionControl = false,
-    onSaveSuccess,
+    onSaveSuccess: _onSaveSuccess,
   } = props;
 
   const editorRef = useRef<any>(null);
@@ -137,13 +137,26 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const [monacoCanUndo, setMonacoCanUndo] = useState(false);
   const [monacoCanRedo, setMonacoCanRedo] = useState(false);
 
-  // State for sub-database selection (cluster mode - second dropdown, e.g., D1 databases)
-  const [selectedSubDbId, setSelectedSubDbId] = useState<string | undefined>(
-    initialSelectedDatabaseId,
-  );
-  const [selectedSubDbName, setSelectedSubDbName] = useState<
-    string | undefined
-  >(initialSelectedDatabaseName);
+  // State for diff mode
+  const [isDiffMode, setIsDiffMode] = useState(false);
+  const [originalContent, setOriginalContent] = useState("");
+  const [modifiedContent, setModifiedContent] = useState("");
+  const [pendingModification, setPendingModification] =
+    useState<ConsoleModification | null>(null);
+
+  // Editor key to force remount when needed
+  const [editorKey, setEditorKey] = useState(0);
+
+  // Refs for tracking state without triggering re-renders
+  const isProgrammaticUpdateRef = useRef(false);
+  const lastInitialContentRef = useRef(initialContent);
+  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const filePathRef = useRef(filePath);
+
+  // Update filePathRef when props change
+  useEffect(() => {
+    filePathRef.current = filePath;
+  }, [filePath]);
 
   const fetchDatabasesForConnection = useDatabaseStore(
     state => state.fetchDatabasesForConnection,
@@ -190,15 +203,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Keep refs of the latest callbacks to avoid stale closures in Monaco commands
   const onExecuteRef = useRef(onExecute);
   const onSaveRef = useRef(onSave);
-  const filePathRef = useRef<string | undefined>(filePath);
-
-  // Determine editor language based on selected database type if available
-  const editorLanguage = useMemo(() => {
-    const selectedDb = databases.find(db => db.id === selectedDatabaseId);
-    const dbType = selectedDb?.type;
-    // Use most stable highlighter: javascript for MongoDB shell, sql otherwise
-    return dbType === "mongodb" ? "javascript" : "sql";
-  }, [databases, selectedDatabaseId]);
 
   // Update refs whenever the callbacks change
   useEffect(() => {
@@ -209,131 +213,37 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onSaveRef.current = onSave;
   }, [onSave]);
 
-  // Persist last known file path so subsequent saves don't downgrade to "Save As"
-  useEffect(() => {
-    if (filePath) {
-      filePathRef.current = filePath;
-    }
-  }, [filePath]);
+  // State for sub-database selection (cluster mode - second dropdown, e.g., D1 databases)
+  const [selectedSubDbId, setSelectedSubDbId] = useState<string | undefined>(
+    initialSelectedDatabaseId,
+  );
+  const [selectedSubDbName, setSelectedSubDbName] = useState<
+    string | undefined
+  >(initialSelectedDatabaseName);
 
-  // Diff mode state
-  const [isDiffMode, setIsDiffMode] = useState(false);
-  const [pendingModification, setPendingModification] =
-    useState<ConsoleModification | null>(null);
-  const [originalContent, setOriginalContent] = useState("");
-  const [modifiedContent, setModifiedContent] = useState("");
+  // Refs for sub-database selection
+  const selectedSubDbIdRef = useRef(selectedSubDbId);
+  const selectedSubDbNameRef = useRef(selectedSubDbName);
+  const selectedDatabaseIdRef = useRef(selectedDatabaseId);
 
-  // Only track the initial content for resetting the editor when needed
-  const [editorKey, setEditorKey] = useState(0);
-
-  // Track if we're programmatically updating content to avoid feedback loops
-  const isProgrammaticUpdateRef = useRef(false);
-  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastInitialContentRef = useRef(initialContent);
-
-  // Keep a ref of the latest selected database so closures (e.g. Monaco keybindings) always see the up-to-date value
-  const selectedDatabaseIdRef = useRef<string>(selectedDatabaseId);
-  const selectedSubDbIdRef = useRef<string | undefined>(selectedSubDbId);
-  const selectedSubDbNameRef = useRef<string | undefined>(selectedSubDbName);
-
-  // Whenever selectedDatabaseId changes, update the ref
-  useEffect(() => {
-    selectedDatabaseIdRef.current = selectedDatabaseId;
-  }, [selectedDatabaseId]);
-
-  // Whenever sub-database selection changes, update refs and notify parent
+  // Update refs when state changes
   useEffect(() => {
     selectedSubDbIdRef.current = selectedSubDbId;
     selectedSubDbNameRef.current = selectedSubDbName;
-    if (onDatabaseNameChange) {
-      onDatabaseNameChange(selectedSubDbId, selectedSubDbName);
-    }
-  }, [selectedSubDbId, selectedSubDbName, onDatabaseNameChange]);
+    selectedDatabaseIdRef.current = selectedDatabaseId;
+  }, [selectedSubDbId, selectedSubDbName, selectedDatabaseId]);
 
-  // Sync sub-database selection with initial values when they change
+  // Sync state with props when they change from outside (e.g. switching tabs)
+  useEffect(() => {
+    if (initialDatabaseId) {
+      setSelectedDatabaseId(initialDatabaseId);
+    }
+  }, [initialDatabaseId]);
+
   useEffect(() => {
     setSelectedSubDbId(initialSelectedDatabaseId);
     setSelectedSubDbName(initialSelectedDatabaseName);
   }, [initialSelectedDatabaseId, initialSelectedDatabaseName]);
-
-  // Get current selected connection to check if it's in cluster mode
-  const selectedConnection = useMemo(() => {
-    return databases.find(db => db.id === selectedDatabaseId);
-  }, [databases, selectedDatabaseId]);
-
-  // Fetch available databases when a cluster mode connection is selected
-  useEffect(() => {
-    const fetchDatabases = async () => {
-      if (
-        !selectedConnection?.isClusterMode ||
-        !currentWorkspace?.id ||
-        !selectedDatabaseId
-      ) {
-        return;
-      }
-
-      try {
-        const dbs = await fetchDatabasesForConnection(
-          currentWorkspace.id,
-          selectedDatabaseId,
-        );
-
-        // Auto-select first database if none selected and databases available
-        if (!selectedSubDbId && dbs && dbs.length > 0) {
-          const firstDb = dbs[0];
-          setSelectedSubDbId(firstDb.id);
-          setSelectedSubDbName(firstDb.label);
-        }
-      } catch (err) {
-        console.error("Failed to fetch databases for connection:", err);
-      }
-    };
-
-    fetchDatabases();
-  }, [
-    selectedConnection?.isClusterMode,
-    selectedDatabaseId,
-    currentWorkspace?.id,
-    fetchDatabasesForConnection,
-    selectedSubDbId,
-  ]);
-
-  const availableDatabases = databasesInConnection[selectedDatabaseId] || [];
-  const isLoadingDatabases = loadingStore[`dbs-in:${selectedDatabaseId}`];
-
-  // Memoize the default database ID to prevent unnecessary re-calculations
-  const defaultDatabaseId = useMemo(() => {
-    if (initialDatabaseId) return initialDatabaseId;
-    if (databases.length > 0) return databases[0].id;
-    return "";
-  }, [initialDatabaseId, databases]);
-
-  // On first load (or when the list of databases changes) pick a sensible
-  // default connection **only** if the user hasn't interacted with the
-  // dropdown yet.
-  useEffect(() => {
-    if (
-      !hasUserSelectedDatabaseRef.current &&
-      !selectedDatabaseId &&
-      defaultDatabaseId
-    ) {
-      setSelectedDatabaseId(defaultDatabaseId);
-    }
-  }, [defaultDatabaseId, selectedDatabaseId]);
-
-  // Sync the selected database with the incoming prop **only** when the user
-  // has **not** explicitly chosen a connection. This prevents the dropdown
-  // from constantly "blinking" back to the prop-driven value after every
-  // keystroke or parent re-render.
-  useEffect(() => {
-    if (!initialDatabaseId) return; // ignore empty values
-
-    // If the parent changed the default database (e.g., because we switched
-    // files/tabs) and the user hasn't made a manual choice yet, adopt it.
-    if (!hasUserSelectedDatabaseRef.current) {
-      setSelectedDatabaseId(initialDatabaseId);
-    }
-  }, [initialDatabaseId]);
 
   // Notify parent whenever selectedDatabaseId changes (with debouncing to prevent loops)
   const handleDatabaseChange = useCallback(
@@ -346,10 +256,121 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   );
 
   useEffect(() => {
-    if (selectedDatabaseId) {
+    if (selectedDatabaseId && selectedDatabaseId !== initialDatabaseId) {
       handleDatabaseChange(selectedDatabaseId);
     }
-  }, [selectedDatabaseId, handleDatabaseChange]);
+  }, [selectedDatabaseId, handleDatabaseChange, initialDatabaseId]);
+
+  // Whenever sub-database selection changes, notify parent
+  useEffect(() => {
+    if (onDatabaseNameChange) {
+      // Only notify if values are different from props to avoid loops
+      if (
+        selectedSubDbId !== initialSelectedDatabaseId ||
+        selectedSubDbName !== initialSelectedDatabaseName
+      ) {
+        onDatabaseNameChange(selectedSubDbId, selectedSubDbName);
+      }
+    }
+  }, [
+    selectedSubDbId,
+    selectedSubDbName,
+    onDatabaseNameChange,
+    initialSelectedDatabaseId,
+    initialSelectedDatabaseName,
+  ]);
+
+  const handleDatabaseSelection = useCallback((event: any) => {
+    const newDatabaseId = event.target.value;
+    hasUserSelectedDatabaseRef.current = true; // Mark that user has manually selected
+    setSelectedDatabaseId(newDatabaseId);
+    // Clear sub-database selection when switching connections
+    setSelectedSubDbId(undefined);
+    setSelectedSubDbName(undefined);
+  }, []);
+
+  // Derived state for databases
+  const selectedConnection = useMemo(
+    () => databases.find(db => db.id === selectedDatabaseId),
+    [databases, selectedDatabaseId],
+  );
+
+  const availableDatabases = useMemo(
+    () => databasesInConnection[selectedDatabaseId] || [],
+    [databasesInConnection, selectedDatabaseId],
+  );
+
+  const isLoadingDatabases =
+    loadingStore[`dbs-in:${selectedDatabaseId}`] || false;
+
+  // Fetch sub-databases if needed
+  useEffect(() => {
+    if (
+      selectedConnection?.isClusterMode &&
+      selectedDatabaseId &&
+      currentWorkspace?.id
+    ) {
+      fetchDatabasesForConnection(currentWorkspace.id, selectedDatabaseId);
+    }
+  }, [
+    selectedConnection,
+    selectedDatabaseId,
+    fetchDatabasesForConnection,
+    currentWorkspace?.id,
+  ]);
+
+  // Helper function to get current content
+  const getCurrentEditorContent = useCallback(() => {
+    return editorRef.current?.getValue() || "";
+  }, []);
+
+  // Handler for opening info modal
+  const handleInfoClick = useCallback(() => {
+    setInfoModalOpen(true);
+  }, []);
+
+  // Handler for closing info modal
+  const handleInfoModalClose = useCallback(() => {
+    setInfoModalOpen(false);
+  }, []);
+
+  // Execute handler
+  const handleExecute = useCallback(() => {
+    const content = getCurrentEditorContent();
+    // Use the latest ref value for execution
+    if (onExecuteRef.current) {
+      onExecuteRef.current(
+        content,
+        selectedDatabaseIdRef.current || undefined,
+        selectedSubDbIdRef.current,
+      );
+    }
+  }, [getCurrentEditorContent]);
+
+  // Save handler
+  const handleSave = useCallback(async () => {
+    if (onSaveRef.current) {
+      const content = getCurrentEditorContent();
+      await onSaveRef.current(content, filePathRef.current);
+      // Note: We rely on the parent to update dbContentHash via props or re-render
+      // if (onSaveSuccess) onSaveSuccess(...);
+    }
+  }, [getCurrentEditorContent]);
+
+  // Calculate editor language
+  const editorLanguage = useMemo(() => {
+    if (filePath?.endsWith(".sql")) return "sql";
+    if (filePath?.endsWith(".json")) return "json";
+    if (filePath?.endsWith(".js") || filePath?.endsWith(".ts")) {
+      return "javascript";
+    }
+
+    // Fallback to connection type
+    const selectedDb = databases.find(db => db.id === selectedDatabaseId);
+    const dbType = selectedDb?.type;
+    // Use most stable highlighter: javascript for MongoDB shell, sql otherwise
+    return dbType === "mongodb" ? "javascript" : "sql";
+  }, [filePath, databases, selectedDatabaseId]);
 
   // Track the console ID to detect when we switch to a different console
   const lastConsoleIdRef = useRef(consoleId);
@@ -387,25 +408,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     }
   }, [consoleId, initialContent]);
 
-  // Reset unsaved changes when dbContentHash changes (new DB version loaded)
-  useEffect(() => {
-    if (dbContentHash) {
-      // When we have a new DB hash, check if current content matches it
-      if (editorRef.current) {
-        const model = editorRef.current.getModel();
-        if (model) {
-          const currentContent = model.getValue();
-          const currentContentHash = hashContent(currentContent);
-          const hasChanges = currentContentHash !== dbContentHash;
-          setHasUnsavedChanges(hasChanges);
-        }
-      } else {
-        // Editor not mounted yet, assume no changes
-        setHasUnsavedChanges(false);
-      }
-    }
-  }, [dbContentHash]);
-
   // Apply new initialContent from props when background fetch finishes
   // Only overwrite if the editor is currently showing a placeholder or empty
   useEffect(() => {
@@ -414,6 +416,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     if (!model) return;
     const current = model.getValue();
     const isPlaceholder = current === "loading..." || current.trim() === "";
+
+    // If we have new content and current is placeholder/empty, update it
     if (isPlaceholder && initialContent && current !== initialContent) {
       isProgrammaticUpdateRef.current = true;
       model.setValue(initialContent);
@@ -439,128 +443,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         clearTimeout(debounceTimeoutRef.current);
       }
     };
-  }, []);
-
-  // Resize handling for monaco layout
-  useEffect(() => {
-    const handleResize = () => {
-      if (editorRef.current) {
-        editorRef.current.layout();
-      }
-    };
-
-    const resizeObserver = new ResizeObserver(handleResize);
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
-
-    return () => {
-      resizeObserver.disconnect();
-    };
-  }, []);
-
-  // Get current content from editor
-  const getCurrentEditorContent = useCallback(() => {
-    if (editorRef.current) {
-      const model = editorRef.current.getModel();
-      if (model) {
-        return model.getValue();
-      }
-    }
-    return initialContent;
-  }, [initialContent]);
-
-  // Execute helper
-  const executeContent = useCallback(
-    (content: string) => {
-      if (content.trim()) {
-        onExecuteRef.current(
-          content,
-          selectedDatabaseIdRef.current || undefined,
-          selectedSubDbIdRef.current, // D1 database UUID for cluster mode
-        );
-      }
-    },
-    [], // Remove onExecute from dependencies since we're using the ref
-  );
-
-  const handleSave = useCallback(async () => {
-    if (onSave) {
-      // If in diff mode, save the modified content
-      const content =
-        isDiffMode && modifiedContent
-          ? modifiedContent
-          : getCurrentEditorContent();
-      const success = await onSave(content, filePathRef.current);
-
-      // Reset unsaved changes flag if save was successful
-      if (success) {
-        setHasUnsavedChanges(false);
-
-        // Notify parent of the new DB content hash
-        if (onSaveSuccess) {
-          const newDbContentHash = hashContent(content);
-          onSaveSuccess(newDbContentHash);
-        }
-      }
-      // Parent component is responsible for feedback (e.g., snackbar, error modal)
-    }
-  }, [
-    onSave,
-    getCurrentEditorContent,
-    isDiffMode,
-    modifiedContent,
-    onSaveSuccess,
-  ]);
-
-  const handleExecute = useCallback(() => {
-    // If in diff mode, execute the modified content
-    if (isDiffMode && modifiedContent) {
-      executeContent(modifiedContent);
-      return;
-    }
-
-    // Prefer executing the currently selected text, if any, otherwise run the entire editor content
-    if (editorRef.current) {
-      const model = editorRef.current.getModel();
-      if (model) {
-        const selection = editorRef.current.getSelection();
-        let textToExecute = "";
-
-        if (selection && !selection.isEmpty()) {
-          textToExecute = model.getValueInRange(selection);
-        } else {
-          textToExecute = model.getValue();
-        }
-
-        executeContent(textToExecute);
-        return;
-      }
-    }
-
-    // Fallback: execute the initial content
-    executeContent(initialContent);
-  }, [executeContent, initialContent, isDiffMode, modifiedContent]);
-
-  const handleDatabaseSelection = useCallback((event: any) => {
-    const newDatabaseId = event.target.value;
-    hasUserSelectedDatabaseRef.current = true; // Mark that user has manually selected
-    setSelectedDatabaseId(newDatabaseId);
-    // Clear sub-database selection when switching connections
-    setSelectedSubDbId(undefined);
-    setSelectedSubDbName(undefined);
-  }, []);
-
-  // No need to wrap undo/redo - they will trigger content change which updates hasUnsavedChanges
-
-  // Handler for opening info modal
-  const handleInfoClick = useCallback(() => {
-    setInfoModalOpen(true);
-  }, []);
-
-  // Handler for closing info modal
-  const handleInfoModalClose = useCallback(() => {
-    setInfoModalOpen(false);
   }, []);
 
   const handleEditorDidMount = useCallback(

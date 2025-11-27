@@ -267,7 +267,8 @@ export interface ISavedConsole extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   folderId?: Types.ObjectId;
-  databaseId?: Types.ObjectId;
+  connectionId?: Types.ObjectId;
+  databaseName?: string;
   name: string;
   description?: string;
   code: string;
@@ -759,16 +760,20 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       ref: "Workspace",
       required: true,
     },
-    folderId: {
-      type: Schema.Types.ObjectId,
-      ref: "ConsoleFolder",
-    },
-    databaseId: {
-      type: Schema.Types.ObjectId,
-      ref: "DatabaseConnection",
-      required: false,
-    },
-    name: {
+  folderId: {
+    type: Schema.Types.ObjectId,
+    ref: "ConsoleFolder",
+  },
+  connectionId: {
+    type: Schema.Types.ObjectId,
+    ref: "DatabaseConnection",
+    required: false,
+  },
+  databaseName: {
+    type: String,
+    required: false,
+  },
+  name: {
       type: String,
       required: true,
       trim: true,
@@ -827,7 +832,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
 // Indexes
 SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
-SavedConsoleSchema.index({ databaseId: 1 }, { sparse: true }); // Sparse index since databaseId is optional
+SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
 
 /**
  * Chat Schema

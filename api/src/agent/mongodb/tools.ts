@@ -6,7 +6,7 @@ import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { createConsoleTools, ConsoleData } from "../shared/console-tools";
 
-const listDatabases = async (workspaceId: string) => {
+const listMongoConnections = async (workspaceId: string) => {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
@@ -20,7 +20,7 @@ const listDatabases = async (workspaceId: string) => {
       id: db._id.toString(),
       name: db.name,
       description: "",
-      database: (db as any).connection.database,
+      databaseName: (db as any).connection.database, // Default DB
       type: db.type,
       active: true,
       displayName:
@@ -28,25 +28,61 @@ const listDatabases = async (workspaceId: string) => {
     }));
 };
 
-const listCollections = async (databaseId: string, workspaceId: string) => {
+const listMongoDatabases = async (connectionId: string, workspaceId: string) => {
   if (
-    !Types.ObjectId.isValid(databaseId) ||
+    !Types.ObjectId.isValid(connectionId) ||
     !Types.ObjectId.isValid(workspaceId)
   ) {
-    throw new Error("Invalid database ID or workspace ID");
+    throw new Error("Invalid connection ID or workspace ID");
   }
   const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(databaseId),
+    _id: new Types.ObjectId(connectionId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
-  if (!database) throw new Error("Database not found or access denied");
+  if (!database) throw new Error("Connection not found or access denied");
+  if (database.type !== "mongodb") {
+    throw new Error("Database listing only supported for MongoDB connections");
+  }
+
+  const connection = await databaseConnectionService.getConnection(
+    database as any,
+  );
+  // List databases using admin command
+  const adminDb = connection.db("admin");
+  const result = await adminDb.admin().listDatabases();
+  
+  return result.databases.map((db: any) => ({
+    name: db.name,
+    sizeOnDisk: db.sizeOnDisk,
+    empty: db.empty,
+  }));
+};
+
+const listCollections = async (
+  connectionId: string,
+  workspaceId: string,
+  databaseName?: string,
+) => {
+  if (
+    !Types.ObjectId.isValid(connectionId) ||
+    !Types.ObjectId.isValid(workspaceId)
+  ) {
+    throw new Error("Invalid connection ID or workspace ID");
+  }
+  const database = await DatabaseConnection.findOne({
+    _id: new Types.ObjectId(connectionId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (!database) throw new Error("Connection not found or access denied");
   if (database.type !== "mongodb") {
     throw new Error("Collection listing only supported for MongoDB databases");
   }
   const connection = await databaseConnectionService.getConnection(
     database as any,
   );
-  const db = connection.db((database as any).connection.database);
+  // Use provided databaseName or default from connection
+  const targetDbName = databaseName || (database as any).connection.database;
+  const db = connection.db(targetDbName);
   const collections = await db
     .listCollections({ type: "collection" })
     .toArray();
@@ -68,21 +104,22 @@ const inferBsonType = (value: any): string => {
 };
 
 const inspectCollection = async (
-  databaseId: string,
+  connectionId: string,
   collectionName: string,
   workspaceId: string,
+  databaseName?: string,
 ) => {
   if (
-    !Types.ObjectId.isValid(databaseId) ||
+    !Types.ObjectId.isValid(connectionId) ||
     !Types.ObjectId.isValid(workspaceId)
   ) {
-    throw new Error("Invalid database ID or workspace ID");
+    throw new Error("Invalid connection ID or workspace ID");
   }
   const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(databaseId),
+    _id: new Types.ObjectId(connectionId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
-  if (!database) throw new Error("Database not found or access denied");
+  if (!database) throw new Error("Connection not found or access denied");
   if (database.type !== "mongodb") {
     throw new Error(
       "Collection inspection only supported for MongoDB databases",
@@ -91,7 +128,8 @@ const inspectCollection = async (
   const connection = await databaseConnectionService.getConnection(
     database as any,
   );
-  const db = connection.db((database as any).connection.database);
+  const targetDbName = databaseName || (database as any).connection.database;
+  const db = connection.db(targetDbName);
   const collection = db.collection(collectionName);
   const SAMPLE_SIZE = 100;
   const sampleDocuments = await collection
@@ -117,23 +155,29 @@ const inspectCollection = async (
 
 const executeQuery = async (
   query: string,
-  databaseId: string,
+  connectionId: string,
   workspaceId: string,
+  databaseName?: string,
 ) => {
   if (
-    !Types.ObjectId.isValid(databaseId) ||
+    !Types.ObjectId.isValid(connectionId) ||
     !Types.ObjectId.isValid(workspaceId)
   ) {
-    throw new Error("Invalid database ID or workspace ID");
+    throw new Error("Invalid connection ID or workspace ID");
   }
   const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(databaseId),
+    _id: new Types.ObjectId(connectionId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
-  if (!database) throw new Error("Database not found or access denied");
+  if (!database) throw new Error("Connection not found or access denied");
+  
+  // Pass databaseName options if supported, or prepend db switching script
+  const options = databaseName ? { databaseName } : undefined;
+  
   const result = await databaseConnectionService.executeQuery(
     database as any,
     query,
+    options,
   );
   return result;
 };
@@ -143,33 +187,57 @@ export const createMongoTools = (
   consoles?: ConsoleData[],
   preferredConsoleId?: string,
 ) => {
-  const listDatabasesTool = tool({
-    name: "list_databases",
+  const listConnectionsTool = tool({
+    name: "list_connections",
     description:
-      "Return a list of all active MongoDB databases that the system knows about for the current workspace.",
+      "Return a list of all active MongoDB connections available for the current workspace.",
     parameters: {
       type: "object",
       properties: {},
       required: [],
       additionalProperties: false,
     },
-    execute: async (_: any) => listDatabases(workspaceId),
+    execute: async (_: any) => listMongoConnections(workspaceId),
+  });
+
+  const listDatabasesTool = tool({
+    name: "list_databases",
+    description:
+      "List logical databases available on the MongoDB server for a specific connection.",
+    parameters: {
+      type: "object",
+      properties: {
+        connectionId: { type: "string", description: "The connection ID" },
+      },
+      required: ["connectionId"],
+      additionalProperties: false,
+    },
+    execute: async (input: any) =>
+      listMongoDatabases(input.connectionId, workspaceId),
   });
 
   const listCollectionsTool = tool({
     name: "list_collections",
     description:
-      "Return a list of collections for the provided database identifier.",
+      "Return a list of collections for the provided connection and optional database.",
     parameters: {
       type: "object",
       properties: {
-        databaseId: { type: "string", description: "The database id" },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description: "Optional database name to list collections from",
+        },
       },
-      required: ["databaseId"],
+      required: ["connectionId", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
-      listCollections(input.databaseId, workspaceId),
+      listCollections(
+        input.connectionId,
+        workspaceId,
+        input.databaseName || undefined,
+      ),
   });
 
   const executeQueryTool = tool({
@@ -180,13 +248,22 @@ export const createMongoTools = (
       type: "object",
       properties: {
         query: { type: "string", description: "The MongoDB query to execute" },
-        databaseId: { type: "string", description: "The target database id" },
+        connectionId: { type: "string", description: "The target connection ID" },
+        databaseName: {
+          type: "string",
+          description: "Optional target database name",
+        },
       },
-      required: ["query", "databaseId"],
+      required: ["query", "connectionId", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
-      executeQuery(input.query, input.databaseId, workspaceId),
+      executeQuery(
+        input.query,
+        input.connectionId,
+        workspaceId,
+        input.databaseName || undefined,
+      ),
   });
 
   const inspectCollectionTool = tool({
@@ -196,19 +273,26 @@ export const createMongoTools = (
     parameters: {
       type: "object",
       properties: {
-        databaseId: { type: "string" },
+        connectionId: { type: "string" },
         collectionName: { type: "string" },
+        databaseName: { type: "string" },
       },
-      required: ["databaseId", "collectionName"],
+      required: ["connectionId", "collectionName", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
-      inspectCollection(input.databaseId, input.collectionName, workspaceId),
+      inspectCollection(
+        input.connectionId,
+        input.collectionName,
+        workspaceId,
+        input.databaseName || undefined,
+      ),
   });
 
   const consoleTools = createConsoleTools(consoles, preferredConsoleId);
 
   return [
+    listConnectionsTool,
     listDatabasesTool,
     listCollectionsTool,
     inspectCollectionTool,
