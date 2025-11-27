@@ -112,38 +112,14 @@ export const createConsoleTools = (
 
       // Helper to build response with connection context
       const buildResponse = (consoleData: ConsoleData) => {
-        // Extract connection context from console data
-        const connectionId =
-          consoleData.connectionId ||
-          consoleData.metadata?.connectionId;
-
-        const connectionType =
-          consoleData.connectionType || consoleData.metadata?.connectionType;
-
-        // databaseId is the specific database identifier (e.g., D1 UUID for cluster mode)
-        const databaseId =
-          consoleData.databaseId ||
-          consoleData.metadata?.databaseId ||
-          consoleData.metadata?.queryOptions?.databaseId;
-
-        // databaseName is the human-readable database name
-        const databaseName =
-          consoleData.databaseName ||
-          consoleData.metadata?.databaseName ||
-          consoleData.metadata?.queryOptions?.databaseName ||
-          consoleData.metadata?.queryOptions?.dbName ||
-          consoleData.metadata?.dbName;
-
         return {
           success: true,
           consoleId: consoleData.id,
           title: consoleData.title,
           content: consoleData.content || "",
-          // Clean connection context
-          connectionId,
-          connectionType,
-          databaseId, // Specific database ID (e.g., D1 UUID)
-          databaseName, // Human-readable database name
+          connectionId: consoleData.connectionId,
+          databaseId: consoleData.databaseId,
+          databaseName: consoleData.databaseName,
         };
       };
 
