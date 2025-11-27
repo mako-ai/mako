@@ -71,9 +71,15 @@ interface ConsoleProps {
   isSaving?: boolean;
   onContentChange?: (content: string) => void;
   databases?: DatabaseConnection[];
-  initialDatabaseId?: string;
-  initialSelectedDatabaseId?: string; // D1 database UUID for cluster mode
-  initialSelectedDatabaseName?: string; // D1 database human-readable name for cluster mode
+  // Current database selection (from store, single source of truth)
+  connectionId?: string;
+  databaseId?: string; // D1 database UUID for cluster mode
+  databaseName?: string; // D1 database human-readable name for cluster mode
+  // Saved database values (for dirty tracking - only updated on save)
+  savedConnectionId?: string;
+  savedDatabaseId?: string;
+  savedDatabaseName?: string;
+  // Callbacks for database changes
   onDatabaseChange?: (connectionId: string) => void;
   onDatabaseNameChange?: (
     databaseId: string | undefined,
@@ -111,9 +117,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     isSaving,
     onContentChange,
     databases = [],
-    initialDatabaseId,
-    initialSelectedDatabaseId,
-    initialSelectedDatabaseName,
+    // Current database selection (single source of truth from store)
+    connectionId,
+    databaseId,
+    databaseName,
+    // Saved database values (for dirty tracking)
+    savedConnectionId,
+    savedDatabaseId,
+    savedDatabaseName,
     onDatabaseChange,
     onDatabaseNameChange,
     filePath,
@@ -133,8 +144,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // State to track if there are unsaved changes (content only)
   const [hasContentChanges, setHasContentChanges] = useState(false);
   
-  // State to track if database selection has changed
-  const [hasDatabaseChanges, setHasDatabaseChanges] = useState(false);
+  // Compute database dirty state from props (comparing current vs saved values)
+  const hasDatabaseChanges = useMemo(() => {
+    const connectionChanged = connectionId !== savedConnectionId;
+    const dbIdChanged = databaseId !== savedDatabaseId;
+    const dbNameChanged = databaseName !== savedDatabaseName;
+    return connectionChanged || dbIdChanged || dbNameChanged;
+  }, [connectionId, savedConnectionId, databaseId, savedDatabaseId, databaseName, savedDatabaseName]);
   
   // Combined dirty state - true if either content or database selection changed
   const hasUnsavedChanges = hasContentChanges || hasDatabaseChanges;
@@ -196,21 +212,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     hasInitialVersionRef.current = false;
   }, [consoleId]);
 
-  // Track if user has manually selected a database
-  const hasUserSelectedDatabaseRef = useRef(false);
-
-  const [selectedDatabaseId, setSelectedDatabaseId] = useState<string>(() => {
-    // Initialize with initialDatabaseId or first database or empty string
-    if (initialDatabaseId) return initialDatabaseId;
-    if (databases.length > 0) return databases[0].id;
-    return "";
-  });
-
-  // Keep refs of the latest callbacks to avoid stale closures in Monaco commands
+  // Keep refs of the latest callbacks and props to avoid stale closures in Monaco commands
   const onExecuteRef = useRef(onExecute);
   const onSaveRef = useRef(onSave);
+  const connectionIdRef = useRef(connectionId);
+  const databaseIdRef = useRef(databaseId);
 
-  // Update refs whenever the callbacks change
+  // Update refs whenever the callbacks/props change
   useEffect(() => {
     onExecuteRef.current = onExecute;
   }, [onExecute]);
@@ -219,126 +227,49 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onSaveRef.current = onSave;
   }, [onSave]);
 
-  // State for sub-database selection (cluster mode - second dropdown, e.g., D1 databases)
-  const [selectedSubDbId, setSelectedSubDbId] = useState<string | undefined>(
-    initialSelectedDatabaseId,
-  );
-  const [selectedSubDbName, setSelectedSubDbName] = useState<
-    string | undefined
-  >(initialSelectedDatabaseName);
-
-  // Refs for sub-database selection
-  const selectedSubDbIdRef = useRef(selectedSubDbId);
-  const selectedSubDbNameRef = useRef(selectedSubDbName);
-  const selectedDatabaseIdRef = useRef(selectedDatabaseId);
-
-  // Update refs when state changes
   useEffect(() => {
-    selectedSubDbIdRef.current = selectedSubDbId;
-    selectedSubDbNameRef.current = selectedSubDbName;
-    selectedDatabaseIdRef.current = selectedDatabaseId;
-  }, [selectedSubDbId, selectedSubDbName, selectedDatabaseId]);
+    connectionIdRef.current = connectionId;
+    databaseIdRef.current = databaseId;
+  }, [connectionId, databaseId]);
 
-  // Sync state with props when they change from outside (e.g. switching tabs)
-  useEffect(() => {
-    if (initialDatabaseId) {
-      setSelectedDatabaseId(initialDatabaseId);
-    }
-  }, [initialDatabaseId]);
-
-  useEffect(() => {
-    setSelectedSubDbId(initialSelectedDatabaseId);
-    setSelectedSubDbName(initialSelectedDatabaseName);
-  }, [initialSelectedDatabaseId, initialSelectedDatabaseName]);
-
-  // Notify parent whenever selectedDatabaseId changes (with debouncing to prevent loops)
-  const handleDatabaseChange = useCallback(
-    (databaseId: string) => {
-      if (onDatabaseChange && databaseId) {
-        onDatabaseChange(databaseId);
-      }
-    },
-    [onDatabaseChange],
-  );
-
-  useEffect(() => {
-    if (selectedDatabaseId && selectedDatabaseId !== initialDatabaseId) {
-      handleDatabaseChange(selectedDatabaseId);
-    }
-  }, [selectedDatabaseId, handleDatabaseChange, initialDatabaseId]);
-
-  // Whenever sub-database selection changes, notify parent
-  useEffect(() => {
-    if (onDatabaseNameChange) {
-      // Only notify if values are different from props to avoid loops
-      if (
-        selectedSubDbId !== initialSelectedDatabaseId ||
-        selectedSubDbName !== initialSelectedDatabaseName
-      ) {
-        onDatabaseNameChange(selectedSubDbId, selectedSubDbName);
-      }
-    }
-  }, [
-    selectedSubDbId,
-    selectedSubDbName,
-    onDatabaseNameChange,
-    initialSelectedDatabaseId,
-    initialSelectedDatabaseName,
-  ]);
-
-  // Track if database selection has changed from initial values (for dirty state)
-  useEffect(() => {
-    const connectionChanged = selectedDatabaseId !== initialDatabaseId;
-    const subDbIdChanged = selectedSubDbId !== initialSelectedDatabaseId;
-    const subDbNameChanged = selectedSubDbName !== initialSelectedDatabaseName;
-    
-    // Consider dirty if any database-related selection changed
-    const isDatabaseDirty = connectionChanged || subDbIdChanged || subDbNameChanged;
-    setHasDatabaseChanges(isDatabaseDirty);
-  }, [
-    selectedDatabaseId,
-    initialDatabaseId,
-    selectedSubDbId,
-    initialSelectedDatabaseId,
-    selectedSubDbName,
-    initialSelectedDatabaseName,
-  ]);
-
+  // Handler for connection selection change - calls parent callback directly (unidirectional flow)
   const handleDatabaseSelection = useCallback((event: any) => {
-    const newDatabaseId = event.target.value;
-    hasUserSelectedDatabaseRef.current = true; // Mark that user has manually selected
-    setSelectedDatabaseId(newDatabaseId);
+    const newConnectionId = event.target.value;
+    if (onDatabaseChange) {
+      onDatabaseChange(newConnectionId);
+    }
     // Clear sub-database selection when switching connections
-    setSelectedSubDbId(undefined);
-    setSelectedSubDbName(undefined);
-  }, []);
+    if (onDatabaseNameChange) {
+      onDatabaseNameChange(undefined, undefined);
+    }
+  }, [onDatabaseChange, onDatabaseNameChange]);
 
   // Derived state for databases
   const selectedConnection = useMemo(
-    () => databases.find(db => db.id === selectedDatabaseId),
-    [databases, selectedDatabaseId],
+    () => databases.find(db => db.id === connectionId),
+    [databases, connectionId],
   );
 
   const availableDatabases = useMemo(
-    () => databasesInConnection[selectedDatabaseId] || [],
-    [databasesInConnection, selectedDatabaseId],
+    () => databasesInConnection[connectionId || ""] || [],
+    [databasesInConnection, connectionId],
   );
 
   const isLoadingDatabases =
-    loadingStore[`dbs-in:${selectedDatabaseId}`] || false;
+    loadingStore[`dbs-in:${connectionId}`] || false;
 
   // Fetch sub-databases if needed
   useEffect(() => {
     if (
       selectedConnection?.isClusterMode &&
-      selectedDatabaseId &&
+      connectionId &&
       currentWorkspace?.id
     ) {
-      fetchDatabasesForConnection(currentWorkspace.id, selectedDatabaseId);
+      fetchDatabasesForConnection(currentWorkspace.id, connectionId);
     }
   }, [
     selectedConnection,
-    selectedDatabaseId,
+    connectionId,
     fetchDatabasesForConnection,
     currentWorkspace?.id,
   ]);
@@ -361,12 +292,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Execute handler
   const handleExecute = useCallback(() => {
     const content = getCurrentEditorContent();
-    // Use the latest ref value for execution
+    // Use the latest ref values for execution (to avoid stale closures in Monaco commands)
     if (onExecuteRef.current) {
       onExecuteRef.current(
         content,
-        selectedDatabaseIdRef.current || undefined,
-        selectedSubDbIdRef.current,
+        connectionIdRef.current || undefined,
+        databaseIdRef.current,
       );
     }
   }, [getCurrentEditorContent]);
@@ -390,11 +321,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     }
 
     // Fallback to connection type
-    const selectedDb = databases.find(db => db.id === selectedDatabaseId);
+    const selectedDb = databases.find(db => db.id === connectionId);
     const dbType = selectedDb?.type;
     // Use most stable highlighter: javascript for MongoDB shell, sql otherwise
     return dbType === "mongodb" ? "javascript" : "sql";
-  }, [filePath, databases, selectedDatabaseId]);
+  }, [filePath, databases, connectionId]);
 
   // Track the console ID to detect when we switch to a different console
   const lastConsoleIdRef = useRef(consoleId);
@@ -788,7 +719,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             size="small"
             startIcon={<PlayIcon />}
             onClick={handleExecute}
-            disabled={isExecuting || !selectedDatabaseId}
+            disabled={isExecuting || !connectionId}
             disableElevation
             sx={{
               whiteSpace: "nowrap",
@@ -912,7 +843,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               variant="standard"
               disableUnderline
               labelId="database-select-label"
-              value={selectedDatabaseId}
+              value={connectionId || ""}
               onChange={handleDatabaseSelection}
               disabled={databases.length === 0}
             >
@@ -943,12 +874,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                   variant="standard"
                   disableUnderline
                   labelId="database-name-select-label"
-                  value={selectedSubDbId || ""}
+                  value={databaseId || ""}
                   onChange={e => {
                     const dbId = e.target.value || undefined;
                     const db = availableDatabases.find(d => d.id === dbId);
-                    setSelectedSubDbId(dbId);
-                    setSelectedSubDbName(db?.label);
+                    // Call parent callback directly (unidirectional flow)
+                    if (onDatabaseNameChange) {
+                      onDatabaseNameChange(dbId, db?.label);
+                    }
                   }}
                   disabled={
                     isLoadingDatabases || availableDatabases.length === 0

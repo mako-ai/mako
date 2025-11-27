@@ -127,6 +127,18 @@ export const useConsoleStore = () => {
     });
   };
 
+  const updateConsoleSavedDatabase = (
+    id: string,
+    connectionId?: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => {
+    dispatch({
+      type: "UPDATE_CONSOLE_SAVED_DATABASE",
+      payload: { id, connectionId, databaseId, databaseName },
+    } as any);
+  };
+
   const clearAllConsoles = () => {
     consoleTabs.forEach(tab => removeConsoleTab(tab.id));
   };
@@ -236,6 +248,7 @@ export const useConsoleStore = () => {
     clearAllConsoles,
     updateConsoleConnection,
     updateConsoleDatabase,
+    updateConsoleSavedDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
@@ -399,6 +412,18 @@ useConsoleStore.getState = () => {
     });
   };
 
+  const updateConsoleSavedDatabase = (
+    id: string,
+    connectionId?: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => {
+    dispatch({
+      type: "UPDATE_CONSOLE_SAVED_DATABASE",
+      payload: { id, connectionId, databaseId, databaseName },
+    } as any);
+  };
+
   const clearAllConsoles = () => {
     consoleTabs.forEach(tab => removeConsoleTab(tab.id));
   };
@@ -420,6 +445,7 @@ useConsoleStore.getState = () => {
     clearAllConsoles,
     updateConsoleConnection,
     updateConsoleDatabase,
+    updateConsoleSavedDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,

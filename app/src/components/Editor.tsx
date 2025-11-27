@@ -93,6 +93,7 @@ function Editor() {
     updateConsoleContent,
     updateConsoleConnection,
     updateConsoleDatabase,
+    updateConsoleSavedDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
@@ -339,6 +340,15 @@ function Editor() {
         // Mark tab as dirty since it's now saved and should be persistent
         updateConsoleDirty(tabId, true);
 
+        // Update the saved database values to reflect what was just persisted
+        // This is used for dirty state tracking in the Console component
+        updateConsoleSavedDatabase(
+          tabId,
+          connectionId,
+          databaseId,
+          databaseName,
+        );
+
         setSnackbarMessage(
           `Console saved ${isNew ? "as" : "to"} '${savePath}.js'`,
         );
@@ -567,16 +577,14 @@ function Editor() {
                             },
                           });
                         }}
-                        initialDatabaseId={tab.connectionId}
-                        initialSelectedDatabaseId={
-                          tab.databaseId ||
-                          tab.metadata?.queryOptions?.databaseId || // Legacy
-                          tab.metadata?.queryOptions?.databaseName // D1 uses databaseName for UUID
-                        }
-                        initialSelectedDatabaseName={
-                          tab.databaseName ||
-                          tab.metadata?.queryOptions?.databaseLabel
-                        }
+                        // Current database selection (single source of truth from store)
+                        connectionId={tab.connectionId}
+                        databaseId={tab.databaseId}
+                        databaseName={tab.databaseName}
+                        // Saved database values (for dirty tracking)
+                        savedConnectionId={tab.savedConnectionId}
+                        savedDatabaseId={tab.savedDatabaseId}
+                        savedDatabaseName={tab.savedDatabaseName}
                         databases={availableDatabases}
                         onDatabaseChange={connId =>
                           updateConsoleConnection(tab.id, connId)
