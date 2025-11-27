@@ -165,13 +165,12 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
         // Enrich consoles with connection type information
         const enrichedConsoles = (consoles || []).map((c: any) => ({
           ...c,
-          connectionId: c.metadata?.databaseId || c.connectionId,
+          // connectionId is the DatabaseConnection MongoDB ObjectId - keep it as-is
+          connectionId: c.connectionId,
           connectionType:
             c.connectionType ||
             c.metadata?.connectionType ||
-            (c.metadata?.databaseId
-              ? databaseTypeMap.get(c.metadata.databaseId)
-              : undefined),
+            (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined),
           databaseName: c.databaseName || c.metadata?.selectedDatabaseName,
         }));
 
@@ -329,37 +328,37 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
                 }
 
                 // Just notify the UI about the handoff, let the library handle the actual transition
-              if (handoffAgent) {
-                const handoffAgentLower = handoffAgent.toLowerCase();
-                if (handoffAgentLower.includes("mongodb")) {
-                  currentAgent = "mongo";
-                } else if (handoffAgentLower.includes("bigquery")) {
-                  currentAgent = "bigquery";
-                } else if (handoffAgentLower.includes("postgres")) {
-                  currentAgent = "postgres";
+                if (handoffAgent) {
+                  const handoffAgentLower = handoffAgent.toLowerCase();
+                  if (handoffAgentLower.includes("mongodb")) {
+                    currentAgent = "mongo";
+                  } else if (handoffAgentLower.includes("bigquery")) {
+                    currentAgent = "bigquery";
+                  } else if (handoffAgentLower.includes("postgres")) {
+                    currentAgent = "postgres";
+                  }
+                  sendEvent({
+                    type: "agent_mode",
+                    mode: currentAgent,
+                  });
+
+                  const agentLabel =
+                    currentAgent === "mongo"
+                      ? "MongoDB"
+                      : currentAgent === "bigquery"
+                        ? "BigQuery"
+                        : currentAgent === "postgres"
+                          ? "Postgres"
+                          : "Database";
+
+                  // Send handoff notification event
+                  sendEvent({
+                    type: "handoff",
+                    agent: currentAgent,
+                    message: `Switching to ${agentLabel} assistant...`,
+                  });
                 }
-                sendEvent({
-                  type: "agent_mode",
-                  mode: currentAgent,
-                });
-
-                const agentLabel =
-                  currentAgent === "mongo"
-                    ? "MongoDB"
-                    : currentAgent === "bigquery"
-                      ? "BigQuery"
-                      : currentAgent === "postgres"
-                        ? "Postgres"
-                        : "Database";
-
-                // Send handoff notification event
-                sendEvent({
-                  type: "handoff",
-                  agent: currentAgent,
-                  message: `Switching to ${agentLabel} assistant...`,
-                });
               }
-            }
 
               if (
                 item?.type === "tool_call_item" &&
