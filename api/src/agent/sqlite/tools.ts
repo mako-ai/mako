@@ -323,7 +323,7 @@ export const createSqliteTools = (
             "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
         },
       },
-      required: ["connectionId"],
+      required: ["connectionId", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
@@ -351,7 +351,7 @@ export const createSqliteTools = (
             "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
         },
       },
-      required: ["connectionId"],
+      required: ["connectionId", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
@@ -380,7 +380,7 @@ export const createSqliteTools = (
             "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
         },
       },
-      required: ["connectionId", "table"],
+      required: ["connectionId", "table", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
@@ -410,7 +410,7 @@ export const createSqliteTools = (
             "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
         },
       },
-      required: ["connectionId", "table"],
+      required: ["connectionId", "table", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
@@ -440,7 +440,7 @@ export const createSqliteTools = (
             "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
         },
       },
-      required: ["connectionId", "query"],
+      required: ["connectionId", "query", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
@@ -470,7 +470,7 @@ export const createSqliteTools = (
             "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
         },
       },
-      required: ["connectionId", "query"],
+      required: ["connectionId", "query", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>

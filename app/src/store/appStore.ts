@@ -93,7 +93,6 @@ export type AppView =
   | "sync-jobs"
   | "settings";
 
-
 /*********************
  * Initial state     *
  *********************/

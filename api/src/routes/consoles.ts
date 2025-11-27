@@ -101,6 +101,7 @@ consoleRoutes.get("/content", async (c: Context) => {
       content: consoleData.content,
       connectionId: consoleData.connectionId,
       databaseName: consoleData.databaseName,
+      databaseId: consoleData.databaseId,
       language: consoleData.language,
       id: consoleData.id,
     });
@@ -157,7 +158,7 @@ consoleRoutes.post("/", async (c: Context) => {
     }
 
     // connectionId is optional - consoles can be saved without being associated with a specific database
-    let targetConnectionId = connectionId || databaseId;
+    let targetConnectionId = connectionId;
     if (!targetConnectionId) {
       // Try to get the first database for the workspace, but don't require it
       const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
@@ -182,6 +183,7 @@ consoleRoutes.post("/", async (c: Context) => {
       user.id,
       targetConnectionId,
       databaseName,
+      databaseId,
       {
         id, // Pass client-provided ID
         folderId,
@@ -201,6 +203,7 @@ consoleRoutes.post("/", async (c: Context) => {
           content,
           connectionId: targetConnectionId,
           databaseName,
+          databaseId,
           language: savedConsole.language,
         },
       },
@@ -245,7 +248,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
     }
 
     // connectionId is optional - consoles can be saved without being associated with a specific database
-    let targetConnectionId = body.connectionId || body.databaseId;
+    let targetConnectionId = body.connectionId;
     if (!targetConnectionId) {
       // Try to get the first database for the workspace, but don't require it
       const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
@@ -262,6 +265,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       user.id,
       targetConnectionId,
       body.databaseName,
+      body.databaseId,
       {
         folderId: body.folderId,
         description: body.description,
@@ -279,6 +283,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         content: body.content,
         connectionId: targetConnectionId,
         databaseName: body.databaseName,
+        databaseId: body.databaseId,
         language: savedConsole.language,
       },
     });

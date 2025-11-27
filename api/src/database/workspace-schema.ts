@@ -269,6 +269,7 @@ export interface ISavedConsole extends Document {
   folderId?: Types.ObjectId;
   connectionId?: Types.ObjectId;
   databaseName?: string;
+  databaseId?: string;
   name: string;
   description?: string;
   code: string;
@@ -770,6 +771,10 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     required: false,
   },
   databaseName: {
+    type: String,
+    required: false,
+  },
+  databaseId: {
     type: String,
     required: false,
   },

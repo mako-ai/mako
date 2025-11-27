@@ -17,7 +17,8 @@ export interface ConsoleFile {
   id?: string; // Database ID for saved consoles
   folderId?: string; // Database ID for folders
   connectionId?: string; // Associated database connection ID
-  databaseName?: string; // Associated database name
+  databaseName?: string; // Associated database name (human-readable)
+  databaseId?: string; // Associated database ID (e.g., D1 UUID for cluster mode)
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;
@@ -142,6 +143,7 @@ export class ConsoleManager {
           id: console._id.toString(),
           connectionId: console.connectionId?.toString(),
           databaseName: console.databaseName,
+          databaseId: console.databaseId,
           language: console.language,
           description: console.description,
           isPrivate: console.isPrivate,
@@ -259,6 +261,7 @@ export class ConsoleManager {
     content: string;
     connectionId?: string;
     databaseName?: string;
+    databaseId?: string;
     language?: string;
     id?: string;
   } | null> {
@@ -279,6 +282,7 @@ export class ConsoleManager {
           content: savedConsole.code,
           connectionId: savedConsole.connectionId?.toString(),
           databaseName: savedConsole.databaseName,
+          databaseId: savedConsole.databaseId,
           language: savedConsole.language,
           id: savedConsole._id.toString(),
         };
@@ -301,6 +305,7 @@ export class ConsoleManager {
     userId: string,
     connectionId?: string,
     databaseName?: string,
+    databaseId?: string,
     options?: {
       id?: string; // Optional client-provided ID
       folderId?: string;
@@ -347,6 +352,9 @@ export class ConsoleManager {
         if (databaseName !== undefined) {
           savedConsole.databaseName = databaseName;
         }
+        if (databaseId !== undefined) {
+          savedConsole.databaseId = databaseId;
+        }
         if (options?.description !== undefined) {
           savedConsole.description = options.description;
         }
@@ -363,6 +371,7 @@ export class ConsoleManager {
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
           connectionId: connectionId ? new Types.ObjectId(connectionId) : undefined,
           databaseName: databaseName,
+          databaseId: databaseId,
           name: consoleName,
           description: options?.description || "",
           code: content,

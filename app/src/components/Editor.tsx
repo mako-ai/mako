@@ -306,13 +306,14 @@ function Editor() {
         isNew = true;
       }
 
-      // Get the current database ID for the tab
+      // Get the current connection and database info for the tab
       const currentTab = consoleTabs.find(tab => tab.id === tabId);
-      // Use connectionId (which references the DatabaseConnection) for saving.
-      // databaseId in the tab state might refer to a sub-database UUID (e.g. for D1)
-      // which cannot be stored in the backend's databaseId ObjectId field.
+      // connectionId references the DatabaseConnection ObjectId
+      // databaseId is the sub-database UUID (e.g., D1 cluster mode UUID)
+      // databaseName is the human-readable database name
       const connectionId = currentTab?.connectionId;
       const databaseName = currentTab?.databaseName;
+      const databaseId = currentTab?.databaseId;
 
       const result = await saveConsole(
         currentWorkspace.id,
@@ -321,6 +322,7 @@ function Editor() {
         savePath,
         connectionId,
         databaseName,
+        databaseId,
         isNew,
       );
       if (result.success) {

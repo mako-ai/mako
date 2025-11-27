@@ -130,8 +130,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
 
-  // State to track if there are unsaved changes
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // State to track if there are unsaved changes (content only)
+  const [hasContentChanges, setHasContentChanges] = useState(false);
+  
+  // State to track if database selection has changed
+  const [hasDatabaseChanges, setHasDatabaseChanges] = useState(false);
+  
+  // Combined dirty state - true if either content or database selection changed
+  const hasUnsavedChanges = hasContentChanges || hasDatabaseChanges;
 
   // State to track Monaco's undo/redo availability
   const [monacoCanUndo, setMonacoCanUndo] = useState(false);
@@ -277,6 +283,24 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     selectedSubDbName,
     onDatabaseNameChange,
     initialSelectedDatabaseId,
+    initialSelectedDatabaseName,
+  ]);
+
+  // Track if database selection has changed from initial values (for dirty state)
+  useEffect(() => {
+    const connectionChanged = selectedDatabaseId !== initialDatabaseId;
+    const subDbIdChanged = selectedSubDbId !== initialSelectedDatabaseId;
+    const subDbNameChanged = selectedSubDbName !== initialSelectedDatabaseName;
+    
+    // Consider dirty if any database-related selection changed
+    const isDatabaseDirty = connectionChanged || subDbIdChanged || subDbNameChanged;
+    setHasDatabaseChanges(isDatabaseDirty);
+  }, [
+    selectedDatabaseId,
+    initialDatabaseId,
+    selectedSubDbId,
+    initialSelectedDatabaseId,
+    selectedSubDbName,
     initialSelectedDatabaseName,
   ]);
 
@@ -428,9 +452,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       if (dbContentHash) {
         const currentContentHash = hashContent(initialContent);
         const hasChanges = currentContentHash !== dbContentHash;
-        setHasUnsavedChanges(hasChanges);
+        setHasContentChanges(hasChanges);
       } else {
-        setHasUnsavedChanges(false);
+        setHasContentChanges(false);
       }
       isProgrammaticUpdateRef.current = false;
     }
@@ -485,7 +509,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         const currentContentHash = hashContent(currentContent);
         const hasChanges =
           !dbContentHash || currentContentHash !== dbContentHash;
-        setHasUnsavedChanges(hasChanges);
+        setHasContentChanges(hasChanges);
 
         // Save initial version for undo history
         if (enableVersionControl && !hasInitialVersionRef.current) {
@@ -517,7 +541,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       // Always check if content has changed from DB version (even for undo/redo)
       const currentContentHash = hashContent(content);
       const hasChanges = !dbContentHash || currentContentHash !== dbContentHash;
-      setHasUnsavedChanges(hasChanges);
+      setHasContentChanges(hasChanges);
 
       // Update Monaco undo/redo state
       if (editorRef.current) {
@@ -685,7 +709,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             const currentContentHash = hashContent(savedModifiedContent);
             const hasChanges =
               !dbContentHash || currentContentHash !== dbContentHash;
-            setHasUnsavedChanges(hasChanges);
+            setHasContentChanges(hasChanges);
           }
         }
         isProgrammaticUpdateRef.current = false;

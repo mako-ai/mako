@@ -116,6 +116,8 @@ function MainApp() {
     consoleId?: string, // Add optional consoleId parameter
     isPlaceholder?: boolean,
     queryOptions?: Record<string, any>, // Options to pass when executing (e.g., D1 databaseId)
+    explicitDatabaseId?: string, // Explicit database ID (e.g., D1 UUID from saved console)
+    explicitDatabaseName?: string, // Explicit database name from saved console
   ) => {
     // For existing consoles, use the server ID as the tab ID
     const tabId = consoleId || generateObjectId();
@@ -148,10 +150,10 @@ function MainApp() {
       return;
     }
 
-    // Extract databaseId and databaseName from queryOptions (e.g., for D1 cluster mode)
-    // D1 uses databaseName for the UUID, other DBs may use databaseId or dbName
-    const databaseId = queryOptions?.databaseId || queryOptions?.databaseName; // D1 stores UUID in databaseName
-    const databaseName = queryOptions?.databaseLabel || queryOptions?.dbName; // Human-readable name if available
+    // Use explicit databaseId/databaseName if provided, otherwise extract from queryOptions
+    // For D1 cluster mode, queryOptions.databaseName contains the UUID
+    const databaseId = explicitDatabaseId || queryOptions?.databaseId || queryOptions?.databaseName;
+    const databaseName = explicitDatabaseName || queryOptions?.databaseLabel || queryOptions?.dbName;
 
     // Create a new tab with the determined ID
     const id = addConsoleTab({
@@ -245,6 +247,8 @@ function MainApp() {
               connectionId,
               consoleId,
               isPlaceholder,
+              databaseId,
+              databaseName,
             ) => {
               openOrFocusConsoleTab(
                 path,
@@ -254,6 +258,9 @@ function MainApp() {
                 path,
                 consoleId,
                 isPlaceholder,
+                undefined, // queryOptions - not needed for saved consoles
+                databaseId,
+                databaseName,
               );
             }}
           />

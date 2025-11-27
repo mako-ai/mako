@@ -167,6 +167,7 @@ export const useConsoleStore = () => {
     currentPath?: string,
     connectionId?: string,
     databaseName?: string,
+    databaseId?: string,
     isNew?: boolean,
   ): Promise<{
     success: boolean;
@@ -204,6 +205,7 @@ export const useConsoleStore = () => {
           content,
           connectionId,
           databaseName,
+          databaseId,
         });
         return res.success
           ? { success: true, path, id: (res as any).data?.id }
@@ -213,7 +215,7 @@ export const useConsoleStore = () => {
           success: boolean;
           data?: any;
           error?: string;
-        }>(endpoint, { content, connectionId, databaseName });
+        }>(endpoint, { content, connectionId, databaseName, databaseId });
         return res.success
           ? { success: true, path }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -269,8 +271,8 @@ export const useConsoleStore = () => {
             title: res.name || res.path || "Console",
             content: res.content || "",
             initialContent: res.content || "",
-            connectionId: res.connectionId || res.databaseId,
-            databaseId: res.databaseId, // For backward compatibility
+            connectionId: res.connectionId,
+            databaseId: res.databaseId,
             databaseName: res.databaseName,
             kind: "console",
           });
@@ -449,8 +451,8 @@ useConsoleStore.getState = () => {
             title: res.name || res.path || "Console",
             content: res.content || "",
             initialContent: res.content || "",
-            connectionId: res.connectionId || res.databaseId,
-            databaseId: res.databaseId, // For backward compatibility
+            connectionId: res.connectionId,
+            databaseId: res.databaseId,
             databaseName: res.databaseName,
             kind: "console",
           });

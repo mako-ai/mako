@@ -16,7 +16,8 @@ export interface ConsoleData {
   // Connection context - populated when console is attached to a database connection
   connectionId?: string; // ID of the DatabaseConnection
   connectionType?: string; // "mongodb" | "postgresql" | etc.
-  databaseName?: string; // Specific database name (for cluster mode connections)
+  databaseId?: string; // Specific database ID (e.g., D1 UUID for cluster mode)
+  databaseName?: string; // Human-readable database name
 }
 
 export interface ConsoleEvent {
@@ -112,25 +113,26 @@ export const createConsoleTools = (
       // Helper to build response with connection context
       const buildResponse = (consoleData: ConsoleData) => {
         // Extract connection context from console data
-        // Prioritize connectionId, fall back to databaseId (old schema)
         const connectionId =
           consoleData.connectionId ||
-          consoleData.metadata?.connectionId ||
-          (consoleData as any).databaseId;
+          consoleData.metadata?.connectionId;
 
         const connectionType =
           consoleData.connectionType || consoleData.metadata?.connectionType;
 
-        // For D1: databaseName is the UUID
-        // For MongoDB/Postgres: databaseName is the logical database name
+        // databaseId is the specific database identifier (e.g., D1 UUID for cluster mode)
+        const databaseId =
+          consoleData.databaseId ||
+          consoleData.metadata?.databaseId ||
+          consoleData.metadata?.queryOptions?.databaseId;
+
+        // databaseName is the human-readable database name
         const databaseName =
           consoleData.databaseName ||
-          (consoleData as any).databaseName ||
           consoleData.metadata?.databaseName ||
           consoleData.metadata?.queryOptions?.databaseName ||
           consoleData.metadata?.queryOptions?.dbName ||
-          consoleData.metadata?.dbName ||
-          consoleData.metadata?.queryOptions?.databaseId; // Some old D1 consoles might store UUID here
+          consoleData.metadata?.dbName;
 
         return {
           success: true,
@@ -140,7 +142,8 @@ export const createConsoleTools = (
           // Clean connection context
           connectionId,
           connectionType,
-          databaseName, // Specific database (logical name or UUID)
+          databaseId, // Specific database ID (e.g., D1 UUID)
+          databaseName, // Human-readable database name
         };
       };
 
