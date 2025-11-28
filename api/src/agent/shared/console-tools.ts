@@ -16,7 +16,8 @@ export interface ConsoleData {
   // Connection context - populated when console is attached to a database connection
   connectionId?: string; // ID of the DatabaseConnection
   connectionType?: string; // "mongodb" | "postgresql" | etc.
-  databaseName?: string; // Specific database name (for cluster mode connections)
+  databaseId?: string; // Specific database ID (e.g., D1 UUID for cluster mode)
+  databaseName?: string; // Human-readable database name
 }
 
 export interface ConsoleEvent {
@@ -111,35 +112,15 @@ export const createConsoleTools = (
 
       // Helper to build response with connection context
       const buildResponse = (consoleData: ConsoleData) => {
-        // Extract connection context from console data
-        const connectionId =
-          consoleData.connectionId || consoleData.metadata?.connectionId;
-        const connectionType =
-          consoleData.connectionType || consoleData.metadata?.connectionType;
-
-        // For D1: databaseId is the UUID (sent at top level or in metadata)
-        const databaseId =
-          (consoleData as any).databaseId ||
-          consoleData.metadata?.databaseId ||
-          consoleData.metadata?.queryOptions?.databaseId;
-        // For MongoDB/Postgres: databaseName is the database name
-        const databaseName =
-          (consoleData as any).databaseName ||
-          consoleData.metadata?.databaseName ||
-          consoleData.metadata?.queryOptions?.databaseName ||
-          consoleData.metadata?.queryOptions?.dbName ||
-          consoleData.metadata?.dbName;
-
         return {
           success: true,
           consoleId: consoleData.id,
           title: consoleData.title,
           content: consoleData.content || "",
-          // Clean connection context
-          connectionId,
-          connectionType,
-          databaseId, // D1 database UUID (for cluster-mode D1)
-          databaseName, // Database name (for MongoDB/Postgres cluster-mode)
+          connectionId: consoleData.connectionId,
+          connectionType: consoleData.connectionType,
+          databaseId: consoleData.databaseId,
+          databaseName: consoleData.databaseName,
         };
       };
 

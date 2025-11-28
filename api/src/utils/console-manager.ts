@@ -16,7 +16,9 @@ export interface ConsoleFile {
   children?: ConsoleFile[];
   id?: string; // Database ID for saved consoles
   folderId?: string; // Database ID for folders
-  databaseId?: string; // Associated database ID
+  connectionId?: string; // Associated database connection ID
+  databaseName?: string; // Associated database name (human-readable)
+  databaseId?: string; // Associated database ID (e.g., D1 UUID for cluster mode)
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;
@@ -139,7 +141,9 @@ export class ConsoleManager {
           content: console.code,
           isDirectory: false,
           id: console._id.toString(),
-          databaseId: console.databaseId?.toString(),
+          connectionId: console.connectionId?.toString(),
+          databaseName: console.databaseName,
+          databaseId: console.databaseId,
           language: console.language,
           description: console.description,
           isPrivate: console.isPrivate,
@@ -255,6 +259,8 @@ export class ConsoleManager {
     workspaceId: string,
   ): Promise<{
     content: string;
+    connectionId?: string;
+    databaseName?: string;
     databaseId?: string;
     language?: string;
     id?: string;
@@ -274,7 +280,9 @@ export class ConsoleManager {
       if (savedConsole) {
         return {
           content: savedConsole.code,
-          databaseId: savedConsole.databaseId?.toString(),
+          connectionId: savedConsole.connectionId?.toString(),
+          databaseName: savedConsole.databaseName,
+          databaseId: savedConsole.databaseId,
           language: savedConsole.language,
           id: savedConsole._id.toString(),
         };
@@ -295,6 +303,8 @@ export class ConsoleManager {
     content: string,
     workspaceId: string,
     userId: string,
+    connectionId?: string,
+    databaseName?: string,
     databaseId?: string,
     options?: {
       id?: string; // Optional client-provided ID
@@ -334,10 +344,16 @@ export class ConsoleManager {
         // Update existing console
         savedConsole.code = content;
         savedConsole.updatedAt = new Date();
-        if (databaseId !== undefined) {
-          savedConsole.databaseId = databaseId
-            ? new Types.ObjectId(databaseId)
+        if (connectionId !== undefined) {
+          savedConsole.connectionId = connectionId
+            ? new Types.ObjectId(connectionId)
             : undefined;
+        }
+        if (databaseName !== undefined) {
+          savedConsole.databaseName = databaseName;
+        }
+        if (databaseId !== undefined) {
+          savedConsole.databaseId = databaseId;
         }
         if (options?.description !== undefined) {
           savedConsole.description = options.description;
@@ -353,7 +369,9 @@ export class ConsoleManager {
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
-          databaseId: databaseId ? new Types.ObjectId(databaseId) : undefined,
+          connectionId: connectionId ? new Types.ObjectId(connectionId) : undefined,
+          databaseName: databaseName,
+          databaseId: databaseId,
           name: consoleName,
           description: options?.description || "",
           code: content,

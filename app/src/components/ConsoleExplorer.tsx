@@ -59,9 +59,11 @@ interface ConsoleExplorerProps {
   onConsoleSelect: (
     path: string,
     content: string,
-    databaseId?: string,
+    connectionId?: string,
     consoleId?: string, // Add consoleId parameter
     isPlaceholder?: boolean,
+    databaseId?: string,
+    databaseName?: string,
   ) => void;
 }
 
@@ -154,12 +156,16 @@ function ConsoleExplorer(
     const cached = useConsoleContentStore.getState().get(consoleId);
     const initialContent = cached?.content ?? "loading...";
     const connectionId = cached?.connectionId || node.connectionId;
+    const databaseId = cached?.databaseId || node.databaseId;
+    const databaseName = cached?.databaseName || node.databaseName;
     onConsoleSelect(
       node.path,
       initialContent,
       connectionId,
       consoleId,
       !cached,
+      databaseId,
+      databaseName,
     );
 
     // 2) Fetch in background via apiClient and update store
@@ -169,6 +175,8 @@ function ConsoleExplorer(
         success: boolean;
         content: string;
         connectionId?: string;
+        databaseId?: string;
+        databaseName?: string;
         id: string;
       }>(`/workspaces/${currentWorkspace.id}/consoles/content`, {
         id: consoleId,
@@ -177,12 +185,22 @@ function ConsoleExplorer(
         useConsoleContentStore.getState().set(consoleId, {
           content: (data as any).content,
           connectionId: (data as any).connectionId || node.connectionId,
+          databaseId: (data as any).databaseId || node.databaseId,
+          databaseName: (data as any).databaseName || node.databaseName,
         });
         // Optionally update tab content if it is still open and was showing stale/placeholder
-        const { updateConsoleContent, updateConsoleFilePath } = (
+        const { updateConsoleContent, updateConsoleFilePath, updateConsoleDatabase, updateConsoleConnection } = (
           await import("../store/consoleStore")
         ).useConsoleStore.getState();
         updateConsoleContent(consoleId, (data as any).content);
+        
+        // Update the connection and database info
+        if ((data as any).connectionId) {
+          updateConsoleConnection(consoleId, (data as any).connectionId);
+        }
+        if ((data as any).databaseId || (data as any).databaseName) {
+          updateConsoleDatabase(consoleId, (data as any).databaseId, (data as any).databaseName);
+        }
 
         // Update the file path so the editor knows this is an existing file
         // This fixes the "Save As" prompt appearing for existing consoles

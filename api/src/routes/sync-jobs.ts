@@ -29,7 +29,7 @@ syncJobRoutes.get("/", async c => {
       },
       {
         $lookup: {
-          from: "databases",
+          from: "databaseconnections",
           localField: "destinationDatabaseId",
           foreignField: "_id",
           as: "destinationDatabaseId",

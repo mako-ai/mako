@@ -4,6 +4,8 @@ import { immer } from "zustand/middleware/immer";
 interface ConsoleContentEntry {
   content: string;
   connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
   lastFetchedAt: number;
 }
 
@@ -12,7 +14,7 @@ interface ConsoleContentState {
   get: (consoleId: string) => ConsoleContentEntry | undefined;
   set: (
     consoleId: string,
-    entry: { content: string; connectionId?: string },
+    entry: { content: string; connectionId?: string; databaseId?: string; databaseName?: string },
   ) => void;
   clear: (consoleId?: string) => void;
 }
@@ -26,6 +28,8 @@ export const useConsoleContentStore = create<ConsoleContentState>()(
         state.byId[consoleId] = {
           content: entry.content,
           connectionId: entry.connectionId,
+          databaseId: entry.databaseId,
+          databaseName: entry.databaseName,
           lastFetchedAt: Date.now(),
         };
       });

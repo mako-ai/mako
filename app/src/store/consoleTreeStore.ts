@@ -11,6 +11,8 @@ export interface ConsoleEntry {
   id?: string;
   folderId?: string;
   connectionId?: string; // Associated connection ID (DatabaseConnection ObjectId)
+  databaseId?: string; // Database ID (e.g., D1 UUID for cluster mode)
+  databaseName?: string; // Human-readable database name
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;

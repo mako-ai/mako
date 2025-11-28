@@ -38,7 +38,9 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(
+    database: IDatabaseConnection,
+  ): Promise<DatabaseTreeNode[]> {
     // Single Database Mode
     if (database.connection.database) {
       const dbName = database.connection.database;
@@ -48,7 +50,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
           label: dbName,
           kind: "database",
           hasChildren: true,
-          metadata: { databaseName: dbName },
+          metadata: { databaseId: dbName, databaseName: dbName },
         },
       ];
     }
@@ -67,7 +69,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         label: r.datname,
         kind: "database",
         hasChildren: true,
-        metadata: { databaseName: r.datname },
+        metadata: { databaseId: r.datname, databaseName: r.datname },
       }));
     } catch (error) {
       console.error("Error listing databases in cluster mode:", error);
@@ -82,7 +84,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     const result = await this.executeQuery(
       database,
       `select schema_name from information_schema.schemata order by schema_name;`,
-      { dbName },
+      { databaseName: dbName },
     );
     if (!result.success) return [];
     const systemSchemas: Record<string, true> = {
@@ -102,7 +104,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         label: schema,
         kind: "schema",
         hasChildren: true,
-        metadata: { schema, databaseName: dbName },
+        metadata: { schema, databaseId: dbName, databaseName: dbName },
       }));
   }
 
@@ -112,20 +114,21 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   ): Promise<DatabaseTreeNode[]> {
     // Expanding a Database Node (Cluster Mode)
     if (parent.kind === "database") {
-      const dbName = parent.metadata?.databaseName;
+      const dbName =
+        parent.metadata?.databaseName || parent.metadata?.databaseId;
       return this.listSchemas(database, dbName);
     }
 
     if (parent.kind !== "schema") return [];
 
     const schema = parent.metadata?.schema || parent.id;
-    const dbName = parent.metadata?.databaseName;
+    const dbName = parent.metadata?.databaseName || parent.metadata?.databaseId;
     const safeSchema = String(schema).replace(/'/g, "''");
 
     const result = await this.executeQuery(
       database,
       `select table_name, table_type from information_schema.tables where table_schema = '${safeSchema}' order by table_name;`,
-      { dbName },
+      { databaseName: dbName },
     );
 
     if (!result.success) return [];
@@ -136,17 +139,24 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       label: r.table_name,
       kind: r.table_type === "VIEW" ? "view" : "table",
       hasChildren: false,
-      metadata: { schema, table: r.table_name, databaseName: dbName },
+      metadata: {
+        schema,
+        table: r.table_name,
+        databaseId: dbName,
+        databaseName: dbName,
+      },
     }));
   }
 
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: any,
+    options?: { databaseName?: string; databaseId?: string; dbName?: string },
   ): Promise<QueryResult> {
     try {
-      const pool = await this.getConnection(database, options?.dbName);
+      // Support both databaseName and dbName for compatibility
+      const targetDb = options?.databaseName || options?.dbName;
+      const pool = await this.getConnection(database, targetDb);
       const result = await pool.query(query);
       return {
         success: true,
@@ -445,7 +455,9 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     }
   }
 
-  private async _getConnector(database: IDatabaseConnection): Promise<Connector> {
+  private async _getConnector(
+    database: IDatabaseConnection,
+  ): Promise<Connector> {
     const conn = (database.connection as any) || {};
 
     // Debug logging to trace connection config
