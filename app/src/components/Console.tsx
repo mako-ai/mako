@@ -130,7 +130,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     filePath,
     onHistoryClick,
     enableVersionControl = false,
-    onSaveSuccess: _onSaveSuccess,
+    onSaveSuccess,
   } = props;
 
   const editorRef = useRef<any>(null);
@@ -223,6 +223,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Keep refs of the latest callbacks and props to avoid stale closures in Monaco commands
   const onExecuteRef = useRef(onExecute);
   const onSaveRef = useRef(onSave);
+  const onSaveSuccessRef = useRef(onSaveSuccess);
   const connectionIdRef = useRef(connectionId);
   const databaseIdRef = useRef(databaseId);
 
@@ -234,6 +235,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   useEffect(() => {
     onSaveRef.current = onSave;
   }, [onSave]);
+
+  useEffect(() => {
+    onSaveSuccessRef.current = onSaveSuccess;
+  }, [onSaveSuccess]);
 
   useEffect(() => {
     connectionIdRef.current = connectionId;
@@ -354,8 +359,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     if (onSaveRef.current) {
       const content = getCurrentEditorContent();
       await onSaveRef.current(content, filePathRef.current);
-      // Note: We rely on the parent to update dbContentHash via props or re-render
-      // if (onSaveSuccess) onSaveSuccess(...);
+
+      // Update dbContentHash via callback to mark content as saved
+      const newContentHash = hashContent(content);
+      if (onSaveSuccessRef.current) {
+        onSaveSuccessRef.current(newContentHash);
+      }
+      // Also clear local dirty state since save succeeded
+      setHasContentChanges(false);
     }
   }, [getCurrentEditorContent]);
 
