@@ -91,7 +91,7 @@ export const createConsoleTools = (
   const readConsoleTool = tool({
     name: "read_console",
     description:
-      "Read the contents of the current console editor. Returns console content and the attached database connection information (connectionId, connectionType, databaseName) so you know which database to query.",
+      "Read the contents of the current console editor. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName) so you know which database to query.",
     parameters: {
       type: "object",
       properties: {
@@ -118,6 +118,7 @@ export const createConsoleTools = (
           title: consoleData.title,
           content: consoleData.content || "",
           connectionId: consoleData.connectionId,
+          connectionType: consoleData.connectionType,
           databaseId: consoleData.databaseId,
           databaseName: consoleData.databaseName,
         };
