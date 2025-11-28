@@ -595,8 +595,9 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       );
     }
 
-    // Pass explicit databaseName for cluster mode (D1, etc.)
+    // Pass explicit databaseId and databaseName for cluster mode (D1, etc.)
     const executionOptions = {
+      databaseId: savedConsole.databaseId,
       databaseName: savedConsole.databaseName,
     };
 
