@@ -105,7 +105,7 @@ const createDefaultChatId = () => "default-" + Date.now();
 const getInitialState = (): GlobalState => {
   const defaultChatId = createDefaultChatId();
   return {
-    activeView: "consoles",
+    activeView: "databases",
     activeEditorContent: undefined,
     currentWorkspaceId: null,
     ui: {
