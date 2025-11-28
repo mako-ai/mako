@@ -616,7 +616,7 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
         result = await databaseConnectionService.executeQuery(
           database,
           mongoQuery,
-          savedConsole.mongoOptions, // This might need databaseName too if mongo supports it
+          { ...savedConsole.mongoOptions, ...executionOptions },
         );
       } else {
         // For JavaScript-style MongoDB queries (db.collection.find(), etc.)
