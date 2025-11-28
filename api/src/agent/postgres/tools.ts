@@ -72,9 +72,7 @@ const fetchPostgresDatabase = async (
   }
 
   if (!POSTGRES_TYPES.has(database.type)) {
-    throw new Error(
-      "This tool only supports PostgreSQL database connections.",
-    );
+    throw new Error("This tool only supports PostgreSQL database connections.");
   }
 
   return database;
@@ -129,10 +127,11 @@ const listSchemas = async (
   databaseName: string,
   workspaceId: string,
 ) => {
-  const database = await fetchPostgresDatabase(connectionId, workspaceId);
+  if (!databaseName) {
+    throw new Error("'databaseName' is required");
+  }
 
-  // Pass databaseName to connect to specific DB
-  const options = databaseName ? { databaseName } : undefined;
+  const database = await fetchPostgresDatabase(connectionId, workspaceId);
 
   const result = await databaseConnectionService.executeQuery(
     database as any,
@@ -140,7 +139,7 @@ const listSchemas = async (
      FROM information_schema.schemata
      WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
      ORDER BY schema_name;`,
-    options,
+    { databaseName },
   );
 
   if (!result.success) {
@@ -158,13 +157,15 @@ const listTables = async (
   schema: string,
   workspaceId: string,
 ) => {
+  if (!databaseName) {
+    throw new Error("'databaseName' is required");
+  }
   if (!schema || typeof schema !== "string") {
     throw new Error("'schema' is required");
   }
 
   const database = await fetchPostgresDatabase(connectionId, workspaceId);
   const schemaLiteral = escapeLiteral(schema);
-  const options = databaseName ? { databaseName } : undefined;
 
   const result = await databaseConnectionService.executeQuery(
     database as any,
@@ -172,7 +173,7 @@ const listTables = async (
      FROM information_schema.tables
      WHERE table_schema = ${schemaLiteral}
      ORDER BY table_name;`,
-    options,
+    { databaseName },
   );
 
   if (!result.success) {
@@ -193,6 +194,9 @@ const describeTable = async (
   table: string,
   workspaceId: string,
 ) => {
+  if (!databaseName) {
+    throw new Error("'databaseName' is required");
+  }
   if (!schema || typeof schema !== "string") {
     throw new Error("'schema' is required");
   }
@@ -203,7 +207,6 @@ const describeTable = async (
   const database = await fetchPostgresDatabase(connectionId, workspaceId);
   const schemaLiteral = escapeLiteral(schema);
   const tableLiteral = escapeLiteral(table);
-  const options = databaseName ? { databaseName } : undefined;
 
   const result = await databaseConnectionService.executeQuery(
     database as any,
@@ -219,7 +222,7 @@ const describeTable = async (
      WHERE table_schema = ${schemaLiteral}
        AND table_name = ${tableLiteral}
      ORDER BY ordinal_position;`,
-    options,
+    { databaseName },
   );
 
   if (!result.success) {
@@ -245,21 +248,21 @@ const executePostgresQuery = async (
   connectionId: string,
   query: string,
   workspaceId: string,
-  databaseName?: string,
+  databaseName: string,
 ) => {
+  if (!databaseName) {
+    throw new Error("'databaseName' is required");
+  }
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
   }
 
   const database = await fetchPostgresDatabase(connectionId, workspaceId);
   const safeQuery = appendLimitIfMissing(query);
-  const options = databaseName ? { databaseName } : undefined;
 
-  return databaseConnectionService.executeQuery(
-    database as any,
-    safeQuery,
-    options,
-  );
+  return databaseConnectionService.executeQuery(database as any, safeQuery, {
+    databaseName,
+  });
 };
 
 export const createPostgresTools = (
@@ -332,14 +335,18 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
       },
       required: ["connectionId", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
-      listSchemas(input.connectionId, input.databaseName || undefined, workspaceId),
+      listSchemas(input.connectionId, input.databaseName, workspaceId),
   });
 
   const listSchemasAlias = tool({
@@ -349,14 +356,18 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
       },
       required: ["connectionId", "databaseName"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
-      listSchemas(input.connectionId, input.databaseName || undefined, workspaceId),
+      listSchemas(input.connectionId, input.databaseName, workspaceId),
   });
 
   const listTablesTool = tool({
@@ -366,9 +377,13 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
-        schema: { type: "string" },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
+        schema: { type: "string", description: "The schema name" },
       },
       required: ["connectionId", "schema", "databaseName"],
       additionalProperties: false,
@@ -376,7 +391,7 @@ export const createPostgresTools = (
     execute: async (input: any) =>
       listTables(
         input.connectionId,
-        input.databaseName || undefined,
+        input.databaseName,
         input.schema,
         workspaceId,
       ),
@@ -389,9 +404,13 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
-        schema: { type: "string" },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
+        schema: { type: "string", description: "The schema name" },
       },
       required: ["connectionId", "schema", "databaseName"],
       additionalProperties: false,
@@ -399,7 +418,7 @@ export const createPostgresTools = (
     execute: async (input: any) =>
       listTables(
         input.connectionId,
-        input.databaseName || undefined,
+        input.databaseName,
         input.schema,
         workspaceId,
       ),
@@ -412,10 +431,14 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
-        schema: { type: "string" },
-        table: { type: "string" },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
+        schema: { type: "string", description: "The schema name" },
+        table: { type: "string", description: "The table name" },
       },
       required: ["connectionId", "schema", "table", "databaseName"],
       additionalProperties: false,
@@ -423,7 +446,7 @@ export const createPostgresTools = (
     execute: async (input: any) =>
       describeTable(
         input.connectionId,
-        input.databaseName || undefined,
+        input.databaseName,
         input.schema,
         input.table,
         workspaceId,
@@ -437,10 +460,14 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
-        schema: { type: "string" },
-        table: { type: "string" },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
+        schema: { type: "string", description: "The schema name" },
+        table: { type: "string", description: "The table name" },
       },
       required: ["connectionId", "schema", "table", "databaseName"],
       additionalProperties: false,
@@ -448,7 +475,7 @@ export const createPostgresTools = (
     execute: async (input: any) =>
       describeTable(
         input.connectionId,
-        input.databaseName || undefined,
+        input.databaseName,
         input.schema,
         input.table,
         workspaceId,
@@ -462,9 +489,13 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
-        query: { type: "string" },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
+        query: { type: "string", description: "The SQL query to execute" },
       },
       required: ["connectionId", "query", "databaseName"],
       additionalProperties: false,
@@ -474,7 +505,7 @@ export const createPostgresTools = (
         input.connectionId,
         input.query,
         workspaceId,
-        input.databaseName || undefined,
+        input.databaseName,
       ),
   });
 
@@ -485,9 +516,13 @@ export const createPostgresTools = (
     parameters: {
       type: "object",
       properties: {
-        connectionId: { type: "string" },
-        databaseName: { type: ["string", "null"] },
-        query: { type: "string" },
+        connectionId: { type: "string", description: "The connection ID" },
+        databaseName: {
+          type: "string",
+          description:
+            "The target database name (use list_databases to discover available databases)",
+        },
+        query: { type: "string", description: "The SQL query to execute" },
       },
       required: ["connectionId", "query", "databaseName"],
       additionalProperties: false,
@@ -497,7 +532,7 @@ export const createPostgresTools = (
         input.connectionId,
         input.query,
         workspaceId,
-        input.databaseName || undefined,
+        input.databaseName,
       ),
   });
 
