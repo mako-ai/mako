@@ -41,6 +41,10 @@ export interface QueryExecuteOptions {
   databaseName?: string;
   /** Sub-database ID (e.g., Cloudflare D1 database UUID) */
   databaseId?: string;
+  /** Batch size for paginated queries (BigQuery) */
+  batchSize?: number;
+  /** Location/region for query execution (BigQuery) */
+  location?: string;
 }
 
 interface PooledConnection {
@@ -530,7 +534,7 @@ export class DatabaseConnectionService {
   private async executeBigQueryQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { batchSize?: number; location?: string },
+    options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     try {
       if (typeof query !== "string" || !query.trim()) {

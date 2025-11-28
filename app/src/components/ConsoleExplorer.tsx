@@ -48,6 +48,8 @@ interface ConsoleEntry {
   id?: string; // Database ID for saved consoles/folders
   folderId?: string; // Database ID for folders
   connectionId?: string; // Associated connection ID (DatabaseConnection ObjectId)
+  databaseId?: string; // Associated database ID
+  databaseName?: string; // Associated database name
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;
@@ -601,11 +603,11 @@ function ConsoleExplorer(
             : undefined
         }
       >
-        <MenuItem onClick={() => handleRename(contextMenu!.item)}>
+        <MenuItem onClick={() => contextMenu && handleRename(contextMenu.item)}>
           <EditIcon sx={{ mr: 1 }} fontSize="small" />
           Rename
         </MenuItem>
-        <MenuItem onClick={() => handleDelete(contextMenu!.item)}>
+        <MenuItem onClick={() => contextMenu && handleDelete(contextMenu.item)}>
           <DeleteIcon sx={{ mr: 1 }} fontSize="small" />
           Delete
         </MenuItem>
@@ -761,7 +763,7 @@ function ConsoleExplorer(
               : "This will permanently delete the console."}
           </Alert>
           <Typography>
-            Are you sure you want to delete "{selectedItem?.name}"?
+            Are you sure you want to delete &ldquo;{selectedItem?.name}&rdquo;?
           </Typography>
         </DialogContent>
         <DialogActions>
