@@ -761,24 +761,24 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       ref: "Workspace",
       required: true,
     },
-  folderId: {
-    type: Schema.Types.ObjectId,
-    ref: "ConsoleFolder",
-  },
-  connectionId: {
-    type: Schema.Types.ObjectId,
-    ref: "DatabaseConnection",
-    required: false,
-  },
-  databaseName: {
-    type: String,
-    required: false,
-  },
-  databaseId: {
-    type: String,
-    required: false,
-  },
-  name: {
+    folderId: {
+      type: Schema.Types.ObjectId,
+      ref: "ConsoleFolder",
+    },
+    connectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
+      required: false,
+    },
+    databaseName: {
+      type: String,
+      required: false,
+    },
+    databaseId: {
+      type: String,
+      required: false,
+    },
+    name: {
       type: String,
       required: true,
       trim: true,

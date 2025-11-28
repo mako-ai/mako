@@ -52,11 +52,12 @@ class ApiClient {
     if (response.status === 401) {
       // Clear any stored auth state
       localStorage.removeItem("activeWorkspaceId");
-      
+
       // Only redirect if not already redirecting and not on login/register page
       const currentPath = window.location.pathname;
-      const isAuthPage = currentPath === "/login" || currentPath === "/register";
-      
+      const isAuthPage =
+        currentPath === "/login" || currentPath === "/register";
+
       if (!isAuthPage && !isRedirectingToLogin) {
         isRedirectingToLogin = true;
         window.location.href = "/login";

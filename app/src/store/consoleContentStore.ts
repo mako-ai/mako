@@ -14,7 +14,12 @@ interface ConsoleContentState {
   get: (consoleId: string) => ConsoleContentEntry | undefined;
   set: (
     consoleId: string,
-    entry: { content: string; connectionId?: string; databaseId?: string; databaseName?: string },
+    entry: {
+      content: string;
+      connectionId?: string;
+      databaseId?: string;
+      databaseName?: string;
+    },
   ) => void;
   clear: (consoleId?: string) => void;
 }

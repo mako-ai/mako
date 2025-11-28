@@ -369,7 +369,9 @@ export class ConsoleManager {
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
-          connectionId: connectionId ? new Types.ObjectId(connectionId) : undefined,
+          connectionId: connectionId
+            ? new Types.ObjectId(connectionId)
+            : undefined,
           databaseName: databaseName,
           databaseId: databaseId,
           name: consoleName,

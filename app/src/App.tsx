@@ -1,5 +1,11 @@
-import { Box, styled } from "@mui/material";
-import { Routes, Route, useParams, Navigate, useNavigate } from "react-router-dom";
+import { Box, CircularProgress, styled } from "@mui/material";
+import {
+  Routes,
+  Route,
+  useParams,
+  Navigate,
+  useNavigate,
+} from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import { useAppStore, useChatStore } from "./store";
 import { useConsoleStore } from "./store/consoleStore";
@@ -18,7 +24,6 @@ import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
 import { RegisterPage } from "./components/RegisterPage";
 import { useAuth } from "./contexts/auth-context";
-import { CircularProgress } from "@mui/material";
 
 // Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
 const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
@@ -376,7 +381,7 @@ function LoginRoute() {
   );
 }
 
-// Register page with navigation to login  
+// Register page with navigation to login
 function RegisterRoute() {
   const navigate = useNavigate();
   return (

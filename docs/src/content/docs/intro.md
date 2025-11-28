@@ -16,14 +16,13 @@ Mako stacks four key components to solve the data fragmentation problem:
 
 ## Why Mako?
 
-*   **Unified View**: Break down silos by pulling data from Stripe, Close.com, Postgres, and more into one place.
-*   **AI-First**: Don't just run SQL; ask questions in plain English. Mako understands your schema.
-*   **Open Source**: Built on modern open-source technologies. You own your data and your infrastructure.
-*   **Extensible**: Add new data sources easily using the Connector SDK.
+- **Unified View**: Break down silos by pulling data from Stripe, Close.com, Postgres, and more into one place.
+- **AI-First**: Don't just run SQL; ask questions in plain English. Mako understands your schema.
+- **Open Source**: Built on modern open-source technologies. You own your data and your infrastructure.
+- **Extensible**: Add new data sources easily using the Connector SDK.
 
 ## Who is it for?
 
-*   **CEOs/Founders**: Get answers to business questions without waiting for a data analyst.
-*   **Data Analysts**: Automate the boring parts of ETL and query writing.
-*   **Product Managers**: Make data-driven decisions with direct access to product metrics.
-
+- **CEOs/Founders**: Get answers to business questions without waiting for a data analyst.
+- **Data Analysts**: Automate the boring parts of ETL and query writing.
+- **Product Managers**: Make data-driven decisions with direct access to product metrics.

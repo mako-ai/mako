@@ -189,17 +189,24 @@ function ConsoleExplorer(
           databaseName: (data as any).databaseName || node.databaseName,
         });
         // Optionally update tab content if it is still open and was showing stale/placeholder
-        const { updateConsoleContent, updateConsoleFilePath, updateConsoleDatabase, updateConsoleConnection } = (
-          await import("../store/consoleStore")
-        ).useConsoleStore.getState();
+        const {
+          updateConsoleContent,
+          updateConsoleFilePath,
+          updateConsoleDatabase,
+          updateConsoleConnection,
+        } = (await import("../store/consoleStore")).useConsoleStore.getState();
         updateConsoleContent(consoleId, (data as any).content);
-        
+
         // Update the connection and database info
         if ((data as any).connectionId) {
           updateConsoleConnection(consoleId, (data as any).connectionId);
         }
         if ((data as any).databaseId || (data as any).databaseName) {
-          updateConsoleDatabase(consoleId, (data as any).databaseId, (data as any).databaseName);
+          updateConsoleDatabase(
+            consoleId,
+            (data as any).databaseId,
+            (data as any).databaseName,
+          );
         }
 
         // Update the file path so the editor knows this is an existing file

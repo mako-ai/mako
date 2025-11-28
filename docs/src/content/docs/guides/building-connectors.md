@@ -20,7 +20,12 @@ Connectors live in `api/src/connectors/<source-name>`. Each connector must have:
 Create `api/src/connectors/my-service/connector.ts`:
 
 ```typescript
-import { BaseConnector, FetchOptions, FetchState, ResumableFetchOptions } from "../base/BaseConnector";
+import {
+  BaseConnector,
+  FetchOptions,
+  FetchState,
+  ResumableFetchOptions,
+} from "../base/BaseConnector";
 
 export class MyServiceConnector extends BaseConnector {
   // 1. Define Metadata
@@ -47,22 +52,22 @@ export class MyServiceConnector extends BaseConnector {
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
     const { entity, state } = options;
     const page = state?.page || 1;
-    
+
     // Fetch data from your API
     const response = await this.client.getUsers({ page });
-    
+
     // Process and save batch
     await options.onBatch(response.data);
-    
+
     // Return new state
     return {
       totalProcessed: (state?.totalProcessed || 0) + response.data.length,
       hasMore: response.hasMore,
       page: page + 1,
-      iterationsInChunk: (state?.iterationsInChunk || 0) + 1
+      iterationsInChunk: (state?.iterationsInChunk || 0) + 1,
     };
   }
-  
+
   // 4. Enable Resumable Fetching
   supportsResumableFetching() {
     return true;
@@ -86,7 +91,6 @@ export const connectorRegistry = {
 
 ## Best Practices
 
-*   **Idempotency**: Ensure that running the sync twice for the same data doesn't create duplicates. Use `upsert` operations in the destination.
-*   **Rate Limiting**: Respect the API limits of the source. Use `this.sleep()` if necessary.
-*   **Typing**: Define interfaces for the API responses you expect.
-
+- **Idempotency**: Ensure that running the sync twice for the same data doesn't create duplicates. Use `upsert` operations in the destination.
+- **Rate Limiting**: Respect the API limits of the source. Use `this.sleep()` if necessary.
+- **Typing**: Define interfaces for the API responses you expect.

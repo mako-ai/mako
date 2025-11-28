@@ -13,6 +13,7 @@ This guide covers deploying the RevOps marketing website to Vercel.
 ### Option 1: Deploy via Vercel Dashboard (Recommended)
 
 1. **Push your code to GitHub**
+
    ```bash
    git add .
    git commit -m "Add website"
@@ -20,12 +21,14 @@ This guide covers deploying the RevOps marketing website to Vercel.
    ```
 
 2. **Import to Vercel**
+
    - Go to [vercel.com/new](https://vercel.com/new)
    - Click "Import Project"
    - Select your GitHub repository
    - Vercel will auto-detect Next.js
 
 3. **Configure Project**
+
    - **Root Directory**: Set to `website`
    - **Framework Preset**: Next.js (auto-detected)
    - **Build Command**: `npm run build` (default)
@@ -40,22 +43,26 @@ This guide covers deploying the RevOps marketing website to Vercel.
 ### Option 2: Deploy via Vercel CLI
 
 1. **Install Vercel CLI**
+
    ```bash
    npm i -g vercel
    ```
 
 2. **Login to Vercel**
+
    ```bash
    vercel login
    ```
 
 3. **Deploy from website directory**
+
    ```bash
    cd website
    vercel
    ```
 
 4. **Follow the prompts**
+
    - Set up and deploy? Yes
    - Which scope? Select your account
    - Link to existing project? No
@@ -78,10 +85,12 @@ Update the app links in `app/page.tsx` to point to your production app:
 
 ```typescript
 // Replace localhost URLs with your production app URL
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://app.yourrevopsdomain.com';
+const APP_URL =
+  process.env.NEXT_PUBLIC_APP_URL || "https://app.yourrevopsdomain.com";
 ```
 
 Then set in Vercel:
+
 - **Key**: `NEXT_PUBLIC_APP_URL`
 - **Value**: `https://app.yourrevopsdomain.com`
 
@@ -99,6 +108,7 @@ Then set in Vercel:
 Add these records to your DNS provider:
 
 **For apex domain (revops.com):**
+
 ```
 Type: A
 Name: @
@@ -106,6 +116,7 @@ Value: 76.76.21.21
 ```
 
 **For www subdomain:**
+
 ```
 Type: CNAME
 Name: www
@@ -115,6 +126,7 @@ Value: cname.vercel-dns.com
 ## Automatic Deployments
 
 Vercel automatically deploys:
+
 - **Production**: Pushes to `main` branch → `https://yoursite.com`
 - **Preview**: Pull requests → `https://pr-123-yourproject.vercel.app`
 
@@ -135,6 +147,7 @@ The website uses these settings (in `vercel.json`):
 ## Performance Optimizations
 
 Vercel automatically provides:
+
 - ✅ Edge Network CDN
 - ✅ Automatic HTTPS
 - ✅ Image Optimization
@@ -146,6 +159,7 @@ Vercel automatically provides:
 ### Analytics
 
 Enable Vercel Analytics:
+
 1. Go to project settings
 2. Navigate to "Analytics"
 3. Enable Web Analytics
@@ -153,6 +167,7 @@ Enable Vercel Analytics:
 ### Speed Insights
 
 Enable Speed Insights:
+
 1. Go to project settings
 2. Navigate to "Speed Insights"
 3. Enable Real Experience Score
@@ -162,6 +177,7 @@ Enable Speed Insights:
 ### Build Fails
 
 Check build logs in Vercel dashboard. Common issues:
+
 - Missing dependencies: Run `npm install` locally first
 - TypeScript errors: Run `npm run build` locally to test
 - Node version mismatch: Specify Node version in `package.json`:
@@ -209,4 +225,3 @@ If a deployment has issues:
 - [Vercel Documentation](https://vercel.com/docs)
 - [Next.js Deployment](https://nextjs.org/docs/deployment)
 - [Vercel CLI Reference](https://vercel.com/docs/cli)
-

@@ -205,14 +205,16 @@ export const createBigQueryTools = (
 
   const listDatasetsTool = tool({
     name: "bq_list_datasets",
-    description: "List BigQuery datasets for the provided connection identifier.",
+    description:
+      "List BigQuery datasets for the provided connection identifier.",
     parameters: {
       type: "object",
       properties: { connectionId: { type: "string" } },
       required: ["connectionId"],
       additionalProperties: false,
     },
-    execute: async (input: any) => listDatasets(input.connectionId, workspaceId),
+    execute: async (input: any) =>
+      listDatasets(input.connectionId, workspaceId),
   });
 
   const listDatasetsAlias = tool({
@@ -225,7 +227,8 @@ export const createBigQueryTools = (
       required: ["connectionId"],
       additionalProperties: false,
     },
-    execute: async (input: any) => listDatasets(input.connectionId, workspaceId),
+    execute: async (input: any) =>
+      listDatasets(input.connectionId, workspaceId),
   });
 
   const listTablesTool = tool({
@@ -312,7 +315,10 @@ export const createBigQueryTools = (
       "Execute a BigQuery SQL query and return the results (LIMIT 500 enforced by default).",
     parameters: {
       type: "object",
-      properties: { connectionId: { type: "string" }, query: { type: "string" } },
+      properties: {
+        connectionId: { type: "string" },
+        query: { type: "string" },
+      },
       required: ["connectionId", "query"],
       additionalProperties: false,
     },
@@ -326,7 +332,10 @@ export const createBigQueryTools = (
       "Alias: Execute a BigQuery SQL query and return the results (LIMIT 500 enforced by default).",
     parameters: {
       type: "object",
-      properties: { connectionId: { type: "string" }, query: { type: "string" } },
+      properties: {
+        connectionId: { type: "string" },
+        query: { type: "string" },
+      },
       required: ["connectionId", "query"],
       additionalProperties: false,
     },

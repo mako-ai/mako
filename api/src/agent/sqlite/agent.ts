@@ -17,6 +17,3 @@ export const buildSqliteAgent = (
     tools: createSqliteTools(workspaceId, consoles, preferredConsoleId),
     model: "gpt-5",
   });
-
-
-

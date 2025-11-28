@@ -267,9 +267,8 @@ export async function performSyncChunk(
       connectionIdentifier,
       async (id: string) => {
         const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
-        const destinationDb = await getDestinationManager().getDestination(
-          realDestinationId,
-        );
+        const destinationDb =
+          await getDestinationManager().getDestination(realDestinationId);
         if (!destinationDb) return null;
 
         const config = {
@@ -544,9 +543,8 @@ export async function performSync(
       connectionIdentifier,
       async (id: string) => {
         const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
-        const destinationDb = await getDestinationManager().getDestination(
-          realDestinationId,
-        );
+        const destinationDb =
+          await getDestinationManager().getDestination(realDestinationId);
         if (!destinationDb) return null;
 
         const config = {

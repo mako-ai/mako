@@ -46,7 +46,10 @@ export async function performSync(
   logger?.log("info", `Data source: ${dataSourceId}`);
   logger?.log("info", `Destination: ${destinationDatabaseId}`);
   if (destinationDatabaseName) {
-    logger?.log("info", `Destination Database Name: ${destinationDatabaseName}`);
+    logger?.log(
+      "info",
+      `Destination Database Name: ${destinationDatabaseName}`,
+    );
   }
 
   try {
