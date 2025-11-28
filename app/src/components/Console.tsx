@@ -358,15 +358,18 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const handleSave = useCallback(async () => {
     if (onSaveRef.current) {
       const content = getCurrentEditorContent();
-      await onSaveRef.current(content, filePathRef.current);
+      const success = await onSaveRef.current(content, filePathRef.current);
 
-      // Update dbContentHash via callback to mark content as saved
-      const newContentHash = hashContent(content);
-      if (onSaveSuccessRef.current) {
-        onSaveSuccessRef.current(newContentHash);
+      // Only mark content as saved if the save actually succeeded
+      if (success) {
+        // Update dbContentHash via callback to mark content as saved
+        const newContentHash = hashContent(content);
+        if (onSaveSuccessRef.current) {
+          onSaveSuccessRef.current(newContentHash);
+        }
+        // Also clear local dirty state since save succeeded
+        setHasContentChanges(false);
       }
-      // Also clear local dirty state since save succeeded
-      setHasContentChanges(false);
     }
   }, [getCurrentEditorContent]);
 
