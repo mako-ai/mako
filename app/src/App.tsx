@@ -1,5 +1,5 @@
 import { Box, styled } from "@mui/material";
-import { Routes, Route, useParams } from "react-router-dom";
+import { Routes, Route, useParams, Navigate, useNavigate } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import { useAppStore, useChatStore } from "./store";
 import { useConsoleStore } from "./store/consoleStore";
@@ -15,6 +15,10 @@ import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
 import { ConsoleModification } from "./hooks/useMonacoConsole";
 import { generateObjectId } from "./utils/objectId";
+import { LoginPage } from "./components/LoginPage";
+import { RegisterPage } from "./components/RegisterPage";
+import { useAuth } from "./contexts/auth-context";
+import { CircularProgress } from "@mui/material";
 
 // Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
 const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
@@ -332,11 +336,65 @@ function MainApp() {
   );
 }
 
+// Loading spinner component
+function LoadingScreen() {
+  return (
+    <Box
+      display="flex"
+      justifyContent="center"
+      alignItems="center"
+      minHeight="100vh"
+    >
+      <CircularProgress size={60} />
+    </Box>
+  );
+}
+
+// Auth route wrapper - redirects to "/" if already authenticated
+function AuthRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  // If already authenticated, redirect to main app
+  if (user) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
+}
+
+// Login page with navigation to register
+function LoginRoute() {
+  const navigate = useNavigate();
+  return (
+    <AuthRoute>
+      <LoginPage onSwitchToRegister={() => navigate("/register")} />
+    </AuthRoute>
+  );
+}
+
+// Register page with navigation to login  
+function RegisterRoute() {
+  const navigate = useNavigate();
+  return (
+    <AuthRoute>
+      <RegisterPage onSwitchToLogin={() => navigate("/login")} />
+    </AuthRoute>
+  );
+}
+
 function App() {
   return (
     <Routes>
       {/* Invite route - no authentication required */}
       <Route path="/invite/:token" element={<InvitePage />} />
+
+      {/* Auth routes - redirect to "/" if already logged in */}
+      <Route path="/login" element={<LoginRoute />} />
+      <Route path="/register" element={<RegisterRoute />} />
 
       {/* Main app route - authentication required */}
       <Route path="/*" element={<MainApp />} />

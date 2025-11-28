@@ -2,8 +2,7 @@ import { useEffect, useRef } from "react";
 import { useAppStore, useAppDispatch } from "../store";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
-import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
+import { useAuth } from "../contexts/auth-context";
 
 /**
  * UrlSync component
@@ -20,6 +19,7 @@ import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
  */
 export function UrlSync() {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const dispatch = useAppDispatch();
 
   // We need access to store methods but we don't want to trigger re-renders of this component
@@ -40,9 +40,17 @@ export function UrlSync() {
   // Ref to track if hydration has occurred to prevent double-hydration
   const isHydrated = useRef(false);
 
+  // Reset hydration state when user logs out
+  useEffect(() => {
+    if (!user) {
+      isHydrated.current = false;
+    }
+  }, [user]);
+
   // --- Hydration: Restore state from URL on mount ---
   useEffect(() => {
-    if (isHydrated.current || !currentWorkspace) return;
+    // Don't hydrate if not authenticated or no workspace
+    if (isHydrated.current || !currentWorkspace || !user) return;
 
     const path = window.location.pathname;
 
@@ -131,11 +139,12 @@ export function UrlSync() {
     }
 
     isHydrated.current = true;
-  }, [currentWorkspace]); // Only run when workspace is ready
+  }, [currentWorkspace, user]); // Only run when workspace is ready and user is authenticated
 
   // --- Synchronization: Update URL when state changes ---
   useEffect(() => {
-    if (!isHydrated.current) return; // Don't sync until after hydration
+    // Don't sync until after hydration or if user is not authenticated
+    if (!isHydrated.current || !user) return;
 
     let newPath = "/";
 
@@ -172,7 +181,7 @@ export function UrlSync() {
     if (window.location.pathname !== newPath) {
       window.history.replaceState(null, "", newPath);
     }
-  }, [activeView, activeConsoleId, consoleTabs]); // Re-run when relevant state changes
+  }, [activeView, activeConsoleId, consoleTabs, user]); // Re-run when relevant state changes
 
   return null; // This component renders nothing
 }

@@ -7,6 +7,9 @@ interface ApiRequestOptions extends RequestInit {
   params?: Record<string, string>;
 }
 
+// Flag to prevent multiple 401 redirects
+let isRedirectingToLogin = false;
+
 class ApiClient {
   private basePath: string;
 
@@ -45,11 +48,19 @@ class ApiClient {
    * Handle API response and errors
    */
   private async handleResponse<T>(response: Response): Promise<T> {
-    // Handle 401 Unauthorized - redirect to login
+    // Handle 401 Unauthorized - redirect to login (but avoid redirect loop)
     if (response.status === 401) {
       // Clear any stored auth state
       localStorage.removeItem("activeWorkspaceId");
-      window.location.href = "/login";
+      
+      // Only redirect if not already redirecting and not on login/register page
+      const currentPath = window.location.pathname;
+      const isAuthPage = currentPath === "/login" || currentPath === "/register";
+      
+      if (!isAuthPage && !isRedirectingToLogin) {
+        isRedirectingToLogin = true;
+        window.location.href = "/login";
+      }
       throw new Error("Unauthorized");
     }
 

@@ -134,6 +134,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   } = props;
 
   const editorRef = useRef<any>(null);
+  const diffEditorRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
@@ -295,10 +296,35 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     currentWorkspace?.id,
   ]);
 
-  // Helper function to get current content
+  // Helper function to get current content (or selected text if there's a selection)
   const getCurrentEditorContent = useCallback(() => {
-    return editorRef.current?.getValue() || "";
-  }, []);
+    // In diff mode, get content from the modified editor
+    if (isDiffMode) {
+      const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
+      if (modifiedEditor) {
+        const selection = modifiedEditor.getSelection();
+        const model = modifiedEditor.getModel();
+        // If there's a non-empty selection, return only the selected text
+        if (selection && !selection.isEmpty() && model) {
+          return model.getValueInRange(selection);
+        }
+      }
+      // Fall back to full modified content
+      return modifiedContent || "";
+    }
+
+    // Normal mode: check for selection first
+    if (editorRef.current) {
+      const selection = editorRef.current.getSelection();
+      const model = editorRef.current.getModel();
+      // If there's a non-empty selection, return only the selected text
+      if (selection && !selection.isEmpty() && model) {
+        return model.getValueInRange(selection);
+      }
+      return editorRef.current.getValue() || "";
+    }
+    return "";
+  }, [isDiffMode, modifiedContent]);
 
   // Handler for opening info modal
   const handleInfoClick = useCallback(() => {
@@ -686,6 +712,34 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     setModifiedContent("");
   }, []);
 
+  // DiffEditor mount handler - set up CMD+Enter and store ref
+  const handleDiffEditorDidMount = useCallback(
+    (diffEditor: any, monaco: any) => {
+      diffEditorRef.current = diffEditor;
+
+      // Get the modified editor to add keyboard shortcuts
+      const modifiedEditor = diffEditor.getModifiedEditor();
+      if (modifiedEditor) {
+        // CMD/CTRL + Enter execution support
+        modifiedEditor.addCommand(
+          monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+          () => {
+            // Use refs to get latest values
+            const content = getCurrentEditorContent();
+            if (onExecuteRef.current) {
+              onExecuteRef.current(
+                content,
+                connectionIdRef.current || undefined,
+                databaseIdRef.current,
+              );
+            }
+          },
+        );
+      }
+    },
+    [getCurrentEditorContent],
+  );
+
   useImperativeHandle(
     ref,
     () => ({
@@ -1014,6 +1068,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             language={editorLanguage || "javascript"}
             original={originalContent}
             modified={modifiedContent}
+            onMount={handleDiffEditorDidMount}
             options={{
               automaticLayout: true,
               readOnly: true,

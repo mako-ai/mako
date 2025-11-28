@@ -1,8 +1,7 @@
-import React, { useState } from "react";
+import React from "react";
+import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../contexts/auth-context";
 import { CircularProgress, Box } from "@mui/material";
-import { LoginPage } from "./LoginPage";
-import { RegisterPage } from "./RegisterPage";
 
 /**
  * Props for ProtectedRoute component
@@ -12,11 +11,12 @@ interface ProtectedRouteProps {
 }
 
 /**
- * Component to protect routes that require authentication
+ * Component to protect routes that require authentication.
+ * Redirects to /login if not authenticated.
  */
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user, loading } = useAuth();
-  const [showRegister, setShowRegister] = useState(false);
+  const location = useLocation();
 
   // Show loading spinner while checking auth status
   if (loading) {
@@ -32,12 +32,10 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     );
   }
 
-  // Show login/register if not authenticated
+  // Redirect to login if not authenticated
   if (!user) {
-    if (showRegister) {
-      return <RegisterPage onSwitchToLogin={() => setShowRegister(false)} />;
-    }
-    return <LoginPage onSwitchToRegister={() => setShowRegister(true)} />;
+    // Store the attempted URL for potential redirect after login
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   // Render children if authenticated
