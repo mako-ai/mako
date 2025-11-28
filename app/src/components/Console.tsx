@@ -301,8 +301,16 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     currentWorkspace?.id,
   ]);
 
-  // Helper function to get current content (or selected text if there's a selection)
-  const getCurrentEditorContent = useCallback(() => {
+  // Helper function to get full editor content (ignores selection)
+  const getFullEditorContent = useCallback(() => {
+    if (isDiffMode) {
+      return modifiedContent || "";
+    }
+    return editorRef.current?.getValue() || "";
+  }, [isDiffMode, modifiedContent]);
+
+  // Helper function to get content for execution (selected text if there's a selection, otherwise full content)
+  const getExecutionContent = useCallback(() => {
     // In diff mode, get content from the modified editor
     if (isDiffMode) {
       const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
@@ -343,7 +351,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // Execute handler
   const handleExecute = useCallback(() => {
-    const content = getCurrentEditorContent();
+    const content = getExecutionContent();
     // Use the latest ref values for execution (to avoid stale closures in Monaco commands)
     if (onExecuteRef.current) {
       onExecuteRef.current(
@@ -352,12 +360,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         databaseIdRef.current,
       );
     }
-  }, [getCurrentEditorContent]);
+  }, [getExecutionContent]);
 
-  // Save handler
+  // Save handler - always saves full content regardless of selection
   const handleSave = useCallback(async () => {
     if (onSaveRef.current) {
-      const content = getCurrentEditorContent();
+      const content = getFullEditorContent();
       const success = await onSaveRef.current(content, filePathRef.current);
 
       // Only mark content as saved if the save actually succeeded
@@ -371,7 +379,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         setHasContentChanges(false);
       }
     }
-  }, [getCurrentEditorContent]);
+  }, [getFullEditorContent]);
 
   // Calculate editor language
   const editorLanguage = useMemo(() => {
@@ -642,7 +650,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Show diff instead of applying modification immediately
   const showDiff = useCallback(
     (modification: ConsoleModification) => {
-      const currentContent = getCurrentEditorContent();
+      const currentContent = getFullEditorContent();
       const newContent = calculateModifiedContent(currentContent, modification);
 
       setOriginalContent(currentContent);
@@ -650,7 +658,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       setPendingModification(modification);
       setIsDiffMode(true);
     },
-    [getCurrentEditorContent, calculateModifiedContent],
+    [getFullEditorContent, calculateModifiedContent],
   );
 
   // Accept the changes
@@ -739,7 +747,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
           () => {
             // Use refs to get latest values
-            const content = getCurrentEditorContent();
+            const content = getExecutionContent();
             if (onExecuteRef.current) {
               onExecuteRef.current(
                 content,
@@ -751,14 +759,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         );
       }
     },
-    [getCurrentEditorContent],
+    [getExecutionContent],
   );
 
   useImperativeHandle(
     ref,
     () => ({
       getCurrentContent: () => {
-        const content = getCurrentEditorContent();
+        const content = getFullEditorContent();
         return {
           content,
           fileName: title ? `${title}.js` : "console.js",
@@ -773,7 +781,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       showDiff,
     }),
     [
-      getCurrentEditorContent,
+      getFullEditorContent,
       title,
       applyModification,
       undo,
