@@ -1,5 +1,11 @@
-import { Box, styled } from "@mui/material";
-import { Routes, Route, useParams } from "react-router-dom";
+import { Box, CircularProgress, styled } from "@mui/material";
+import {
+  Routes,
+  Route,
+  useParams,
+  Navigate,
+  useNavigate,
+} from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import { useAppStore, useChatStore } from "./store";
 import { useConsoleStore } from "./store/consoleStore";
@@ -15,6 +21,9 @@ import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
 import { ConsoleModification } from "./hooks/useMonacoConsole";
 import { generateObjectId } from "./utils/objectId";
+import { LoginPage } from "./components/LoginPage";
+import { RegisterPage } from "./components/RegisterPage";
+import { useAuth } from "./contexts/auth-context";
 
 // Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
 const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
@@ -41,6 +50,8 @@ function InvitePage() {
     </WorkspaceProvider>
   );
 }
+
+import { UrlSync } from "./components/UrlSync";
 
 // Main application component (extracted from original App)
 function MainApp() {
@@ -114,6 +125,8 @@ function MainApp() {
     consoleId?: string, // Add optional consoleId parameter
     isPlaceholder?: boolean,
     queryOptions?: Record<string, any>, // Options to pass when executing (e.g., D1 databaseId)
+    explicitDatabaseId?: string, // Explicit database ID (e.g., D1 UUID from saved console)
+    explicitDatabaseName?: string, // Explicit database name from saved console
   ) => {
     // For existing consoles, use the server ID as the tab ID
     const tabId = consoleId || generateObjectId();
@@ -146,10 +159,15 @@ function MainApp() {
       return;
     }
 
-    // Extract databaseId and databaseName from queryOptions (e.g., for D1 cluster mode)
-    // D1 uses databaseName for the UUID, other DBs may use databaseId or dbName
-    const databaseId = queryOptions?.databaseId || queryOptions?.databaseName; // D1 stores UUID in databaseName
-    const databaseName = queryOptions?.databaseLabel || queryOptions?.dbName; // Human-readable name if available
+    // Use explicit values if provided, otherwise extract from queryOptions (tree node metadata)
+    // databaseId: used for selector value, saving to DB, and API calls (UUID for D1, name for MongoDB/PostgreSQL)
+    // databaseName: used for display in selector (human-readable name, falls back to databaseId)
+    const databaseId =
+      explicitDatabaseId ||
+      queryOptions?.databaseId ||
+      queryOptions?.databaseName;
+    const databaseName =
+      explicitDatabaseName || queryOptions?.databaseName || databaseId;
 
     // Create a new tab with the determined ID
     const id = addConsoleTab({
@@ -243,6 +261,8 @@ function MainApp() {
               connectionId,
               consoleId,
               isPlaceholder,
+              databaseId,
+              databaseName,
             ) => {
               openOrFocusConsoleTab(
                 path,
@@ -252,6 +272,9 @@ function MainApp() {
                 path,
                 consoleId,
                 isPlaceholder,
+                undefined, // queryOptions - not needed for saved consoles
+                databaseId,
+                databaseName,
               );
             }}
           />
@@ -268,6 +291,7 @@ function MainApp() {
 
   return (
     <AuthWrapper>
+      <UrlSync />
       <Box
         sx={{
           display: "flex",
@@ -317,11 +341,65 @@ function MainApp() {
   );
 }
 
+// Loading spinner component
+function LoadingScreen() {
+  return (
+    <Box
+      display="flex"
+      justifyContent="center"
+      alignItems="center"
+      minHeight="100vh"
+    >
+      <CircularProgress size={60} />
+    </Box>
+  );
+}
+
+// Auth route wrapper - redirects to "/" if already authenticated
+function AuthRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  // If already authenticated, redirect to main app
+  if (user) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
+}
+
+// Login page with navigation to register
+function LoginRoute() {
+  const navigate = useNavigate();
+  return (
+    <AuthRoute>
+      <LoginPage onSwitchToRegister={() => navigate("/register")} />
+    </AuthRoute>
+  );
+}
+
+// Register page with navigation to login
+function RegisterRoute() {
+  const navigate = useNavigate();
+  return (
+    <AuthRoute>
+      <RegisterPage onSwitchToLogin={() => navigate("/login")} />
+    </AuthRoute>
+  );
+}
+
 function App() {
   return (
     <Routes>
       {/* Invite route - no authentication required */}
       <Route path="/invite/:token" element={<InvitePage />} />
+
+      {/* Auth routes - redirect to "/" if already logged in */}
+      <Route path="/login" element={<LoginRoute />} />
+      <Route path="/register" element={<RegisterRoute />} />
 
       {/* Main app route - authentication required */}
       <Route path="/*" element={<MainApp />} />

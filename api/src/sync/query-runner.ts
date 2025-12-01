@@ -163,7 +163,9 @@ class QueryRunner {
     }[]
   > {
     try {
-      const databases = await DatabaseConnection.find({}).sort({ createdAt: -1 });
+      const databases = await DatabaseConnection.find({}).sort({
+        createdAt: -1,
+      });
       return databases.map(db => ({
         id: db._id.toString(),
         name: db.name,

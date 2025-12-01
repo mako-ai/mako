@@ -99,6 +99,8 @@ consoleRoutes.get("/content", async (c: Context) => {
     return c.json({
       success: true,
       content: consoleData.content,
+      connectionId: consoleData.connectionId,
+      databaseName: consoleData.databaseName,
       databaseId: consoleData.databaseId,
       language: consoleData.language,
       id: consoleData.id,
@@ -127,7 +129,9 @@ consoleRoutes.post("/", async (c: Context) => {
       id, // Optional client-provided ID
       path: consolePath,
       content,
-      databaseId,
+      connectionId,
+      databaseId, // Backward compatibility
+      databaseName,
       folderId,
       description,
       language,
@@ -153,15 +157,15 @@ consoleRoutes.post("/", async (c: Context) => {
       return c.json({ success: false, error: "Content must be a string" }, 400);
     }
 
-    // databaseId is optional - consoles can be saved without being associated with a specific database
-    let targetDatabaseId = databaseId;
-    if (!targetDatabaseId) {
+    // connectionId is optional - consoles can be saved without being associated with a specific database
+    let targetConnectionId = connectionId;
+    if (!targetConnectionId) {
       // Try to get the first database for the workspace, but don't require it
       const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
       if (databases.length > 0) {
-        targetDatabaseId = databases[0]._id.toString();
+        targetConnectionId = databases[0]._id.toString();
       }
-      // If no databases exist, that's fine - targetDatabaseId will remain undefined
+      // If no databases exist, that's fine - targetConnectionId will remain undefined
     }
 
     const exists = await consoleManager.consoleExists(consolePath, workspaceId);
@@ -177,7 +181,9 @@ consoleRoutes.post("/", async (c: Context) => {
       content,
       workspaceId,
       user.id,
-      targetDatabaseId,
+      targetConnectionId,
+      databaseName,
+      databaseId,
       {
         id, // Pass client-provided ID
         folderId,
@@ -195,7 +201,9 @@ consoleRoutes.post("/", async (c: Context) => {
           id: savedConsole._id.toString(),
           path: consolePath,
           content,
-          databaseId: targetDatabaseId,
+          connectionId: targetConnectionId,
+          databaseName,
+          databaseId,
           language: savedConsole.language,
         },
       },
@@ -239,15 +247,15 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       );
     }
 
-    // databaseId is optional - consoles can be saved without being associated with a specific database
-    let targetDatabaseId = body.databaseId;
-    if (!targetDatabaseId) {
+    // connectionId is optional - consoles can be saved without being associated with a specific database
+    let targetConnectionId = body.connectionId;
+    if (!targetConnectionId) {
       // Try to get the first database for the workspace, but don't require it
       const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
       if (databases.length > 0) {
-        targetDatabaseId = databases[0]._id.toString();
+        targetConnectionId = databases[0]._id.toString();
       }
-      // If no databases exist, that's fine - targetDatabaseId will remain undefined
+      // If no databases exist, that's fine - targetConnectionId will remain undefined
     }
 
     const savedConsole = await consoleManager.saveConsole(
@@ -255,7 +263,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       body.content,
       workspaceId,
       user.id,
-      targetDatabaseId,
+      targetConnectionId,
+      body.databaseName,
+      body.databaseId,
       {
         folderId: body.folderId,
         description: body.description,
@@ -271,7 +281,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         id: savedConsole._id.toString(),
         path: consolePath,
         content: body.content,
-        databaseId: targetDatabaseId,
+        connectionId: targetConnectionId,
+        databaseName: body.databaseName,
+        databaseId: body.databaseId,
         language: savedConsole.language,
       },
     });
@@ -552,11 +564,11 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
-    // If console has a database ID, verify it exists and belongs to workspace
+    // If console has a connection ID, verify it exists and belongs to workspace
     let database = null;
-    if (savedConsole.databaseId) {
+    if (savedConsole.connectionId) {
       database = await DatabaseConnection.findOne({
-        _id: savedConsole.databaseId,
+        _id: savedConsole.connectionId,
         workspaceId: new Types.ObjectId(access.workspaceId),
       });
 
@@ -577,11 +589,17 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       return c.json(
         {
           success: false,
-          error: "Console has no associated database",
+          error: "Console has no associated database connection",
         },
         400,
       );
     }
+
+    // Pass explicit databaseId and databaseName for cluster mode (D1, etc.)
+    const executionOptions = {
+      databaseId: savedConsole.databaseId,
+      databaseName: savedConsole.databaseName,
+    };
 
     if (savedConsole.language === "mongodb") {
       if (
@@ -599,13 +617,14 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
         result = await databaseConnectionService.executeQuery(
           database,
           mongoQuery,
-          savedConsole.mongoOptions,
+          { ...savedConsole.mongoOptions, ...executionOptions },
         );
       } else {
         // For JavaScript-style MongoDB queries (db.collection.find(), etc.)
         result = await databaseConnectionService.executeQuery(
           database,
           savedConsole.code,
+          executionOptions,
         );
       }
     } else {
@@ -613,6 +632,7 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       result = await databaseConnectionService.executeQuery(
         database,
         savedConsole.code,
+        executionOptions,
       );
     }
 
@@ -670,9 +690,9 @@ consoleRoutes.get("/list", async (c: Context) => {
       workspaceId: new Types.ObjectId(access.workspaceId),
     })
       .select(
-        "_id name description language databaseId createdAt updatedAt lastExecutedAt executionCount",
+        "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount",
       )
-      .populate("databaseId", "name type")
+      .populate("connectionId", "name type")
       .sort({ updatedAt: -1 });
 
     return c.json({
@@ -682,13 +702,14 @@ consoleRoutes.get("/list", async (c: Context) => {
         name: console.name,
         description: console.description,
         language: console.language,
-        database: console.databaseId
+        connection: console.connectionId
           ? {
-              id: console.databaseId._id,
-              name: (console.databaseId as any).name,
-              type: (console.databaseId as any).type,
+              id: console.connectionId._id,
+              name: (console.connectionId as any).name,
+              type: (console.connectionId as any).type,
             }
           : null,
+        databaseName: console.databaseName,
         createdAt: console.createdAt,
         updatedAt: console.updatedAt,
         lastExecutedAt: console.lastExecutedAt,
@@ -731,7 +752,7 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const savedConsole = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
       workspaceId: new Types.ObjectId(access.workspaceId),
-    }).populate("databaseId", "name type");
+    }).populate("connectionId", "name type");
 
     if (!savedConsole) {
       return c.json({ success: false, error: "Console not found" }, 404);
@@ -746,13 +767,14 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
         code: savedConsole.code,
         language: savedConsole.language,
         mongoOptions: savedConsole.mongoOptions,
-        database: savedConsole.databaseId
+        connection: savedConsole.connectionId
           ? {
-              id: savedConsole.databaseId._id,
-              name: (savedConsole.databaseId as any).name,
-              type: (savedConsole.databaseId as any).type,
+              id: savedConsole.connectionId._id,
+              name: (savedConsole.connectionId as any).name,
+              type: (savedConsole.connectionId as any).type,
             }
           : null,
+        databaseName: savedConsole.databaseName,
         createdAt: savedConsole.createdAt,
         updatedAt: savedConsole.updatedAt,
         lastExecutedAt: savedConsole.lastExecutedAt,

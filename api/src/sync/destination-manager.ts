@@ -51,7 +51,7 @@ export class DatabaseDestinationManager {
 
   async getDestination(id: string): Promise<any> {
     const db = await this.getDb();
-    const collection = db.collection("databases");
+    const collection = db.collection("databaseconnections");
 
     if (!ObjectId.isValid(id)) {
       return null;
@@ -84,7 +84,7 @@ export class DatabaseDestinationManager {
     workspaceId: string,
   ): Promise<{ name: string; id: string }[]> {
     const db = await this.getDb();
-    const collection = db.collection("databases");
+    const collection = db.collection("databaseconnections");
     const destinations = await collection
       .find(
         { workspaceId: new ObjectId(workspaceId) },

@@ -9,18 +9,18 @@ Mako is built as a modern TypeScript monorepo using a specialized stack for perf
 
 ### 1. Web Application (`app/`)
 
-*   **Framework**: Vite + React
-*   **Styling**: Tailwind CSS
-*   **State**: React Context + Hooks
-*   **Routing**: React Router
+- **Framework**: Vite + React
+- **Styling**: Tailwind CSS
+- **State**: React Context + Hooks
+- **Routing**: React Router
 
 ### 2. API Service (`api/`)
 
-*   **Runtime**: Node.js
-*   **Framework**: Hono (running on Node.js adapter)
-*   **Database**: MongoDB (Mongoose ODM)
-*   **Auth**: Lucia Auth + Arctic (OAuth)
-*   **Job Queue**: Inngest
+- **Runtime**: Node.js
+- **Framework**: Hono (running on Node.js adapter)
+- **Database**: MongoDB (Mongoose ODM)
+- **Auth**: Lucia Auth + Arctic (OAuth)
+- **Job Queue**: Inngest
 
 ### 3. Sync Engine
 
@@ -42,7 +42,9 @@ Connectors are standardized via the `BaseConnector` abstract class.
 ```typescript
 abstract class BaseConnector {
   // Fetch a single chunk of data, returning state to resume
-  abstract fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState>;
+  abstract fetchEntityChunk(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState>;
 
   // Validate configuration
   abstract testConnection(): Promise<ConnectionTestResult>;
@@ -53,13 +55,13 @@ abstract class BaseConnector {
 
 The Query Runner allows Mako to execute SQL (and other query languages) against connected data sources.
 
-*   It supports multiple drivers (BigQuery, Postgres, MongoDB).
-*   It uses a uniform interface to execute queries and return results to the AI Assistant or the UI.
+- It supports multiple drivers (BigQuery, Postgres, MongoDB).
+- It uses a uniform interface to execute queries and return results to the AI Assistant or the UI.
 
 ### 5. AI Agent
 
 Mako includes an AI Agent capable of:
+
 1.  **Schema Inspection**: Understanding the structure of connected databases.
 2.  **Query Generation**: Writing SQL/Mongo queries based on natural language.
 3.  **Data Analysis**: interpreting query results for the user.
-

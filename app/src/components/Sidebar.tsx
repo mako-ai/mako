@@ -95,6 +95,9 @@ function Sidebar() {
       useSyncJobStore.getState().reset();
 
       await logout();
+
+      // Use full page reload to ensure clean state and avoid race conditions with 401 handlers
+      window.location.href = "/login";
     } catch (error) {
       console.error("Logout failed:", error);
     }

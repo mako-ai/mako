@@ -32,6 +32,21 @@ export interface ConnectionConfig {
   database: string;
 }
 
+/**
+ * Options for query execution
+ * Used consistently across all database drivers
+ */
+export interface QueryExecuteOptions {
+  /** Target database name (for cluster/server-level connections) */
+  databaseName?: string;
+  /** Sub-database ID (e.g., Cloudflare D1 database UUID) */
+  databaseId?: string;
+  /** Batch size for paginated queries (BigQuery) */
+  batchSize?: number;
+  /** Location/region for query execution (BigQuery) */
+  location?: string;
+}
+
 interface PooledConnection {
   client: MongoClient;
   db: Db;
@@ -77,10 +92,7 @@ export class DatabaseConnectionService {
       "cloudsql-postgres",
       new CloudSQLPostgresDatabaseDriver() as any,
     );
-    this.drivers.set(
-      "cloudflare-d1",
-      new CloudflareD1DatabaseDriver() as any,
-    );
+    this.drivers.set("cloudflare-d1", new CloudflareD1DatabaseDriver() as any);
     // Start cleanup interval for MongoDB connections
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
@@ -135,20 +147,20 @@ export class DatabaseConnectionService {
   async executeQuery(
     database: IDatabaseConnection,
     query: any,
-    options?: any,
+    options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     try {
       switch (database.type) {
         case "mongodb":
           return await this.executeMongoDBQuery(database, query, options);
         case "postgresql":
-          return await this.executePostgreSQLQuery(database, query);
+          return await this.executePostgreSQLQuery(database, query, options);
         case "cloudsql-postgres":
           return await this.drivers
             .get("cloudsql-postgres")!
             .executeQuery(database, query, options);
         case "mysql":
-          return await this.executeMySQLQuery(database, query);
+          return await this.executeMySQLQuery(database, query, options);
         case "sqlite":
           return await this.executeSQLiteQuery(database, query);
         case "mssql":
@@ -522,7 +534,7 @@ export class DatabaseConnectionService {
   private async executeBigQueryQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { batchSize?: number; location?: string },
+    options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     try {
       if (typeof query !== "string" || !query.trim()) {
@@ -1069,11 +1081,11 @@ export class DatabaseConnectionService {
   private async executeMongoDBQuery(
     database: IDatabaseConnection,
     query: any,
-    options?: any,
+    options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     const client = (await this.getConnection(database)) as MongoClient;
-    // Use database from options (Cluster mode support) or fallback to connection default
-    const dbName = options?.dbName || database.connection.database;
+    // Use database from options or fallback to connection default
+    const dbName = options?.databaseName || database.connection.database;
     const db = client.db(dbName);
 
     try {
@@ -1429,22 +1441,64 @@ export class DatabaseConnectionService {
   private async executePostgreSQLQuery(
     database: IDatabaseConnection,
     query: string,
+    options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
-    const client = (await this.getConnection(database)) as PgClient;
-    try {
-      const result = await client.query(query);
-      return {
-        success: true,
-        data: result.rows,
-        rowCount: result.rowCount ?? undefined,
-        fields: result.fields,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "PostgreSQL query failed",
-      };
+    // Determine the target database: options override or connection default
+    const targetDatabase =
+      options?.databaseName || database.connection.database;
+
+    // Check if we need a different database than what's cached in the connection
+    const connectionDatabase = database.connection.database;
+    let client: PgClient;
+
+    if (targetDatabase && targetDatabase !== connectionDatabase) {
+      // Need to create a new connection for the target database
+      client = new PgClient({
+        host: database.connection.host,
+        port: database.connection.port || 5432,
+        database: targetDatabase,
+        user: database.connection.username,
+        password: database.connection.password,
+        ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
+      });
+      await client.connect();
+
+      try {
+        const result = await client.query(query);
+        return {
+          success: true,
+          data: result.rows,
+          rowCount: result.rowCount ?? undefined,
+          fields: result.fields,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "PostgreSQL query failed",
+        };
+      } finally {
+        // Close the temporary connection
+        await client.end();
+      }
+    } else {
+      // Use the cached connection
+      client = (await this.getConnection(database)) as PgClient;
+      try {
+        const result = await client.query(query);
+        return {
+          success: true,
+          data: result.rows,
+          rowCount: result.rowCount ?? undefined,
+          fields: result.fields,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "PostgreSQL query failed",
+        };
+      }
     }
   }
 
@@ -1496,20 +1550,59 @@ export class DatabaseConnectionService {
   private async executeMySQLQuery(
     database: IDatabaseConnection,
     query: string,
+    options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
-    const connection = (await this.getConnection(database)) as mysql.Connection;
-    try {
-      const [rows, fields] = await connection.execute(query);
-      return {
-        success: true,
-        data: rows,
-        fields: fields,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "MySQL query failed",
-      };
+    // Determine the target database: options override or connection default
+    const targetDatabase =
+      options?.databaseName || database.connection.database;
+
+    const connectionDatabase = database.connection.database;
+    let connection: mysql.Connection;
+
+    if (targetDatabase && targetDatabase !== connectionDatabase) {
+      // Need to create a new connection for the target database
+      connection = await mysql.createConnection({
+        host: database.connection.host,
+        port: database.connection.port || 3306,
+        database: targetDatabase,
+        user: database.connection.username,
+        password: database.connection.password,
+        ssl: database.connection.ssl
+          ? { rejectUnauthorized: false }
+          : undefined,
+      });
+
+      try {
+        const [rows, fields] = await connection.execute(query);
+        return {
+          success: true,
+          data: rows,
+          fields: fields,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "MySQL query failed",
+        };
+      } finally {
+        await connection.end();
+      }
+    } else {
+      // Use the cached connection
+      connection = (await this.getConnection(database)) as mysql.Connection;
+      try {
+        const [rows, fields] = await connection.execute(query);
+        return {
+          success: true,
+          data: rows,
+          fields: fields,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "MySQL query failed",
+        };
+      }
     }
   }
 
@@ -1534,7 +1627,9 @@ export class DatabaseConnectionService {
     }
   }
 
-  private async createSQLiteConnection(database: IDatabaseConnection): Promise<any> {
+  private async createSQLiteConnection(
+    database: IDatabaseConnection,
+  ): Promise<any> {
     const db = await open({
       filename: database.connection.database || ":memory:",
       driver: SqliteDatabase,

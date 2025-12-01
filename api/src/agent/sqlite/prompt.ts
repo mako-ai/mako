@@ -98,5 +98,3 @@ LIMIT 500;
 \`\`\`
 I have placed a query in your console that retrieves all users created in the last 7 days. The query filters by the created_at timestamp using SQLite's datetime functions and includes a LIMIT 500 for safety. You can run it now or adjust the date range as needed.
 `;
-
-

@@ -15,7 +15,9 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(
+    database: IDatabaseConnection,
+  ): Promise<DatabaseTreeNode[]> {
     const datasets =
       await databaseConnectionService.listBigQueryDatasets(database);
     return datasets.map<DatabaseTreeNode>(ds => ({
@@ -54,7 +56,11 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       }));
   }
 
-  async executeQuery(database: IDatabaseConnection, query: string, options?: any) {
+  async executeQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options?: any,
+  ) {
     return databaseConnectionService.executeQuery(database, query, options);
   }
 }

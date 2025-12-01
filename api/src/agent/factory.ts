@@ -4,10 +4,7 @@ import {
   AgentBuilder,
   DatabaseAgentKind,
 } from "./types";
-import {
-  getAgentRegistration,
-  getRegisteredAgentKinds,
-} from "./registry";
+import { getAgentRegistration, getRegisteredAgentKinds } from "./registry";
 import { buildTriageAgent } from "./triage/agent";
 
 const buildTriage: AgentBuilder = config =>
@@ -43,10 +40,7 @@ export function createAgent(kind: AgentKind, config: AgentConfig): any {
  * @returns Array of supported agent kinds
  */
 export function getSupportedAgentKinds(): AgentKind[] {
-  return [
-    ...getRegisteredAgentKinds(),
-    "triage",
-  ] as AgentKind[];
+  return [...getRegisteredAgentKinds(), "triage"] as AgentKind[];
 }
 
 /**

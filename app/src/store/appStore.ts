@@ -25,6 +25,9 @@ export interface ConsoleTab {
   connectionId?: string; // DatabaseConnection ID (MongoDB ObjectId)
   databaseId?: string; // Specific database ID (e.g., D1 UUID for cluster mode)
   databaseName?: string; // Human-readable database name (e.g., D1 database name)
+  savedConnectionId?: string; // Connection ID last saved to DB (for dirty tracking)
+  savedDatabaseId?: string; // Database ID last saved to DB (for dirty tracking)
+  savedDatabaseName?: string; // Database name last saved to DB (for dirty tracking)
   filePath?: string;
   kind?: "console" | "settings" | "connectors" | "members" | "sync-job-editor";
   isDirty?: boolean; // false/undefined = pristine (replaceable), true = dirty (persistent)
@@ -34,7 +37,13 @@ export interface ConsoleTab {
 
 export interface GlobalState {
   // Backward-compatibility top-level view props
-  activeView?: "databases" | "consoles" | "connectors" | "sync-jobs";
+  activeView?:
+    | "databases"
+    | "consoles"
+    | "connectors"
+    | "sync-jobs"
+    | "settings";
+
   activeEditorContent?: {
     content: string;
     fileName?: string;
@@ -42,7 +51,13 @@ export interface GlobalState {
   };
   currentWorkspaceId?: string | null;
   ui: {
-    leftPane: "databases" | "consoles" | "connectors" | "sync-jobs";
+    leftPane:
+      | "databases"
+      | "consoles"
+      | "connectors"
+      | "sync-jobs"
+      | "settings";
+
     loading: Record<string, boolean>; // keyed by request name
   };
   explorers: {
@@ -74,7 +89,12 @@ export interface GlobalState {
   };
 }
 
-export type AppView = "databases" | "consoles" | "connectors" | "sync-jobs";
+export type AppView =
+  | "databases"
+  | "consoles"
+  | "connectors"
+  | "sync-jobs"
+  | "settings";
 
 /*********************
  * Initial state     *
@@ -85,7 +105,7 @@ const createDefaultChatId = () => "default-" + Date.now();
 const getInitialState = (): GlobalState => {
   const defaultChatId = createDefaultChatId();
   return {
-    activeView: "consoles",
+    activeView: "databases",
     activeEditorContent: undefined,
     currentWorkspaceId: null,
     ui: {
@@ -160,6 +180,15 @@ export type Action =
   | {
       type: "UPDATE_CONSOLE_DB_HASH";
       payload: { id: string; dbContentHash: string };
+    }
+  | {
+      type: "UPDATE_CONSOLE_SAVED_DATABASE";
+      payload: {
+        id: string;
+        connectionId?: string;
+        databaseId?: string;
+        databaseName?: string;
+      };
     }
   | {
       type: "UPDATE_CONSOLE_FILE_PATH";
@@ -243,6 +272,10 @@ export const reducer = (state: GlobalState, action: Action): void => {
         connectionId,
         databaseId,
         databaseName,
+        // Initialize saved* fields to track the original database selection for dirty state
+        savedConnectionId: connectionId,
+        savedDatabaseId: databaseId,
+        savedDatabaseName: databaseName,
         filePath,
         kind: kind || "console",
         isDirty: false, // New tabs start as pristine
@@ -385,6 +418,15 @@ export const reducer = (state: GlobalState, action: Action): void => {
     case "UPDATE_CONSOLE_DB_HASH": {
       const tab = state.consoles.tabs[action.payload.id];
       if (tab) tab.dbContentHash = action.payload.dbContentHash;
+      break;
+    }
+    case "UPDATE_CONSOLE_SAVED_DATABASE": {
+      const tab = state.consoles.tabs[action.payload.id];
+      if (tab) {
+        tab.savedConnectionId = action.payload.connectionId;
+        tab.savedDatabaseId = action.payload.databaseId;
+        tab.savedDatabaseName = action.payload.databaseName;
+      }
       break;
     }
     case "UPDATE_CONSOLE_FILE_PATH": {
@@ -583,8 +625,9 @@ export const useAppStore = create<
   GlobalState & {
     dispatch: (a: Action) => void;
     setActiveView: (
-      view: "databases" | "consoles" | "connectors" | "sync-jobs",
+      view: "databases" | "consoles" | "connectors" | "sync-jobs" | "settings",
     ) => void;
+
     setCurrentWorkspaceId: (workspaceId: string | null) => void;
     setActiveEditorContent: (
       content:
@@ -680,6 +723,35 @@ export const useAppStore = create<
               const firstSessionId = Object.keys(sessions)[0];
               data.state.chat.currentChatId = firstSessionId;
             }
+          }
+
+          // Migration: Populate saved* fields and normalize legacy data for existing console tabs
+          if (data.state?.consoles?.tabs) {
+            Object.values(data.state.consoles.tabs).forEach((tab: any) => {
+              // Normalize databaseId/databaseName from legacy metadata.queryOptions
+              if (tab.databaseId === undefined && tab.metadata?.queryOptions) {
+                tab.databaseId =
+                  tab.metadata.queryOptions.databaseId ||
+                  tab.metadata.queryOptions.databaseName; // D1 uses databaseName for UUID
+              }
+              if (
+                tab.databaseName === undefined &&
+                tab.metadata?.queryOptions
+              ) {
+                tab.databaseName = tab.metadata.queryOptions.databaseLabel;
+              }
+
+              // Initialize saved* fields from current values for dirty state tracking
+              if (tab.savedConnectionId === undefined) {
+                tab.savedConnectionId = tab.connectionId;
+              }
+              if (tab.savedDatabaseId === undefined) {
+                tab.savedDatabaseId = tab.databaseId;
+              }
+              if (tab.savedDatabaseName === undefined) {
+                tab.savedDatabaseName = tab.databaseName;
+              }
+            });
           }
 
           return data;

@@ -77,7 +77,7 @@ const fetchSqliteDatabase = async (
   return database;
 };
 
-const listSqliteDatabases = async (workspaceId: string) => {
+const listSqliteConnections = async (workspaceId: string) => {
   const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
 
   const databases = await DatabaseConnection.find({
@@ -92,11 +92,35 @@ const listSqliteDatabases = async (workspaceId: string) => {
       name: db.name,
       type: db.type,
       accountId: connection.account_id || "unknown",
-      databaseId: connection.database_id || "all-databases",
+      databaseId: connection.database_id || null, // D1 database UUID (null if cluster-mode)
       displayName: `${db.name} (${db.type})`,
       active: true,
     };
   });
+};
+
+const listSqliteDatabases = async (
+  connectionId: string,
+  workspaceId: string,
+) => {
+  const database = await fetchSqliteDatabase(connectionId, workspaceId);
+  const connection: any = (database as any).connection || {};
+
+  // For D1, if we had an API to list databases in the account, we would call it here.
+  // For now, we return the configured database_id if present, or "main" for standard SQLite.
+  // TODO: Implement D1 account database listing if possible.
+
+  const dbs = [];
+  if (connection.database_id) {
+    dbs.push({
+      databaseId: connection.database_id,
+      name: connection.database_id,
+    });
+  } else {
+    dbs.push({ databaseId: "main", name: "main" });
+  }
+
+  return dbs;
 };
 
 const listTables = async (
@@ -104,30 +128,21 @@ const listTables = async (
   workspaceId: string,
   databaseId: string,
 ) => {
-  const database = await fetchSqliteDatabase(connectionId, workspaceId);
-  const connection: any = (database as any).connection || {};
-
-  // Determine the effective database ID
-  // For D1: use provided databaseId, or fallback to connection.database_id
-  // For SQLite file: database_id isn't needed
-  const effectiveDatabaseId = databaseId || connection.database_id;
-
-  // For D1 cluster-mode (no database_id configured), databaseId is required
-  if (database.type === "cloudflare-d1" && !effectiveDatabaseId) {
-    throw new Error(
-      "databaseId is required for D1 cluster-mode connections. Use read_console to get the databaseId from the attached console.",
-    );
+  if (!databaseId) {
+    throw new Error("'databaseId' is required");
   }
+
+  const database = await fetchSqliteDatabase(connectionId, workspaceId);
 
   const result = await databaseConnectionService.executeQuery(
     database as any,
     `SELECT name, type 
      FROM sqlite_master 
      WHERE type IN ('table', 'view') 
-       AND name NOT LIKE 'sqlite_%' 
-       AND name NOT LIKE '_cf_%'
+     AND name NOT LIKE 'sqlite_%' 
+     AND name NOT LIKE '_cf_%'
      ORDER BY type DESC, name ASC;`,
-    effectiveDatabaseId ? { databaseId: effectiveDatabaseId } : undefined,
+    { databaseId },
   );
 
   if (!result.success) {
@@ -146,28 +161,20 @@ const describeTable = async (
   workspaceId: string,
   databaseId: string,
 ) => {
+  if (!databaseId) {
+    throw new Error("'databaseId' is required");
+  }
   if (!table || typeof table !== "string") {
     throw new Error("'table' is required");
   }
 
   const database = await fetchSqliteDatabase(connectionId, workspaceId);
-  const connection: any = (database as any).connection || {};
-
-  // Determine the effective database ID
-  const effectiveDatabaseId = databaseId || connection.database_id;
-
-  // For D1 cluster-mode (no database_id configured), databaseId is required
-  if (database.type === "cloudflare-d1" && !effectiveDatabaseId) {
-    throw new Error(
-      "databaseId is required for D1 cluster-mode connections. Use read_console to get the databaseId from the attached console.",
-    );
-  }
 
   // Use PRAGMA table_info for column details
   const result = await databaseConnectionService.executeQuery(
     database as any,
     `PRAGMA table_info('${table.replace(/'/g, "''")}');`,
-    effectiveDatabaseId ? { databaseId: effectiveDatabaseId } : undefined,
+    { databaseId },
   );
 
   if (!result.success) {
@@ -191,31 +198,21 @@ const executeSqliteQuery = async (
   connectionId: string,
   query: string,
   workspaceId: string,
-  databaseId?: string,
+  databaseId: string,
 ) => {
+  if (!databaseId) {
+    throw new Error("'databaseId' is required");
+  }
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
   }
 
   const database = await fetchSqliteDatabase(connectionId, workspaceId);
-  const connection: any = (database as any).connection || {};
   const safeQuery = appendLimitIfMissing(query);
 
-  // Determine the effective database ID
-  const effectiveDatabaseId = databaseId || connection.database_id;
-
-  // For D1 cluster-mode (no database_id configured), databaseId is required
-  if (database.type === "cloudflare-d1" && !effectiveDatabaseId) {
-    throw new Error(
-      "databaseId is required for D1 cluster-mode connections. Use read_console to get the databaseId from the attached console.",
-    );
-  }
-
-  return databaseConnectionService.executeQuery(
-    database as any,
-    safeQuery,
-    effectiveDatabaseId ? { databaseId: effectiveDatabaseId } : undefined,
-  );
+  return databaseConnectionService.executeQuery(database as any, safeQuery, {
+    databaseId,
+  });
 };
 
 export const createSqliteTools = (
@@ -223,8 +220,8 @@ export const createSqliteTools = (
   consoles?: ConsoleData[],
   preferredConsoleId?: string,
 ) => {
-  const listDatabasesTool = tool({
-    name: "sqlite_list_databases",
+  const listConnectionsTool = tool({
+    name: "sqlite_list_connections",
     description:
       "Return a list of SQLite/Cloudflare D1 database connections available in this workspace.",
     parameters: {
@@ -233,11 +230,11 @@ export const createSqliteTools = (
       required: [],
       additionalProperties: false,
     },
-    execute: async () => listSqliteDatabases(workspaceId),
+    execute: async () => listSqliteConnections(workspaceId),
   });
 
-  const listDatabasesAlias = tool({
-    name: "list_databases",
+  const listConnectionsAlias = tool({
+    name: "list_connections",
     description:
       "Alias for listing SQLite/D1 database connections for the workspace.",
     parameters: {
@@ -246,81 +243,110 @@ export const createSqliteTools = (
       required: [],
       additionalProperties: false,
     },
-    execute: async () => listSqliteDatabases(workspaceId),
+    execute: async () => listSqliteConnections(workspaceId),
   });
 
-  const listTablesTool = tool({
-    name: "sqlite_list_tables",
+  const listDatabasesTool = tool({
+    name: "sqlite_list_databases",
     description:
-      "List tables and views in the selected SQLite/D1 database. For D1 cluster-mode connections, provide both connectionId and databaseId (the D1 database UUID).",
+      "List logical databases (or D1 UUIDs) within a specific SQLite/D1 connection.",
     parameters: {
       type: "object",
       properties: {
         connectionId: {
           type: "string",
-          description: "The connection ID (from sqlite_list_databases)",
+          description: "The connection ID (from list_connections)",
+        },
+      },
+      required: ["connectionId"],
+      additionalProperties: false,
+    },
+    execute: async (input: any) =>
+      listSqliteDatabases(input.connectionId, workspaceId),
+  });
+
+  const listDatabasesAlias = tool({
+    name: "list_databases",
+    description:
+      "Alias for listing logical databases (or D1 UUIDs) within a specific connection.",
+    parameters: {
+      type: "object",
+      properties: {
+        connectionId: {
+          type: "string",
+          description: "The connection ID (from list_connections)",
+        },
+      },
+      required: ["connectionId"],
+      additionalProperties: false,
+    },
+    execute: async (input: any) =>
+      listSqliteDatabases(input.connectionId, workspaceId),
+  });
+
+  const listTablesTool = tool({
+    name: "sqlite_list_tables",
+    description: "List tables and views in the selected SQLite/D1 database.",
+    parameters: {
+      type: "object",
+      properties: {
+        connectionId: {
+          type: "string",
+          description: "The connection ID (from sqlite_list_connections)",
         },
         databaseId: {
-          type: ["string", "null"],
+          type: "string",
           description:
-            "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
+            "The D1 database UUID (use list_databases to discover available databases)",
         },
       },
       required: ["connectionId", "databaseId"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
-      listTables(
-        input.connectionId,
-        workspaceId,
-        input.databaseId || undefined,
-      ),
+      listTables(input.connectionId, workspaceId, input.databaseId),
   });
 
   const listTablesAlias = tool({
     name: "list_tables",
     description:
-      "Alias: List tables and views in the selected SQLite/D1 database. For D1 cluster-mode connections, provide both connectionId and databaseId (the D1 database UUID).",
+      "Alias: List tables and views in the selected SQLite/D1 database.",
     parameters: {
       type: "object",
       properties: {
         connectionId: {
           type: "string",
-          description: "The connection ID (from sqlite_list_databases)",
+          description: "The connection ID (from sqlite_list_connections)",
         },
         databaseId: {
-          type: ["string", "null"],
+          type: "string",
           description:
-            "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
+            "The D1 database UUID (use list_databases to discover available databases)",
         },
       },
       required: ["connectionId", "databaseId"],
       additionalProperties: false,
     },
     execute: async (input: any) =>
-      listTables(
-        input.connectionId,
-        workspaceId,
-        input.databaseId || undefined,
-      ),
+      listTables(input.connectionId, workspaceId, input.databaseId),
   });
 
   const describeTableTool = tool({
     name: "sqlite_describe_table",
     description:
-      "Describe a SQLite table, including columns, data types, nullability, defaults, and primary key status. For D1 cluster-mode connections, provide both connectionId and databaseId (the D1 database UUID).",
+      "Describe a SQLite table, including columns, data types, nullability, defaults, and primary key status.",
     parameters: {
       type: "object",
       properties: {
         connectionId: {
           type: "string",
-          description: "The connection ID (from sqlite_list_databases)",
+          description: "The connection ID (from sqlite_list_connections)",
         },
         table: { type: "string", description: "The table name to describe" },
         databaseId: {
-          type: ["string", "null"],
+          type: "string",
           description:
-            "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
+            "The D1 database UUID (use list_databases to discover available databases)",
         },
       },
       required: ["connectionId", "table", "databaseId"],
@@ -331,26 +357,26 @@ export const createSqliteTools = (
         input.connectionId,
         input.table,
         workspaceId,
-        input.databaseId || undefined,
+        input.databaseId,
       ),
   });
 
   const describeTableAlias = tool({
     name: "describe_table",
     description:
-      "Alias: Describe a SQLite table, including columns, data types, nullability, defaults, and primary key status. For D1 cluster-mode connections, provide both connectionId and databaseId (the D1 database UUID).",
+      "Alias: Describe a SQLite table, including columns, data types, nullability, defaults, and primary key status.",
     parameters: {
       type: "object",
       properties: {
         connectionId: {
           type: "string",
-          description: "The connection ID (from sqlite_list_databases)",
+          description: "The connection ID (from sqlite_list_connections)",
         },
         table: { type: "string", description: "The table name to describe" },
         databaseId: {
-          type: ["string", "null"],
+          type: "string",
           description:
-            "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
+            "The D1 database UUID (use list_databases to discover available databases)",
         },
       },
       required: ["connectionId", "table", "databaseId"],
@@ -361,26 +387,26 @@ export const createSqliteTools = (
         input.connectionId,
         input.table,
         workspaceId,
-        input.databaseId || undefined,
+        input.databaseId,
       ),
   });
 
   const executeQueryTool = tool({
     name: "sqlite_execute_query",
     description:
-      "Execute a SQLite SQL query and return the results (adds LIMIT 500 when missing). For D1 cluster-mode connections, provide both connectionId and databaseId (the D1 database UUID).",
+      "Execute a SQLite SQL query and return the results (adds LIMIT 500 when missing).",
     parameters: {
       type: "object",
       properties: {
         connectionId: {
           type: "string",
-          description: "The connection ID (from sqlite_list_databases)",
+          description: "The connection ID (from sqlite_list_connections)",
         },
         query: { type: "string", description: "The SQL query to execute" },
         databaseId: {
-          type: ["string", "null"],
+          type: "string",
           description:
-            "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
+            "The D1 database UUID (use list_databases to discover available databases)",
         },
       },
       required: ["connectionId", "query", "databaseId"],
@@ -391,26 +417,26 @@ export const createSqliteTools = (
         input.connectionId,
         input.query,
         workspaceId,
-        input.databaseId || undefined,
+        input.databaseId,
       ),
   });
 
   const executeQueryAlias = tool({
     name: "execute_query",
     description:
-      "Alias: Execute a SQLite SQL query and return the results (adds LIMIT 500 when missing). For D1 cluster-mode connections, provide both connectionId and databaseId (the D1 database UUID).",
+      "Alias: Execute a SQLite SQL query and return the results (adds LIMIT 500 when missing).",
     parameters: {
       type: "object",
       properties: {
         connectionId: {
           type: "string",
-          description: "The connection ID (from sqlite_list_databases)",
+          description: "The connection ID (from sqlite_list_connections)",
         },
         query: { type: "string", description: "The SQL query to execute" },
         databaseId: {
-          type: ["string", "null"],
+          type: "string",
           description:
-            "For D1 cluster-mode: the D1 database UUID (from read_console). Pass null for single-database connections.",
+            "The D1 database UUID (use list_databases to discover available databases)",
         },
       },
       required: ["connectionId", "query", "databaseId"],
@@ -421,13 +447,15 @@ export const createSqliteTools = (
         input.connectionId,
         input.query,
         workspaceId,
-        input.databaseId || undefined,
+        input.databaseId,
       ),
   });
 
   const consoleTools = createConsoleTools(consoles, preferredConsoleId);
 
   return [
+    listConnectionsTool,
+    listConnectionsAlias,
     listDatabasesTool,
     listDatabasesAlias,
     listTablesTool,
