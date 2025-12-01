@@ -119,7 +119,8 @@ databaseTreeRoutes.get(
       template = `SELECT * FROM ${table} LIMIT 500;`;
     } else {
       // Fallback SQL-like template
-      template = "SELECT * FROM table_name LIMIT 500;";
+      const table = nodeId || "table_name";
+      template = `SELECT * FROM ${table} LIMIT 500;`;
     }
 
     return c.json({ success: true, data: { language, template } });

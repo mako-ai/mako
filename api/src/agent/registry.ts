@@ -166,9 +166,7 @@ export const listAgentRegistrations = (): AgentRegistration[] =>
 
 export const registerAgent = (registration: AgentRegistration): void => {
   if (agentRegistry.has(registration.kind)) {
-    throw new Error(
-      `Agent kind "${registration.kind}" is already registered.`,
-    );
+    throw new Error(`Agent kind "${registration.kind}" is already registered.`);
   }
   agentRegistry.set(registration.kind, registration);
 };

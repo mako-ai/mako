@@ -5,7 +5,11 @@ import {
   requireWorkspaceRole,
   AuthenticatedContext,
 } from "../middleware/workspace.middleware";
-import { DatabaseConnection, IDatabaseConnection, SyncJob } from "../database/workspace-schema";
+import {
+  DatabaseConnection,
+  IDatabaseConnection,
+  SyncJob,
+} from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
 
@@ -714,6 +718,83 @@ workspaceDatabaseRoutes.get(
         {
           success: false,
           error: error instanceof Error ? error.message : "Failed to get views",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// ============================================================================
+// Workspace-level execute endpoint (cleaner API)
+// Mounted at /api/workspaces/:workspaceId/execute in index.ts
+// ============================================================================
+export const workspaceExecuteRoutes = new Hono();
+
+// POST /api/workspaces/:workspaceId/execute - Execute query with explicit connection/database params
+workspaceExecuteRoutes.post(
+  "/",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const body = await c.req.json();
+
+      const { connectionId, databaseId, databaseName, query } = body;
+
+      // Validate required fields
+      if (!connectionId) {
+        return c.json(
+          { success: false, error: "connectionId is required" },
+          400,
+        );
+      }
+
+      if (!query) {
+        return c.json({ success: false, error: "query is required" }, 400);
+      }
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json(
+          { success: false, error: "Invalid connectionId format" },
+          400,
+        );
+      }
+
+      // Find the database connection
+      const database = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(connectionId),
+        workspaceId: workspace._id,
+      });
+
+      if (!database) {
+        return c.json(
+          { success: false, error: "Database connection not found" },
+          404,
+        );
+      }
+
+      // Build options for query execution
+      const options = {
+        databaseId,
+        databaseName,
+      };
+
+      const result = await databaseConnectionService.executeQuery(
+        database,
+        query,
+        options,
+      );
+
+      return c.json(result);
+    } catch (error) {
+      console.error("Error executing query:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to execute query",
         },
         500,
       );

@@ -7,15 +7,15 @@ Mako uses a robust authentication system built with **Lucia Auth** and **Arctic*
 
 ## Overview
 
-*   **Session Management**: Lucia Auth (v3) with MongoDB adapter.
-*   **OAuth**: Arctic for handling Google and GitHub flows.
-*   **Security**: HTTP-only cookies, CSRF protection, and rate limiting.
+- **Session Management**: Lucia Auth (v3) with MongoDB adapter.
+- **OAuth**: Arctic for handling Google and GitHub flows.
+- **Security**: HTTP-only cookies, CSRF protection, and rate limiting.
 
 ## Features
 
-*   **Email/Password**: Secure registration and login with bcrypt hashing.
-*   **Social Login**: "Continue with Google" and "Continue with GitHub".
-*   **Session Persistence**: Configurable session duration (default 24h).
+- **Email/Password**: Secure registration and login with bcrypt hashing.
+- **Social Login**: "Continue with Google" and "Continue with GitHub".
+- **Session Persistence**: Configurable session duration (default 24h).
 
 ## Integration Guide
 
@@ -26,7 +26,7 @@ Use the `unifiedAuthMiddleware` to protect API endpoints. It supports both Sessi
 ```typescript
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 
-app.get("/api/protected-resource", unifiedAuthMiddleware, (c) => {
+app.get("/api/protected-resource", unifiedAuthMiddleware, c => {
   const user = c.get("user");
   return c.json({ message: `Hello, ${user.email}` });
 });
@@ -64,4 +64,3 @@ GOOGLE_CLIENT_SECRET="..."
 GITHUB_CLIENT_ID="..."
 GITHUB_CLIENT_SECRET="..."
 ```
-

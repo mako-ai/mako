@@ -240,7 +240,9 @@ async function interactiveMode() {
       `   Destination: ${destinations.find((d: { id: string }) => d.id === destinationId)?.name}`,
     );
     if (destinationDatabaseName?.trim()) {
-      console.log(`   Destination Database Name: ${destinationDatabaseName.trim()}`);
+      console.log(
+        `   Destination Database Name: ${destinationDatabaseName.trim()}`,
+      );
     }
     console.log(
       `   Entities: ${selectedEntities ? selectedEntities.join(", ") : "All entities"}`,

@@ -59,7 +59,9 @@ export const webhookEventProcessFunction = inngest.createFunction(
     const result = await step.run("process-event", async () => {
       try {
         const dataSource = await DataSource.findById(job.dataSourceId);
-        const database = await DatabaseConnection.findById(job.destinationDatabaseId);
+        const database = await DatabaseConnection.findById(
+          job.destinationDatabaseId,
+        );
 
         if (!dataSource || !database) {
           throw new Error("Invalid data source or database");

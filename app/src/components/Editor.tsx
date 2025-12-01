@@ -93,6 +93,7 @@ function Editor() {
     updateConsoleContent,
     updateConsoleConnection,
     updateConsoleDatabase,
+    updateConsoleSavedDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
@@ -227,8 +228,11 @@ function Editor() {
   const handleConsoleExecute = async (
     tabId: string,
     contentToExecute: string,
-    databaseId?: string,
-    queryOptions?: Record<string, any>,
+    connectionId?: string,
+    options?: {
+      databaseId?: string; // Sub-database ID (e.g., D1 UUID)
+      databaseName?: string; // Sub-database name for cluster mode
+    },
   ) => {
     if (!contentToExecute.trim()) return;
 
@@ -238,8 +242,8 @@ function Editor() {
       return;
     }
 
-    if (!databaseId) {
-      setErrorMessage("No database selected");
+    if (!connectionId) {
+      setErrorMessage("No database connection selected");
       setErrorModalOpen(true);
       return;
     }
@@ -249,9 +253,9 @@ function Editor() {
     try {
       const result = await executeQuery(
         currentWorkspace.id,
-        databaseId,
+        connectionId,
         contentToExecute,
-        queryOptions,
+        options,
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
@@ -306,18 +310,19 @@ function Editor() {
         isNew = true;
       }
 
-      // Get the current database ID for the tab
+      // Get the current connection and database info for the tab
       const currentTab = consoleTabs.find(tab => tab.id === tabId);
-      // Use connectionId (which references the DatabaseConnection) for saving.
-      // databaseId in the tab state might refer to a sub-database UUID (e.g. for D1)
-      // which cannot be stored in the backend's databaseId ObjectId field.
-      const databaseId = currentTab?.connectionId;
+      const connectionId = currentTab?.connectionId;
+      const databaseId = currentTab?.databaseId;
+      const databaseName = currentTab?.databaseName;
 
       const result = await saveConsole(
         currentWorkspace.id,
         tabId,
         contentToSave,
         savePath,
+        connectionId,
+        databaseName,
         databaseId,
         isNew,
       );
@@ -334,6 +339,15 @@ function Editor() {
 
         // Mark tab as dirty since it's now saved and should be persistent
         updateConsoleDirty(tabId, true);
+
+        // Update the saved database values to reflect what was just persisted
+        // This is used for dirty state tracking in the Console component
+        updateConsoleSavedDatabase(
+          tabId,
+          connectionId,
+          databaseId,
+          databaseName,
+        );
 
         setSnackbarMessage(
           `Console saved ${isNew ? "as" : "to"} '${savePath}.js'`,
@@ -522,20 +536,11 @@ function Editor() {
                         initialContent={tab.content}
                         dbContentHash={tab.dbContentHash}
                         title={tab.title}
-                        onExecute={(content, connectionId, databaseName) =>
-                          handleConsoleExecute(
-                            tab.id,
-                            content,
-                            connectionId,
-                            // Merge tab's queryOptions with dynamically selected databaseName/databaseId
-                            databaseName
-                              ? {
-                                  ...tab.metadata?.queryOptions,
-                                  databaseId: databaseName, // For D1: databaseName is the UUID
-                                  databaseName,
-                                }
-                              : tab.metadata?.queryOptions,
-                          )
+                        onExecute={(content, connectionId, databaseId) =>
+                          handleConsoleExecute(tab.id, content, connectionId, {
+                            databaseId: databaseId || tab.databaseId,
+                            databaseName: tab.databaseName,
+                          })
                         }
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)
@@ -563,16 +568,14 @@ function Editor() {
                             },
                           });
                         }}
-                        initialDatabaseId={tab.connectionId}
-                        initialSelectedDatabaseId={
-                          tab.databaseId ||
-                          tab.metadata?.queryOptions?.databaseId ||
-                          tab.metadata?.queryOptions?.databaseName // D1 uses databaseName for UUID
-                        }
-                        initialSelectedDatabaseName={
-                          tab.databaseName ||
-                          tab.metadata?.queryOptions?.databaseLabel
-                        }
+                        // Current database selection (single source of truth from store)
+                        connectionId={tab.connectionId}
+                        databaseId={tab.databaseId}
+                        databaseName={tab.databaseName}
+                        // Saved database values (for dirty tracking)
+                        savedConnectionId={tab.savedConnectionId}
+                        savedDatabaseId={tab.savedDatabaseId}
+                        savedDatabaseName={tab.savedDatabaseName}
                         databases={availableDatabases}
                         onDatabaseChange={connId =>
                           updateConsoleConnection(tab.id, connId)

@@ -71,7 +71,9 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
     return client;
   }
 
-  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(
+    database: IDatabaseConnection,
+  ): Promise<DatabaseTreeNode[]> {
     const conn = database.connection as unknown as D1Connection;
 
     // If a specific database_id is configured, show only that database
@@ -82,7 +84,10 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
           label: conn.database_id,
           kind: "database",
           hasChildren: true,
-          metadata: { databaseName: conn.database_id },
+          metadata: {
+            databaseId: conn.database_id,
+            databaseName: conn.database_id,
+          },
         },
       ];
     }
@@ -106,7 +111,8 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         label: db.name,
         kind: "database",
         hasChildren: true,
-        metadata: { databaseName: db.uuid }, // UUID is the unique database identifier for D1
+        // databaseId: UUID (used for API calls), databaseName: human-readable label (for display)
+        metadata: { databaseId: db.uuid, databaseName: db.name },
       }));
     } catch (error) {
       console.error("Error listing D1 databases:", error);
@@ -120,7 +126,11 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
   ): Promise<DatabaseTreeNode[]> {
     if (parent.kind !== "database") return [];
 
-    const databaseId = parent.metadata?.databaseName || parent.id;
+    // databaseId is the UUID (for API calls), databaseName is the human-readable label
+    const databaseId =
+      parent.metadata?.databaseId || parent.metadata?.databaseName || parent.id;
+    const databaseName =
+      parent.metadata?.databaseName || parent.metadata?.databaseId || parent.id;
 
     // Query SQLite master table to get tables
     try {
@@ -143,7 +153,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         label: row.name,
         kind: row.type === "view" ? "view" : "table",
         hasChildren: false,
-        metadata: { databaseName: databaseId, table: row.name },
+        metadata: { databaseId, databaseName, table: row.name },
       }));
     } catch (error) {
       console.error("Error listing D1 tables:", error);
@@ -285,7 +295,8 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
 
         const resultInfo = response.data.result_info;
         hasMore =
-          resultInfo && resultInfo.page * resultInfo.per_page < resultInfo.count;
+          resultInfo &&
+          resultInfo.page * resultInfo.per_page < resultInfo.count;
         page++;
       }
 
@@ -304,4 +315,3 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
     this.httpClients.clear();
   }
 }
-

@@ -15,13 +15,17 @@ import { agentRoutes } from "./routes/agent";
 import { authRoutes } from "./auth/auth.controller";
 import { connectDatabase } from "./database/schema";
 import { workspaceRoutes } from "./routes/workspaces";
-import { workspaceDatabaseRoutes } from "./routes/workspace-databases";
+import {
+  workspaceDatabaseRoutes,
+  workspaceExecuteRoutes,
+} from "./routes/workspace-databases";
 import { connectorRoutes } from "./routes/connectors";
 import { databaseSchemaRoutes } from "./routes/database-schemas";
 import { databaseTreeRoutes } from "./routes/database-tree";
 import { databaseRegistry } from "./databases/registry";
 import { BigQueryDatabaseDriver } from "./databases/drivers/bigquery/driver";
 import { MongoDatabaseDriver } from "./databases/drivers/mongodb/driver";
+import { PostgreSQLDatabaseDriver } from "./databases/drivers/postgresql/driver";
 import { CloudSQLPostgresDatabaseDriver } from "./databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "./databases/drivers/cloudflare-d1/driver";
 import { syncJobRoutes } from "./routes/sync-jobs";
@@ -81,6 +85,7 @@ app.get("/health", c => {
 app.route("/api/auth", authRoutes);
 app.route("/api/workspaces", workspaceRoutes);
 app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
+app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);
 app.route("/api/workspaces/:workspaceId/consoles", consoleRoutes);
 app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
@@ -98,6 +103,7 @@ app.route("/api/workspaces/:workspaceId/databases", databaseTreeRoutes);
 // Register database drivers
 databaseRegistry.register(new BigQueryDatabaseDriver());
 databaseRegistry.register(new MongoDatabaseDriver());
+databaseRegistry.register(new PostgreSQLDatabaseDriver());
 databaseRegistry.register(new CloudSQLPostgresDatabaseDriver());
 databaseRegistry.register(new CloudflareD1DatabaseDriver());
 app.route("/api", webhookRoutes);

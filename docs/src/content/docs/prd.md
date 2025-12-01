@@ -396,4 +396,3 @@ The goal is not only to make it possible to answer these questions, but also to 
 | Design Lead          | [Name] | **\_\_\_** | **\_** |
 | QA Lead              | [Name] | **\_\_\_** | **\_** |
 | Business Stakeholder | [Name] | **\_\_\_** | **\_** |
-

@@ -27,27 +27,27 @@ jobs:
     environment:
       name: ${{ github.ref_name == 'master' && 'production' || 'staging' }}
     env:
-      SERVICE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
-      IMAGE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
       BASE_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
+      BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
-      VITE_API_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai/api' || 'https://dev-app.mako.ai/api' }}
-      GCP_SERVICE_ACCOUNT: ${{ github.ref_name == 'master' && secrets.GCP_PROD_SERVICE_ACCOUNT || secrets.GCP_DEV_SERVICE_ACCOUNT }}
       DATABASE_URL: ${{ github.ref_name == 'master' && secrets.PROD_DATABASE_URL || secrets.DEV_DATABASE_URL }}
-      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
-      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
-      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+      GCP_SERVICE_ACCOUNT: ${{ github.ref_name == 'master' && secrets.GCP_PROD_SERVICE_ACCOUNT || secrets.GCP_DEV_SERVICE_ACCOUNT }}
       GITHUB_CLIENT_ID: ${{ vars.GITHUB_CLIENT_ID }}
       GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      IMAGE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
-      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-      SESSION_DURATION: ${{ vars.SESSION_DURATION }}
-      BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
-      RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
-      RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+      RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
+      RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
+      SERVICE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
+      SESSION_DURATION: ${{ vars.SESSION_DURATION }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      VITE_API_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai/api' || 'https://dev-app.mako.ai/api' }}
+      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,6 +81,7 @@ jobs:
         env:
           BASE_URL: ${{ env.BASE_URL }}
           CLIENT_URL: ${{ env.CLIENT_URL }}
+          NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
           VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
 
@@ -137,20 +138,21 @@ jobs:
             --timeout=600 \
             --min-instances=1 \
             --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
-            --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --set-env-vars DATABASE_URL=${DATABASE_URL} \
-            --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
-            --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
             --set-env-vars GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID} \
             --set-env-vars GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET} \
+            --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
+            --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
-            --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
-            --set-env-vars SESSION_DURATION=${SESSION_DURATION} \
-            --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
-            --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
-            --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
+            --set-env-vars NODE_ENV=production \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
-            --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
+            --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
+            --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
+            --set-env-vars SESSION_DURATION=${SESSION_DURATION} \
+            --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
+            --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --quiet

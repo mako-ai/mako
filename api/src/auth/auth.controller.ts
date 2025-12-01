@@ -299,7 +299,7 @@ authRoutes.get("/google/callback", async c => {
     setCookie(c, "google_oauth_state", "", { maxAge: 0 });
     setCookie(c, "google_code_verifier", "", { maxAge: 0 });
 
-    return c.redirect(`${process.env.CLIENT_URL}/dashboard`);
+    return c.redirect(`${process.env.CLIENT_URL}/`);
   } catch (error: any) {
     console.error("Google OAuth error:", error);
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
@@ -381,7 +381,7 @@ authRoutes.get("/github/callback", async c => {
     // Clear OAuth cookie
     setCookie(c, "github_oauth_state", "", { maxAge: 0 });
 
-    return c.redirect(`${process.env.CLIENT_URL}/dashboard`);
+    return c.redirect(`${process.env.CLIENT_URL}/`);
   } catch (error: any) {
     console.error("GitHub OAuth error:", error);
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);

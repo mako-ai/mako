@@ -127,6 +127,18 @@ export const useConsoleStore = () => {
     });
   };
 
+  const updateConsoleSavedDatabase = (
+    id: string,
+    connectionId?: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => {
+    dispatch({
+      type: "UPDATE_CONSOLE_SAVED_DATABASE",
+      payload: { id, connectionId, databaseId, databaseName },
+    } as any);
+  };
+
   const clearAllConsoles = () => {
     consoleTabs.forEach(tab => removeConsoleTab(tab.id));
   };
@@ -139,18 +151,23 @@ export const useConsoleStore = () => {
 
   const executeQuery = async (
     workspaceId: string,
-    databaseId: string,
+    connectionId: string,
     query: string,
-    options?: Record<string, any>,
+    options?: {
+      databaseName?: string;
+      databaseId?: string;
+    },
   ): Promise<{ success: boolean; data?: any; error?: string }> => {
     try {
       const res = await apiClient.post<{
         success: boolean;
         data: any;
         error?: string;
-      }>(`/workspaces/${workspaceId}/databases/${databaseId}/execute`, {
+      }>(`/workspaces/${workspaceId}/execute`, {
+        connectionId,
         query,
-        options,
+        databaseId: options?.databaseId,
+        databaseName: options?.databaseName,
       });
       return res.success
         ? { success: true, data: (res as any).data }
@@ -165,6 +182,8 @@ export const useConsoleStore = () => {
     tabId: string,
     content: string,
     currentPath?: string,
+    connectionId?: string,
+    databaseName?: string,
     databaseId?: string,
     isNew?: boolean,
   ): Promise<{
@@ -197,7 +216,14 @@ export const useConsoleStore = () => {
           success: boolean;
           data?: { id: string };
           error?: string;
-        }>(endpoint, { id: tabId, path, content, databaseId });
+        }>(endpoint, {
+          id: tabId,
+          path,
+          content,
+          connectionId,
+          databaseName,
+          databaseId,
+        });
         return res.success
           ? { success: true, path, id: (res as any).data?.id }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -206,7 +232,7 @@ export const useConsoleStore = () => {
           success: boolean;
           data?: any;
           error?: string;
-        }>(endpoint, { content, databaseId });
+        }>(endpoint, { content, connectionId, databaseName, databaseId });
         return res.success
           ? { success: true, path }
           : { success: false, error: (res as any).error || "Save failed" };
@@ -227,6 +253,7 @@ export const useConsoleStore = () => {
     clearAllConsoles,
     updateConsoleConnection,
     updateConsoleDatabase,
+    updateConsoleSavedDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
@@ -234,6 +261,45 @@ export const useConsoleStore = () => {
     getVersionManager,
     executeQuery: executeQuery,
     saveConsole: saveConsole,
+    loadConsole: async (id: string, workspaceId: string) => {
+      // Check if console is already loaded
+      const existing = consoleTabs.find(t => t.id === id);
+      if (existing) {
+        setActiveConsole(id);
+        return;
+      }
+
+      try {
+        // Fetch from API
+        const res = await apiClient.get<{
+          success: boolean;
+          content: string;
+          connectionId?: string;
+          databaseId?: string; // Backward compatibility
+          databaseName?: string;
+          language?: string;
+          id: string;
+          path?: string;
+          name?: string;
+        }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
+
+        if (res.success) {
+          addConsoleTab({
+            id: res.id, // Should match requested ID
+            title: res.name || res.path || "Console",
+            content: res.content || "",
+            initialContent: res.content || "",
+            connectionId: res.connectionId,
+            databaseId: res.databaseId,
+            databaseName: res.databaseName,
+            kind: "console",
+          });
+          setActiveConsole(res.id);
+        }
+      } catch (e) {
+        console.error("Failed to load console", e);
+      }
+    },
   };
 };
 
@@ -351,6 +417,18 @@ useConsoleStore.getState = () => {
     });
   };
 
+  const updateConsoleSavedDatabase = (
+    id: string,
+    connectionId?: string,
+    databaseId?: string,
+    databaseName?: string,
+  ) => {
+    dispatch({
+      type: "UPDATE_CONSOLE_SAVED_DATABASE",
+      payload: { id, connectionId, databaseId, databaseName },
+    } as any);
+  };
+
   const clearAllConsoles = () => {
     consoleTabs.forEach(tab => removeConsoleTab(tab.id));
   };
@@ -372,10 +450,48 @@ useConsoleStore.getState = () => {
     clearAllConsoles,
     updateConsoleConnection,
     updateConsoleDatabase,
+    updateConsoleSavedDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
+    loadConsole: async (id: string, workspaceId: string) => {
+      const existing = consoleTabs.find(t => t.id === id);
+      if (existing) {
+        setActiveConsole(id);
+        return;
+      }
+
+      try {
+        const res = await apiClient.get<{
+          success: boolean;
+          content: string;
+          connectionId?: string;
+          databaseId?: string; // Backward compatibility
+          databaseName?: string;
+          language?: string;
+          id: string;
+          path?: string;
+          name?: string;
+        }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
+
+        if (res.success) {
+          addConsoleTab({
+            id: res.id,
+            title: res.name || res.path || "Console",
+            content: res.content || "",
+            initialContent: res.content || "",
+            connectionId: res.connectionId,
+            databaseId: res.databaseId,
+            databaseName: res.databaseName,
+            kind: "console",
+          });
+          setActiveConsole(res.id);
+        }
+      } catch (e) {
+        console.error("Failed to load console", e);
+      }
+    },
   };
 };
