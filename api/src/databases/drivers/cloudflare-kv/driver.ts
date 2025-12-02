@@ -232,22 +232,99 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
 
   /**
    * Parse a JSON-like object string safely using JSON.parse
+   * Handles JS object syntax like { prefix: "user:", limit: 100 }
    */
   private parseJsonObject(str: string): { prefix?: string; limit?: number } {
     try {
-      // Convert JS object syntax to JSON (unquoted keys to quoted)
-      const jsonStr = str.replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"');
-      return JSON.parse(jsonStr);
+      // First try parsing as valid JSON directly
+      return JSON.parse(str);
     } catch {
-      return {};
+      // Convert JS object syntax to JSON, respecting string boundaries
+      try {
+        const jsonStr = this.convertJsObjectToJson(str);
+        return JSON.parse(jsonStr);
+      } catch {
+        return {};
+      }
     }
+  }
+
+  /**
+   * Convert JS object syntax to JSON, only quoting keys outside of strings
+   * Handles: { prefix: "user:", limit: 100 } -> { "prefix": "user:", "limit": 100 }
+   */
+  private convertJsObjectToJson(str: string): string {
+    let result = "";
+    let inString = false;
+    let stringChar = "";
+    let i = 0;
+
+    while (i < str.length) {
+      const char = str[i];
+
+      // Handle string boundaries
+      if (!inString && (char === '"' || char === "'" || char === "`")) {
+        inString = true;
+        stringChar = char;
+        // Convert single quotes and backticks to double quotes for JSON
+        result += '"';
+        i++;
+        continue;
+      }
+
+      if (inString && char === stringChar && str[i - 1] !== "\\") {
+        inString = false;
+        stringChar = "";
+        result += '"';
+        i++;
+        continue;
+      }
+
+      // Inside a string - copy as-is (except escape quotes if needed)
+      if (inString) {
+        // Escape double quotes inside strings that were originally single-quoted
+        if (char === '"' && stringChar !== '"') {
+          result += '\\"';
+        } else {
+          result += char;
+        }
+        i++;
+        continue;
+      }
+
+      // Outside string - look for unquoted keys (word followed by colon)
+      if (/[a-zA-Z_]/.test(char)) {
+        let key = "";
+        while (i < str.length && /\w/.test(str[i])) {
+          key += str[i];
+          i++;
+        }
+        // Skip whitespace
+        while (i < str.length && /\s/.test(str[i])) {
+          i++;
+        }
+        // Check if followed by colon (making it a key)
+        if (str[i] === ":") {
+          result += `"${key}"`;
+        } else {
+          // Not a key, might be a boolean/null value
+          result += key;
+        }
+        continue;
+      }
+
+      result += char;
+      i++;
+    }
+
+    return result;
   }
 
   /**
    * Parse a value (string, number, boolean, object, array) safely
    */
   private parseValue(str: string): any {
-    // String
+    // String literals - extract the content
     if (
       (str.startsWith('"') && str.endsWith('"')) ||
       (str.startsWith("'") && str.endsWith("'")) ||
@@ -255,12 +332,17 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     ) {
       return str.slice(1, -1);
     }
-    // Try JSON parse for objects, arrays, numbers, booleans, null
+    // Try JSON parse first for valid JSON
     try {
-      const jsonStr = str.replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"');
-      return JSON.parse(jsonStr);
+      return JSON.parse(str);
     } catch {
-      return str;
+      // Try converting JS object syntax to JSON
+      try {
+        const jsonStr = this.convertJsObjectToJson(str);
+        return JSON.parse(jsonStr);
+      } catch {
+        return str;
+      }
     }
   }
 
