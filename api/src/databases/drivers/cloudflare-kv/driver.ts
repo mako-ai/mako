@@ -325,19 +325,8 @@ Transformations:
     const method = methodMatch[1];
     let rest = q.slice(methodMatch[0].length);
 
-    // Find the closing paren for the method call
-    let depth = 1;
-    let argEnd = 0;
-    for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "(") depth++;
-      else if (rest[i] === ")") {
-        depth--;
-        if (depth === 0) {
-          argEnd = i;
-          break;
-        }
-      }
-    }
+    // Find the closing paren for the method call (respects string literals)
+    const argEnd = this.findMatchingParen(rest);
 
     const argsStr = rest.slice(0, argEnd);
     rest = rest.slice(argEnd + 1).trim();
@@ -356,32 +345,28 @@ Transformations:
       const transformType = transformMatch[1];
       rest = rest.slice(transformMatch[0].length);
 
-      // Find closing paren
-      depth = 1;
-      let transformArgEnd = 0;
-      for (let i = 0; i < rest.length; i++) {
-        if (rest[i] === "(") depth++;
-        else if (rest[i] === ")") {
-          depth--;
-          if (depth === 0) {
-            transformArgEnd = i;
-            break;
-          }
-        }
-      }
+      // Find closing paren (respects string literals)
+      const transformArgEnd = this.findMatchingParen(rest);
 
       const transformArgsStr = rest.slice(0, transformArgEnd);
       rest = rest.slice(transformArgEnd + 1).trim();
 
       // For .then(), .map(), .filter() - the argument is a function
-      if (["then", "map", "filter", "find", "some", "every"].includes(transformType)) {
+      if (
+        ["then", "map", "filter", "find", "some", "every"].includes(
+          transformType,
+        )
+      ) {
         transforms.push({ type: transformType, fn: transformArgsStr.trim() });
       } else if (["slice", "at"].includes(transformType)) {
         // For slice/at - parse numeric arguments
         const sliceArgs = this.parseArgs(transformArgsStr);
         transforms.push({ type: transformType, args: sliceArgs });
       } else if (transformType === "sort") {
-        transforms.push({ type: "sort", fn: transformArgsStr.trim() || undefined });
+        transforms.push({
+          type: "sort",
+          fn: transformArgsStr.trim() || undefined,
+        });
       } else if (transformType === "reverse") {
         transforms.push({ type: "reverse" });
       } else if (transformType === "flat") {
@@ -414,6 +399,55 @@ Transformations:
       // If parsing fails, return as single string argument
       return [trimmed];
     }
+  }
+
+  /**
+   * Find the index of the closing parenthesis that matches an opening paren.
+   * Assumes the opening '(' has already been consumed, so we start at depth=1.
+   * Respects string literals (single and double quotes) and template literals.
+   */
+  private findMatchingParen(str: string): number {
+    let depth = 1;
+    let inString: string | null = null; // tracks quote char if inside a string
+    let i = 0;
+
+    while (i < str.length) {
+      const ch = str[i];
+
+      // Handle escape sequences inside strings
+      if (inString && ch === "\\") {
+        i += 2; // skip escaped character
+        continue;
+      }
+
+      // Toggle string state on quote characters
+      if (ch === '"' || ch === "'" || ch === "`") {
+        if (inString === ch) {
+          inString = null; // closing quote
+        } else if (!inString) {
+          inString = ch; // opening quote
+        }
+        i++;
+        continue;
+      }
+
+      // Only count parens when not inside a string
+      if (!inString) {
+        if (ch === "(") {
+          depth++;
+        } else if (ch === ")") {
+          depth--;
+          if (depth === 0) {
+            return i;
+          }
+        }
+      }
+
+      i++;
+    }
+
+    // No matching paren found, return end of string
+    return str.length;
   }
 
   /**
@@ -493,10 +527,11 @@ Transformations:
         case "reverse":
           result = [...result].reverse();
           break;
-        case "flat":
+        case "flat": {
           const depth = transform.args?.[0] ?? 1;
           result = result.flat(depth);
           break;
+        }
         case "reduce":
           if (transform.fn) {
             result = this.safeEvalReduce(result, transform.fn);
@@ -559,19 +594,22 @@ Transformations:
     const parts = this.splitReduceArgs(fnStr);
     if (!parts) return arr;
 
-    const { fn, initial } = parts;
+    const { fn, initial, hasInitial } = parts;
     const arrowMatch = fn.match(
       /^\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*=>\s*(.+)\s*$/s,
     );
 
     if (arrowMatch) {
       const [, paramAcc, paramItem, body] = arrowMatch;
-      return arr.reduce((acc, item) => {
+      const reduceFn = (acc: any, item: any) => {
         return this.evalSafeExpression(body.trim(), {
           [paramAcc]: acc,
           [paramItem]: item,
         });
-      }, initial);
+      };
+      // Only pass initial value if explicitly provided
+      // arr.reduce(fn) uses first element as initial, arr.reduce(fn, undefined) uses undefined
+      return hasInitial ? arr.reduce(reduceFn, initial) : arr.reduce(reduceFn);
     }
 
     return arr;
@@ -579,7 +617,7 @@ Transformations:
 
   private splitReduceArgs(
     fnStr: string,
-  ): { fn: string; initial: any } | null {
+  ): { fn: string; initial: any; hasInitial: boolean } | null {
     // Find the arrow function and initial value
     // (acc, item) => acc + item.value, 0
     let depth = 0;
@@ -597,13 +635,13 @@ Transformations:
       const initialStr = fnStr.slice(lastComma + 1).trim();
       try {
         const initial = new Function(`return ${initialStr}`)();
-        return { fn, initial };
+        return { fn, initial, hasInitial: true };
       } catch {
-        return { fn, initial: undefined };
+        return { fn, initial: undefined, hasInitial: false };
       }
     }
 
-    return { fn: fnStr, initial: undefined };
+    return { fn: fnStr, initial: undefined, hasInitial: false };
   }
 
   /**
@@ -741,7 +779,8 @@ Transformations:
     }
 
     // Serialize value if it's an object
-    const body = typeof value === "object" ? JSON.stringify(value) : String(value);
+    const body =
+      typeof value === "object" ? JSON.stringify(value) : String(value);
 
     const params: Record<string, any> = {};
     if (options?.expiration) params.expiration = options.expiration;
