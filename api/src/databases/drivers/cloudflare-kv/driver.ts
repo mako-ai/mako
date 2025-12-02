@@ -250,6 +250,24 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Check if the character at position i is escaped by counting preceding backslashes.
+   * A character is escaped if preceded by an odd number of backslashes.
+   * Examples:
+   *   "test\"more" - quote after \ IS escaped (1 backslash = odd)
+   *   "path\\"     - quote after \\ is NOT escaped (2 backslashes = even)
+   *   "a\\\"b"     - quote after \\\ IS escaped (3 backslashes = odd)
+   */
+  private isEscaped(str: string, i: number): boolean {
+    let backslashCount = 0;
+    let j = i - 1;
+    while (j >= 0 && str[j] === "\\") {
+      backslashCount++;
+      j--;
+    }
+    return backslashCount % 2 === 1;
+  }
+
+  /**
    * Convert JS object syntax to JSON, only quoting keys outside of strings
    * Handles: { prefix: "user:", limit: 100 } -> { "prefix": "user:", "limit": 100 }
    */
@@ -272,7 +290,7 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
         continue;
       }
 
-      if (inString && char === stringChar && str[i - 1] !== "\\") {
+      if (inString && char === stringChar && !this.isEscaped(str, i)) {
         inString = false;
         stringChar = "";
         result += '"';
