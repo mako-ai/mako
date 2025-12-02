@@ -21,12 +21,14 @@ export { buildMongoAgent } from "./mongodb/agent";
 export { buildBigQueryAgent } from "./bigquery/agent";
 export { buildPostgresAgent } from "./postgres/agent";
 export { buildTriageAgent } from "./triage/agent";
+export { buildCloudflareKVAgent } from "./cloudflare-kv/agent";
 
 // Tool creators (if needed externally)
 export { createMongoTools } from "./mongodb/tools";
 export { createBigQueryTools } from "./bigquery/tools";
 export { createPostgresTools } from "./postgres/tools";
 export { createTriageTools } from "./triage/tools";
+export { createCloudflareKVTools } from "./cloudflare-kv/tools";
 
 // Shared utilities
 export {

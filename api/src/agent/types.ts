@@ -2,7 +2,12 @@
 
 import type { Tool } from "@openai/agents";
 
-export type DatabaseAgentKind = "mongo" | "bigquery" | "postgres" | "sqlite";
+export type DatabaseAgentKind =
+  | "mongo"
+  | "bigquery"
+  | "postgres"
+  | "sqlite"
+  | "cloudflare-kv";
 
 export type AgentKind = DatabaseAgentKind | "triage";
 

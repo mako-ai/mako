@@ -28,6 +28,7 @@ import { MongoDatabaseDriver } from "./databases/drivers/mongodb/driver";
 import { PostgreSQLDatabaseDriver } from "./databases/drivers/postgresql/driver";
 import { CloudSQLPostgresDatabaseDriver } from "./databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "./databases/drivers/cloudflare-d1/driver";
+import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/driver";
 import { syncJobRoutes } from "./routes/sync-jobs";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest } from "./inngest";
@@ -106,6 +107,7 @@ databaseRegistry.register(new MongoDatabaseDriver());
 databaseRegistry.register(new PostgreSQLDatabaseDriver());
 databaseRegistry.register(new CloudSQLPostgresDatabaseDriver());
 databaseRegistry.register(new CloudflareD1DatabaseDriver());
+databaseRegistry.register(new CloudflareKVDatabaseDriver());
 app.route("/api", webhookRoutes);
 
 // Inngest endpoint

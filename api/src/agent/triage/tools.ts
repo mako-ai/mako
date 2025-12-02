@@ -45,6 +45,18 @@ const listAllDatabases = async (workspaceId: string) => {
       const database =
         connection.database || connection.db || "unknown-database";
       displayInfo = `${host}/${database}`;
+    } else if (db.type === "cloudflare-kv") {
+      const accountId = connection.account_id || "unknown-account";
+      const namespaceId = connection.namespace_id;
+      displayInfo = namespaceId
+        ? `${accountId}/${namespaceId}`
+        : `${accountId} (all namespaces)`;
+    } else if (db.type === "cloudflare-d1") {
+      const accountId = connection.account_id || "unknown-account";
+      const databaseId = connection.database_id;
+      displayInfo = databaseId
+        ? `${accountId}/${databaseId}`
+        : `${accountId} (all databases)`;
     } else {
       displayInfo = connection.database || connection.db || "Unknown";
     }

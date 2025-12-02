@@ -7,6 +7,8 @@ import { buildPostgresAgent } from "./postgres/agent";
 import { createPostgresTools } from "./postgres/tools";
 import { buildSqliteAgent } from "./sqlite/agent";
 import { createSqliteTools } from "./sqlite/tools";
+import { buildCloudflareKVAgent } from "./cloudflare-kv/agent";
+import { createCloudflareKVTools } from "./cloudflare-kv/tools";
 
 type RegistrationMap = Map<DatabaseAgentKind, AgentRegistration>;
 
@@ -149,6 +151,40 @@ const coreRegistrations: AgentRegistration[] = [
       "list_tables",
       "sqlite_describe_table",
       "describe_table",
+    ],
+  },
+  {
+    kind: "cloudflare-kv",
+    buildAgent: (config: AgentConfig) =>
+      buildCloudflareKVAgent(
+        config.workspaceId,
+        config.consoles,
+        config.preferredConsoleId,
+      ),
+    createTools: (config: AgentConfig) =>
+      createCloudflareKVTools(
+        config.workspaceId,
+        config.consoles,
+        config.preferredConsoleId,
+      ),
+    metadata: {
+      name: "Cloudflare KV Assistant",
+      handoffDescription:
+        "Specialist for Cloudflare Workers KV Store. Use when the task targets key-value data in Cloudflare KV namespaces.",
+      kind: "cloudflare-kv",
+    },
+    handoff: {
+      toolName: "transfer_to_cloudflare_kv",
+      description:
+        "Transfer the conversation to the Cloudflare KV Assistant for KV Store-related tasks.",
+    },
+    discoveryToolNames: [
+      "kv_list_connections",
+      "list_connections",
+      "kv_list_namespaces",
+      "list_namespaces",
+      "kv_list_keys",
+      "list_keys",
     ],
   },
 ];
