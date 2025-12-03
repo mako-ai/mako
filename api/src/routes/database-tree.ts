@@ -117,6 +117,9 @@ databaseTreeRoutes.get(
           ? nodeId.split(".")[1]
           : nodeId || "table_name");
       template = `SELECT * FROM ${table} LIMIT 500;`;
+    } else if (dbType === "cloudflare-kv") {
+      // KV uses JavaScript-like syntax mirroring Cloudflare Workers API
+      template = "kv.list({ limit: 100 })";
     } else {
       // Fallback SQL-like template
       const table = nodeId || "table_name";

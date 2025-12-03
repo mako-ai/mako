@@ -334,6 +334,37 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
       },
     ],
   },
+  "cloudflare-kv": {
+    fields: [
+      {
+        name: "account_id",
+        label: "Account ID",
+        type: "string",
+        required: true,
+        placeholder: "023e105f4ecef8ad9ca31a8372d0c353",
+        helperText:
+          "Your Cloudflare account ID (found in the URL when logged into the dashboard)",
+      },
+      {
+        name: "api_token",
+        label: "API Token",
+        type: "password",
+        required: true,
+        placeholder: "Your Cloudflare API token",
+        helperText:
+          "Create an API token with Workers KV Storage permissions at https://dash.cloudflare.com/profile/api-tokens",
+      },
+      {
+        name: "namespace_id",
+        label: "Namespace ID (optional)",
+        type: "string",
+        required: false,
+        placeholder: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        helperText:
+          "Leave empty to list all KV namespaces in your account, or specify a namespace ID to connect directly",
+      },
+    ],
+  },
 };
 
 databaseSchemaRoutes.get("/types", c => {
@@ -357,6 +388,7 @@ databaseSchemaRoutes.get("/types", c => {
     if (t === "mongodb") return "mongodb";
     if (t === "bigquery") return "sql";
     if (t === "cloudflare-d1") return "sql";
+    if (t === "cloudflare-kv") return "javascript";
     return "sql";
   };
 
@@ -374,7 +406,9 @@ databaseSchemaRoutes.get("/types", c => {
           ? "SELECT * FROM `{project}.{dataset}.{table}` LIMIT 500;"
           : t === "cloudflare-d1"
             ? "SELECT * FROM {table} LIMIT 500;"
-            : "SELECT * FROM {table} LIMIT 500;";
+            : t === "cloudflare-kv"
+              ? "kv.list({ limit: 100 })"
+              : "SELECT * FROM {table} LIMIT 500;";
     return { type: t, displayName, consoleLanguage, iconUrl, defaultTemplate };
   });
 

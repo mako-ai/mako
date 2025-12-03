@@ -158,7 +158,8 @@ export interface IDatabaseConnection extends Document {
     | "sqlite"
     | "mssql"
     | "bigquery"
-    | "cloudflare-d1";
+    | "cloudflare-d1"
+    | "cloudflare-kv";
   connection: {
     host?: string;
     port?: number;
@@ -605,6 +606,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
         "mssql",
         "bigquery",
         "cloudflare-d1",
+        "cloudflare-kv",
       ],
       required: true,
     },
