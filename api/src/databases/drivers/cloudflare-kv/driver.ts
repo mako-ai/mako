@@ -231,111 +231,14 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
   }
 
   /**
-   * Parse a JSON-like object string safely using JSON.parse
-   * Handles JS object syntax like { prefix: "user:", limit: 100 }
+   * Parse a JSON object string safely
    */
   private parseJsonObject(str: string): { prefix?: string; limit?: number } {
     try {
-      // First try parsing as valid JSON directly
       return JSON.parse(str);
     } catch {
-      // Convert JS object syntax to JSON, respecting string boundaries
-      try {
-        const jsonStr = this.convertJsObjectToJson(str);
-        return JSON.parse(jsonStr);
-      } catch {
-        return {};
-      }
+      return {};
     }
-  }
-
-  /**
-   * Check if the character at position i is escaped by counting preceding backslashes.
-   * A character is escaped if preceded by an odd number of backslashes.
-   * Examples:
-   *   "test\"more" - quote after \ IS escaped (1 backslash = odd)
-   *   "path\\"     - quote after \\ is NOT escaped (2 backslashes = even)
-   *   "a\\\"b"     - quote after \\\ IS escaped (3 backslashes = odd)
-   */
-  private isEscaped(str: string, i: number): boolean {
-    let backslashCount = 0;
-    let j = i - 1;
-    while (j >= 0 && str[j] === "\\") {
-      backslashCount++;
-      j--;
-    }
-    return backslashCount % 2 === 1;
-  }
-
-  /**
-   * Convert JS object syntax to JSON, only quoting keys outside of strings
-   * Handles: { prefix: "user:", limit: 100 } -> { "prefix": "user:", "limit": 100 }
-   */
-  private convertJsObjectToJson(str: string): string {
-    let result = "";
-    let inString = false;
-    let stringChar = "";
-    let i = 0;
-
-    while (i < str.length) {
-      const char = str[i];
-
-      // Handle string boundaries
-      if (!inString && (char === '"' || char === "'" || char === "`")) {
-        inString = true;
-        stringChar = char;
-        // Convert single quotes and backticks to double quotes for JSON
-        result += '"';
-        i++;
-        continue;
-      }
-
-      if (inString && char === stringChar && !this.isEscaped(str, i)) {
-        inString = false;
-        stringChar = "";
-        result += '"';
-        i++;
-        continue;
-      }
-
-      // Inside a string - copy as-is (except escape quotes if needed)
-      if (inString) {
-        // Escape double quotes inside strings that were originally single-quoted
-        if (char === '"' && stringChar !== '"') {
-          result += '\\"';
-        } else {
-          result += char;
-        }
-        i++;
-        continue;
-      }
-
-      // Outside string - look for unquoted keys (word followed by colon)
-      if (/[a-zA-Z_]/.test(char)) {
-        let key = "";
-        while (i < str.length && /\w/.test(str[i])) {
-          key += str[i];
-          i++;
-        }
-        // Skip whitespace
-        while (i < str.length && /\s/.test(str[i])) {
-          i++;
-        }
-        // Check if followed by colon (making it a key)
-        if (str[i] === ":") {
-          result += `"${key}"`;
-        } else {
-          // Not a key, might be a boolean/null value
-          result += key;
-        }
-        continue;
-      }
-
-      result += char;
-      i++;
-    }
-
-    return result;
   }
 
   /**
@@ -350,17 +253,10 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     ) {
       return str.slice(1, -1);
     }
-    // Try JSON parse first for valid JSON
     try {
       return JSON.parse(str);
     } catch {
-      // Try converting JS object syntax to JSON
-      try {
-        const jsonStr = this.convertJsObjectToJson(str);
-        return JSON.parse(jsonStr);
-      } catch {
-        return str;
-      }
+      return str;
     }
   }
 
