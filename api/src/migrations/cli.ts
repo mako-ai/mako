@@ -1,3 +1,16 @@
+/**
+ * Migration CLI
+ *
+ * Command-line interface for managing MongoDB migrations.
+ *
+ * Usage:
+ *   pnpm run migrate              # Run all pending migrations (default)
+ *   pnpm run migrate status       # Show status of all migrations
+ *   pnpm run migrate create "name" # Create a new migration file
+ *
+ * @see README.md for full documentation and examples
+ */
+
 /* eslint-disable no-process-exit */
 import { Command } from "commander";
 import * as fs from "fs";

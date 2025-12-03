@@ -1,7 +1,18 @@
+/**
+ * Migration System Types
+ *
+ * This file defines the TypeScript interfaces used throughout the migration system.
+ *
+ * @see README.md for full documentation
+ * @see runner.ts for implementation
+ * @see cli.ts for command-line interface
+ */
+
 import { Db } from "mongodb";
 
 /**
- * Migration record stored in the migrations collection
+ * Migration record stored in the `migrations` collection.
+ * Tracks which migrations have run and their execution status.
  */
 export interface MigrationRecord {
   _id: string; // Migration ID (e.g., "2024-12-03-143022_add_indexes")

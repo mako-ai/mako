@@ -1,0 +1,57 @@
+# Migrations
+
+MongoDB migration system for schema and data changes.
+
+## Location
+
+- Migration files: [api/src/migrations/](mdc:api/src/migrations/)
+- CLI entry: [api/src/migrations/cli.ts](mdc:api/src/migrations/cli.ts)
+- Runner logic: [api/src/migrations/runner.ts](mdc:api/src/migrations/runner.ts)
+- Deploy integration: [deploy.sh](mdc:deploy.sh) runs migrations after Cloud Run deploy
+- Full docs: [api/src/migrations/README.md](mdc:api/src/migrations/README.md)
+
+## Commands
+
+```bash
+pnpm run migrate              # Run pending migrations
+pnpm run migrate status       # Show migration status
+pnpm run migrate create "name" # Create new migration
+```
+
+## Deployment
+
+Migrations run automatically at the end of `./deploy.sh` after the Cloud Run service is updated. If migrations fail, the deploy script exits with an error but the service is already deployed.
+
+## Migration File Format
+
+```typescript
+import { Db } from "mongodb";
+
+export const description = "What this migration does";
+
+export async function up(db: Db): Promise<void> {
+  await db.collection("users").createIndex({ email: 1 });
+}
+```
+
+## Rules
+
+- **Naming**: Files must match `yyyy-mm-dd-hhmmss_snake_case_name.ts`
+- **One change per migration**: Keep migrations focused and small
+- **Idempotent when possible**: Use `$exists` checks, `{ upsert: true }` options
+- **Never edit old migrations**: Create a new migration to fix issues
+- **No down migrations**: This system is up-only by design
+- **Test locally**: Run against dev database before production
+
+## Tracking
+
+Migrations are tracked in the `migrations` collection:
+
+```typescript
+{
+  _id: string;         // Migration ID
+  ran_at: Date | null; // null = not yet run
+  duration_ms?: number;
+  error?: string;
+}
+```

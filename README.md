@@ -100,6 +100,7 @@ Mako uses a modern, scalable architecture designed for flexibility and performan
 | -------------------- | ------------------------------------------- |
 | `pnpm run dev`       | Start API, frontend, and Inngest dev server |
 | `pnpm run sync`      | Run the interactive sync tool               |
+| `pnpm run migrate`   | Run database migrations                     |
 | `pnpm run docker:up` | Start MongoDB and other services            |
 | `pnpm run test`      | Run test suite                              |
 | `pnpm run build`     | Build all packages                          |

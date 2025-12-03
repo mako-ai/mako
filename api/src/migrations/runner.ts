@@ -1,3 +1,20 @@
+/**
+ * Migration Runner
+ *
+ * Core logic for discovering, tracking, and executing migrations.
+ *
+ * How it works:
+ * 1. Scans the migrations directory for .ts files matching the naming pattern
+ * 2. Compares found files against the `migrations` collection in MongoDB
+ * 3. Runs pending migrations in lexicographic order (oldest first)
+ * 4. Records success/failure with timestamps and duration
+ *
+ * Migration files must export an `up(db: Db)` function.
+ * Optional: export a `description` string for documentation.
+ *
+ * @see README.md for full documentation and examples
+ */
+
 import { Db, Collection } from "mongodb";
 import * as fs from "fs";
 import * as path from "path";
@@ -8,7 +25,10 @@ import {
   MigrationStatus,
 } from "./types";
 
+/** Collection name for tracking migration status */
 const MIGRATIONS_COLLECTION = "migrations";
+
+/** Directory containing migration files (same as this file) */
 const MIGRATIONS_DIR = path.join(__dirname);
 
 /**
