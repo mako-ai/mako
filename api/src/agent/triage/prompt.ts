@@ -35,6 +35,7 @@ The system already guesses the correct specialist based on console content, rece
 | \`transfer_to_mongodb\` | Handoff to MongoDB assistant | When MongoDB owns the data |
 | \`transfer_to_postgres\` | Handoff to Postgres assistant | When Postgres owns the data |
 | \`transfer_to_bigquery\` | Handoff to BigQuery assistant | When BigQuery owns the data |
+| \`transfer_to_sqlite\` | Handoff to SQLite/D1 assistant | When SQLite or Cloudflare D1 owns the data |
 
 ---
 

@@ -10,6 +10,7 @@ import crypto from "crypto";
 import { DatabaseDriver } from "../databases/driver";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
+import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 
 export interface QueryResult {
@@ -93,6 +94,7 @@ export class DatabaseConnectionService {
       new CloudSQLPostgresDatabaseDriver() as any,
     );
     this.drivers.set("cloudflare-d1", new CloudflareD1DatabaseDriver() as any);
+    this.drivers.set("cloudflare-kv", new CloudflareKVDatabaseDriver() as any);
     // Start cleanup interval for MongoDB connections
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
@@ -126,6 +128,10 @@ export class DatabaseConnectionService {
         case "cloudflare-d1":
           return await (
             this.drivers.get("cloudflare-d1") as CloudflareD1DatabaseDriver
+          ).testConnection(database);
+        case "cloudflare-kv":
+          return await (
+            this.drivers.get("cloudflare-kv") as CloudflareKVDatabaseDriver
           ).testConnection(database);
         default:
           return {
@@ -170,6 +176,10 @@ export class DatabaseConnectionService {
         case "cloudflare-d1":
           return await this.drivers
             .get("cloudflare-d1")!
+            .executeQuery(database, query, options);
+        case "cloudflare-kv":
+          return await this.drivers
+            .get("cloudflare-kv")!
             .executeQuery(database, query, options);
         default:
           return {
