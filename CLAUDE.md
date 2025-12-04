@@ -40,12 +40,16 @@ pnpm sync <source>         # Sync data from external sources
 pnpm query <query_file>    # Run MongoDB queries
 ```
 
-### Migration Commands
+### Database Migrations
 
 ```bash
-pnpm migrate:databases     # Migrate database configs to MongoDB
-pnpm --filter api migrate:workspaces  # Migrate users to workspace system
+pnpm migrate               # Run all pending migrations
+pnpm migrate status        # Show migration status
+pnpm migrate create "name" # Create a new migration file
 ```
+
+Migrations are TypeScript files in `/api/src/migrations/` that run against MongoDB.
+See `/api/src/migrations/README.md` for patterns and examples.
 
 ## Core Architecture Patterns
 
@@ -87,10 +91,11 @@ pnpm --filter api migrate:workspaces  # Migrate users to workspace system
 
 - `/api/src/database/` - MongoDB schemas and models
 - `/api/src/connectors/` - External API connector implementations
+- `/api/src/migrations/` - Database migration files (see README.md inside)
 - `/app/src/components/` - React components organized by feature
 - `/app/src/store/` - Zustand state management stores
 - `/consoles/` - Pre-built analytics queries and scripts
-- `/scripts/` - Migration and utility scripts
+- `/scripts/` - Utility scripts
 
 ## Configuration
 
@@ -149,8 +154,9 @@ Currently manual testing with comprehensive checklists:
 ## Deployment
 
 - **Docker**: Multi-stage build, Node.js 20 base image, port 8080
-- **Google Cloud Run**: Production deployment via `deploy.sh`
+- **Google Cloud Run**: Production deployment via `deploy.sh` or GitHub Actions
 - **Static files**: Frontend served by API server in production
+- **Migrations**: Run automatically after deploy (both `deploy.sh` and GitHub Actions)
 
 ## Common Workflows
 
@@ -158,4 +164,4 @@ Currently manual testing with comprehensive checklists:
 2. **New database connections**: Use encrypted connection storage, test with existing patterns
 3. **Frontend components**: Follow MUI patterns, use Zustand for state, implement responsive design
 4. **API endpoints**: Use Hono middleware, implement workspace context, add proper error handling
-5. **Migrations**: Use TypeScript scripts in `/scripts/` directory for data migrations
+5. **Migrations**: Create with `pnpm migrate create "name"`, implement in `/api/src/migrations/`

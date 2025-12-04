@@ -156,3 +156,6 @@ jobs:
             --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --quiet
+
+      - name: Run database migrations
+        run: pnpm run migrate
