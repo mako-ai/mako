@@ -338,15 +338,17 @@ export async function runPendingMigrations(
  */
 export function generateMigrationId(name: string): string {
   const now = new Date();
-  const timestamp = [
+  const datePart = [
     now.getFullYear(),
     String(now.getMonth() + 1).padStart(2, "0"),
     String(now.getDate()).padStart(2, "0"),
-    "-",
+  ].join("-");
+  const timePart = [
     String(now.getHours()).padStart(2, "0"),
     String(now.getMinutes()).padStart(2, "0"),
     String(now.getSeconds()).padStart(2, "0"),
   ].join("");
+  const timestamp = `${datePart}-${timePart}`;
 
   // Sanitize name: lowercase, replace spaces/dashes with underscores
   const sanitizedName = name
