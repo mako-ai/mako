@@ -23,6 +23,7 @@ import {
   MigrationModule,
   MigrationInfo,
   MigrationStatus,
+  MigrationFullStatus,
 } from "./types";
 
 /** Collection name for tracking migration status */
@@ -37,9 +38,7 @@ const MIGRATIONS_DIR = path.join(__dirname);
  */
 function parseMigrationFilename(filename: string): MigrationInfo | null {
   // Match pattern: 2024-12-03-143022_some_name.ts
-  const match = filename.match(
-    /^(\d{4}-\d{2}-\d{2}-\d{6}_[a-z0-9_]+)\.ts$/i,
-  );
+  const match = filename.match(/^(\d{4}-\d{2}-\d{2}-\d{6}_[a-z0-9_]+)\.ts$/i);
   if (!match) {
     return null;
   }
@@ -94,7 +93,9 @@ async function loadMigration(filepath: string): Promise<MigrationModule> {
   const module = await import(filepath);
 
   if (typeof module.up !== "function") {
-    throw new Error(`Migration at ${filepath} does not export an 'up' function`);
+    throw new Error(
+      `Migration at ${filepath} does not export an 'up' function`,
+    );
   }
 
   return {
@@ -158,6 +159,63 @@ export async function getMigrationStatus(db: Db): Promise<MigrationStatus[]> {
   }
 
   return statuses;
+}
+
+/**
+ * Get full migration status comparing local files vs database records.
+ * This shows ALL migrations - both local files and database records,
+ * making it easy to spot mismatches (e.g., DB record with no local file).
+ */
+export async function getMigrationFullStatus(
+  db: Db,
+): Promise<MigrationFullStatus[]> {
+  const files = getMigrationFiles();
+  const records = await getMigrationRecords(db);
+
+  const fileIds = new Set(files.map(f => f.id));
+  const allIds = new Set([...fileIds, ...records.keys()]);
+
+  const statuses: MigrationFullStatus[] = [];
+
+  for (const id of allIds) {
+    const hasLocalFile = fileIds.has(id);
+    const record = records.get(id);
+
+    let description: string | undefined;
+    if (hasLocalFile) {
+      const file = files.find(f => f.id === id)!;
+      try {
+        const module = await loadMigration(file.filepath);
+        description = module.description;
+      } catch {
+        // Ignore load errors for status display
+      }
+    }
+
+    let dbStatus: MigrationFullStatus["dbStatus"];
+    if (!record) {
+      dbStatus = "missing";
+    } else if (record.error) {
+      dbStatus = "failed";
+    } else if (record.ran_at) {
+      dbStatus = "completed";
+    } else {
+      dbStatus = "pending";
+    }
+
+    statuses.push({
+      id,
+      localFile: hasLocalFile,
+      dbStatus,
+      ran_at: record?.ran_at ?? null,
+      duration_ms: record?.duration_ms,
+      error: record?.error,
+      description,
+    });
+  }
+
+  // Sort by ID (chronological order)
+  return statuses.sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**
@@ -314,4 +372,3 @@ export async function up(db: Db): Promise<void> {
 }
 `;
 }
-

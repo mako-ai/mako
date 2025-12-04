@@ -17,7 +17,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { databaseConnectionService } from "../services/database-connection.service";
 import {
-  getMigrationStatus,
+  getMigrationFullStatus,
   runPendingMigrations,
   generateMigrationId,
   generateMigrationContent,
@@ -65,49 +65,60 @@ function printSeparator(widths: number[], char: "┬" | "┼" | "┴"): void {
 async function statusCommand(): Promise<void> {
   try {
     const { db } = await databaseConnectionService.getMainConnection();
-    const statuses = await getMigrationStatus(db);
+    const statuses = await getMigrationFullStatus(db);
+
+    console.log("\nMigration Status:\n");
 
     if (statuses.length === 0) {
-      console.log("\nNo migrations found.");
+      console.log("No migrations found (no local files, no database records).");
       console.log('Create one with: pnpm run migrate create "migration name"');
       await databaseConnectionService.closeAllConnections();
       process.exit(0);
     }
 
-    console.log("\nMigration Status:\n");
-
     // Calculate column widths
     const idWidth = Math.max(4, ...statuses.map(s => s.id.length));
-    const statusWidth = 10;
+    const localWidth = 7; // "Local"
+    const serverWidth = 10; // "Server"
     const ranAtWidth = 19;
-    const widths = [idWidth, statusWidth, ranAtWidth];
+    const widths = [idWidth, localWidth, serverWidth, ranAtWidth];
 
     // Print header
     printSeparator(widths, "┬");
-    printRow(["ID", "Status", "Ran At"], widths);
+    printRow(["ID", "Local", "Server", "Ran At"], widths);
     printSeparator(widths, "┼");
 
     // Print rows
     for (const status of statuses) {
-      const statusStr =
-        status.status === "completed"
+      const localStr = status.localFile ? "✓" : "✗";
+      const serverStr =
+        status.dbStatus === "completed"
           ? "completed"
-          : status.status === "failed"
+          : status.dbStatus === "failed"
             ? "failed"
-            : "pending";
-      printRow([status.id, statusStr, formatDate(status.ran_at)], widths);
+            : status.dbStatus === "pending"
+              ? "pending"
+              : "-";
+      printRow([status.id, localStr, serverStr, formatDate(status.ran_at)], widths);
     }
 
     printSeparator(widths, "┴");
 
     // Summary
-    const completed = statuses.filter(s => s.status === "completed").length;
-    const pending = statuses.filter(s => s.status === "pending").length;
-    const failed = statuses.filter(s => s.status === "failed").length;
+    const completed = statuses.filter(s => s.dbStatus === "completed").length;
+    const pending = statuses.filter(
+      s => s.localFile && s.dbStatus === "missing",
+    ).length;
+    const failed = statuses.filter(s => s.dbStatus === "failed").length;
+    const orphaned = statuses.filter(
+      s => !s.localFile && s.dbStatus !== "missing",
+    ).length;
 
-    console.log(
-      `\n${completed} completed, ${pending} pending${failed > 0 ? `, ${failed} failed` : ""}`,
-    );
+    const parts = [`${completed} completed`, `${pending} pending`];
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (orphaned > 0) parts.push(`${orphaned} orphaned (no local file)`);
+
+    console.log(`\n${parts.join(", ")}`);
 
     await databaseConnectionService.closeAllConnections();
     process.exit(0);

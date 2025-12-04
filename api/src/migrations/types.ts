@@ -50,3 +50,16 @@ export interface MigrationStatus {
   description?: string;
 }
 
+/**
+ * Full migration status comparing local files vs database records
+ */
+export interface MigrationFullStatus {
+  id: string;
+  localFile: boolean; // true if file exists locally
+  dbStatus: "pending" | "completed" | "failed" | "missing"; // "missing" = not in DB
+  ran_at: Date | null;
+  duration_ms?: number;
+  error?: string;
+  description?: string;
+}
+
