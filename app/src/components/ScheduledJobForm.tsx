@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
-import { useForm, Controller } from "react-hook-form";
+import { useForm, Controller, useFieldArray } from "react-hook-form";
 import {
   Box,
   TextField,
@@ -33,6 +33,7 @@ import {
   Delete as DeleteIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
+  Code as CodeIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSyncJobStore } from "../store/syncJobStore";
@@ -43,6 +44,7 @@ import {
 } from "../store/databaseContentStore";
 import { apiClient } from "../lib/api-client";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
+import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 
 interface ScheduledJobFormProps {
   jobId?: string;
@@ -50,6 +52,17 @@ interface ScheduledJobFormProps {
   onSave?: () => void;
   onSaved?: (jobId: string) => void;
   onCancel?: () => void;
+}
+
+// Query interface for GraphQL/PostHog transfers
+interface TransferQuery {
+  name: string;
+  query: string;
+  data_path?: string;
+  total_count_path?: string;
+  has_next_page_path?: string;
+  cursor_path?: string;
+  batch_size?: number;
 }
 
 interface FormData {
@@ -61,6 +74,7 @@ interface FormData {
   syncMode: "full" | "incremental";
   enabled: boolean;
   entityFilter: string[];
+  queries: TransferQuery[];
 }
 
 // Entity metadata interface
@@ -165,6 +179,7 @@ export function ScheduledJobForm({
       syncMode: "full",
       enabled: true,
       entityFilter: [],
+      queries: [],
     },
   });
 
@@ -172,6 +187,51 @@ export function ScheduledJobForm({
   const watchTimezone = watch("timezone");
   const watchDataSourceId = watch("dataSourceId");
   const watchDestinationDatabaseId = watch("destinationDatabaseId");
+
+  // Field array for queries (schema-driven)
+  const {
+    fields: queryFields,
+    append: appendQuery,
+    remove: removeQuery,
+  } = useFieldArray({
+    control,
+    name: "queries",
+  });
+
+  // Get selected data source
+  const selectedDataSource = useMemo(() => {
+    return connectors.find(ds => ds._id === watchDataSourceId);
+  }, [connectors, watchDataSourceId]);
+
+  // Fetch connector schema to check for transferQueries
+  const { schemas, fetchSchema } = useConnectorCatalogStore();
+  const [transferQueriesSchema, setTransferQueriesSchema] = useState<any>(null);
+
+  useEffect(() => {
+    if (!selectedDataSource?.type) {
+      setTransferQueriesSchema(null);
+      return;
+    }
+
+    const connectorType = selectedDataSource.type;
+    const cachedSchema = schemas[connectorType];
+
+    if (cachedSchema?.transferQueries) {
+      setTransferQueriesSchema(cachedSchema.transferQueries);
+    } else {
+      // Fetch schema if not cached
+      fetchSchema(connectorType).then(schema => {
+        if (schema?.transferQueries) {
+          setTransferQueriesSchema(schema.transferQueries);
+        } else {
+          setTransferQueriesSchema(null);
+        }
+      });
+    }
+  }, [selectedDataSource?.type, schemas, fetchSchema]);
+
+  // Connector requires queries if schema has transferQueries property
+  const requiresQueries = !!transferQueriesSchema;
 
   // Fetch available databases when destination changes
   useEffect(() => {
@@ -429,6 +489,7 @@ export function ScheduledJobForm({
           syncMode: job.syncMode as "full" | "incremental",
           enabled: job.enabled,
           entityFilter: job.entityFilter || [],
+          queries: (job as any).queries || [],
         };
 
         reset(formData);
@@ -503,11 +564,17 @@ export function ScheduledJobForm({
       return;
     }
 
-    // Validate entity selection
-    if (!selectAllEntities && selectedEntities.length === 0) {
+    // Validate entity selection (skip for connectors that use queries instead)
+    if (!requiresQueries && !selectAllEntities && selectedEntities.length === 0) {
       setError(
         "Please select at least one entity to sync, or choose 'All Entities'",
       );
+      return;
+    }
+
+    // Validate queries for connectors with transferQueries schema
+    if (requiresQueries && (!data.queries || data.queries.length === 0)) {
+      setError("Please add at least one query to define what data to sync");
       return;
     }
     if (
@@ -545,6 +612,7 @@ export function ScheduledJobForm({
         syncMode: data.syncMode,
         enabled: data.enabled,
         entityFilter: data.entityFilter,
+        queries: data.queries, // GraphQL/PostHog queries
         schedule: {
           cron: data.schedule,
           timezone: data.timezone,
@@ -862,8 +930,8 @@ export function ScheduledJobForm({
                 </Box>
               )}
 
-              {/* Entity Selection */}
-              {watchDataSourceId && (
+              {/* Entity Selection - only show for connectors without transferQueries */}
+              {watchDataSourceId && !requiresQueries && (
                 <>
                   <Divider />
                   <Box>
@@ -1084,6 +1152,175 @@ export function ScheduledJobForm({
                         No entities available for this connector.
                       </Alert>
                     ) : null}
+                  </Box>
+                </>
+              )}
+
+              {/* Queries Configuration (schema-driven) */}
+              {requiresQueries && transferQueriesSchema && (
+                <>
+                  <Divider />
+                  <Box>
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        mb: 2,
+                      }}
+                    >
+                      <Typography
+                        variant="subtitle2"
+                        sx={{ display: "flex", alignItems: "center", gap: 1 }}
+                      >
+                        <CodeIcon fontSize="small" />
+                        {transferQueriesSchema.label || "Queries"}
+                      </Typography>
+                      <Button
+                        size="small"
+                        startIcon={<AddIcon />}
+                        onClick={() => {
+                          // Create default values from schema
+                          const defaultQuery: Record<string, any> = {};
+                          transferQueriesSchema.fields?.forEach((f: any) => {
+                            if (f.default !== undefined) {
+                              defaultQuery[f.name] = f.default;
+                            } else if (f.type === "number") {
+                              defaultQuery[f.name] = undefined;
+                            } else {
+                              defaultQuery[f.name] = "";
+                            }
+                          });
+                          appendQuery(defaultQuery);
+                        }}
+                      >
+                        Add Query
+                      </Button>
+                    </Box>
+
+                    {queryFields.length === 0 ? (
+                      <Alert severity="info">
+                        <Typography variant="body2">
+                          No queries configured. Add at least one query to define
+                          what data to sync from this connector.
+                        </Typography>
+                      </Alert>
+                    ) : (
+                      queryFields.map((field, index) => (
+                        <Box
+                          key={field.id}
+                          sx={{
+                            border: 1,
+                            borderColor: "divider",
+                            borderRadius: 1,
+                            p: 2,
+                            mb: 2,
+                          }}
+                        >
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              mb: 2,
+                            }}
+                          >
+                            <Typography variant="subtitle2">
+                              Query {index + 1}
+                            </Typography>
+                            <IconButton
+                              size="small"
+                              color="error"
+                              onClick={() => removeQuery(index)}
+                            >
+                              <DeleteIcon fontSize="small" />
+                            </IconButton>
+                          </Box>
+
+                          <Stack spacing={2}>
+                            {/* Render fields from schema */}
+                            {transferQueriesSchema.fields?.map((schemaField: any) => (
+                              <Controller
+                                key={schemaField.name}
+                                name={`queries.${index}.${schemaField.name}`}
+                                control={control}
+                                rules={{
+                                  required: schemaField.required
+                                    ? `${schemaField.label} is required`
+                                    : false,
+                                }}
+                                render={({ field: formField, fieldState }) => {
+                                  if (schemaField.type === "textarea") {
+                                    return (
+                                      <TextField
+                                        {...formField}
+                                        label={schemaField.label}
+                                        placeholder={schemaField.placeholder}
+                                        error={!!fieldState.error}
+                                        helperText={
+                                          fieldState.error?.message ||
+                                          schemaField.helperText
+                                        }
+                                        multiline
+                                        rows={schemaField.rows || 6}
+                                        fullWidth
+                                        sx={{
+                                          "& .MuiInputBase-input": {
+                                            fontFamily: "monospace",
+                                            fontSize: "0.875rem",
+                                          },
+                                        }}
+                                      />
+                                    );
+                                  }
+
+                                  if (schemaField.type === "number") {
+                                    return (
+                                      <TextField
+                                        {...formField}
+                                        label={schemaField.label}
+                                        type="number"
+                                        placeholder={schemaField.placeholder}
+                                        error={!!fieldState.error}
+                                        helperText={
+                                          fieldState.error?.message ||
+                                          schemaField.helperText
+                                        }
+                                        size="small"
+                                        sx={{ width: 150 }}
+                                        onChange={e =>
+                                          formField.onChange(
+                                            e.target.value
+                                              ? parseInt(e.target.value)
+                                              : undefined,
+                                          )
+                                        }
+                                      />
+                                    );
+                                  }
+
+                                  // Default: string field
+                                  return (
+                                    <TextField
+                                      {...formField}
+                                      label={schemaField.label}
+                                      placeholder={schemaField.placeholder}
+                                      error={!!fieldState.error}
+                                      helperText={
+                                        fieldState.error?.message ||
+                                        schemaField.helperText
+                                      }
+                                      size="small"
+                                      fullWidth
+                                    />
+                                  );
+                                }}
+                              />
+                            ))}
+                          </Stack>
+                        </Box>
+                      ))
+                    )}
                   </Box>
                 </>
               )}

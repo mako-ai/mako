@@ -11,9 +11,18 @@ description: Sync jobs, chunked sync architecture, and Inngest usage
 - Connector registry (CLI): [api/src/sync/connector-registry.ts](mdc:api/src/sync/connector-registry.ts) with lazy imports.
 - Inngest integration: [api/src/inngest](mdc:api/src/inngest).
 
+## Connector vs Transfer Responsibilities
+
+- **Connectors** store only credentials and connection settings (endpoint, API key, auth headers).
+- **Transfers (SyncJobs)** define what data to sync:
+  - `entityFilter`: which entities to sync (for connectors with fixed entities like Stripe, Close)
+  - `queries`: GraphQL/PostHog query definitions (for query-based connectors)
+- For GraphQL/PostHog connectors, queries are injected into the connector at sync time via `dataSource.connection.queries`.
+
 Rules:
 
 - Use chunked sync pattern; avoid long blocking operations in a single job.
 - Delegate connector-specific logic to `api/src/connectors/**`.
 - All sync jobs should be idempotent and checkpoint progress (by cursor/offset) per workspace.
 - Prefer Inngest for scheduling/triggering; avoid ad-hoc timers.
+- Do not store queries in connector config; they belong in the SyncJob/transfer.

@@ -37,78 +37,75 @@ export class GraphQLConnector extends BaseConnector {
           helperText:
             "Authentication and custom headers as JSON (encrypted when saved)",
         },
-        {
-          name: "queries",
-          label: "GraphQL Queries",
-          type: "object_array",
-          required: true,
-          itemFields: [
-            {
-              name: "name",
-              label: "Entity Name",
-              type: "string",
-              required: true,
-              placeholder: "items",
-              helperText: "Name for this entity (used for collection naming)",
-            },
-            {
-              name: "query",
-              label: "GraphQL Query",
-              type: "textarea",
-              required: true,
-              rows: 12,
-              placeholder:
-                "query GetData($limit: Int!, $offset: Int!) {\n  items(limit: $limit, offset: $offset) {\n    id\n    name\n    created_at\n  }\n  items_aggregate {\n    aggregate {\n      count\n    }\n  }\n}",
-              helperText:
-                "Your GraphQL query with pagination support. For custom cursor pagination, use $first and $after instead of $limit and $offset.",
-            },
-            {
-              name: "data_path",
-              label: "Data Path",
-              type: "string",
-              required: true,
-              placeholder: "data.items",
-              helperText: "JSONPath to the data array in the response",
-            },
-            {
-              name: "total_count_path",
-              label: "Total Count Path",
-              type: "string",
-              required: false,
-              placeholder: "data.items_aggregate.aggregate.count",
-              helperText: "JSONPath to total count (for progress tracking)",
-            },
-            {
-              name: "has_next_page_path",
-              label: "Has Next Page Path",
-              type: "string",
-              required: false,
-              placeholder: "data.items.pageInfo.hasNextPage",
-              helperText: "JSONPath for cursor-based pagination (optional)",
-            },
-            {
-              name: "cursor_path",
-              label: "Cursor Path",
-              type: "string",
-              required: false,
-              placeholder: "data.items.pageInfo.endCursor",
-              helperText: "JSONPath for next cursor value (optional)",
-            },
-            {
-              name: "batch_size",
-              label: "Batch Size",
-              type: "number",
-              required: false,
-              default: 100,
-              placeholder: "100",
-              helperText:
-                "Number of records per request (uses $limit variable)",
-            },
-          ],
-          helperText:
-            "Define one or more GraphQL queries. Each query will be synced to its own MongoDB collection.",
-        },
       ],
+      // Queries are configured at the Transfer level, not Connector level
+      // This schema tells the UI what query fields to show
+      transferQueries: {
+        label: "GraphQL Queries",
+        required: true,
+        fields: [
+          {
+            name: "name",
+            label: "Entity Name",
+            type: "string",
+            required: true,
+            placeholder: "items",
+            helperText: "Name for this entity (used for collection naming)",
+          },
+          {
+            name: "query",
+            label: "GraphQL Query",
+            type: "textarea",
+            required: true,
+            rows: 8,
+            placeholder:
+              "query GetData($limit: Int!, $offset: Int!) {\n  items(limit: $limit, offset: $offset) {\n    id\n    name\n    created_at\n  }\n}",
+            helperText:
+              "Your GraphQL query with pagination support ($limit/$offset or $first/$after)",
+          },
+          {
+            name: "data_path",
+            label: "Data Path",
+            type: "string",
+            required: true,
+            placeholder: "data.items",
+            helperText: "JSONPath to the data array in the response",
+          },
+          {
+            name: "total_count_path",
+            label: "Total Count Path",
+            type: "string",
+            required: false,
+            placeholder: "data.items_aggregate.aggregate.count",
+            helperText: "JSONPath to total count (for progress tracking)",
+          },
+          {
+            name: "has_next_page_path",
+            label: "Has Next Page Path",
+            type: "string",
+            required: false,
+            placeholder: "data.items.pageInfo.hasNextPage",
+            helperText: "JSONPath for cursor-based pagination (optional)",
+          },
+          {
+            name: "cursor_path",
+            label: "Cursor Path",
+            type: "string",
+            required: false,
+            placeholder: "data.items.pageInfo.endCursor",
+            helperText: "JSONPath for next cursor value (optional)",
+          },
+          {
+            name: "batch_size",
+            label: "Batch Size",
+            type: "number",
+            required: false,
+            default: 100,
+            placeholder: "100",
+            helperText: "Number of records per request",
+          },
+        ],
+      },
     };
   }
 
@@ -129,13 +126,24 @@ export class GraphQLConnector extends BaseConnector {
       errors.push("GraphQL endpoint is required");
     }
 
-    // Validate queries array (new format)
+    // Validate headers JSON if provided (at top level)
     if (
-      !this.dataSource.config.queries ||
-      this.dataSource.config.queries.length === 0
+      this.dataSource.config.headers &&
+      typeof this.dataSource.config.headers === "string"
     ) {
-      errors.push("At least one GraphQL query must be configured");
-    } else {
+      try {
+        JSON.parse(this.dataSource.config.headers);
+      } catch {
+        errors.push("Headers must be valid JSON format");
+      }
+    }
+
+    // Note: queries are validated at sync time when provided by the transfer
+    // Validate queries if present (for backward compatibility and sync-time validation)
+    if (
+      this.dataSource.config.queries &&
+      this.dataSource.config.queries.length > 0
+    ) {
       this.dataSource.config.queries.forEach((query: any, index: number) => {
         if (!query.name) {
           errors.push(`Query ${index + 1} is missing a name`);
@@ -143,23 +151,10 @@ export class GraphQLConnector extends BaseConnector {
         if (!query.query) {
           errors.push(`Query ${index + 1} is missing the GraphQL query`);
         }
-        if (!query.data_path) {
+        if (!query.data_path && !query.dataPath) {
           errors.push(`Query ${index + 1} is missing the data path`);
         }
-        // Validate headers JSON if provided at connector level (only once)
       });
-
-      // Validate headers JSON if provided (at top level)
-      if (
-        this.dataSource.config.headers &&
-        typeof this.dataSource.config.headers === "string"
-      ) {
-        try {
-          JSON.parse(this.dataSource.config.headers);
-        } catch {
-          errors.push("Headers must be valid JSON format");
-        }
-      }
     }
 
     return { valid: errors.length === 0, errors };

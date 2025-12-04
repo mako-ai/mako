@@ -323,6 +323,25 @@ export interface IChat extends Document {
 }
 
 /**
+ * Query configuration for GraphQL/PostHog transfers
+ */
+export interface ITransferQuery {
+  name: string;
+  query: string;
+  variables?: { [key: string]: any };
+  dataPath?: string;
+  data_path?: string;
+  hasNextPagePath?: string;
+  has_next_page_path?: string;
+  cursorPath?: string;
+  cursor_path?: string;
+  totalCountPath?: string;
+  total_count_path?: string;
+  batchSize?: number;
+  batch_size?: number;
+}
+
+/**
  * SyncJob model interface
  */
 export interface ISyncJob extends Document {
@@ -344,6 +363,7 @@ export interface ISyncJob extends Document {
     enabled: boolean;
   };
   entityFilter?: string[]; // Optional: specific entities to sync
+  queries?: ITransferQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
   enabled: boolean;
   lastRunAt?: Date;
@@ -997,6 +1017,23 @@ const SyncJobSchema = new Schema<ISyncJob>(
       },
     },
     entityFilter: [String],
+    queries: [
+      {
+        name: { type: String, required: true },
+        query: { type: String, required: true },
+        variables: { type: Schema.Types.Mixed },
+        dataPath: String,
+        data_path: String,
+        hasNextPagePath: String,
+        has_next_page_path: String,
+        cursorPath: String,
+        cursor_path: String,
+        totalCountPath: String,
+        total_count_path: String,
+        batchSize: Number,
+        batch_size: Number,
+      },
+    ],
     syncMode: {
       type: String,
       enum: ["full", "incremental"],

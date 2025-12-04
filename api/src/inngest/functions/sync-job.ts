@@ -607,6 +607,7 @@ export const syncJobFunction = inngest.createFunction(
                   maxIterations: 10, // Run 10 API calls per chunk
                   logger: syncLogger,
                   step, // Pass Inngest step for serverless-friendly retries
+                  queries: (job as any).queries, // Pass transfer queries for GraphQL/PostHog
                 });
 
                 // Update heartbeat after chunk completes (not during)
@@ -733,6 +734,7 @@ export const syncJobFunction = inngest.createFunction(
               job.syncMode === "incremental",
               syncLogger,
               step, // Pass Inngest step for serverless-friendly retries
+              (job as any).queries, // Pass transfer queries for GraphQL/PostHog
             );
 
             logger.info("Sync operation completed successfully", { jobId });

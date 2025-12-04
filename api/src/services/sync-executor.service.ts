@@ -37,6 +37,7 @@ export async function performSync(
   isIncremental: boolean = false,
   logger?: SyncLogger,
   step?: any, // Inngest step object for serverless-friendly retries
+  queries?: any[], // GraphQL/PostHog queries from the transfer
 ): Promise<void> {
   // Log sync context
   logger?.log("info", `Sync mode: ${isIncremental ? "incremental" : "full"}`);
@@ -61,6 +62,7 @@ export async function performSync(
       isIncremental,
       logger,
       step, // Pass through the step parameter
+      queries, // Pass through transfer queries for GraphQL/PostHog
     );
     logger?.log("info", "Sync process completed successfully");
   } catch (error) {

@@ -13,6 +13,12 @@ export interface ConnectorType {
 
 export interface ConnectorSchemaResponse {
   fields: Array<any>;
+  /** Schema for transfer-level queries (for connectors like GraphQL/PostHog) */
+  transferQueries?: {
+    label: string;
+    required: boolean;
+    fields: Array<any>;
+  };
 }
 
 interface CatalogState {

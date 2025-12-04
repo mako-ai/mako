@@ -53,41 +53,43 @@ export class PosthogConnector extends BaseConnector {
             },
           ],
         },
-        {
-          name: "queries",
-          label: "HogQL Queries",
-          type: "object_array",
-          required: true,
-          itemFields: [
-            {
-              name: "name",
-              label: "Entity Name",
-              type: "string",
-              required: true,
-              placeholder: "events_7d",
-              helperText: "Name used as entity and collection name",
-            },
-            {
-              name: "query",
-              label: "HogQL Query",
-              type: "textarea",
-              required: true,
-              rows: 12,
-              placeholder:
-                "SELECT event, count() AS cnt FROM events WHERE timestamp > now() - interval 7 day GROUP BY event ORDER BY cnt DESC",
-              helperText:
-                "Optional placeholders: $limit and $offset. If omitted, pagination will be appended automatically.",
-            },
-            {
-              name: "batch_size",
-              label: "Batch Size",
-              type: "number",
-              required: false,
-              default: 100,
-            },
-          ],
-        },
       ],
+      // Queries are configured at the Transfer level, not Connector level
+      // This schema tells the UI what query fields to show
+      transferQueries: {
+        label: "HogQL Queries",
+        required: true,
+        fields: [
+          {
+            name: "name",
+            label: "Entity Name",
+            type: "string",
+            required: true,
+            placeholder: "events_7d",
+            helperText: "Name used as entity and collection name",
+          },
+          {
+            name: "query",
+            label: "HogQL Query",
+            type: "textarea",
+            required: true,
+            rows: 8,
+            placeholder:
+              "SELECT event, count() AS cnt FROM events WHERE timestamp > now() - interval 7 day GROUP BY event ORDER BY cnt DESC",
+            helperText:
+              "Optional placeholders: $limit and $offset. If omitted, pagination will be appended automatically.",
+          },
+          {
+            name: "batch_size",
+            label: "Batch Size",
+            type: "number",
+            required: false,
+            default: 100,
+            placeholder: "100",
+            helperText: "Number of records per request",
+          },
+        ],
+      },
     };
   }
 
@@ -111,12 +113,8 @@ export class PosthogConnector extends BaseConnector {
     if (!this.dataSource.config.api_key) {
       errors.push("PostHog api_key is required");
     }
-    if (
-      !Array.isArray(this.dataSource.config.queries) ||
-      this.dataSource.config.queries.length === 0
-    ) {
-      errors.push("At least one HogQL query must be configured");
-    }
+    // Note: queries are now configured at the Transfer level, not Connector level
+    // Validation happens at sync time when queries are injected
 
     return { valid: errors.length === 0, errors };
   }

@@ -5,13 +5,43 @@ Purpose: Ensure adding a new connector requires only dropping a new folder under
 Rules:
 
 - Connectors must be 100% self-contained under `api/src/connectors/<type>/`.
+- Connector schemas should define only credentials/connection settings (endpoint, API keys, auth headers).
+- Query definitions (for query-based connectors) belong at the **transfer level** (SyncJob.queries), not in connector config.
 - UI must be schema-driven: forms render using the schema returned by `/api/connectors/:type/schema`.
 - Do NOT hardcode connector-specific logic in shared components (e.g., `app/src/components/**`), routes, or services.
 - If conditional fields are needed, use schema properties like `showIf` and `type: "select"` with `options`; never add branching by connector type in UI code.
 - Connector registration happens via registries; adding a connector should not require editing the UI or non-registry backend files.
 - Keep any connector-specific data transformations inside the connector implementation.
 
+## Transfer-Level Queries Schema
+
+For connectors that require user-defined queries (like GraphQL, PostHog, or custom SQL connectors), the schema should expose a `transferQueries` property:
+
+```typescript
+static getConfigSchema() {
+  return {
+    fields: [
+      // Connection/credential fields only
+      { name: "endpoint", label: "Endpoint URL", type: "string", required: true },
+    ],
+    // Queries are configured at the Transfer (SyncJob) level
+    transferQueries: {
+      label: "GraphQL Queries",  // Display label
+      required: true,            // Whether at least one query is required
+      fields: [                  // Schema for each query item
+        { name: "name", label: "Entity Name", type: "string", required: true },
+        { name: "query", label: "Query", type: "textarea", required: true, rows: 8 },
+        { name: "batch_size", label: "Batch Size", type: "number", default: 100 },
+      ],
+    },
+  };
+}
+```
+
+The frontend reads `schema.transferQueries` and dynamically renders the query editor in the SyncJob form. **Never** check connector types like `if (type === "graphql")` in UI code.
+
 Enforcement guidance:
 
 - During reviews, reject edits that add `if (type === "xyz")` checks outside connector folders.
 - Prefer updating connector schemas over UI code to change field order, visibility, or control types.
+- Check for `transferQueries` schema property presence, not connector type names.
