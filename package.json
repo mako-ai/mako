@@ -11,7 +11,7 @@
     "format": "prettier --write \"api/**/*.ts\"",
     "sync": "ts-node api/src/sync/cli.ts",
     "sync:help": "ts-node api/src/sync/cli.ts --help",
-    "migrate": "ts-node api/src/migrations/cli.ts",
+    "migrate": "ts-node -r dotenv/config api/src/migrations/cli.ts",
     "query": "ts-node sync/query-runner.ts",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
