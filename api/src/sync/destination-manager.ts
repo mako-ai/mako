@@ -75,7 +75,9 @@ export class DatabaseDestinationManager {
         connection_string: this.decryptString(
           destination.connection.connectionString,
         ),
-        database: this.decryptString(destination.connection.database),
+        database: destination.connection.database
+          ? this.decryptString(destination.connection.database)
+          : undefined,
       },
     };
   }

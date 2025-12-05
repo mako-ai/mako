@@ -120,6 +120,17 @@ gcloud run deploy mako \
   --min-instances=1 \
   --timeout=600
 
+# -------------------------------------------------------------
+# Run database migrations
+# -------------------------------------------------------------
+echo "Running database migrations..."
+if ! pnpm run migrate; then
+  echo "⚠️  Migrations failed! The deployment succeeded but migrations did not run."
+  echo "    You may need to run 'pnpm run migrate' manually."
+  exit 1
+fi
+echo "✅ Migrations completed successfully."
+
 # Disable default run.app URL to force traffic through custom domain only (only do this once  )
 # gcloud beta run services update revops-fullstack \
 #   --region $REGION \

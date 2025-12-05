@@ -5,6 +5,7 @@
 - Deployment scripts and env: [deploy.sh](mdc:deploy.sh), [env.yaml](mdc:env.yaml), [cloud-run-env.yaml](mdc:cloud-run-env.yaml).
 - Inngest local/dev configuration: [INNGEST_DEV_CONFIG.md](mdc:INNGEST_DEV_CONFIG.md).
 - If a change requires new environment variables, document them in `env.yaml` and update relevant READMEs.
+- Database migrations run automatically after deploy. See [90-migrations.mdc](mdc:.cursor/rules/90-migrations.mdc).
 
 Environment variables (local defaults):
 
