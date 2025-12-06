@@ -157,5 +157,27 @@ jobs:
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --quiet
 
+      - name: Install MongoDB tools
+        if: github.ref_name == 'dev'
+        run: |
+          wget -qO- https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb.gpg
+          echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-database-tools mongodb-mongosh
+
+      - name: Restore staging database from production
+        if: github.ref_name == 'dev'
+        env:
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          DEV_DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+        run: |
+          echo "Dropping staging database..."
+          mongosh "$DEV_DATABASE_URL" --eval "db.dropDatabase()"
+          echo "Restoring from production..."
+          mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$DEV_DATABASE_URL" --gzip --archive \
+            --nsInclude="production.*" \
+            --nsFrom="production.*" \
+            --nsTo="dev.*"
+
       - name: Run database migrations
         run: pnpm run migrate
