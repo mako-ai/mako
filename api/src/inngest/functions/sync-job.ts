@@ -508,8 +508,7 @@ export const syncJobFunction = inngest.createFunction(
             }
 
             // Inject transfer queries into dataSource for GraphQL/PostHog connectors
-            // These connectors derive entities from connection.queries, which are now stored
-            // at the transfer (SyncJob) level rather than the connector config
+            // The registry maps connection -> config when creating the connector
             const transferQueries = (job as any).queries;
             if (transferQueries && transferQueries.length > 0) {
               dataSource.connection = {
@@ -690,6 +689,16 @@ export const syncJobFunction = inngest.createFunction(
             job.dataSourceId.toString(),
           );
           if (dataSource) {
+            // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+            // The registry maps connection -> config when creating the connector
+            const transferQueries = (job as any).queries;
+            if (transferQueries && transferQueries.length > 0) {
+              dataSource.connection = {
+                ...dataSource.connection,
+                queries: transferQueries,
+              };
+            }
+
             const connector =
               await syncConnectorRegistry.getConnector(dataSource);
             if (connector) {

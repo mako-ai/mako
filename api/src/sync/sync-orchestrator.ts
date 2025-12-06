@@ -245,6 +245,7 @@ export async function performSyncChunk(
     }
 
     // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+    // The registry maps connection -> config when creating the connector
     if (queries && queries.length > 0) {
       dataSource.connection = {
         ...dataSource.connection,
@@ -504,6 +505,7 @@ export async function performSync(
     }
 
     // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+    // The registry maps connection -> config when creating the connector
     if (queries && queries.length > 0) {
       dataSource.connection = {
         ...dataSource.connection,
