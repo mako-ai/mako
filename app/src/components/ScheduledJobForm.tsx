@@ -565,7 +565,11 @@ export function ScheduledJobForm({
     }
 
     // Validate entity selection (skip for connectors that use queries instead)
-    if (!requiresQueries && !selectAllEntities && selectedEntities.length === 0) {
+    if (
+      !requiresQueries &&
+      !selectAllEntities &&
+      selectedEntities.length === 0
+    ) {
       setError(
         "Please select at least one entity to sync, or choose 'All Entities'",
       );
@@ -1201,8 +1205,8 @@ export function ScheduledJobForm({
                     {queryFields.length === 0 ? (
                       <Alert severity="info">
                         <Typography variant="body2">
-                          No queries configured. Add at least one query to define
-                          what data to sync from this connector.
+                          No queries configured. Add at least one query to
+                          define what data to sync from this connector.
                         </Typography>
                       </Alert>
                     ) : (
@@ -1239,47 +1243,75 @@ export function ScheduledJobForm({
 
                           <Stack spacing={2}>
                             {/* Render fields from schema */}
-                            {transferQueriesSchema.fields?.map((schemaField: any) => (
-                              <Controller
-                                key={schemaField.name}
-                                name={`queries.${index}.${schemaField.name}`}
-                                control={control}
-                                rules={{
-                                  required: schemaField.required
-                                    ? `${schemaField.label} is required`
-                                    : false,
-                                }}
-                                render={({ field: formField, fieldState }) => {
-                                  if (schemaField.type === "textarea") {
-                                    return (
-                                      <TextField
-                                        {...formField}
-                                        label={schemaField.label}
-                                        placeholder={schemaField.placeholder}
-                                        error={!!fieldState.error}
-                                        helperText={
-                                          fieldState.error?.message ||
-                                          schemaField.helperText
-                                        }
-                                        multiline
-                                        rows={schemaField.rows || 6}
-                                        fullWidth
-                                        sx={{
-                                          "& .MuiInputBase-input": {
-                                            fontFamily: "monospace",
-                                            fontSize: "0.875rem",
-                                          },
-                                        }}
-                                      />
-                                    );
-                                  }
+                            {transferQueriesSchema.fields?.map(
+                              (schemaField: any) => (
+                                <Controller
+                                  key={schemaField.name}
+                                  name={`queries.${index}.${schemaField.name}`}
+                                  control={control}
+                                  rules={{
+                                    required: schemaField.required
+                                      ? `${schemaField.label} is required`
+                                      : false,
+                                  }}
+                                  render={({
+                                    field: formField,
+                                    fieldState,
+                                  }) => {
+                                    if (schemaField.type === "textarea") {
+                                      return (
+                                        <TextField
+                                          {...formField}
+                                          label={schemaField.label}
+                                          placeholder={schemaField.placeholder}
+                                          error={!!fieldState.error}
+                                          helperText={
+                                            fieldState.error?.message ||
+                                            schemaField.helperText
+                                          }
+                                          multiline
+                                          rows={schemaField.rows || 6}
+                                          fullWidth
+                                          sx={{
+                                            "& .MuiInputBase-input": {
+                                              fontFamily: "monospace",
+                                              fontSize: "0.875rem",
+                                            },
+                                          }}
+                                        />
+                                      );
+                                    }
 
-                                  if (schemaField.type === "number") {
+                                    if (schemaField.type === "number") {
+                                      return (
+                                        <TextField
+                                          {...formField}
+                                          label={schemaField.label}
+                                          type="number"
+                                          placeholder={schemaField.placeholder}
+                                          error={!!fieldState.error}
+                                          helperText={
+                                            fieldState.error?.message ||
+                                            schemaField.helperText
+                                          }
+                                          size="small"
+                                          sx={{ width: 150 }}
+                                          onChange={e =>
+                                            formField.onChange(
+                                              e.target.value
+                                                ? parseInt(e.target.value)
+                                                : undefined,
+                                            )
+                                          }
+                                        />
+                                      );
+                                    }
+
+                                    // Default: string field
                                     return (
                                       <TextField
                                         {...formField}
                                         label={schemaField.label}
-                                        type="number"
                                         placeholder={schemaField.placeholder}
                                         error={!!fieldState.error}
                                         helperText={
@@ -1287,36 +1319,13 @@ export function ScheduledJobForm({
                                           schemaField.helperText
                                         }
                                         size="small"
-                                        sx={{ width: 150 }}
-                                        onChange={e =>
-                                          formField.onChange(
-                                            e.target.value
-                                              ? parseInt(e.target.value)
-                                              : undefined,
-                                          )
-                                        }
+                                        fullWidth
                                       />
                                     );
-                                  }
-
-                                  // Default: string field
-                                  return (
-                                    <TextField
-                                      {...formField}
-                                      label={schemaField.label}
-                                      placeholder={schemaField.placeholder}
-                                      error={!!fieldState.error}
-                                      helperText={
-                                        fieldState.error?.message ||
-                                        schemaField.helperText
-                                      }
-                                      size="small"
-                                      fullWidth
-                                    />
-                                  );
-                                }}
-                              />
-                            ))}
+                                  }}
+                                />
+                              ),
+                            )}
                           </Stack>
                         </Box>
                       ))

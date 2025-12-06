@@ -1,4 +1,4 @@
-import { Db, ObjectId } from "mongodb";
+import { Db } from "mongodb";
 
 export const description =
   "Move queries from GraphQL/PostHog connectors to their first matching SyncJob transfer";
