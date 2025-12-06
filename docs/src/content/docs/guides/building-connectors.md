@@ -5,6 +5,15 @@ description: Learn how to create a new data connector.
 
 Connectors allow Mako to ingest data from external sources. This guide walks you through creating a new connector.
 
+## Key Principle: Separation of Concerns
+
+- **Connectors** store only credentials and connection settings (endpoint, API keys, auth headers).
+- **Transfers (SyncJobs)** define what data to sync:
+  - For connectors with fixed entities (Stripe, Close): use `entityFilter`
+  - For query-based connectors (GraphQL, PostHog): use `queries` array on the transfer
+
+This separation allows reusing the same connector credentials for multiple transfers with different data configurations.
+
 ## Structure
 
 Connectors live in `api/src/connectors/<source-name>`. Each connector must have:

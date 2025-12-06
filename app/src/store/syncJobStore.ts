@@ -43,6 +43,25 @@ const webhookConfigSchema = z
   })
   .optional();
 
+// Query schema for GraphQL/PostHog transfers
+const transferQuerySchema = z.object({
+  name: z.string(),
+  query: z.string(),
+  variables: z.record(z.any()).optional(),
+  dataPath: z.string().optional(),
+  data_path: z.string().optional(),
+  hasNextPagePath: z.string().optional(),
+  has_next_page_path: z.string().optional(),
+  cursorPath: z.string().optional(),
+  cursor_path: z.string().optional(),
+  totalCountPath: z.string().optional(),
+  total_count_path: z.string().optional(),
+  batchSize: z.number().optional(),
+  batch_size: z.number().optional(),
+});
+
+export type TransferQuery = z.infer<typeof transferQuerySchema>;
+
 const syncJobSchema = z.object({
   _id: z.string(),
   workspaceId: z.string(),
@@ -53,6 +72,7 @@ const syncJobSchema = z.object({
   schedule: syncJobScheduleSchema,
   webhookConfig: webhookConfigSchema,
   entityFilter: z.array(z.string()).nullable().optional(),
+  queries: z.array(transferQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
   enabled: z.boolean(),
   lastRunAt: z.string().nullable().optional(),

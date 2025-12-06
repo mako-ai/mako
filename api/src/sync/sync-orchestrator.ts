@@ -27,6 +27,7 @@ export interface SyncChunkOptions {
   maxIterations?: number;
   logger?: SyncLogger;
   step?: any; // Inngest step object for serverless-friendly retries
+  queries?: any[]; // GraphQL/PostHog queries from the transfer
 }
 
 /**
@@ -225,6 +226,7 @@ export async function performSyncChunk(
     state,
     maxIterations = 10,
     logger,
+    queries,
   } = options;
 
   const syncMode = isIncremental ? "incremental" : "full";
@@ -240,6 +242,15 @@ export async function performSyncChunk(
 
     if (!dataSource.active) {
       throw new Error(`Data source '${dataSource.name}' is not active`);
+    }
+
+    // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+    // The registry maps connection -> config when creating the connector
+    if (queries && queries.length > 0) {
+      dataSource.connection = {
+        ...dataSource.connection,
+        queries,
+      };
     }
 
     // Get connector from registry
@@ -458,6 +469,7 @@ export async function performSync(
   isIncremental: boolean = false,
   logger?: SyncLogger,
   step?: any, // Inngest step object for serverless-friendly retries
+  queries?: any[], // GraphQL/PostHog queries from the transfer
 ) {
   logger?.log(
     "debug",
@@ -490,6 +502,15 @@ export async function performSync(
       const errorMsg = `Data source '${dataSource.name}' is not active`;
       logger?.log("error", errorMsg);
       throw new Error(errorMsg);
+    }
+
+    // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+    // The registry maps connection -> config when creating the connector
+    if (queries && queries.length > 0) {
+      dataSource.connection = {
+        ...dataSource.connection,
+        queries,
+      };
     }
 
     // Get destination database (just for validation)

@@ -507,6 +507,16 @@ export const syncJobFunction = inngest.createFunction(
               throw new Error(`Data source not found: ${job.dataSourceId}`);
             }
 
+            // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+            // The registry maps connection -> config when creating the connector
+            const transferQueries = (job as any).queries;
+            if (transferQueries && transferQueries.length > 0) {
+              dataSource.connection = {
+                ...dataSource.connection,
+                queries: transferQueries,
+              };
+            }
+
             const connector =
               await syncConnectorRegistry.getConnector(dataSource);
             if (!connector) {
@@ -607,6 +617,7 @@ export const syncJobFunction = inngest.createFunction(
                   maxIterations: 10, // Run 10 API calls per chunk
                   logger: syncLogger,
                   step, // Pass Inngest step for serverless-friendly retries
+                  queries: (job as any).queries, // Pass transfer queries for GraphQL/PostHog
                 });
 
                 // Update heartbeat after chunk completes (not during)
@@ -678,6 +689,16 @@ export const syncJobFunction = inngest.createFunction(
             job.dataSourceId.toString(),
           );
           if (dataSource) {
+            // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+            // The registry maps connection -> config when creating the connector
+            const transferQueries = (job as any).queries;
+            if (transferQueries && transferQueries.length > 0) {
+              dataSource.connection = {
+                ...dataSource.connection,
+                queries: transferQueries,
+              };
+            }
+
             const connector =
               await syncConnectorRegistry.getConnector(dataSource);
             if (connector) {
@@ -733,6 +754,7 @@ export const syncJobFunction = inngest.createFunction(
               job.syncMode === "incremental",
               syncLogger,
               step, // Pass Inngest step for serverless-friendly retries
+              (job as any).queries, // Pass transfer queries for GraphQL/PostHog
             );
 
             logger.info("Sync operation completed successfully", { jobId });

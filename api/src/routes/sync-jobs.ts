@@ -46,6 +46,7 @@ syncJobRoutes.get("/", async c => {
           schedule: 1,
           webhookConfig: 1,
           entityFilter: 1,
+          queries: 1,
           syncMode: 1,
           enabled: 1,
           lastRunAt: 1,
@@ -152,6 +153,7 @@ syncJobRoutes.post("/", async c => {
           ? body.destinationDatabaseName.trim()
           : undefined,
       entityFilter: body.entityFilter || [],
+      queries: body.queries || [], // GraphQL/PostHog queries
       syncMode: body.syncMode || "full",
       enabled: body.enabled !== false,
       createdBy: userId,
@@ -275,6 +277,7 @@ syncJobRoutes.put("/:jobId", async c => {
           : undefined;
     }
     if (body.entityFilter !== undefined) job.entityFilter = body.entityFilter;
+    if (body.queries !== undefined) job.queries = body.queries; // GraphQL/PostHog queries
     if (body.syncMode) job.syncMode = body.syncMode;
     if (body.enabled !== undefined) job.enabled = body.enabled;
 
