@@ -30,7 +30,7 @@ jobs:
       BASE_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
-      DATABASE_URL: ${{ github.ref_name == 'master' && secrets.PROD_DATABASE_URL || secrets.DEV_DATABASE_URL }}
+      DATABASE_URL: ${{ github.ref_name == 'master' && secrets.PROD_DATABASE_URL || secrets.STAGING_DATABASE_URL }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
       GCP_SERVICE_ACCOUNT: ${{ github.ref_name == 'master' && secrets.GCP_PROD_SERVICE_ACCOUNT || secrets.GCP_DEV_SERVICE_ACCOUNT }}
       GITHUB_CLIENT_ID: ${{ vars.GITHUB_CLIENT_ID }}
@@ -169,15 +169,15 @@ jobs:
         if: github.ref_name == 'dev'
         env:
           PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-          DEV_DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: |
           echo "Dropping staging database..."
-          mongosh "$DEV_DATABASE_URL" --eval "db.dropDatabase()"
+          mongosh "$STAGING_DATABASE_URL" --eval "db.dropDatabase()"
           echo "Restoring from production..."
-          mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$DEV_DATABASE_URL" --gzip --archive \
+          mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
             --nsInclude="production.*" \
             --nsFrom="production.*" \
-            --nsTo="dev.*"
+            --nsTo="staging.*"
 
       - name: Run database migrations
         run: pnpm run migrate
