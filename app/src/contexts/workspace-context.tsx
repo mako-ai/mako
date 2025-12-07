@@ -17,7 +17,7 @@ import {
 import { useAuth } from "./auth-context";
 import { useAppStore } from "../store";
 
-import { useSyncJobStore } from "../store/syncJobStore";
+import { useFlowStore } from "../store/flowStore";
 
 interface WorkspaceContextState {
   // State
@@ -215,7 +215,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
           // Also reset in-memory store state to prevent leaks if reload is delayed
           useAppStore.getState().reset();
-          useSyncJobStore.getState().reset();
+          useFlowStore.getState().reset();
 
           localStorage.setItem("activeWorkspaceId", id);
           setCurrentWorkspaceId(id);

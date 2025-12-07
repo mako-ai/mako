@@ -22,24 +22,24 @@ import {
   Webhook as WebhookIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useSyncJobStore } from "../store/syncJobStore";
+import { useFlowStore } from "../store/flowStore";
 import { useConsoleStore } from "../store/consoleStore";
 
-export function SyncJobsExplorer() {
+export function FlowsExplorer() {
   const { currentWorkspace } = useWorkspace();
   const {
-    jobs: jobsMap,
+    flows: flowsMap,
     loading: loadingMap,
     error: errorMap,
     init,
     refresh,
-    selectJob,
+    selectFlow,
     clearError,
-  } = useSyncJobStore();
+  } = useFlowStore();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
 
-  const jobs = currentWorkspace ? jobsMap[currentWorkspace.id] || [] : [];
+  const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
   const isLoading = currentWorkspace
     ? !!loadingMap[currentWorkspace.id]
     : false;
@@ -68,39 +68,39 @@ export function SyncJobsExplorer() {
     setAnchorEl(null);
   };
 
-  const handleCreateNew = (jobType: "scheduled" | "webhook") => {
+  const handleCreateNew = (flowType: "scheduled" | "webhook") => {
     const id = addConsoleTab({
-      title: `New ${jobType === "scheduled" ? "Scheduled" : "Webhook"} Job`,
+      title: `New ${flowType === "scheduled" ? "Scheduled" : "Webhook"} Flow`,
       content: "",
       initialContent: "",
-      kind: "sync-job-editor" as any,
-      metadata: { isNew: true, jobType },
+      kind: "flow-editor" as any,
+      metadata: { isNew: true, flowType },
     });
     setActiveConsole(id);
     handleMenuClose();
   };
 
-  const handleEditJob = (jobId: string) => {
-    selectJob(jobId);
-    const job = jobs.find(j => j._id === jobId);
-    if (job) {
+  const handleEditFlow = (flowId: string) => {
+    selectFlow(flowId);
+    const flow = flows.find(f => f._id === flowId);
+    if (flow) {
       const existingTab = useConsoleStore
         .getState()
-        .consoleTabs.find((tab: any) => tab.metadata?.jobId === jobId);
+        .consoleTabs.find((tab: any) => tab.metadata?.flowId === flowId);
 
       if (existingTab) {
         setActiveConsole(existingTab.id);
       } else {
         const id = addConsoleTab({
-          title: `${job.dataSourceId.name} → ${job.destinationDatabaseId.name}`,
+          title: `${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`,
           content: "",
           initialContent: "",
-          kind: "sync-job-editor" as any,
+          kind: "flow-editor" as any,
           metadata: {
-            jobId,
+            flowId,
             isNew: false,
-            jobType: job.type,
-            enabled: job.enabled,
+            flowType: flow.type,
+            enabled: flow.enabled,
           },
         });
         setActiveConsole(id);
@@ -108,22 +108,22 @@ export function SyncJobsExplorer() {
     }
   };
 
-  const getJobStatus = (job: any) => {
-    if (!job.enabled) {
+  const getFlowStatus = (flow: any) => {
+    if (!flow.enabled) {
       return {
         label: "Disabled",
         color: "default" as const,
         letter: "D",
       };
     }
-    if (job.lastError) {
+    if (flow.lastError) {
       return {
         label: "Failed",
         color: "error" as const,
         letter: "F",
       };
     }
-    if (job.lastSuccessAt) {
+    if (flow.lastSuccessAt) {
       return {
         label: "Success",
         color: "success" as const,
@@ -193,10 +193,10 @@ export function SyncJobsExplorer() {
               textTransform: "uppercase",
             }}
           >
-            Transfers
+            Flows
           </Typography>
           <Box sx={{ display: "flex", gap: 0 }}>
-            <Tooltip title="Add Transfer">
+            <Tooltip title="Add Flow">
               <IconButton size="small" onClick={handleMenuOpen}>
                 <AddIcon size={20} strokeWidth={2} />
               </IconButton>
@@ -227,32 +227,32 @@ export function SyncJobsExplorer() {
         </Alert>
       )}
 
-      {/* Jobs List */}
+      {/* Flows List */}
       <Box sx={{ flexGrow: 1, overflow: "auto" }}>
-        {isLoading && jobs.length === 0 ? (
+        {isLoading && flows.length === 0 ? (
           <List dense>{renderSkeletonItems()}</List>
-        ) : jobs.length === 0 ? (
+        ) : flows.length === 0 ? (
           <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-            <Typography variant="body2">No sync jobs configured.</Typography>
+            <Typography variant="body2">No flows configured.</Typography>
           </Box>
         ) : (
           <List dense>
-            {jobs.map(job => {
-              const status = getJobStatus(job);
+            {flows.map(flow => {
+              const status = getFlowStatus(flow);
               const isActive = !!(
                 activeConsoleId &&
                 consoleTabs.find(
                   (t: any) =>
                     t.id === activeConsoleId &&
-                    (t as any).kind === "sync-job-editor" &&
-                    (t as any).metadata?.jobId === job._id,
+                    (t as any).kind === "flow-editor" &&
+                    (t as any).metadata?.flowId === flow._id,
                 )
               );
               return (
-                <ListItem key={job._id} disablePadding>
+                <ListItem key={flow._id} disablePadding>
                   <ListItemButton
                     selected={isActive}
-                    onClick={() => handleEditJob(job._id)}
+                    onClick={() => handleEditFlow(flow._id)}
                     sx={{
                       px: 1,
                       py: 0.2,
@@ -262,18 +262,18 @@ export function SyncJobsExplorer() {
                     }}
                   >
                     <ListItemIcon sx={{ minWidth: 28 }}>
-                      {job.type === "webhook" ? (
+                      {flow.type === "webhook" ? (
                         <WebhookIcon
                           size={20}
                           strokeWidth={1.5}
                           style={{
                             fontSize: 24,
-                            color: job.enabled
+                            color: flow.enabled
                               ? "text.primary"
                               : "text.disabled",
                           }}
                         />
-                      ) : job.enabled ? (
+                      ) : flow.enabled ? (
                         <ScheduleIcon
                           size={20}
                           strokeWidth={1.5}
@@ -294,7 +294,7 @@ export function SyncJobsExplorer() {
                       )}
                     </ListItemIcon>
                     <ListItemText
-                      primary={`${job.dataSourceId.name} → ${job.destinationDatabaseId.name}`}
+                      primary={`${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`}
                       secondary={null}
                       sx={{
                         pr: 6,
@@ -318,7 +318,7 @@ export function SyncJobsExplorer() {
                     >
                       <Tooltip
                         title={
-                          job.syncMode === "incremental"
+                          flow.syncMode === "incremental"
                             ? "Incremental Sync"
                             : "Full Sync"
                         }
@@ -331,7 +331,7 @@ export function SyncJobsExplorer() {
                             cursor: "help",
                           }}
                         >
-                          {job.syncMode === "incremental" ? "I" : "F"}
+                          {flow.syncMode === "incremental" ? "I" : "F"}
                         </Typography>
                       </Tooltip>
                       <Tooltip title={status.label}>
@@ -362,7 +362,7 @@ export function SyncJobsExplorer() {
         )}
       </Box>
 
-      {/* Add New Job Menu */}
+      {/* Add New Flow Menu */}
       <Menu
         anchorEl={anchorEl}
         open={open}
@@ -392,3 +392,7 @@ export function SyncJobsExplorer() {
     </Box>
   );
 }
+
+/** @deprecated Use FlowsExplorer instead */
+export const SyncJobsExplorer = FlowsExplorer;
+

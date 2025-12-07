@@ -24,15 +24,15 @@ import {
   ContentCopy as CopyIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useSyncJobStore } from "../store/syncJobStore";
+import { useFlowStore } from "../store/flowStore";
 import { useDatabaseStore } from "../store/databaseStore";
 import { apiClient } from "../lib/api-client";
 
-interface WebhookFormProps {
-  jobId?: string;
+interface WebhookFlowFormProps {
+  flowId?: string;
   isNew?: boolean;
   onSave?: () => void;
-  onSaved?: (jobId: string) => void;
+  onSaved?: (flowId: string) => void;
   onCancel?: () => void;
 }
 
@@ -42,34 +42,35 @@ interface FormData {
   webhookSecret?: string;
 }
 
-export function WebhookForm({
-  jobId,
+export function WebhookFlowForm({
+  flowId,
   isNew = false,
   onSave,
   onSaved,
   onCancel,
-}: WebhookFormProps) {
+}: WebhookFlowFormProps) {
   const { currentWorkspace } = useWorkspace();
   const {
-    jobs: jobsMap,
+    flows: flowsMap,
     loading: loadingMap,
     error: errorMap,
-    createJob,
-    updateJob,
+    createFlow,
+    updateFlow,
     clearError,
-    deleteJob,
-  } = useSyncJobStore();
+    deleteFlow,
+  } = useFlowStore();
 
   // Get workspace-specific data
-  const jobs = currentWorkspace ? jobsMap[currentWorkspace.id] || [] : [];
-  const jobsLoading = currentWorkspace
+  const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
+  const flowsLoading = currentWorkspace
     ? !!loadingMap[currentWorkspace.id]
     : false;
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
     : null;
-  const databases = useDatabaseStore(state => state.databases);
+  const databasesMap = useDatabaseStore(state => state.databases);
   const fetchDatabases = useDatabaseStore(state => state.fetchDatabases);
+  const databases = currentWorkspace ? databasesMap[currentWorkspace.id] || [] : [];
 
   const [connectors, setConnectors] = useState<any[]>([]);
   const [isLoadingConnectors, setIsLoadingConnectors] = useState(false);
@@ -77,7 +78,7 @@ export function WebhookForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const [currentJobId, setCurrentJobId] = useState<string | undefined>(jobId);
+  const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(flowId);
   const [isNewMode, setIsNewMode] = useState(isNew);
 
   const {
@@ -127,26 +128,26 @@ export function WebhookForm({
     }
   }, [currentWorkspace?.id, fetchDatabases]);
 
-  // Load job data if editing
+  // Load flow data if editing
   useEffect(() => {
-    if (!isNewMode && currentJobId && jobs.length > 0) {
-      const job = jobs.find(j => j._id === currentJobId);
-      if (job && job.type === "webhook") {
+    if (!isNewMode && currentFlowId && flows.length > 0) {
+      const flow = flows.find(j => j._id === currentFlowId);
+      if (flow && flow.type === "webhook") {
         const formData: FormData = {
-          dataSourceId: (job.dataSourceId as any)._id,
-          destinationDatabaseId: (job.destinationDatabaseId as any)._id,
+          dataSourceId: (flow.dataSourceId as any)._id,
+          destinationDatabaseId: (flow.destinationDatabaseId as any)._id,
         };
 
         // Set webhook-specific data if available
-        if (job.webhookConfig) {
-          setWebhookUrl(job.webhookConfig.endpoint || "");
-          formData.webhookSecret = job.webhookConfig.secret || "";
+        if (flow.webhookConfig) {
+          setWebhookUrl(flow.webhookConfig.endpoint || "");
+          formData.webhookSecret = flow.webhookConfig.secret || "";
         }
 
         reset(formData);
       }
     }
-  }, [isNewMode, currentJobId, jobs, reset]);
+  }, [isNewMode, currentFlowId, flows, reset]);
 
   // Clear store error when component unmounts
   useEffect(() => {
@@ -190,43 +191,43 @@ export function WebhookForm({
         webhookSecret: data.webhookSecret || "",
       };
 
-      let newJob;
+      let newFlow;
       if (isNewMode) {
-        newJob = await createJob(currentWorkspace.id, payload);
+        newFlow = await createFlow(currentWorkspace.id, payload);
         setSuccess(true);
-        // Refresh the jobs list
-        await useSyncJobStore.getState().fetchJobs(currentWorkspace.id);
+        // Refresh the flows list
+        await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
-        // Switch to edit mode and update the jobId
+        // Switch to edit mode and update the flowId
         setIsNewMode(false);
-        setCurrentJobId(newJob._id);
+        setCurrentFlowId(newFlow._id);
 
-        // Notify parent that a new job has been created
-        onSaved?.(newJob._id);
+        // Notify parent that a new flow has been created
+        onSaved?.(newFlow._id);
 
-        // Reset form with the new job data to mark it as pristine
+        // Reset form with the new flow data to mark it as pristine
         reset(data);
 
         // Notify parent if needed
         onSave?.();
-      } else if (currentJobId) {
-        await updateJob(currentWorkspace.id, currentJobId, payload);
+      } else if (currentFlowId) {
+        await updateFlow(currentWorkspace.id, currentFlowId, payload);
         setSuccess(true);
-        // Refresh the jobs list
-        await useSyncJobStore.getState().fetchJobs(currentWorkspace.id);
+        // Refresh the flows list
+        await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
         // Reset form to mark it as pristine
         reset(data);
 
-        onSaved?.(currentJobId);
+        onSaved?.(currentFlowId);
 
         // Notify parent if needed
         onSave?.();
       }
     } catch (error) {
-      console.error("Failed to save sync job:", error);
+      console.error("Failed to save flow:", error);
       setError(
-        error instanceof Error ? error.message : "Failed to save sync job",
+        error instanceof Error ? error.message : "Failed to save flow",
       );
     } finally {
       setIsSubmitting(false);
@@ -248,22 +249,22 @@ export function WebhookForm({
         }}
       >
         {/* Delete button on the left */}
-        {!isNewMode && currentJobId && (
+        {!isNewMode && currentFlowId && (
           <Button
             color="error"
             size="small"
             startIcon={<DeleteIcon />}
             onClick={async () => {
               if (
-                confirm("Are you sure you want to delete this webhook job?")
+                confirm("Are you sure you want to delete this webhook flow?")
               ) {
                 if (currentWorkspace?.id) {
                   try {
-                    await deleteJob(currentWorkspace.id, currentJobId);
+                    await deleteFlow(currentWorkspace.id, currentFlowId);
                     // Close the editor after successful deletion
                     onCancel?.();
                   } catch (error) {
-                    console.error("Failed to delete webhook job:", error);
+                    console.error("Failed to delete webhook flow:", error);
                   }
                 }
               }
@@ -310,9 +311,9 @@ export function WebhookForm({
             variant="body1"
             sx={{ mb: 3, display: "flex", alignItems: "center", gap: 1 }}
           >
-            {currentJobId && (
+            {currentFlowId && (
               <>
-                <strong>Job ID:</strong> {currentJobId}
+                <strong>Flow ID:</strong> {currentFlowId}
               </>
             )}
           </Typography>
@@ -411,7 +412,7 @@ export function WebhookForm({
 
               {/* Webhook Configuration */}
               {/* Webhook URL and Secret (only shown after creation) */}
-              {!isNewMode && currentJobId && webhookUrl && (
+              {!isNewMode && currentFlowId && webhookUrl && (
                 <Box
                   sx={{
                     p: 2,

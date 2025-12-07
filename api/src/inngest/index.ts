@@ -1,11 +1,17 @@
 import { inngest } from "./client";
 import {
+  flowFunction,
+  scheduledFlowFunction,
+  manualFlowFunction,
+  cancelFlowFunction,
+  cleanupAbandonedFlowsFunction,
+  // Backwards compatibility exports
   syncJobFunction,
   scheduledSyncJobFunction,
   manualSyncJobFunction,
   cancelSyncJobFunction,
   cleanupAbandonedJobsFunction,
-} from "./functions/sync-job";
+} from "./functions/flow";
 import {
   webhookEventProcessFunction,
   webhookCleanupFunction,
@@ -19,28 +25,36 @@ const isDevelopment =
 
 // Base functions that should always be available
 const baseFunctions = [
-  syncJobFunction,
-  manualSyncJobFunction,
-  cancelSyncJobFunction,
-  cleanupAbandonedJobsFunction,
+  flowFunction,
+  manualFlowFunction,
+  cancelFlowFunction,
+  cleanupAbandonedFlowsFunction,
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
 ];
 
-// Conditionally add scheduled sync job function (only in production)
+// Conditionally add scheduled flow function (only in production)
 export const functions = isDevelopment
   ? baseFunctions
-  : [...baseFunctions, scheduledSyncJobFunction];
+  : [...baseFunctions, scheduledFlowFunction];
 
 if (isDevelopment) {
-  console.log("⚠️  Scheduled sync job is DISABLED in development mode");
+  console.log("⚠️  Scheduled flows are DISABLED in development mode");
 } else {
-  console.log("✅ Scheduled sync job is ENABLED in production mode");
+  console.log("✅ Scheduled flows are ENABLED in production mode");
 }
 
 // Re-export for named imports
 export { inngest };
+export {
+  flowFunction,
+  scheduledFlowFunction,
+  manualFlowFunction,
+  cancelFlowFunction,
+  cleanupAbandonedFlowsFunction,
+};
+// Backwards compatibility exports
 export {
   syncJobFunction,
   scheduledSyncJobFunction,

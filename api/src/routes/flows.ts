@@ -1,19 +1,19 @@
 import { Hono } from "hono";
 import {
-  SyncJob,
+  Flow,
   Connector as DataSource,
   DatabaseConnection,
-  JobExecution,
+  FlowExecution,
   WebhookEvent,
 } from "../database/workspace-schema";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 
-export const syncJobRoutes = new Hono();
+export const flowRoutes = new Hono();
 
-// GET /api/workspaces/:workspaceId/sync-jobs - List all sync jobs
-syncJobRoutes.get("/", async c => {
+// GET /api/workspaces/:workspaceId/flows - List all flows
+flowRoutes.get("/", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
 
@@ -74,14 +74,14 @@ syncJobRoutes.get("/", async c => {
       },
     ];
 
-    const jobs = await SyncJob.aggregate(buildPipeline("connectors"));
+    const flows = await Flow.aggregate(buildPipeline("connectors"));
 
     return c.json({
       success: true,
-      data: jobs,
+      data: flows,
     });
   } catch (error) {
-    console.error("Error listing sync jobs:", error);
+    console.error("Error listing flows:", error);
     return c.json(
       {
         success: false,
@@ -92,8 +92,8 @@ syncJobRoutes.get("/", async c => {
   }
 });
 
-// POST /api/workspaces/:workspaceId/sync-jobs - Create a new sync job
-syncJobRoutes.post("/", async c => {
+// POST /api/workspaces/:workspaceId/flows - Create a new flow
+flowRoutes.post("/", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
     if (!workspaceId) {
@@ -103,12 +103,12 @@ syncJobRoutes.post("/", async c => {
     const userId = "system";
     const body = await c.req.json();
 
-    // Validate required fields based on job type
-    const jobType = body.type || "scheduled";
+    // Validate required fields based on flow type
+    const flowType = body.type || "scheduled";
     const requiredFields = ["dataSourceId", "destinationDatabaseId"];
 
-    // Schedule is only required for scheduled jobs
-    if (jobType === "scheduled") {
+    // Schedule is only required for scheduled flows
+    if (flowType === "scheduled") {
       requiredFields.push("schedule");
     }
 
@@ -141,10 +141,10 @@ syncJobRoutes.post("/", async c => {
       );
     }
 
-    // Create sync job with type-specific configuration
-    const syncJobData: any = {
+    // Create flow with type-specific configuration
+    const flowData: any = {
       workspaceId: new Types.ObjectId(workspaceId),
-      type: jobType,
+      type: flowType,
       dataSourceId: new Types.ObjectId(body.dataSourceId),
       destinationDatabaseId: new Types.ObjectId(body.destinationDatabaseId),
       destinationDatabaseName:
@@ -159,12 +159,12 @@ syncJobRoutes.post("/", async c => {
       createdBy: userId,
     };
 
-    if (jobType === "scheduled") {
-      syncJobData.schedule = {
+    if (flowType === "scheduled") {
+      flowData.schedule = {
         cron: body.schedule.cron || body.schedule,
         timezone: body.schedule.timezone || body.timezone || "UTC",
       };
-    } else if (jobType === "webhook") {
+    } else if (flowType === "webhook") {
       // Generate webhook configuration
       const webhookEndpoint = generateWebhookEndpoint(
         workspaceId,
@@ -173,35 +173,35 @@ syncJobRoutes.post("/", async c => {
       // Webhook secret must be provided by the user (from Stripe/Close)
       const webhookSecret = body.webhookSecret || "";
 
-      syncJobData.webhookConfig = {
+      flowData.webhookConfig = {
         endpoint: webhookEndpoint,
         secret: webhookSecret,
         enabled: true,
       };
     }
 
-    const syncJob = new SyncJob(syncJobData);
+    const flow = new Flow(flowData);
 
-    // Update webhook endpoint with actual job ID
-    if (jobType === "webhook" && syncJob.webhookConfig) {
-      syncJob.webhookConfig.endpoint = generateWebhookEndpoint(
+    // Update webhook endpoint with actual flow ID
+    if (flowType === "webhook" && flow.webhookConfig) {
+      flow.webhookConfig.endpoint = generateWebhookEndpoint(
         workspaceId,
-        syncJob._id.toString(),
+        flow._id.toString(),
       );
     }
 
-    await syncJob.save();
+    await flow.save();
 
     // Populate references for response
-    await syncJob.populate("dataSourceId", "name type");
-    await syncJob.populate("destinationDatabaseId", "name type");
+    await flow.populate("dataSourceId", "name type");
+    await flow.populate("destinationDatabaseId", "name type");
 
     return c.json({
       success: true,
-      data: syncJob,
+      data: flow,
     });
   } catch (error) {
-    console.error("Error creating sync job:", error);
+    console.error("Error creating flow:", error);
     return c.json(
       {
         success: false,
@@ -212,29 +212,29 @@ syncJobRoutes.post("/", async c => {
   }
 });
 
-// GET /api/workspaces/:workspaceId/sync-jobs/:jobId - Get job details
-syncJobRoutes.get("/:jobId", async c => {
+// GET /api/workspaces/:workspaceId/flows/:flowId - Get flow details
+flowRoutes.get("/:flowId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
 
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     })
       .populate("dataSourceId", "name type config")
       .populate("destinationDatabaseId", "name type");
 
-    if (!job) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
     return c.json({
       success: true,
-      data: job,
+      data: flow,
     });
   } catch (error) {
-    console.error("Error getting sync job:", error);
+    console.error("Error getting flow:", error);
     return c.json(
       {
         success: false,
@@ -245,69 +245,69 @@ syncJobRoutes.get("/:jobId", async c => {
   }
 });
 
-// PUT /api/workspaces/:workspaceId/sync-jobs/:jobId - Update job
-syncJobRoutes.put("/:jobId", async c => {
+// PUT /api/workspaces/:workspaceId/flows/:flowId - Update flow
+flowRoutes.put("/:flowId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const body = await c.req.json();
 
-    // Find and validate job
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    // Find and validate flow
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     });
 
-    if (!job) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
     // Update allowed fields
-    if (job.type === "scheduled" && body.schedule) {
-      job.schedule = {
+    if (flow.type === "scheduled" && body.schedule) {
+      flow.schedule = {
         cron: body.schedule.cron || body.schedule,
-        timezone: body.schedule.timezone || job.schedule.timezone,
+        timezone: body.schedule.timezone || flow.schedule.timezone,
       };
     }
     if (body.destinationDatabaseName !== undefined) {
-      job.destinationDatabaseName =
+      flow.destinationDatabaseName =
         typeof body.destinationDatabaseName === "string" &&
         body.destinationDatabaseName.trim().length > 0
           ? body.destinationDatabaseName.trim()
           : undefined;
     }
-    if (body.entityFilter !== undefined) job.entityFilter = body.entityFilter;
-    if (body.queries !== undefined) job.queries = body.queries; // GraphQL/PostHog queries
-    if (body.syncMode) job.syncMode = body.syncMode;
-    if (body.enabled !== undefined) job.enabled = body.enabled;
+    if (body.entityFilter !== undefined) flow.entityFilter = body.entityFilter;
+    if (body.queries !== undefined) flow.queries = body.queries; // GraphQL/PostHog queries
+    if (body.syncMode) flow.syncMode = body.syncMode;
+    if (body.enabled !== undefined) flow.enabled = body.enabled;
 
     // Update webhook-specific fields
-    if (job.type === "webhook" && job.webhookConfig) {
+    if (flow.type === "webhook" && flow.webhookConfig) {
       // Handle webhookSecret directly from body
       if (body.webhookSecret !== undefined) {
-        job.webhookConfig.secret = body.webhookSecret;
+        flow.webhookConfig.secret = body.webhookSecret;
       }
 
       // Handle other webhook config fields
       if (body.webhookConfig) {
         if (body.webhookConfig.enabled !== undefined) {
-          job.webhookConfig.enabled = body.webhookConfig.enabled;
+          flow.webhookConfig.enabled = body.webhookConfig.enabled;
         }
       }
     }
 
-    await job.save();
+    await flow.save();
 
     // Populate references for response
-    await job.populate("dataSourceId", "name type");
-    await job.populate("destinationDatabaseId", "name type");
+    await flow.populate("dataSourceId", "name type");
+    await flow.populate("destinationDatabaseId", "name type");
 
     return c.json({
       success: true,
-      data: job,
+      data: flow,
     });
   } catch (error) {
-    console.error("Error updating sync job:", error);
+    console.error("Error updating flow:", error);
     return c.json(
       {
         success: false,
@@ -318,27 +318,27 @@ syncJobRoutes.put("/:jobId", async c => {
   }
 });
 
-// DELETE /api/workspaces/:workspaceId/sync-jobs/:jobId - Delete job
-syncJobRoutes.delete("/:jobId", async c => {
+// DELETE /api/workspaces/:workspaceId/flows/:flowId - Delete flow
+flowRoutes.delete("/:flowId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
 
-    const result = await SyncJob.deleteOne({
-      _id: new Types.ObjectId(jobId),
+    const result = await Flow.deleteOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     });
 
     if (result.deletedCount === 0) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
     return c.json({
       success: true,
-      message: "Sync job deleted successfully",
+      message: "Flow deleted successfully",
     });
   } catch (error) {
-    console.error("Error deleting sync job:", error);
+    console.error("Error deleting flow:", error);
     return c.json(
       {
         success: false,
@@ -349,33 +349,33 @@ syncJobRoutes.delete("/:jobId", async c => {
   }
 });
 
-// POST /api/workspaces/:workspaceId/sync-jobs/:jobId/toggle - Enable/disable job
-syncJobRoutes.post("/:jobId/toggle", async c => {
+// POST /api/workspaces/:workspaceId/flows/:flowId/toggle - Enable/disable flow
+flowRoutes.post("/:flowId/toggle", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
 
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     });
 
-    if (!job) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
-    job.enabled = !job.enabled;
-    await job.save();
+    flow.enabled = !flow.enabled;
+    await flow.save();
 
     return c.json({
       success: true,
       data: {
-        enabled: job.enabled,
-        message: `Sync job ${job.enabled ? "enabled" : "disabled"} successfully`,
+        enabled: flow.enabled,
+        message: `Flow ${flow.enabled ? "enabled" : "disabled"} successfully`,
       },
     });
   } catch (error) {
-    console.error("Error toggling sync job:", error);
+    console.error("Error toggling flow:", error);
     return c.json(
       {
         success: false,
@@ -386,42 +386,42 @@ syncJobRoutes.post("/:jobId/toggle", async c => {
   }
 });
 
-// POST /api/workspaces/:workspaceId/sync-jobs/:jobId/run - Manually trigger job
-syncJobRoutes.post("/:jobId/run", async c => {
+// POST /api/workspaces/:workspaceId/flows/:flowId/run - Manually trigger flow
+flowRoutes.post("/:flowId/run", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
 
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     })
       .populate("dataSourceId")
       .populate("destinationDatabaseId");
 
-    if (!job) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
-    // Trigger sync job via Inngest
+    // Trigger flow via Inngest
     const eventId = await inngest.send({
-      name: "sync/job.manual",
+      name: "flow.manual",
       data: {
-        jobId: job._id.toString(),
+        flowId: flow._id.toString(),
       },
     });
 
     return c.json({
       success: true,
-      message: "Sync job triggered successfully",
+      message: "Flow triggered successfully",
       data: {
-        jobId: job._id,
+        flowId: flow._id,
         eventId,
         startedAt: new Date(),
       },
     });
   } catch (error) {
-    console.error("Error running sync job:", error);
+    console.error("Error running flow:", error);
     return c.json(
       {
         success: false,
@@ -432,25 +432,25 @@ syncJobRoutes.post("/:jobId/run", async c => {
   }
 });
 
-// GET /api/workspaces/:workspaceId/sync-jobs/:jobId/status - Check if job is running
-syncJobRoutes.get("/:jobId/status", async c => {
+// GET /api/workspaces/:workspaceId/flows/:flowId/status - Check if flow is running
+flowRoutes.get("/:flowId/status", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
 
-    // Verify job exists and belongs to workspace
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    // Verify flow exists and belongs to workspace
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     });
 
-    if (!job) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
     // Check for running executions
-    const runningExecution = await JobExecution.findOne({
-      jobId: new Types.ObjectId(jobId),
+    const runningExecution = await FlowExecution.findOne({
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
       status: "running",
     })
@@ -471,7 +471,7 @@ syncJobRoutes.get("/:jobId/status", async c => {
       },
     });
   } catch (error) {
-    console.error("Error checking sync job status:", error);
+    console.error("Error checking flow status:", error);
     return c.json(
       {
         success: false,
@@ -482,30 +482,30 @@ syncJobRoutes.get("/:jobId/status", async c => {
   }
 });
 
-// POST /api/workspaces/:workspaceId/sync-jobs/:jobId/cancel - Cancel running job
-syncJobRoutes.post("/:jobId/cancel", async c => {
+// POST /api/workspaces/:workspaceId/flows/:flowId/cancel - Cancel running flow
+flowRoutes.post("/:flowId/cancel", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const body = await c.req.json().catch(() => ({}));
     const { executionId } = body;
 
-    // Verify job exists and belongs to workspace
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    // Verify flow exists and belongs to workspace
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     });
 
-    if (!job) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
     let executionIdToCancel = executionId;
 
     // If no executionId provided, find the running execution
     if (!executionIdToCancel) {
-      const runningExecution = await JobExecution.findOne({
-        jobId: new Types.ObjectId(jobId),
+      const runningExecution = await FlowExecution.findOne({
+        flowId: new Types.ObjectId(flowId),
         workspaceId: new Types.ObjectId(workspaceId),
         status: "running",
       })
@@ -524,9 +524,9 @@ syncJobRoutes.post("/:jobId/cancel", async c => {
 
     // Trigger cancellation via Inngest
     const eventId = await inngest.send({
-      name: "sync/job.cancel",
+      name: "flow.cancel",
       data: {
-        jobId: job._id.toString(),
+        flowId: flow._id.toString(),
         executionId: executionIdToCancel,
       },
     });
@@ -535,13 +535,13 @@ syncJobRoutes.post("/:jobId/cancel", async c => {
       success: true,
       message: "Cancellation request sent successfully",
       data: {
-        jobId: job._id,
+        flowId: flow._id,
         executionId: executionIdToCancel,
         eventId,
       },
     });
   } catch (error) {
-    console.error("Error cancelling sync job:", error);
+    console.error("Error cancelling flow:", error);
     return c.json(
       {
         success: false,
@@ -552,27 +552,27 @@ syncJobRoutes.post("/:jobId/cancel", async c => {
   }
 });
 
-// GET /api/workspaces/:workspaceId/sync-jobs/:jobId/history - Get execution history
-syncJobRoutes.get("/:jobId/history", async c => {
+// GET /api/workspaces/:workspaceId/flows/:flowId/history - Get execution history
+flowRoutes.get("/:flowId/history", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const limit = parseInt(c.req.query("limit") || "50");
     const offset = parseInt(c.req.query("offset") || "0");
 
-    // Verify job exists and belongs to workspace
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    // Verify flow exists and belongs to workspace
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     });
 
-    if (!job) {
-      return c.json({ success: false, error: "Sync job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
-    // Fetch executions from job_executions collection
-    const executions = await JobExecution.find({
-      jobId: new Types.ObjectId(jobId),
+    // Fetch executions from flow_executions collection
+    const executions = await FlowExecution.find({
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     })
       .sort({ startedAt: -1 })
@@ -592,8 +592,8 @@ syncJobRoutes.get("/:jobId/history", async c => {
     return c.json({
       success: true,
       data: {
-        total: await JobExecution.countDocuments({
-          jobId: new Types.ObjectId(jobId),
+        total: await FlowExecution.countDocuments({
+          flowId: new Types.ObjectId(flowId),
           workspaceId: new Types.ObjectId(workspaceId),
         }),
         limit,
@@ -602,7 +602,7 @@ syncJobRoutes.get("/:jobId/history", async c => {
       },
     });
   } catch (error) {
-    console.error("Error getting sync job history:", error);
+    console.error("Error getting flow history:", error);
     return c.json(
       {
         success: false,
@@ -614,15 +614,15 @@ syncJobRoutes.get("/:jobId/history", async c => {
 });
 
 // GET full details for a specific execution
-syncJobRoutes.get("/:jobId/executions/:executionId", async c => {
+flowRoutes.get("/:flowId/executions/:executionId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const executionId = c.req.param("executionId");
 
-    const execution = await JobExecution.findOne({
+    const execution = await FlowExecution.findOne({
       _id: new Types.ObjectId(executionId),
-      jobId: new Types.ObjectId(jobId),
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     }).lean();
 
@@ -638,15 +638,15 @@ syncJobRoutes.get("/:jobId/executions/:executionId", async c => {
 });
 
 // GET logs for a specific execution
-syncJobRoutes.get("/:jobId/executions/:executionId/logs", async c => {
+flowRoutes.get("/:flowId/executions/:executionId/logs", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const executionId = c.req.param("executionId");
 
-    const execution = await JobExecution.findOne({
+    const execution = await FlowExecution.findOne({
       _id: new Types.ObjectId(executionId),
-      jobId: new Types.ObjectId(jobId),
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     }).lean();
 
@@ -661,25 +661,25 @@ syncJobRoutes.get("/:jobId/executions/:executionId/logs", async c => {
   }
 });
 
-// GET webhook stats for a job
-syncJobRoutes.get("/:jobId/webhook/stats", async c => {
+// GET webhook stats for a flow
+flowRoutes.get("/:flowId/webhook/stats", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
 
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
       type: "webhook",
     });
 
-    if (!job) {
-      return c.json({ success: false, error: "Webhook job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Webhook flow not found" }, 404);
     }
 
     // Get recent webhook events
     const recentEvents = await WebhookEvent.find({
-      jobId: new Types.ObjectId(jobId),
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     })
       .sort({ receivedAt: -1 })
@@ -700,11 +700,11 @@ syncJobRoutes.get("/:jobId/webhook/stats", async c => {
         : 100;
 
     const stats = {
-      webhookUrl: job.webhookConfig?.endpoint,
-      lastReceived: job.webhookConfig?.lastReceivedAt
-        ? new Date(job.webhookConfig.lastReceivedAt).toISOString()
+      webhookUrl: flow.webhookConfig?.endpoint,
+      lastReceived: flow.webhookConfig?.lastReceivedAt
+        ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
         : null,
-      totalReceived: job.webhookConfig?.totalReceived || 0,
+      totalReceived: flow.webhookConfig?.totalReceived || 0,
       eventsToday,
       successRate: Math.round(successRate),
       recentEvents: recentEvents.slice(0, 10).map(event => ({
@@ -723,27 +723,27 @@ syncJobRoutes.get("/:jobId/webhook/stats", async c => {
   }
 });
 
-// GET webhook events for a job
-syncJobRoutes.get("/:jobId/webhook/events", async c => {
+// GET webhook events for a flow
+flowRoutes.get("/:flowId/webhook/events", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const limit = parseInt(c.req.query("limit") || "50");
     const offset = parseInt(c.req.query("offset") || "0");
     const status = c.req.query("status");
 
-    const job = await SyncJob.findOne({
-      _id: new Types.ObjectId(jobId),
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
       type: "webhook",
     });
 
-    if (!job) {
-      return c.json({ success: false, error: "Webhook job not found" }, 404);
+    if (!flow) {
+      return c.json({ success: false, error: "Webhook flow not found" }, 404);
     }
 
     const query: any = {
-      jobId: new Types.ObjectId(jobId),
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     };
 
@@ -785,15 +785,15 @@ syncJobRoutes.get("/:jobId/webhook/events", async c => {
 });
 
 // GET webhook event details
-syncJobRoutes.get("/:jobId/webhook/events/:eventId", async c => {
+flowRoutes.get("/:flowId/webhook/events/:eventId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const eventId = c.req.param("eventId");
 
     const event = await WebhookEvent.findOne({
       _id: new Types.ObjectId(eventId),
-      jobId: new Types.ObjectId(jobId),
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
     }).lean();
 
@@ -809,15 +809,15 @@ syncJobRoutes.get("/:jobId/webhook/events/:eventId", async c => {
 });
 
 // POST retry webhook event
-syncJobRoutes.post("/:jobId/webhook/events/:eventId/retry", async c => {
+flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const jobId = c.req.param("jobId");
+    const flowId = c.req.param("flowId");
     const eventId = c.req.param("eventId");
 
     const event = await WebhookEvent.findOne({
       _id: new Types.ObjectId(eventId),
-      jobId: new Types.ObjectId(jobId),
+      flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
       status: { $in: ["failed", "completed"] }, // Can retry failed or completed events
     });
@@ -840,7 +840,7 @@ syncJobRoutes.post("/:jobId/webhook/events/:eventId/retry", async c => {
     await inngest.send({
       name: "webhook/event.process",
       data: {
-        jobId: event.jobId.toString(),
+        flowId: event.flowId.toString(),
         eventId: event.eventId,
       },
     });
@@ -857,3 +857,7 @@ syncJobRoutes.post("/:jobId/webhook/events/:eventId/retry", async c => {
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
+
+/** @deprecated Use flowRoutes instead */
+export const syncJobRoutes = flowRoutes;
+

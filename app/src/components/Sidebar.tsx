@@ -14,7 +14,7 @@ import {
   SquareChevronRight as ConsoleIcon,
   Database as DatabaseIcon,
   Plug as DataSourceIcon,
-  ArrowLeftRight as SyncJobsIcon,
+  ArrowLeftRight as FlowsIcon,
   CircleUserRound as UserIcon,
 } from "lucide-react";
 import { useAppStore, AppView } from "../store";
@@ -24,7 +24,7 @@ import { useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
-import { useSyncJobStore } from "../store/syncJobStore";
+import { useFlowStore } from "../store/flowStore";
 
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive",
@@ -47,13 +47,13 @@ const NavButton = styled(Button, {
 // Views that can appear in the sidebar navigation. Extends the core AppView
 // union with additional sidebar-specific entries that don't directly map to
 // a left-pane view managed by the app store.
-type NavigationView = AppView | "views" | "settings" | "sync-jobs";
+type NavigationView = AppView | "views" | "settings" | "flows";
 
 const topNavigationItems: { view: NavigationView; icon: any; label: string }[] =
   [
     { view: "databases", icon: DatabaseIcon, label: "Databases" },
     { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
-    { view: "sync-jobs", icon: SyncJobsIcon, label: "Transfers" },
+    { view: "flows", icon: FlowsIcon, label: "Flows" },
     { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
   ];
 
@@ -92,7 +92,7 @@ function Sidebar() {
 
       // Full store resets
       useAppStore.getState().reset();
-      useSyncJobStore.getState().reset();
+      useFlowStore.getState().reset();
 
       await logout();
 
@@ -109,7 +109,7 @@ function Sidebar() {
       view === "databases" ||
       view === "consoles" ||
       view === "connectors" ||
-      view === "sync-jobs"
+      view === "flows"
     ) {
       setActiveView(view as AppView);
     }

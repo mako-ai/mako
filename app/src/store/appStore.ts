@@ -29,7 +29,7 @@ export interface ConsoleTab {
   savedDatabaseId?: string; // Database ID last saved to DB (for dirty tracking)
   savedDatabaseName?: string; // Database name last saved to DB (for dirty tracking)
   filePath?: string;
-  kind?: "console" | "settings" | "connectors" | "members" | "sync-job-editor";
+  kind?: "console" | "settings" | "connectors" | "members" | "flow-editor";
   isDirty?: boolean; // false/undefined = pristine (replaceable), true = dirty (persistent)
   icon?: string; // URL or path to icon, e.g., "/api/connectors/stripe/icon.svg"
   metadata?: Record<string, any>; // Additional data for special tab types
@@ -41,7 +41,7 @@ export interface GlobalState {
     | "databases"
     | "consoles"
     | "connectors"
-    | "sync-jobs"
+    | "flows"
     | "settings";
 
   activeEditorContent?: {
@@ -55,7 +55,7 @@ export interface GlobalState {
       | "databases"
       | "consoles"
       | "connectors"
-      | "sync-jobs"
+      | "flows"
       | "settings";
 
     loading: Record<string, boolean>; // keyed by request name
@@ -93,7 +93,7 @@ export type AppView =
   | "databases"
   | "consoles"
   | "connectors"
-  | "sync-jobs"
+  | "flows"
   | "settings";
 
 /*********************
@@ -208,7 +208,7 @@ export type Action =
   | { type: "SET_LOADING"; payload: { key: string; value: boolean } }
   | {
       type: "NAVIGATE_LEFT_PANE";
-      payload: { pane: "databases" | "consoles" | "connectors" | "sync-jobs" };
+      payload: { pane: "databases" | "consoles" | "connectors" | "flows" };
     }
   | {
       type: "SET_ACTIVE_EDITOR_CONTENT";
@@ -625,7 +625,7 @@ export const useAppStore = create<
   GlobalState & {
     dispatch: (a: Action) => void;
     setActiveView: (
-      view: "databases" | "consoles" | "connectors" | "sync-jobs" | "settings",
+      view: "databases" | "consoles" | "connectors" | "flows" | "settings",
     ) => void;
 
     setCurrentWorkspaceId: (workspaceId: string | null) => void;

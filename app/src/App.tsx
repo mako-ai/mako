@@ -15,7 +15,7 @@ import DatabaseExplorer from "./components/DatabaseExplorer";
 import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
-import { SyncJobsExplorer } from "./components/SyncJobsExplorer";
+import { FlowsExplorer } from "./components/FlowsExplorer";
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -281,8 +281,8 @@ function MainApp() {
         );
       case "connectors":
         return <DataSourceExplorer />;
-      case "sync-jobs":
-        return <SyncJobsExplorer />;
+      case "flows":
+        return <FlowsExplorer />;
       // Add others as needed
       default:
         return null;

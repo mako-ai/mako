@@ -323,9 +323,9 @@ export interface IChat extends Document {
 }
 
 /**
- * Query configuration for GraphQL/PostHog transfers
+ * Query configuration for GraphQL/PostHog flows
  */
-export interface ITransferQuery {
+export interface IFlowQuery {
   name: string;
   query: string;
   variables?: { [key: string]: any };
@@ -341,10 +341,13 @@ export interface ITransferQuery {
   batch_size?: number;
 }
 
+/** @deprecated Use IFlowQuery instead */
+export type ITransferQuery = IFlowQuery;
+
 /**
- * SyncJob model interface
+ * Flow model interface (data sync flow configuration)
  */
-export interface ISyncJob extends Document {
+export interface IFlow extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   type: "scheduled" | "webhook"; // Required field
@@ -363,7 +366,7 @@ export interface ISyncJob extends Document {
     enabled: boolean;
   };
   entityFilter?: string[]; // Optional: specific entities to sync
-  queries?: ITransferQuery[]; // Queries for GraphQL/PostHog connectors
+  queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
   enabled: boolean;
   lastRunAt?: Date;
@@ -377,12 +380,15 @@ export interface ISyncJob extends Document {
   updatedAt: Date;
 }
 
+/** @deprecated Use IFlow instead */
+export type ISyncJob = IFlow;
+
 /**
- * JobExecution model interface
+ * FlowExecution model interface
  */
-export interface IJobExecution extends Document {
+export interface IFlowExecution extends Document {
   _id: Types.ObjectId;
-  jobId: Types.ObjectId;
+  flowId: Types.ObjectId;
   workspaceId: Types.ObjectId;
   startedAt: Date;
   completedAt?: Date;
@@ -405,12 +411,15 @@ export interface IJobExecution extends Document {
   system?: any;
 }
 
+/** @deprecated Use IFlowExecution instead */
+export type IJobExecution = IFlowExecution;
+
 /**
  * WebhookEvent model interface
  */
 export interface IWebhookEvent extends Document {
   _id: Types.ObjectId;
-  jobId: Types.ObjectId;
+  flowId: Types.ObjectId;
   workspaceId: Types.ObjectId;
   eventId: string; // External event ID (e.g., Stripe's evt_xxx)
   eventType: string; // e.g., "customer.updated"
@@ -947,9 +956,9 @@ ChatSchema.index({ workspaceId: 1, title: 1 });
 ChatSchema.index({ workspaceId: 1, createdBy: 1 }); // For user-specific chat queries
 
 /**
- * SyncJob Schema
+ * Flow Schema (data sync flow configuration)
  */
-const SyncJobSchema = new Schema<ISyncJob>(
+const FlowSchema = new Schema<IFlow>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -983,7 +992,7 @@ const SyncJobSchema = new Schema<ISyncJob>(
         },
         validate: {
           validator: function (v: string) {
-            // Skip validation for webhook jobs
+            // Skip validation for webhook flows
             if (this.type === "webhook") return true;
             // Basic cron validation - 5 or 6 fields
             const fields = v.split(" ");
@@ -1062,21 +1071,25 @@ const SyncJobSchema = new Schema<ISyncJob>(
     timestamps: true,
     toJSON: { getters: true },
     toObject: { getters: true },
+    collection: "flows",
   },
 );
 
 // Indexes
-SyncJobSchema.index({ workspaceId: 1, enabled: 1 });
-SyncJobSchema.index({ dataSourceId: 1 });
-SyncJobSchema.index({ destinationDatabaseId: 1 });
-SyncJobSchema.index({ nextRunAt: 1 });
+FlowSchema.index({ workspaceId: 1, enabled: 1 });
+FlowSchema.index({ dataSourceId: 1 });
+FlowSchema.index({ destinationDatabaseId: 1 });
+FlowSchema.index({ nextRunAt: 1 });
+
+/** @deprecated Use FlowSchema */
+const SyncJobSchema = FlowSchema;
 
 /**
- * JobExecution Schema (binds to 'job_executions' collection)
+ * FlowExecution Schema (binds to 'flow_executions' collection)
  */
-const JobExecutionSchema = new Schema<IJobExecution>(
+const FlowExecutionSchema = new Schema<IFlowExecution>(
   {
-    jobId: { type: Schema.Types.ObjectId, ref: "SyncJob", required: true },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
     workspaceId: {
       type: Schema.Types.ObjectId,
       ref: "Workspace",
@@ -1109,20 +1122,23 @@ const JobExecutionSchema = new Schema<IJobExecution>(
     system: Schema.Types.Mixed,
   },
   {
-    collection: "job_executions",
+    collection: "flow_executions",
     timestamps: false,
   },
 );
 
 // Indexes
-JobExecutionSchema.index({ jobId: 1, startedAt: -1 });
+FlowExecutionSchema.index({ flowId: 1, startedAt: -1 });
+
+/** @deprecated Use FlowExecutionSchema */
+const JobExecutionSchema = FlowExecutionSchema;
 
 /**
  * WebhookEvent Schema
  */
 const WebhookEventSchema = new Schema<IWebhookEvent>(
   {
-    jobId: { type: Schema.Types.ObjectId, ref: "SyncJob", required: true },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
     workspaceId: {
       type: Schema.Types.ObjectId,
       ref: "Workspace",
@@ -1154,8 +1170,8 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
 );
 
 // Indexes
-WebhookEventSchema.index({ jobId: 1, eventId: 1 }, { unique: true });
-WebhookEventSchema.index({ jobId: 1, status: 1, receivedAt: 1 });
+WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
+WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 
 // Models
@@ -1190,12 +1206,17 @@ export const SavedConsole = mongoose.model<ISavedConsole>(
   SavedConsoleSchema,
 );
 export const Chat = mongoose.model<IChat>("Chat", ChatSchema);
-export const SyncJob = mongoose.model<ISyncJob>("SyncJob", SyncJobSchema);
-export const JobExecution = mongoose.model<IJobExecution>(
-  "JobExecution",
-  JobExecutionSchema,
+export const Flow = mongoose.model<IFlow>("Flow", FlowSchema);
+export const FlowExecution = mongoose.model<IFlowExecution>(
+  "FlowExecution",
+  FlowExecutionSchema,
 );
 export const WebhookEvent = mongoose.model<IWebhookEvent>(
   "WebhookEvent",
   WebhookEventSchema,
 );
+
+/** @deprecated Use Flow instead */
+export const SyncJob = Flow;
+/** @deprecated Use FlowExecution instead */
+export const JobExecution = FlowExecution;

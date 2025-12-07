@@ -1,7 +1,7 @@
 import { inngest } from "../client";
 import {
-  SyncJob,
-  ISyncJob,
+  Flow,
+  IFlow,
   Connector as DataSource,
   DatabaseConnection,
 } from "../../database/workspace-schema";
@@ -18,35 +18,35 @@ import * as os from "os";
 import { CronExpressionParser } from "cron-parser";
 import { getExecutionLogger, getSyncLogger } from "../logging";
 
-// Helper function to get job display name
-async function getJobDisplayName(job: ISyncJob): Promise<string> {
+// Helper function to get flow display name
+async function getFlowDisplayName(flow: IFlow): Promise<string> {
   try {
     const [dataSource, database] = await Promise.all([
-      DataSource.findById(job.dataSourceId),
-      DatabaseConnection.findById(job.destinationDatabaseId),
+      DataSource.findById(flow.dataSourceId),
+      DatabaseConnection.findById(flow.destinationDatabaseId),
     ]);
 
-    const sourceName = dataSource?.name || job.dataSourceId.toString();
-    const destName = database?.name || job.destinationDatabaseId.toString();
+    const sourceName = dataSource?.name || flow.dataSourceId.toString();
+    const destName = database?.name || flow.destinationDatabaseId.toString();
 
     return `${sourceName} → ${destName}`;
   } catch {
     // Fallback to IDs if lookup fails
-    return `${job.dataSourceId} → ${job.destinationDatabaseId}`;
+    return `${flow.dataSourceId} → ${flow.destinationDatabaseId}`;
   }
 }
 
-// Job execution logging interface
-interface JobExecutionLog {
+// Flow execution logging interface
+interface FlowExecutionLog {
   timestamp: Date;
   level: "debug" | "info" | "warn" | "error";
   message: string;
   metadata?: any;
 }
 
-interface JobExecution {
+interface FlowExecutionData {
   _id?: Types.ObjectId;
-  jobId: Types.ObjectId;
+  flowId: Types.ObjectId;
   workspaceId: Types.ObjectId;
   startedAt: Date;
   completedAt?: Date;
@@ -59,7 +59,7 @@ interface JobExecution {
     stack?: string;
     code?: string;
   };
-  logs: JobExecutionLog[];
+  logs: FlowExecutionLog[];
   context: {
     dataSourceId: Types.ObjectId;
     destinationDatabaseId: Types.ObjectId;
@@ -85,8 +85,8 @@ interface JobExecution {
   };
 }
 
-// Helper class for managing job execution logging
-class JobExecutionLogger implements SyncLogger {
+// Helper class for managing flow execution logging
+class FlowExecutionLogger implements SyncLogger {
   private executionId: Types.ObjectId;
   private startTime: Date;
   private logger;
@@ -94,16 +94,16 @@ class JobExecutionLogger implements SyncLogger {
   private syncedEntities: Set<string> = new Set();
 
   constructor(
-    private jobId: Types.ObjectId,
+    private flowId: Types.ObjectId,
     private workspaceId: Types.ObjectId,
-    private context: JobExecution["context"],
+    private context: FlowExecutionData["context"],
   ) {
     this.executionId = new Types.ObjectId();
     this.startTime = new Date();
     // Use LogTape logger with execution-specific category
     // All logs from this logger will automatically be stored in database via the sink
     this.logger = getExecutionLogger(
-      jobId.toString(),
+      flowId.toString(),
       this.executionId.toString(),
     );
   }
@@ -114,9 +114,9 @@ class JobExecutionLogger implements SyncLogger {
   }
 
   async start(): Promise<void> {
-    const execution: Partial<JobExecution> = {
+    const execution: Partial<FlowExecutionData> = {
       _id: this.executionId,
-      jobId: this.jobId,
+      flowId: this.flowId,
       workspaceId: this.workspaceId,
       startedAt: this.startTime,
       lastHeartbeat: new Date(),
@@ -135,7 +135,7 @@ class JobExecutionLogger implements SyncLogger {
     await this.saveExecution(execution);
 
     // Log with execution context - this will be picked up by the database sink
-    this.log("info", `Job execution started: ${this.context.syncMode} sync`, {
+    this.log("info", `Flow execution started: ${this.context.syncMode} sync`, {
       syncMode: this.context.syncMode,
       dataSourceId: this.context.dataSourceId.toString(),
       destinationDatabaseId: this.context.destinationDatabaseId.toString(),
@@ -145,12 +145,12 @@ class JobExecutionLogger implements SyncLogger {
   // Check if this execution already exists in the database
   async exists(): Promise<boolean> {
     try {
-      const db = SyncJob.db;
-      const collection = db.collection("job_executions");
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
       const existing = await collection.findOne({ _id: this.executionId });
       return !!existing;
     } catch (error) {
-      console.error("Failed to check job execution existence:", error);
+      console.error("Failed to check flow execution existence:", error);
       return false;
     }
   }
@@ -161,11 +161,11 @@ class JobExecutionLogger implements SyncLogger {
     });
   }
 
-  log(level: JobExecutionLog["level"], message: string, metadata?: any): void {
+  log(level: FlowExecutionLog["level"], message: string, metadata?: any): void {
     // Log to LogTape with execution context
     // The database sink will automatically store these logs
     const logData = {
-      jobId: this.jobId.toString(),
+      flowId: this.flowId.toString(),
       executionId: this.executionId.toString(),
       workspaceId: this.workspaceId.toString(),
       ...metadata,
@@ -199,7 +199,7 @@ class JobExecutionLogger implements SyncLogger {
   async complete(
     success: boolean,
     error?: Error,
-    stats?: JobExecution["stats"],
+    stats?: FlowExecutionData["stats"],
   ): Promise<void> {
     const completedAt = new Date();
     const duration = completedAt.getTime() - this.startTime.getTime();
@@ -214,7 +214,7 @@ class JobExecutionLogger implements SyncLogger {
       syncedEntities: Array.from(this.syncedEntities),
     };
 
-    const updates: Partial<JobExecution> = {
+    const updates: Partial<FlowExecutionData> = {
       completedAt,
       lastHeartbeat: completedAt,
       duration,
@@ -235,7 +235,7 @@ class JobExecutionLogger implements SyncLogger {
 
     this.log(
       "info",
-      `Job execution ${success ? "completed" : "failed"} in ${duration}ms`,
+      `Flow execution ${success ? "completed" : "failed"} in ${duration}ms`,
       {
         duration,
         success,
@@ -245,10 +245,10 @@ class JobExecutionLogger implements SyncLogger {
     );
   }
 
-  private async saveExecution(data: Partial<JobExecution>): Promise<void> {
+  private async saveExecution(data: Partial<FlowExecutionData>): Promise<void> {
     try {
-      const db = SyncJob.db;
-      const collection = db.collection("job_executions");
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
 
       // If we're creating a new execution (has _id in data), use upsert
       // Otherwise, update the existing execution
@@ -263,7 +263,7 @@ class JobExecutionLogger implements SyncLogger {
         const filter = { _id: this.executionId };
         const update = { $set: data };
 
-        console.log(`Updating job execution:`, {
+        console.log(`Updating flow execution:`, {
           executionId: this.executionId.toString(),
           filter,
           updateFields: Object.keys(data),
@@ -279,21 +279,21 @@ class JobExecutionLogger implements SyncLogger {
           } as any);
           if (existsWithStringId) {
             console.error(
-              `Job execution found with string ID instead of ObjectId: ${this.executionId}`,
+              `Flow execution found with string ID instead of ObjectId: ${this.executionId}`,
             );
           }
 
           console.error(
-            `Failed to update job execution - document not found with _id: ${this.executionId}`,
+            `Failed to update flow execution - document not found with _id: ${this.executionId}`,
           );
           throw new Error(
-            `Job execution document not found: ${this.executionId}`,
+            `Flow execution document not found: ${this.executionId}`,
           );
         }
 
         // Log successful updates for debugging
         if (data.status || data.completedAt) {
-          console.log(`Job execution ${this.executionId} updated:`, {
+          console.log(`Flow execution ${this.executionId} updated:`, {
             status: data.status,
             completedAt: data.completedAt,
             success: data.success,
@@ -302,7 +302,7 @@ class JobExecutionLogger implements SyncLogger {
         }
       }
     } catch (error) {
-      console.error("Failed to save job execution:", error, {
+      console.error("Failed to save flow execution:", error, {
         executionId: this.executionId.toString(),
         updateData: data,
       });
@@ -312,29 +312,29 @@ class JobExecutionLogger implements SyncLogger {
   }
 }
 
-// The sync job function
-export const syncJobFunction = inngest.createFunction(
+// The flow function
+export const flowFunction = inngest.createFunction(
   {
-    id: "sync-job",
-    name: "Execute Sync Job",
+    id: "flow",
+    name: "Execute Flow",
     concurrency: {
-      limit: 1, // Only one execution per job at a time
-      key: "event.data.jobId", // Prevent duplicate executions of the same job
+      limit: 1, // Only one execution per flow at a time
+      key: "event.data.flowId", // Prevent duplicate executions of the same flow
     },
     retries: 2,
     cancelOn: [
       {
-        event: "sync/job.cancel",
-        if: "async.data.jobId == event.data.jobId",
+        event: "flow.cancel",
+        if: "async.data.flowId == event.data.flowId",
       },
     ],
   },
-  { event: "sync/job.execute" },
+  { event: "flow.execute" },
   async ({ event, step, logger }) => {
-    const { jobId, noJitter } = event.data;
+    const { flowId, noJitter } = event.data;
 
-    logger.info("Sync job function started", {
-      jobId,
+    logger.info("Flow function started", {
+      flowId,
       eventData: event.data,
     });
 
@@ -342,21 +342,21 @@ export const syncJobFunction = inngest.createFunction(
     let executionId: string | undefined;
 
     // Helper to create the execution logger
-    const getExecutionLogger = (job: ISyncJob): JobExecutionLogger => {
-      const logger = new JobExecutionLogger(
-        new Types.ObjectId(jobId),
-        new Types.ObjectId(job.workspaceId),
+    const createExecutionLogger = (flow: IFlow): FlowExecutionLogger => {
+      const execLogger = new FlowExecutionLogger(
+        new Types.ObjectId(flowId),
+        new Types.ObjectId(flow.workspaceId),
         {
-          dataSourceId: new Types.ObjectId(job.dataSourceId),
-          destinationDatabaseId: new Types.ObjectId(job.destinationDatabaseId),
-          destinationDatabaseName: job.destinationDatabaseName,
-          syncMode: job.syncMode === "incremental" ? "incremental" : "full",
-          entityFilter: job.entityFilter,
-          cronExpression: job.schedule?.cron || "N/A",
-          timezone: job.schedule?.timezone || "UTC",
+          dataSourceId: new Types.ObjectId(flow.dataSourceId),
+          destinationDatabaseId: new Types.ObjectId(flow.destinationDatabaseId),
+          destinationDatabaseName: flow.destinationDatabaseName,
+          syncMode: flow.syncMode === "incremental" ? "incremental" : "full",
+          entityFilter: flow.entityFilter,
+          cronExpression: flow.schedule?.cron || "N/A",
+          timezone: flow.schedule?.timezone || "UTC",
         },
       );
-      return logger;
+      return execLogger;
     };
 
     try {
@@ -365,14 +365,14 @@ export const syncJobFunction = inngest.createFunction(
       const jitterMs = await step.run("apply-jitter", async () => {
         if (noJitter) {
           logger.info("Skipping jitter", {
-            jobId,
+            flowId,
           });
           return 0;
         }
 
         const jitter = Math.floor(Math.random() * 60000);
-        logger.info("Executing job with jitter", {
-          jobId,
+        logger.info("Executing flow with jitter", {
+          flowId,
           jitterMs: jitter,
         });
 
@@ -383,43 +383,43 @@ export const syncJobFunction = inngest.createFunction(
         return jitter;
       });
 
-      // Get job details
-      const job = (await step.run("fetch-job", async () => {
-        const syncJob = await SyncJob.findById(jobId);
-        if (!syncJob) {
-          throw new Error(`Job ${jobId} not found`);
+      // Get flow details
+      const flow = (await step.run("fetch-flow", async () => {
+        const syncFlow = await Flow.findById(flowId);
+        if (!syncFlow) {
+          throw new Error(`Flow ${flowId} not found`);
         }
-        return syncJob.toObject() as ISyncJob;
-      })) as ISyncJob;
+        return syncFlow.toObject() as IFlow;
+      })) as IFlow;
 
-      if (!job || !job.enabled) {
-        return { success: false, message: "Job is disabled" };
+      if (!flow || !flow.enabled) {
+        return { success: false, message: "Flow is disabled" };
       }
 
-      // Webhook jobs should not be executed by the sync job function
-      if (job.type === "webhook") {
-        logger.error("CRITICAL: Webhook job reached sync job executor!", {
-          jobId,
-          jobType: job.type,
-          dataSourceId: job.dataSourceId,
-          schedule: job.schedule,
-          webhookConfig: !!job.webhookConfig,
+      // Webhook flows should not be executed by the flow function
+      if (flow.type === "webhook") {
+        logger.error("CRITICAL: Webhook flow reached flow executor!", {
+          flowId,
+          flowType: flow.type,
+          dataSourceId: flow.dataSourceId,
+          schedule: flow.schedule,
+          webhookConfig: !!flow.webhookConfig,
         });
         return {
           success: false,
-          message: "Webhook jobs cannot be executed as sync jobs",
+          message: "Webhook flows cannot be executed as scheduled flows",
         };
       }
 
       // Initialize logger and get execution ID
       executionId = await step.run("initialize-logger", async () => {
-        const execLogger = getExecutionLogger(job);
+        const execLogger = createExecutionLogger(flow);
         await execLogger.start();
 
-        const jobDisplayName = await getJobDisplayName(job);
-        logger.info("Starting job execution", {
-          jobId,
-          jobDisplayName,
+        const flowDisplayName = await getFlowDisplayName(flow);
+        logger.info("Starting flow execution", {
+          flowId,
+          flowDisplayName,
           jitterApplied: jitterMs,
           executionId: execLogger.getExecutionId(),
           triggerType: noJitter ? "manual" : "scheduled",
@@ -430,10 +430,10 @@ export const syncJobFunction = inngest.createFunction(
 
       // We have the execution ID, no need to store the logger
 
-      // Update job status
-      const currentRunCount = await step.run("update-job-status", async () => {
-        const result = await SyncJob.findByIdAndUpdate(
-          jobId,
+      // Update flow status
+      const currentRunCount = await step.run("update-flow-status", async () => {
+        const result = await Flow.findByIdAndUpdate(
+          flowId,
           {
             lastRunAt: new Date(),
             $inc: { runCount: 1 },
@@ -443,22 +443,22 @@ export const syncJobFunction = inngest.createFunction(
         if (result) {
           return result.runCount;
         }
-        return job.runCount + 1;
+        return flow.runCount + 1;
       });
 
-      logger.info("Job run status updated", {
-        jobId,
+      logger.info("Flow run status updated", {
+        flowId,
         runCount: currentRunCount,
       });
 
       // Validate sync configuration
       await step.run("validate-sync-config", async () => {
         logger.info("Validating sync configuration", {
-          jobId,
-          syncMode: job.syncMode,
-          dataSourceId: job.dataSourceId.toString(),
-          destinationDatabaseId: job.destinationDatabaseId.toString(),
-          entityFilter: job.entityFilter,
+          flowId,
+          syncMode: flow.syncMode,
+          dataSourceId: flow.dataSourceId.toString(),
+          destinationDatabaseId: flow.destinationDatabaseId.toString(),
+          entityFilter: flow.entityFilter,
         });
         return true;
       });
@@ -471,10 +471,10 @@ export const syncJobFunction = inngest.createFunction(
         "check-chunking-support",
         async () => {
           const dataSource = await databaseDataSourceManager.getDataSource(
-            job.dataSourceId.toString(),
+            flow.dataSourceId.toString(),
           );
           if (!dataSource) {
-            throw new Error(`Data source not found: ${job.dataSourceId}`);
+            throw new Error(`Data source not found: ${flow.dataSourceId}`);
           }
 
           const connector =
@@ -487,7 +487,7 @@ export const syncJobFunction = inngest.createFunction(
 
           const supports = connector.supportsResumableFetching();
           logger.info("Connector chunking support check", {
-            jobId,
+            flowId,
             connectorType: dataSource.type,
             supportsChunking: supports,
           });
@@ -501,19 +501,19 @@ export const syncJobFunction = inngest.createFunction(
           "get-entities-to-sync",
           async () => {
             const dataSource = await databaseDataSourceManager.getDataSource(
-              job.dataSourceId.toString(),
+              flow.dataSourceId.toString(),
             );
             if (!dataSource) {
-              throw new Error(`Data source not found: ${job.dataSourceId}`);
+              throw new Error(`Data source not found: ${flow.dataSourceId}`);
             }
 
-            // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+            // Inject flow queries into dataSource for GraphQL/PostHog connectors
             // The registry maps connection -> config when creating the connector
-            const transferQueries = (job as any).queries;
-            if (transferQueries && transferQueries.length > 0) {
+            const flowQueries = (flow as any).queries;
+            if (flowQueries && flowQueries.length > 0) {
               dataSource.connection = {
                 ...dataSource.connection,
-                queries: transferQueries,
+                queries: flowQueries,
               };
             }
 
@@ -530,9 +530,9 @@ export const syncJobFunction = inngest.createFunction(
               .getAvailableEntities()
               .filter(e => typeof e === "string" && e.trim().length > 0);
 
-            if (job.entityFilter && job.entityFilter.length > 0) {
+            if (flow.entityFilter && flow.entityFilter.length > 0) {
               // Validate requested entities
-              const invalidEntities = job.entityFilter.filter(
+              const invalidEntities = flow.entityFilter.filter(
                 e => !availableEntities.includes(e),
               );
               if (invalidEntities.length > 0) {
@@ -541,7 +541,7 @@ export const syncJobFunction = inngest.createFunction(
                 );
               }
               // Also filter requested list against non-empty names
-              return job.entityFilter.filter(
+              return flow.entityFilter.filter(
                 e => typeof e === "string" && e.trim().length > 0,
               );
             } else {
@@ -556,7 +556,7 @@ export const syncJobFunction = inngest.createFunction(
         // Process each entity with chunked execution
         for (const entity of entitiesToSync) {
           logger.info("Starting chunked sync for entity", {
-            jobId,
+            flowId,
             entity,
           });
 
@@ -569,7 +569,7 @@ export const syncJobFunction = inngest.createFunction(
               `sync-${entity}-chunk-${chunkIndex}`,
               async () => {
                 logger.info("Executing chunk", {
-                  jobId,
+                  flowId,
                   entity,
                   chunkIndex,
                 });
@@ -578,7 +578,7 @@ export const syncJobFunction = inngest.createFunction(
                 const syncLogger: SyncLogger = {
                   log: (level: string, message: string, metadata?: any) => {
                     const logData = {
-                      jobId,
+                      flowId,
                       entity,
                       chunkIndex,
                       executionId, // Include executionId for database sink
@@ -608,23 +608,23 @@ export const syncJobFunction = inngest.createFunction(
                 };
 
                 const result = await performSyncChunk({
-                  dataSourceId: job.dataSourceId.toString(),
-                  destinationId: job.destinationDatabaseId.toString(),
-                  destinationDatabaseName: job.destinationDatabaseName,
+                  dataSourceId: flow.dataSourceId.toString(),
+                  destinationId: flow.destinationDatabaseId.toString(),
+                  destinationDatabaseName: flow.destinationDatabaseName,
                   entity,
-                  isIncremental: job.syncMode === "incremental",
+                  isIncremental: flow.syncMode === "incremental",
                   state,
                   maxIterations: 10, // Run 10 API calls per chunk
                   logger: syncLogger,
                   step, // Pass Inngest step for serverless-friendly retries
-                  queries: (job as any).queries, // Pass transfer queries for GraphQL/PostHog
+                  queries: (flow as any).queries, // Pass flow queries for GraphQL/PostHog
                 });
 
                 // Update heartbeat after chunk completes (not during)
                 if (executionId) {
                   try {
-                    const db = SyncJob.db;
-                    const collection = db.collection("job_executions");
+                    const db = Flow.db;
+                    const collection = db.collection("flow_executions");
                     await collection.updateOne(
                       { _id: new Types.ObjectId(executionId) },
                       { $set: { lastHeartbeat: new Date() } },
@@ -639,7 +639,7 @@ export const syncJobFunction = inngest.createFunction(
                 }
 
                 logger.info("Chunk completed", {
-                  jobId,
+                  flowId,
                   entity,
                   chunkIndex,
                   totalProcessed: result.state.totalProcessed,
@@ -651,7 +651,7 @@ export const syncJobFunction = inngest.createFunction(
                   logger.info(
                     `✅ ${entity} sync completed (${result.state.totalProcessed} records)`,
                     {
-                      jobId,
+                      flowId,
                       entity,
                       chunkIndex,
                       executionId,
@@ -676,7 +676,7 @@ export const syncJobFunction = inngest.createFunction(
           }
 
           logger.info("Completed chunked sync for entity", {
-            jobId,
+            flowId,
             entity,
             totalChunks: chunkIndex,
           });
@@ -686,16 +686,16 @@ export const syncJobFunction = inngest.createFunction(
         await step.run("execute-sync", async () => {
           // For non-chunked sync, we need to get the entities
           const dataSource = await databaseDataSourceManager.getDataSource(
-            job.dataSourceId.toString(),
+            flow.dataSourceId.toString(),
           );
           if (dataSource) {
-            // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+            // Inject flow queries into dataSource for GraphQL/PostHog connectors
             // The registry maps connection -> config when creating the connector
-            const transferQueries = (job as any).queries;
-            if (transferQueries && transferQueries.length > 0) {
+            const flowQueries = (flow as any).queries;
+            if (flowQueries && flowQueries.length > 0) {
               dataSource.connection = {
                 ...dataSource.connection,
-                queries: transferQueries,
+                queries: flowQueries,
               };
             }
 
@@ -703,14 +703,14 @@ export const syncJobFunction = inngest.createFunction(
               await syncConnectorRegistry.getConnector(dataSource);
             if (connector) {
               syncedEntities =
-                job.entityFilter && job.entityFilter.length > 0
-                  ? job.entityFilter
+                flow.entityFilter && flow.entityFilter.length > 0
+                  ? flow.entityFilter
                   : connector.getAvailableEntities();
             }
           }
           logger.info("Starting non-chunked sync operation", {
-            jobId,
-            syncMode: job.syncMode,
+            flowId,
+            syncMode: flow.syncMode,
           });
 
           try {
@@ -718,7 +718,7 @@ export const syncJobFunction = inngest.createFunction(
             const syncLogger: SyncLogger = {
               log: (level: string, message: string, metadata?: any) => {
                 const logData = {
-                  jobId,
+                  flowId,
                   executionId, // Include executionId for database sink
                   ...metadata,
                 };
@@ -747,21 +747,21 @@ export const syncJobFunction = inngest.createFunction(
             };
 
             await performSync(
-              job.dataSourceId.toString(),
-              job.destinationDatabaseId.toString(),
-              job.destinationDatabaseName,
-              job.entityFilter,
-              job.syncMode === "incremental",
+              flow.dataSourceId.toString(),
+              flow.destinationDatabaseId.toString(),
+              flow.destinationDatabaseName,
+              flow.entityFilter,
+              flow.syncMode === "incremental",
               syncLogger,
               step, // Pass Inngest step for serverless-friendly retries
-              (job as any).queries, // Pass transfer queries for GraphQL/PostHog
+              (flow as any).queries, // Pass flow queries for GraphQL/PostHog
             );
 
-            logger.info("Sync operation completed successfully", { jobId });
+            logger.info("Sync operation completed successfully", { flowId });
             return { success: true };
           } catch (error: any) {
             logger.error("Sync operation failed", {
-              jobId,
+              flowId,
               error: error.message,
               stack: error.stack,
             });
@@ -770,10 +770,10 @@ export const syncJobFunction = inngest.createFunction(
         });
       }
 
-      // Update job success status
+      // Update flow success status
       await step.run("update-success-status", async () => {
-        logger.info("Updating job success status", { jobId });
-        await SyncJob.findByIdAndUpdate(jobId, {
+        logger.info("Updating flow success status", { flowId });
+        await Flow.findByIdAndUpdate(flowId, {
           lastSuccessAt: new Date(),
           lastError: null,
         });
@@ -782,13 +782,13 @@ export const syncJobFunction = inngest.createFunction(
       // Complete execution logging
       await step.run("complete-execution", async () => {
         logger.info("Completing execution logging", {
-          jobId,
+          flowId,
           executionId,
         });
         if (executionId) {
           try {
-            const db = SyncJob.db;
-            const collection = db.collection("job_executions");
+            const db = Flow.db;
+            const collection = db.collection("flow_executions");
             const completedAt = new Date();
 
             // Update the execution to completed
@@ -831,14 +831,14 @@ export const syncJobFunction = inngest.createFunction(
               );
 
               logger.info("Execution completed successfully", {
-                jobId,
+                flowId,
                 executionId,
                 duration,
               });
             }
           } catch (error) {
             logger.error("Failed to complete execution logging", {
-              jobId,
+              flowId,
               executionId,
               error: error instanceof Error ? error.message : String(error),
             });
@@ -846,15 +846,15 @@ export const syncJobFunction = inngest.createFunction(
           }
         } else {
           logger.warn("No execution ID available to complete", {
-            jobId,
+            flowId,
           });
         }
       });
 
       return { success: true, message: "Sync completed successfully" };
     } catch (error: any) {
-      logger.error("Job failed", {
-        jobId,
+      logger.error("Flow failed", {
+        flowId,
         error: error.message,
         errorName: error.name,
         errorCode: error.code,
@@ -871,7 +871,7 @@ export const syncJobFunction = inngest.createFunction(
         error.message?.includes("Function cancelled");
 
       logger.info("Error analysis", {
-        jobId,
+        flowId,
         errorName: error.name,
         errorCode: error.code,
         errorMessage: error.message,
@@ -882,8 +882,8 @@ export const syncJobFunction = inngest.createFunction(
       await step.run("complete-execution-error", async () => {
         if (executionId) {
           try {
-            const db = SyncJob.db;
-            const collection = db.collection("job_executions");
+            const db = Flow.db;
+            const collection = db.collection("flow_executions");
             const completedAt = new Date();
 
             // Calculate duration from the document's startedAt
@@ -906,7 +906,7 @@ export const syncJobFunction = inngest.createFunction(
                     success: false,
                     error: {
                       message: isCancelled
-                        ? "Job execution cancelled by user"
+                        ? "Flow execution cancelled by user"
                         : error.message,
                       stack: isCancelled ? undefined : error.stack,
                       code: isCancelled
@@ -919,13 +919,13 @@ export const syncJobFunction = inngest.createFunction(
             }
 
             logger.info("Error execution logging completed", {
-              jobId,
+              flowId,
               executionId,
               status: isCancelled ? "cancelled" : "failed",
             });
           } catch (completeError) {
             logger.error("Failed to complete error execution logging", {
-              jobId,
+              flowId,
               executionId,
               originalError: error.message,
               completeError:
@@ -940,7 +940,7 @@ export const syncJobFunction = inngest.createFunction(
 
       // Update error status (unless cancelled)
       if (!isCancelled) {
-        await SyncJob.findByIdAndUpdate(jobId, {
+        await Flow.findByIdAndUpdate(flowId, {
           lastError: error.message || "Unknown error",
         });
       }
@@ -950,86 +950,86 @@ export const syncJobFunction = inngest.createFunction(
   },
 );
 
-// Scheduled job runner function
-export const scheduledSyncJobFunction = inngest.createFunction(
+// Scheduled flow runner function
+export const scheduledFlowFunction = inngest.createFunction(
   {
-    id: "scheduled-sync-job",
-    name: "Run Scheduled Transfers",
+    id: "scheduled-flow",
+    name: "Run Scheduled Flows",
   },
-  { cron: "*/5 * * * *" }, // Run every 5 minutes to check for jobs to execute
+  { cron: "*/5 * * * *" }, // Run every 5 minutes to check for flows to execute
   async ({ step, logger }) => {
     const scheduleLogger = getSyncLogger("scheduler");
 
-    scheduleLogger.info("Scheduled sync job runner triggered", {
+    scheduleLogger.info("Scheduled flow runner triggered", {
       timestamp: new Date().toISOString(),
     });
 
-    // Get all enabled scheduled sync jobs (not webhooks)
-    const jobs = (await step.run("fetch-enabled-jobs", async () => {
-      const syncJobs = await SyncJob.find({
+    // Get all enabled scheduled flows (not webhooks)
+    const flows = (await step.run("fetch-enabled-flows", async () => {
+      const syncFlows = await Flow.find({
         enabled: true,
-        type: "scheduled", // Only get scheduled jobs explicitly
+        type: "scheduled", // Only get scheduled flows explicitly
       });
-      scheduleLogger.info("Found enabled scheduled sync jobs", {
-        count: syncJobs.length,
-        // Log job types for debugging
-        jobTypes: syncJobs.map(job => ({
-          id: job._id.toString(),
-          type: job.type,
+      scheduleLogger.info("Found enabled scheduled flows", {
+        count: syncFlows.length,
+        // Log flow types for debugging
+        flowTypes: syncFlows.map(flow => ({
+          id: flow._id.toString(),
+          type: flow.type,
         })),
       });
-      return syncJobs.map(job => job.toObject() as ISyncJob);
-    })) as ISyncJob[];
+      return syncFlows.map(flow => flow.toObject() as IFlow);
+    })) as IFlow[];
 
     const now = new Date();
-    const executedJobs: string[] = [];
+    const executedFlows: string[] = [];
     let schedulingJitter = 0;
 
-    // Check each job to see if it should run
-    for (const job of jobs) {
-      const shouldRun = await step.run(`check-job-${job._id}`, async () => {
+    // Check each flow to see if it should run
+    for (const flow of flows) {
+      const shouldRun = await step.run(`check-flow-${flow._id}`, async () => {
         try {
-          const jobDisplayName = await getJobDisplayName(job);
-          const jobLogger = getSyncLogger(`scheduler.${job._id}`);
+          const flowDisplayName = await getFlowDisplayName(flow);
+          const flowLogger = getSyncLogger(`scheduler.${flow._id}`);
 
-          // Safety check: skip webhook jobs (shouldn't happen with our filter, but just in case)
-          if (job.type === "webhook" || !job.schedule?.cron) {
-            jobLogger.warn("CRITICAL: Non-scheduled job found in scheduler!", {
-              jobId: job._id.toString(),
-              jobType: job.type,
-              hasSchedule: !!job.schedule,
-              hasCron: !!job.schedule?.cron,
-              schedule: job.schedule,
+          // Safety check: skip webhook flows (shouldn't happen with our filter, but just in case)
+          if (flow.type === "webhook" || !flow.schedule?.cron) {
+            flowLogger.warn("CRITICAL: Non-scheduled flow found in scheduler!", {
+              flowId: flow._id.toString(),
+              flowType: flow.type,
+              hasSchedule: !!flow.schedule,
+              hasCron: !!flow.schedule?.cron,
+              schedule: flow.schedule,
             });
             return false;
           }
 
-          jobLogger.debug("Checking job", {
-            jobId: job._id.toString(),
-            jobName: jobDisplayName,
-            cronExpression: job.schedule.cron,
-            timezone: job.schedule.timezone || "UTC",
+          flowLogger.debug("Checking flow", {
+            flowId: flow._id.toString(),
+            flowName: flowDisplayName,
+            cronExpression: flow.schedule.cron,
+            timezone: flow.schedule.timezone || "UTC",
             currentTime: now.toISOString(),
           });
 
           // Convert lastRunAt to Date if needed
-          const lastRunDate = job.lastRunAt ? new Date(job.lastRunAt) : null;
+          const lastRunDate = flow.lastRunAt ? new Date(flow.lastRunAt) : null;
 
-          jobLogger.debug("Job last run information", {
-            jobId: job._id.toString(),
+          flowLogger.debug("Flow last run information", {
+            flowId: flow._id.toString(),
             lastRunAt: lastRunDate ? lastRunDate.toISOString() : "Never",
-            lastRunAtRaw: job.lastRunAt,
-            lastRunAtType: typeof job.lastRunAt,
+            lastRunAtRaw: flow.lastRunAt,
+            lastRunAtType: typeof flow.lastRunAt,
           });
 
           // Parse cron expression with timezone
           const options = {
             currentDate: now,
-            tz: job.schedule.timezone || "UTC",
+            tz: flow.schedule.timezone || "UTC",
           };
 
           const interval = CronExpressionParser.parse(
-            job.schedule.cron,
+            flow.schedule.cron,
             options,
           );
           const nextRun = interval.next().toDate();
@@ -1038,7 +1038,7 @@ export const scheduledSyncJobFunction = inngest.createFunction(
           let prevRun: Date | null = null;
           try {
             const prevInterval = CronExpressionParser.parse(
-              job.schedule.cron,
+              flow.schedule.cron,
               options,
             );
             prevRun = prevInterval.prev().toDate();
@@ -1046,8 +1046,8 @@ export const scheduledSyncJobFunction = inngest.createFunction(
             // Might fail if there's no previous occurrence
           }
 
-          jobLogger.debug("Job schedule analysis", {
-            jobId: job._id.toString(),
+          flowLogger.debug("Flow schedule analysis", {
+            flowId: flow._id.toString(),
             nextRun: nextRun.toISOString(),
             previousScheduledRun: prevRun ? prevRun.toISOString() : null,
             nextRunTimestamp: nextRun.getTime(),
@@ -1055,15 +1055,15 @@ export const scheduledSyncJobFunction = inngest.createFunction(
             timeUntilNextRun: nextRun.getTime() - now.getTime(),
           });
 
-          // Check if the job should have run since the last execution
+          // Check if the flow should have run since the last execution
           const lastRun = lastRunDate || new Date(0);
 
           // Check if we missed any scheduled runs
           let missedRun = false;
           if (prevRun && lastRun < prevRun && prevRun <= now) {
             missedRun = true;
-            jobLogger.warn("Missed scheduled run", {
-              jobId: job._id.toString(),
+            flowLogger.warn("Missed scheduled run", {
+              flowId: flow._id.toString(),
               missedRunTime: prevRun.toISOString(),
             });
           }
@@ -1074,17 +1074,17 @@ export const scheduledSyncJobFunction = inngest.createFunction(
           if (lastRun.getTime() > 0) {
             // Parse from last run time to see when next run should have been
             const intervalFromLastRun = CronExpressionParser.parse(
-              job.schedule.cron,
+              flow.schedule.cron,
               {
                 currentDate: lastRun,
-                tz: job.schedule.timezone || "UTC",
+                tz: flow.schedule.timezone || "UTC",
               },
             );
             const nextRunFromLastRun = intervalFromLastRun.next().toDate();
             alternativeShouldRun = nextRunFromLastRun <= now;
 
-            jobLogger.debug("Alternative schedule check", {
-              jobId: job._id.toString(),
+            flowLogger.debug("Alternative schedule check", {
+              flowId: flow._id.toString(),
               nextRunFromLastRun: nextRunFromLastRun.toISOString(),
               shouldHaveRunByNow: alternativeShouldRun,
             });
@@ -1093,8 +1093,8 @@ export const scheduledSyncJobFunction = inngest.createFunction(
           // Original logic (likely always false since nextRun is future)
           const shouldExecute = nextRun <= now && lastRun < nextRun;
 
-          jobLogger.debug("Schedule execution decision", {
-            jobId: job._id.toString(),
+          flowLogger.debug("Schedule execution decision", {
+            flowId: flow._id.toString(),
             nextRunIsInPast: nextRun <= now,
             lastRunBeforeNextRun: lastRun < nextRun,
             shouldExecuteOriginalLogic: shouldExecute,
@@ -1105,91 +1105,91 @@ export const scheduledSyncJobFunction = inngest.createFunction(
           // Use the alternative logic instead
           return alternativeShouldRun || missedRun;
         } catch (error) {
-          logger.error(`Failed to parse cron expression for job ${job._id}`, {
+          logger.error(`Failed to parse cron expression for flow ${flow._id}`, {
             error,
-            jobId: job._id.toString(),
+            flowId: flow._id.toString(),
           });
           return false;
         }
       });
 
       if (shouldRun) {
-        // Add small scheduling jitter (0-5 seconds) between jobs to spread out the load
+        // Add small scheduling jitter (0-5 seconds) between flows to spread out the load
         if (schedulingJitter > 0) {
-          await step.sleep(`scheduling-jitter-${job._id}`, schedulingJitter);
+          await step.sleep(`scheduling-jitter-${flow._id}`, schedulingJitter);
         }
 
-        // Trigger the sync job (without noJitter flag, so jitter will be applied)
-        await step.sendEvent(`trigger-job-${job._id}`, {
-          name: "sync/job.execute",
-          data: { jobId: job._id.toString() },
+        // Trigger the flow (without noJitter flag, so jitter will be applied)
+        await step.sendEvent(`trigger-flow-${flow._id}`, {
+          name: "flow.execute",
+          data: { flowId: flow._id.toString() },
         });
 
-        const jobDisplayName = await getJobDisplayName(job);
-        executedJobs.push(jobDisplayName);
+        const flowDisplayName = await getFlowDisplayName(flow);
+        executedFlows.push(flowDisplayName);
 
-        // Increment jitter for next job (0-5 seconds)
+        // Increment jitter for next flow (0-5 seconds)
         schedulingJitter = Math.floor(Math.random() * 5000);
       }
     }
 
-    scheduleLogger.info("Scheduled job runner completed", {
-      jobsChecked: jobs.length,
-      jobsExecuted: executedJobs.length,
-      executedJobs: executedJobs,
+    scheduleLogger.info("Scheduled flow runner completed", {
+      flowsChecked: flows.length,
+      flowsExecuted: executedFlows.length,
+      executedFlows: executedFlows,
     });
 
     return {
-      checked: jobs.length,
-      executed: executedJobs.length,
-      jobs: executedJobs,
+      checked: flows.length,
+      executed: executedFlows.length,
+      flows: executedFlows,
     };
   },
 );
 
 // Manual trigger function for immediate execution
-export const manualSyncJobFunction = inngest.createFunction(
+export const manualFlowFunction = inngest.createFunction(
   {
-    id: "manual-sync-job",
-    name: "Manual Sync Job Trigger",
+    id: "manual-flow",
+    name: "Manual Flow Trigger",
   },
-  { event: "sync/job.manual" },
+  { event: "flow.manual" },
   async ({ event, step }) => {
-    const { jobId } = event.data;
+    const { flowId } = event.data;
 
-    // Trigger the sync job with noJitter flag
-    await step.sendEvent("trigger-sync-job", {
-      name: "sync/job.execute",
+    // Trigger the flow with noJitter flag
+    await step.sendEvent("trigger-flow", {
+      name: "flow.execute",
       data: {
-        jobId,
+        flowId,
         noJitter: true, // Skip jitter for manual execution
       },
     });
 
-    return { success: true, message: `Triggered sync job: ${jobId}` };
+    return { success: true, message: `Triggered flow: ${flowId}` };
   },
 );
 
-// Cancel running job function - updates the database when cancel is requested
-export const cancelSyncJobFunction = inngest.createFunction(
+// Cancel running flow function - updates the database when cancel is requested
+export const cancelFlowFunction = inngest.createFunction(
   {
-    id: "cancel-sync-job",
-    name: "Cancel Running Sync Job",
+    id: "cancel-flow",
+    name: "Cancel Running Flow",
   },
-  { event: "sync/job.cancel" },
+  { event: "flow.cancel" },
   async ({ event, logger }) => {
-    const { jobId, executionId } = event.data;
+    const { flowId, executionId } = event.data;
 
     logger.info("Processing cancel request", {
-      jobId,
+      flowId,
       executionId,
     });
 
     // Update the execution status to cancelled
     // Inngest will stop the function between steps, but we need to update the DB
     try {
-      const db = SyncJob.db;
-      const collection = db.collection("job_executions");
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
 
       if (executionId) {
         const result = await collection.updateOne(
@@ -1204,7 +1204,7 @@ export const cancelSyncJobFunction = inngest.createFunction(
               status: "cancelled",
               success: false,
               error: {
-                message: "Job execution cancelled by user",
+                message: "Flow execution cancelled by user",
                 code: "USER_CANCELLED",
               },
             },
@@ -1212,14 +1212,14 @@ export const cancelSyncJobFunction = inngest.createFunction(
         );
 
         logger.info("Database update result", {
-          jobId,
+          flowId,
           executionId,
           modified: result.modifiedCount,
         });
       }
     } catch (error) {
       logger.error("Failed to update execution status", {
-        jobId,
+        flowId,
         executionId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1232,26 +1232,26 @@ export const cancelSyncJobFunction = inngest.createFunction(
   },
 );
 
-// Cleanup function for abandoned jobs
-export const cleanupAbandonedJobsFunction = inngest.createFunction(
+// Cleanup function for abandoned flows
+export const cleanupAbandonedFlowsFunction = inngest.createFunction(
   {
-    id: "cleanup-abandoned-jobs",
-    name: "Cleanup Abandoned Jobs",
+    id: "cleanup-abandoned-flows",
+    name: "Cleanup Abandoned Flows",
   },
   { cron: "*/15 * * * *" }, // Run every 15 minutes
   async ({ step, logger }) => {
-    const result = await step.run("cleanup-abandoned-jobs", async () => {
-      const db = SyncJob.db;
+    const result = await step.run("cleanup-abandoned-flows", async () => {
+      const db = Flow.db;
       const now = new Date();
       const heartbeatTimeout = new Date(now.getTime() - 120000); // 2 minutes ago
 
-      const executionsCollection = db.collection("job_executions");
-      const locksCollection = db.collection("job_execution_locks");
+      const executionsCollection = db.collection("flow_executions");
+      const locksCollection = db.collection("flow_execution_locks");
 
       let abandonedCount = 0;
       let staleLockCount = 0;
 
-      // 1. Find and mark abandoned job executions
+      // 1. Find and mark abandoned flow executions
       const abandonedExecutions = await executionsCollection
         .find({
           status: "running",
@@ -1276,7 +1276,7 @@ export const cleanupAbandonedJobsFunction = inngest.createFunction(
               completedAt: now,
               error: {
                 message:
-                  "Job execution abandoned due to worker crash or timeout",
+                  "Flow execution abandoned due to worker crash or timeout",
                 code: "WORKER_TIMEOUT",
               },
             },
@@ -1284,13 +1284,13 @@ export const cleanupAbandonedJobsFunction = inngest.createFunction(
         );
         abandonedCount = abandonedExecutions.length;
 
-        logger.warn("Marked abandoned job executions", {
+        logger.warn("Marked abandoned flow executions", {
           count: abandonedCount,
           executionIds: abandonedExecutions.map(e => e._id.toString()),
         });
       }
 
-      // 2. Clean up stale job locks
+      // 2. Clean up stale flow locks
       const heartbeatStaleThreshold = new Date(now.getTime() - 600000); // 10 minutes ago
       const staleLocks = await locksCollection
         .find({
@@ -1311,13 +1311,13 @@ export const cleanupAbandonedJobsFunction = inngest.createFunction(
         });
         staleLockCount = staleLocks.length;
 
-        logger.info("Cleaned up stale job locks", {
+        logger.info("Cleaned up stale flow locks", {
           count: staleLockCount,
           lockIds: staleLocks.map(l => l._id.toString()),
         });
       }
 
-      logger.info("Cleanup abandoned jobs completed", {
+      logger.info("Cleanup abandoned flows completed", {
         abandonedExecutions: abandonedCount,
         staleLocks: staleLockCount,
         timestamp: now.toISOString(),
@@ -1333,3 +1333,16 @@ export const cleanupAbandonedJobsFunction = inngest.createFunction(
     return result;
   },
 );
+
+// Backwards compatibility exports
+/** @deprecated Use flowFunction instead */
+export const syncJobFunction = flowFunction;
+/** @deprecated Use scheduledFlowFunction instead */
+export const scheduledSyncJobFunction = scheduledFlowFunction;
+/** @deprecated Use manualFlowFunction instead */
+export const manualSyncJobFunction = manualFlowFunction;
+/** @deprecated Use cancelFlowFunction instead */
+export const cancelSyncJobFunction = cancelFlowFunction;
+/** @deprecated Use cleanupAbandonedFlowsFunction instead */
+export const cleanupAbandonedJobsFunction = cleanupAbandonedFlowsFunction;
+
