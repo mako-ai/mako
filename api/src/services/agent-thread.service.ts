@@ -168,7 +168,27 @@ export const persistUserMessage = async (
   }
 
   // Update existing chat with the new user message
-  const existingMessages = threadContext.recentMessages;
+  // IMPORTANT: Fetch current messages from DB to avoid truncation data loss
+  // (threadContext.recentMessages only contains last CONTEXT_WINDOW_SIZE messages)
+  const existingChat = await Chat.findById(sessionId);
+  if (!existingChat) {
+    // Chat was deleted between context load and persist - create new one
+    const newChat = new Chat({
+      workspaceId: new ObjectId(workspaceId),
+      threadId: threadContext.threadId,
+      title: "New Chat",
+      messages: [userMessageObj],
+      createdBy: userId || "system",
+      titleGenerated: false,
+      createdAt: now,
+      updatedAt: now,
+      pinnedConsoleId,
+    });
+    await newChat.save();
+    return newChat._id.toString();
+  }
+
+  const existingMessages = existingChat.messages || [];
   const updateData: any = {
     messages: [...existingMessages, userMessageObj],
     updatedAt: now,
@@ -204,12 +224,16 @@ export const updateChatWithResponse = async (
 
   const messages = [...(chat.messages || [])];
 
-  // Only add assistant message if there's content
-  if (assistantContent.trim()) {
+  // Add assistant message if there's content OR tool calls
+  // Tool calls should be persisted even when the assistant doesn't generate text
+  const hasContent = assistantContent.trim();
+  const hasToolCalls = toolCalls && toolCalls.length > 0;
+
+  if (hasContent || hasToolCalls) {
     messages.push({
       role: "assistant" as const,
       content: assistantContent,
-      toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+      toolCalls: hasToolCalls ? toolCalls : undefined,
     });
   }
 
@@ -268,7 +292,11 @@ export const persistChatError = async (
 
     // Add partial response if any
     if (partialResponse?.trim()) {
-      errorDetails.push(``, `**Partial response before error:**`, partialResponse.trim());
+      errorDetails.push(
+        ``,
+        `**Partial response before error:**`,
+        partialResponse.trim(),
+      );
     }
 
     // Add tool call summary if any
@@ -287,32 +315,33 @@ export const persistChatError = async (
     messages.push({
       role: "assistant" as const,
       content: errorDetails.join("\n"),
-      toolCalls: partialToolCalls && partialToolCalls.length > 0
-        ? [
-            ...partialToolCalls,
-            {
-              toolName: "_error",
-              timestamp: now,
-              status: "completed" as const,
-              result: {
-                error: error.message,
-                code: error.code,
-                type: error.type,
+      toolCalls:
+        partialToolCalls && partialToolCalls.length > 0
+          ? [
+              ...partialToolCalls,
+              {
+                toolName: "_error",
+                timestamp: now,
+                status: "completed" as const,
+                result: {
+                  error: error.message,
+                  code: error.code,
+                  type: error.type,
+                },
               },
-            },
-          ]
-        : [
-            {
-              toolName: "_error",
-              timestamp: now,
-              status: "completed" as const,
-              result: {
-                error: error.message,
-                code: error.code,
-                type: error.type,
+            ]
+          : [
+              {
+                toolName: "_error",
+                timestamp: now,
+                status: "completed" as const,
+                result: {
+                  error: error.message,
+                  code: error.code,
+                  type: error.type,
+                },
               },
-            },
-          ],
+            ],
     });
 
     await Chat.findByIdAndUpdate(
