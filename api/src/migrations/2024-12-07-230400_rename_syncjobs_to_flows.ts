@@ -1,7 +1,7 @@
 import { Db } from "mongodb";
 
 export const description =
-  "Rename syncjobs to flows, job_executions to flow_executions, job_execution_locks to flow_execution_locks, and jobId to flowId";
+  "Rename syncjobs to flows, job_executions to flow_executions, job_execution_locks to flow_execution_locks, jobId to flowId, and fix status spelling (canceled → cancelled)";
 
 /**
  * Migration: Rename SyncJobs to Flows
@@ -11,6 +11,7 @@ export const description =
  * 2. job_executions collection → flow_executions
  * 3. job_execution_locks collection → flow_execution_locks
  * 4. jobId field → flowId in flow_executions and webhookevents
+ * 5. status "canceled" → "cancelled" in flow_executions (spelling normalization)
  */
 export async function up(db: Db): Promise<void> {
   const collections = await db.listCollections().toArray();
@@ -89,6 +90,21 @@ export async function up(db: Db): Promise<void> {
     console.log(
       `✅ Renamed field jobId → flowId in flow_executions: ${flowExecResult.modifiedCount} documents updated`,
     );
+
+    // 4b. Update status spelling: "canceled" (American) → "cancelled" (British)
+    // The old schema used "canceled", new schema uses "cancelled"
+    const statusResult = await db
+      .collection("flow_executions")
+      .updateMany({ status: "canceled" }, { $set: { status: "cancelled" } });
+    if (statusResult.modifiedCount > 0) {
+      console.log(
+        `✅ Updated status spelling "canceled" → "cancelled" in flow_executions: ${statusResult.modifiedCount} documents updated`,
+      );
+    } else {
+      console.log(
+        'ℹ️  No documents with status "canceled" found in flow_executions, skipping status update.',
+      );
+    }
   } else {
     console.log(
       "ℹ️  Collection 'flow_executions' not found, skipping field rename.",
