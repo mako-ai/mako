@@ -58,7 +58,7 @@ interface ExecutionHistoryItem {
   }>;
 }
 
-interface SyncJobDetails {
+interface FlowDetails {
   id: string;
   description?: any;
   dataSourceId: string;
@@ -76,13 +76,13 @@ interface SyncJobDetails {
   updatedAt: string;
 }
 
-interface SyncJobLogsProps {
-  jobId: string;
+interface FlowLogsProps {
+  flowId: string;
   onRunNow?: () => void;
   onEdit?: () => void;
 }
 
-// Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
+// Styled PanelResizeHandle components
 const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   width: "1px",
   background: theme.palette.divider,
@@ -93,7 +93,7 @@ const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   },
 }));
 
-export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
+export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
   const { currentWorkspace } = useWorkspace();
   const [history, setHistory] = useState<ExecutionHistoryItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
@@ -102,7 +102,7 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
   const [logs, setLogs] = useState<any[]>([]);
   const [fullExecutionDetails, setFullExecutionDetails] =
     useState<ExecutionHistoryItem | null>(null);
-  const [jobDetails, setJobDetails] = useState<SyncJobDetails | null>(null);
+  const [flowDetails, setFlowDetails] = useState<FlowDetails | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [runningExecutionId, setRunningExecutionId] = useState<string | null>(
     null,
@@ -110,7 +110,7 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
 
   // Function to fetch history
   const fetchHistory = useCallback(async () => {
-    if (!currentWorkspace?.id || !jobId) return;
+    if (!currentWorkspace?.id || !flowId) return;
     setIsLoading(true);
     try {
       const response = await apiClient.get<{
@@ -118,7 +118,7 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
         data: {
           history: ExecutionHistoryItem[];
         };
-      }>(`/workspaces/${currentWorkspace.id}/sync-jobs/${jobId}/history`, {
+      }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}/history`, {
         limit: "100",
       });
 
@@ -133,11 +133,11 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [currentWorkspace?.id, jobId]);
+  }, [currentWorkspace?.id, flowId]);
 
-  // Function to check job running status
-  const checkJobStatus = useCallback(async () => {
-    if (!currentWorkspace?.id || !jobId) return;
+  // Function to check flow running status
+  const checkFlowStatus = useCallback(async () => {
+    if (!currentWorkspace?.id || !flowId) return;
     try {
       const response = await apiClient.get<{
         success: boolean;
@@ -149,7 +149,7 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
             lastHeartbeat: string;
           } | null;
         };
-      }>(`/workspaces/${currentWorkspace.id}/sync-jobs/${jobId}/status`);
+      }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}/status`);
 
       if (response.success) {
         setIsRunning(response.data.isRunning);
@@ -158,40 +158,40 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
         );
       }
     } catch (err) {
-      console.error("Failed to check job status", err);
+      console.error("Failed to check flow status", err);
     }
-  }, [currentWorkspace?.id, jobId]);
+  }, [currentWorkspace?.id, flowId]);
 
-  // Function to cancel running job
+  // Function to cancel running flow
   const handleCancel = useCallback(async () => {
-    if (!currentWorkspace?.id || !jobId) return;
+    if (!currentWorkspace?.id || !flowId) return;
     try {
       const response = await apiClient.post<{
         success: boolean;
         message: string;
-      }>(`/workspaces/${currentWorkspace.id}/sync-jobs/${jobId}/cancel`, {
+      }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}/cancel`, {
         executionId: runningExecutionId, // Pass the executionId if available
       });
 
       if (response.success) {
         // Wait a moment then refresh status
         setTimeout(() => {
-          checkJobStatus();
+          checkFlowStatus();
           // Refresh history to show cancelled execution
           fetchHistory();
         }, 1000);
       } else {
-        setError("Failed to cancel job");
+        setError("Failed to cancel flow");
       }
     } catch (err) {
-      console.error("Failed to cancel job", err);
-      setError("Failed to cancel job execution");
+      console.error("Failed to cancel flow", err);
+      setError("Failed to cancel flow execution");
     }
   }, [
     currentWorkspace?.id,
-    jobId,
+    flowId,
     runningExecutionId,
-    checkJobStatus,
+    checkFlowStatus,
     fetchHistory,
   ]);
 
@@ -203,38 +203,38 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
       onRunNow();
       // Start checking status after triggering run
       setTimeout(() => {
-        checkJobStatus();
+        checkFlowStatus();
         fetchHistory();
       }, 1000);
     }
-  }, [isRunning, handleCancel, onRunNow, checkJobStatus, fetchHistory]);
+  }, [isRunning, handleCancel, onRunNow, checkFlowStatus, fetchHistory]);
 
-  // Fetch job details
+  // Fetch flow details
   useEffect(() => {
-    const fetchJobDetails = async () => {
-      if (!currentWorkspace?.id || !jobId) return;
+    const fetchFlowDetails = async () => {
+      if (!currentWorkspace?.id || !flowId) return;
       try {
         const response = await apiClient.get<{
           success: boolean;
-          data: SyncJobDetails;
-        }>(`/workspaces/${currentWorkspace.id}/sync-jobs/${jobId}`);
+          data: FlowDetails;
+        }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}`);
 
         if (response.success) {
-          setJobDetails(response.data);
+          setFlowDetails(response.data);
         }
       } catch (err) {
-        console.error("Failed to fetch job details", err);
+        console.error("Failed to fetch flow details", err);
       }
     };
 
-    fetchJobDetails();
-  }, [currentWorkspace?.id, jobId]);
+    fetchFlowDetails();
+  }, [currentWorkspace?.id, flowId]);
 
   // Fetch execution history and check status
   useEffect(() => {
     fetchHistory();
-    checkJobStatus();
-  }, [currentWorkspace?.id, jobId, fetchHistory, checkJobStatus]);
+    checkFlowStatus();
+  }, [currentWorkspace?.id, flowId, fetchHistory, checkFlowStatus]);
 
   const selectedHistory =
     selectedIndex >= 0 && selectedIndex < history.length
@@ -250,7 +250,7 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
           success: boolean;
           data: ExecutionHistoryItem;
         }>(
-          `/workspaces/${currentWorkspace.id}/sync-jobs/${jobId}/executions/${selectedHistory.executionId}`,
+          `/workspaces/${currentWorkspace.id}/flows/${flowId}/executions/${selectedHistory.executionId}`,
         );
 
         if (response.success && response.data) {
@@ -268,7 +268,7 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
     };
 
     fetchExecutionDetails();
-  }, [selectedHistory, currentWorkspace?.id, jobId]);
+  }, [selectedHistory, currentWorkspace?.id, flowId]);
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -352,8 +352,8 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
         </Box>
       </Box>
 
-      {/* Job Overview */}
-      {jobDetails && (
+      {/* Flow Overview */}
+      {flowDetails && (
         <Box
           sx={{
             p: 1,
@@ -374,51 +374,51 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
               <Typography variant="body2">
                 <strong>Source:</strong>{" "}
                 {extractStringValue(
-                  jobDetails.dataSourceName,
-                  extractStringValue(jobDetails.dataSourceId, "Unknown"),
+                  flowDetails.dataSourceName,
+                  extractStringValue(flowDetails.dataSourceId, "Unknown"),
                 )}
               </Typography>
               <Typography variant="body2">
                 <strong>Destination:</strong>{" "}
                 {extractStringValue(
-                  jobDetails.destinationDatabaseName,
+                  flowDetails.destinationDatabaseName,
                   extractStringValue(
-                    jobDetails.destinationDatabaseId,
+                    flowDetails.destinationDatabaseId,
                     "Default",
                   ),
                 )}
               </Typography>
               <Typography variant="body2">
                 <strong>Sync Mode:</strong>{" "}
-                {extractStringValue(jobDetails.syncMode, "Unknown")}
+                {extractStringValue(flowDetails.syncMode, "Unknown")}
               </Typography>
               <Typography variant="body2">
                 <strong>Status:</strong>{" "}
-                {jobDetails.enabled ? "Active" : "Inactive"}
+                {flowDetails.enabled ? "Active" : "Inactive"}
               </Typography>
             </Box>
-            {jobDetails.schedule?.cron && (
+            {flowDetails.schedule?.cron && (
               <Typography variant="body2">
                 <strong>Schedule:</strong>{" "}
-                {extractStringValue(jobDetails.schedule.cron, "")}
-                {jobDetails.schedule.timezone &&
-                  ` (${extractStringValue(jobDetails.schedule.timezone, "")})`}
+                {extractStringValue(flowDetails.schedule.cron, "")}
+                {flowDetails.schedule.timezone &&
+                  ` (${extractStringValue(flowDetails.schedule.timezone, "")})`}
               </Typography>
             )}
-            {jobDetails.entityFilter &&
-              Array.isArray(jobDetails.entityFilter) &&
-              jobDetails.entityFilter.length > 0 && (
+            {flowDetails.entityFilter &&
+              Array.isArray(flowDetails.entityFilter) &&
+              flowDetails.entityFilter.length > 0 && (
                 <Typography variant="body2">
                   <strong>Entities:</strong>{" "}
-                  {jobDetails.entityFilter
+                  {flowDetails.entityFilter
                     .map(entity => extractStringValue(entity, ""))
                     .join(", ")}
                 </Typography>
               )}
-            {jobDetails.description && (
+            {flowDetails.description && (
               <Typography variant="body2">
                 <strong>Description:</strong>{" "}
-                {extractStringValue(jobDetails.description, "")}
+                {extractStringValue(flowDetails.description, "")}
               </Typography>
             )}
           </Stack>
@@ -463,7 +463,7 @@ export function SyncJobLogs({ jobId, onRunNow, onEdit }: SyncJobLogsProps) {
                 aria-label="Refresh"
                 onClick={() => {
                   fetchHistory();
-                  checkJobStatus();
+                  checkFlowStatus();
                 }}
                 disabled={isLoading}
                 sx={{ color: "text.primary" }}

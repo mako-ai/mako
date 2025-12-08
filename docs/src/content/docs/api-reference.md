@@ -22,14 +22,14 @@ The Mako API is a RESTful API built with Hono. All endpoints are prefixed with `
 | `POST` | `/api/workspaces`     | Create a workspace    |
 | `GET`  | `/api/workspaces/:id` | Get workspace details |
 
-## Connectors & Sync
+## Connectors & Flows
 
 | Method | Endpoint                              | Description                  |
 | :----- | :------------------------------------ | :--------------------------- |
 | `GET`  | `/api/workspaces/:wid/connectors`     | List configured data sources |
 | `POST` | `/api/workspaces/:wid/connectors`     | Add a new data source        |
-| `POST` | `/api/workspaces/:wid/sync-jobs`      | Trigger a sync job           |
-| `GET`  | `/api/workspaces/:wid/sync-jobs/:jid` | Get sync job status          |
+| `POST` | `/api/workspaces/:wid/flows`          | Trigger a flow               |
+| `GET`  | `/api/workspaces/:wid/flows/:fid`     | Get flow status              |
 
 ## Query Execution
 

@@ -5,10 +5,10 @@ import { v4 as uuidv4 } from "uuid";
  */
 export function generateWebhookEndpoint(
   workspaceId: string,
-  jobId: string,
+  flowId: string,
 ): string {
   const baseUrl = process.env.API_BASE_URL || "http://localhost:3001";
-  return `${baseUrl}/api/webhooks/${workspaceId}/${jobId}`;
+  return `${baseUrl}/api/webhooks/${workspaceId}/${flowId}`;
 }
 
 /**
@@ -32,17 +32,17 @@ export function verifyWebhookSignature(
 /**
  * Format webhook stats for display
  */
-export function formatWebhookStats(job: any): {
+export function formatWebhookStats(flow: any): {
   lastReceived: string;
   totalReceived: number;
   receivedToday: number;
   successRate: number;
 } {
-  const lastReceived = job.webhookConfig?.lastReceivedAt
-    ? new Date(job.webhookConfig.lastReceivedAt).toLocaleString()
+  const lastReceived = flow.webhookConfig?.lastReceivedAt
+    ? new Date(flow.webhookConfig.lastReceivedAt).toLocaleString()
     : "Never";
 
-  const totalReceived = job.webhookConfig?.totalReceived || 0;
+  const totalReceived = flow.webhookConfig?.totalReceived || 0;
 
   // TODO: Calculate receivedToday from webhook events collection
   const receivedToday = 0;

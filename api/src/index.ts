@@ -29,7 +29,7 @@ import { PostgreSQLDatabaseDriver } from "./databases/drivers/postgresql/driver"
 import { CloudSQLPostgresDatabaseDriver } from "./databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "./databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/driver";
-import { syncJobRoutes } from "./routes/sync-jobs";
+import { flowRoutes } from "./routes/flows";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest } from "./inngest";
 import mongoose from "mongoose";
@@ -92,7 +92,7 @@ app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
-app.route("/api/workspaces/:workspaceId/sync-jobs", syncJobRoutes);
+app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
 app.route("/api/run", executeRoutes);
 app.route("/api/execute", executeRoutes);
 app.route("/api/database", databaseRoutes);

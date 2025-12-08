@@ -34,9 +34,9 @@ Query Runner
 
 - Location: [api/src/sync/query-runner.ts](mdc:api/src/sync/query-runner.ts); reads JSON aggregation pipeline; selects MongoDB source by ID; uses connection service.
 
-Routing & Jobs
+Routing & Flows
 
-- Main routers mounted in index: consoles, execute, database, sources, connectors, workspaces, sync-jobs, webhooks.
+- Main routers mounted in index: consoles, execute, database, sources, connectors, workspaces, flows, webhooks.
 - Inngest endpoint: `GET|PUT|POST /api/inngest` from [api/src/inngest](mdc:api/src/inngest).
 
 Build & Scripts

@@ -36,7 +36,7 @@ import {
   Code as CodeIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useSyncJobStore } from "../store/syncJobStore";
+import { useFlowStore } from "../store/flowStore";
 import { useDatabaseStore } from "../store/databaseStore";
 import {
   useDatabaseContentStore,
@@ -46,11 +46,11 @@ import { apiClient } from "../lib/api-client";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 
-interface ScheduledJobFormProps {
-  jobId?: string;
+interface ScheduledFlowFormProps {
+  flowId?: string;
   isNew?: boolean;
   onSave?: () => void;
-  onSaved?: (jobId: string) => void;
+  onSaved?: (flowId: string) => void;
   onCancel?: () => void;
 }
 
@@ -98,28 +98,28 @@ const SCHEDULE_PRESETS = [
   { label: "Monthly on 1st", cron: "0 0 1 * *" },
 ];
 
-export function ScheduledJobForm({
-  jobId,
+export function ScheduledFlowForm({
+  flowId,
   isNew = false,
   onSave,
   onSaved,
   onCancel,
-}: ScheduledJobFormProps) {
+}: ScheduledFlowFormProps) {
   const { currentWorkspace } = useWorkspace();
   const {
-    jobs: jobsMap,
+    flows: flowsMap,
     loading: _loadingMap,
     error: errorMap,
-    createJob,
-    updateJob,
+    createFlow,
+    updateFlow,
     clearError,
-    deleteJob,
-  } = useSyncJobStore();
+    deleteFlow,
+  } = useFlowStore();
 
   // Get workspace-specific data
-  const jobs = useMemo(
-    () => (currentWorkspace ? jobsMap[currentWorkspace.id] || [] : []),
-    [currentWorkspace, jobsMap],
+  const flows = useMemo(
+    () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, flowsMap],
   );
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
@@ -147,7 +147,9 @@ export function ScheduledJobForm({
   const [error, setError] = useState<string | null>(null);
   // Local saved flag for future UX enhancements (snackbar/toast)
   // Currently unused; keeping logic minimal to avoid noisy lint.
-  const [currentJobId, setCurrentJobId] = useState<string | undefined>(jobId);
+  const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
+    flowId,
+  );
   const [isNewMode, setIsNewMode] = useState(isNew);
 
   // Entity selection state
@@ -359,7 +361,7 @@ export function ScheduledJobForm({
             .map(e => e.name);
           setExpandedEntities(entitiesToExpand);
 
-          if (isNewMode || (!currentJobId && jobs.length === 0)) {
+          if (isNewMode || (!currentFlowId && flows.length === 0)) {
             setSelectedEntities([]);
             setSelectAllEntities(true);
             setValue("entityFilter", []);
@@ -375,8 +377,8 @@ export function ScheduledJobForm({
       connectors,
       currentWorkspace?.id,
       isNewMode,
-      currentJobId,
-      jobs.length,
+      currentFlowId,
+      flows.length,
       setValue,
     ],
   );
@@ -475,28 +477,28 @@ export function ScheduledJobForm({
     updateAvailableEntities,
   ]);
 
-  // Load job data if editing
+  // Load flow data if editing
   useEffect(() => {
-    if (!isNewMode && currentJobId && jobs.length > 0) {
-      const job = jobs.find(j => j._id === currentJobId);
-      if (job && job.type === "scheduled") {
+    if (!isNewMode && currentFlowId && flows.length > 0) {
+      const flow = flows.find(j => j._id === currentFlowId);
+      if (flow && flow.type === "scheduled") {
         const formData: FormData = {
-          dataSourceId: (job.dataSourceId as any)._id,
-          destinationDatabaseId: (job.destinationDatabaseId as any)._id,
-          destinationDatabaseName: job.destinationDatabaseName || "",
-          schedule: job.schedule?.cron || "0 * * * *",
-          timezone: job.schedule?.timezone || "UTC",
-          syncMode: job.syncMode as "full" | "incremental",
-          enabled: job.enabled,
-          entityFilter: job.entityFilter || [],
-          queries: (job as any).queries || [],
+          dataSourceId: (flow.dataSourceId as any)._id,
+          destinationDatabaseId: (flow.destinationDatabaseId as any)._id,
+          destinationDatabaseName: flow.destinationDatabaseName || "",
+          schedule: flow.schedule?.cron || "0 * * * *",
+          timezone: flow.schedule?.timezone || "UTC",
+          syncMode: flow.syncMode as "full" | "incremental",
+          enabled: flow.enabled,
+          entityFilter: flow.entityFilter || [],
+          queries: (flow as any).queries || [],
         };
 
         reset(formData);
 
         // Set entity selection state
-        if (job.entityFilter && job.entityFilter.length > 0) {
-          setSelectedEntities(job.entityFilter);
+        if (flow.entityFilter && flow.entityFilter.length > 0) {
+          setSelectedEntities(flow.entityFilter);
           setSelectAllEntities(false);
         } else {
           setSelectAllEntities(true);
@@ -505,30 +507,30 @@ export function ScheduledJobForm({
 
         // Check if using a preset
         const isPreset = SCHEDULE_PRESETS.some(
-          p => p.cron === (job.schedule?.cron || "0 * * * *"),
+          p => p.cron === (flow.schedule?.cron || "0 * * * *"),
         );
         setScheduleMode(isPreset ? "preset" : "custom");
       }
     }
-  }, [isNewMode, currentJobId, jobs, reset]);
+  }, [isNewMode, currentFlowId, flows, reset]);
 
-  // Re-apply job entity selection after entities are loaded
+  // Re-apply flow entity selection after entities are loaded
   useEffect(() => {
     if (
       !isNewMode &&
-      currentJobId &&
-      jobs.length > 0 &&
+      currentFlowId &&
+      flows.length > 0 &&
       availableEntities.length > 0
     ) {
-      const job = jobs.find(j => j._id === currentJobId);
-      if (job && job.entityFilter && job.entityFilter.length > 0) {
-        // Validate that the job's entities exist in available entities
+      const flow = flows.find(j => j._id === currentFlowId);
+      if (flow && flow.entityFilter && flow.entityFilter.length > 0) {
+        // Validate that the flow's entities exist in available entities
         // Also check for sub-entities (e.g., "activities:Call")
         const availableEntityNames = availableEntities.flatMap(e => [
           e.name,
           ...(e.subEntities?.map(sub => `${e.name}:${sub.name}`) || []),
         ]);
-        const validEntities = job.entityFilter.filter(entity =>
+        const validEntities = flow.entityFilter.filter(entity =>
           availableEntityNames.includes(entity),
         );
         if (validEntities.length > 0) {
@@ -537,7 +539,7 @@ export function ScheduledJobForm({
         }
       }
     }
-  }, [isNewMode, currentJobId, jobs, availableEntities]);
+  }, [isNewMode, currentFlowId, flows, availableEntities]);
 
   // Sync form entityFilter with selection state
   useEffect(() => {
@@ -625,42 +627,40 @@ export function ScheduledJobForm({
 
       // Intentionally reduced noisy console logging in production
 
-      let newJob;
+      let newFlow;
       if (isNewMode) {
-        newJob = await createJob(currentWorkspace.id, payload);
-        // Refresh the jobs list
-        await useSyncJobStore.getState().fetchJobs(currentWorkspace.id);
+        newFlow = await createFlow(currentWorkspace.id, payload);
+        // Refresh the flows list
+        await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
-        // Switch to edit mode and update the jobId
+        // Switch to edit mode and update the flowId
         setIsNewMode(false);
-        setCurrentJobId(newJob._id);
+        setCurrentFlowId(newFlow._id);
 
-        // Notify parent that a new job has been created
-        onSaved?.(newJob._id);
+        // Notify parent that a new flow has been created
+        onSaved?.(newFlow._id);
 
-        // Reset form with the new job data to mark it as pristine
+        // Reset form with the new flow data to mark it as pristine
         reset(data);
 
         // Notify parent if needed
         onSave?.();
-      } else if (currentJobId) {
-        await updateJob(currentWorkspace.id, currentJobId, payload);
-        // Refresh the jobs list
-        await useSyncJobStore.getState().fetchJobs(currentWorkspace.id);
+      } else if (currentFlowId) {
+        await updateFlow(currentWorkspace.id, currentFlowId, payload);
+        // Refresh the flows list
+        await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
         // Reset form to mark it as pristine
         reset(data);
 
-        onSaved?.(currentJobId);
+        onSaved?.(currentFlowId);
 
         // Notify parent if needed
         onSave?.();
       }
     } catch (error) {
-      console.error("Failed to save sync job:", error);
-      setError(
-        error instanceof Error ? error.message : "Failed to save sync job",
-      );
+      console.error("Failed to save flow:", error);
+      setError(error instanceof Error ? error.message : "Failed to save flow");
     } finally {
       setIsSubmitting(false);
     }
@@ -713,20 +713,20 @@ export function ScheduledJobForm({
         }}
       >
         {/* Delete button on the left */}
-        {!isNewMode && currentJobId && (
+        {!isNewMode && currentFlowId && (
           <Button
             color="error"
             size="small"
             startIcon={<DeleteIcon />}
             onClick={async () => {
-              if (confirm("Are you sure you want to delete this sync job?")) {
+              if (confirm("Are you sure you want to delete this flow?")) {
                 if (currentWorkspace?.id) {
                   try {
-                    await deleteJob(currentWorkspace.id, currentJobId);
+                    await deleteFlow(currentWorkspace.id, currentFlowId);
                     // Close the editor after successful deletion
                     onCancel?.();
                   } catch (error) {
-                    console.error("Failed to delete sync job:", error);
+                    console.error("Failed to delete flow:", error);
                   }
                 }
               }
@@ -773,9 +773,9 @@ export function ScheduledJobForm({
             variant="body1"
             sx={{ mb: 3, display: "flex", alignItems: "center", gap: 1 }}
           >
-            {currentJobId && (
+            {currentFlowId && (
               <>
-                <strong>Job ID:</strong> {currentJobId}
+                <strong>Flow ID:</strong> {currentFlowId}
               </>
             )}
           </Typography>
@@ -1185,17 +1185,20 @@ export function ScheduledJobForm({
                         startIcon={<AddIcon />}
                         onClick={() => {
                           // Create default values from schema
-                          const defaultQuery: Record<string, any> = {};
+                          const defaultQuery: Partial<TransferQuery> = {
+                            name: "",
+                            query: "",
+                          };
                           transferQueriesSchema.fields?.forEach((f: any) => {
                             if (f.default !== undefined) {
-                              defaultQuery[f.name] = f.default;
+                              (defaultQuery as any)[f.name] = f.default;
                             } else if (f.type === "number") {
-                              defaultQuery[f.name] = undefined;
+                              (defaultQuery as any)[f.name] = undefined;
                             } else {
-                              defaultQuery[f.name] = "";
+                              (defaultQuery as any)[f.name] = "";
                             }
                           });
-                          appendQuery(defaultQuery);
+                          appendQuery(defaultQuery as TransferQuery);
                         }}
                       >
                         Add Query
@@ -1247,7 +1250,9 @@ export function ScheduledJobForm({
                               (schemaField: any) => (
                                 <Controller
                                   key={schemaField.name}
-                                  name={`queries.${index}.${schemaField.name}`}
+                                  name={
+                                    `queries.${index}.${schemaField.name}` as any
+                                  }
                                   control={control}
                                   rules={{
                                     required: schemaField.required
@@ -1439,7 +1444,7 @@ export function ScheduledJobForm({
                             onChange={field.onChange}
                           />
                         }
-                        label="Enable Job"
+                        label="Enable Flow"
                       />
                     )}
                   />

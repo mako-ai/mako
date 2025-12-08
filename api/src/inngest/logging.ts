@@ -7,9 +7,9 @@ import {
 } from "@logtape/logtape";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Types } from "mongoose";
-import { SyncJob } from "../database/workspace-schema";
+import { Flow } from "../database/workspace-schema";
 
-// Database sink for job execution logs
+// Database sink for flow execution logs
 interface DatabaseSinkOptions {
   // Collection name for storing logs
   collectionName?: string;
@@ -19,7 +19,7 @@ interface DatabaseSinkOptions {
 
 export function getDatabaseSink(options: DatabaseSinkOptions = {}): Sink {
   const {
-    collectionName = "job_executions",
+    collectionName = "flow_executions",
     filter = record => record.category.includes("execution"),
   } = options;
 
@@ -40,7 +40,7 @@ export function getDatabaseSink(options: DatabaseSinkOptions = {}): Sink {
     // Perform database operation asynchronously without blocking
     void (async () => {
       try {
-        const db = SyncJob.db;
+        const db = Flow.db;
         const collection = db.collection(collectionName);
 
         // Create log entry
@@ -182,6 +182,6 @@ export function getSyncLogger(entity?: string) {
 }
 
 // Export a function to get an execution logger
-export function getExecutionLogger(jobId: string, executionId: string) {
-  return getLogger(["inngest", "execution", jobId, executionId]);
+export function getExecutionLogger(flowId: string, executionId: string) {
+  return getLogger(["inngest", "execution", flowId, executionId]);
 }

@@ -6,20 +6,20 @@ import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
 
 // Zod schemas for validation
-const syncJobDataSourceSchema = z.object({
+const flowDataSourceSchema = z.object({
   _id: z.string(),
   name: z.string(),
   type: z.string(),
 });
 
-const syncJobDestinationSchema = z.object({
+const flowDestinationSchema = z.object({
   _id: z.string(),
   name: z.string(),
   type: z.string(),
 });
 
-// Allow schedule to be absent or partial (webhook jobs have no schedule)
-const syncJobScheduleSchema = z
+// Allow schedule to be absent or partial (webhook flows have no schedule)
+const flowScheduleSchema = z
   .object({
     cron: z.string().optional(),
     timezone: z.string().optional(),
@@ -43,8 +43,8 @@ const webhookConfigSchema = z
   })
   .optional();
 
-// Query schema for GraphQL/PostHog transfers
-const transferQuerySchema = z.object({
+// Query schema for GraphQL/PostHog flows
+const flowQuerySchema = z.object({
   name: z.string(),
   query: z.string(),
   variables: z.record(z.any()).optional(),
@@ -60,19 +60,19 @@ const transferQuerySchema = z.object({
   batch_size: z.number().optional(),
 });
 
-export type TransferQuery = z.infer<typeof transferQuerySchema>;
+export type FlowQuery = z.infer<typeof flowQuerySchema>;
 
-const syncJobSchema = z.object({
+const flowSchema = z.object({
   _id: z.string(),
   workspaceId: z.string(),
-  dataSourceId: syncJobDataSourceSchema,
-  destinationDatabaseId: syncJobDestinationSchema,
+  dataSourceId: flowDataSourceSchema,
+  destinationDatabaseId: flowDestinationSchema,
   destinationDatabaseName: z.string().nullable().optional(),
   type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
-  schedule: syncJobScheduleSchema,
+  schedule: flowScheduleSchema,
   webhookConfig: webhookConfigSchema,
   entityFilter: z.array(z.string()).nullable().optional(),
-  queries: z.array(transferQuerySchema).nullable().optional(),
+  queries: z.array(flowQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
   enabled: z.boolean(),
   lastRunAt: z.string().nullable().optional(),
@@ -86,55 +86,53 @@ const syncJobSchema = z.object({
   updatedAt: z.string(),
 });
 
-export type SyncJob = z.infer<typeof syncJobSchema>;
+export type Flow = z.infer<typeof flowSchema>;
 
-const syncJobExecutionHistorySchema = z.object({
+const flowExecutionHistorySchema = z.object({
   executedAt: z.string(),
   success: z.boolean(),
   error: z.string().nullable().optional(),
   duration: z.number().nullable().optional(),
 });
 
-export type SyncJobExecutionHistory = z.infer<
-  typeof syncJobExecutionHistorySchema
->;
+export type FlowExecutionHistory = z.infer<typeof flowExecutionHistorySchema>;
 
 // Store state schema for validation
-const syncJobStoreStateSchema = z.object({
-  jobs: z.record(z.array(syncJobSchema)),
+const flowStoreStateSchema = z.object({
+  flows: z.record(z.array(flowSchema)),
   loading: z.record(z.boolean()).optional().default({}),
   error: z.record(errorSchema.nullable()).optional().default({}),
-  selectedJobId: z.string().nullable(),
-  executionHistory: z.record(z.array(syncJobExecutionHistorySchema)),
+  selectedFlowId: z.string().nullable(),
+  executionHistory: z.record(z.array(flowExecutionHistorySchema)),
 });
 
-type SyncJobStoreState = z.infer<typeof syncJobStoreStateSchema>;
+type FlowStoreState = z.infer<typeof flowStoreStateSchema>;
 
-interface SyncJobStore extends SyncJobStoreState {
+interface FlowStore extends FlowStoreState {
   // Actions
-  fetchJobs: (workspaceId: string) => Promise<SyncJob[]>;
-  refresh: (workspaceId: string) => Promise<SyncJob[]>;
+  fetchFlows: (workspaceId: string) => Promise<Flow[]>;
+  refresh: (workspaceId: string) => Promise<Flow[]>;
   init: (workspaceId: string) => Promise<void>;
-  createJob: (workspaceId: string, data: Partial<SyncJob>) => Promise<SyncJob>;
-  updateJob: (
+  createFlow: (workspaceId: string, data: Partial<Flow>) => Promise<Flow>;
+  updateFlow: (
     workspaceId: string,
-    jobId: string,
-    data: Partial<SyncJob>,
+    flowId: string,
+    data: Partial<Flow>,
   ) => Promise<void>;
-  deleteJob: (workspaceId: string, jobId: string) => Promise<void>;
-  toggleJob: (workspaceId: string, jobId: string) => Promise<void>;
-  runJob: (workspaceId: string, jobId: string) => Promise<void>;
-  fetchJobHistory: (workspaceId: string, jobId: string) => Promise<void>;
-  selectJob: (jobId: string | null) => void;
+  deleteFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  toggleFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  runFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  fetchFlowHistory: (workspaceId: string, flowId: string) => Promise<void>;
+  selectFlow: (flowId: string | null) => void;
   clearError: (workspaceId: string) => void;
   reset: () => void;
 }
 
-const initialState: SyncJobStoreState = {
-  jobs: {},
+const initialState: FlowStoreState = {
+  flows: {},
   loading: {},
   error: {},
-  selectedJobId: null,
+  selectedFlowId: null,
   executionHistory: {},
 };
 
@@ -150,12 +148,12 @@ const normalizeError = (error: any): string => {
   return "Unknown error";
 };
 
-export const useSyncJobStore = create<SyncJobStore>()(
+export const useFlowStore = create<FlowStore>()(
   persist(
     immer((set, get) => ({
       ...initialState,
 
-      fetchJobs: async (workspaceId: string) => {
+      fetchFlows: async (workspaceId: string) => {
         set(state => {
           state.loading[workspaceId] = true;
           state.error[workspaceId] = null;
@@ -164,18 +162,18 @@ export const useSyncJobStore = create<SyncJobStore>()(
         try {
           const response = await apiClient.get<{
             success: boolean;
-            data: SyncJob[];
+            data: Flow[];
             error?: string;
-          }>(`/workspaces/${workspaceId}/sync-jobs`);
+          }>(`/workspaces/${workspaceId}/flows`);
 
           if (response.success) {
             set(state => {
-              state.jobs[workspaceId] = response.data || [];
+              state.flows[workspaceId] = response.data || [];
               state.error[workspaceId] = null;
             });
             return response.data || [];
           } else {
-            throw new Error(response.error || "Failed to fetch sync jobs");
+            throw new Error(response.error || "Failed to fetch flows");
           }
         } catch (error: any) {
           set(state => {
@@ -190,20 +188,22 @@ export const useSyncJobStore = create<SyncJobStore>()(
       },
 
       refresh: async (workspaceId: string) => {
-        return await get().fetchJobs(workspaceId);
+        return await get().fetchFlows(workspaceId);
       },
 
       init: async (workspaceId: string) => {
-        const existingJobs = get().jobs[workspaceId];
+        const existingFlows = get().flows[workspaceId];
 
-        // If we have cached jobs, check if any are missing the 'type' field
+        // If we have cached flows, check if any are missing the 'type' field
         // This indicates stale data from before webhooks were implemented
-        if (existingJobs && existingJobs.length > 0) {
-          const hasStaleData = existingJobs.some(job => job.type === undefined);
+        if (existingFlows && existingFlows.length > 0) {
+          const hasStaleData = existingFlows.some(
+            flow => flow.type === undefined,
+          );
           if (hasStaleData) {
             // Clear stale data from the store before refreshing
             set(state => {
-              state.jobs[workspaceId] = [];
+              state.flows[workspaceId] = [];
             });
             // Now refresh from API
             await get().refresh(workspaceId);
@@ -212,12 +212,12 @@ export const useSyncJobStore = create<SyncJobStore>()(
         }
 
         // If no data exists, fetch it
-        if (!existingJobs || existingJobs.length === 0) {
+        if (!existingFlows || existingFlows.length === 0) {
           await get().refresh(workspaceId);
         }
       },
 
-      createJob: async (workspaceId: string, data: Partial<SyncJob>) => {
+      createFlow: async (workspaceId: string, data: Partial<Flow>) => {
         set(state => {
           state.loading[workspaceId] = true;
           state.error[workspaceId] = null;
@@ -226,21 +226,21 @@ export const useSyncJobStore = create<SyncJobStore>()(
         try {
           const response = await apiClient.post<{
             success: boolean;
-            data: SyncJob;
+            data: Flow;
             error?: string;
-          }>(`/workspaces/${workspaceId}/sync-jobs`, data);
+          }>(`/workspaces/${workspaceId}/flows`, data);
 
           if (response.success) {
-            const newJob = response.data;
+            const newFlow = response.data;
             set(state => {
-              if (!state.jobs[workspaceId]) {
-                state.jobs[workspaceId] = [];
+              if (!state.flows[workspaceId]) {
+                state.flows[workspaceId] = [];
               }
-              state.jobs[workspaceId].push(newJob);
+              state.flows[workspaceId].push(newFlow);
             });
-            return newJob;
+            return newFlow;
           } else {
-            throw new Error(response.error || "Failed to create sync job");
+            throw new Error(response.error || "Failed to create flow");
           }
         } catch (error: any) {
           set(state => {
@@ -254,10 +254,10 @@ export const useSyncJobStore = create<SyncJobStore>()(
         }
       },
 
-      updateJob: async (
+      updateFlow: async (
         workspaceId: string,
-        jobId: string,
-        data: Partial<SyncJob>,
+        flowId: string,
+        data: Partial<Flow>,
       ) => {
         set(state => {
           state.loading[workspaceId] = true;
@@ -267,20 +267,20 @@ export const useSyncJobStore = create<SyncJobStore>()(
         try {
           const response = await apiClient.put<{
             success: boolean;
-            data: SyncJob;
+            data: Flow;
             error?: string;
-          }>(`/workspaces/${workspaceId}/sync-jobs/${jobId}`, data);
+          }>(`/workspaces/${workspaceId}/flows/${flowId}`, data);
 
           if (response.success) {
             set(state => {
-              const jobs = state.jobs[workspaceId] || [];
-              const index = jobs.findIndex(job => job._id === jobId);
+              const flows = state.flows[workspaceId] || [];
+              const index = flows.findIndex(flow => flow._id === flowId);
               if (index !== -1) {
-                jobs[index] = response.data;
+                flows[index] = response.data;
               }
             });
           } else {
-            throw new Error(response.error || "Failed to update sync job");
+            throw new Error(response.error || "Failed to update flow");
           }
         } catch (error: any) {
           set(state => {
@@ -294,7 +294,7 @@ export const useSyncJobStore = create<SyncJobStore>()(
         }
       },
 
-      deleteJob: async (workspaceId: string, jobId: string) => {
+      deleteFlow: async (workspaceId: string, flowId: string) => {
         set(state => {
           state.loading[workspaceId] = true;
           state.error[workspaceId] = null;
@@ -305,21 +305,21 @@ export const useSyncJobStore = create<SyncJobStore>()(
             success: boolean;
             error?: string;
             message?: string;
-          }>(`/workspaces/${workspaceId}/sync-jobs/${jobId}`);
+          }>(`/workspaces/${workspaceId}/flows/${flowId}`);
 
           if (response.success) {
             set(state => {
-              if (state.jobs[workspaceId]) {
-                state.jobs[workspaceId] = state.jobs[workspaceId].filter(
-                  job => job._id !== jobId,
+              if (state.flows[workspaceId]) {
+                state.flows[workspaceId] = state.flows[workspaceId].filter(
+                  flow => flow._id !== flowId,
                 );
               }
-              if (state.selectedJobId === jobId) {
-                state.selectedJobId = null;
+              if (state.selectedFlowId === flowId) {
+                state.selectedFlowId = null;
               }
             });
           } else {
-            throw new Error(response.error || "Failed to delete sync job");
+            throw new Error(response.error || "Failed to delete flow");
           }
         } catch (error: any) {
           set(state => {
@@ -333,7 +333,7 @@ export const useSyncJobStore = create<SyncJobStore>()(
         }
       },
 
-      toggleJob: async (workspaceId: string, jobId: string) => {
+      toggleFlow: async (workspaceId: string, flowId: string) => {
         set(state => {
           state.loading[workspaceId] = true;
           state.error[workspaceId] = null;
@@ -344,18 +344,18 @@ export const useSyncJobStore = create<SyncJobStore>()(
             success: boolean;
             data: { enabled: boolean; message: string };
             error?: string;
-          }>(`/workspaces/${workspaceId}/sync-jobs/${jobId}/toggle`);
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/toggle`);
 
           if (response.success) {
             set(state => {
-              const jobs = state.jobs[workspaceId] || [];
-              const index = jobs.findIndex(job => job._id === jobId);
+              const flows = state.flows[workspaceId] || [];
+              const index = flows.findIndex(flow => flow._id === flowId);
               if (index !== -1) {
-                jobs[index].enabled = response.data.enabled;
+                flows[index].enabled = response.data.enabled;
               }
             });
           } else {
-            throw new Error(response.error || "Failed to toggle sync job");
+            throw new Error(response.error || "Failed to toggle flow");
           }
         } catch (error: any) {
           set(state => {
@@ -368,7 +368,7 @@ export const useSyncJobStore = create<SyncJobStore>()(
         }
       },
 
-      runJob: async (workspaceId: string, jobId: string) => {
+      runFlow: async (workspaceId: string, flowId: string) => {
         set(state => {
           state.loading[workspaceId] = true;
           state.error[workspaceId] = null;
@@ -380,13 +380,13 @@ export const useSyncJobStore = create<SyncJobStore>()(
             message?: string;
             data?: any;
             error?: string;
-          }>(`/workspaces/${workspaceId}/sync-jobs/${jobId}/run`);
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/run`);
 
           if (response.success) {
-            // Refresh job data to get updated status
+            // Refresh flow data to get updated status
             await get().refresh(workspaceId);
           } else {
-            throw new Error(response.error || "Failed to run sync job");
+            throw new Error(response.error || "Failed to run flow");
           }
         } catch (error: any) {
           set(state => {
@@ -399,27 +399,27 @@ export const useSyncJobStore = create<SyncJobStore>()(
         }
       },
 
-      fetchJobHistory: async (workspaceId: string, jobId: string) => {
+      fetchFlowHistory: async (workspaceId: string, flowId: string) => {
         try {
           const response = await apiClient.get<{
             success: boolean;
-            data: { history: SyncJobExecutionHistory[] };
+            data: { history: FlowExecutionHistory[] };
             error?: string;
-          }>(`/workspaces/${workspaceId}/sync-jobs/${jobId}/history`);
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/history`);
 
           if (response.success) {
             set(state => {
-              state.executionHistory[jobId] = response.data.history;
+              state.executionHistory[flowId] = response.data.history;
             });
           }
         } catch (error: any) {
-          console.error("Failed to fetch job history:", error);
+          console.error("Failed to fetch flow history:", error);
         }
       },
 
-      selectJob: (jobId: string | null) => {
+      selectFlow: (flowId: string | null) => {
         set(state => {
-          state.selectedJobId = jobId;
+          state.selectedFlowId = flowId;
         });
       },
 
@@ -434,15 +434,15 @@ export const useSyncJobStore = create<SyncJobStore>()(
       },
     })),
     {
-      name: "sync-job-store-v2", // Version bump to clear old persisted state
+      name: "flow-store-v1", // New storage key for fresh start
       storage: createValidatedStorage(
-        syncJobStoreStateSchema,
-        "sync-job-store-v2",
+        flowStoreStateSchema,
+        "flow-store-v1",
         initialState,
       ),
       partialize: state => ({
-        jobs: state.jobs,
-        selectedJobId: state.selectedJobId,
+        flows: state.flows,
+        selectedFlowId: state.selectedFlowId,
         executionHistory: state.executionHistory,
         // Don't persist loading or error states
       }),
