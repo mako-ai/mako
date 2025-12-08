@@ -70,7 +70,9 @@ export function WebhookFlowForm({
     : null;
   const databasesMap = useDatabaseStore(state => state.databases);
   const fetchDatabases = useDatabaseStore(state => state.fetchDatabases);
-  const databases = currentWorkspace ? databasesMap[currentWorkspace.id] || [] : [];
+  const databases = currentWorkspace
+    ? databasesMap[currentWorkspace.id] || []
+    : [];
 
   const [connectors, setConnectors] = useState<any[]>([]);
   const [isLoadingConnectors, setIsLoadingConnectors] = useState(false);
@@ -78,7 +80,9 @@ export function WebhookFlowForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(flowId);
+  const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
+    flowId,
+  );
   const [isNewMode, setIsNewMode] = useState(isNew);
 
   const {
@@ -226,9 +230,7 @@ export function WebhookFlowForm({
       }
     } catch (error) {
       console.error("Failed to save flow:", error);
-      setError(
-        error instanceof Error ? error.message : "Failed to save flow",
-      );
+      setError(error instanceof Error ? error.message : "Failed to save flow");
     } finally {
       setIsSubmitting(false);
     }

@@ -37,12 +37,7 @@ export interface ConsoleTab {
 
 export interface GlobalState {
   // Backward-compatibility top-level view props
-  activeView?:
-    | "databases"
-    | "consoles"
-    | "connectors"
-    | "flows"
-    | "settings";
+  activeView?: "databases" | "consoles" | "connectors" | "flows" | "settings";
 
   activeEditorContent?: {
     content: string;
@@ -51,12 +46,7 @@ export interface GlobalState {
   };
   currentWorkspaceId?: string | null;
   ui: {
-    leftPane:
-      | "databases"
-      | "consoles"
-      | "connectors"
-      | "flows"
-      | "settings";
+    leftPane: "databases" | "consoles" | "connectors" | "flows" | "settings";
 
     loading: Record<string, boolean>; // keyed by request name
   };
