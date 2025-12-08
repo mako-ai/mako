@@ -1,9 +1,25 @@
 import bcrypt from "bcrypt";
-import { generateId } from "lucia";
-import { lucia } from "./lucia";
-import { User, OAuthAccount } from "../database/schema";
+import { v4 as uuidv4 } from "uuid";
+import { sessionManager, ValidatedSession, ValidatedUser } from "./session";
+import { User, OAuthAccount, EmailVerification } from "../database/schema";
 import type { OAuthProvider } from "./arctic";
 import { workspaceService } from "../services/workspace.service";
+import { emailService } from "../services/email.service";
+
+/**
+ * Generate a random ID (replacement for Lucia's generateId)
+ */
+function generateId(length: number = 15): string {
+  const id = uuidv4().replace(/-/g, "");
+  return id.substring(0, length);
+}
+
+/**
+ * Generate a 6-digit verification code
+ */
+function generateVerificationCode(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
 /**
  * Authentication service with business logic
@@ -11,6 +27,7 @@ import { workspaceService } from "../services/workspace.service";
 export class AuthService {
   /**
    * Register a new user with email and password
+   * Creates an unverified user and sends verification email
    */
   async register(email: string, password: string) {
     // Validate input
@@ -22,9 +39,51 @@ export class AuthService {
       throw new Error("Password must be at least 8 characters long");
     }
 
+    const normalizedEmail = email.toLowerCase();
+
     // Check if user already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
+      // Check if this is an OAuth-only user (no password set)
+      if (!existingUser.hashedPassword) {
+        // Check if user has OAuth accounts linked
+        const oauthAccounts = await OAuthAccount.find({ userId: existingUser._id });
+        if (oauthAccounts.length > 0) {
+          const providers = oauthAccounts.map(a => a.provider).join(", ");
+          throw new Error(
+            `This email is linked to a ${providers} account. Please login with ${providers} and set a password from your account settings.`
+          );
+        }
+      }
+
+      // If user exists but is not verified, allow re-registration
+      if (!existingUser.emailVerified && existingUser.hashedPassword) {
+        // Delete old verification codes and send new one
+        await EmailVerification.deleteMany({
+          email: normalizedEmail,
+          type: "registration",
+        });
+
+        // Update password in case it changed
+        const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10");
+        const hashedPassword = await bcrypt.hash(password, rounds);
+        existingUser.hashedPassword = hashedPassword;
+        await existingUser.save();
+
+        // Generate and send new verification code
+        const code = generateVerificationCode();
+        await EmailVerification.create({
+          email: normalizedEmail,
+          code,
+          type: "registration",
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
+        });
+
+        const verifyUrl = `${process.env.CLIENT_URL}/verify-email?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
+        await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
+
+        return { user: existingUser, requiresVerification: true };
+      }
       throw new Error("User with this email already exists");
     }
 
@@ -32,26 +91,130 @@ export class AuthService {
     const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10");
     const hashedPassword = await bcrypt.hash(password, rounds);
 
-    // Create user
+    // Create unverified user
     const userId = generateId(15);
     const user = await User.create({
       _id: userId,
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       hashedPassword,
+      emailVerified: false,
     });
 
-    // Create default workspace for the user
-    const workspace = await workspaceService.createWorkspace(
-      userId,
-      `${email}'s Workspace`,
-    );
-
-    // Create session with workspace
-    const session = await lucia.createSession(userId, {
-      activeWorkspaceId: workspace._id.toString(),
+    // Generate verification code
+    const code = generateVerificationCode();
+    await EmailVerification.create({
+      email: normalizedEmail,
+      code,
+      type: "registration",
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
     });
 
-    return { user, session };
+    // Send verification email
+    const verifyUrl = `${process.env.CLIENT_URL}/verify-email?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
+    await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
+
+    return { user, requiresVerification: true };
+  }
+
+  /**
+   * Verify email with code and complete registration
+   */
+  async verifyEmail(email: string, code: string) {
+    const normalizedEmail = email.toLowerCase();
+
+    // Find verification record
+    const verification = await EmailVerification.findOne({
+      email: normalizedEmail,
+      code,
+      type: "registration",
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!verification) {
+      throw new Error("Invalid or expired verification code");
+    }
+
+    // Find user
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    // Mark user as verified
+    user.emailVerified = true;
+    await user.save();
+
+    // Delete verification record
+    await EmailVerification.deleteOne({ _id: verification._id });
+
+    // Check for pending invitations
+    const pendingInvites = await workspaceService.getPendingInvitesForEmail(normalizedEmail);
+    
+    // Check for existing workspaces
+    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    
+    let activeWorkspaceId: string | undefined;
+
+    // If user has workspaces, use the first one
+    if (workspaces.length > 0) {
+      activeWorkspaceId = workspaces[0].workspace._id.toString();
+    }
+    // If there are pending invites, don't create a workspace - let user choose
+    else if (pendingInvites.length > 0) {
+      // No active workspace - user will be shown onboarding
+      activeWorkspaceId = undefined;
+    }
+    // No invites and no workspaces - create default workspace
+    else {
+      const workspace = await workspaceService.createWorkspace(
+        user._id,
+        `${email}'s Workspace`,
+      );
+      activeWorkspaceId = workspace._id.toString();
+    }
+
+    // Create session (may be without activeWorkspaceId for onboarding)
+    const session = await sessionManager.createSession(user._id, {
+      activeWorkspaceId,
+    });
+
+    return { user, session, hasWorkspaces: !!activeWorkspaceId };
+  }
+
+  /**
+   * Resend verification email
+   */
+  async resendVerification(email: string) {
+    const normalizedEmail = email.toLowerCase();
+
+    // Find user
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    if (user.emailVerified) {
+      throw new Error("Email is already verified");
+    }
+
+    // Delete old verification codes
+    await EmailVerification.deleteMany({
+      email: normalizedEmail,
+      type: "registration",
+    });
+
+    // Generate new verification code
+    const code = generateVerificationCode();
+    await EmailVerification.create({
+      email: normalizedEmail,
+      code,
+      type: "registration",
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
+    });
+
+    // Send verification email
+    const verifyUrl = `${process.env.CLIENT_URL}/verify-email?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
+    await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
   }
 
   /**
@@ -80,6 +243,13 @@ export class AuthService {
       throw new Error("Invalid email or password");
     }
 
+    // Check if email is verified
+    if (!user.emailVerified) {
+      // Send a new verification code
+      await this.resendVerification(email);
+      throw new Error("Please verify your email before logging in. A new verification code has been sent.");
+    }
+
     // Get user's workspaces
     const workspaces = await workspaceService.getWorkspacesForUser(user._id);
     const activeWorkspaceId =
@@ -88,7 +258,7 @@ export class AuthService {
         : undefined;
 
     // Create session
-    const session = await lucia.createSession(user._id, {
+    const session = await sessionManager.createSession(user._id, {
       activeWorkspaceId,
     });
 
@@ -137,7 +307,7 @@ export class AuthService {
           ? workspaces[0].workspace._id.toString()
           : undefined;
 
-      const session = await lucia.createSession(user._id, {
+      const session = await sessionManager.createSession(user._id, {
         activeWorkspaceId,
       });
       return { user, session, isNewUser: false };
@@ -145,17 +315,21 @@ export class AuthService {
 
     // New OAuth account
     let user;
+    let isNewUser = true;
 
     if (email) {
       // Check if user with this email exists
       user = await User.findOne({ email: email.toLowerCase() });
 
-      if (!user) {
-        // Create new user
+      if (user) {
+        isNewUser = false;
+      } else {
+        // Create new user - OAuth users are verified by default
         const userId = generateId(15);
         user = await User.create({
           _id: userId,
           email: email.toLowerCase(),
+          emailVerified: true, // OAuth users are verified
         });
       }
     } else {
@@ -164,7 +338,14 @@ export class AuthService {
       user = await User.create({
         _id: userId,
         email: fallbackEmail,
+        emailVerified: true, // OAuth users are verified
       });
+    }
+
+    // If user exists but not verified, mark as verified (OAuth verifies email)
+    if (!user.emailVerified) {
+      user.emailVerified = true;
+      await user.save();
     }
 
     // Create OAuth account link
@@ -175,34 +356,47 @@ export class AuthService {
       email: email ?? fallbackEmail,
     });
 
-    // Create default workspace for new user
+    // Check for pending invitations
+    const pendingInvites = await workspaceService.getPendingInvitesForEmail(user.email);
+    
+    // Check for existing workspaces
     const workspaces = await workspaceService.getWorkspacesForUser(user._id);
-    let activeWorkspaceId: string;
+    let activeWorkspaceId: string | undefined;
 
-    if (workspaces.length === 0) {
-      // Create workspace only if user doesn't have any
+    // If user has workspaces, use the first one
+    if (workspaces.length > 0) {
+      activeWorkspaceId = workspaces[0].workspace._id.toString();
+    }
+    // If there are pending invites, don't create a workspace - let user choose
+    else if (pendingInvites.length > 0) {
+      // No active workspace - user will be shown onboarding
+      activeWorkspaceId = undefined;
+    }
+    // No invites and no workspaces - create default workspace
+    else {
       const workspace = await workspaceService.createWorkspace(
         user._id,
         `${user.email}'s Workspace`,
       );
       activeWorkspaceId = workspace._id.toString();
-    } else {
-      activeWorkspaceId = workspaces[0].workspace._id.toString();
     }
 
-    // Create session
-    const session = await lucia.createSession(user._id, {
+    // Create session (may be without activeWorkspaceId for onboarding)
+    const session = await sessionManager.createSession(user._id, {
       activeWorkspaceId,
     });
 
-    return { user, session, isNewUser: true };
+    return { user, session, isNewUser };
   }
 
   /**
    * Validate session and get user
    */
-  async validateSession(sessionId: string) {
-    const result = await lucia.validateSession(sessionId);
+  async validateSession(sessionId: string): Promise<{
+    session: ValidatedSession | null;
+    user: ValidatedUser | null;
+  }> {
+    const result = await sessionManager.validateSession(sessionId);
 
     if (!result.session || !result.user) {
       return { session: null, user: null };
@@ -219,7 +413,6 @@ export class AuthService {
       user: {
         id: user._id,
         email: user.email,
-        createdAt: user.createdAt,
       },
     };
   }
@@ -228,7 +421,7 @@ export class AuthService {
    * Logout user by invalidating session
    */
   async logout(sessionId: string) {
-    await lucia.invalidateSession(sessionId);
+    await sessionManager.invalidateSession(sessionId);
   }
 
   /**
@@ -241,5 +434,86 @@ export class AuthService {
       email: account.email,
       linkedAt: account.createdAt,
     }));
+  }
+
+  /**
+   * Link password to existing OAuth user (after email verification)
+   */
+  async linkPassword(email: string, password: string, verificationCode: string) {
+    const normalizedEmail = email.toLowerCase();
+
+    // Verify the code
+    const verification = await EmailVerification.findOne({
+      email: normalizedEmail,
+      code: verificationCode,
+      type: "link_password",
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!verification) {
+      throw new Error("Invalid or expired verification code");
+    }
+
+    // Find user
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    if (user.hashedPassword) {
+      throw new Error("Password is already set for this account");
+    }
+
+    // Validate password
+    if (!password || password.length < 8) {
+      throw new Error("Password must be at least 8 characters long");
+    }
+
+    // Hash and save password
+    const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10");
+    const hashedPassword = await bcrypt.hash(password, rounds);
+    user.hashedPassword = hashedPassword;
+    await user.save();
+
+    // Delete verification record
+    await EmailVerification.deleteOne({ _id: verification._id });
+
+    return { user };
+  }
+
+  /**
+   * Send verification code to link password to OAuth account
+   */
+  async sendLinkPasswordVerification(email: string) {
+    const normalizedEmail = email.toLowerCase();
+
+    // Find user
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    if (user.hashedPassword) {
+      throw new Error("Password is already set for this account");
+    }
+
+    // Delete old verification codes
+    await EmailVerification.deleteMany({
+      email: normalizedEmail,
+      type: "link_password",
+    });
+
+    // Generate new verification code
+    const code = generateVerificationCode();
+    await EmailVerification.create({
+      email: normalizedEmail,
+      code,
+      type: "link_password",
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
+    });
+
+    // Send verification email
+    const verifyUrl = `${process.env.CLIENT_URL}/set-password?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
+    await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
   }
 }

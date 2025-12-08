@@ -12,6 +12,43 @@ import { Workspace } from "../database/workspace-schema";
 
 export const workspaceRoutes = new Hono();
 
+// Get pending invitations for current user's email
+workspaceRoutes.get(
+  "/pending-invites",
+  authMiddleware,
+  async (c: AuthenticatedContext) => {
+    try {
+      const user = c.get("user");
+      const invites = await workspaceService.getPendingInvitesForEmail(
+        user!.email,
+      );
+
+      return c.json({
+        success: true,
+        data: invites.map((invite: any) => ({
+          token: invite.token,
+          workspaceName: invite.workspaceId?.name || "Unknown Workspace",
+          inviterEmail: invite.invitedBy?.email || "Unknown",
+          role: invite.role,
+          expiresAt: invite.expiresAt,
+        })),
+      });
+    } catch (error) {
+      console.error("Error getting pending invites:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get pending invites",
+        },
+        500,
+      );
+    }
+  },
+);
+
 // Get all workspaces for current user
 workspaceRoutes.get("/", authMiddleware, async (c: AuthenticatedContext) => {
   try {
@@ -683,7 +720,62 @@ workspaceRoutes.delete(
   },
 );
 
-// Accept invite (public endpoint)
+// Get invite details (public endpoint - no auth required)
+workspaceRoutes.get("/invites/:token", async c => {
+  try {
+    const token = c.req.param("token");
+
+    const invite = await workspaceService.getInviteByToken(token);
+
+    if (!invite) {
+      return c.json(
+        {
+          success: false,
+          error: "Invalid or expired invitation",
+        },
+        404,
+      );
+    }
+
+    // Check if invite is expired
+    if (invite.expiresAt < new Date()) {
+      return c.json(
+        {
+          success: false,
+          error: "This invitation has expired",
+        },
+        410,
+      );
+    }
+
+    // Return invite details without sensitive data
+    const workspace = invite.workspaceId as any;
+    const inviter = invite.invitedBy as any;
+
+    return c.json({
+      success: true,
+      data: {
+        workspaceName: workspace?.name || "Unknown Workspace",
+        inviterEmail: inviter?.email || "Unknown",
+        inviteeEmail: invite.email,
+        role: invite.role,
+        expiresAt: invite.expiresAt,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting invite:", error);
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to get invite",
+      },
+      500,
+    );
+  }
+});
+
+// Accept invite (requires auth, enforces email matching)
 workspaceRoutes.post(
   "/invites/:token/accept",
   authMiddleware,
@@ -691,6 +783,30 @@ workspaceRoutes.post(
     try {
       const user = c.get("user");
       const token = c.req.param("token");
+
+      // Get invite to check email
+      const invite = await workspaceService.getInviteByToken(token);
+
+      if (!invite) {
+        return c.json(
+          {
+            success: false,
+            error: "Invalid or expired invitation",
+          },
+          404,
+        );
+      }
+
+      // Enforce email matching
+      if (user!.email.toLowerCase() !== invite.email.toLowerCase()) {
+        return c.json(
+          {
+            success: false,
+            error: `This invitation was sent to ${invite.email}. Please log in with that email address to accept it.`,
+          },
+          403,
+        );
+      }
 
       const workspace = await workspaceService.acceptInvite(token, user!.id);
 

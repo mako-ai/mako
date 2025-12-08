@@ -7,8 +7,9 @@ import {
   IWorkspaceMember,
   IWorkspaceInvite,
 } from "../database/workspace-schema";
-import { Session } from "../database/schema";
+import { Session, User } from "../database/schema";
 import { v4 as uuidv4 } from "uuid";
+import { emailService } from "./email.service";
 
 export class WorkspaceService {
   /**
@@ -263,13 +264,35 @@ export class WorkspaceService {
   ): Promise<IWorkspaceInvite> {
     const invite = new WorkspaceInvite({
       workspaceId: new Types.ObjectId(workspaceId),
-      email,
+      email: email.toLowerCase(),
       token: uuidv4().replace(/-/g, ""),
       role,
       invitedBy: invitedBy,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
     });
-    return invite.save();
+    await invite.save();
+
+    // Send invitation email
+    try {
+      const workspace = await Workspace.findById(workspaceId);
+      const inviter = await User.findById(invitedBy);
+
+      const workspaceName = workspace?.name || "Unknown Workspace";
+      const inviterName = inviter?.email || "Someone";
+      const inviteUrl = `${process.env.CLIENT_URL}/invite/${invite.token}`;
+
+      await emailService.sendInvitationEmail(
+        email.toLowerCase(),
+        workspaceName,
+        inviterName,
+        inviteUrl,
+      );
+    } catch (error) {
+      console.error("Failed to send invitation email:", error);
+      // Don't fail the invite creation if email fails
+    }
+
+    return invite;
   }
 
   /**
@@ -381,6 +404,20 @@ export class WorkspaceService {
       acceptedAt: { $exists: false },
       expiresAt: { $gt: new Date() },
     })
+      .populate("invitedBy", "email")
+      .sort({ createdAt: -1 });
+  }
+
+  /**
+   * Get pending invites for a specific email address
+   */
+  async getPendingInvitesForEmail(email: string): Promise<IWorkspaceInvite[]> {
+    return WorkspaceInvite.find({
+      email: email.toLowerCase(),
+      acceptedAt: { $exists: false },
+      expiresAt: { $gt: new Date() },
+    })
+      .populate("workspaceId", "name")
       .populate("invitedBy", "email")
       .sort({ createdAt: -1 });
   }

@@ -1,15 +1,15 @@
 import { Context, Next } from "hono";
-import { Session, User } from "lucia";
+import { ValidatedSession, ValidatedUser } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
 import { Types } from "mongoose";
 
 export interface AuthenticatedContext extends Context {
-  get(key: "user"): User | undefined;
-  get(key: "session"): Session | undefined;
+  get(key: "user"): ValidatedUser | undefined;
+  get(key: "session"): ValidatedSession | undefined;
   get(key: "workspace"): any;
   get(key: "memberRole"): string | undefined;
-  set(key: "user", value: User): void;
-  set(key: "session", value: Session): void;
+  set(key: "user", value: ValidatedUser): void;
+  set(key: "session", value: ValidatedSession): void;
   set(key: "workspace", value: any): void;
   set(key: "memberRole", value: string): void;
 }

@@ -23,6 +23,7 @@ import { ConsoleModification } from "./hooks/useMonacoConsole";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
 import { RegisterPage } from "./components/RegisterPage";
+import { VerifyEmailPage } from "./components/VerifyEmailPage";
 import { useAuth } from "./contexts/auth-context";
 
 // Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
@@ -391,6 +392,11 @@ function RegisterRoute() {
   );
 }
 
+// Verify email page - no auth redirect (user may need to verify before being logged in)
+function VerifyEmailRoute() {
+  return <VerifyEmailPage />;
+}
+
 function App() {
   return (
     <Routes>
@@ -400,6 +406,7 @@ function App() {
       {/* Auth routes - redirect to "/" if already logged in */}
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/register" element={<RegisterRoute />} />
+      <Route path="/verify-email" element={<VerifyEmailRoute />} />
 
       {/* Main app route - authentication required */}
       <Route path="/*" element={<MainApp />} />

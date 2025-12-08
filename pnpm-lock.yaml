@@ -156,9 +156,6 @@ importers:
       js-yaml:
         specifier: ^4.1.0
         version: 4.1.0
-      lucia:
-        specifier: ^3.2.2
-        version: 3.2.2
       mongodb:
         specifier: ^6.17.0
         version: 6.17.0(@aws-sdk/credential-providers@3.835.0)(socks@2.8.5)
@@ -5614,10 +5611,6 @@ packages:
     resolution: {integrity: sha512-Nv9KddBcQSlQopmBHXSsZVY5xsdlZkdH/Iey0BlcBYggMd4two7cZnKOK9vmy3nY0O5RGH99z1PCeTpPqszUYg==}
     engines: {bun: '>=1.0.0', deno: '>=1.30.0', node: '>=8.0.0'}
 
-  lucia@3.2.2:
-    resolution: {integrity: sha512-P1FlFBGCMPMXu+EGdVD9W4Mjm0DqsusmKgO7Xc33mI5X1bklmsQb0hfzPhXomQr9waWIBDsiOjvr1e6BTaUqpA==}
-    deprecated: This package has been deprecated. Please see https://lucia-auth.com/lucia-v3/migrate.
-
   lucide-react@0.511.0:
     resolution: {integrity: sha512-VK5a2ydJ7xm8GvBeKLS9mu1pVK6ucef9780JVUjw6bAjJL/QXnd4Y0p7SPeOUMC27YhzNCZvm5d/QX0Tp3rc0w==}
     peerDependencies:
@@ -10085,7 +10078,7 @@ snapshots:
 
   '@openai/agents-core@0.0.5(ws@8.18.2)(zod@3.25.67)':
     dependencies:
-      '@openai/zod': zod@3.25.67
+      '@openai/zod': zod@3.25.76
       debug: 4.4.1(supports-color@5.5.0)
       openai: 5.2.0(ws@8.18.2)(zod@3.25.67)
     optionalDependencies:
@@ -10098,7 +10091,7 @@ snapshots:
   '@openai/agents-openai@0.0.5(ws@8.18.2)(zod@3.25.67)':
     dependencies:
       '@openai/agents-core': 0.0.5(ws@8.18.2)(zod@3.25.67)
-      '@openai/zod': zod@3.25.67
+      '@openai/zod': zod@3.25.76
       debug: 4.4.1(supports-color@5.5.0)
       openai: 5.2.0(ws@8.18.2)(zod@3.25.67)
     transitivePeerDependencies:
@@ -10109,7 +10102,7 @@ snapshots:
   '@openai/agents-realtime@0.0.5(zod@3.25.67)':
     dependencies:
       '@openai/agents-core': 0.0.5(ws@8.18.2)(zod@3.25.67)
-      '@openai/zod': zod@3.25.67
+      '@openai/zod': zod@3.25.76
       '@types/ws': 8.18.1
       debug: 4.4.1(supports-color@5.5.0)
       ws: 8.18.2
@@ -15133,11 +15126,6 @@ snapshots:
       es5-ext: 0.10.64
 
   lru.min@1.1.2: {}
-
-  lucia@3.2.2:
-    dependencies:
-      '@oslojs/crypto': 1.0.1
-      '@oslojs/encoding': 1.1.0
 
   lucide-react@0.511.0(react@18.3.1):
     dependencies:

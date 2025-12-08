@@ -1,4 +1,5 @@
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useEffect } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   Box,
   Paper,
@@ -25,12 +26,23 @@ interface RegisterPageProps {
 
 export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
   const { register, loginWithOAuth, error, loading, clearError } = useAuth();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+
+  // Pre-fill email from URL params (e.g., from invite page)
+  useEffect(() => {
+    const emailParam = searchParams.get("email");
+    if (emailParam) {
+      setEmail(emailParam);
+    }
+  }, [searchParams]);
 
   const validateForm = () => {
     const errors: Record<string, string> = {};
@@ -64,8 +76,17 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
     if (!validateForm()) return;
 
     try {
-      await register({ email, password, confirmPassword });
-      // Redirect handled by auth context
+      const { requiresVerification } = await register({
+        email,
+        password,
+        confirmPassword,
+      });
+
+      if (requiresVerification) {
+        // Redirect to verify email page
+        navigate(`/verify-email?email=${encodeURIComponent(email)}`);
+      }
+      // If no verification required (shouldn't happen), auth context handles redirect
     } catch (err) {
       // Error displayed in UI via error state from context
     }
