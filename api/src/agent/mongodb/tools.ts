@@ -1,6 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore – provided at runtime
 import { tool } from "@openai/agents";
+import { Document } from "mongodb";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
@@ -141,14 +142,19 @@ const truncateValue = (value: any, depth: number = 0): any => {
   // Handle strings
   if (typeof value === "string") {
     if (value.length > MAX_STRING_LENGTH) {
-      return value.substring(0, MAX_STRING_LENGTH) + `... [truncated, ${value.length} chars total]`;
+      return (
+        value.substring(0, MAX_STRING_LENGTH) +
+        `... [truncated, ${value.length} chars total]`
+      );
     }
     return value;
   }
 
   // Handle arrays
   if (Array.isArray(value)) {
-    const truncatedArray = value.slice(0, MAX_ARRAY_ITEMS).map(item => truncateValue(item, depth + 1));
+    const truncatedArray = value
+      .slice(0, MAX_ARRAY_ITEMS)
+      .map(item => truncateValue(item, depth + 1));
     if (value.length > MAX_ARRAY_ITEMS) {
       truncatedArray.push(`[... ${value.length - MAX_ARRAY_ITEMS} more items]`);
     }
@@ -166,7 +172,8 @@ const truncateValue = (value: any, depth: number = 0): any => {
     }
 
     if (keys.length > MAX_OBJECT_KEYS) {
-      truncatedObj["_truncated"] = `${keys.length - MAX_OBJECT_KEYS} more keys omitted`;
+      truncatedObj["_truncated"] =
+        `${keys.length - MAX_OBJECT_KEYS} more keys omitted`;
     }
 
     return truncatedObj;
@@ -192,7 +199,9 @@ const truncateQueryResults = (results: any): any => {
   // If results is an array, truncate each item and limit count
   if (Array.isArray(results)) {
     const maxResults = 100;
-    const truncated = results.slice(0, maxResults).map(doc => truncateDocument(doc));
+    const truncated = results
+      .slice(0, maxResults)
+      .map(doc => truncateDocument(doc));
     if (results.length > maxResults) {
       return {
         data: truncated,
@@ -205,9 +214,25 @@ const truncateQueryResults = (results: any): any => {
 
   // If results is an object with data array (common pattern)
   if (results.data && Array.isArray(results.data)) {
+    const truncatedData = truncateQueryResults(results.data);
+
+    // If truncateQueryResults returned an object with metadata (due to >100 items),
+    // flatten it to avoid nested { data: { data: [...], _truncated: ... } }
+    if (
+      truncatedData &&
+      typeof truncatedData === "object" &&
+      !Array.isArray(truncatedData) &&
+      truncatedData.data
+    ) {
+      return {
+        ...results,
+        ...truncatedData, // Spreads data, _truncated, and _message at top level
+      };
+    }
+
     return {
       ...results,
-      data: truncateQueryResults(results.data),
+      data: truncatedData,
     };
   }
 
@@ -268,7 +293,7 @@ const inspectCollection = async (
   // Truncate sample documents to prevent context overflow
   const truncatedSamples = sampleDocuments
     .slice(0, MAX_SAMPLE_DOCS_RETURNED)
-    .map(doc => truncateDocument(doc));
+    .map((doc: Document) => truncateDocument(doc));
 
   // Final safety check: ensure total output isn't too large
   let output = {
@@ -328,7 +353,9 @@ const executeQuery = async (
     if (outputSize > MAX_TOTAL_OUTPUT_SIZE) {
       return {
         ...result,
-        data: Array.isArray(truncatedData) ? truncatedData.slice(0, 50) : truncatedData,
+        data: Array.isArray(truncatedData)
+          ? truncatedData.slice(0, 50)
+          : truncatedData,
         _warning: `Results truncated from ${outputSize} bytes. Add .limit() to your query for smaller result sets.`,
       };
     }
