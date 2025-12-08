@@ -126,6 +126,7 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
       // Track state for error persistence (declared here so accessible in catch)
       let assistantReply = "";
       let currentAgent: AgentMode = "triage";
+      let errorPersisted = false; // Flag to prevent duplicate messages after error
       const toolCalls: Array<{
         toolName: string;
         timestamp: Date;
@@ -253,7 +254,6 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
         currentAgent = activeAgent;
         let _eventCount = 0;
         let _textDeltaCount = 0;
-        let handoffOccurred = false;
 
         try {
           for await (const event of runStream as AsyncIterable<any>) {
@@ -328,7 +328,6 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
 
                 // Track handoff as a tool call
                 if (item?.type === "handoff_call_item") {
-                  handoffOccurred = true;
                   const agentNameLower = (handoffAgent || "").toLowerCase();
                   const handoffToolName = agentNameLower.includes("mongodb")
                     ? "transfer_to_mongodb"
@@ -625,6 +624,7 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
             toolCalls,
             assistantReply,
           );
+          errorPersisted = true; // Mark error as persisted to prevent duplicate messages
 
           // Don't throw, just log and continue to close gracefully
           if (streamError.message !== "terminated") {
@@ -641,17 +641,20 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
         } catch (completionError: any) {
           console.error("Stream completion error:", completionError);
 
-          // Persist completion error for debugging
-          await persistChatError(
-            currentSessionId,
-            {
-              message: completionError.message || "Stream completion error",
-              code: completionError.code,
-              type: completionError.type || "completion_error",
-            },
-            toolCalls,
-            assistantReply,
-          );
+          // Only persist if we haven't already persisted an error
+          if (!errorPersisted) {
+            await persistChatError(
+              currentSessionId,
+              {
+                message: completionError.message || "Stream completion error",
+                code: completionError.code,
+                type: completionError.type || "completion_error",
+              },
+              toolCalls,
+              assistantReply,
+            );
+            errorPersisted = true;
+          }
 
           // Continue anyway - we may have partial results
         }
@@ -663,8 +666,12 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
         }
 
         // Update chat with assistant response (user message already saved via early persistence)
+        // Skip if error was already persisted to prevent duplicate assistant messages
         // We always update since we want to save tool calls even if there's no text response
-        if (assistantReply.trim() || toolCalls.length > 0) {
+        if (
+          !errorPersisted &&
+          (assistantReply.trim() || toolCalls.length > 0)
+        ) {
           await updateChatWithResponse(
             currentSessionId,
             assistantReply,
@@ -730,7 +737,8 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
               message: err.message || "Unexpected error",
               code: err.code,
               type: err.type || "unexpected_error",
-              stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+              stack:
+                process.env.NODE_ENV === "development" ? err.stack : undefined,
             },
             toolCalls,
             assistantReply,
