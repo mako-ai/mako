@@ -9,7 +9,9 @@ import { createAgent, AgentKind } from "../agent";
 import {
   getOrCreateThreadContext,
   buildAgentContext,
-  persistChatSession,
+  persistUserMessage,
+  updateChatWithResponse,
+  persistChatError,
 } from "../services/agent-thread.service";
 import {
   shouldGenerateTitle,
@@ -119,6 +121,18 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
   const stream = new ReadableStream({
     async start(controller) {
       let isClosed = false;
+      let currentSessionId = sessionId; // Track session ID for updates
+
+      // Track state for error persistence (declared here so accessible in catch)
+      let assistantReply = "";
+      let currentAgent: AgentMode = "triage";
+      const toolCalls: Array<{
+        toolName: string;
+        timestamp: Date;
+        status: "started" | "completed";
+        input?: any;
+        result?: any;
+      }> = [];
 
       const sendEvent = (data: any) => {
         if (isClosed) return;
@@ -140,6 +154,20 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
               createdBy: userId.toString(),
             })
           : null;
+
+        // EARLY PERSISTENCE: Save user message immediately before running agent
+        // This ensures the message is saved even if the agent crashes
+        currentSessionId = await persistUserMessage(
+          sessionId,
+          threadContext,
+          message.trim(),
+          workspaceId,
+          userId.toString(),
+          consoleId,
+        );
+
+        // Send the session ID immediately so frontend can track it
+        sendEvent({ type: "session", sessionId: currentSessionId });
 
         // Get workspace database capabilities for smart selection
         const workspaceDatabases = await DatabaseConnection.find({
@@ -220,18 +248,12 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           maxTurns: 100, // Allow enough turns for handoffs to complete
         });
 
-        let assistantReply = "";
+        // Reset tracking variables for this run
+        assistantReply = "";
+        currentAgent = activeAgent;
         let _eventCount = 0;
         let _textDeltaCount = 0;
-        let currentAgent = activeAgent;
         let handoffOccurred = false;
-        const toolCalls: Array<{
-          toolName: string;
-          timestamp: Date;
-          status: "started" | "completed";
-          input?: any;
-          result?: any;
-        }> = [];
 
         try {
           for await (const event of runStream as AsyncIterable<any>) {
@@ -592,11 +614,24 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           // Handle stream processing errors
           console.error("Stream processing error:", streamError);
 
+          // Persist error for debugging
+          await persistChatError(
+            currentSessionId,
+            {
+              message: streamError.message || "Stream processing error",
+              code: streamError.code,
+              type: streamError.type || "stream_error",
+            },
+            toolCalls,
+            assistantReply,
+          );
+
           // Don't throw, just log and continue to close gracefully
           if (streamError.message !== "terminated") {
             sendEvent({
               type: "error",
-              message: "Stream processing error",
+              message: streamError.message || "Stream processing error",
+              code: streamError.code,
             });
           }
         }
@@ -605,6 +640,19 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           await runStream.completed;
         } catch (completionError: any) {
           console.error("Stream completion error:", completionError);
+
+          // Persist completion error for debugging
+          await persistChatError(
+            currentSessionId,
+            {
+              message: completionError.message || "Stream completion error",
+              code: completionError.code,
+              type: completionError.type || "completion_error",
+            },
+            toolCalls,
+            assistantReply,
+          );
+
           // Continue anyway - we may have partial results
         }
 
@@ -614,71 +662,58 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           sendEvent({ type: "text", content: assistantReply });
         }
 
-        // Important: If a handoff occurred but no text was generated, the stream should have continued
-        // with the new agent. We should only save messages when we have actual content.
-        if (assistantReply.trim() || (!handoffOccurred && message.trim())) {
-          // Update messages with the new conversation turn
-          const allMessages = [
-            ...threadContext.recentMessages,
-            { role: "user" as const, content: message.trim() },
-          ];
-
-          // Only add assistant message if there's actual content
-          if (assistantReply.trim()) {
-            allMessages.push({
-              role: "assistant" as const,
-              content: assistantReply,
-              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-            });
-          }
-
-          // Persist the chat session with thread management and pinning
-          const finalSessionId = await persistChatSession(
-            sessionId,
-            threadContext,
-            allMessages,
-            workspaceId,
+        // Update chat with assistant response (user message already saved via early persistence)
+        // We always update since we want to save tool calls even if there's no text response
+        if (assistantReply.trim() || toolCalls.length > 0) {
+          await updateChatWithResponse(
+            currentSessionId,
+            assistantReply,
+            toolCalls.length > 0 ? toolCalls : undefined,
             currentAgent,
-            userId.toString(),
-            consoleId, // Pin the console if provided
           );
-
-          // Send thread info
-          sendEvent({
-            type: "thread_info",
-            threadId: threadContext.threadId,
-            messageCount: allMessages.length,
-          });
-
-          sendEvent({ type: "session", sessionId: finalSessionId });
-
-          // Fire-and-forget: generate a descriptive chat title if not already set
-          void (async () => {
-            try {
-              // Only attempt if we have a valid session id and enough context
-              if (!finalSessionId) return;
-
-              if (!shouldGenerateTitle(allMessages)) return;
-
-              const title = await generateChatTitle(allMessages);
-              const trimmed = (title || "").trim();
-              if (!trimmed) return;
-
-              await Chat.findOneAndUpdate(
-                {
-                  _id: new ObjectId(finalSessionId),
-                  workspaceId: new ObjectId(workspaceId),
-                  createdBy: userId.toString(),
-                  titleGenerated: false,
-                },
-                { title: trimmed, titleGenerated: true, updatedAt: new Date() },
-                { new: true },
-              );
-            } catch (e) {
-              console.error("Title generation error:", e);
-            }
-          })();
         }
+
+        // Fetch updated message count for thread info
+        const updatedChat = await Chat.findById(currentSessionId);
+        const messageCount = updatedChat?.messages?.length || 0;
+
+        // Send thread info
+        sendEvent({
+          type: "thread_info",
+          threadId: threadContext.threadId,
+          messageCount,
+        });
+
+        // Fire-and-forget: generate a descriptive chat title if not already set
+        void (async () => {
+          try {
+            // Only attempt if we have a valid session id
+            if (!currentSessionId) return;
+
+            const chat = await Chat.findById(currentSessionId);
+            if (!chat || chat.titleGenerated) return;
+
+            const allMessages = chat.messages || [];
+            if (!shouldGenerateTitle(allMessages)) return;
+
+            const title = await generateChatTitle(allMessages);
+            const trimmed = (title || "").trim();
+            if (!trimmed) return;
+
+            await Chat.findOneAndUpdate(
+              {
+                _id: new ObjectId(currentSessionId),
+                workspaceId: new ObjectId(workspaceId),
+                createdBy: userId.toString(),
+                titleGenerated: false,
+              },
+              { title: trimmed, titleGenerated: true, updatedAt: new Date() },
+              { new: true },
+            );
+          } catch (e) {
+            console.error("Title generation error:", e);
+          }
+        })();
 
         // Close the stream
         isClosed = true;
@@ -686,9 +721,26 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
         controller.close();
       } catch (err: any) {
         console.error("/api/agent/stream error", err);
+
+        // Persist error for debugging (best-effort, don't await to avoid blocking close)
+        if (currentSessionId) {
+          void persistChatError(
+            currentSessionId,
+            {
+              message: err.message || "Unexpected error",
+              code: err.code,
+              type: err.type || "unexpected_error",
+              stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+            },
+            toolCalls,
+            assistantReply,
+          );
+        }
+
         sendEvent({
           type: "error",
           message: err.message || "Unexpected error",
+          code: err.code,
         });
         isClosed = true;
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));

@@ -107,6 +107,118 @@ const inferBsonType = (value: any): string => {
   return typeof value;
 };
 
+// Truncation constants for preventing context overflow
+const MAX_STRING_LENGTH = 200;
+const MAX_ARRAY_ITEMS = 5;
+const MAX_OBJECT_KEYS = 10;
+const MAX_NESTED_DEPTH = 3;
+const MAX_SAMPLE_DOCS_RETURNED = 5;
+const MAX_TOTAL_OUTPUT_SIZE = 50000; // ~50KB cap for the entire output
+
+/**
+ * Truncate a single value to prevent context overflow while preserving structure
+ */
+const truncateValue = (value: any, depth: number = 0): any => {
+  if (depth > MAX_NESTED_DEPTH) {
+    return "[nested too deep]";
+  }
+
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  // Handle BSON types
+  if (value?._bsontype === "ObjectId") {
+    return value.toString();
+  }
+  if (value?._bsontype === "Decimal128") {
+    return value.toString();
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  // Handle strings
+  if (typeof value === "string") {
+    if (value.length > MAX_STRING_LENGTH) {
+      return value.substring(0, MAX_STRING_LENGTH) + `... [truncated, ${value.length} chars total]`;
+    }
+    return value;
+  }
+
+  // Handle arrays
+  if (Array.isArray(value)) {
+    const truncatedArray = value.slice(0, MAX_ARRAY_ITEMS).map(item => truncateValue(item, depth + 1));
+    if (value.length > MAX_ARRAY_ITEMS) {
+      truncatedArray.push(`[... ${value.length - MAX_ARRAY_ITEMS} more items]`);
+    }
+    return truncatedArray;
+  }
+
+  // Handle objects
+  if (typeof value === "object") {
+    const keys = Object.keys(value);
+    const truncatedObj: Record<string, any> = {};
+    const keysToInclude = keys.slice(0, MAX_OBJECT_KEYS);
+
+    for (const key of keysToInclude) {
+      truncatedObj[key] = truncateValue(value[key], depth + 1);
+    }
+
+    if (keys.length > MAX_OBJECT_KEYS) {
+      truncatedObj["_truncated"] = `${keys.length - MAX_OBJECT_KEYS} more keys omitted`;
+    }
+
+    return truncatedObj;
+  }
+
+  // Primitives pass through
+  return value;
+};
+
+/**
+ * Truncate an entire document for safe inclusion in agent context
+ */
+const truncateDocument = (doc: any): any => {
+  return truncateValue(doc, 0);
+};
+
+/**
+ * Truncate query results to prevent context overflow
+ */
+const truncateQueryResults = (results: any): any => {
+  if (!results) return results;
+
+  // If results is an array, truncate each item and limit count
+  if (Array.isArray(results)) {
+    const maxResults = 100;
+    const truncated = results.slice(0, maxResults).map(doc => truncateDocument(doc));
+    if (results.length > maxResults) {
+      return {
+        data: truncated,
+        _truncated: true,
+        _message: `Showing ${maxResults} of ${results.length} results. Use LIMIT in your query for specific counts.`,
+      };
+    }
+    return truncated;
+  }
+
+  // If results is an object with data array (common pattern)
+  if (results.data && Array.isArray(results.data)) {
+    return {
+      ...results,
+      data: truncateQueryResults(results.data),
+    };
+  }
+
+  // Single document
+  if (typeof results === "object") {
+    return truncateDocument(results);
+  }
+
+  return results;
+};
+
 const inspectCollection = async (
   connectionId: string,
   collectionName: string,
@@ -152,11 +264,32 @@ const inspectCollection = async (
     field,
     types: Array.from(types),
   }));
-  return {
+
+  // Truncate sample documents to prevent context overflow
+  const truncatedSamples = sampleDocuments
+    .slice(0, MAX_SAMPLE_DOCS_RETURNED)
+    .map(doc => truncateDocument(doc));
+
+  // Final safety check: ensure total output isn't too large
+  let output = {
     schema,
-    sampleDocuments: sampleDocuments.slice(0, 25),
+    sampleDocuments: truncatedSamples,
     totalSampled: sampleDocuments.length,
+    _note: `Showing ${truncatedSamples.length} truncated samples. Values longer than ${MAX_STRING_LENGTH} chars, arrays with more than ${MAX_ARRAY_ITEMS} items, and objects with more than ${MAX_OBJECT_KEYS} keys are summarized.`,
   };
+
+  const outputSize = JSON.stringify(output).length;
+  if (outputSize > MAX_TOTAL_OUTPUT_SIZE) {
+    // If still too large, reduce samples further
+    output = {
+      schema,
+      sampleDocuments: truncatedSamples.slice(0, 2),
+      totalSampled: sampleDocuments.length,
+      _note: `Output was too large (${outputSize} bytes). Reduced to 2 samples. Use execute_query for specific data retrieval.`,
+    };
+  }
+
+  return output;
 };
 
 const executeQuery = async (
@@ -185,6 +318,27 @@ const executeQuery = async (
     query,
     { databaseName },
   );
+
+  // Truncate results to prevent context overflow
+  if (result && result.success && result.data) {
+    const truncatedData = truncateQueryResults(result.data);
+
+    // Check total size and provide warning if large
+    const outputSize = JSON.stringify(truncatedData).length;
+    if (outputSize > MAX_TOTAL_OUTPUT_SIZE) {
+      return {
+        ...result,
+        data: Array.isArray(truncatedData) ? truncatedData.slice(0, 50) : truncatedData,
+        _warning: `Results truncated from ${outputSize} bytes. Add .limit() to your query for smaller result sets.`,
+      };
+    }
+
+    return {
+      ...result,
+      data: truncatedData,
+    };
+  }
+
   return result;
 };
 

@@ -134,3 +134,194 @@ export const persistChatSession = async (
   await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
   return sessionId;
 };
+
+/**
+ * Persist user message immediately to create/update chat session before agent runs.
+ * This ensures the user's message is saved even if the agent crashes.
+ */
+export const persistUserMessage = async (
+  sessionId: string | undefined,
+  threadContext: ThreadContext,
+  userMessage: string,
+  workspaceId: string,
+  userId?: string,
+  pinnedConsoleId?: string,
+): Promise<string> => {
+  const now = new Date();
+  const userMessageObj = { role: "user" as const, content: userMessage };
+
+  if (!sessionId) {
+    // Create new chat with just the user message
+    const newChat = new Chat({
+      workspaceId: new ObjectId(workspaceId),
+      threadId: threadContext.threadId,
+      title: "New Chat",
+      messages: [...threadContext.recentMessages, userMessageObj],
+      createdBy: userId || "system",
+      titleGenerated: false,
+      createdAt: now,
+      updatedAt: now,
+      pinnedConsoleId,
+    });
+    await newChat.save();
+    return newChat._id.toString();
+  }
+
+  // Update existing chat with the new user message
+  const existingMessages = threadContext.recentMessages;
+  const updateData: any = {
+    messages: [...existingMessages, userMessageObj],
+    updatedAt: now,
+  };
+  if (pinnedConsoleId !== undefined) {
+    updateData.pinnedConsoleId = pinnedConsoleId;
+  }
+  await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
+  return sessionId;
+};
+
+/**
+ * Update chat with assistant response and tool calls.
+ * Called after agent completes (or partially completes).
+ */
+export const updateChatWithResponse = async (
+  sessionId: string,
+  assistantContent: string,
+  toolCalls?: Array<{
+    toolName: string;
+    timestamp?: Date;
+    status?: "started" | "completed";
+    input?: any;
+    result?: any;
+  }>,
+  activeAgent?: AgentKind,
+): Promise<void> => {
+  const now = new Date();
+
+  // Fetch current messages and append assistant response
+  const chat = await Chat.findById(sessionId);
+  if (!chat) return;
+
+  const messages = [...(chat.messages || [])];
+
+  // Only add assistant message if there's content
+  if (assistantContent.trim()) {
+    messages.push({
+      role: "assistant" as const,
+      content: assistantContent,
+      toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+    });
+  }
+
+  const updateData: any = { messages, updatedAt: now };
+  if (activeAgent) {
+    updateData.activeAgent = activeAgent;
+  }
+
+  await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
+};
+
+/**
+ * Persist error information to the chat for debugging.
+ * Adds an assistant message with error details and any partial tool calls.
+ */
+export const persistChatError = async (
+  sessionId: string,
+  error: {
+    message: string;
+    code?: string;
+    type?: string;
+    stack?: string;
+  },
+  partialToolCalls?: Array<{
+    toolName: string;
+    timestamp?: Date;
+    status?: "started" | "completed";
+    input?: any;
+    result?: any;
+  }>,
+  partialResponse?: string,
+): Promise<void> => {
+  if (!sessionId) return;
+
+  const now = new Date();
+
+  try {
+    const chat = await Chat.findById(sessionId);
+    if (!chat) return;
+
+    const messages = [...(chat.messages || [])];
+
+    // Create error details for debugging
+    const errorDetails = [
+      `⚠️ **Error occurred during processing**`,
+      ``,
+      `**Error:** ${error.message}`,
+    ];
+
+    if (error.code) {
+      errorDetails.push(`**Code:** ${error.code}`);
+    }
+    if (error.type) {
+      errorDetails.push(`**Type:** ${error.type}`);
+    }
+
+    // Add partial response if any
+    if (partialResponse?.trim()) {
+      errorDetails.push(``, `**Partial response before error:**`, partialResponse.trim());
+    }
+
+    // Add tool call summary if any
+    if (partialToolCalls && partialToolCalls.length > 0) {
+      errorDetails.push(``, `**Tool calls before error:**`);
+      for (const tc of partialToolCalls) {
+        const status = tc.status === "completed" ? "✓" : "⏳";
+        errorDetails.push(`- ${status} ${tc.toolName}`);
+      }
+    }
+
+    // Add timestamp
+    errorDetails.push(``, `*Occurred at: ${now.toISOString()}*`);
+
+    // Add as an assistant message with error marker
+    messages.push({
+      role: "assistant" as const,
+      content: errorDetails.join("\n"),
+      toolCalls: partialToolCalls && partialToolCalls.length > 0
+        ? [
+            ...partialToolCalls,
+            {
+              toolName: "_error",
+              timestamp: now,
+              status: "completed" as const,
+              result: {
+                error: error.message,
+                code: error.code,
+                type: error.type,
+              },
+            },
+          ]
+        : [
+            {
+              toolName: "_error",
+              timestamp: now,
+              status: "completed" as const,
+              result: {
+                error: error.message,
+                code: error.code,
+                type: error.type,
+              },
+            },
+          ],
+    });
+
+    await Chat.findByIdAndUpdate(
+      sessionId,
+      { messages, updatedAt: now },
+      { new: true },
+    );
+  } catch (persistError) {
+    // Don't throw - this is best-effort error logging
+    console.error("Failed to persist chat error:", persistError);
+  }
+};
