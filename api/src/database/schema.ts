@@ -8,8 +8,21 @@ export interface IUser extends Document {
   _id: string;
   email: string;
   hashedPassword?: string;
+  emailVerified: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Email verification model interface
+ */
+export interface IEmailVerification extends Document {
+  _id: string;
+  email: string;
+  code: string;
+  type: "registration" | "link_password";
+  expiresAt: Date;
+  createdAt: Date;
 }
 
 /**
@@ -53,11 +66,53 @@ const UserSchema = new Schema<IUser>(
       type: String,
       required: false,
     },
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
   },
 );
+
+/**
+ * Email Verification Schema
+ */
+const EmailVerificationSchema = new Schema<IEmailVerification>(
+  {
+    _id: {
+      type: String,
+      default: () => uuidv4(),
+    },
+    email: {
+      type: String,
+      required: true,
+      lowercase: true,
+      trim: true,
+    },
+    code: {
+      type: String,
+      required: true,
+    },
+    type: {
+      type: String,
+      enum: ["registration", "link_password"],
+      required: true,
+    },
+    expiresAt: {
+      type: Date,
+      required: true,
+    },
+  },
+  {
+    timestamps: { createdAt: true, updatedAt: false },
+  },
+);
+
+// Indexes for email verification
+EmailVerificationSchema.index({ email: 1, type: 1 });
+EmailVerificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 /**
  * Session Schema for Lucia
@@ -125,6 +180,10 @@ export const Session = mongoose.model<ISession>("Session", SessionSchema);
 export const OAuthAccount = mongoose.model<IOAuthAccount>(
   "OAuthAccount",
   OAuthAccountSchema,
+);
+export const EmailVerification = mongoose.model<IEmailVerification>(
+  "EmailVerification",
+  EmailVerificationSchema,
 );
 
 /**

@@ -36,6 +36,22 @@ export interface WorkspaceInvite {
   expiresAt: string;
 }
 
+export interface InviteDetails {
+  workspaceName: string;
+  inviterEmail: string;
+  inviteeEmail: string;
+  role: string;
+  expiresAt: string;
+}
+
+export interface PendingInvite {
+  token: string;
+  workspaceName: string;
+  inviterEmail: string;
+  role: string;
+  expiresAt: string;
+}
+
 export interface CreateWorkspaceData {
   name: string;
   slug?: string;
@@ -214,6 +230,20 @@ class WorkspaceClient {
   }
 
   /**
+   * Get invite details (public endpoint - no auth required)
+   */
+  async getInviteDetails(token: string): Promise<InviteDetails> {
+    const response = await fetch(`/api/workspaces/invites/${token}`);
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "Failed to get invite details");
+    }
+
+    return data.data;
+  }
+
+  /**
    * Accept invitation
    */
   async acceptInvite(token: string): Promise<Workspace> {
@@ -232,6 +262,17 @@ class WorkspaceClient {
       success: boolean;
       data: WorkspaceDatabase[];
     }>(`/workspaces/${workspaceId}/databases`);
+    return response.data;
+  }
+
+  /**
+   * Get pending invitations for the current user's email
+   */
+  async getPendingInvitesForUser(): Promise<PendingInvite[]> {
+    const response = await apiClient.get<{
+      success: boolean;
+      data: PendingInvite[];
+    }>("/workspaces/pending-invites");
     return response.data;
   }
 }

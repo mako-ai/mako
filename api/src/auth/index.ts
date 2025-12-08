@@ -2,7 +2,14 @@
  * Auth module exports
  */
 
-export { lucia } from "./lucia";
+export { sessionManager } from "./session";
+export type {
+  ValidatedSession,
+  ValidatedUser,
+  SessionAttributes,
+  SessionCookie,
+  CookieAttributes,
+} from "./session";
 export { getGoogle, getGitHub } from "./arctic";
 export { AuthService } from "./auth.service";
 export {
@@ -11,4 +18,8 @@ export {
   rateLimitMiddleware,
 } from "./auth.middleware";
 export { authRoutes } from "./auth.controller";
-export { MongoDBAdapter } from "./mongodb-adapter";
+export {
+  unifiedAuthMiddleware,
+  isApiKeyAuth,
+  isSessionAuth,
+} from "./unified-auth.middleware";

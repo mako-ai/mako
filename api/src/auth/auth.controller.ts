@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { setCookie, getCookie } from "hono/cookie";
 import { generateState, generateCodeVerifier } from "arctic";
-import { lucia } from "./lucia";
+import { sessionManager } from "./session";
 import { getGoogle, getGitHub } from "./arctic";
 import { AuthService } from "./auth.service";
 import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
@@ -15,7 +15,7 @@ type Variables = {
 const authService = new AuthService();
 export const authRoutes = new Hono<{ Variables: Variables }>();
 
-// Helper to convert Lucia cookie attributes to Hono format
+// Helper to convert session cookie attributes to Hono format
 const convertCookieAttributes = (attributes: any) => ({
   ...attributes,
   sameSite: attributes.sameSite
@@ -32,15 +32,44 @@ const authRateLimiter = rateLimitMiddleware(
 
 /**
  * Register new user
+ * Creates an unverified user and sends verification email
  */
 authRoutes.post("/register", authRateLimiter, async c => {
   try {
     const { email, password } = await c.req.json();
 
-    const { user, session } = await authService.register(email, password);
+    const { user, requiresVerification } = await authService.register(email, password);
+
+    return c.json({
+      user: {
+        id: user._id,
+        email: user.email,
+        createdAt: user.createdAt,
+        emailVerified: user.emailVerified,
+      },
+      requiresVerification,
+      message: "Verification email sent. Please check your inbox.",
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
+ * Verify email with code
+ */
+authRoutes.post("/verify-email", authRateLimiter, async c => {
+  try {
+    const { email, code } = await c.req.json();
+
+    if (!email || !code) {
+      return c.json({ error: "Email and verification code are required" }, 400);
+    }
+
+    const { user, session } = await authService.verifyEmail(email, code);
 
     // Set session cookie
-    const sessionCookie = lucia.createSessionCookie(session.id);
+    const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
       sessionCookie.name,
@@ -53,7 +82,30 @@ authRoutes.post("/register", authRateLimiter, async c => {
         id: user._id,
         email: user.email,
         createdAt: user.createdAt,
+        emailVerified: user.emailVerified,
       },
+      message: "Email verified successfully",
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
+ * Resend verification email
+ */
+authRoutes.post("/resend-verification", authRateLimiter, async c => {
+  try {
+    const { email } = await c.req.json();
+
+    if (!email) {
+      return c.json({ error: "Email is required" }, 400);
+    }
+
+    await authService.resendVerification(email);
+
+    return c.json({
+      message: "Verification email sent. Please check your inbox.",
     });
   } catch (error: any) {
     return c.json({ error: error.message }, 400);
@@ -70,7 +122,7 @@ authRoutes.post("/login", authRateLimiter, async c => {
     const { user, session } = await authService.login(email, password);
 
     // Set session cookie
-    const sessionCookie = lucia.createSessionCookie(session.id);
+    const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
       sessionCookie.name,
@@ -100,7 +152,7 @@ authRoutes.post("/logout", authMiddleware, async c => {
     await authService.logout(session.id);
 
     // Clear session cookie
-    const sessionCookie = lucia.createBlankSessionCookie();
+    const sessionCookie = sessionManager.createBlankSessionCookie();
     setCookie(
       c,
       sessionCookie.name,
@@ -141,7 +193,9 @@ authRoutes.get("/me", authMiddleware, async c => {
  */
 authRoutes.post("/refresh", async c => {
   try {
-    const sessionId = lucia.readSessionCookie(c.req.header("Cookie") || "");
+    const sessionId = sessionManager.readSessionCookie(
+      c.req.header("Cookie") || "",
+    );
 
     if (!sessionId) {
       return c.json({ error: "No session found" }, 401);
@@ -155,7 +209,7 @@ authRoutes.post("/refresh", async c => {
 
     // Refresh session if needed
     if (session.fresh) {
-      const sessionCookie = lucia.createSessionCookie(session.id);
+      const sessionCookie = sessionManager.createSessionCookie(session.id);
       setCookie(
         c,
         sessionCookie.name,
@@ -169,6 +223,45 @@ authRoutes.post("/refresh", async c => {
         id: user.id,
         email: user.email,
       },
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
+ * Request to set password for OAuth-only account
+ */
+authRoutes.post("/request-set-password", authMiddleware, async c => {
+  try {
+    const user = c.get("user");
+
+    await authService.sendLinkPasswordVerification(user.email);
+
+    return c.json({
+      message: "Verification code sent to your email.",
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
+ * Set password for OAuth-only account (with verification code)
+ */
+authRoutes.post("/set-password", authMiddleware, async c => {
+  try {
+    const user = c.get("user");
+    const { password, code } = await c.req.json();
+
+    if (!password || !code) {
+      return c.json({ error: "Password and verification code are required" }, 400);
+    }
+
+    await authService.linkPassword(user.email, password, code);
+
+    return c.json({
+      message: "Password set successfully. You can now login with your email and password.",
     });
   } catch (error: any) {
     return c.json({ error: error.message }, 400);
@@ -287,7 +380,7 @@ authRoutes.get("/google/callback", async c => {
     );
 
     // Set session cookie
-    const sessionCookie = lucia.createSessionCookie(session.id);
+    const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
       sessionCookie.name,
@@ -370,7 +463,7 @@ authRoutes.get("/github/callback", async c => {
     );
 
     // Set session cookie
-    const sessionCookie = lucia.createSessionCookie(session.id);
+    const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
       sessionCookie.name,

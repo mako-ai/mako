@@ -1,5 +1,5 @@
 import { Context, Next } from "hono";
-import { lucia } from "./lucia";
+import { sessionManager } from "./session";
 import { getCookie } from "hono/cookie";
 import { hashApiKey } from "./api-key.middleware";
 import { Workspace } from "../database/workspace-schema";
@@ -57,13 +57,13 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
   }
 
   // Fall back to session authentication
-  const sessionId = getCookie(c, lucia.sessionCookieName);
+  const sessionId = getCookie(c, sessionManager.sessionCookieName);
 
   if (!sessionId) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  const { session, user } = await lucia.validateSession(sessionId);
+  const { session, user } = await sessionManager.validateSession(sessionId);
 
   if (!session || !user) {
     return c.json({ error: "Invalid session" }, 401);
