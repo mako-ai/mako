@@ -493,7 +493,9 @@ export function WebhookFlowForm({
                                 <Button
                                   size="small"
                                   onClick={() => {
-                                    navigator.clipboard.writeText(field.value);
+                                    navigator.clipboard.writeText(
+                                      field.value ?? "",
+                                    );
                                     setSuccess(true);
                                     setTimeout(() => setSuccess(false), 2000);
                                   }}
