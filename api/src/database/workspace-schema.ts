@@ -387,7 +387,7 @@ export interface IFlowExecution extends Document {
   startedAt: Date;
   completedAt?: Date;
   lastHeartbeat?: Date;
-  status: "running" | "completed" | "failed" | "canceled";
+  status: "running" | "completed" | "failed" | "cancelled" | "abandoned";
   success: boolean;
   duration?: number;
   logs: Array<{
@@ -1088,7 +1088,7 @@ const FlowExecutionSchema = new Schema<IFlowExecution>(
     lastHeartbeat: Date,
     status: {
       type: String,
-      enum: ["running", "completed", "failed", "canceled"],
+      enum: ["running", "completed", "failed", "cancelled", "abandoned"],
       required: true,
     },
     success: { type: Boolean, required: true },
