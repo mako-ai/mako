@@ -392,7 +392,3 @@ export function FlowsExplorer() {
     </Box>
   );
 }
-
-/** @deprecated Use FlowsExplorer instead */
-export const SyncJobsExplorer = FlowsExplorer;
-

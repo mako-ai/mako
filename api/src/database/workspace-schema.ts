@@ -341,9 +341,6 @@ export interface IFlowQuery {
   batch_size?: number;
 }
 
-/** @deprecated Use IFlowQuery instead */
-export type ITransferQuery = IFlowQuery;
-
 /**
  * Flow model interface (data sync flow configuration)
  */
@@ -380,9 +377,6 @@ export interface IFlow extends Document {
   updatedAt: Date;
 }
 
-/** @deprecated Use IFlow instead */
-export type ISyncJob = IFlow;
-
 /**
  * FlowExecution model interface
  */
@@ -410,9 +404,6 @@ export interface IFlowExecution extends Document {
   context?: any;
   system?: any;
 }
-
-/** @deprecated Use IFlowExecution instead */
-export type IJobExecution = IFlowExecution;
 
 /**
  * WebhookEvent model interface
@@ -1081,9 +1072,6 @@ FlowSchema.index({ dataSourceId: 1 });
 FlowSchema.index({ destinationDatabaseId: 1 });
 FlowSchema.index({ nextRunAt: 1 });
 
-/** @deprecated Use FlowSchema */
-const SyncJobSchema = FlowSchema;
-
 /**
  * FlowExecution Schema (binds to 'flow_executions' collection)
  */
@@ -1129,9 +1117,6 @@ const FlowExecutionSchema = new Schema<IFlowExecution>(
 
 // Indexes
 FlowExecutionSchema.index({ flowId: 1, startedAt: -1 });
-
-/** @deprecated Use FlowExecutionSchema */
-const JobExecutionSchema = FlowExecutionSchema;
 
 /**
  * WebhookEvent Schema
@@ -1215,8 +1200,3 @@ export const WebhookEvent = mongoose.model<IWebhookEvent>(
   "WebhookEvent",
   WebhookEventSchema,
 );
-
-/** @deprecated Use Flow instead */
-export const SyncJob = Flow;
-/** @deprecated Use FlowExecution instead */
-export const JobExecution = FlowExecution;

@@ -48,11 +48,11 @@ export const webhookEventProcessFunction = inngest.createFunction(
 
     // Get flow details
     const flow: any = await step.run("fetch-flow-details", async () => {
-      const syncFlow = await Flow.findById(flowId);
-      if (!syncFlow) {
+      const found = await Flow.findById(flowId);
+      if (!found) {
         throw new Error(`Flow not found: ${flowId}`);
       }
-      return syncFlow.toObject();
+      return found.toObject();
     });
 
     // Process the event

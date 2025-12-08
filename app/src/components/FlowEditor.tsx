@@ -116,7 +116,3 @@ export function FlowEditor({
     </Box>
   );
 }
-
-/** @deprecated Use FlowEditor instead */
-export const SyncJobEditor = FlowEditor;
-

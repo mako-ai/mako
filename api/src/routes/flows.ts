@@ -857,7 +857,3 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
-
-/** @deprecated Use flowRoutes instead */
-export const syncJobRoutes = flowRoutes;
-

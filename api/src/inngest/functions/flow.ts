@@ -385,11 +385,11 @@ export const flowFunction = inngest.createFunction(
 
       // Get flow details
       const flow = (await step.run("fetch-flow", async () => {
-        const syncFlow = await Flow.findById(flowId);
-        if (!syncFlow) {
+        const found = await Flow.findById(flowId);
+        if (!found) {
           throw new Error(`Flow ${flowId} not found`);
         }
-        return syncFlow.toObject() as IFlow;
+        return found.toObject() as IFlow;
       })) as IFlow;
 
       if (!flow || !flow.enabled) {
@@ -950,8 +950,8 @@ export const flowFunction = inngest.createFunction(
   },
 );
 
-// Scheduled flow runner function
-export const scheduledFlowFunction = inngest.createFunction(
+// Flow scheduler - checks and triggers due flows every 5 minutes
+export const flowSchedulerFunction = inngest.createFunction(
   {
     id: "scheduled-flow",
     name: "Run Scheduled Flows",
@@ -966,19 +966,19 @@ export const scheduledFlowFunction = inngest.createFunction(
 
     // Get all enabled scheduled flows (not webhooks)
     const flows = (await step.run("fetch-enabled-flows", async () => {
-      const syncFlows = await Flow.find({
+      const found = await Flow.find({
         enabled: true,
         type: "scheduled", // Only get scheduled flows explicitly
       });
       scheduleLogger.info("Found enabled scheduled flows", {
-        count: syncFlows.length,
+        count: found.length,
         // Log flow types for debugging
-        flowTypes: syncFlows.map(flow => ({
-          id: flow._id.toString(),
-          type: flow.type,
+        flowTypes: found.map(f => ({
+          id: f._id.toString(),
+          type: f.type,
         })),
       });
-      return syncFlows.map(flow => flow.toObject() as IFlow);
+      return found.map(f => f.toObject() as IFlow);
     })) as IFlow[];
 
     const now = new Date();
@@ -994,13 +994,16 @@ export const scheduledFlowFunction = inngest.createFunction(
 
           // Safety check: skip webhook flows (shouldn't happen with our filter, but just in case)
           if (flow.type === "webhook" || !flow.schedule?.cron) {
-            flowLogger.warn("CRITICAL: Non-scheduled flow found in scheduler!", {
-              flowId: flow._id.toString(),
-              flowType: flow.type,
-              hasSchedule: !!flow.schedule,
-              hasCron: !!flow.schedule?.cron,
-              schedule: flow.schedule,
-            });
+            flowLogger.warn(
+              "CRITICAL: Non-scheduled flow found in scheduler!",
+              {
+                flowId: flow._id.toString(),
+                flowType: flow.type,
+                hasSchedule: !!flow.schedule,
+                hasCron: !!flow.schedule?.cron,
+                schedule: flow.schedule,
+              },
+            );
             return false;
           }
 
@@ -1333,16 +1336,3 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
     return result;
   },
 );
-
-// Backwards compatibility exports
-/** @deprecated Use flowFunction instead */
-export const syncJobFunction = flowFunction;
-/** @deprecated Use scheduledFlowFunction instead */
-export const scheduledSyncJobFunction = scheduledFlowFunction;
-/** @deprecated Use manualFlowFunction instead */
-export const manualSyncJobFunction = manualFlowFunction;
-/** @deprecated Use cancelFlowFunction instead */
-export const cancelSyncJobFunction = cancelFlowFunction;
-/** @deprecated Use cleanupAbandonedFlowsFunction instead */
-export const cleanupAbandonedJobsFunction = cleanupAbandonedFlowsFunction;
-

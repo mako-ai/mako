@@ -1,16 +1,10 @@
 import { inngest } from "./client";
 import {
   flowFunction,
-  scheduledFlowFunction,
+  flowSchedulerFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
-  // Backwards compatibility exports
-  syncJobFunction,
-  scheduledSyncJobFunction,
-  manualSyncJobFunction,
-  cancelSyncJobFunction,
-  cleanupAbandonedJobsFunction,
 } from "./functions/flow";
 import {
   webhookEventProcessFunction,
@@ -34,10 +28,10 @@ const baseFunctions = [
   webhookRetryFunction,
 ];
 
-// Conditionally add scheduled flow function (only in production)
+// Conditionally add flow scheduler (only in production)
 export const functions = isDevelopment
   ? baseFunctions
-  : [...baseFunctions, scheduledFlowFunction];
+  : [...baseFunctions, flowSchedulerFunction];
 
 if (isDevelopment) {
   console.log("⚠️  Scheduled flows are DISABLED in development mode");
@@ -49,20 +43,10 @@ if (isDevelopment) {
 export { inngest };
 export {
   flowFunction,
-  scheduledFlowFunction,
+  flowSchedulerFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
-};
-// Backwards compatibility exports
-export {
-  syncJobFunction,
-  scheduledSyncJobFunction,
-  manualSyncJobFunction,
-  cancelSyncJobFunction,
-  cleanupAbandonedJobsFunction,
-};
-export {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,

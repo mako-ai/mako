@@ -62,9 +62,6 @@ const flowQuerySchema = z.object({
 
 export type FlowQuery = z.infer<typeof flowQuerySchema>;
 
-/** @deprecated Use FlowQuery instead */
-export type TransferQuery = FlowQuery;
-
 const flowSchema = z.object({
   _id: z.string(),
   workspaceId: z.string(),
@@ -91,9 +88,6 @@ const flowSchema = z.object({
 
 export type Flow = z.infer<typeof flowSchema>;
 
-/** @deprecated Use Flow instead */
-export type SyncJob = Flow;
-
 const flowExecutionHistorySchema = z.object({
   executedAt: z.string(),
   success: z.boolean(),
@@ -102,9 +96,6 @@ const flowExecutionHistorySchema = z.object({
 });
 
 export type FlowExecutionHistory = z.infer<typeof flowExecutionHistorySchema>;
-
-/** @deprecated Use FlowExecutionHistory instead */
-export type SyncJobExecutionHistory = FlowExecutionHistory;
 
 // Store state schema for validation
 const flowStoreStateSchema = z.object({
@@ -135,32 +126,6 @@ interface FlowStore extends FlowStoreState {
   selectFlow: (flowId: string | null) => void;
   clearError: (workspaceId: string) => void;
   reset: () => void;
-
-  // Backwards compatibility aliases
-  /** @deprecated Use flows instead */
-  jobs: FlowStoreState["flows"];
-  /** @deprecated Use selectedFlowId instead */
-  selectedJobId: FlowStoreState["selectedFlowId"];
-  /** @deprecated Use fetchFlows instead */
-  fetchJobs: (workspaceId: string) => Promise<Flow[]>;
-  /** @deprecated Use createFlow instead */
-  createJob: (workspaceId: string, data: Partial<Flow>) => Promise<Flow>;
-  /** @deprecated Use updateFlow instead */
-  updateJob: (
-    workspaceId: string,
-    flowId: string,
-    data: Partial<Flow>,
-  ) => Promise<void>;
-  /** @deprecated Use deleteFlow instead */
-  deleteJob: (workspaceId: string, flowId: string) => Promise<void>;
-  /** @deprecated Use toggleFlow instead */
-  toggleJob: (workspaceId: string, flowId: string) => Promise<void>;
-  /** @deprecated Use runFlow instead */
-  runJob: (workspaceId: string, flowId: string) => Promise<void>;
-  /** @deprecated Use fetchFlowHistory instead */
-  fetchJobHistory: (workspaceId: string, flowId: string) => Promise<void>;
-  /** @deprecated Use selectFlow instead */
-  selectJob: (flowId: string | null) => void;
 }
 
 const initialState: FlowStoreState = {
@@ -187,14 +152,6 @@ export const useFlowStore = create<FlowStore>()(
   persist(
     immer((set, get) => ({
       ...initialState,
-
-      // Backwards compatibility: jobs is an alias for flows
-      get jobs() {
-        return get().flows;
-      },
-      get selectedJobId() {
-        return get().selectedFlowId;
-      },
 
       fetchFlows: async (workspaceId: string) => {
         set(state => {
@@ -228,11 +185,6 @@ export const useFlowStore = create<FlowStore>()(
             delete state.loading[workspaceId];
           });
         }
-      },
-
-      // Backwards compatibility alias
-      fetchJobs: async (workspaceId: string) => {
-        return get().fetchFlows(workspaceId);
       },
 
       refresh: async (workspaceId: string) => {
@@ -302,11 +254,6 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      // Backwards compatibility alias
-      createJob: async (workspaceId: string, data: Partial<Flow>) => {
-        return get().createFlow(workspaceId, data);
-      },
-
       updateFlow: async (
         workspaceId: string,
         flowId: string,
@@ -345,15 +292,6 @@ export const useFlowStore = create<FlowStore>()(
             delete state.loading[workspaceId];
           });
         }
-      },
-
-      // Backwards compatibility alias
-      updateJob: async (
-        workspaceId: string,
-        flowId: string,
-        data: Partial<Flow>,
-      ) => {
-        return get().updateFlow(workspaceId, flowId, data);
       },
 
       deleteFlow: async (workspaceId: string, flowId: string) => {
@@ -395,11 +333,6 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      // Backwards compatibility alias
-      deleteJob: async (workspaceId: string, flowId: string) => {
-        return get().deleteFlow(workspaceId, flowId);
-      },
-
       toggleFlow: async (workspaceId: string, flowId: string) => {
         set(state => {
           state.loading[workspaceId] = true;
@@ -435,11 +368,6 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      // Backwards compatibility alias
-      toggleJob: async (workspaceId: string, flowId: string) => {
-        return get().toggleFlow(workspaceId, flowId);
-      },
-
       runFlow: async (workspaceId: string, flowId: string) => {
         set(state => {
           state.loading[workspaceId] = true;
@@ -471,11 +399,6 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      // Backwards compatibility alias
-      runJob: async (workspaceId: string, flowId: string) => {
-        return get().runFlow(workspaceId, flowId);
-      },
-
       fetchFlowHistory: async (workspaceId: string, flowId: string) => {
         try {
           const response = await apiClient.get<{
@@ -494,20 +417,10 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      // Backwards compatibility alias
-      fetchJobHistory: async (workspaceId: string, flowId: string) => {
-        return get().fetchFlowHistory(workspaceId, flowId);
-      },
-
       selectFlow: (flowId: string | null) => {
         set(state => {
           state.selectedFlowId = flowId;
         });
-      },
-
-      // Backwards compatibility alias
-      selectJob: (flowId: string | null) => {
-        get().selectFlow(flowId);
       },
 
       clearError: (workspaceId: string) => {
@@ -536,7 +449,3 @@ export const useFlowStore = create<FlowStore>()(
     },
   ),
 );
-
-/** @deprecated Use useFlowStore instead */
-export const useSyncJobStore = useFlowStore;
-

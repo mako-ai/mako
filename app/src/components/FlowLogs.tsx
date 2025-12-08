@@ -694,7 +694,3 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
     </Box>
   );
 }
-
-/** @deprecated Use FlowLogs instead */
-export const SyncJobLogs = FlowLogs;
-
