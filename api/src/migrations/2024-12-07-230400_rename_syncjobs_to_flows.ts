@@ -1,7 +1,7 @@
 import { Db } from "mongodb";
 
 export const description =
-  "Rename syncjobs to flows, job_executions to flow_executions, and jobId to flowId";
+  "Rename syncjobs to flows, job_executions to flow_executions, job_execution_locks to flow_execution_locks, and jobId to flowId";
 
 /**
  * Migration: Rename SyncJobs to Flows
@@ -9,7 +9,8 @@ export const description =
  * This migration renames:
  * 1. syncjobs collection → flows
  * 2. job_executions collection → flow_executions
- * 3. jobId field → flowId in flow_executions and webhookevents
+ * 3. job_execution_locks collection → flow_execution_locks
+ * 4. jobId field → flowId in flow_executions and webhookevents
  */
 export async function up(db: Db): Promise<void> {
   const collections = await db.listCollections().toArray();
@@ -51,7 +52,29 @@ export async function up(db: Db): Promise<void> {
     );
   }
 
-  // 3. Rename jobId → flowId in flow_executions
+  // 3. Rename job_execution_locks → flow_execution_locks
+  if (collectionNames.includes("job_execution_locks")) {
+    if (collectionNames.includes("flow_execution_locks")) {
+      console.log(
+        "⚠️  Both 'job_execution_locks' and 'flow_execution_locks' collections exist. Skipping rename.",
+      );
+    } else {
+      await db.collection("job_execution_locks").rename("flow_execution_locks");
+      console.log(
+        "✅ Renamed collection: job_execution_locks → flow_execution_locks",
+      );
+    }
+  } else if (collectionNames.includes("flow_execution_locks")) {
+    console.log(
+      "ℹ️  Collection 'flow_execution_locks' already exists, skipping rename.",
+    );
+  } else {
+    console.log(
+      "ℹ️  Collection 'job_execution_locks' not found, nothing to rename.",
+    );
+  }
+
+  // 4. Rename jobId → flowId in flow_executions
   // Re-fetch collection names after renames
   const updatedCollections = await db.listCollections().toArray();
   const updatedCollectionNames = updatedCollections.map(c => c.name);
@@ -67,10 +90,12 @@ export async function up(db: Db): Promise<void> {
       `✅ Renamed field jobId → flowId in flow_executions: ${flowExecResult.modifiedCount} documents updated`,
     );
   } else {
-    console.log("ℹ️  Collection 'flow_executions' not found, skipping field rename.");
+    console.log(
+      "ℹ️  Collection 'flow_executions' not found, skipping field rename.",
+    );
   }
 
-  // 4. Rename jobId → flowId in webhookevents
+  // 5. Rename jobId → flowId in webhookevents
   if (updatedCollectionNames.includes("webhookevents")) {
     const webhookResult = await db
       .collection("webhookevents")
@@ -82,9 +107,10 @@ export async function up(db: Db): Promise<void> {
       `✅ Renamed field jobId → flowId in webhookevents: ${webhookResult.modifiedCount} documents updated`,
     );
   } else {
-    console.log("ℹ️  Collection 'webhookevents' not found, skipping field rename.");
+    console.log(
+      "ℹ️  Collection 'webhookevents' not found, skipping field rename.",
+    );
   }
 
   console.log("Migration complete: SyncJobs → Flows");
 }
-
