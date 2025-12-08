@@ -10,7 +10,7 @@ import {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
-} from "./functions/webhook-job";
+} from "./functions/webhook-flow";
 
 // Check if we're running in development mode
 const isDevelopment =

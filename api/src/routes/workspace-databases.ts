@@ -348,7 +348,7 @@ workspaceDatabaseRoutes.delete(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      // Check for dependent sync jobs
+      // Check for dependent flows
       const dependentFlow = await Flow.findOne({
         destinationDatabaseId: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,

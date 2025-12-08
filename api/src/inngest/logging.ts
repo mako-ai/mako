@@ -9,7 +9,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { Types } from "mongoose";
 import { Flow } from "../database/workspace-schema";
 
-// Database sink for job execution logs
+// Database sink for flow execution logs
 interface DatabaseSinkOptions {
   // Collection name for storing logs
   collectionName?: string;

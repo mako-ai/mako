@@ -62,9 +62,9 @@ pnpm run dev
 - **API**: [http://localhost:8080](http://localhost:8080)
 - **Inngest Dashboard**: [http://localhost:8288](http://localhost:8288)
 
-## Running Sync Jobs
+## Running Flows
 
-Mako includes a CLI for running data sync jobs manually.
+Mako includes a CLI for running data sync flows manually.
 
 ```bash
 # Interactive mode
