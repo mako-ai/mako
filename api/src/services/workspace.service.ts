@@ -10,6 +10,7 @@ import {
 import { Session, User } from "../database/schema";
 import { v4 as uuidv4 } from "uuid";
 import { emailService } from "./email.service";
+import { validateAndNormalizeEmail, normalizeEmail } from "../utils/email.utils";
 
 export class WorkspaceService {
   /**
@@ -262,9 +263,11 @@ export class WorkspaceService {
     role: "admin" | "member" | "viewer",
     invitedBy: string,
   ): Promise<IWorkspaceInvite> {
+    const normalizedEmail = validateAndNormalizeEmail(email);
+
     const invite = new WorkspaceInvite({
       workspaceId: new Types.ObjectId(workspaceId),
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       token: uuidv4().replace(/-/g, ""),
       role,
       invitedBy: invitedBy,
@@ -282,7 +285,7 @@ export class WorkspaceService {
       const inviteUrl = `${process.env.CLIENT_URL}/invite/${invite.token}`;
 
       await emailService.sendInvitationEmail(
-        email.toLowerCase(),
+        normalizedEmail,
         workspaceName,
         inviterName,
         inviteUrl,
@@ -413,7 +416,7 @@ export class WorkspaceService {
    */
   async getPendingInvitesForEmail(email: string): Promise<IWorkspaceInvite[]> {
     return WorkspaceInvite.find({
-      email: email.toLowerCase(),
+      email: normalizeEmail(email),
       acceptedAt: { $exists: false },
       expiresAt: { $gt: new Date() },
     })

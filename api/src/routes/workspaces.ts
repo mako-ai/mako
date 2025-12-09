@@ -9,6 +9,7 @@ import {
 } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
+import { normalizeEmail } from "../utils/email.utils";
 
 export const workspaceRoutes = new Hono();
 
@@ -798,7 +799,7 @@ workspaceRoutes.post(
       }
 
       // Enforce email matching
-      if (user!.email.toLowerCase() !== invite.email.toLowerCase()) {
+      if (normalizeEmail(user!.email) !== normalizeEmail(invite.email)) {
         return c.json(
           {
             success: false,

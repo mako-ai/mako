@@ -5,6 +5,10 @@ import { User, OAuthAccount, EmailVerification } from "../database/schema";
 import type { OAuthProvider } from "./arctic";
 import { workspaceService } from "../services/workspace.service";
 import { emailService } from "../services/email.service";
+import {
+  validateAndNormalizeEmail,
+  normalizeEmail,
+} from "../utils/email.utils";
 
 /**
  * Generate a random ID (replacement for Lucia's generateId)
@@ -31,7 +35,7 @@ export class AuthService {
    */
   async register(email: string, password: string) {
     // Validate input
-    if (!email || !password) {
+    if (!password) {
       throw new Error("Email and password are required");
     }
 
@@ -39,7 +43,7 @@ export class AuthService {
       throw new Error("Password must be at least 8 characters long");
     }
 
-    const normalizedEmail = email.toLowerCase();
+    const normalizedEmail = validateAndNormalizeEmail(email);
 
     // Check if user already exists
     const existingUser = await User.findOne({ email: normalizedEmail });
@@ -47,11 +51,13 @@ export class AuthService {
       // Check if this is an OAuth-only user (no password set)
       if (!existingUser.hashedPassword) {
         // Check if user has OAuth accounts linked
-        const oauthAccounts = await OAuthAccount.find({ userId: existingUser._id });
+        const oauthAccounts = await OAuthAccount.find({
+          userId: existingUser._id,
+        });
         if (oauthAccounts.length > 0) {
           const providers = oauthAccounts.map(a => a.provider).join(", ");
           throw new Error(
-            `This email is linked to a ${providers} account. Please login with ${providers} and set a password from your account settings.`
+            `This email is linked to a ${providers} account. Please login with ${providers} and set a password from your account settings.`,
           );
         }
       }
@@ -80,7 +86,11 @@ export class AuthService {
         });
 
         const verifyUrl = `${process.env.CLIENT_URL}/verify-email?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
-        await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
+        await emailService.sendVerificationEmail(
+          normalizedEmail,
+          code,
+          verifyUrl,
+        );
 
         return { user: existingUser, requiresVerification: true };
       }
@@ -120,7 +130,7 @@ export class AuthService {
    * Verify email with code and complete registration
    */
   async verifyEmail(email: string, code: string) {
-    const normalizedEmail = email.toLowerCase();
+    const normalizedEmail = normalizeEmail(email);
 
     // Find verification record
     const verification = await EmailVerification.findOne({
@@ -148,11 +158,12 @@ export class AuthService {
     await EmailVerification.deleteOne({ _id: verification._id });
 
     // Check for pending invitations
-    const pendingInvites = await workspaceService.getPendingInvitesForEmail(normalizedEmail);
-    
+    const pendingInvites =
+      await workspaceService.getPendingInvitesForEmail(normalizedEmail);
+
     // Check for existing workspaces
     const workspaces = await workspaceService.getWorkspacesForUser(user._id);
-    
+
     let activeWorkspaceId: string | undefined;
 
     // If user has workspaces, use the first one
@@ -185,7 +196,7 @@ export class AuthService {
    * Resend verification email
    */
   async resendVerification(email: string) {
-    const normalizedEmail = email.toLowerCase();
+    const normalizedEmail = normalizeEmail(email);
 
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
@@ -222,12 +233,13 @@ export class AuthService {
    */
   async login(email: string, password: string) {
     // Validate input
-    if (!email || !password) {
+    if (!password) {
       throw new Error("Email and password are required");
     }
 
     // Find user
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const normalizedEmail = validateAndNormalizeEmail(email);
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       throw new Error("Invalid email or password");
     }
@@ -247,7 +259,9 @@ export class AuthService {
     if (!user.emailVerified) {
       // Send a new verification code
       await this.resendVerification(email);
-      throw new Error("Please verify your email before logging in. A new verification code has been sent.");
+      throw new Error(
+        "Please verify your email before logging in. A new verification code has been sent.",
+      );
     }
 
     // Get user's workspaces
@@ -319,7 +333,8 @@ export class AuthService {
 
     if (email) {
       // Check if user with this email exists
-      user = await User.findOne({ email: email.toLowerCase() });
+      const normalizedOAuthEmail = normalizeEmail(email);
+      user = await User.findOne({ email: normalizedOAuthEmail });
 
       if (user) {
         isNewUser = false;
@@ -328,7 +343,7 @@ export class AuthService {
         const userId = generateId(15);
         user = await User.create({
           _id: userId,
-          email: email.toLowerCase(),
+          email: normalizedOAuthEmail,
           emailVerified: true, // OAuth users are verified
         });
       }
@@ -357,8 +372,10 @@ export class AuthService {
     });
 
     // Check for pending invitations
-    const pendingInvites = await workspaceService.getPendingInvitesForEmail(user.email);
-    
+    const pendingInvites = await workspaceService.getPendingInvitesForEmail(
+      user.email,
+    );
+
     // Check for existing workspaces
     const workspaces = await workspaceService.getWorkspacesForUser(user._id);
     let activeWorkspaceId: string | undefined;
@@ -439,8 +456,12 @@ export class AuthService {
   /**
    * Link password to existing OAuth user (after email verification)
    */
-  async linkPassword(email: string, password: string, verificationCode: string) {
-    const normalizedEmail = email.toLowerCase();
+  async linkPassword(
+    email: string,
+    password: string,
+    verificationCode: string,
+  ) {
+    const normalizedEmail = normalizeEmail(email);
 
     // Verify the code
     const verification = await EmailVerification.findOne({
@@ -485,7 +506,7 @@ export class AuthService {
    * Send verification code to link password to OAuth account
    */
   async sendLinkPasswordVerification(email: string) {
-    const normalizedEmail = email.toLowerCase();
+    const normalizedEmail = normalizeEmail(email);
 
     // Find user
     const user = await User.findOne({ email: normalizedEmail });

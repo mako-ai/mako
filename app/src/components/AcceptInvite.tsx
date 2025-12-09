@@ -20,6 +20,7 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { workspaceClient, type InviteDetails } from "../lib/workspace-client";
+import { normalizeEmail } from "../utils/email";
 
 interface AcceptInviteProps {
   token: string;
@@ -64,7 +65,9 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
 
         // If user is logged in, check email match
         if (!authLoading && user) {
-          if (user.email.toLowerCase() === details.inviteeEmail.toLowerCase()) {
+          if (
+            normalizeEmail(user.email) === normalizeEmail(details.inviteeEmail)
+          ) {
             setState("invite_details");
           } else {
             setState("email_mismatch");
@@ -87,7 +90,8 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
 
     if (user) {
       if (
-        user.email.toLowerCase() === inviteDetails.inviteeEmail.toLowerCase()
+        normalizeEmail(user.email) ===
+        normalizeEmail(inviteDetails.inviteeEmail)
       ) {
         setState("invite_details");
       } else {
