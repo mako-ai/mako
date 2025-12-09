@@ -1,4 +1,5 @@
 import bcrypt from "bcrypt";
+import { randomInt } from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { sessionManager, ValidatedSession, ValidatedUser } from "./session";
 import { User, OAuthAccount, EmailVerification } from "../database/schema";
@@ -19,10 +20,10 @@ function generateId(length: number = 15): string {
 }
 
 /**
- * Generate a 6-digit verification code
+ * Generate a 6-digit verification code using cryptographically secure randomness
  */
 function generateVerificationCode(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return randomInt(100000, 1000000).toString();
 }
 
 /**

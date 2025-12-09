@@ -148,6 +148,12 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
     window.location.href = "/login";
   };
 
+  const handleOAuthLogin = (provider: "google" | "github") => {
+    // Store the current URL to redirect back after OAuth
+    setInviteRedirect(window.location.href);
+    loginWithOAuth(provider);
+  };
+
   // Loading state
   if (state === "loading" || authLoading) {
     return (
@@ -462,14 +468,14 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
                 <Button
                   variant="outlined"
                   fullWidth
-                  onClick={() => loginWithOAuth("google")}
+                  onClick={() => handleOAuthLogin("google")}
                 >
                   Google
                 </Button>
                 <Button
                   variant="outlined"
                   fullWidth
-                  onClick={() => loginWithOAuth("github")}
+                  onClick={() => handleOAuthLogin("github")}
                 >
                   GitHub
                 </Button>
