@@ -23,6 +23,7 @@ interface SendGridResponse {
 interface EmailServiceConfig {
   apiKey: string;
   fromEmail: string;
+  fromName: string;
   invitationTemplateId?: string;
   verificationTemplateId?: string;
 }
@@ -43,6 +44,7 @@ function getConfig(): EmailServiceConfig {
   return {
     apiKey: apiKey || "",
     fromEmail: fromEmail || "noreply@example.com",
+    fromName: "Mako",
     invitationTemplateId: process.env.SENDGRID_INVITATION_TEMPLATE_ID,
     verificationTemplateId: process.env.SENDGRID_VERIFICATION_TEMPLATE_ID,
   };
@@ -62,7 +64,10 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
     console.log("Subject:", data.subject);
     if (data.templateId) {
       console.log("Template ID:", data.templateId);
-      console.log("Template Data:", JSON.stringify(data.dynamicTemplateData, null, 2));
+      console.log(
+        "Template Data:",
+        JSON.stringify(data.dynamicTemplateData, null, 2),
+      );
     }
     if (data.text) {
       console.log("Text:", data.text);
@@ -77,7 +82,7 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
         dynamic_template_data: data.dynamicTemplateData,
       },
     ],
-    from: { email: data.from },
+    from: { email: data.from, name: config.fromName },
     subject: data.subject,
   };
 
@@ -194,7 +199,9 @@ If you didn't expect this invitation, you can safely ignore this email.
       });
     }
 
-    console.log(`✉️ Invitation email sent to ${to} for workspace ${workspaceName}`);
+    console.log(
+      `✉️ Invitation email sent to ${to} for workspace ${workspaceName}`,
+    );
   }
 
   /**
