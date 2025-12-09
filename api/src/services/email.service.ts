@@ -86,10 +86,12 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
       {
         to: [{ email: data.to }],
         dynamic_template_data: data.dynamicTemplateData,
+        subject: data.subject,
       },
     ],
     from: { email: data.from, name: config.fromName },
     template_id: data.templateId,
+    subject: data.subject,
   };
 
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
