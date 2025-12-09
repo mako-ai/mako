@@ -233,7 +233,10 @@ class SessionManager {
 
     const cookies = cookieHeader.split(";").map(c => c.trim());
     for (const cookie of cookies) {
-      const [name, value] = cookie.split("=");
+      const equalsIndex = cookie.indexOf("=");
+      if (equalsIndex === -1) continue;
+      const name = cookie.substring(0, equalsIndex);
+      const value = cookie.substring(equalsIndex + 1);
       if (name === SESSION_COOKIE_NAME && value) {
         return value;
       }

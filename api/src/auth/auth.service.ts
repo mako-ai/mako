@@ -37,7 +37,7 @@ export class AuthService {
   async register(email: string, password: string) {
     // Validate input
     if (!password) {
-      throw new Error("Email and password are required");
+      throw new Error("Password is required");
     }
 
     if (password.length < 8) {
@@ -233,7 +233,7 @@ export class AuthService {
   async login(email: string, password: string) {
     // Validate input
     if (!password) {
-      throw new Error("Email and password are required");
+      throw new Error("Password is required");
     }
 
     // Find user
