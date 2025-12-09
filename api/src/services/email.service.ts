@@ -1,15 +1,17 @@
 /**
  * Email service using SendGrid for transactional emails
+ *
+ * Security: All user-controlled data (workspace names, inviter names, etc.)
+ * is passed to SendGrid dynamic templates which handle escaping.
+ * We never interpolate user data into HTML strings directly.
  */
 
 interface SendGridMailData {
   to: string;
   from: string;
   subject: string;
-  templateId?: string;
-  dynamicTemplateData?: Record<string, any>;
-  text?: string;
-  html?: string;
+  templateId: string;
+  dynamicTemplateData: Record<string, any>;
 }
 
 interface SendGridResponse {
@@ -26,6 +28,7 @@ interface EmailServiceConfig {
   fromName: string;
   invitationTemplateId?: string;
   verificationTemplateId?: string;
+  passwordResetTemplateId?: string;
 }
 
 /**
@@ -47,35 +50,38 @@ function getConfig(): EmailServiceConfig {
     fromName: "Mako",
     invitationTemplateId: process.env.SENDGRID_INVITATION_TEMPLATE_ID,
     verificationTemplateId: process.env.SENDGRID_VERIFICATION_TEMPLATE_ID,
+    passwordResetTemplateId: process.env.SENDGRID_PASSWORD_RESET_TEMPLATE_ID,
   };
 }
 
 /**
- * Send email via SendGrid API
+ * Log email for development mode (no API key configured)
+ * Only logs safe metadata and plain text representations
+ */
+function logEmailForDev(
+  type: string,
+  to: string,
+  subject: string,
+  templateData: Record<string, any>,
+): void {
+  console.log(`📧 [Email Service - Dev Mode] ${type}`);
+  console.log("To:", to);
+  console.log("Subject:", subject);
+  console.log("Template Data:", JSON.stringify(templateData, null, 2));
+}
+
+/**
+ * Send email via SendGrid API using dynamic templates only
  */
 async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
   const config = getConfig();
 
   if (!config.apiKey) {
-    // Log the email for development/testing
-    console.log("📧 [Email Service - Dev Mode]");
-    console.log("To:", data.to);
-    console.log("From:", data.from);
-    console.log("Subject:", data.subject);
-    if (data.templateId) {
-      console.log("Template ID:", data.templateId);
-      console.log(
-        "Template Data:",
-        JSON.stringify(data.dynamicTemplateData, null, 2),
-      );
-    }
-    if (data.text) {
-      console.log("Text:", data.text);
-    }
+    // Dev mode - log only, no actual email sent
     return { statusCode: 200 };
   }
 
-  const body: any = {
+  const body = {
     personalizations: [
       {
         to: [{ email: data.to }],
@@ -83,20 +89,8 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
       },
     ],
     from: { email: data.from, name: config.fromName },
-    subject: data.subject,
+    template_id: data.templateId,
   };
-
-  if (data.templateId) {
-    body.template_id = data.templateId;
-  } else {
-    body.content = [];
-    if (data.text) {
-      body.content.push({ type: "text/plain", value: data.text });
-    }
-    if (data.html) {
-      body.content.push({ type: "text/html", value: data.html });
-    }
-  }
 
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
@@ -118,6 +112,9 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
 
 /**
  * Email service class with methods for different email types
+ *
+ * All methods require SendGrid dynamic template IDs to be configured.
+ * In dev mode (no API key), emails are logged but not sent.
  */
 export class EmailService {
   /**
@@ -130,74 +127,40 @@ export class EmailService {
     inviteUrl: string,
   ): Promise<void> {
     const config = getConfig();
+    const templateData = {
+      workspace_name: workspaceName,
+      inviter_name: inviterName,
+      invite_url: inviteUrl,
+      invitee_email: to,
+    };
 
-    if (config.invitationTemplateId) {
-      // Use SendGrid dynamic template
-      await sendMail({
+    if (!config.apiKey) {
+      logEmailForDev(
+        "Invitation",
         to,
-        from: config.fromEmail,
-        subject: `You've been invited to join ${workspaceName}`,
-        templateId: config.invitationTemplateId,
-        dynamicTemplateData: {
-          workspace_name: workspaceName,
-          inviter_name: inviterName,
-          invite_url: inviteUrl,
-          invitee_email: to,
-        },
-      });
-    } else {
-      // Use plain text/HTML fallback
-      const subject = `You've been invited to join ${workspaceName}`;
-      const text = `
-Hello,
-
-${inviterName} has invited you to join the workspace "${workspaceName}".
-
-Click the link below to accept the invitation:
-${inviteUrl}
-
-This invitation will expire in 7 days.
-
-If you didn't expect this invitation, you can safely ignore this email.
-      `.trim();
-
-      const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .button { display: inline-block; padding: 12px 24px; background-color: #1976d2; color: white; text-decoration: none; border-radius: 4px; margin: 20px 0; }
-    .button:hover { background-color: #1565c0; }
-    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #666; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h2>You've been invited!</h2>
-    <p><strong>${inviterName}</strong> has invited you to join the workspace <strong>"${workspaceName}"</strong>.</p>
-    <a href="${inviteUrl}" class="button">Accept Invitation</a>
-    <p>Or copy and paste this link into your browser:</p>
-    <p style="word-break: break-all; color: #666;">${inviteUrl}</p>
-    <div class="footer">
-      <p>This invitation will expire in 7 days.</p>
-      <p>If you didn't expect this invitation, you can safely ignore this email.</p>
-    </div>
-  </div>
-</body>
-</html>
-      `.trim();
-
-      await sendMail({
-        to,
-        from: config.fromEmail,
-        subject,
-        text,
-        html,
-      });
+        `You've been invited to join ${workspaceName}`,
+        templateData,
+      );
+      console.log(
+        `✉️ [Dev] Invitation email logged for ${to} (workspace: ${workspaceName})`,
+      );
+      return;
     }
+
+    if (!config.invitationTemplateId) {
+      console.error(
+        "SENDGRID_INVITATION_TEMPLATE_ID not configured - skipping invitation email",
+      );
+      return;
+    }
+
+    await sendMail({
+      to,
+      from: config.fromEmail,
+      subject: `You've been invited to join ${workspaceName}`,
+      templateId: config.invitationTemplateId,
+      dynamicTemplateData: templateData,
+    });
 
     console.log(
       `✉️ Invitation email sent to ${to} for workspace ${workspaceName}`,
@@ -213,133 +176,70 @@ If you didn't expect this invitation, you can safely ignore this email.
     verifyUrl: string,
   ): Promise<void> {
     const config = getConfig();
+    const templateData = {
+      verification_code: code,
+      verify_url: verifyUrl,
+      email: to,
+    };
 
-    if (config.verificationTemplateId) {
-      // Use SendGrid dynamic template
-      await sendMail({
+    if (!config.apiKey) {
+      logEmailForDev(
+        "Verification",
         to,
-        from: config.fromEmail,
-        subject: "Verify your email address",
-        templateId: config.verificationTemplateId,
-        dynamicTemplateData: {
-          verification_code: code,
-          verify_url: verifyUrl,
-          email: to,
-        },
-      });
-    } else {
-      // Use plain text/HTML fallback
-      const subject = "Verify your email address";
-      const text = `
-Hello,
-
-Your verification code is: ${code}
-
-You can also click the link below to verify your email:
-${verifyUrl}
-
-This code will expire in 15 minutes.
-
-If you didn't create an account, you can safely ignore this email.
-      `.trim();
-
-      const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .code { font-size: 32px; font-weight: bold; letter-spacing: 8px; background: #f5f5f5; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0; }
-    .button { display: inline-block; padding: 12px 24px; background-color: #1976d2; color: white; text-decoration: none; border-radius: 4px; margin: 20px 0; }
-    .button:hover { background-color: #1565c0; }
-    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #666; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h2>Verify your email address</h2>
-    <p>Enter this code to verify your email:</p>
-    <div class="code">${code}</div>
-    <p>Or click the button below:</p>
-    <a href="${verifyUrl}" class="button">Verify Email</a>
-    <div class="footer">
-      <p>This code will expire in 15 minutes.</p>
-      <p>If you didn't create an account, you can safely ignore this email.</p>
-    </div>
-  </div>
-</body>
-</html>
-      `.trim();
-
-      await sendMail({
-        to,
-        from: config.fromEmail,
-        subject,
-        text,
-        html,
-      });
+        "Verify your email address",
+        templateData,
+      );
+      console.log(`✉️ [Dev] Verification email logged for ${to}`);
+      return;
     }
+
+    if (!config.verificationTemplateId) {
+      console.error(
+        "SENDGRID_VERIFICATION_TEMPLATE_ID not configured - skipping verification email",
+      );
+      return;
+    }
+
+    await sendMail({
+      to,
+      from: config.fromEmail,
+      subject: "Verify your email address",
+      templateId: config.verificationTemplateId,
+      dynamicTemplateData: templateData,
+    });
 
     console.log(`✉️ Verification email sent to ${to}`);
   }
 
   /**
-   * Send password reset email (for future use)
+   * Send password reset email
    */
   async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
     const config = getConfig();
-    const subject = "Reset your password";
+    const templateData = {
+      reset_url: resetUrl,
+      email: to,
+    };
 
-    const text = `
-Hello,
+    if (!config.apiKey) {
+      logEmailForDev("Password Reset", to, "Reset your password", templateData);
+      console.log(`✉️ [Dev] Password reset email logged for ${to}`);
+      return;
+    }
 
-We received a request to reset your password.
-
-Click the link below to reset your password:
-${resetUrl}
-
-This link will expire in 1 hour.
-
-If you didn't request a password reset, you can safely ignore this email.
-    `.trim();
-
-    const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .button { display: inline-block; padding: 12px 24px; background-color: #1976d2; color: white; text-decoration: none; border-radius: 4px; margin: 20px 0; }
-    .button:hover { background-color: #1565c0; }
-    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #666; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h2>Reset your password</h2>
-    <p>We received a request to reset your password.</p>
-    <a href="${resetUrl}" class="button">Reset Password</a>
-    <p>Or copy and paste this link into your browser:</p>
-    <p style="word-break: break-all; color: #666;">${resetUrl}</p>
-    <div class="footer">
-      <p>This link will expire in 1 hour.</p>
-      <p>If you didn't request a password reset, you can safely ignore this email.</p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
+    if (!config.passwordResetTemplateId) {
+      console.error(
+        "SENDGRID_PASSWORD_RESET_TEMPLATE_ID not configured - skipping password reset email",
+      );
+      return;
+    }
 
     await sendMail({
       to,
       from: config.fromEmail,
-      subject,
-      text,
-      html,
+      subject: "Reset your password",
+      templateId: config.passwordResetTemplateId,
+      dynamicTemplateData: templateData,
     });
 
     console.log(`✉️ Password reset email sent to ${to}`);
