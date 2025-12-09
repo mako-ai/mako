@@ -20,7 +20,7 @@ export interface IEmailVerification extends Document {
   _id: string;
   email: string;
   code: string;
-  type: "registration" | "link_password";
+  type: "registration" | "link_password" | "password_reset";
   expiresAt: Date;
   createdAt: Date;
 }
@@ -97,7 +97,7 @@ const EmailVerificationSchema = new Schema<IEmailVerification>(
     },
     type: {
       type: String,
-      enum: ["registration", "link_password"],
+      enum: ["registration", "link_password", "password_reset"],
       required: true,
     },
     expiresAt: {
@@ -174,17 +174,22 @@ const OAuthAccountSchema = new Schema<IOAuthAccount>(
 OAuthAccountSchema.index({ provider: 1, providerUserId: 1 }, { unique: true });
 OAuthAccountSchema.index({ userId: 1 });
 
-// Models
-export const User = mongoose.model<IUser>("User", UserSchema);
-export const Session = mongoose.model<ISession>("Session", SessionSchema);
-export const OAuthAccount = mongoose.model<IOAuthAccount>(
-  "OAuthAccount",
-  OAuthAccountSchema,
-);
-export const EmailVerification = mongoose.model<IEmailVerification>(
-  "EmailVerification",
-  EmailVerificationSchema,
-);
+// Models - use existing model if already compiled (prevents hot reload issues)
+export const User =
+  (mongoose.models.User as mongoose.Model<IUser>) ||
+  mongoose.model<IUser>("User", UserSchema);
+
+export const Session =
+  (mongoose.models.Session as mongoose.Model<ISession>) ||
+  mongoose.model<ISession>("Session", SessionSchema);
+
+export const OAuthAccount =
+  (mongoose.models.OAuthAccount as mongoose.Model<IOAuthAccount>) ||
+  mongoose.model<IOAuthAccount>("OAuthAccount", OAuthAccountSchema);
+
+export const EmailVerification =
+  (mongoose.models.EmailVerification as mongoose.Model<IEmailVerification>) ||
+  mongoose.model<IEmailVerification>("EmailVerification", EmailVerificationSchema);
 
 /**
  * Database connection helper

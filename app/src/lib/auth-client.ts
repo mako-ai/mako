@@ -200,6 +200,42 @@ class AuthClient {
   initiateOAuth(provider: "google" | "github") {
     window.location.href = this.buildUrl(`/auth/${provider}`);
   }
+
+  /**
+   * Request password reset
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const response = await fetch(this.buildUrl("/auth/forgot-password"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ email }),
+    });
+
+    await this.handleResponse(response);
+  }
+
+  /**
+   * Reset password with code
+   */
+  async resetPassword(
+    email: string,
+    code: string,
+    password: string,
+  ): Promise<void> {
+    const response = await fetch(this.buildUrl("/auth/reset-password"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ email, code, password }),
+    });
+
+    await this.handleResponse(response);
+  }
 }
 
 // Export singleton instance

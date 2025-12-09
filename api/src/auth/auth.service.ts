@@ -2,7 +2,12 @@ import bcrypt from "bcrypt";
 import { randomInt } from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { sessionManager, ValidatedSession, ValidatedUser } from "./session";
-import { User, OAuthAccount, EmailVerification } from "../database/schema";
+import {
+  User,
+  OAuthAccount,
+  EmailVerification,
+  Session,
+} from "../database/schema";
 import type { OAuthProvider } from "./arctic";
 import { workspaceService } from "../services/workspace.service";
 import { emailService } from "../services/email.service";
@@ -546,5 +551,100 @@ export class AuthService {
     // Send verification email
     const verifyUrl = `${process.env.CLIENT_URL}/set-password?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
     await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
+  }
+
+  /**
+   * Request password reset - sends email with reset link
+   * For security, always returns success even if email doesn't exist
+   */
+  async requestPasswordReset(email: string) {
+    const normalizedEmail = normalizeEmail(email);
+
+    // Find user - but don't reveal if they exist or not
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      // Return silently for security - don't reveal if email exists
+      console.log(
+        `Password reset requested for non-existent email: ${normalizedEmail}`,
+      );
+      return;
+    }
+
+    // Check if user has a password (not OAuth-only)
+    if (!user.hashedPassword) {
+      // User is OAuth-only - silently ignore for security
+      console.log(
+        `Password reset requested for OAuth-only account: ${normalizedEmail}`,
+      );
+      return;
+    }
+
+    // Delete old password reset codes for this email
+    await EmailVerification.deleteMany({
+      email: normalizedEmail,
+      type: "password_reset",
+    });
+
+    // Generate new reset code
+    const code = generateVerificationCode();
+    await EmailVerification.create({
+      email: normalizedEmail,
+      code,
+      type: "password_reset",
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
+    });
+
+    // Send password reset email
+    const resetUrl = `${process.env.CLIENT_URL}/reset-password?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
+    await emailService.sendPasswordResetEmail(normalizedEmail, resetUrl);
+  }
+
+  /**
+   * Reset password with verification code
+   */
+  async resetPassword(email: string, code: string, newPassword: string) {
+    const normalizedEmail = normalizeEmail(email);
+
+    // Validate password
+    if (!newPassword) {
+      throw new Error("Password is required");
+    }
+
+    if (newPassword.length < 8) {
+      throw new Error("Password must be at least 8 characters long");
+    }
+
+    // Find verification record
+    const verification = await EmailVerification.findOne({
+      email: normalizedEmail,
+      code,
+      type: "password_reset",
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!verification) {
+      throw new Error("Invalid or expired reset code");
+    }
+
+    // Find user
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    // Hash and save new password
+    const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10");
+    const hashedPassword = await bcrypt.hash(newPassword, rounds);
+    user.hashedPassword = hashedPassword;
+    await user.save();
+
+    // Delete verification record
+    await EmailVerification.deleteOne({ _id: verification._id });
+
+    // Invalidate all existing sessions for this user (security measure)
+    await Session.deleteMany({ userId: user._id });
+
+    return { success: true };
   }
 }

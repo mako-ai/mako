@@ -269,6 +269,59 @@ authRoutes.post("/set-password", authMiddleware, async c => {
 });
 
 /**
+ * Request password reset
+ */
+authRoutes.post("/forgot-password", authRateLimiter, async c => {
+  try {
+    const { email } = await c.req.json();
+
+    if (!email) {
+      return c.json({ error: "Email is required" }, 400);
+    }
+
+    await authService.requestPasswordReset(email);
+
+    // Always return success for security (don't reveal if email exists)
+    return c.json({
+      message:
+        "If an account exists with this email, you will receive a password reset link.",
+    });
+  } catch (error: any) {
+    // Log but don't expose internal errors
+    console.error("Password reset request error:", error);
+    return c.json({
+      message:
+        "If an account exists with this email, you will receive a password reset link.",
+    });
+  }
+});
+
+/**
+ * Reset password with code
+ */
+authRoutes.post("/reset-password", authRateLimiter, async c => {
+  try {
+    const { email, code, password } = await c.req.json();
+
+    if (!email || !code || !password) {
+      return c.json(
+        { error: "Email, code, and new password are required" },
+        400,
+      );
+    }
+
+    await authService.resetPassword(email, code, password);
+
+    return c.json({
+      message:
+        "Password reset successfully. You can now login with your new password.",
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
  * Google OAuth initiation
  */
 authRoutes.get("/google", async c => {
