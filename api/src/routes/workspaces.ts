@@ -768,8 +768,7 @@ workspaceRoutes.get("/invites/:token", async c => {
     return c.json(
       {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to get invite",
+        error: error instanceof Error ? error.message : "Failed to get invite",
       },
       500,
     );
@@ -795,6 +794,18 @@ workspaceRoutes.post(
             error: "Invalid or expired invitation",
           },
           404,
+        );
+      }
+
+      // Check if invite is expired BEFORE checking email match
+      // This ensures users get the correct error message
+      if (invite.expiresAt < new Date()) {
+        return c.json(
+          {
+            success: false,
+            error: "This invitation has expired",
+          },
+          410,
         );
       }
 
