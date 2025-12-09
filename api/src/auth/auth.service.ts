@@ -62,7 +62,9 @@ export class AuthService {
         }
       }
 
-      // If user exists but is not verified, allow re-registration
+      // If user exists but is not verified, resend verification email
+      // SECURITY: Do NOT update the password - this prevents account takeover attacks
+      // where an attacker could overwrite a legitimate user's password before verification
       if (!existingUser.emailVerified && existingUser.hashedPassword) {
         // Delete old verification codes and send new one
         await EmailVerification.deleteMany({
@@ -70,13 +72,7 @@ export class AuthService {
           type: "registration",
         });
 
-        // Update password in case it changed
-        const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10");
-        const hashedPassword = await bcrypt.hash(password, rounds);
-        existingUser.hashedPassword = hashedPassword;
-        await existingUser.save();
-
-        // Generate and send new verification code
+        // Generate and send new verification code (password stays unchanged)
         const code = generateVerificationCode();
         await EmailVerification.create({
           email: normalizedEmail,
@@ -92,6 +88,8 @@ export class AuthService {
           verifyUrl,
         );
 
+        // Return success but indicate this was a resend, not a password update
+        // The user should use their original password to log in after verification
         return { user: existingUser, requiresVerification: true };
       }
       throw new Error("User with this email already exists");
@@ -179,7 +177,7 @@ export class AuthService {
     else {
       const workspace = await workspaceService.createWorkspace(
         user._id,
-        `${email}'s Workspace`,
+        `${normalizedEmail}'s Workspace`,
       );
       activeWorkspaceId = workspace._id.toString();
     }
@@ -358,9 +356,20 @@ export class AuthService {
     }
 
     // If user exists but not verified, mark as verified (OAuth verifies email)
+    // SECURITY: Also clear any existing password to prevent account takeover attacks.
+    // Attack scenario: Attacker pre-registers with victim's email and sets a password.
+    // When victim later signs up via OAuth, without clearing the password, the attacker
+    // could still log in using the email/password they set.
     if (!user.emailVerified) {
       user.emailVerified = true;
+      user.hashedPassword = undefined;
       await user.save();
+
+      // Clean up any pending verification records since OAuth supersedes email verification
+      await EmailVerification.deleteMany({
+        email: user.email,
+        type: "registration",
+      });
     }
 
     // Create OAuth account link

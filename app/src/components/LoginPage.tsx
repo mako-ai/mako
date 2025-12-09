@@ -18,6 +18,7 @@ import {
   GitHub as GitHubIcon,
 } from "@mui/icons-material";
 import { useAuth } from "../hooks/useAuth";
+import { handleInviteRedirectIfPresent } from "../utils/invite-redirect";
 
 interface LoginPageProps {
   onSwitchToRegister: () => void;
@@ -55,7 +56,8 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
 
     try {
       await login({ email, password });
-      // Redirect handled by auth context
+      // Check for invite redirect, otherwise auth context handles navigation
+      handleInviteRedirectIfPresent();
     } catch (err) {
       // Error displayed in UI via error state from context
     }

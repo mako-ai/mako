@@ -1,9 +1,10 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
 import { CircularProgress, Box } from "@mui/material";
 import { OnboardingFlow } from "./OnboardingFlow";
+import { getAndClearInviteRedirect } from "../utils/invite-redirect";
 
 /**
  * Props for ProtectedRoute component
@@ -26,6 +27,21 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     loadWorkspaces,
   } = useWorkspace();
   const location = useLocation();
+  const [checkingRedirect, setCheckingRedirect] = useState(true);
+
+  // Check for invite redirect after OAuth login
+  // This handles the case where user logs in via OAuth and should be redirected to an invite page
+  useEffect(() => {
+    if (!authLoading && user) {
+      const inviteRedirect = getAndClearInviteRedirect();
+      if (inviteRedirect) {
+        // Redirect to the stored invite URL
+        window.location.href = inviteRedirect;
+        return;
+      }
+    }
+    setCheckingRedirect(false);
+  }, [authLoading, user]);
 
   // Handler for when onboarding is complete
   const handleOnboardingComplete = useCallback(() => {
@@ -33,8 +49,8 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     loadWorkspaces();
   }, [loadWorkspaces]);
 
-  // Show loading spinner while checking auth status
-  if (authLoading) {
+  // Show loading spinner while checking auth status or redirect
+  if (authLoading || checkingRedirect) {
     return (
       <Box
         display="flex"

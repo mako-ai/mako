@@ -21,6 +21,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { workspaceClient, type InviteDetails } from "../lib/workspace-client";
 import { normalizeEmail } from "../utils/email";
+import { setInviteRedirect } from "../utils/invite-redirect";
 
 interface AcceptInviteProps {
   token: string;
@@ -37,7 +38,7 @@ type InviteState =
 
 export function AcceptInvite({ token }: AcceptInviteProps) {
   const { acceptInvite } = useWorkspace();
-  const { user, loading: authLoading, loginWithOAuth } = useAuth();
+  const { user, loading: authLoading, loginWithOAuth, logout } = useAuth();
 
   const [state, setState] = useState<InviteState>("loading");
   const [inviteDetails, setInviteDetails] = useState<InviteDetails | null>(
@@ -123,20 +124,21 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
 
   const handleLogin = () => {
     // Store the current URL to redirect back after login
-    sessionStorage.setItem("inviteRedirect", window.location.href);
+    setInviteRedirect(window.location.href);
     window.location.href = "/login";
   };
 
   const handleRegister = () => {
     // Store the current URL to redirect back after registration
-    sessionStorage.setItem("inviteRedirect", window.location.href);
+    setInviteRedirect(window.location.href);
     window.location.href = `/register?email=${encodeURIComponent(inviteDetails?.inviteeEmail || "")}`;
   };
 
-  const handleSwitchAccount = () => {
+  const handleSwitchAccount = async () => {
     // Logout and redirect to login
-    sessionStorage.setItem("inviteRedirect", window.location.href);
-    window.location.href = "/logout";
+    setInviteRedirect(window.location.href);
+    await logout();
+    window.location.href = "/login";
   };
 
   // Loading state

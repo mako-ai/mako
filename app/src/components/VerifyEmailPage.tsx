@@ -12,6 +12,10 @@ import {
 } from "@mui/material";
 import { Email as EmailIcon, CheckCircle } from "@mui/icons-material";
 import { useAuth } from "../hooks/useAuth";
+import {
+  getAndClearInviteRedirect,
+  hasInviteRedirect,
+} from "../utils/invite-redirect";
 
 export function VerifyEmailPage() {
   const { verifyEmail, resendVerification, error, loading, clearError } =
@@ -48,9 +52,14 @@ export function VerifyEmailPage() {
     try {
       await verifyEmail(email, code);
       setVerified(true);
-      // Redirect after short delay
+      // Redirect after short delay, checking for invite redirect first
       setTimeout(() => {
-        navigate("/");
+        const inviteRedirect = getAndClearInviteRedirect();
+        if (inviteRedirect) {
+          window.location.href = inviteRedirect;
+        } else {
+          navigate("/");
+        }
       }, 2000);
     } catch (err) {
       // Error will be shown in UI
@@ -69,9 +78,14 @@ export function VerifyEmailPage() {
     try {
       await verifyEmail(email, code);
       setVerified(true);
-      // Redirect after short delay
+      // Redirect after short delay, checking for invite redirect first
       setTimeout(() => {
-        navigate("/");
+        const inviteRedirect = getAndClearInviteRedirect();
+        if (inviteRedirect) {
+          window.location.href = inviteRedirect;
+        } else {
+          navigate("/");
+        }
       }, 2000);
     } catch (err) {
       // Error displayed in UI
@@ -126,7 +140,7 @@ export function VerifyEmailPage() {
             Your email has been verified successfully.
           </Typography>
           <Typography color="text.secondary">
-            Redirecting you to the app...
+            Redirecting you{hasInviteRedirect() ? " to the invitation" : ""}...
           </Typography>
         </Paper>
       </Box>
