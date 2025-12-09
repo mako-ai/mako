@@ -40,7 +40,7 @@ import { apiClient } from "../lib/api-client";
 
 interface WebhookStatsProps {
   workspaceId: string;
-  jobId: string;
+  flowId: string;
   onEdit?: () => void;
 }
 
@@ -67,7 +67,7 @@ interface WebhookStats {
 
 export function WebhookStats({
   workspaceId,
-  jobId,
+  flowId,
   onEdit,
 }: WebhookStatsProps) {
   const [stats, setStats] = useState<WebhookStats | null>(null);
@@ -89,7 +89,7 @@ export function WebhookStats({
       const response = await apiClient.get<{
         success: boolean;
         data: WebhookStats;
-      }>(`/workspaces/${workspaceId}/sync-jobs/${jobId}/webhook/stats`);
+      }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/stats`);
 
       if (response.success && response.data) {
         setStats(response.data);
@@ -109,7 +109,7 @@ export function WebhookStats({
           events: WebhookEvent[];
         };
       }>(
-        `/workspaces/${workspaceId}/sync-jobs/${jobId}/webhook/events?limit=${rowsPerPage}&offset=${page * rowsPerPage}`,
+        `/workspaces/${workspaceId}/flows/${flowId}/webhook/events?limit=${rowsPerPage}&offset=${page * rowsPerPage}`,
       );
 
       if (response.success && response.data) {
@@ -126,7 +126,7 @@ export function WebhookStats({
   const fetchEventDetails = async (eventId: string) => {
     try {
       const response = await apiClient.get(
-        `/workspaces/${workspaceId}/sync-jobs/${jobId}/webhook/events/${eventId}`,
+        `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}`,
       );
 
       if (response.success && response.data) {
@@ -140,7 +140,7 @@ export function WebhookStats({
   const retryEvent = async (eventId: string) => {
     try {
       const response = await apiClient.post(
-        `/workspaces/${workspaceId}/sync-jobs/${jobId}/webhook/events/${eventId}/retry`,
+        `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}/retry`,
       );
 
       if (response.success) {
@@ -156,7 +156,7 @@ export function WebhookStats({
   useEffect(() => {
     fetchStats();
     fetchEvents();
-  }, [workspaceId, jobId, page, rowsPerPage]);
+  }, [workspaceId, flowId, page, rowsPerPage]);
 
   const handleRefresh = () => {
     setLoading(true);

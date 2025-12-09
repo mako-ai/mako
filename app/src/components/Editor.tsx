@@ -29,7 +29,7 @@ import ResultsTable from "./ResultsTable";
 import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
-import { SyncJobEditor } from "./SyncJobEditor";
+import { FlowEditor } from "./FlowEditor";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, useAppDispatch } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -437,8 +437,8 @@ function Editor() {
                         <SettingsIcon size={20} strokeWidth={1.5} />
                       ) : tab.kind === "connectors" ? (
                         <DataSourceIcon size={20} strokeWidth={1.5} />
-                      ) : tab.kind === "sync-job-editor" ? (
-                        tab.metadata?.jobType === "webhook" ? (
+                      ) : tab.kind === "flow-editor" ? (
+                        tab.metadata?.flowType === "webhook" ? (
                           <WebhookIcon size={20} strokeWidth={1.5} />
                         ) : tab.metadata?.enabled === false ? (
                           <PauseIcon size={20} strokeWidth={1.5} />
@@ -510,13 +510,13 @@ function Editor() {
                       typeof tab.content === "string" ? tab.content : undefined
                     }
                   />
-                ) : tab.kind === "sync-job-editor" ? (
-                  <SyncJobEditor
-                    jobId={tab.metadata?.jobId}
+                ) : tab.kind === "flow-editor" ? (
+                  <FlowEditor
+                    flowId={tab.metadata?.flowId}
                     isNew={tab.metadata?.isNew}
-                    jobType={tab.metadata?.jobType}
+                    flowType={tab.metadata?.flowType}
                     onSave={() => {
-                      // The SyncJobEditor already handles refreshing the jobs list
+                      // The FlowEditor already handles refreshing the flows list
                       // We don't need to close the tab anymore
                     }}
                     onCancel={() => {

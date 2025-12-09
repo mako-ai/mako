@@ -57,7 +57,7 @@ export function UrlSync() {
     // Regex patterns for routes
     const consoleMatch = path.match(/^\/c\/([a-zA-Z0-9-]+)/);
     const connectorMatch = path.match(/^\/cx\/([a-zA-Z0-9-]+)/);
-    const transferMatch = path.match(/^\/t\/([a-zA-Z0-9-]+)/);
+    const flowMatch = path.match(/^\/f\/([a-zA-Z0-9-]+)/);
     const settingsMatch = path.match(/^\/settings/);
 
     if (consoleMatch) {
@@ -91,31 +91,25 @@ export function UrlSync() {
         });
         setActiveConsole(id);
       }
-    } else if (transferMatch) {
-      // /t/:transferId
-      const transferId = transferMatch[1];
-      setActiveView("sync-jobs");
-
-      // Similar logic for sync jobs / transfers
-      // Note: Sync jobs might be handled differently in your UI (e.g. modal vs tab)
-      // Assuming tab-based approach similar to connectors for now based on user request
-      // If "Transfers" is just a list view, we might just switch the view.
-      // But user asked for "/t/{transfer_id}", implying a specific detail view.
+    } else if (flowMatch) {
+      // /f/:flowId
+      const flowId = flowMatch[1];
+      setActiveView("flows");
 
       // Check for existing tab
       const existingTab = consoleTabs.find(
-        t => t.kind === "sync-job-editor" && t.metadata?.jobId === transferId,
+        t => t.kind === "flow-editor" && t.metadata?.flowId === flowId,
       );
 
       if (existingTab) {
         setActiveConsole(existingTab.id);
       } else {
         const id = addConsoleTab({
-          title: "Transfer",
+          title: "Flow",
           content: "",
           initialContent: "",
-          kind: "sync-job-editor",
-          metadata: { jobId: transferId },
+          kind: "flow-editor",
+          metadata: { flowId },
         });
         setActiveConsole(id);
       }
@@ -168,11 +162,11 @@ export function UrlSync() {
           newPath = `/cx/${tab.content}`;
         }
       }
-    } else if (activeView === "sync-jobs") {
+    } else if (activeView === "flows") {
       if (activeConsoleId) {
         const tab = consoleTabs.find(t => t.id === activeConsoleId);
-        if (tab && tab.kind === "sync-job-editor" && tab.metadata?.jobId) {
-          newPath = `/t/${tab.metadata.jobId}`;
+        if (tab && tab.kind === "flow-editor" && tab.metadata?.flowId) {
+          newPath = `/f/${tab.metadata.flowId}`;
         }
       }
     }

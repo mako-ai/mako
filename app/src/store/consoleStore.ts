@@ -9,7 +9,7 @@ export type TabKind =
   | "settings"
   | "connectors"
   | "members"
-  | "sync-job-editor";
+  | "flow-editor";
 
 // Store version managers for each console tab
 const versionManagers = new Map<string, ConsoleVersionManager>();

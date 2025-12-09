@@ -1,16 +1,16 @@
 import { inngest } from "./client";
 import {
-  syncJobFunction,
-  scheduledSyncJobFunction,
-  manualSyncJobFunction,
-  cancelSyncJobFunction,
-  cleanupAbandonedJobsFunction,
-} from "./functions/sync-job";
+  flowFunction,
+  flowSchedulerFunction,
+  manualFlowFunction,
+  cancelFlowFunction,
+  cleanupAbandonedFlowsFunction,
+} from "./functions/flow";
 import {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
-} from "./functions/webhook-job";
+} from "./functions/webhook-flow";
 
 // Check if we're running in development mode
 const isDevelopment =
@@ -19,36 +19,34 @@ const isDevelopment =
 
 // Base functions that should always be available
 const baseFunctions = [
-  syncJobFunction,
-  manualSyncJobFunction,
-  cancelSyncJobFunction,
-  cleanupAbandonedJobsFunction,
+  flowFunction,
+  manualFlowFunction,
+  cancelFlowFunction,
+  cleanupAbandonedFlowsFunction,
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
 ];
 
-// Conditionally add scheduled sync job function (only in production)
+// Conditionally add flow scheduler (only in production)
 export const functions = isDevelopment
   ? baseFunctions
-  : [...baseFunctions, scheduledSyncJobFunction];
+  : [...baseFunctions, flowSchedulerFunction];
 
 if (isDevelopment) {
-  console.log("⚠️  Scheduled sync job is DISABLED in development mode");
+  console.log("⚠️  Scheduled flows are DISABLED in development mode");
 } else {
-  console.log("✅ Scheduled sync job is ENABLED in production mode");
+  console.log("✅ Scheduled flows are ENABLED in production mode");
 }
 
 // Re-export for named imports
 export { inngest };
 export {
-  syncJobFunction,
-  scheduledSyncJobFunction,
-  manualSyncJobFunction,
-  cancelSyncJobFunction,
-  cleanupAbandonedJobsFunction,
-};
-export {
+  flowFunction,
+  flowSchedulerFunction,
+  manualFlowFunction,
+  cancelFlowFunction,
+  cleanupAbandonedFlowsFunction,
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,

@@ -8,7 +8,7 @@ import {
 import {
   DatabaseConnection,
   IDatabaseConnection,
-  SyncJob,
+  Flow,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
@@ -348,18 +348,18 @@ workspaceDatabaseRoutes.delete(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      // Check for dependent sync jobs
-      const dependentJob = await SyncJob.findOne({
+      // Check for dependent flows
+      const dependentFlow = await Flow.findOne({
         destinationDatabaseId: new Types.ObjectId(databaseId),
         workspaceId: workspace._id,
       });
 
-      if (dependentJob) {
+      if (dependentFlow) {
         return c.json(
           {
             success: false,
             error:
-              "Cannot delete database because it is used by one or more sync jobs",
+              "Cannot delete database because it is used by one or more flows",
           },
           409,
         );

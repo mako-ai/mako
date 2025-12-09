@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import {
-  SyncJob,
+  Flow,
   WebhookEvent,
   Connector as DataSource,
 } from "../database/workspace-schema";
@@ -12,14 +12,14 @@ const router = new Hono();
 
 /**
  * Webhook endpoint handler
- * URL structure: /api/webhooks/:workspaceId/:jobId
+ * URL structure: /api/webhooks/:workspaceId/:flowId
  */
-router.post("/webhooks/:workspaceId/:jobId", async c => {
-  const { workspaceId, jobId } = c.req.param();
+router.post("/webhooks/:workspaceId/:flowId", async c => {
+  const { workspaceId, flowId } = c.req.param();
 
   console.log("=== WEBHOOK DEBUG START ===");
   console.log("Workspace ID:", workspaceId);
-  console.log("Job ID:", jobId);
+  console.log("Flow ID:", flowId);
 
   // For Stripe webhooks, we need the raw body as Buffer
   // Using arrayBuffer and converting to Buffer preserves the exact bytes
@@ -32,26 +32,26 @@ router.post("/webhooks/:workspaceId/:jobId", async c => {
   console.log("Raw body (first 200 chars):", rawBodyText.substring(0, 200));
 
   try {
-    // 1. Quick validation - find the sync job
-    const syncJob = await SyncJob.findOne({
-      _id: jobId,
+    // 1. Quick validation - find the flow
+    const flow = await Flow.findOne({
+      _id: flowId,
       workspaceId: workspaceId,
       type: "webhook",
       enabled: true,
     });
 
-    if (!syncJob) {
-      console.warn(`Webhook received for invalid job: ${jobId}`);
+    if (!flow) {
+      console.warn(`Webhook received for invalid flow: ${flowId}`);
       return c.json({ error: "Invalid webhook endpoint" }, 404);
     }
 
-    if (!syncJob.webhookConfig?.enabled) {
-      console.warn(`Webhook received for disabled job: ${jobId}`);
+    if (!flow.webhookConfig?.enabled) {
+      console.warn(`Webhook received for disabled flow: ${flowId}`);
       return c.json({ error: "Webhook endpoint disabled" }, 403);
     }
 
     // 2. Get the data source and connector
-    const dataSource = await DataSource.findById(syncJob.dataSourceId);
+    const dataSource = await DataSource.findById(flow.dataSourceId);
     if (!dataSource) {
       return c.json({ error: "Data source not found" }, 404);
     }
@@ -70,24 +70,24 @@ router.post("/webhooks/:workspaceId/:jobId", async c => {
 
     if (connector.supportsWebhooks()) {
       console.log("Connector supports webhooks, verifying signature...");
-      console.log("Webhook secret from DB:", syncJob.webhookConfig.secret);
+      console.log("Webhook secret from DB:", flow.webhookConfig.secret);
       console.log(
         "Webhook secret length:",
-        syncJob.webhookConfig.secret?.length,
+        flow.webhookConfig.secret?.length,
       );
       console.log(
         "Secret starts with 'whsec_':",
-        syncJob.webhookConfig.secret?.startsWith("whsec_"),
+        flow.webhookConfig.secret?.startsWith("whsec_"),
       );
       console.log(
         "First 10 chars of secret:",
-        syncJob.webhookConfig.secret?.substring(0, 10),
+        flow.webhookConfig.secret?.substring(0, 10),
       );
 
       const verificationResult = await connector.verifyWebhook({
         payload: rawBodyText,
         headers: headers,
-        secret: syncJob.webhookConfig.secret,
+        secret: flow.webhookConfig.secret,
       });
 
       if (!verificationResult.valid) {
@@ -117,7 +117,7 @@ router.post("/webhooks/:workspaceId/:jobId", async c => {
 
     // 3. Store the raw event for processing
     const webhookEvent = new WebhookEvent({
-      jobId,
+      flowId,
       workspaceId,
       eventId: event.id || uuidv4(),
       eventType: event.type || event.event_type || event.action || "unknown",
@@ -131,8 +131,8 @@ router.post("/webhooks/:workspaceId/:jobId", async c => {
     await webhookEvent.save();
 
     // 5. Update webhook stats
-    await SyncJob.updateOne(
-      { _id: jobId },
+    await Flow.updateOne(
+      { _id: flowId },
       {
         $set: { "webhookConfig.lastReceivedAt": new Date() },
         $inc: { "webhookConfig.totalReceived": 1 },
@@ -143,7 +143,7 @@ router.post("/webhooks/:workspaceId/:jobId", async c => {
     await inngest.send({
       name: "webhook/event.process",
       data: {
-        jobId,
+        flowId,
         workspaceId,
         eventId: webhookEvent.eventId,
       },
@@ -171,18 +171,18 @@ router.post("/webhooks/:workspaceId/:jobId", async c => {
  * Test webhook endpoint
  * Sends a test event to verify webhook configuration
  */
-router.post("/webhooks/:workspaceId/:jobId/test", async c => {
-  const { workspaceId, jobId } = c.req.param();
+router.post("/webhooks/:workspaceId/:flowId/test", async c => {
+  const { workspaceId, flowId } = c.req.param();
 
   try {
-    const syncJob = await SyncJob.findOne({
-      _id: jobId,
+    const flow = await Flow.findOne({
+      _id: flowId,
       workspaceId: workspaceId,
       type: "webhook",
     });
 
-    if (!syncJob) {
-      return c.json({ error: "Webhook job not found" });
+    if (!flow) {
+      return c.json({ error: "Webhook flow not found" });
     }
 
     // Create a test event
@@ -198,7 +198,7 @@ router.post("/webhooks/:workspaceId/:jobId/test", async c => {
 
     // Store the test event
     const webhookEvent = new WebhookEvent({
-      jobId,
+      flowId,
       workspaceId,
       eventId: testEvent.id,
       eventType: testEvent.type,
@@ -214,7 +214,7 @@ router.post("/webhooks/:workspaceId/:jobId/test", async c => {
     await inngest.send({
       name: "webhook/event.process",
       data: {
-        jobId,
+        flowId,
         workspaceId,
         eventId: webhookEvent.eventId,
         isTest: true,

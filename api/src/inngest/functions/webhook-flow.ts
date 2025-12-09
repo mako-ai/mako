@@ -1,7 +1,7 @@
 import { inngest } from "../client";
 import {
   WebhookEvent,
-  SyncJob,
+  Flow,
   Connector as DataSource,
   DatabaseConnection,
 } from "../../database/workspace-schema";
@@ -21,14 +21,14 @@ export const webhookEventProcessFunction = inngest.createFunction(
   },
   { event: "webhook/event.process" },
   async ({ event, step }) => {
-    const { jobId, eventId } = event.data;
-    const logger = getSyncLogger(`webhook.${jobId}`);
+    const { flowId, eventId } = event.data;
+    const logger = getSyncLogger(`webhook.${flowId}`);
 
-    logger.debug("Processing webhook event", { jobId, eventId });
+    logger.debug("Processing webhook event", { flowId, eventId });
 
     // Get the webhook event
     const webhookEvent = (await step.run("fetch-webhook-event", async () => {
-      const event = await WebhookEvent.findOne({ jobId, eventId });
+      const event = await WebhookEvent.findOne({ flowId, eventId });
       if (!event) {
         throw new Error(`Webhook event not found: ${eventId}`);
       }
@@ -46,21 +46,21 @@ export const webhookEventProcessFunction = inngest.createFunction(
       );
     });
 
-    // Get job details
-    const job: any = await step.run("fetch-job-details", async () => {
-      const syncJob = await SyncJob.findById(jobId);
-      if (!syncJob) {
-        throw new Error(`Job not found: ${jobId}`);
+    // Get flow details
+    const flow: any = await step.run("fetch-flow-details", async () => {
+      const found = await Flow.findById(flowId);
+      if (!found) {
+        throw new Error(`Flow not found: ${flowId}`);
       }
-      return syncJob.toObject();
+      return found.toObject();
     });
 
     // Process the event
     const result = await step.run("process-event", async () => {
       try {
-        const dataSource = await DataSource.findById(job.dataSourceId);
+        const dataSource = await DataSource.findById(flow.dataSourceId);
         const database = await DatabaseConnection.findById(
-          job.destinationDatabaseId,
+          flow.destinationDatabaseId,
         );
 
         if (!dataSource || !database) {
@@ -68,7 +68,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
         }
 
         // Get MongoDB connection through mongoose
-        const dbConnection = SyncJob.db;
+        const dbConnection = Flow.db;
         // Use the actual database name from connection, not the label
         const dbName = database.connection.database || database.name;
         const db = dbConnection.useDb(dbName);
@@ -237,10 +237,10 @@ export const webhookEventProcessFunction = inngest.createFunction(
       }
     });
 
-    // Update job stats
-    await step.run("update-job-stats", async () => {
-      await SyncJob.updateOne(
-        { _id: jobId },
+    // Update flow stats
+    await step.run("update-flow-stats", async () => {
+      await Flow.updateOne(
+        { _id: flowId },
         {
           $set: {
             lastRunAt: new Date(),
@@ -326,7 +326,7 @@ export const webhookRetryFunction = inngest.createFunction(
         await inngest.send({
           name: "webhook/event.process",
           data: {
-            jobId: event.jobId.toString(),
+            flowId: event.flowId.toString(),
             eventId: event.eventId,
           },
         });
@@ -344,3 +344,4 @@ export const webhookRetryFunction = inngest.createFunction(
     return result;
   },
 );
+
