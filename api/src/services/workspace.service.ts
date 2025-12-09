@@ -455,6 +455,92 @@ export class WorkspaceService {
   }
 
   /**
+   * Atomically get or create a default workspace for a user.
+   * Prevents race conditions where concurrent requests could create duplicate workspaces.
+   * Returns the workspace and whether it was newly created.
+   */
+  async getOrCreateDefaultWorkspace(
+    userId: string,
+    defaultName: string,
+  ): Promise<{ workspace: IWorkspace; created: boolean }> {
+    // Use a transaction to ensure atomicity
+    const mongoSession = await Workspace.db.startSession();
+
+    try {
+      let result: { workspace: IWorkspace; created: boolean } | null = null;
+
+      await mongoSession.withTransaction(async () => {
+        // Check for existing workspaces within the transaction
+        const existingMember = await WorkspaceMember.findOne({
+          userId: userId,
+        }).session(mongoSession);
+
+        if (existingMember) {
+          // User already has a workspace
+          const workspace = await Workspace.findById(
+            existingMember.workspaceId,
+          ).session(mongoSession);
+          if (workspace) {
+            result = { workspace, created: false };
+            return;
+          }
+        }
+
+        // No workspace exists, create one
+        // Generate unique slug
+        const baseSlug = this.generateSlug(defaultName);
+        let uniqueSlug = baseSlug;
+        let counter = 1;
+        while (
+          await Workspace.findOne({ slug: uniqueSlug }).session(mongoSession)
+        ) {
+          uniqueSlug = `${baseSlug}-${counter}`;
+          counter++;
+        }
+
+        // Create workspace
+        const workspace = new Workspace({
+          name: defaultName,
+          slug: uniqueSlug,
+          createdBy: userId,
+          settings: {
+            maxDatabases: 5,
+            maxMembers: 10,
+            billingTier: "free",
+          },
+        });
+        await workspace.save({ session: mongoSession });
+
+        // Add creator as owner
+        const member = new WorkspaceMember({
+          workspaceId: workspace._id,
+          userId: userId,
+          role: "owner",
+          joinedAt: new Date(),
+        });
+        await member.save({ session: mongoSession });
+
+        // Update user's active workspace in session
+        await Session.updateMany(
+          { userId },
+          { activeWorkspaceId: workspace._id.toString() },
+          { session: mongoSession },
+        );
+
+        result = { workspace, created: true };
+      });
+
+      if (!result) {
+        throw new Error("Failed to get or create workspace");
+      }
+
+      return result;
+    } finally {
+      await mongoSession.endSession();
+    }
+  }
+
+  /**
    * Generate slug from name
    */
   private generateSlug(name: string): string {

@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect } from "react";
+import { useState, FormEvent, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   Box,
@@ -29,7 +29,32 @@ export function VerifyEmailPage() {
   const [resendLoading, setResendLoading] = useState(false);
   const [verified, setVerified] = useState(false);
 
-  // Get email and code from URL params
+  // Track if auto-verification has been attempted to prevent duplicate calls
+  // (React Strict Mode runs effects twice in development)
+  const autoVerifyAttempted = useRef(false);
+
+  const handleAutoVerify = useCallback(
+    async (emailParam: string, codeParam: string) => {
+      try {
+        await verifyEmail(emailParam, codeParam);
+        setVerified(true);
+        // Redirect after short delay, checking for invite redirect first
+        setTimeout(() => {
+          const inviteRedirect = getAndClearInviteRedirect();
+          if (inviteRedirect) {
+            window.location.href = inviteRedirect;
+          } else {
+            navigate("/");
+          }
+        }, 2000);
+      } catch (err) {
+        // Error will be shown in UI
+      }
+    },
+    [verifyEmail, navigate],
+  );
+
+  // Get email and code from URL params and auto-verify if present
   useEffect(() => {
     const emailParam = searchParams.get("email");
     const codeParam = searchParams.get("code");
@@ -42,29 +67,12 @@ export function VerifyEmailPage() {
       setCode(codeParam);
     }
 
-    // Auto-verify if both email and code are provided
-    if (emailParam && codeParam) {
+    // Auto-verify if both email and code are provided, but only once
+    if (emailParam && codeParam && !autoVerifyAttempted.current) {
+      autoVerifyAttempted.current = true;
       handleAutoVerify(emailParam, codeParam);
     }
-  }, [searchParams]);
-
-  const handleAutoVerify = async (email: string, code: string) => {
-    try {
-      await verifyEmail(email, code);
-      setVerified(true);
-      // Redirect after short delay, checking for invite redirect first
-      setTimeout(() => {
-        const inviteRedirect = getAndClearInviteRedirect();
-        if (inviteRedirect) {
-          window.location.href = inviteRedirect;
-        } else {
-          navigate("/");
-        }
-      }, 2000);
-    } catch (err) {
-      // Error will be shown in UI
-    }
-  };
+  }, [searchParams, handleAutoVerify]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();

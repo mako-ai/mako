@@ -165,23 +165,20 @@ export class AuthService {
     const pendingInvites =
       await workspaceService.getPendingInvitesForEmail(normalizedEmail);
 
-    // Check for existing workspaces
-    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
-
     let activeWorkspaceId: string | undefined;
 
-    // If user has workspaces, use the first one
-    if (workspaces.length > 0) {
-      activeWorkspaceId = workspaces[0].workspace._id.toString();
-    }
     // If there are pending invites, don't create a workspace - let user choose
-    else if (pendingInvites.length > 0) {
+    if (pendingInvites.length > 0) {
+      // Check for existing workspaces (user may have accepted an invite already)
+      const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+      if (workspaces.length > 0) {
+        activeWorkspaceId = workspaces[0].workspace._id.toString();
+      }
       // No active workspace - user will be shown onboarding
-      activeWorkspaceId = undefined;
-    }
-    // No invites and no workspaces - create default workspace
-    else {
-      const workspace = await workspaceService.createWorkspace(
+    } else {
+      // No invites - atomically get or create default workspace
+      // This prevents race conditions from duplicate requests
+      const { workspace } = await workspaceService.getOrCreateDefaultWorkspace(
         user._id,
         `${normalizedEmail}'s Workspace`,
       );
@@ -391,22 +388,20 @@ export class AuthService {
       user.email,
     );
 
-    // Check for existing workspaces
-    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
     let activeWorkspaceId: string | undefined;
 
-    // If user has workspaces, use the first one
-    if (workspaces.length > 0) {
-      activeWorkspaceId = workspaces[0].workspace._id.toString();
-    }
     // If there are pending invites, don't create a workspace - let user choose
-    else if (pendingInvites.length > 0) {
+    if (pendingInvites.length > 0) {
+      // Check for existing workspaces (user may have accepted an invite already)
+      const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+      if (workspaces.length > 0) {
+        activeWorkspaceId = workspaces[0].workspace._id.toString();
+      }
       // No active workspace - user will be shown onboarding
-      activeWorkspaceId = undefined;
-    }
-    // No invites and no workspaces - create default workspace
-    else {
-      const workspace = await workspaceService.createWorkspace(
+    } else {
+      // No invites - atomically get or create default workspace
+      // This prevents race conditions from duplicate requests
+      const { workspace } = await workspaceService.getOrCreateDefaultWorkspace(
         user._id,
         `${user.email}'s Workspace`,
       );

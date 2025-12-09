@@ -32,7 +32,12 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   // Check for invite redirect after OAuth login
   // This handles the case where user logs in via OAuth and should be redirected to an invite page
   useEffect(() => {
-    if (!authLoading && user) {
+    // Wait until auth loading is complete before checking for redirects
+    if (authLoading) {
+      return;
+    }
+
+    if (user) {
       const inviteRedirect = getAndClearInviteRedirect();
       if (inviteRedirect) {
         // Redirect to the stored invite URL
@@ -40,6 +45,8 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
         return;
       }
     }
+
+    // Only mark redirect check complete after auth is done
     setCheckingRedirect(false);
   }, [authLoading, user]);
 

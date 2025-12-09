@@ -196,10 +196,11 @@ export class EmailService {
     }
 
     if (!config.verificationTemplateId) {
-      console.error(
-        "SENDGRID_VERIFICATION_TEMPLATE_ID not configured - skipping verification email",
+      // This is a configuration error when SendGrid is enabled but template is missing
+      // We must throw to prevent users from being created without receiving verification emails
+      throw new Error(
+        "Email configuration error: SENDGRID_VERIFICATION_TEMPLATE_ID is required when SENDGRID_API_KEY is set",
       );
-      return;
     }
 
     await sendMail({
@@ -230,10 +231,11 @@ export class EmailService {
     }
 
     if (!config.passwordResetTemplateId) {
-      console.error(
-        "SENDGRID_PASSWORD_RESET_TEMPLATE_ID not configured - skipping password reset email",
+      // This is a configuration error when SendGrid is enabled but template is missing
+      // We must throw to prevent password reset from silently failing
+      throw new Error(
+        "Email configuration error: SENDGRID_PASSWORD_RESET_TEMPLATE_ID is required when SENDGRID_API_KEY is set",
       );
-      return;
     }
 
     await sendMail({
