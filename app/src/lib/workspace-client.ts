@@ -233,14 +233,11 @@ class WorkspaceClient {
    * Get invite details (public endpoint - no auth required)
    */
   async getInviteDetails(token: string): Promise<InviteDetails> {
-    const response = await fetch(`/api/workspaces/invites/${token}`);
-    const data = await response.json();
-
-    if (!response.ok || !data.success) {
-      throw new Error(data.error || "Failed to get invite details");
-    }
-
-    return data.data;
+    const response = await apiClient.get<{
+      success: boolean;
+      data: InviteDetails;
+    }>(`/workspaces/invites/${token}`);
+    return response.data;
   }
 
   /**

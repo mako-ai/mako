@@ -5,12 +5,12 @@
 /**
  * Simple email regex pattern
  * Validates: local@domain.tld
- * - Local part: letters, numbers, underscores, dots, hyphens
+ * - Local part: letters, numbers, underscores, dots, hyphens, plus signs
  * - Domain: letters, numbers, hyphens (with dots for subdomains)
  * - TLD: at least 2 letters
  */
 const EMAIL_REGEX =
-  /^[a-zA-Z0-9._-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}$/;
+  /^[a-zA-Z0-9._+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}$/;
 
 /**
  * Validate an email address against a simple regex pattern

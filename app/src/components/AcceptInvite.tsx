@@ -86,8 +86,15 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
   }, [token, authLoading, user]);
 
   // Re-check email match when auth state changes
+  // Only re-evaluate for states that should respond to auth changes
   useEffect(() => {
-    if (authLoading || !inviteDetails || state === "loading") return;
+    if (authLoading || !inviteDetails) return;
+
+    // Only re-check email match for "invite_details" and "email_mismatch" states
+    // Skip terminal states (success, error, expired) and in-progress states (loading, accepting)
+    if (state !== "invite_details" && state !== "email_mismatch") {
+      return;
+    }
 
     if (user) {
       if (
