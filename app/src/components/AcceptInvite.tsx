@@ -46,13 +46,22 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
   );
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [successWorkspace, setSuccessWorkspace] = useState<string>("");
-  const loadedRef = useRef(false);
+  const loadedTokenRef = useRef<string | null>(null);
 
-  // Load invite details on mount
+  // Load invite details on mount and when token changes
   useEffect(() => {
     const loadInviteDetails = async () => {
-      if (loadedRef.current) return;
-      loadedRef.current = true;
+      // Skip if we've already loaded this specific token
+      if (loadedTokenRef.current === token) return;
+
+      // Reset state for new token
+      if (loadedTokenRef.current !== null) {
+        setState("loading");
+        setInviteDetails(null);
+        setErrorMessage("");
+      }
+
+      loadedTokenRef.current = token;
 
       try {
         const details = await workspaceClient.getInviteDetails(token);
