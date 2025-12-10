@@ -87,6 +87,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       setCurrentWorkspace(null);
       setMembers([]);
       setInvites([]);
+      // Reset initialized so ProtectedRoute shows loading spinner on next login
+      // instead of briefly flashing OnboardingFlow before workspaces load
+      setInitialized(false);
     }
   }, [user, authLoading]);
 
