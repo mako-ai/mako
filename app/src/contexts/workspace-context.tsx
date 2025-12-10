@@ -26,6 +26,7 @@ interface WorkspaceContextState {
   members: WorkspaceMember[];
   invites: WorkspaceInvite[];
   loading: boolean;
+  initialized: boolean; // true after first load attempt completes
   error: string | null;
 
   // Actions
@@ -71,6 +72,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [invites, setInvites] = useState<WorkspaceInvite[]>([]);
   const [loading, setLoading] = useState(false);
+  const [initialized, setInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Load workspaces when user is authenticated
@@ -140,6 +142,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       console.error("Load workspaces error:", err);
     } finally {
       setLoading(false);
+      setInitialized(true);
     }
   }, []);
 
@@ -351,6 +354,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     members,
     invites,
     loading,
+    initialized,
     error,
 
     // Actions

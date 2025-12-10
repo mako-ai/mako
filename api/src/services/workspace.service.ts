@@ -10,7 +10,10 @@ import {
 import { Session, User } from "../database/schema";
 import { v4 as uuidv4 } from "uuid";
 import { emailService } from "./email.service";
-import { validateAndNormalizeEmail, normalizeEmail } from "../utils/email.utils";
+import {
+  validateAndNormalizeEmail,
+  normalizeEmail,
+} from "../utils/email.utils";
 
 export class WorkspaceService {
   /**
@@ -455,88 +458,104 @@ export class WorkspaceService {
   }
 
   /**
-   * Atomically get or create a default workspace for a user.
-   * Prevents race conditions where concurrent requests could create duplicate workspaces.
-   * Returns the workspace and whether it was newly created.
+   * Get or create default workspace for a user.
+   * Uses a unique partial index on WorkspaceMember.isDefaultMembership to prevent
+   * duplicate workspace creation from concurrent requests (e.g., double-clicking
+   * email verification link, OAuth callback retries).
    */
   async getOrCreateDefaultWorkspace(
     userId: string,
     defaultName: string,
   ): Promise<{ workspace: IWorkspace; created: boolean }> {
-    // Use a transaction to ensure atomicity
-    const mongoSession = await Workspace.db.startSession();
+    // First, check if user already has any workspace membership
+    const existingMember = await WorkspaceMember.findOne({ userId });
+    if (existingMember) {
+      const workspace = await Workspace.findById(existingMember.workspaceId);
+      if (workspace) {
+        return { workspace, created: false };
+      }
+      // Member exists but workspace doesn't - clean up orphaned member
+      await WorkspaceMember.deleteOne({ _id: existingMember._id });
+    }
+
+    // Generate unique slug for the new workspace
+    const baseSlug = this.generateSlug(defaultName);
+    let uniqueSlug = baseSlug;
+    let counter = 1;
+    while (await Workspace.findOne({ slug: uniqueSlug })) {
+      uniqueSlug = `${baseSlug}-${counter}`;
+      counter++;
+    }
+
+    // Create the workspace
+    const workspace = new Workspace({
+      name: defaultName,
+      slug: uniqueSlug,
+      createdBy: userId,
+      settings: {
+        maxDatabases: 5,
+        maxMembers: 10,
+        billingTier: "free",
+      },
+    });
+    await workspace.save();
 
     try {
-      let result: { workspace: IWorkspace; created: boolean } | null = null;
+      // Create workspace member with isDefaultMembership flag
+      // The unique partial index on { userId } where { isDefaultMembership: true }
+      // ensures only one request succeeds in concurrent scenarios
+      const member = new WorkspaceMember({
+        workspaceId: workspace._id,
+        userId: userId,
+        role: "owner",
+        joinedAt: new Date(),
+        isDefaultMembership: true,
+      });
+      await member.save();
 
-      await mongoSession.withTransaction(async () => {
-        // Check for existing workspaces within the transaction
-        const existingMember = await WorkspaceMember.findOne({
-          userId: userId,
-        }).session(mongoSession);
+      // Update user's active workspace in session
+      await Session.updateMany(
+        { userId },
+        { activeWorkspaceId: workspace._id.toString() },
+      );
 
-        if (existingMember) {
-          // User already has a workspace
-          const workspace = await Workspace.findById(
-            existingMember.workspaceId,
-          ).session(mongoSession);
-          if (workspace) {
-            result = { workspace, created: false };
-            return;
+      return { workspace, created: true };
+    } catch (error: any) {
+      // Handle duplicate key error from concurrent request
+      if (error.code === 11000 && error.keyPattern?.userId) {
+        // Another request won the race - clean up our workspace and return theirs
+        await Workspace.deleteOne({ _id: workspace._id });
+
+        // Fetch the workspace that was created by the winning request
+        const winningMember = await WorkspaceMember.findOne({
+          userId,
+          isDefaultMembership: true,
+        });
+        if (winningMember) {
+          const winningWorkspace = await Workspace.findById(
+            winningMember.workspaceId,
+          );
+          if (winningWorkspace) {
+            return { workspace: winningWorkspace, created: false };
           }
         }
 
-        // No workspace exists, create one
-        // Generate unique slug
-        const baseSlug = this.generateSlug(defaultName);
-        let uniqueSlug = baseSlug;
-        let counter = 1;
-        while (
-          await Workspace.findOne({ slug: uniqueSlug }).session(mongoSession)
-        ) {
-          uniqueSlug = `${baseSlug}-${counter}`;
-          counter++;
+        // Fallback: find any workspace the user is a member of
+        const anyMember = await WorkspaceMember.findOne({ userId });
+        if (anyMember) {
+          const anyWorkspace = await Workspace.findById(anyMember.workspaceId);
+          if (anyWorkspace) {
+            return { workspace: anyWorkspace, created: false };
+          }
         }
 
-        // Create workspace
-        const workspace = new Workspace({
-          name: defaultName,
-          slug: uniqueSlug,
-          createdBy: userId,
-          settings: {
-            maxDatabases: 5,
-            maxMembers: 10,
-            billingTier: "free",
-          },
-        });
-        await workspace.save({ session: mongoSession });
-
-        // Add creator as owner
-        const member = new WorkspaceMember({
-          workspaceId: workspace._id,
-          userId: userId,
-          role: "owner",
-          joinedAt: new Date(),
-        });
-        await member.save({ session: mongoSession });
-
-        // Update user's active workspace in session
-        await Session.updateMany(
-          { userId },
-          { activeWorkspaceId: workspace._id.toString() },
-          { session: mongoSession },
+        throw new Error(
+          "Failed to get or create workspace after concurrent request",
         );
-
-        result = { workspace, created: true };
-      });
-
-      if (!result) {
-        throw new Error("Failed to get or create workspace");
       }
 
-      return result;
-    } finally {
-      await mongoSession.endSession();
+      // Re-throw other errors
+      throw error;
     }
   }
 

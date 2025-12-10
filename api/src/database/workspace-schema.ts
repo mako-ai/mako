@@ -126,6 +126,8 @@ export interface IWorkspaceMember extends Document {
   userId: string;
   role: "owner" | "admin" | "member" | "viewer";
   joinedAt: Date;
+  /** True only for the first workspace auto-created during user onboarding */
+  isDefaultMembership?: boolean;
 }
 
 /**
@@ -548,11 +550,20 @@ const WorkspaceMemberSchema = new Schema<IWorkspaceMember>({
     type: Date,
     default: Date.now,
   },
+  isDefaultMembership: {
+    type: Boolean,
+    required: false,
+  },
 });
 
 // Indexes
 WorkspaceMemberSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 WorkspaceMemberSchema.index({ userId: 1 });
+// Prevent duplicate default workspace creation during concurrent onboarding requests
+WorkspaceMemberSchema.index(
+  { userId: 1 },
+  { unique: true, partialFilterExpression: { isDefaultMembership: true } },
+);
 
 /**
  * WorkspaceInvite Schema

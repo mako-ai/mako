@@ -24,6 +24,7 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     workspaces,
     currentWorkspace,
     loading: workspaceLoading,
+    initialized: workspaceInitialized,
     loadWorkspaces,
   } = useWorkspace();
   const location = useLocation();
@@ -76,8 +77,8 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Show loading spinner while loading workspaces
-  if (workspaceLoading) {
+  // Show loading spinner while loading workspaces or waiting for initial load
+  if (!workspaceInitialized || workspaceLoading) {
     return (
       <Box
         display="flex"
