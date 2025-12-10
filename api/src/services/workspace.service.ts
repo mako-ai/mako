@@ -487,20 +487,24 @@ export class WorkspaceService {
       counter++;
     }
 
-    // Create the workspace
-    const workspace = new Workspace({
-      name: defaultName,
-      slug: uniqueSlug,
-      createdBy: userId,
-      settings: {
-        maxDatabases: 5,
-        maxMembers: 10,
-        billingTier: "free",
-      },
-    });
-    await workspace.save();
+    // Start a session for transaction to ensure workspace and member are created atomically
+    const session = await Workspace.db.startSession();
+    await session.startTransaction();
 
     try {
+      // Create the workspace
+      const workspace = new Workspace({
+        name: defaultName,
+        slug: uniqueSlug,
+        createdBy: userId,
+        settings: {
+          maxDatabases: 5,
+          maxMembers: 10,
+          billingTier: "free",
+        },
+      });
+      await workspace.save({ session });
+
       // Create workspace member with isDefaultMembership flag
       // The unique partial index on { userId } where { isDefaultMembership: true }
       // ensures only one request succeeds in concurrent scenarios
@@ -511,22 +515,23 @@ export class WorkspaceService {
         joinedAt: new Date(),
         isDefaultMembership: true,
       });
-      await member.save();
+      await member.save({ session });
 
       // Update user's active workspace in session
       await Session.updateMany(
         { userId },
         { activeWorkspaceId: workspace._id.toString() },
+        { session },
       );
 
+      await session.commitTransaction();
       return { workspace, created: true };
     } catch (error: any) {
+      await session.abortTransaction();
+
       // Handle duplicate key error from concurrent request
       if (error.code === 11000 && error.keyPattern?.userId) {
-        // Another request won the race - clean up our workspace and return theirs
-        await Workspace.deleteOne({ _id: workspace._id });
-
-        // Fetch the workspace that was created by the winning request
+        // Another request won the race - fetch the workspace they created
         const winningMember = await WorkspaceMember.findOne({
           userId,
           isDefaultMembership: true,
@@ -556,6 +561,8 @@ export class WorkspaceService {
 
       // Re-throw other errors
       throw error;
+    } finally {
+      await session.endSession();
     }
   }
 
