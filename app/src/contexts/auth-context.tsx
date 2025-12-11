@@ -20,7 +20,11 @@ interface AuthContextState {
   loading: boolean;
   error: string | null;
   login: (credentials: LoginCredentials) => Promise<void>;
-  register: (credentials: RegisterCredentials) => Promise<void>;
+  register: (
+    credentials: RegisterCredentials,
+  ) => Promise<{ requiresVerification: boolean }>;
+  verifyEmail: (email: string, code: string) => Promise<void>;
+  resendVerification: (email: string) => Promise<void>;
   logout: () => Promise<void>;
   loginWithOAuth: (provider: "google" | "github") => void;
   clearError: () => void;
@@ -82,17 +86,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /**
    * Register user
    */
-  const register = useCallback(async (credentials: RegisterCredentials) => {
+  const register = useCallback(
+    async (
+      credentials: RegisterCredentials,
+    ): Promise<{ requiresVerification: boolean }> => {
+      try {
+        setError(null);
+        setLoading(true);
+        const { user, requiresVerification } =
+          await authClient.register(credentials);
+
+        // Only set user if verification is not required
+        // (shouldn't happen with new flow, but for safety)
+        if (!requiresVerification) {
+          setUser(user);
+        }
+
+        return { requiresVerification };
+      } catch (err: any) {
+        setError(err.message || "Registration failed");
+        throw err;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
+
+  /**
+   * Verify email with code
+   */
+  const verifyEmail = useCallback(async (email: string, code: string) => {
     try {
       setError(null);
       setLoading(true);
-      const user = await authClient.register(credentials);
+      const user = await authClient.verifyEmail(email, code);
       setUser(user);
     } catch (err: any) {
-      setError(err.message || "Registration failed");
+      setError(err.message || "Verification failed");
       throw err;
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  /**
+   * Resend verification email
+   */
+  const resendVerification = useCallback(async (email: string) => {
+    try {
+      setError(null);
+      await authClient.resendVerification(email);
+    } catch (err: any) {
+      setError(err.message || "Failed to resend verification");
+      throw err;
     }
   }, []);
 
@@ -133,6 +180,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     error,
     login,
     register,
+    verifyEmail,
+    resendVerification,
     logout,
     loginWithOAuth,
     clearError,
