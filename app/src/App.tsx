@@ -23,6 +23,9 @@ import { ConsoleModification } from "./hooks/useMonacoConsole";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
 import { RegisterPage } from "./components/RegisterPage";
+import { VerifyEmailPage } from "./components/VerifyEmailPage";
+import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
+import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 
 // Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
@@ -371,14 +374,32 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// Login page with navigation to register
+// Login page with navigation to register and forgot password
 function LoginRoute() {
   const navigate = useNavigate();
   return (
     <AuthRoute>
-      <LoginPage onSwitchToRegister={() => navigate("/register")} />
+      <LoginPage
+        onSwitchToRegister={() => navigate("/register")}
+        onForgotPassword={() => navigate("/forgot-password")}
+      />
     </AuthRoute>
   );
+}
+
+// Forgot password page
+function ForgotPasswordRoute() {
+  const navigate = useNavigate();
+  return (
+    <AuthRoute>
+      <ForgotPasswordPage onBackToLogin={() => navigate("/login")} />
+    </AuthRoute>
+  );
+}
+
+// Reset password page - accessed via email link
+function ResetPasswordRoute() {
+  return <ResetPasswordPage />;
 }
 
 // Register page with navigation to login
@@ -391,6 +412,11 @@ function RegisterRoute() {
   );
 }
 
+// Verify email page - no auth redirect (user may need to verify before being logged in)
+function VerifyEmailRoute() {
+  return <VerifyEmailPage />;
+}
+
 function App() {
   return (
     <Routes>
@@ -400,6 +426,9 @@ function App() {
       {/* Auth routes - redirect to "/" if already logged in */}
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/register" element={<RegisterRoute />} />
+      <Route path="/verify-email" element={<VerifyEmailRoute />} />
+      <Route path="/forgot-password" element={<ForgotPasswordRoute />} />
+      <Route path="/reset-password" element={<ResetPasswordRoute />} />
 
       {/* Main app route - authentication required */}
       <Route path="/*" element={<MainApp />} />

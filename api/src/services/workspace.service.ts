@@ -7,8 +7,13 @@ import {
   IWorkspaceMember,
   IWorkspaceInvite,
 } from "../database/workspace-schema";
-import { Session } from "../database/schema";
+import { Session, User } from "../database/schema";
 import { v4 as uuidv4 } from "uuid";
+import { emailService } from "./email.service";
+import {
+  validateAndNormalizeEmail,
+  normalizeEmail,
+} from "../utils/email.utils";
 
 export class WorkspaceService {
   /**
@@ -261,15 +266,39 @@ export class WorkspaceService {
     role: "admin" | "member" | "viewer",
     invitedBy: string,
   ): Promise<IWorkspaceInvite> {
+    const normalizedEmail = validateAndNormalizeEmail(email);
+
     const invite = new WorkspaceInvite({
       workspaceId: new Types.ObjectId(workspaceId),
-      email,
+      email: normalizedEmail,
       token: uuidv4().replace(/-/g, ""),
       role,
       invitedBy: invitedBy,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
     });
-    return invite.save();
+    await invite.save();
+
+    // Send invitation email
+    try {
+      const workspace = await Workspace.findById(workspaceId);
+      const inviter = await User.findById(invitedBy);
+
+      const workspaceName = workspace?.name || "Unknown Workspace";
+      const inviterName = inviter?.email || "Someone";
+      const inviteUrl = `${process.env.CLIENT_URL}/invite/${invite.token}`;
+
+      await emailService.sendInvitationEmail(
+        normalizedEmail,
+        workspaceName,
+        inviterName,
+        inviteUrl,
+      );
+    } catch (error) {
+      console.error("Failed to send invitation email:", error);
+      // Don't fail the invite creation if email fails
+    }
+
+    return invite;
   }
 
   /**
@@ -386,6 +415,20 @@ export class WorkspaceService {
   }
 
   /**
+   * Get pending invites for a specific email address
+   */
+  async getPendingInvitesForEmail(email: string): Promise<IWorkspaceInvite[]> {
+    return WorkspaceInvite.find({
+      email: normalizeEmail(email),
+      acceptedAt: { $exists: false },
+      expiresAt: { $gt: new Date() },
+    })
+      .populate("workspaceId", "name")
+      .populate("invitedBy", "email")
+      .sort({ createdAt: -1 });
+  }
+
+  /**
    * Cancel invite
    */
   async cancelInvite(inviteId: string): Promise<boolean> {
@@ -412,6 +455,155 @@ export class WorkspaceService {
     );
 
     return result.modifiedCount > 0;
+  }
+
+  /**
+   * Get or create default workspace for a user.
+   * Uses a unique partial index on WorkspaceMember.isDefaultMembership to prevent
+   * duplicate workspace creation from concurrent requests (e.g., double-clicking
+   * email verification link, OAuth callback retries).
+   */
+  async getOrCreateDefaultWorkspace(
+    userId: string,
+    defaultName: string,
+  ): Promise<{ workspace: IWorkspace; created: boolean }> {
+    // Retry logic for handling race conditions (slug conflicts, concurrent creation)
+    const maxRetries = 3;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await this._getOrCreateDefaultWorkspaceAttempt(
+          userId,
+          defaultName,
+        );
+      } catch (error: any) {
+        // Retry on duplicate slug error (race condition on slug generation)
+        if (error.code === 11000 && error.keyPattern?.slug) {
+          if (attempt < maxRetries - 1) {
+            // Wait a bit before retrying with exponential backoff
+            await new Promise(resolve =>
+              setTimeout(resolve, 50 * Math.pow(2, attempt)),
+            );
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+    throw new Error("Failed to create workspace after multiple attempts");
+  }
+
+  /**
+   * Single attempt to get or create default workspace
+   */
+  private async _getOrCreateDefaultWorkspaceAttempt(
+    userId: string,
+    defaultName: string,
+  ): Promise<{ workspace: IWorkspace; created: boolean }> {
+    // First, check if user already has any workspace membership
+    const existingMember = await WorkspaceMember.findOne({ userId });
+    if (existingMember) {
+      const workspace = await Workspace.findById(existingMember.workspaceId);
+      if (workspace) {
+        return { workspace, created: false };
+      }
+      // Member exists but workspace doesn't - clean up orphaned member
+      await WorkspaceMember.deleteOne({ _id: existingMember._id });
+    }
+
+    // Generate unique slug for the new workspace
+    // Include random suffix to minimize collision probability in concurrent scenarios
+    const baseSlug = this.generateSlug(defaultName);
+    let uniqueSlug = baseSlug;
+    let counter = 1;
+    while (await Workspace.findOne({ slug: uniqueSlug })) {
+      // Use random suffix for subsequent attempts to avoid predictable collisions
+      const randomSuffix = Math.random().toString(36).substring(2, 6);
+      uniqueSlug = `${baseSlug}-${randomSuffix}`;
+      counter++;
+      if (counter > 10) {
+        // Fallback to UUID suffix if too many collisions
+        uniqueSlug = `${baseSlug}-${Date.now().toString(36)}`;
+        break;
+      }
+    }
+
+    // Start a session for transaction to ensure workspace and member are created atomically
+    const session = await Workspace.db.startSession();
+    await session.startTransaction();
+
+    try {
+      // Create the workspace
+      const workspace = new Workspace({
+        name: defaultName,
+        slug: uniqueSlug,
+        createdBy: userId,
+        settings: {
+          maxDatabases: 5,
+          maxMembers: 10,
+          billingTier: "free",
+        },
+      });
+      await workspace.save({ session });
+
+      // Create workspace member with isDefaultMembership flag
+      // The unique partial index on { userId } where { isDefaultMembership: true }
+      // ensures only one request succeeds in concurrent scenarios
+      const member = new WorkspaceMember({
+        workspaceId: workspace._id,
+        userId: userId,
+        role: "owner",
+        joinedAt: new Date(),
+        isDefaultMembership: true,
+      });
+      await member.save({ session });
+
+      // Update user's active workspace in session
+      await Session.updateMany(
+        { userId },
+        { activeWorkspaceId: workspace._id.toString() },
+        { session },
+      );
+
+      await session.commitTransaction();
+      return { workspace, created: true };
+    } catch (error: any) {
+      await session.abortTransaction();
+
+      // Handle duplicate key error from concurrent request on WorkspaceMember
+      if (error.code === 11000 && error.keyPattern?.userId) {
+        // Another request won the race - fetch the workspace they created
+        const winningMember = await WorkspaceMember.findOne({
+          userId,
+          isDefaultMembership: true,
+        });
+        if (winningMember) {
+          const winningWorkspace = await Workspace.findById(
+            winningMember.workspaceId,
+          );
+          if (winningWorkspace) {
+            return { workspace: winningWorkspace, created: false };
+          }
+        }
+
+        // Fallback: find any workspace the user is a member of
+        const anyMember = await WorkspaceMember.findOne({ userId });
+        if (anyMember) {
+          const anyWorkspace = await Workspace.findById(anyMember.workspaceId);
+          if (anyWorkspace) {
+            return { workspace: anyWorkspace, created: false };
+          }
+        }
+
+        throw new Error(
+          "Failed to get or create workspace after concurrent request",
+        );
+      }
+
+      // Re-throw other errors (including duplicate slug errors for retry at outer level)
+      throw error;
+    } finally {
+      await session.endSession();
+    }
   }
 
   /**

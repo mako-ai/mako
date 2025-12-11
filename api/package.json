@@ -32,7 +32,6 @@
     "inngest": "^3.39.2",
     "inquirer": "^8.2.6",
     "js-yaml": "^4.1.0",
-    "lucia": "^3.2.2",
     "mongodb": "^6.17.0",
     "mongoose": "^8.15.1",
     "mssql": "^11.0.1",

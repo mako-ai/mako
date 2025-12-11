@@ -1,7 +1,7 @@
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useEffect } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   Box,
-  Paper,
   TextField,
   Button,
   Typography,
@@ -25,12 +25,21 @@ interface RegisterPageProps {
 
 export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
   const { register, loginWithOAuth, error, loading, clearError } = useAuth();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+
+  // Pre-fill email from URL params (e.g., from invite page)
+  useEffect(() => {
+    const emailParam = searchParams.get("email");
+    if (emailParam) {
+      setEmail(emailParam);
+    }
+  }, [searchParams]);
 
   const validateForm = () => {
     const errors: Record<string, string> = {};
@@ -47,12 +56,6 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
       errors.password = "Password must be at least 8 characters long";
     }
 
-    if (!confirmPassword) {
-      errors.confirmPassword = "Please confirm your password";
-    } else if (password !== confirmPassword) {
-      errors.confirmPassword = "Passwords do not match";
-    }
-
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -64,9 +67,15 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
     if (!validateForm()) return;
 
     try {
-      await register({ email, password, confirmPassword });
-      // Redirect handled by auth context
-    } catch (err) {
+      const { requiresVerification } = await register({
+        email,
+        password,
+      });
+
+      if (requiresVerification) {
+        navigate(`/verify-email?email=${encodeURIComponent(email)}`);
+      }
+    } catch {
       // Error displayed in UI via error state from context
     }
   };
@@ -81,159 +90,279 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
       sx={{
         minHeight: "100vh",
         display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        bgcolor: "background.default",
-        p: 2,
+        bgcolor: "#0a0a0a",
       }}
     >
-      <Paper
-        elevation={3}
+      {/* Left Side - Branding */}
+      <Box
         sx={{
-          p: 4,
-          maxWidth: 400,
-          width: "100%",
-          borderRadius: 2,
+          flex: 1,
+          display: { xs: "none", md: "flex" },
+          flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "flex-start",
+          px: 8,
+          background:
+            "linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #0a0a0a 100%)",
+          position: "relative",
+          overflow: "hidden",
         }}
       >
-        <Box sx={{ textAlign: "center", mb: 3 }}>
-          <Typography variant="h4" component="h1" gutterBottom>
-            Create Account
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Sign up to get started with your account
-          </Typography>
-        </Box>
-
-        {error && (
-          <Alert severity="error" sx={{ mb: 2 }} onClose={clearError}>
-            {error}
-          </Alert>
-        )}
-
-        <form onSubmit={handleSubmit}>
-          <TextField
-            fullWidth
-            label="Email"
-            type="email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            error={!!formErrors.email}
-            helperText={formErrors.email}
-            margin="normal"
-            disabled={loading}
-            autoComplete="email"
-            autoFocus
-          />
-
-          <TextField
-            fullWidth
-            label="Password"
-            type={showPassword ? "text" : "password"}
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            error={!!formErrors.password}
-            helperText={formErrors.password}
-            margin="normal"
-            disabled={loading}
-            autoComplete="new-password"
-            InputProps={{
-              endAdornment: (
-                <InputAdornment position="end">
-                  <IconButton
-                    aria-label="toggle password visibility"
-                    onClick={() => setShowPassword(!showPassword)}
-                    edge="end"
-                  >
-                    {showPassword ? <VisibilityOff /> : <Visibility />}
-                  </IconButton>
-                </InputAdornment>
-              ),
+        {/* Decorative elements */}
+        <Box
+          sx={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            opacity: 0.3,
+            background:
+              "radial-gradient(circle at 30% 50%, rgba(0, 255, 170, 0.1) 0%, transparent 50%)",
+          }}
+        />
+        <Box
+          sx={{
+            position: "relative",
+            zIndex: 1,
+          }}
+        >
+          <Box
+            component="img"
+            src="/mako-icon.svg"
+            alt="Mako"
+            sx={{
+              width: 64,
+              height: "auto",
+              mb: 4,
+              filter: "brightness(0) invert(1)",
             }}
           />
-
-          <TextField
-            fullWidth
-            label="Confirm Password"
-            type={showConfirmPassword ? "text" : "password"}
-            value={confirmPassword}
-            onChange={e => setConfirmPassword(e.target.value)}
-            error={!!formErrors.confirmPassword}
-            helperText={formErrors.confirmPassword}
-            margin="normal"
-            disabled={loading}
-            autoComplete="new-password"
-            InputProps={{
-              endAdornment: (
-                <InputAdornment position="end">
-                  <IconButton
-                    aria-label="toggle confirm password visibility"
-                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    edge="end"
-                  >
-                    {showConfirmPassword ? <VisibilityOff /> : <Visibility />}
-                  </IconButton>
-                </InputAdornment>
-              ),
+          <Typography
+            variant="h3"
+            sx={{
+              fontWeight: 600,
+              color: "#fff",
+              lineHeight: 1.2,
             }}
-          />
-
-          <Button
-            type="submit"
-            fullWidth
-            variant="contained"
-            size="large"
-            disabled={loading}
-            sx={{ mt: 3, mb: 2 }}
           >
-            {loading ? "Creating Account..." : "Create Account"}
-          </Button>
-        </form>
-
-        <Divider sx={{ my: 3 }}>
-          <Typography variant="body2" color="text.secondary">
-            Or continue with
+            Query your data
+            <br />
+            in seconds.
           </Typography>
-        </Divider>
-
-        <Box sx={{ display: "flex", gap: 2, mb: 3 }}>
-          <Button
-            fullWidth
-            variant="outlined"
-            startIcon={<GoogleIcon />}
-            onClick={() => handleOAuthLogin("google")}
-            disabled={loading}
-          >
-            Google
-          </Button>
-          <Button
-            fullWidth
-            variant="outlined"
-            startIcon={<GitHubIcon />}
-            onClick={() => handleOAuthLogin("github")}
-            disabled={loading}
-          >
-            GitHub
-          </Button>
         </Box>
+      </Box>
 
-        <Box sx={{ textAlign: "center" }}>
-          <Typography variant="body2" color="text.secondary">
-            Already have an account?{" "}
-            <Link
-              component="button"
-              variant="body2"
-              onClick={e => {
-                e.preventDefault();
-                onSwitchToLogin();
-              }}
+      {/* Right Side - Form */}
+      <Box
+        sx={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "center",
+          px: { xs: 3, sm: 6 },
+          py: 4,
+          bgcolor: "#0f0f0f",
+        }}
+      >
+        <Box sx={{ width: "100%", maxWidth: 380 }}>
+          <Typography
+            variant="h4"
+            sx={{ fontWeight: 600, color: "#fff", mb: 1 }}
+          >
+            Create your free account
+          </Typography>
+          <Typography variant="body2" sx={{ color: "#888", mb: 4 }}>
+            Connect to Mako with:
+          </Typography>
+
+          {error && (
+            <Alert severity="error" sx={{ mb: 3 }} onClose={clearError}>
+              {error}
+            </Alert>
+          )}
+
+          {/* Social Login Buttons */}
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}>
+            <Button
+              fullWidth
+              variant="outlined"
+              startIcon={<GoogleIcon />}
+              onClick={() => handleOAuthLogin("google")}
               disabled={loading}
+              sx={{
+                py: 1.25,
+                borderColor: "#333",
+                color: "#fff",
+                bgcolor: "#1a1a1a",
+                "&:hover": {
+                  borderColor: "#555",
+                  bgcolor: "#222",
+                },
+              }}
             >
-              Sign in
+              Google
+            </Button>
+            <Button
+              fullWidth
+              variant="outlined"
+              startIcon={<GitHubIcon />}
+              onClick={() => handleOAuthLogin("github")}
+              disabled={loading}
+              sx={{
+                py: 1.25,
+                borderColor: "#333",
+                color: "#fff",
+                bgcolor: "#1a1a1a",
+                "&:hover": {
+                  borderColor: "#555",
+                  bgcolor: "#222",
+                },
+              }}
+            >
+              GitHub
+            </Button>
+          </Box>
+
+          <Divider sx={{ my: 3, "&::before, &::after": { borderColor: "#333" } }}>
+            <Typography
+              variant="body2"
+              sx={{ color: "#666", textTransform: "uppercase", fontSize: 11, letterSpacing: 1 }}
+            >
+              Or continue with email
+            </Typography>
+          </Divider>
+
+          <form onSubmit={handleSubmit}>
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="body2" sx={{ color: "#fff", mb: 0.5 }}>
+                Email
+              </Typography>
+              <TextField
+                fullWidth
+                size="small"
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                error={!!formErrors.email}
+                helperText={formErrors.email}
+                disabled={loading}
+                autoComplete="email"
+                autoFocus
+                placeholder="youremail@email.com"
+                sx={{
+                  "& .MuiOutlinedInput-root": {
+                    bgcolor: "#1a1a1a",
+                    "& fieldset": { borderColor: "#333" },
+                    "&:hover fieldset": { borderColor: "#555" },
+                    "&.Mui-focused fieldset": { borderColor: "#00ffaa" },
+                  },
+                  "& .MuiInputBase-input": { color: "#fff", py: 1.25 },
+                }}
+              />
+            </Box>
+
+            <Box sx={{ mb: 2.5 }}>
+              <Typography variant="body2" sx={{ color: "#fff", mb: 0.5 }}>
+                Password
+              </Typography>
+              <TextField
+                fullWidth
+                size="small"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                error={!!formErrors.password}
+                helperText={formErrors.password}
+                disabled={loading}
+                autoComplete="new-password"
+                placeholder="Enter a unique password"
+                sx={{
+                  "& .MuiOutlinedInput-root": {
+                    bgcolor: "#1a1a1a",
+                    "& fieldset": { borderColor: "#333" },
+                    "&:hover fieldset": { borderColor: "#555" },
+                    "&.Mui-focused fieldset": { borderColor: "#00ffaa" },
+                  },
+                  "& .MuiInputBase-input": { color: "#fff", py: 1.25 },
+                }}
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          aria-label="toggle password visibility"
+                          onClick={() => setShowPassword(!showPassword)}
+                          edge="end"
+                          size="small"
+                          sx={{ color: "#888" }}
+                        >
+                          {showPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  },
+                }}
+              />
+            </Box>
+
+            <Button
+              type="submit"
+              fullWidth
+              variant="contained"
+              size="large"
+              disabled={loading}
+              sx={{
+                py: 1.5,
+                bgcolor: "#333",
+                color: "#888",
+                "&:hover": { bgcolor: "#444" },
+                "&.Mui-disabled": { bgcolor: "#222", color: "#555" },
+              }}
+            >
+              {loading ? "Creating account..." : "Continue"}
+            </Button>
+          </form>
+
+          <Typography
+            variant="caption"
+            sx={{ color: "#666", display: "block", mt: 2, lineHeight: 1.5 }}
+          >
+            By creating an account you agree to the{" "}
+            <Link href="#" sx={{ color: "#888" }}>
+              Terms of Service
+            </Link>{" "}
+            and our{" "}
+            <Link href="#" sx={{ color: "#888" }}>
+              Privacy Policy
             </Link>
+            .
           </Typography>
+
+          <Box sx={{ textAlign: "center", mt: 4 }}>
+            <Typography variant="body2" sx={{ color: "#888" }}>
+              Already have an account?{" "}
+              <Link
+                component="button"
+                variant="body2"
+                onClick={e => {
+                  e.preventDefault();
+                  onSwitchToLogin();
+                }}
+                disabled={loading}
+                sx={{
+                  color: "#00c896",
+                  textDecoration: "none",
+                  "&:hover": { textDecoration: "underline" },
+                }}
+              >
+                Log in
+              </Link>
+            </Typography>
+          </Box>
         </Box>
-      </Paper>
+      </Box>
     </Box>
   );
 }

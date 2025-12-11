@@ -25,6 +25,8 @@ interface User {
 
 interface AuthResponse {
   user: User;
+  requiresVerification?: boolean;
+  message?: string;
 }
 
 class AuthClient {
@@ -57,8 +59,11 @@ class AuthClient {
 
   /**
    * Register a new user
+   * Returns user and whether verification is required
    */
-  async register(credentials: RegisterCredentials): Promise<User> {
+  async register(
+    credentials: RegisterCredentials,
+  ): Promise<{ user: User; requiresVerification: boolean }> {
     if (
       credentials.confirmPassword &&
       credentials.password !== credentials.confirmPassword
@@ -79,7 +84,43 @@ class AuthClient {
     });
 
     const data = await this.handleResponse<AuthResponse>(response);
+    return {
+      user: data.user,
+      requiresVerification: data.requiresVerification ?? false,
+    };
+  }
+
+  /**
+   * Verify email with code
+   */
+  async verifyEmail(email: string, code: string): Promise<User> {
+    const response = await fetch(this.buildUrl("/auth/verify-email"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ email, code }),
+    });
+
+    const data = await this.handleResponse<AuthResponse>(response);
     return data.user;
+  }
+
+  /**
+   * Resend verification email
+   */
+  async resendVerification(email: string): Promise<void> {
+    const response = await fetch(this.buildUrl("/auth/resend-verification"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ email }),
+    });
+
+    await this.handleResponse(response);
   }
 
   /**
@@ -158,6 +199,42 @@ class AuthClient {
    */
   initiateOAuth(provider: "google" | "github") {
     window.location.href = this.buildUrl(`/auth/${provider}`);
+  }
+
+  /**
+   * Request password reset
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const response = await fetch(this.buildUrl("/auth/forgot-password"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ email }),
+    });
+
+    await this.handleResponse(response);
+  }
+
+  /**
+   * Reset password with code
+   */
+  async resetPassword(
+    email: string,
+    code: string,
+    password: string,
+  ): Promise<void> {
+    const response = await fetch(this.buildUrl("/auth/reset-password"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ email, code, password }),
+    });
+
+    await this.handleResponse(response);
   }
 }
 

@@ -1,18 +1,18 @@
 import { Context, Next } from "hono";
-import { lucia } from "./lucia";
+import { sessionManager } from "./session";
 import { getCookie } from "hono/cookie";
 
 /**
  * Authentication middleware to validate session
  */
 export async function authMiddleware(c: Context, next: Next) {
-  const sessionId = getCookie(c, lucia.sessionCookieName);
+  const sessionId = getCookie(c, sessionManager.sessionCookieName);
 
   if (!sessionId) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  const { session, user } = await lucia.validateSession(sessionId);
+  const { session, user } = await sessionManager.validateSession(sessionId);
 
   if (!session || !user) {
     return c.json({ error: "Invalid session" }, 401);
@@ -29,10 +29,10 @@ export async function authMiddleware(c: Context, next: Next) {
  * Optional auth middleware - doesn't require authentication but adds user to context if available
  */
 export async function optionalAuthMiddleware(c: Context, next: Next) {
-  const sessionId = getCookie(c, lucia.sessionCookieName);
+  const sessionId = getCookie(c, sessionManager.sessionCookieName);
 
   if (sessionId) {
-    const { session, user } = await lucia.validateSession(sessionId);
+    const { session, user } = await sessionManager.validateSession(sessionId);
 
     if (session && user) {
       c.set("user", user);
