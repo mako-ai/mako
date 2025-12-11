@@ -259,7 +259,11 @@ export function ResetPasswordPage() {
           </Typography>
 
           {error && (
-            <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+            <Alert
+              severity="error"
+              sx={{ mb: 3 }}
+              onClose={() => setError(null)}
+            >
               {error}
             </Alert>
           )}
@@ -340,7 +344,11 @@ export function ResetPasswordPage() {
                             size="small"
                             sx={{ color: "#888" }}
                           >
-                            {showPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+                            {showPassword ? (
+                              <VisibilityOff fontSize="small" />
+                            ) : (
+                              <Visibility fontSize="small" />
+                            )}
                           </IconButton>
                         </InputAdornment>
                       ),
@@ -379,12 +387,18 @@ export function ResetPasswordPage() {
                         <InputAdornment position="end">
                           <IconButton
                             aria-label="toggle confirm password visibility"
-                            onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                            onClick={() =>
+                              setShowConfirmPassword(!showConfirmPassword)
+                            }
                             edge="end"
                             size="small"
                             sx={{ color: "#888" }}
                           >
-                            {showConfirmPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+                            {showConfirmPassword ? (
+                              <VisibilityOff fontSize="small" />
+                            ) : (
+                              <Visibility fontSize="small" />
+                            )}
                           </IconButton>
                         </InputAdornment>
                       ),

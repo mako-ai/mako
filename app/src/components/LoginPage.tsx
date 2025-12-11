@@ -169,7 +169,9 @@ export function LoginPage({
           )}
 
           {/* Social Login Buttons */}
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}>
+          <Box
+            sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}
+          >
             <Button
               fullWidth
               variant="outlined"
@@ -210,10 +212,17 @@ export function LoginPage({
             </Button>
           </Box>
 
-          <Divider sx={{ my: 3, "&::before, &::after": { borderColor: "#333" } }}>
+          <Divider
+            sx={{ my: 3, "&::before, &::after": { borderColor: "#333" } }}
+          >
             <Typography
               variant="body2"
-              sx={{ color: "#666", textTransform: "uppercase", fontSize: 11, letterSpacing: 1 }}
+              sx={{
+                color: "#666",
+                textTransform: "uppercase",
+                fontSize: 11,
+                letterSpacing: 1,
+              }}
             >
               Or log in with your email
             </Typography>
@@ -249,7 +258,14 @@ export function LoginPage({
             </Box>
 
             <Box sx={{ mb: 2.5 }}>
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.5 }}>
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  mb: 0.5,
+                }}
+              >
                 <Typography variant="body2" sx={{ color: "#fff" }}>
                   Password
                 </Typography>
@@ -302,7 +318,11 @@ export function LoginPage({
                           size="small"
                           sx={{ color: "#888" }}
                         >
-                          {showPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+                          {showPassword ? (
+                            <VisibilityOff fontSize="small" />
+                          ) : (
+                            <Visibility fontSize="small" />
+                          )}
                         </IconButton>
                       </InputAdornment>
                     ),

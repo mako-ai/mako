@@ -184,7 +184,9 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
           )}
 
           {/* Social Login Buttons */}
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}>
+          <Box
+            sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}
+          >
             <Button
               fullWidth
               variant="outlined"
@@ -225,10 +227,17 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
             </Button>
           </Box>
 
-          <Divider sx={{ my: 3, "&::before, &::after": { borderColor: "#333" } }}>
+          <Divider
+            sx={{ my: 3, "&::before, &::after": { borderColor: "#333" } }}
+          >
             <Typography
               variant="body2"
-              sx={{ color: "#666", textTransform: "uppercase", fontSize: 11, letterSpacing: 1 }}
+              sx={{
+                color: "#666",
+                textTransform: "uppercase",
+                fontSize: 11,
+                letterSpacing: 1,
+              }}
             >
               Or continue with email
             </Typography>
@@ -298,7 +307,11 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
                           size="small"
                           sx={{ color: "#888" }}
                         >
-                          {showPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+                          {showPassword ? (
+                            <VisibilityOff fontSize="small" />
+                          ) : (
+                            <Visibility fontSize="small" />
+                          )}
                         </IconButton>
                       </InputAdornment>
                     ),
