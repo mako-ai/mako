@@ -1,12 +1,5 @@
 import { useState, FormEvent } from "react";
-import {
-  Box,
-  TextField,
-  Button,
-  Typography,
-  Alert,
-  Link,
-} from "@mui/material";
+import { Box, TextField, Button, Typography, Alert, Link } from "@mui/material";
 import { authClient } from "../lib/auth-client";
 
 interface ForgotPasswordPageProps {
@@ -131,8 +124,9 @@ export function ForgotPasswordPage({ onBackToLogin }: ForgotPasswordPageProps) {
               Check Your Email
             </Typography>
             <Typography variant="body2" sx={{ color: "#888", mb: 4 }}>
-              If an account exists with <strong style={{ color: "#fff" }}>{email}</strong>, 
-              you will receive a password reset link shortly.
+              If an account exists with{" "}
+              <strong style={{ color: "#fff" }}>{email}</strong>, you will
+              receive a password reset link shortly.
             </Typography>
             <Typography variant="body2" sx={{ color: "#666", mb: 4 }}>
               Please check your inbox and spam folder.
@@ -243,7 +237,11 @@ export function ForgotPasswordPage({ onBackToLogin }: ForgotPasswordPageProps) {
           </Typography>
 
           {error && (
-            <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+            <Alert
+              severity="error"
+              sx={{ mb: 3 }}
+              onClose={() => setError(null)}
+            >
               {error}
             </Alert>
           )}

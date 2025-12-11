@@ -58,4 +58,3 @@ export function handleInviteRedirectIfPresent(): boolean {
   }
   return false;
 }
-
