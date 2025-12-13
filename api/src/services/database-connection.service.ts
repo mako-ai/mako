@@ -44,6 +44,10 @@ export interface QueryExecuteOptions {
   batchSize?: number;
   /** Location/region for query execution (BigQuery) */
   location?: string;
+  /** Abort signal for cancellation */
+  signal?: AbortSignal;
+  /** Execution ID for job tracking (enables cancellation) */
+  executionId?: string;
 }
 
 interface PooledConnection {
@@ -71,6 +75,17 @@ export class DatabaseConnectionService {
 
   // MongoDB-specific pooling
   private mongoConnections: Map<string, PooledConnection> = new Map();
+
+  // Track running BigQuery jobs for cancellation
+  private runningBigQueryJobs: Map<
+    string,
+    {
+      projectId: string;
+      jobId: string;
+      location?: string;
+      client: AxiosInstance;
+    }
+  > = new Map();
   private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly maxIdleTime = 15 * 60 * 1000; // 15 minutes to be safe
 
@@ -750,7 +765,15 @@ export class DatabaseConnectionService {
     query: string,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
+    const executionId = options?.executionId;
+    const signal = options?.signal;
+
+    const checkAborted = () => {
+      if (signal?.aborted) throw new Error("Query cancelled");
+    };
+
     try {
+      checkAborted();
       if (typeof query !== "string" || !query.trim()) {
         return { success: false, error: "Query must be a non-empty string" };
       }
@@ -785,6 +808,7 @@ export class DatabaseConnectionService {
         maxResults: batchSize,
       };
       if (configuredLocation) startBody.location = configuredLocation;
+      checkAborted();
       let response = await client.post(
         `/projects/${project_id}/queries`,
         startBody,
@@ -792,26 +816,34 @@ export class DatabaseConnectionService {
 
       let data = response.data || {};
       const jobId: string | undefined = data.jobReference?.jobId;
-      // Extract location from job reference - this is critical for multi-region setups
-      // BigQuery returns the actual location where the job was created
       const jobLocation: string | undefined =
         data.jobReference?.location || configuredLocation;
       let schema: any = data.schema;
       let pageToken: string | undefined = data.pageToken;
       const rowsAccum: any[] = [];
 
-      // Wait for job completion if not immediately complete
-      // BigQuery may return jobComplete: false for complex/long-running queries
-      const maxWaitMs = 5 * 60 * 1000; // 5 minutes max wait
-      const pollIntervalMs = 1000; // 1 second between polls
+      // Track running job for cancellation
+      if (executionId && jobId) {
+        this.runningBigQueryJobs.set(executionId, {
+          projectId: project_id,
+          jobId,
+          location: jobLocation,
+          client,
+        });
+      }
+
+      // Wait for job completion
+      const maxWaitMs = 5 * 60 * 1000;
+      const pollIntervalMs = 1000;
       let waitedMs = 0;
 
       while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+        checkAborted();
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
         waitedMs += pollIntervalMs;
+        checkAborted();
 
         const params: any = { maxResults: batchSize };
-        // Must use the job's actual location for polling
         if (jobLocation) params.location = jobLocation;
         response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
@@ -821,6 +853,7 @@ export class DatabaseConnectionService {
         schema = data.schema || schema;
       }
 
+      checkAborted();
       if (data.jobComplete === false) {
         return {
           success: false,
@@ -828,17 +861,16 @@ export class DatabaseConnectionService {
         };
       }
 
-      // Collect first page of results
+      // Collect results
       if (Array.isArray(data.rows) && schema) {
         rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
       }
       pageToken = data.pageToken;
 
-      // Paginate through remaining results
       while (pageToken) {
+        checkAborted();
         const params: any = { maxResults: batchSize };
         if (pageToken) params.pageToken = pageToken;
-        // Must use the job's actual location for pagination
         if (jobLocation) params.location = jobLocation;
         response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
@@ -852,18 +884,50 @@ export class DatabaseConnectionService {
         pageToken = data.pageToken;
       }
 
-      return {
-        success: true,
-        data: rowsAccum,
-        rowCount: rowsAccum.length,
-      };
+      return { success: true, data: rowsAccum, rowCount: rowsAccum.length };
     } catch (error: any) {
+      if (error?.message === "Query cancelled") {
+        return { success: false, error: "Query cancelled" };
+      }
       return {
         success: false,
         error:
           (error?.response?.data?.error?.message as string) ||
           (error?.message as string) ||
           "BigQuery query failed",
+      };
+    } finally {
+      if (executionId) this.runningBigQueryJobs.delete(executionId);
+    }
+  }
+
+  /**
+   * Cancel a running BigQuery job
+   */
+  async cancelBigQueryJob(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const job = this.runningBigQueryJobs.get(executionId);
+    if (!job)
+      return { success: false, error: "Job not found or already completed" };
+
+    try {
+      const params: any = {};
+      if (job.location) params.location = job.location;
+      await job.client.post(
+        `/projects/${job.projectId}/jobs/${job.jobId}/cancel`,
+        {},
+        { params },
+      );
+      this.runningBigQueryJobs.delete(executionId);
+      return { success: true };
+    } catch (error: any) {
+      return {
+        success: false,
+        error:
+          error?.response?.data?.error?.message ||
+          error?.message ||
+          "Failed to cancel job",
       };
     }
   }

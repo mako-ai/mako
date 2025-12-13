@@ -28,6 +28,7 @@ import {
   Redo as RedoIcon,
   History as HistoryIcon,
   Info as InfoOutlineIcon,
+  Square as StopIcon,
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
@@ -67,8 +68,10 @@ interface ConsoleProps {
     connectionId?: string,
     databaseId?: string, // Sub-database ID for cluster mode (e.g., D1 UUID)
   ) => void;
+  onCancel?: () => void;
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
   isExecuting: boolean;
+  isCancelling?: boolean;
   isSaving?: boolean;
   onContentChange?: (content: string) => void;
   databases?: DatabaseConnection[];
@@ -114,8 +117,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     dbContentHash,
     title,
     onExecute,
+    onCancel,
     onSave,
     isExecuting,
+    isCancelling,
     isSaving,
     onContentChange,
     databases = [],
@@ -965,23 +970,38 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<PlayIcon />}
-            onClick={handleExecute}
-            disabled={isExecuting || !connectionId}
-            disableElevation
-            sx={{
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              maxWidth: "200px", // Adjust this value as needed
-              minWidth: "120px", // Ensure minimum width for readability
-            }}
-          >
-            {isExecuting ? "Executing..." : "Run (⌘/Ctrl+Enter)"}
-          </Button>
+          {isExecuting ? (
+            <Button
+              variant="contained"
+              size="small"
+              color="error"
+              startIcon={<StopIcon size={18} />}
+              onClick={onCancel}
+              disabled={isCancelling}
+              disableElevation
+              sx={{ minWidth: "120px" }}
+            >
+              {isCancelling ? "Cancelling..." : "Cancel"}
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<PlayIcon />}
+              onClick={handleExecute}
+              disabled={!connectionId}
+              disableElevation
+              sx={{
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: "200px",
+                minWidth: "120px",
+              }}
+            >
+              Run (⌘/Ctrl+Enter)
+            </Button>
+          )}
 
           {onSave && (
             <Tooltip
