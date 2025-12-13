@@ -84,7 +84,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       ...(effectiveMode === "light"
         ? {
             background: {
-              default: "#fafafafa",
+              default: "#fafafa",
               paper: "#ffffff",
             },
             primary: {
@@ -205,9 +205,17 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
           // Ensure font-size cascades to any InputBase that is part of a small Select
           root: ({ ownerState }) => ({
             ...(ownerState.size === "small" && {
-              fontSize: 12,
+              fontSize: "0.875rem",
+              "@media (max-width:600px)": {
+                fontSize: "16px",
+              },
             }),
           }),
+          input: {
+            "@media (max-width:600px)": {
+              fontSize: "16px",
+            },
+          },
         },
       },
       MuiTabs: {
