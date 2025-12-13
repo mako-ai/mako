@@ -1,6 +1,6 @@
 # Cloudflare Worker for PR Preview Routing
 
-This worker routes requests from `pr-{number}.dev-app.mako.ai` to the corresponding Cloud Run preview deployment.
+This worker routes requests from `pr-{number}.mako.ai` to the corresponding Cloud Run preview deployment.
 
 ## Setup Instructions
 
@@ -36,7 +36,7 @@ id = "your-namespace-id-here"
 Alternatively, set up Workers Routes:
 
 1. Go to Workers & Pages → your worker → Settings → Triggers
-2. Add Route: `*.dev-app.mako.ai/*` for zone `mako.ai`
+2. Add Route: `pr-*.mako.ai/*` for zone `mako.ai`
 
 ### 4. Deploy the Worker
 
@@ -51,12 +51,12 @@ pnpm run cf:deploy
 pnpm exec wrangler kv:key put --namespace-id=YOUR_NAMESPACE_ID "123" "https://your-cloud-run-url.run.app"
 
 # Test the routing
-curl https://pr-123.dev-app.mako.ai/
+curl https://pr-123.mako.ai/
 ```
 
 ## How It Works
 
-1. Request arrives at `pr-{number}.dev-app.mako.ai`
+1. Request arrives at `pr-{number}.mako.ai`
 2. Worker extracts the PR number from the subdomain
 3. Worker looks up the Cloud Run URL from KV using the PR number as key
 4. Worker proxies the request to Cloud Run, rewriting headers appropriately

@@ -5,8 +5,8 @@ name = "mako-pr-router"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
-# Routes - routes all *.dev-app.mako.ai traffic through this worker
-routes = [{ pattern = "*.dev-app.mako.ai/*", zone_name = "mako.ai" }]
+# Routes - routes all pr-*.mako.ai traffic through this worker
+routes = [{ pattern = "pr-*.mako.ai/*", zone_name = "mako.ai" }]
 
 # KV Namespace binding
 [[kv_namespaces]]

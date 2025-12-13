@@ -1,7 +1,7 @@
 /**
  * Cloudflare Worker for PR Preview Routing
  *
- * Routes requests from pr-{number}.dev-app.mako.ai to the corresponding
+ * Routes requests from pr-{number}.mako.ai to the corresponding
  * Cloud Run service URL stored in KV.
  *
  * Setup:
@@ -15,13 +15,13 @@ export default {
     const url = new URL(request.url);
     const hostname = url.hostname;
 
-    // Extract PR number from subdomain (pr-123.dev-app.mako.ai)
-    const match = hostname.match(/^pr-(\d+)\.dev-app\.mako\.ai$/);
+    // Extract PR number from subdomain (pr-123.mako.ai)
+    const match = hostname.match(/^pr-(\d+)\.mako\.ai$/);
     if (!match) {
       return new Response(
         JSON.stringify({
           error: "Invalid preview URL",
-          message: "Expected format: pr-{number}.dev-app.mako.ai",
+          message: "Expected format: pr-{number}.mako.ai",
         }),
         {
           status: 404,
