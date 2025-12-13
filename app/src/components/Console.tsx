@@ -440,20 +440,19 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
       // Simple regex to find table references in FROM/JOIN clauses
       // Matches: FROM `dataset.table` or FROM dataset.table or FROM table
-      const tableRegex =
-        /(?:FROM|JOIN)\s+(`?)([^`\s,;]+)\1(?:\s+AS\s+\w+)?/gi;
+      const tableRegex = /(?:FROM|JOIN)\s+(`?)([^`\s,;]+)\1(?:\s+AS\s+\w+)?/gi;
       let match;
 
       while ((match = tableRegex.exec(content)) !== null) {
         const fullMatch = match[0];
         const tableNameRaw = match[2];
-        
-        // Skip if it contains template variables or special chars that might indicate partial query
-        if (tableNameRaw.includes('{') || tableNameRaw.includes('$')) continue;
 
-        const parts = tableNameRaw.split('.');
+        // Skip if it contains template variables or special chars that might indicate partial query
+        if (tableNameRaw.includes("{") || tableNameRaw.includes("$")) continue;
+
+        const parts = tableNameRaw.split(".");
         let isValid = false;
-        
+
         if (parts.length === 1) {
           // Just table name - check if it exists in any dataset
           const table = parts[0];
@@ -467,40 +466,42 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           // dataset.table
           const [ds, table] = parts;
           // Handle backtick cleanup if split included them (though regex should handle outer ones)
-          const cleanDs = ds.replace(/`/g, '');
-          const cleanTable = table.replace(/`/g, '');
-          
+          const cleanDs = ds.replace(/`/g, "");
+          const cleanTable = table.replace(/`/g, "");
+
           if (schema[cleanDs] && schema[cleanDs][cleanTable]) {
             isValid = true;
           }
         } else if (parts.length === 3) {
-           // project.dataset.table - verify dataset and table
-           const [_, ds, table] = parts;
-           const cleanDs = ds.replace(/`/g, '');
-           const cleanTable = table.replace(/`/g, '');
-           
-           if (schema[cleanDs] && schema[cleanDs][cleanTable]) {
-             isValid = true;
-           }
+          // project.dataset.table - verify dataset and table
+          const [_, ds, table] = parts;
+          const cleanDs = ds.replace(/`/g, "");
+          const cleanTable = table.replace(/`/g, "");
+
+          if (schema[cleanDs] && schema[cleanDs][cleanTable]) {
+            isValid = true;
+          }
         }
 
         if (!isValid && parts.length <= 3) {
-           // Calculate position
-           const tableIndex = fullMatch.indexOf(tableNameRaw);
-           // Ensure indices are valid
-           if (tableIndex !== -1) {
-             const startPos = model.getPositionAt(match.index + tableIndex);
-             const endPos = model.getPositionAt(match.index + tableIndex + tableNameRaw.length);
-             
-             markers.push({
-               severity: monacoInstance.MarkerSeverity.Warning,
-               startLineNumber: startPos.lineNumber,
-               startColumn: startPos.column,
-               endLineNumber: endPos.lineNumber,
-               endColumn: endPos.column,
-               message: `Table '${tableNameRaw}' not found in schema`,
-             });
-           }
+          // Calculate position
+          const tableIndex = fullMatch.indexOf(tableNameRaw);
+          // Ensure indices are valid
+          if (tableIndex !== -1) {
+            const startPos = model.getPositionAt(match.index + tableIndex);
+            const endPos = model.getPositionAt(
+              match.index + tableIndex + tableNameRaw.length,
+            );
+
+            markers.push({
+              severity: monacoInstance.MarkerSeverity.Warning,
+              startLineNumber: startPos.lineNumber,
+              startColumn: startPos.column,
+              endLineNumber: endPos.lineNumber,
+              endColumn: endPos.column,
+              message: `Table '${tableNameRaw}' not found in schema`,
+            });
+          }
         }
       }
 
@@ -512,20 +513,22 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
     // Set up debounced validation on change
     const disposer = editorRef.current.onDidChangeModelContent(() => {
-        if (validationTimeoutRef.current) {
-            clearTimeout(validationTimeoutRef.current);
-        }
-        validationTimeoutRef.current = setTimeout(validateContent, 1000);
+      if (validationTimeoutRef.current) {
+        clearTimeout(validationTimeoutRef.current);
+      }
+      validationTimeoutRef.current = setTimeout(validateContent, 1000);
     });
 
     return () => {
-        disposer.dispose();
-        if (validationTimeoutRef.current) clearTimeout(validationTimeoutRef.current);
-        // Clear markers on unmount
-        const model = editorRef.current?.getModel();
-        if (model) {
-            monacoInstance.editor.setModelMarkers(model, "sql-validation", []);
-        }
+      disposer.dispose();
+      if (validationTimeoutRef.current) {
+        clearTimeout(validationTimeoutRef.current);
+      }
+      // Clear markers on unmount
+      const model = editorRef.current?.getModel();
+      if (model) {
+        monacoInstance.editor.setModelMarkers(model, "sql-validation", []);
+      }
     };
   }, [connectionId, autocompleteData, monacoInstance]);
 

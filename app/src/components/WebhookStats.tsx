@@ -125,7 +125,10 @@ export function WebhookStats({
 
   const fetchEventDetails = async (eventId: string) => {
     try {
-      const response = await apiClient.get(
+      const response = await apiClient.get<{
+        success: boolean;
+        data: any;
+      }>(
         `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}`,
       );
 
@@ -220,7 +223,7 @@ export function WebhookStats({
       {/* Stats Overview */}
       {stats && (
         <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid item xs={12} md={3}>
+          <Grid xs={12} md={3}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
@@ -230,7 +233,7 @@ export function WebhookStats({
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid xs={12} md={3}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
@@ -240,7 +243,7 @@ export function WebhookStats({
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid xs={12} md={3}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
@@ -250,7 +253,7 @@ export function WebhookStats({
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid xs={12} md={3}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
