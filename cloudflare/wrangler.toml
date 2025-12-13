@@ -5,16 +5,10 @@ name = "mako-pr-router"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
-# Routes - will route all *.dev-app.mako.ai traffic through this worker
-# You need to add the route in Cloudflare dashboard or via API
-# routes = [
-#   { pattern = "*.dev-app.mako.ai/*", zone_name = "mako.ai" }
-# ]
+# Routes - routes all *.dev-app.mako.ai traffic through this worker
+routes = [{ pattern = "*.dev-app.mako.ai/*", zone_name = "mako.ai" }]
 
 # KV Namespace binding
-# Create with: wrangler kv:namespace create MAKO_PR_DEPLOYMENTS
-# Then update the id below with the returned namespace ID
 [[kv_namespaces]]
 binding = "MAKO_PR_DEPLOYMENTS"
 id = "4b7600c488094db88540a401e8fbbce1"
-# preview_id = "YOUR_PREVIEW_KV_NAMESPACE_ID_HERE"  # Optional: for wrangler dev
