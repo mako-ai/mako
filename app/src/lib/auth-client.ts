@@ -206,7 +206,10 @@ class AuthClient {
    * Get auth configuration from server
    * Useful for dynamic OAuth status checking
    */
-  async getAuthConfig(): Promise<{ oauthEnabled: boolean; providers: string[] }> {
+  async getAuthConfig(): Promise<{
+    oauthEnabled: boolean;
+    providers: string[];
+  }> {
     try {
       const response = await fetch(this.buildUrl("/auth/config"), {
         method: "GET",

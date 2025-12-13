@@ -43,7 +43,8 @@
     "cf:kv:list": "wrangler kv:key list --namespace-id=$CLOUDFLARE_KV_NAMESPACE_ID",
     "preview-db:list": "./scripts/manage-preview-db.sh list",
     "preview-db:create": "./scripts/manage-preview-db.sh create",
-    "preview-db:delete": "./scripts/manage-preview-db.sh delete"
+    "preview-db:delete": "./scripts/manage-preview-db.sh delete",
+    "prepare": "husky"
   },
   "keywords": [
     "analytics",
@@ -73,6 +74,16 @@
     "stripe": "^14.25.0",
     "zod": "^3.25.67"
   },
+  "lint-staged": {
+    "app/**/*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "api/**/*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ]
+  },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.10.4",
@@ -81,7 +92,9 @@
     "concurrently": "^8.2.2",
     "eslint": "^8.55.0",
     "eslint-config-prettier": "^10.1.5",
+    "husky": "^9.1.7",
     "jest": "^29.7.0",
+    "lint-staged": "^16.2.7",
     "nodemon": "^3.0.2",
     "prettier": "^3.1.0",
     "ts-jest": "^29.1.1",

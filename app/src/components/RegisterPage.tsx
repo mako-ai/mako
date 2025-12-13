@@ -178,7 +178,9 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
             Create your free account
           </Typography>
           <Typography variant="body2" sx={{ color: "#888", mb: 4 }}>
-            {isOAuthEnabled ? "Connect to Mako with:" : "Sign up with your email:"}
+            {isOAuthEnabled
+              ? "Connect to Mako with:"
+              : "Sign up with your email:"}
           </Typography>
 
           {error && (
@@ -191,7 +193,12 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
           {isOAuthEnabled && (
             <>
               <Box
-                sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}
+                sx={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 1.5,
+                  mb: 3,
+                }}
               >
                 <Button
                   fullWidth

@@ -151,8 +151,8 @@ function Settings() {
             Custom Prompt Configuration
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Customize the AI assistant's behavior by adding context about your
-            business, data relationships, and common query patterns.
+            Customize the AI assistant&apos;s behavior by adding context about
+            your business, data relationships, and common query patterns.
           </Typography>
 
           {customPromptError && (

@@ -163,7 +163,9 @@ export function LoginPage({
             Log in to your account
           </Typography>
           <Typography variant="body2" sx={{ color: "#888", mb: 4 }}>
-            {isOAuthEnabled ? "Connect to Mako with:" : "Log in with your email:"}
+            {isOAuthEnabled
+              ? "Connect to Mako with:"
+              : "Log in with your email:"}
           </Typography>
 
           {error && (
@@ -176,7 +178,12 @@ export function LoginPage({
           {isOAuthEnabled && (
             <>
               <Box
-                sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}
+                sx={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 1.5,
+                  mb: 3,
+                }}
               >
                 <Button
                   fullWidth

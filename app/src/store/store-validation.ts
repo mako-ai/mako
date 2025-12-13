@@ -6,7 +6,7 @@ import { z } from "zod";
 export function createValidatedStorage<T>(
   schema: z.ZodSchema<T>,
   storageName: string,
-  defaultState: T,
+  _defaultState: T,
 ) {
   return {
     getItem: (name: string) => {
