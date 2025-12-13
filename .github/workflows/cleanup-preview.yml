@@ -25,6 +25,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # On pull_request: closed, default checkout may be the merge commit or default branch.
+          # Pin to the PR head SHA so git diff sees the PR's actual changes.
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Authenticate to Google Cloud
@@ -79,7 +82,7 @@ jobs:
         id: check-migrations
         run: |
           # Check if this PR had migration changes (would have used ephemeral DB)
-          MIGRATION_CHANGES=$(git diff origin/master...HEAD --name-only -- 'api/src/migrations/*.ts' 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+          MIGRATION_CHANGES=$(git diff "origin/${{ github.event.pull_request.base.ref }}"...HEAD --name-only -- 'api/src/migrations/*.ts' 2>/dev/null | wc -l | tr -d ' ' || echo "0")
           if [ "$MIGRATION_CHANGES" -gt 0 ]; then
             echo "has_ephemeral_db=true" >> $GITHUB_OUTPUT
           else
