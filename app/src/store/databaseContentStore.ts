@@ -38,7 +38,7 @@ function makeNodeKey(node?: { id: string; kind: string }): NodeKey {
 
 export const useDatabaseContentStore = create<DatabaseContentState>()(
   persist(
-    immer((set, get) => ({
+    immer((set, _get) => ({
       nodes: {},
       loading: {},
       error: {},

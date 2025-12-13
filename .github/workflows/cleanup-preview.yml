@@ -1,0 +1,142 @@
+name: Cleanup PR Preview
+
+on:
+  pull_request:
+    types: [closed]
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  cleanup:
+    name: Cleanup PR #${{ github.event.pull_request.number }}
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      SERVICE_NAME: mako-pr-${{ github.event.pull_request.number }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # On pull_request: closed, default checkout may be the merge commit or default branch.
+          # Pin to the PR head SHA so git diff sees the PR's actual changes.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Delete Cloud Run service
+        continue-on-error: true
+        run: |
+          echo "Deleting Cloud Run service: ${SERVICE_NAME}"
+          gcloud run services delete ${SERVICE_NAME} \
+            --region ${GCP_REGION} \
+            --quiet || echo "Service ${SERVICE_NAME} not found or already deleted"
+
+      - name: Delete Docker images from Artifact Registry
+        continue-on-error: true
+        run: |
+          IMAGE_NAME="mako-pr-${PR_NUMBER}"
+          IMAGE_PATH="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ vars.GCP_ARTIFACT_REPOSITORY }}/${IMAGE_NAME}"
+          
+          echo "Deleting Docker images: ${IMAGE_PATH}"
+          
+          # List and delete all tags for this image
+          gcloud artifacts docker images list ${IMAGE_PATH} --format='get(DIGEST)' 2>/dev/null | while read digest; do
+            if [ -n "$digest" ]; then
+              echo "Deleting image with digest: ${digest}"
+              gcloud artifacts docker images delete "${IMAGE_PATH}@${digest}" --quiet --delete-tags || true
+            fi
+          done
+          
+          echo "Image cleanup complete"
+
+      - name: Remove from Cloudflare KV
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+        run: |
+          echo "Removing PR #${PR_NUMBER} from Cloudflare KV"
+          curl -X DELETE "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${PR_NUMBER}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --fail-with-body || echo "KV entry not found or already deleted"
+
+      - name: Check for ephemeral database
+        id: check-migrations
+        run: |
+          # Check if this PR had migration changes (would have used ephemeral DB)
+          MIGRATION_CHANGES=$(git diff "origin/${{ github.event.pull_request.base.ref }}"...HEAD --name-only -- 'api/src/migrations/*.ts' 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+          if [ "$MIGRATION_CHANGES" -gt 0 ]; then
+            echo "has_ephemeral_db=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_ephemeral_db=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install MongoDB tools
+        if: steps.check-migrations.outputs.has_ephemeral_db == 'true'
+        run: |
+          wget -qO- https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb.gpg
+          echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-mongosh
+
+      - name: Delete ephemeral database
+        if: steps.check-migrations.outputs.has_ephemeral_db == 'true'
+        continue-on-error: true
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          echo "Deleting ephemeral database for PR #${PR_NUMBER}"
+          # Extract the connection string base and target the PR-specific database
+          # Format the database name
+          DB_NAME="staging_pr_${PR_NUMBER}"
+          
+          # Drop the database
+          mongosh "$STAGING_DATABASE_URL" --eval "db.getSiblingDB('${DB_NAME}').dropDatabase()" || echo "Database not found or already deleted"
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const wasMerged = context.payload.pull_request.merged;
+            const hadEphemeralDb = '${{ steps.check-migrations.outputs.has_ephemeral_db }}' === 'true';
+            
+            const status = wasMerged ? '✅ Merged' : '❌ Closed';
+            
+            const body = `## 🧹 Preview Cleanup Complete
+
+            | Resource | Status |
+            |----------|--------|
+            | Cloud Run Service | Deleted |
+            | Docker Images | Deleted |
+            | Cloudflare KV Entry | Removed |
+            ${hadEphemeralDb ? '| Ephemeral Database | Dropped |' : ''}
+
+            PR was ${status.toLowerCase()}.
+            `;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body,
+            });
+

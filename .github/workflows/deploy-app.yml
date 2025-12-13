@@ -3,12 +3,13 @@ name: Deploy App to Cloud Run
 on:
   push:
     branches:
-      - dev
       - master
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 concurrency:
-  group: deploy-${{ github.ref_name }}
+  group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
   cancel-in-progress: true
 
 env:
@@ -19,25 +20,59 @@ env:
 permissions:
   contents: read
   id-token: write
+  pull-requests: write
 
 jobs:
-  build-and-deploy:
-    name: Deploy ${{ github.ref_name == 'master' && 'production' || 'staging' }}
+  # Detect if migrations have changed (for PR previews)
+  detect-changes:
+    name: Detect migration changes
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      migrations_changed: ${{ steps.check.outputs.migrations_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for migration changes
+        id: check
+        run: |
+          MIGRATION_CHANGES=$(git diff origin/master...HEAD --name-only -- 'api/src/migrations/*.ts' | wc -l | tr -d ' ')
+          echo "Found $MIGRATION_CHANGES migration file(s) changed"
+          if [ "$MIGRATION_CHANGES" -gt 0 ]; then
+            echo "migrations_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "migrations_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  # PR Preview Deployment
+  deploy-preview:
+    name: Deploy PR Preview
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: detect-changes
     environment:
-      name: ${{ github.ref_name == 'master' && 'production' || 'staging' }}
+      name: pr-${{ github.event.pull_request.number }}
+      url: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai
     env:
-      BASE_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_URL: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai
+      CLIENT_URL: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai
+      VITE_API_URL: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai/api
+      # PR previews disable OAuth since redirect URLs can't be dynamically registered
+      DISABLE_OAUTH: "true"
+      # Staging secrets (from staging environment)
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
-      CLIENT_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai' || 'https://dev-app.mako.ai' }}
-      DATABASE_URL: ${{ github.ref_name == 'master' && secrets.PROD_DATABASE_URL || secrets.STAGING_DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
-      GCP_SERVICE_ACCOUNT: ${{ github.ref_name == 'master' && secrets.GCP_PROD_SERVICE_ACCOUNT || secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
       GITHUB_CLIENT_ID: ${{ vars.GITHUB_CLIENT_ID }}
       GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-      IMAGE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
+      IMAGE_NAME: mako-pr-${{ github.event.pull_request.number }}
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -48,10 +83,9 @@ jobs:
       SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
       SENDGRID_PASSWORD_RESET_TEMPLATE_ID: ${{ vars.SENDGRID_PASSWORD_RESET_TEMPLATE_ID }}
       SENDGRID_VERIFICATION_TEMPLATE_ID: ${{ vars.SENDGRID_VERIFICATION_TEMPLATE_ID }}
-      SERVICE_NAME: ${{ github.ref_name == 'master' && 'mako' || 'dev-mako' }}
+      SERVICE_NAME: mako-pr-${{ github.event.pull_request.number }}
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-      VITE_API_URL: ${{ github.ref_name == 'master' && 'https://app.mako.ai/api' || 'https://dev-app.mako.ai/api' }}
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
     steps:
       - name: Checkout
@@ -78,10 +112,247 @@ jobs:
         run: pnpm run --filter api lint
 
       - name: Build workspaces (Fail Fast Check)
-        # We run this locally first because it's significantly faster than the Docker build.
-        # If this fails, we save time by not attempting the Docker build.
-        # Note: The artifacts produced here are NOT used in the Docker image;
-        # the Dockerfile performs its own fresh build.
+        run: pnpm run build
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          CLIENT_URL: ${{ env.CLIENT_URL }}
+          NODE_ENV: production
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
+          VITE_DISABLE_OAUTH: "true"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Compute image URIs
+        id: image
+        run: |
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
+          echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${IMAGE_URI}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Create .env.production for Docker build
+        run: |
+          cat <<EOF > .env.production
+          VITE_API_URL=${VITE_API_URL}
+          VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
+          VITE_DISABLE_OAUTH=true
+          EOF
+
+      - name: Build Docker image
+        run: docker build --platform linux/amd64 -t ${{ steps.image.outputs.sha_tag }} .
+
+      - name: Tag Docker image as latest
+        run: docker tag ${{ steps.image.outputs.sha_tag }} ${{ steps.image.outputs.latest_tag }}
+
+      - name: Push Docker images
+        run: |
+          docker push ${{ steps.image.outputs.sha_tag }}
+          docker push ${{ steps.image.outputs.latest_tag }}
+
+      - name: Clean temporary env.production file
+        run: rm -f .env.production
+
+      # Handle ephemeral database if migrations changed
+      - name: Setup ephemeral database
+        id: ephemeral-db
+        if: needs.detect-changes.outputs.migrations_changed == 'true'
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          echo "Migrations changed - creating ephemeral database for PR #${PR_NUMBER}"
+          # Extract the base URL and create a PR-specific database name
+          # Format: mongodb+srv://user:pass@cluster/dbname -> mongodb+srv://user:pass@cluster/staging_pr_123
+          BASE_DB_URL=$(echo "$STAGING_DATABASE_URL" | sed 's|/[^/]*$|/staging_pr_'"${PR_NUMBER}"'|')
+          echo "ephemeral_db_url=${BASE_DB_URL}" >> "$GITHUB_OUTPUT"
+          echo "using_ephemeral=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set database URL
+        id: db-url
+        run: |
+          if [ "${{ steps.ephemeral-db.outputs.using_ephemeral }}" == "true" ]; then
+            echo "db_url=${{ steps.ephemeral-db.outputs.ephemeral_db_url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "db_url=${{ secrets.STAGING_DATABASE_URL }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          gcloud run deploy ${SERVICE_NAME} \
+            --image ${{ steps.image.outputs.sha_tag }} \
+            --region ${GCP_REGION} \
+            --timeout=600 \
+            --min-instances=0 \
+            --max-instances=2 \
+            --allow-unauthenticated \
+            --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
+            --set-env-vars CLIENT_URL=${CLIENT_URL} \
+            --set-env-vars DATABASE_URL=${{ steps.db-url.outputs.db_url }} \
+            --set-env-vars DISABLE_OAUTH=true \
+            --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
+            --set-env-vars GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID} \
+            --set-env-vars GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET} \
+            --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
+            --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
+            --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
+            --set-env-vars NODE_ENV=production \
+            --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
+            --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
+            --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
+            --set-env-vars SENDGRID_API_KEY=${SENDGRID_API_KEY} \
+            --set-env-vars SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL} \
+            --set-env-vars SENDGRID_INVITATION_TEMPLATE_ID=${SENDGRID_INVITATION_TEMPLATE_ID} \
+            --set-env-vars SENDGRID_PASSWORD_RESET_TEMPLATE_ID=${SENDGRID_PASSWORD_RESET_TEMPLATE_ID} \
+            --set-env-vars SENDGRID_VERIFICATION_TEMPLATE_ID=${SENDGRID_VERIFICATION_TEMPLATE_ID} \
+            --set-env-vars SESSION_DURATION=${SESSION_DURATION} \
+            --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
+            --set-env-vars VITE_API_URL=${VITE_API_URL} \
+            --quiet
+
+          # Get the Cloud Run URL
+          CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --region ${GCP_REGION} --format='value(status.url)')
+          echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Run migrations (ephemeral DB only)
+        if: needs.detect-changes.outputs.migrations_changed == 'true'
+        env:
+          DATABASE_URL: ${{ steps.db-url.outputs.db_url }}
+        run: pnpm run migrate
+
+      - name: Update Cloudflare KV with deployment URL
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+        run: |
+          curl -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${PR_NUMBER}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: text/plain" \
+            --data "${{ steps.deploy.outputs.cloud_run_url }}"
+
+      - name: Comment on PR with deployment URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const previewUrl = `https://pr-${prNumber}.dev-app.mako.ai`;
+            const cloudRunUrl = `${{ steps.deploy.outputs.cloud_run_url }}`;
+            const migrationsChanged = '${{ needs.detect-changes.outputs.migrations_changed }}' === 'true';
+
+            const body = `## 🚀 Preview Deployment Ready
+
+            | | |
+            |---|---|
+            | **Preview URL** | [${previewUrl}](${previewUrl}) |
+            | **Cloud Run URL** | [${cloudRunUrl}](${cloudRunUrl}) |
+            | **Database** | ${migrationsChanged ? '🗄️ Ephemeral (migrations changed)' : '📦 Shared staging'} |
+            | **OAuth** | ❌ Disabled (use email/password) |
+
+            > **Note:** OAuth login is disabled for PR previews. Use email/password authentication for testing.
+            `;
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Preview Deployment Ready')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: body,
+              });
+            }
+
+  # Production Deployment
+  deploy-production:
+    name: Deploy Production
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    environment:
+      name: production
+      url: https://app.mako.ai
+    env:
+      BASE_URL: https://app.mako.ai
+      BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
+      CLIENT_URL: https://app.mako.ai
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_PROD_SERVICE_ACCOUNT }}
+      GITHUB_CLIENT_ID: ${{ vars.GITHUB_CLIENT_ID }}
+      GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      IMAGE_NAME: mako
+      INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
+      INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
+      RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
+      SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+      SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
+      SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
+      SENDGRID_PASSWORD_RESET_TEMPLATE_ID: ${{ vars.SENDGRID_PASSWORD_RESET_TEMPLATE_ID }}
+      SENDGRID_VERIFICATION_TEMPLATE_ID: ${{ vars.SENDGRID_VERIFICATION_TEMPLATE_ID }}
+      SERVICE_NAME: mako
+      SESSION_DURATION: ${{ vars.SESSION_DURATION }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      VITE_API_URL: https://app.mako.ai/api
+      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint web app
+        run: pnpm run --filter app lint
+
+      - name: Lint API
+        run: pnpm run --filter api lint
+
+      - name: Build workspaces (Fail Fast Check)
         run: pnpm run build
         env:
           BASE_URL: ${{ env.BASE_URL }}
@@ -112,9 +383,6 @@ jobs:
           echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Create .env.production for Docker build
-        env:
-          VITE_API_URL: ${{ env.VITE_API_URL }}
-          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
         run: |
           cat <<EOF > .env.production
           VITE_API_URL=${VITE_API_URL}
@@ -166,28 +434,6 @@ jobs:
             --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --quiet
-
-      - name: Install MongoDB tools
-        if: github.ref_name == 'dev'
-        run: |
-          wget -qO- https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb.gpg
-          echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-          sudo apt-get update
-          sudo apt-get install -y mongodb-database-tools mongodb-mongosh
-
-      - name: Restore staging database from production
-        if: github.ref_name == 'dev'
-        env:
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
-        run: |
-          echo "Dropping staging database..."
-          mongosh "$STAGING_DATABASE_URL" --eval "db.dropDatabase()"
-          echo "Restoring from production..."
-          mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
-            --nsInclude="production.*" \
-            --nsFrom="production.*" \
-            --nsTo="staging.*"
 
       - name: Run database migrations
         run: pnpm run migrate

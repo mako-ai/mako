@@ -195,6 +195,39 @@ class AuthClient {
   }
 
   /**
+   * Check if OAuth is enabled
+   * Uses environment variable set at build time
+   */
+  isOAuthEnabled(): boolean {
+    return import.meta.env.VITE_DISABLE_OAUTH !== "true";
+  }
+
+  /**
+   * Get auth configuration from server
+   * Useful for dynamic OAuth status checking
+   */
+  async getAuthConfig(): Promise<{
+    oauthEnabled: boolean;
+    providers: string[];
+  }> {
+    try {
+      const response = await fetch(this.buildUrl("/auth/config"), {
+        method: "GET",
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        return { oauthEnabled: true, providers: ["google", "github"] };
+      }
+
+      return response.json();
+    } catch {
+      // Default to enabled if we can't reach the server
+      return { oauthEnabled: true, providers: ["google", "github"] };
+    }
+  }
+
+  /**
    * Initiate OAuth login
    */
   initiateOAuth(provider: "google" | "github") {
