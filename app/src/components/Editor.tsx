@@ -59,6 +59,7 @@ function Editor() {
     Record<string, QueryResult | null>
   >({});
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(
     null,
@@ -255,6 +256,8 @@ function Editor() {
     const { generateObjectId } = await import("../utils/objectId");
     const executionId = generateObjectId();
 
+    console.log("[Console Execute] Starting query with execution ID:", executionId);
+
     setIsExecuting(true);
     setCurrentExecutionId(executionId); // Set BEFORE executing
     const startTime = Date.now();
@@ -290,6 +293,7 @@ function Editor() {
       setErrorModalOpen(true);
       setTabResults(prev => ({ ...prev, [tabId]: null }));
     } finally {
+      console.log("[Console Execute] Query finished, clearing execution ID:", executionId);
       setIsExecuting(false);
       setCurrentExecutionId(null);
     }
@@ -306,8 +310,20 @@ function Editor() {
         workspace: currentWorkspace?.id,
         executionId: currentExecutionId,
       });
+      setErrorMessage("Cannot cancel: missing execution information");
+      setErrorModalOpen(true);
       return;
     }
+
+    setIsCancelling(true);
+
+    // Set a timeout to reset cancelling state in case server doesn't respond
+    const cancelTimeout = setTimeout(() => {
+      console.warn(
+        "[Console Cancel] Cancellation timeout - resetting state",
+      );
+      setIsCancelling(false);
+    }, 10000); // 10 second timeout
 
     try {
       const { apiClient } = await import("../lib/api-client");
@@ -326,8 +342,12 @@ function Editor() {
 
       console.log("[Console Cancel] Cancel result:", result);
 
+      clearTimeout(cancelTimeout);
+
       if (result.success) {
-        setSnackbarMessage("Query execution cancelled");
+        setSnackbarMessage(
+          result.message || "Query cancellation requested successfully",
+        );
         setSnackbarOpen(true);
       } else {
         setErrorMessage(result.error || "Failed to cancel query");
@@ -335,8 +355,11 @@ function Editor() {
       }
     } catch (e: any) {
       console.error("[Console Cancel] Error cancelling query:", e);
+      clearTimeout(cancelTimeout);
       setErrorMessage(e?.message || "Failed to cancel query");
       setErrorModalOpen(true);
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -605,6 +628,7 @@ function Editor() {
                           handleConsoleSave(tab.id, content, currentPath)
                         }
                         isExecuting={isExecuting}
+                        isCancelling={isCancelling}
                         isSaving={isSaving}
                         onContentChange={content => {
                           updateConsoleContent(tab.id, content);

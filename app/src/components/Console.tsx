@@ -69,6 +69,7 @@ interface ConsoleProps {
   onCancel?: () => void; // Callback to cancel running query
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
   isExecuting: boolean;
+  isCancelling?: boolean; // New state for cancellation in progress
   isSaving?: boolean;
   onContentChange?: (content: string) => void;
   databases?: DatabaseConnection[];
@@ -116,6 +117,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onCancel,
     onSave,
     isExecuting,
+    isCancelling = false,
     isSaving,
     onContentChange,
     databases = [],
@@ -813,7 +815,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          {!isExecuting ? (
+          {!isExecuting && !isCancelling ? (
             <Button
               variant="contained"
               size="small"
@@ -831,6 +833,24 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             >
               Run (⌘/Ctrl+Enter)
             </Button>
+          ) : isCancelling ? (
+            <Button
+              variant="contained"
+              size="small"
+              color="warning"
+              startIcon={<StopIcon />}
+              disabled
+              disableElevation
+              sx={{
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: "200px",
+                minWidth: "120px",
+              }}
+            >
+              Cancelling...
+            </Button>
           ) : (
             <Button
               variant="contained"
@@ -838,7 +858,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               color="error"
               startIcon={<StopIcon />}
               onClick={onCancel}
-              disabled={!onCancel}
+              disabled={!onCancel || isCancelling}
               disableElevation
               sx={{
                 whiteSpace: "nowrap",

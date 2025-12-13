@@ -93,9 +93,16 @@ class QueryExecutionTrackerService {
     executionId: string,
     workspaceId: string,
   ): Promise<{ success: boolean; message?: string; error?: string }> {
+    console.log(
+      `[QueryTracker] Cancel request received for execution ${executionId}`,
+    );
+
     const execution = this.executions.get(executionId);
 
     if (!execution) {
+      console.log(
+        `[QueryTracker] Execution ${executionId} not found or already completed`,
+      );
       return {
         success: false,
         error: "Execution not found or already completed",
@@ -104,6 +111,9 @@ class QueryExecutionTrackerService {
 
     // Verify workspace access
     if (execution.workspaceId !== workspaceId) {
+      console.log(
+        `[QueryTracker] Access denied for execution ${executionId}: workspace mismatch`,
+      );
       return {
         success: false,
         error: "Access denied to this execution",
@@ -117,6 +127,7 @@ class QueryExecutionTrackerService {
     try {
       // Abort the HTTP request/query execution
       execution.abortController.abort();
+      console.log(`[QueryTracker] Abort signal sent for ${executionId}`);
 
       // Handle database-specific cancellation
       if (
@@ -131,11 +142,12 @@ class QueryExecutionTrackerService {
         );
       }
 
-      this.stopTracking(executionId);
+      // Note: We don't immediately stop tracking because the query might still be cleaning up
+      // The query execution handler will call stopTracking when it finishes
 
       return {
         success: true,
-        message: `Query execution cancelled successfully`,
+        message: `Query cancellation signal sent successfully`,
       };
     } catch (error) {
       console.error(`[QueryTracker] Error cancelling execution:`, error);
