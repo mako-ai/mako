@@ -141,12 +141,13 @@ function Sidebar() {
     <Box
       sx={{
         width: 52,
-        height: "100vh",
+        height: "100%",
         borderRight: "1px solid",
         borderColor: "divider",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
+        paddingBottom: "env(safe-area-inset-bottom)",
       }}
     >
       {/* Navigation Items */}

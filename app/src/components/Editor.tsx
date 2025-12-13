@@ -393,7 +393,7 @@ function Editor() {
 
   /* ----------------------------- Render ---------------------------- */
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <Box sx={{ height: "100%", display: "flex", flexDirection: "column", paddingBottom: "env(safe-area-inset-bottom)" }}>
       {consoleTabs.length > 0 ? (
         <Box
           sx={{

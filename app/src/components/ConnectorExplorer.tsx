@@ -149,7 +149,7 @@ function ConnectorExplorer() {
   };
 
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <Box sx={{ height: "100%", display: "flex", flexDirection: "column", paddingBottom: "env(safe-area-inset-bottom)" }}>
       {/* Header */}
       <Box sx={{ px: 1, py: 0.5, borderBottom: 1, borderColor: "divider" }}>
         <Box
