@@ -251,20 +251,23 @@ function Editor() {
       return;
     }
 
+    // Generate execution ID before starting query
+    const { generateObjectId } = await import("../utils/objectId");
+    const executionId = generateObjectId();
+
     setIsExecuting(true);
+    setCurrentExecutionId(executionId); // Set BEFORE executing
     const startTime = Date.now();
     try {
       const result = await executeQuery(
         currentWorkspace.id,
         connectionId,
         contentToExecute,
-        options,
+        {
+          ...options,
+          executionId, // Pass execution ID to backend
+        },
       );
-
-      // Store execution ID for cancellation
-      if (result.executionId) {
-        setCurrentExecutionId(result.executionId);
-      }
 
       const executionTime = Date.now() - startTime;
       if (result.success) {
@@ -293,12 +296,26 @@ function Editor() {
   };
 
   const handleConsoleCancel = async () => {
+    console.log(
+      "[Console Cancel] Attempting to cancel execution:",
+      currentExecutionId,
+    );
+
     if (!currentWorkspace || !currentExecutionId) {
+      console.error("[Console Cancel] Missing workspace or execution ID", {
+        workspace: currentWorkspace?.id,
+        executionId: currentExecutionId,
+      });
       return;
     }
 
     try {
       const { apiClient } = await import("../lib/api-client");
+      console.log(
+        "[Console Cancel] Calling cancel endpoint for execution:",
+        currentExecutionId,
+      );
+
       const result = await apiClient.post<{
         success: boolean;
         message?: string;
@@ -306,6 +323,8 @@ function Editor() {
       }>(`/workspaces/${currentWorkspace.id}/execute/cancel`, {
         executionId: currentExecutionId,
       });
+
+      console.log("[Console Cancel] Cancel result:", result);
 
       if (result.success) {
         setSnackbarMessage("Query execution cancelled");
@@ -315,6 +334,7 @@ function Editor() {
         setErrorModalOpen(true);
       }
     } catch (e: any) {
+      console.error("[Console Cancel] Error cancelling query:", e);
       setErrorMessage(e?.message || "Failed to cancel query");
       setErrorModalOpen(true);
     }

@@ -30,8 +30,10 @@ class QueryExecutionTrackerService {
     workspaceId: string,
     connectionId: string,
     databaseType: string,
+    providedExecutionId?: string,
   ): { executionId: string; abortController: AbortController } {
-    const executionId = new Types.ObjectId().toString();
+    const executionId =
+      providedExecutionId || new Types.ObjectId().toString();
     const abortController = new AbortController();
 
     this.executions.set(executionId, {

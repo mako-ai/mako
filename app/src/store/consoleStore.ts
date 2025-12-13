@@ -156,6 +156,7 @@ export const useConsoleStore = () => {
     options?: {
       databaseName?: string;
       databaseId?: string;
+      executionId?: string;
     },
   ): Promise<{
     success: boolean;
@@ -174,6 +175,7 @@ export const useConsoleStore = () => {
         query,
         databaseId: options?.databaseId,
         databaseName: options?.databaseName,
+        executionId: options?.executionId,
       });
       return res.success
         ? {

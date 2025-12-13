@@ -151,13 +151,65 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { databaseName?: string; databaseId?: string; dbName?: string },
+    options?: any,
   ): Promise<QueryResult> {
     try {
+      // Check if query was cancelled before starting
+      if (options?.abortSignal?.aborted) {
+        return {
+          success: false,
+          error: "Query execution was cancelled",
+        };
+      }
+
       // Support both databaseName and dbName for compatibility
       const targetDb = options?.databaseName || options?.dbName;
       const pool = await this.getConnection(database, targetDb);
+
+      // Set up cancellation handler for CloudSQL
+      let cancelled = false;
+      const abortHandler = () => {
+        if (!cancelled) {
+          cancelled = true;
+          // Fire and forget - don't await to avoid returning a promise
+          void (async () => {
+            try {
+              // Get a client from the pool to cancel the query
+              const client = await pool.connect();
+              try {
+                const pidResult = await client.query(
+                  "SELECT pg_backend_pid()",
+                );
+                const pid = pidResult.rows[0]?.pg_backend_pid;
+                if (pid) {
+                  await client.query("SELECT pg_cancel_backend($1)", [pid]);
+                  console.log(
+                    `[CloudSQL PostgreSQL] Cancelled query with PID ${pid}`,
+                  );
+                }
+              } finally {
+                client.release();
+              }
+            } catch (cancelError) {
+              console.error(
+                "[CloudSQL PostgreSQL] Error cancelling query:",
+                cancelError,
+              );
+            }
+          })();
+        }
+      };
+
+      if (options?.abortSignal) {
+        options.abortSignal.addEventListener("abort", abortHandler);
+      }
+
       const result = await pool.query(query);
+
+      if (options?.abortSignal) {
+        options.abortSignal.removeEventListener("abort", abortHandler);
+      }
+
       return {
         success: true,
         data: result.rows,
@@ -165,6 +217,12 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         fields: result.fields,
       };
     } catch (error) {
+      if (options?.abortSignal?.aborted) {
+        return {
+          success: false,
+          error: "Query execution was cancelled",
+        };
+      }
       return {
         success: false,
         error:

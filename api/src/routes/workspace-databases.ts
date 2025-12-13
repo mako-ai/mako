@@ -741,7 +741,8 @@ workspaceExecuteRoutes.post(
       const workspace = c.get("workspace");
       const body = await c.req.json();
 
-      const { connectionId, databaseId, databaseName, query } = body;
+      const { connectionId, databaseId, databaseName, query, executionId } =
+        body;
 
       // Validate required fields
       if (!connectionId) {
@@ -775,24 +776,24 @@ workspaceExecuteRoutes.post(
         );
       }
 
-      // Start tracking this execution
+      // Start tracking this execution (use provided ID or generate new one)
       const { queryExecutionTracker } = await import(
         "../services/query-execution-tracker.service"
       );
-      const { executionId, abortController } =
-        queryExecutionTracker.startTracking(
-          workspace._id.toString(),
-          connectionId,
-          database.type,
-        );
+      const tracking = queryExecutionTracker.startTracking(
+        workspace._id.toString(),
+        connectionId,
+        database.type,
+        executionId, // Pass the execution ID from client if provided
+      );
 
       try {
         // Build options for query execution
         const options = {
           databaseId,
           databaseName,
-          executionId, // Pass execution ID to the service
-          abortSignal: abortController.signal, // Pass abort signal
+          executionId: tracking.executionId, // Pass execution ID to the service
+          abortSignal: tracking.abortController.signal, // Pass abort signal
         };
 
         const result = await databaseConnectionService.executeQuery(
@@ -802,15 +803,15 @@ workspaceExecuteRoutes.post(
         );
 
         // Stop tracking on successful completion
-        queryExecutionTracker.stopTracking(executionId);
+        queryExecutionTracker.stopTracking(tracking.executionId);
 
         return c.json({
           ...result,
-          executionId, // Include execution ID in response
+          executionId: tracking.executionId, // Include execution ID in response
         });
       } catch (error) {
         // Stop tracking on error
-        queryExecutionTracker.stopTracking(executionId);
+        queryExecutionTracker.stopTracking(tracking.executionId);
         throw error;
       }
     } catch (error) {
