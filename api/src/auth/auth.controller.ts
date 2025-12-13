@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { setCookie, getCookie } from "hono/cookie";
 import { generateState, generateCodeVerifier } from "arctic";
 import { sessionManager } from "./session";
-import { getGoogle, getGitHub } from "./arctic";
+import { getGoogle, getGitHub, isOAuthDisabled } from "./arctic";
 import { AuthService } from "./auth.service";
 import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
 
@@ -29,6 +29,17 @@ const authRateLimiter = rateLimitMiddleware(
   parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"), // 15 minutes
   parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "5"),
 );
+
+/**
+ * Get auth configuration (OAuth enabled/disabled status)
+ * Used by frontend to conditionally show OAuth buttons
+ */
+authRoutes.get("/config", async c => {
+  return c.json({
+    oauthEnabled: !isOAuthDisabled(),
+    providers: isOAuthDisabled() ? [] : ["google", "github"],
+  });
+});
 
 /**
  * Register new user
@@ -325,6 +336,13 @@ authRoutes.post("/reset-password", authRateLimiter, async c => {
  * Google OAuth initiation
  */
 authRoutes.get("/google", async c => {
+  // Check if OAuth is disabled (PR preview environments)
+  if (isOAuthDisabled()) {
+    return c.redirect(
+      `${process.env.CLIENT_URL}/login?error=oauth_disabled`,
+    );
+  }
+
   const state = generateState();
   const codeVerifier = generateCodeVerifier();
 
@@ -456,6 +474,13 @@ authRoutes.get("/google/callback", async c => {
  * GitHub OAuth initiation
  */
 authRoutes.get("/github", async c => {
+  // Check if OAuth is disabled (PR preview environments)
+  if (isOAuthDisabled()) {
+    return c.redirect(
+      `${process.env.CLIENT_URL}/login?error=oauth_disabled`,
+    );
+  }
+
   const state = generateState();
 
   setCookie(c, "github_oauth_state", state, {

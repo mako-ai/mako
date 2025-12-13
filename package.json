@@ -35,7 +35,15 @@
     "docs:build": "pnpm --filter docs run build",
     "lint:all": "pnpm run app:lint && pnpm run api:lint && node scripts/check-connector-agnosticism.js",
     "lint:fix:all": "pnpm run app:lint:fix && pnpm run api:lint:fix && node scripts/check-connector-agnosticism.js",
-    "install:all": "pnpm install -r"
+    "install:all": "pnpm install -r",
+    "cf:login": "wrangler login",
+    "cf:deploy": "wrangler deploy --config cloudflare/wrangler.toml",
+    "cf:tail": "wrangler tail --config cloudflare/wrangler.toml",
+    "cf:kv:create": "wrangler kv:namespace create MAKO_PR_DEPLOYMENTS",
+    "cf:kv:list": "wrangler kv:key list --namespace-id=$CLOUDFLARE_KV_NAMESPACE_ID",
+    "preview-db:list": "./scripts/manage-preview-db.sh list",
+    "preview-db:create": "./scripts/manage-preview-db.sh create",
+    "preview-db:delete": "./scripts/manage-preview-db.sh delete"
   },
   "keywords": [
     "analytics",
@@ -79,6 +87,7 @@
     "ts-jest": "^29.1.1",
     "ts-node": "^10.9.1",
     "typescript": "^5.3.3",
+    "wrangler": "^3.99.0",
     "yaml": "^2.8.0"
   }
 }

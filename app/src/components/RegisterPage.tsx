@@ -18,6 +18,7 @@ import {
   GitHub as GitHubIcon,
 } from "@mui/icons-material";
 import { useAuth } from "../hooks/useAuth";
+import { authClient } from "../lib/auth-client";
 
 interface RegisterPageProps {
   onSwitchToLogin: () => void;
@@ -32,6 +33,9 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+
+  // Check if OAuth is enabled (disabled for PR preview deployments)
+  const isOAuthEnabled = authClient.isOAuthEnabled();
 
   // Pre-fill email from URL params (e.g., from invite page)
   useEffect(() => {
@@ -174,7 +178,7 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
             Create your free account
           </Typography>
           <Typography variant="body2" sx={{ color: "#888", mb: 4 }}>
-            Connect to Mako with:
+            {isOAuthEnabled ? "Connect to Mako with:" : "Sign up with your email:"}
           </Typography>
 
           {error && (
@@ -183,65 +187,69 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
             </Alert>
           )}
 
-          {/* Social Login Buttons */}
-          <Box
-            sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}
-          >
-            <Button
-              fullWidth
-              variant="outlined"
-              startIcon={<GoogleIcon />}
-              onClick={() => handleOAuthLogin("google")}
-              disabled={loading}
-              sx={{
-                py: 1.25,
-                borderColor: "#333",
-                color: "#fff",
-                bgcolor: "#1a1a1a",
-                "&:hover": {
-                  borderColor: "#555",
-                  bgcolor: "#222",
-                },
-              }}
-            >
-              Google
-            </Button>
-            <Button
-              fullWidth
-              variant="outlined"
-              startIcon={<GitHubIcon />}
-              onClick={() => handleOAuthLogin("github")}
-              disabled={loading}
-              sx={{
-                py: 1.25,
-                borderColor: "#333",
-                color: "#fff",
-                bgcolor: "#1a1a1a",
-                "&:hover": {
-                  borderColor: "#555",
-                  bgcolor: "#222",
-                },
-              }}
-            >
-              GitHub
-            </Button>
-          </Box>
+          {/* Social Login Buttons - Hidden when OAuth is disabled (PR previews) */}
+          {isOAuthEnabled && (
+            <>
+              <Box
+                sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 3 }}
+              >
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  startIcon={<GoogleIcon />}
+                  onClick={() => handleOAuthLogin("google")}
+                  disabled={loading}
+                  sx={{
+                    py: 1.25,
+                    borderColor: "#333",
+                    color: "#fff",
+                    bgcolor: "#1a1a1a",
+                    "&:hover": {
+                      borderColor: "#555",
+                      bgcolor: "#222",
+                    },
+                  }}
+                >
+                  Google
+                </Button>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  startIcon={<GitHubIcon />}
+                  onClick={() => handleOAuthLogin("github")}
+                  disabled={loading}
+                  sx={{
+                    py: 1.25,
+                    borderColor: "#333",
+                    color: "#fff",
+                    bgcolor: "#1a1a1a",
+                    "&:hover": {
+                      borderColor: "#555",
+                      bgcolor: "#222",
+                    },
+                  }}
+                >
+                  GitHub
+                </Button>
+              </Box>
 
-          <Divider
-            sx={{ my: 3, "&::before, &::after": { borderColor: "#333" } }}
-          >
-            <Typography
-              variant="body2"
-              sx={{
-                color: "#666",
-                textTransform: "uppercase",
-                fontSize: 11,
-                letterSpacing: 1,
-              }}
-            >
-              Or continue with email
-            </Typography>
-          </Divider>
+              <Divider
+                sx={{ my: 3, "&::before, &::after": { borderColor: "#333" } }}
+              >
+                <Typography
+                  variant="body2"
+                  sx={{
+                    color: "#666",
+                    textTransform: "uppercase",
+                    fontSize: 11,
+                    letterSpacing: 1,
+                  }}
+                >
+                  Or continue with email
+                </Typography>
+              </Divider>
+            </>
+          )}
 
           <form onSubmit={handleSubmit}>
             <Box sx={{ mb: 2 }}>

@@ -10,9 +10,24 @@ let _google: Google | null = null;
 let _github: GitHub | null = null;
 
 /**
+ * Check if OAuth is disabled (for PR preview deployments)
+ * OAuth is disabled when DISABLE_OAUTH env var is set to "true"
+ */
+export function isOAuthDisabled(): boolean {
+  return process.env.DISABLE_OAUTH === "true";
+}
+
+/**
  * Get Google OAuth provider (lazy-loaded)
+ * @throws Error if OAuth is disabled or missing environment variables
  */
 export function getGoogle(): Google {
+  if (isOAuthDisabled()) {
+    throw new Error(
+      "OAuth is disabled in this environment. Use email/password authentication instead.",
+    );
+  }
+
   if (!_google) {
     if (
       !process.env.GOOGLE_CLIENT_ID ||
@@ -34,8 +49,15 @@ export function getGoogle(): Google {
 
 /**
  * Get GitHub OAuth provider (lazy-loaded)
+ * @throws Error if OAuth is disabled or missing environment variables
  */
 export function getGitHub(): GitHub {
+  if (isOAuthDisabled()) {
+    throw new Error(
+      "OAuth is disabled in this environment. Use email/password authentication instead.",
+    );
+  }
+
   if (!_github) {
     if (
       !process.env.GITHUB_CLIENT_ID ||
