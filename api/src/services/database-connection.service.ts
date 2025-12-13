@@ -1547,27 +1547,27 @@ export class DatabaseConnectionService {
       try {
         // Set up cancellation handler
         let cancelled = false;
-        const abortHandler = async () => {
+        const abortHandler = () => {
           if (!cancelled) {
             cancelled = true;
-            try {
-              // Get the process ID of the current query
-              const pidResult = await client.query("SELECT pg_backend_pid()");
-              const pid = pidResult.rows[0]?.pg_backend_pid;
-              if (pid) {
-                // Cancel the query using pg_cancel_backend
-                await client.query(
-                  "SELECT pg_cancel_backend($1)",
-                  [pid],
+            // Fire and forget - don't await to avoid returning a promise
+            void (async () => {
+              try {
+                // Get the process ID of the current query
+                const pidResult = await client.query("SELECT pg_backend_pid()");
+                const pid = pidResult.rows[0]?.pg_backend_pid;
+                if (pid) {
+                  // Cancel the query using pg_cancel_backend
+                  await client.query("SELECT pg_cancel_backend($1)", [pid]);
+                  console.log(`[PostgreSQL] Cancelled query with PID ${pid}`);
+                }
+              } catch (cancelError) {
+                console.error(
+                  "[PostgreSQL] Error cancelling query:",
+                  cancelError,
                 );
-                console.log(`[PostgreSQL] Cancelled query with PID ${pid}`);
               }
-            } catch (cancelError) {
-              console.error(
-                "[PostgreSQL] Error cancelling query:",
-                cancelError,
-              );
-            }
+            })();
           }
         };
 
@@ -1609,27 +1609,27 @@ export class DatabaseConnectionService {
       try {
         // Set up cancellation handler
         let cancelled = false;
-        const abortHandler = async () => {
+        const abortHandler = () => {
           if (!cancelled) {
             cancelled = true;
-            try {
-              // Get the process ID of the current query
-              const pidResult = await client.query("SELECT pg_backend_pid()");
-              const pid = pidResult.rows[0]?.pg_backend_pid;
-              if (pid) {
-                // Cancel the query using pg_cancel_backend
-                await client.query(
-                  "SELECT pg_cancel_backend($1)",
-                  [pid],
+            // Fire and forget - don't await to avoid returning a promise
+            void (async () => {
+              try {
+                // Get the process ID of the current query
+                const pidResult = await client.query("SELECT pg_backend_pid()");
+                const pid = pidResult.rows[0]?.pg_backend_pid;
+                if (pid) {
+                  // Cancel the query using pg_cancel_backend
+                  await client.query("SELECT pg_cancel_backend($1)", [pid]);
+                  console.log(`[PostgreSQL] Cancelled query with PID ${pid}`);
+                }
+              } catch (cancelError) {
+                console.error(
+                  "[PostgreSQL] Error cancelling query:",
+                  cancelError,
                 );
-                console.log(`[PostgreSQL] Cancelled query with PID ${pid}`);
               }
-            } catch (cancelError) {
-              console.error(
-                "[PostgreSQL] Error cancelling query:",
-                cancelError,
-              );
-            }
+            })();
           }
         };
 
