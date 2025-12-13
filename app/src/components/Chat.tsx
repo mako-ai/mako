@@ -483,7 +483,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [isAborted, setIsAborted] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   const [sessionId, setSessionId] = useState<string | "">("");
@@ -543,9 +542,12 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         if (res.ok) {
           const data = await res.json();
           setSessions(data);
-          if (data.length > 0 && !sessionId) {
-            setSessionId(data[0]._id);
-          }
+          setSessionId(prev => {
+            if (data.length > 0 && !prev) {
+              return data[0]._id;
+            }
+            return prev;
+          });
         }
       } catch (_) {
         /* ignore */
@@ -795,7 +797,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     // Create new AbortController
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
-    setIsAborted(false);
 
     const response = await fetch("/api/agent/stream", {
       method: "POST",
@@ -858,7 +859,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             const parsed = JSON.parse(data);
 
             // Debug log all events
-            console.log("Chat received event:", parsed);
+            // console.log("Chat received event:", parsed);
 
             // Handle different event types
             if (parsed.type === "text") {
@@ -936,12 +937,12 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               parsed.modification
             ) {
               // Handle console modification event
-              console.log(
+              /* console.log(
                 "Console modification event received:",
                 parsed.modification,
                 "consoleId:",
                 parsed.consoleId,
-              );
+              ); */
               if (onConsoleModification) {
                 // Pass the modification with the consoleId if available
                 onConsoleModification({
@@ -951,11 +952,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               }
             } else if (parsed.type === "console_creation") {
               // Handle console creation event
-              console.log(
+              /* console.log(
                 "Console creation event received:",
                 parsed.consoleId,
                 parsed.title,
-              );
+              ); */
               if (onConsoleModification) {
                 // Use the modification handler to create a new console
                 onConsoleModification({
@@ -967,7 +968,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               }
             } else if (parsed.type === "handoff") {
               // Handle handoff events - show a status message but don't save it
-              console.log("Handoff event:", parsed);
+              // console.log("Handoff event:", parsed);
               // Don't add to assistantContent, just show in UI temporarily
               setSteps(prev => [
                 ...prev,
@@ -1036,16 +1037,17 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       await streamResponse(userMessage);
     } catch (err: any) {
       if (err.name === "AbortError") {
-        console.log("Request aborted");
-        setIsAborted(true);
         // Add partial content if any
         if (streamingContent || streamingToolCallsRef.current.length > 0) {
-           setMessages(prev => [
+          setMessages(prev => [
             ...prev,
             {
               role: "assistant",
               content: streamingContent + " [Stopped by user]",
-              toolCalls: streamingToolCallsRef.current.length > 0 ? [...streamingToolCallsRef.current] : undefined,
+              toolCalls:
+                streamingToolCallsRef.current.length > 0
+                  ? [...streamingToolCallsRef.current]
+                  : undefined,
             },
           ]);
         }
@@ -1495,7 +1497,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         >
           {/* Send Button */}
           {loading ? (
-             <IconButton
+            <IconButton
               onClick={stopGeneration}
               size="small"
               sx={{
