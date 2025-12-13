@@ -40,6 +40,7 @@ import {
   AlternateEmailOutlined,
   Close,
   Code,
+  Stop as StopIcon,
 } from "@mui/icons-material";
 import { useTheme as useMuiTheme } from "@mui/material/styles";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -482,6 +483,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isAborted, setIsAborted] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   const [sessionId, setSessionId] = useState<string | "">("");
   const [steps, setSteps] = useState<string[]>([]);
@@ -789,6 +792,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     const attachedConsole = attachedContext.find(ctx => ctx.type === "console");
     const consoleIdToPin = attachedConsole?.metadata?.consoleId;
 
+    // Create new AbortController
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    setIsAborted(false);
+
     const response = await fetch("/api/agent/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -799,6 +807,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         consoles: consolesData, // Pass consoles array to backend
         consoleId: consoleIdToPin, // Pin the console if attached
       }),
+      signal: abortController.signal,
     });
 
     if (!response.ok) {
@@ -1003,6 +1012,12 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     }
   };
 
+  const stopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  };
+
   const sendMessage = async () => {
     if (!input.trim() || !currentWorkspace) return;
 
@@ -1020,16 +1035,37 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     try {
       await streamResponse(userMessage);
     } catch (err: any) {
-      setError(err.message || "Failed to send message");
-      setMessages(prev => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `Error: ${err.message}`,
-        },
-      ]);
+      if (err.name === "AbortError") {
+        console.log("Request aborted");
+        setIsAborted(true);
+        // Add partial content if any
+        if (streamingContent || streamingToolCallsRef.current.length > 0) {
+           setMessages(prev => [
+            ...prev,
+            {
+              role: "assistant",
+              content: streamingContent + " [Stopped by user]",
+              toolCalls: streamingToolCallsRef.current.length > 0 ? [...streamingToolCallsRef.current] : undefined,
+            },
+          ]);
+        }
+        setSteps([]);
+        setStreamingContent("");
+        setStreamingToolCalls([]);
+        streamingToolCallsRef.current = [];
+      } else {
+        setError(err.message || "Failed to send message");
+        setMessages(prev => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Error: ${err.message}`,
+          },
+        ]);
+      }
     } finally {
       setLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
@@ -1458,25 +1494,41 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           }}
         >
           {/* Send Button */}
-          <IconButton
-            onClick={sendMessage}
-            disabled={
-              loading || !input.trim() || !sessionId || !currentWorkspace
-            }
-            size="small"
-            sx={{
-              color:
-                input.trim() && currentWorkspace
-                  ? "primary.main"
-                  : "text.disabled",
-              p: 0,
-              "&:hover": {
-                backgroundColor: "action.hover",
-              },
-            }}
-          >
-            <SendIcon sx={{ fontSize: 20 }} />
-          </IconButton>
+          {loading ? (
+             <IconButton
+              onClick={stopGeneration}
+              size="small"
+              sx={{
+                color: "error.main",
+                p: 0,
+                "&:hover": {
+                  backgroundColor: "action.hover",
+                },
+              }}
+            >
+              <StopIcon sx={{ fontSize: 20 }} />
+            </IconButton>
+          ) : (
+            <IconButton
+              onClick={sendMessage}
+              disabled={
+                loading || !input.trim() || !sessionId || !currentWorkspace
+              }
+              size="small"
+              sx={{
+                color:
+                  input.trim() && currentWorkspace
+                    ? "primary.main"
+                    : "text.disabled",
+                p: 0,
+                "&:hover": {
+                  backgroundColor: "action.hover",
+                },
+              }}
+            >
+              <SendIcon sx={{ fontSize: 20 }} />
+            </IconButton>
+          )}
         </Box>
       </Paper>
 

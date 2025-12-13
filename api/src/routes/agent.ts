@@ -244,9 +244,25 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           preferredConsoleId: effectiveConsoleId,
         });
 
-        const runStream: any = await runAgent(agentInstance, agentInput, {
+        let runStream: any;
+
+        // Handle client disconnection
+        c.req.raw.signal.addEventListener("abort", () => {
+          console.log("Client aborted request");
+          isClosed = true;
+          if (runStream && typeof runStream.abort === "function") {
+            try {
+              runStream.abort();
+            } catch (e) {
+              console.error("Error aborting agent stream:", e);
+            }
+          }
+        });
+
+        runStream = await runAgent(agentInstance, agentInput, {
           stream: true,
           maxTurns: 100, // Allow enough turns for handoffs to complete
+          signal: c.req.raw.signal,
         });
 
         // Reset tracking variables for this run
@@ -257,6 +273,7 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
 
         try {
           for await (const event of runStream as AsyncIterable<any>) {
+            if (isClosed) break;
             _eventCount++;
 
             // Log all event types for debugging
