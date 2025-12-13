@@ -334,7 +334,7 @@ const MessageItem = React.memo(
               const codeString = String(children).replace(/\n$/, "");
               return !isInline ? (
                 <CodeBlock
-                  language={match![1]}
+                  language={match?.[1] || ""}
                   key={codeString}
                   isGenerating={false}
                 >
@@ -1293,7 +1293,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                         const codeString = String(children).replace(/\n$/, "");
                         return !isInline ? (
                           <CodeBlock
-                            language={match![1]}
+                            language={match?.[1] || ""}
                             key={codeString}
                             isGenerating
                           >
@@ -1309,7 +1309,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                         );
                       },
                       table({ children }) {
-                        const muiTheme = useMuiTheme();
                         return (
                           <Box sx={{ overflow: "auto", my: 1 }}>
                             <table
@@ -1326,7 +1325,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                         );
                       },
                       th({ children }) {
-                        const muiTheme = useMuiTheme();
                         return (
                           <th
                             style={{
@@ -1344,7 +1342,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                         );
                       },
                       td({ children }) {
-                        const muiTheme = useMuiTheme();
                         return (
                           <td
                             style={{

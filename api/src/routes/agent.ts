@@ -244,7 +244,7 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
           preferredConsoleId: effectiveConsoleId,
         });
 
-        let runStream: any;
+        let runStream: any = null;
 
         // Handle client disconnection
         c.req.raw.signal.addEventListener("abort", () => {
