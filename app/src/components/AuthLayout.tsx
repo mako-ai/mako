@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Typography, useTheme, useMediaQuery, Paper } from "@mui/material";
+import { Box, Typography, useTheme, useMediaQuery } from "@mui/material";
 
 interface AuthLayoutProps {
   children: React.ReactNode;

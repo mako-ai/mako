@@ -79,9 +79,7 @@ export function LoginPage({
     <AuthLayout
       title="Log in to your account"
       subtitle={
-        isOAuthEnabled
-          ? "Connect to Mako with:"
-          : "Log in with your email:"
+        isOAuthEnabled ? "Connect to Mako with:" : "Log in with your email:"
       }
     >
       {error && (

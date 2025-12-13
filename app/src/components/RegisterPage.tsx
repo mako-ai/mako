@@ -94,9 +94,7 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
     <AuthLayout
       title="Create your free account"
       subtitle={
-        isOAuthEnabled
-          ? "Connect to Mako with:"
-          : "Sign up with your email:"
+        isOAuthEnabled ? "Connect to Mako with:" : "Sign up with your email:"
       }
     >
       {error && (

@@ -82,11 +82,7 @@ export function ForgotPasswordPage({ onBackToLogin }: ForgotPasswordPageProps) {
       subtitle="Enter your email address and we'll send you a link to reset your password."
     >
       {error && (
-        <Alert
-          severity="error"
-          sx={{ mb: 3 }}
-          onClose={() => setError(null)}
-        >
+        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
