@@ -704,8 +704,9 @@ export class DatabaseConnectionService {
     executionId: string,
   ): Promise<{ success: boolean; error?: string }> {
     const job = this.runningBigQueryJobs.get(executionId);
-    if (!job)
+    if (!job) {
       return { success: false, error: "Job not found or already completed" };
+    }
 
     try {
       const params: any = {};
