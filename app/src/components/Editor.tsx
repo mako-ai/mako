@@ -59,6 +59,7 @@ function Editor() {
     Record<string, QueryResult | null>
   >({});
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -83,7 +84,10 @@ function Editor() {
       hostName: string;
     }[]
   >([]);
-  // Version history UI is currently disabled; re-enable when implemented
+
+  // Refs for query cancellation
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const executionIdRef = useRef<string | null>(null);
 
   // Tab store
   const {
@@ -99,6 +103,7 @@ function Editor() {
     updateConsoleDirty,
     setActiveConsole,
     executeQuery,
+    cancelQuery,
     saveConsole,
   } = useConsoleStore();
 
@@ -230,8 +235,8 @@ function Editor() {
     contentToExecute: string,
     connectionId?: string,
     options?: {
-      databaseId?: string; // Sub-database ID (e.g., D1 UUID)
-      databaseName?: string; // Sub-database name for cluster mode
+      databaseId?: string;
+      databaseName?: string;
     },
   ) => {
     if (!contentToExecute.trim()) return;
@@ -248,14 +253,23 @@ function Editor() {
       return;
     }
 
+    // Set up abort controller and execution ID
+    abortControllerRef.current = new AbortController();
+    executionIdRef.current = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
     setIsExecuting(true);
+    setIsCancelling(false);
     const startTime = Date.now();
     try {
       const result = await executeQuery(
         currentWorkspace.id,
         connectionId,
         contentToExecute,
-        options,
+        {
+          ...options,
+          executionId: executionIdRef.current,
+          signal: abortControllerRef.current.signal,
+        },
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
@@ -268,18 +282,30 @@ function Editor() {
             executionTime,
           },
         }));
-      } else {
+      } else if (result.error !== "Query cancelled") {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
         setTabResults(prev => ({ ...prev, [tabId]: null }));
       }
     } catch (e: any) {
-      setErrorMessage(JSON.stringify(e, null, 2));
-      setErrorModalOpen(true);
-      setTabResults(prev => ({ ...prev, [tabId]: null }));
+      if (e?.name !== "AbortError") {
+        setErrorMessage(JSON.stringify(e, null, 2));
+        setErrorModalOpen(true);
+        setTabResults(prev => ({ ...prev, [tabId]: null }));
+      }
     } finally {
       setIsExecuting(false);
+      setIsCancelling(false);
+      abortControllerRef.current = null;
+      executionIdRef.current = null;
     }
+  };
+
+  const handleConsoleCancel = async () => {
+    if (!currentWorkspace || !executionIdRef.current) return;
+    setIsCancelling(true);
+    abortControllerRef.current?.abort();
+    await cancelQuery(currentWorkspace.id, executionIdRef.current);
   };
 
   const handleConsoleSave = async (
@@ -542,10 +568,12 @@ function Editor() {
                             databaseName: tab.databaseName,
                           })
                         }
+                        onCancel={handleConsoleCancel}
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)
                         }
                         isExecuting={isExecuting}
+                        isCancelling={isCancelling}
                         isSaving={isSaving}
                         onContentChange={content => {
                           updateConsoleContent(tab.id, content);

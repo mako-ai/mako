@@ -156,6 +156,8 @@ export const useConsoleStore = () => {
     options?: {
       databaseName?: string;
       databaseId?: string;
+      executionId?: string;
+      signal?: AbortSignal;
     },
   ): Promise<{ success: boolean; data?: any; error?: string }> => {
     try {
@@ -163,17 +165,40 @@ export const useConsoleStore = () => {
         success: boolean;
         data: any;
         error?: string;
-      }>(`/workspaces/${workspaceId}/execute`, {
-        connectionId,
-        query,
-        databaseId: options?.databaseId,
-        databaseName: options?.databaseName,
-      });
+      }>(
+        `/workspaces/${workspaceId}/execute`,
+        {
+          connectionId,
+          query,
+          databaseId: options?.databaseId,
+          databaseName: options?.databaseName,
+          executionId: options?.executionId,
+        },
+        { signal: options?.signal },
+      );
       return res.success
         ? { success: true, data: (res as any).data }
         : { success: false, error: (res as any).error || "Execution failed" };
     } catch (e: any) {
+      if (e?.name === "AbortError") {
+        return { success: false, error: "Query cancelled" };
+      }
       return { success: false, error: e?.message || "Execution failed" };
+    }
+  };
+
+  const cancelQuery = async (
+    workspaceId: string,
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await apiClient.post<{ success: boolean; error?: string }>(
+        `/workspaces/${workspaceId}/execute/cancel`,
+        { executionId },
+      );
+      return res;
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Cancel failed" };
     }
   };
 
@@ -259,8 +284,9 @@ export const useConsoleStore = () => {
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
-    executeQuery: executeQuery,
-    saveConsole: saveConsole,
+    executeQuery,
+    cancelQuery,
+    saveConsole,
     loadConsole: async (id: string, workspaceId: string) => {
       // Check if console is already loaded
       const existing = consoleTabs.find(t => t.id === id);

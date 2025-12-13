@@ -123,10 +123,15 @@ class ApiClient {
   /**
    * POST request
    */
-  async post<T>(path: string, data?: any): Promise<T> {
+  async post<T>(
+    path: string,
+    data?: any,
+    options?: { signal?: AbortSignal },
+  ): Promise<T> {
     return this.request<T>(path, {
       method: "POST",
       body: data ? JSON.stringify(data) : undefined,
+      signal: options?.signal,
     });
   }
 
