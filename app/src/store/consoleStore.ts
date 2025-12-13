@@ -157,12 +157,18 @@ export const useConsoleStore = () => {
       databaseName?: string;
       databaseId?: string;
     },
-  ): Promise<{ success: boolean; data?: any; error?: string }> => {
+  ): Promise<{
+    success: boolean;
+    data?: any;
+    error?: string;
+    executionId?: string;
+  }> => {
     try {
       const res = await apiClient.post<{
         success: boolean;
         data: any;
         error?: string;
+        executionId?: string;
       }>(`/workspaces/${workspaceId}/execute`, {
         connectionId,
         query,
@@ -170,7 +176,11 @@ export const useConsoleStore = () => {
         databaseName: options?.databaseName,
       });
       return res.success
-        ? { success: true, data: (res as any).data }
+        ? {
+            success: true,
+            data: (res as any).data,
+            executionId: (res as any).executionId,
+          }
         : { success: false, error: (res as any).error || "Execution failed" };
     } catch (e: any) {
       return { success: false, error: e?.message || "Execution failed" };

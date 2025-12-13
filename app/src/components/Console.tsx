@@ -19,7 +19,7 @@ import {
   Badge,
   Alert,
 } from "@mui/material";
-import { PlayArrow as PlayIcon } from "@mui/icons-material";
+import { PlayArrow as PlayIcon, Stop as StopIcon } from "@mui/icons-material";
 import {
   Check as CheckIcon,
   X as CloseIcon,
@@ -66,6 +66,7 @@ interface ConsoleProps {
     connectionId?: string,
     databaseId?: string, // Sub-database ID for cluster mode (e.g., D1 UUID)
   ) => void;
+  onCancel?: () => void; // Callback to cancel running query
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
   isExecuting: boolean;
   isSaving?: boolean;
@@ -112,6 +113,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     dbContentHash,
     title,
     onExecute,
+    onCancel,
     onSave,
     isExecuting,
     isSaving,
@@ -811,23 +813,44 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<PlayIcon />}
-            onClick={handleExecute}
-            disabled={isExecuting || !connectionId}
-            disableElevation
-            sx={{
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              maxWidth: "200px", // Adjust this value as needed
-              minWidth: "120px", // Ensure minimum width for readability
-            }}
-          >
-            {isExecuting ? "Executing..." : "Run (⌘/Ctrl+Enter)"}
-          </Button>
+          {!isExecuting ? (
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<PlayIcon />}
+              onClick={handleExecute}
+              disabled={!connectionId}
+              disableElevation
+              sx={{
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: "200px",
+                minWidth: "120px",
+              }}
+            >
+              Run (⌘/Ctrl+Enter)
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              size="small"
+              color="error"
+              startIcon={<StopIcon />}
+              onClick={onCancel}
+              disabled={!onCancel}
+              disableElevation
+              sx={{
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: "200px",
+                minWidth: "120px",
+              }}
+            >
+              Stop Query
+            </Button>
+          )}
 
           {onSave && (
             <Tooltip

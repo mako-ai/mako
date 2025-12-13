@@ -775,19 +775,44 @@ workspaceExecuteRoutes.post(
         );
       }
 
-      // Build options for query execution
-      const options = {
-        databaseId,
-        databaseName,
-      };
-
-      const result = await databaseConnectionService.executeQuery(
-        database,
-        query,
-        options,
+      // Start tracking this execution
+      const { queryExecutionTracker } = await import(
+        "../services/query-execution-tracker.service"
       );
+      const { executionId, abortController } =
+        queryExecutionTracker.startTracking(
+          workspace._id.toString(),
+          connectionId,
+          database.type,
+        );
 
-      return c.json(result);
+      try {
+        // Build options for query execution
+        const options = {
+          databaseId,
+          databaseName,
+          executionId, // Pass execution ID to the service
+          abortSignal: abortController.signal, // Pass abort signal
+        };
+
+        const result = await databaseConnectionService.executeQuery(
+          database,
+          query,
+          options,
+        );
+
+        // Stop tracking on successful completion
+        queryExecutionTracker.stopTracking(executionId);
+
+        return c.json({
+          ...result,
+          executionId, // Include execution ID in response
+        });
+      } catch (error) {
+        // Stop tracking on error
+        queryExecutionTracker.stopTracking(executionId);
+        throw error;
+      }
     } catch (error) {
       console.error("Error executing query:", error);
       return c.json(
@@ -795,6 +820,51 @@ workspaceExecuteRoutes.post(
           success: false,
           error:
             error instanceof Error ? error.message : "Failed to execute query",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/execute/cancel - Cancel a running query execution
+workspaceExecuteRoutes.post(
+  "/cancel",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const body = await c.req.json();
+
+      const { executionId } = body;
+
+      if (!executionId) {
+        return c.json(
+          { success: false, error: "executionId is required" },
+          400,
+        );
+      }
+
+      const { queryExecutionTracker } = await import(
+        "../services/query-execution-tracker.service"
+      );
+
+      const result = await queryExecutionTracker.cancelExecution(
+        executionId,
+        workspace._id.toString(),
+      );
+
+      return c.json(result);
+    } catch (error) {
+      console.error("Error cancelling query execution:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to cancel execution",
         },
         500,
       );

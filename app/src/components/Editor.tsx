@@ -60,6 +60,9 @@ function Editor() {
   >({});
   const [isExecuting, setIsExecuting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(
+    null,
+  );
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -257,6 +260,12 @@ function Editor() {
         contentToExecute,
         options,
       );
+
+      // Store execution ID for cancellation
+      if (result.executionId) {
+        setCurrentExecutionId(result.executionId);
+      }
+
       const executionTime = Date.now() - startTime;
       if (result.success) {
         setTabResults(prev => ({
@@ -279,6 +288,35 @@ function Editor() {
       setTabResults(prev => ({ ...prev, [tabId]: null }));
     } finally {
       setIsExecuting(false);
+      setCurrentExecutionId(null);
+    }
+  };
+
+  const handleConsoleCancel = async () => {
+    if (!currentWorkspace || !currentExecutionId) {
+      return;
+    }
+
+    try {
+      const { apiClient } = await import("../lib/api-client");
+      const result = await apiClient.post<{
+        success: boolean;
+        message?: string;
+        error?: string;
+      }>(`/workspaces/${currentWorkspace.id}/execute/cancel`, {
+        executionId: currentExecutionId,
+      });
+
+      if (result.success) {
+        setSnackbarMessage("Query execution cancelled");
+        setSnackbarOpen(true);
+      } else {
+        setErrorMessage(result.error || "Failed to cancel query");
+        setErrorModalOpen(true);
+      }
+    } catch (e: any) {
+      setErrorMessage(e?.message || "Failed to cancel query");
+      setErrorModalOpen(true);
     }
   };
 
@@ -542,6 +580,7 @@ function Editor() {
                             databaseName: tab.databaseName,
                           })
                         }
+                        onCancel={handleConsoleCancel}
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)
                         }

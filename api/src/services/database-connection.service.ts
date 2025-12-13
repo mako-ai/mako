@@ -46,6 +46,10 @@ export interface QueryExecuteOptions {
   batchSize?: number;
   /** Location/region for query execution (BigQuery) */
   location?: string;
+  /** Execution ID for tracking and cancellation */
+  executionId?: string;
+  /** Abort signal for cancellation */
+  abortSignal?: AbortSignal;
 }
 
 interface PooledConnection {
@@ -574,6 +578,14 @@ export class DatabaseConnectionService {
         Math.min(10000, options?.batchSize || 1000),
       );
 
+      // Check if query was cancelled before starting
+      if (options?.abortSignal?.aborted) {
+        return {
+          success: false,
+          error: "Query execution was cancelled",
+        };
+      }
+
       // Start the query
       const startBody: any = {
         query,
@@ -596,6 +608,19 @@ export class DatabaseConnectionService {
       let pageToken: string | undefined = data.pageToken;
       const rowsAccum: any[] = [];
 
+      // Update tracker with BigQuery job metadata
+      if (options?.executionId && jobId) {
+        const { queryExecutionTracker } = await import(
+          "./query-execution-tracker.service"
+        );
+        queryExecutionTracker.updateBigQueryMetadata(
+          options.executionId,
+          jobId,
+          project_id,
+          jobLocation,
+        );
+      }
+
       // Wait for job completion if not immediately complete
       // BigQuery may return jobComplete: false for complex/long-running queries
       const maxWaitMs = 5 * 60 * 1000; // 5 minutes max wait
@@ -603,6 +628,28 @@ export class DatabaseConnectionService {
       let waitedMs = 0;
 
       while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+        // Check for cancellation during polling
+        if (options?.abortSignal?.aborted) {
+          // Cancel the BigQuery job
+          try {
+            await client.post(
+              `/projects/${project_id}/jobs/${jobId}/cancel`,
+              {},
+              { params: jobLocation ? { location: jobLocation } : {} },
+            );
+            console.log(`[BigQuery] Cancelled job ${jobId}`);
+          } catch (cancelError) {
+            console.error(
+              `[BigQuery] Error cancelling job ${jobId}:`,
+              cancelError,
+            );
+          }
+          return {
+            success: false,
+            error: "Query execution was cancelled",
+          };
+        }
+
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
         waitedMs += pollIntervalMs;
 
@@ -632,6 +679,14 @@ export class DatabaseConnectionService {
 
       // Paginate through remaining results
       while (pageToken) {
+        // Check for cancellation during pagination
+        if (options?.abortSignal?.aborted) {
+          return {
+            success: false,
+            error: "Query execution was cancelled",
+          };
+        }
+
         const params: any = { maxResults: batchSize };
         if (pageToken) params.pageToken = pageToken;
         // Must use the job's actual location for pagination
@@ -654,6 +709,14 @@ export class DatabaseConnectionService {
         rowCount: rowsAccum.length,
       };
     } catch (error: any) {
+      // Check if error is due to cancellation
+      if (options?.abortSignal?.aborted) {
+        return {
+          success: false,
+          error: "Query execution was cancelled",
+        };
+      }
+
       return {
         success: false,
         error:
@@ -1453,6 +1516,14 @@ export class DatabaseConnectionService {
     query: string,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
+    // Check if query was cancelled before starting
+    if (options?.abortSignal?.aborted) {
+      return {
+        success: false,
+        error: "Query execution was cancelled",
+      };
+    }
+
     // Determine the target database: options override or connection default
     const targetDatabase =
       options?.databaseName || database.connection.database;
@@ -1474,7 +1545,42 @@ export class DatabaseConnectionService {
       await client.connect();
 
       try {
+        // Set up cancellation handler
+        let cancelled = false;
+        const abortHandler = async () => {
+          if (!cancelled) {
+            cancelled = true;
+            try {
+              // Get the process ID of the current query
+              const pidResult = await client.query("SELECT pg_backend_pid()");
+              const pid = pidResult.rows[0]?.pg_backend_pid;
+              if (pid) {
+                // Cancel the query using pg_cancel_backend
+                await client.query(
+                  "SELECT pg_cancel_backend($1)",
+                  [pid],
+                );
+                console.log(`[PostgreSQL] Cancelled query with PID ${pid}`);
+              }
+            } catch (cancelError) {
+              console.error(
+                "[PostgreSQL] Error cancelling query:",
+                cancelError,
+              );
+            }
+          }
+        };
+
+        if (options?.abortSignal) {
+          options.abortSignal.addEventListener("abort", abortHandler);
+        }
+
         const result = await client.query(query);
+
+        if (options?.abortSignal) {
+          options.abortSignal.removeEventListener("abort", abortHandler);
+        }
+
         return {
           success: true,
           data: result.rows,
@@ -1482,6 +1588,12 @@ export class DatabaseConnectionService {
           fields: result.fields,
         };
       } catch (error) {
+        if (options?.abortSignal?.aborted) {
+          return {
+            success: false,
+            error: "Query execution was cancelled",
+          };
+        }
         return {
           success: false,
           error:
@@ -1495,7 +1607,42 @@ export class DatabaseConnectionService {
       // Use the cached connection
       client = (await this.getConnection(database)) as PgClient;
       try {
+        // Set up cancellation handler
+        let cancelled = false;
+        const abortHandler = async () => {
+          if (!cancelled) {
+            cancelled = true;
+            try {
+              // Get the process ID of the current query
+              const pidResult = await client.query("SELECT pg_backend_pid()");
+              const pid = pidResult.rows[0]?.pg_backend_pid;
+              if (pid) {
+                // Cancel the query using pg_cancel_backend
+                await client.query(
+                  "SELECT pg_cancel_backend($1)",
+                  [pid],
+                );
+                console.log(`[PostgreSQL] Cancelled query with PID ${pid}`);
+              }
+            } catch (cancelError) {
+              console.error(
+                "[PostgreSQL] Error cancelling query:",
+                cancelError,
+              );
+            }
+          }
+        };
+
+        if (options?.abortSignal) {
+          options.abortSignal.addEventListener("abort", abortHandler);
+        }
+
         const result = await client.query(query);
+
+        if (options?.abortSignal) {
+          options.abortSignal.removeEventListener("abort", abortHandler);
+        }
+
         return {
           success: true,
           data: result.rows,
@@ -1503,6 +1650,12 @@ export class DatabaseConnectionService {
           fields: result.fields,
         };
       } catch (error) {
+        if (options?.abortSignal?.aborted) {
+          return {
+            success: false,
+            error: "Query execution was cancelled",
+          };
+        }
         return {
           success: false,
           error:
