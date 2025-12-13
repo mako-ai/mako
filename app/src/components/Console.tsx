@@ -330,7 +330,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     // Register new provider
     completionProviderRef.current =
       monacoInstance.languages.registerCompletionItemProvider("sql", {
-        triggerCharacters: ["."],
+        triggerCharacters: [".", " ", "`"],
         provideCompletionItems: (model: any, position: any) => {
           const textUntilPosition = model.getValueInRange({
             startLineNumber: position.lineNumber,
@@ -347,7 +347,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             endColumn: word.endColumn,
           };
 
-          // Check for dot (autocomplete)
+          // 1. Handle Dot Trigger (dataset. -> tables, table. -> columns)
           if (textUntilPosition.endsWith(".")) {
             // Match the identifier before the dot, handling backticks and dashes
             // Group 1: Optional opening backtick
@@ -356,15 +356,16 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             const match = textUntilPosition.match(/(`?)([^`.]+)\1\.$/);
             if (match) {
               const parent = match[2];
-              // Check if parent is a dataset
+
+              // Check if parent is a dataset (key in schema)
               if (schema[parent]) {
-                // Return tables in this dataset
                 const tables = Object.keys(schema[parent]);
                 return {
                   suggestions: tables.map(t => ({
                     label: t,
                     kind: monacoInstance.languages.CompletionItemKind.Class,
                     insertText: t,
+                    detail: "Table",
                     range,
                   })),
                 };
@@ -373,7 +374,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               // Check if parent is a table (search across all datasets)
               for (const ds of Object.keys(schema)) {
                 if (schema[ds][parent]) {
-                  // Return columns
                   return {
                     suggestions: schema[ds][parent].map((c: any) => ({
                       label: c.name,
@@ -388,7 +388,58 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             }
           }
 
-          // Global suggestions
+          // 2. Handle FROM/JOIN Trigger -> Suggest Datasets & Tables
+          // Check if we are after FROM or JOIN (ignoring case)
+          // Simple regex to check the last significant token
+          const lastTokenMatch = textUntilPosition.match(/(?:FROM|JOIN)\s+$/i);
+          const isFromOrJoin = !!lastTokenMatch;
+
+          // Also check if we are typing a potential dataset/table name (partially typed)
+          const isTypingIdentifier = textUntilPosition.match(
+            /(?:FROM|JOIN)\s+[`\w]*$/i,
+          );
+
+          if (isFromOrJoin || isTypingIdentifier) {
+            const suggestions: any[] = [];
+
+            // Suggest Datasets
+            Object.keys(schema).forEach(ds => {
+              suggestions.push({
+                label: ds,
+                kind: monacoInstance.languages.CompletionItemKind.Module,
+                insertText: ds,
+                detail: "Dataset",
+                range,
+              });
+
+              // Suggest Tables (fully qualified if possible or just table name)
+              // Users often want dataset.table, but typing table name directly is also common if unique
+              Object.keys(schema[ds]).forEach(table => {
+                suggestions.push({
+                  label: table,
+                  kind: monacoInstance.languages.CompletionItemKind.Class,
+                  insertText: table, // Or `${ds}.${table}` ? Let's stick to name for now, or let them type dataset.
+                  detail: `Table in ${ds}`,
+                  range,
+                });
+                // Also suggest fully qualified for convenience
+                suggestions.push({
+                  label: `${ds}.${table}`,
+                  kind: monacoInstance.languages.CompletionItemKind.Class,
+                  insertText: `${ds}.${table}`,
+                  detail: "Full Table Path",
+                  filterText: `${ds}.${table} ${table}`, // Match on both
+                  range,
+                });
+              });
+            });
+
+            return { suggestions };
+          }
+
+          // 3. Global suggestions (default fallback when typing query)
+          // Limit this to avoid noise? Or just provide keywords + schema?
+          // Monaco has built-in SQL keywords. We just add schema items.
           const suggestions: any[] = [];
           Object.keys(schema).forEach(ds => {
             suggestions.push({
@@ -397,8 +448,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               insertText: ds,
               range,
             });
-
-            // Also add tables for convenience
             Object.keys(schema[ds]).forEach(table => {
               suggestions.push({
                 label: table,
@@ -440,17 +489,22 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
       // Simple regex to find table references in FROM/JOIN clauses
       // Matches: FROM `dataset.table` or FROM dataset.table or FROM table
-      const tableRegex = /(?:FROM|JOIN)\s+(`?)([^`\s,;]+)\1(?:\s+AS\s+\w+)?/gi;
+      // Capture the full identifier sequence, stopping at whitespace, comma, semicolon, or parenthesis
+      const tableRegex = /(?:FROM|JOIN)\s+([^\s,;()]+)(?:\s+AS\s+\w+)?/gi;
       let match;
 
       while ((match = tableRegex.exec(content)) !== null) {
         const fullMatch = match[0];
-        const tableNameRaw = match[2];
+        const tableNameRaw = match[1];
 
         // Skip if it contains template variables or special chars that might indicate partial query
         if (tableNameRaw.includes("{") || tableNameRaw.includes("$")) continue;
 
-        const parts = tableNameRaw.split(".");
+        // Clean up backticks from the whole string or parts
+        // Handle potentially complex backticking like `project`.`dataset`.table
+        const cleanRaw = tableNameRaw.replace(/`/g, "");
+        const parts = cleanRaw.split(".");
+
         let isValid = false;
 
         if (parts.length === 1) {
@@ -465,26 +519,22 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         } else if (parts.length === 2) {
           // dataset.table
           const [ds, table] = parts;
-          // Handle backtick cleanup if split included them (though regex should handle outer ones)
-          const cleanDs = ds.replace(/`/g, "");
-          const cleanTable = table.replace(/`/g, "");
-
-          if (schema[cleanDs] && schema[cleanDs][cleanTable]) {
+          if (schema[ds] && schema[ds][table]) {
             isValid = true;
           }
         } else if (parts.length === 3) {
           // project.dataset.table - verify dataset and table
+          // Note: schema keys are dataset names, we assume the second part is dataset
           const [_, ds, table] = parts;
-          const cleanDs = ds.replace(/`/g, "");
-          const cleanTable = table.replace(/`/g, "");
 
-          if (schema[cleanDs] && schema[cleanDs][cleanTable]) {
+          if (schema[ds] && schema[ds][table]) {
             isValid = true;
           }
         }
 
         if (!isValid && parts.length <= 3) {
           // Calculate position
+          // We need to find the position of tableNameRaw within the full match to get accurate offset
           const tableIndex = fullMatch.indexOf(tableNameRaw);
           // Ensure indices are valid
           if (tableIndex !== -1) {
@@ -499,7 +549,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               startColumn: startPos.column,
               endLineNumber: endPos.lineNumber,
               endColumn: endPos.column,
-              message: `Table '${tableNameRaw}' not found in schema`,
+              message: `Table '${cleanRaw}' not found in schema`,
             });
           }
         }
