@@ -45,6 +45,7 @@ interface DatabaseState {
   collections: Record<string, CollectionInfo[]>; // connectionId => collections
   views: Record<string, CollectionInfo[]>; // connectionId => views
   databasesInConnection: Record<string, DatabaseTreeNode[]>; // connectionId => databases within that connection
+  autocompleteData: Record<string, Record<string, any>>; // connectionId => autocomplete data
   loading: Record<string, boolean>; // workspace or connection ids
   error: Record<string, string | null>;
   fetchServers: (workspaceId: string) => Promise<DatabaseConnection[]>;
@@ -58,6 +59,10 @@ interface DatabaseState {
     workspaceId: string,
     connectionId: string,
   ) => Promise<DatabaseTreeNode[]>;
+  fetchAutocompleteData: (
+    workspaceId: string,
+    connectionId: string,
+  ) => Promise<Record<string, any> | null>;
   clearDatabaseData: (workspaceId: string) => void;
   fetchDatabases: () => Promise<void>;
   deleteDatabase: (workspaceId: string, connectionId: string) => Promise<void>;
@@ -69,6 +74,7 @@ export const useDatabaseStore = create<DatabaseState>()(
     collections: {},
     views: {},
     databasesInConnection: {},
+    autocompleteData: {},
     loading: {},
     error: {},
     fetchServers: async workspaceId => {
@@ -190,6 +196,42 @@ export const useDatabaseStore = create<DatabaseState>()(
           err,
         );
         return [];
+      } finally {
+        set(state => {
+          delete state.loading[loadingKey];
+        });
+      }
+    },
+    fetchAutocompleteData: async (workspaceId, connectionId) => {
+      const loadingKey = `autocomplete:${connectionId}`;
+      const cached = get().autocompleteData[connectionId];
+      if (cached) return cached;
+
+      set(state => {
+        state.loading[loadingKey] = true;
+      });
+
+      try {
+        const data = await apiClient.get<{
+          success: boolean;
+          data: Record<string, any>;
+        }>(`/workspaces/${workspaceId}/databases/${connectionId}/autocomplete`);
+
+        if (data.success) {
+          const schema = data.data || {};
+          set(state => {
+            state.autocompleteData[connectionId] = schema;
+          });
+          return schema;
+        }
+        return null;
+      } catch (err) {
+        // Autocomplete might not be supported, so we just log warning
+        console.warn(
+          `Failed to fetch autocomplete data for connection ${connectionId}`,
+          err,
+        );
+        return null;
       } finally {
         set(state => {
           delete state.loading[loadingKey];

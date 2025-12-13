@@ -50,6 +50,57 @@ databaseTreeRoutes.get(
   },
 );
 
+// GET /api/workspaces/:workspaceId/databases/:id/autocomplete
+databaseTreeRoutes.get(
+  "/:id/autocomplete",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    const workspace = c.get("workspace");
+    const databaseId = c.req.param("id");
+    if (!Types.ObjectId.isValid(databaseId)) {
+      return c.json({ success: false, error: "Invalid database ID" }, 400);
+    }
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(databaseId),
+      workspaceId: workspace._id,
+    });
+    if (!database) {
+      return c.json({ success: false, error: "Database not found" }, 404);
+    }
+    const driver = databaseRegistry.getDriver(database.type);
+    if (!driver) {
+      return c.json({ success: false, error: "Driver not found" }, 404);
+    }
+
+    if (!driver.getAutocompleteData) {
+      return c.json(
+        {
+          success: false,
+          error: "Autocomplete not supported for this database type",
+        },
+        400,
+      );
+    }
+
+    try {
+      const schema = await driver.getAutocompleteData(database as any);
+      return c.json({ success: true, data: schema });
+    } catch (error) {
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to fetch autocomplete data",
+        },
+        500,
+      );
+    }
+  },
+);
+
 // GET /api/workspaces/:workspaceId/databases/:id/console-template
 // Returns a placeholder query and language for a given database and optional node context
 databaseTreeRoutes.get(

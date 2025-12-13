@@ -459,6 +459,71 @@ export class DatabaseConnectionService {
     return datasets.sort((a, b) => a.localeCompare(b));
   }
 
+  // Public: Get BigQuery schema (tables and columns) for autocomplete
+  async getBigQuerySchema(
+    database: IDatabaseConnection,
+  ): Promise<
+    Record<string, Record<string, Array<{ name: string; type: string }>>>
+  > {
+    const { project_id } = (database.connection as any) || {};
+    if (!project_id) {
+      throw new Error("BigQuery requires 'project_id' in connection");
+    }
+
+    // List all datasets first
+    const datasetIds = await this.listBigQueryDatasets(database);
+
+    const schema: Record<
+      string,
+      Record<string, Array<{ name: string; type: string }>>
+    > = {};
+
+    // Fetch schema for each dataset in parallel with concurrency limit
+    const fetchDatasetSchema = async (datasetId: string) => {
+      try {
+        const query = `
+          SELECT table_name, column_name, data_type 
+          FROM \`${project_id}.${datasetId}.INFORMATION_SCHEMA.COLUMNS\`
+          ORDER BY table_name, ordinal_position
+        `;
+
+        const result = await this.executeBigQueryQuery(database, query);
+        if (result.success && Array.isArray(result.data)) {
+          if (!schema[datasetId]) schema[datasetId] = {};
+
+          for (const row of result.data) {
+            const tableName = row.table_name;
+            const colName = row.column_name;
+            const colType = row.data_type;
+
+            if (!schema[datasetId][tableName]) {
+              schema[datasetId][tableName] = [];
+            }
+            schema[datasetId][tableName].push({ name: colName, type: colType });
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to fetch schema for dataset ${datasetId}`, e);
+      }
+    };
+
+    const limit = 5;
+    const runners: Promise<void>[] = [];
+    let index = 0;
+    const runNext = async () => {
+      while (index < datasetIds.length) {
+        const current = datasetIds[index++];
+        await fetchDatasetSchema(current);
+      }
+    };
+    for (let i = 0; i < Math.min(limit, datasetIds.length); i++) {
+      runners.push(runNext());
+    }
+    await Promise.all(runners);
+
+    return schema;
+  }
+
   // Public: list BigQuery tables in a dataset
   async listBigQueryTables(
     database: IDatabaseConnection,

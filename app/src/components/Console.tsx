@@ -144,6 +144,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // State to track if there are unsaved changes (content only)
   const [hasContentChanges, setHasContentChanges] = useState(false);
+  const [monacoInstance, setMonacoInstance] = useState<any>(null);
 
   // Compute database dirty state from props (comparing current vs saved values)
   const hasDatabaseChanges = useMemo(() => {
@@ -182,6 +183,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const lastInitialContentRef = useRef(initialContent);
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const filePathRef = useRef(filePath);
+  const monacoRef = useRef<any>(null);
+  const completionProviderRef = useRef<any>(null);
 
   // Update filePathRef when props change
   useEffect(() => {
@@ -195,6 +198,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     state => state.databasesInConnection,
   );
   const loadingStore = useDatabaseStore(state => state.loading);
+  const fetchAutocompleteData = useDatabaseStore(
+    state => state.fetchAutocompleteData,
+  );
+  const autocompleteData = useDatabaseStore(state => state.autocompleteData);
 
   // Use the Monaco console hook for version management
   const {
@@ -300,6 +307,117 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     fetchDatabasesForConnection,
     currentWorkspace?.id,
   ]);
+
+  // Fetch autocomplete data when connection changes
+  useEffect(() => {
+    if (connectionId && currentWorkspace?.id) {
+      fetchAutocompleteData(currentWorkspace.id, connectionId);
+    }
+  }, [connectionId, currentWorkspace?.id, fetchAutocompleteData]);
+
+  // Register completion provider
+  useEffect(() => {
+    if (!monacoInstance || !connectionId) return;
+
+    const schema = autocompleteData[connectionId];
+    if (!schema) return;
+
+    // Dispose previous provider
+    if (completionProviderRef.current) {
+      completionProviderRef.current.dispose();
+    }
+
+    // Register new provider
+    completionProviderRef.current =
+      monacoInstance.languages.registerCompletionItemProvider("sql", {
+        triggerCharacters: ["."],
+        provideCompletionItems: (model: any, position: any) => {
+          const textUntilPosition = model.getValueInRange({
+            startLineNumber: position.lineNumber,
+            startColumn: 1,
+            endLineNumber: position.lineNumber,
+            endColumn: position.column,
+          });
+
+          const word = model.getWordUntilPosition(position);
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: word.startColumn,
+            endColumn: word.endColumn,
+          };
+
+          // Check for dot
+          if (textUntilPosition.endsWith(".")) {
+            // Need to find what's before the dot
+            // Simple regex to find the identifier before dot
+            const match = textUntilPosition.match(/([a-zA-Z0-9_]+)\.$/);
+            if (match) {
+              const parent = match[1];
+              // Check if parent is a dataset
+              if (schema[parent]) {
+                // Return tables in this dataset
+                const tables = Object.keys(schema[parent]);
+                return {
+                  suggestions: tables.map(t => ({
+                    label: t,
+                    kind: monacoInstance.languages.CompletionItemKind.Class,
+                    insertText: t,
+                    range,
+                  })),
+                };
+              }
+
+              // Check if parent is a table (search across all datasets)
+              for (const ds of Object.keys(schema)) {
+                if (schema[ds][parent]) {
+                  // Return columns
+                  return {
+                    suggestions: schema[ds][parent].map((c: any) => ({
+                      label: c.name,
+                      kind: monacoInstance.languages.CompletionItemKind.Field,
+                      insertText: c.name,
+                      detail: c.type,
+                      range,
+                    })),
+                  };
+                }
+              }
+            }
+          }
+
+          // Global suggestions
+          const suggestions: any[] = [];
+          Object.keys(schema).forEach(ds => {
+            suggestions.push({
+              label: ds,
+              kind: monacoInstance.languages.CompletionItemKind.Module,
+              insertText: ds,
+              range,
+            });
+
+            // Also add tables for convenience
+            Object.keys(schema[ds]).forEach(table => {
+              suggestions.push({
+                label: table,
+                kind: monacoInstance.languages.CompletionItemKind.Class,
+                insertText: table,
+                detail: `Table in ${ds}`,
+                range,
+              });
+            });
+          });
+
+          return { suggestions };
+        },
+      });
+
+    return () => {
+      if (completionProviderRef.current) {
+        completionProviderRef.current.dispose();
+      }
+    };
+  }, [connectionId, autocompleteData, monacoInstance]);
 
   // Helper function to get full editor content (ignores selection)
   const getFullEditorContent = useCallback(() => {
@@ -472,6 +590,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const handleEditorDidMount = useCallback(
     (editor: any, monaco: any) => {
       editorRef.current = editor;
+      monacoRef.current = monaco;
+      setMonacoInstance(monaco);
 
       // Always connect editor to the hook (needed for AI modifications)
       setEditor(editor);

@@ -23,6 +23,7 @@ export interface DatabaseDriver {
     database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]>;
+  getAutocompleteData?(database: IDatabaseConnection): Promise<Record<string, any>>;
   executeQuery(
     database: IDatabaseConnection,
     query: string,

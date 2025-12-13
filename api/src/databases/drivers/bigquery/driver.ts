@@ -63,4 +63,10 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   ) {
     return databaseConnectionService.executeQuery(database, query, options);
   }
+
+  async getAutocompleteData(
+    database: IDatabaseConnection,
+  ): Promise<Record<string, any>> {
+    return databaseConnectionService.getBigQuerySchema(database);
+  }
 }
