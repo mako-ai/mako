@@ -138,9 +138,14 @@ export function LoginPage({
 
       <form onSubmit={handleSubmit}>
         <Box sx={{ mb: 2 }}>
+          <Typography
+            variant="body2"
+            sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+          >
+            Email
+          </Typography>
           <TextField
             fullWidth
-            label="Email"
             size="small"
             type="email"
             value={email}
@@ -158,10 +163,17 @@ export function LoginPage({
           <Box
             sx={{
               display: "flex",
-              justifyContent: "flex-end",
-              mb: 0.5,
+              justifyContent: "space-between",
+              alignItems: "center",
+              mb: 1,
             }}
           >
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 500, color: "text.primary" }}
+            >
+              Password
+            </Typography>
             <Link
               component="button"
               type="button"
@@ -178,7 +190,6 @@ export function LoginPage({
           </Box>
           <TextField
             fullWidth
-            label="Password"
             size="small"
             type={showPassword ? "text" : "password"}
             value={password}

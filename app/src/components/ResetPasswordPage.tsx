@@ -119,9 +119,14 @@ export function ResetPasswordPage() {
       ) : (
         <form onSubmit={handleSubmit}>
           <Box sx={{ mb: 2 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+            >
+              Email
+            </Typography>
             <TextField
               fullWidth
-              label="Email"
               size="small"
               type="email"
               value={email}
@@ -135,9 +140,14 @@ export function ResetPasswordPage() {
           </Box>
 
           <Box sx={{ mb: 2 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+            >
+              New Password
+            </Typography>
             <TextField
               fullWidth
-              label="New Password"
               size="small"
               type={showPassword ? "text" : "password"}
               value={password}
@@ -172,9 +182,14 @@ export function ResetPasswordPage() {
           </Box>
 
           <Box sx={{ mb: 2.5 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+            >
+              Confirm Password
+            </Typography>
             <TextField
               fullWidth
-              label="Confirm Password"
               size="small"
               type={showConfirmPassword ? "text" : "password"}
               value={confirmPassword}

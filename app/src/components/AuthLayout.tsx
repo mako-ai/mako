@@ -30,7 +30,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
             alignItems: "flex-start",
             px: 8,
             bgcolor: "primary.main",
-            color: "primary.contrastText",
+            color: "common.white",
             position: "relative",
             overflow: "hidden",
             background: theme =>

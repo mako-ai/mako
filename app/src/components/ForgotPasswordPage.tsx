@@ -89,9 +89,14 @@ export function ForgotPasswordPage({ onBackToLogin }: ForgotPasswordPageProps) {
 
       <form onSubmit={handleSubmit}>
         <Box sx={{ mb: 2.5 }}>
+          <Typography
+            variant="body2"
+            sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+          >
+            Email
+          </Typography>
           <TextField
             fullWidth
-            label="Email"
             size="small"
             type="email"
             value={email}

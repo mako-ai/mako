@@ -153,9 +153,14 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
 
       <form onSubmit={handleSubmit}>
         <Box sx={{ mb: 2 }}>
+          <Typography
+            variant="body2"
+            sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+          >
+            Email
+          </Typography>
           <TextField
             fullWidth
-            label="Email"
             size="small"
             type="email"
             value={email}
@@ -170,9 +175,14 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
         </Box>
 
         <Box sx={{ mb: 2.5 }}>
+          <Typography
+            variant="body2"
+            sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+          >
+            Password
+          </Typography>
           <TextField
             fullWidth
-            label="Password"
             size="small"
             type={showPassword ? "text" : "password"}
             value={password}
