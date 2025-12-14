@@ -1613,25 +1613,19 @@ export class DatabaseConnectionService {
 
       // Get backend PID for cancellation support
       if (executionId) {
-        console.log(`[EXECUTE] Getting PID for executionId=${executionId}`);
-        const pidResult = await client.query("SELECT pg_backend_pid()");
-        let pid = pidResult.rows[0]?.pg_backend_pid;
-
-        // Fallback: try case-insensitive search for PID in the first row
-        if (!pid && pidResult.rows[0]) {
-           const row = pidResult.rows[0];
-           const key = Object.keys(row).find(k => k.toLowerCase().includes("pid"));
-           if (key) pid = row[key];
+        // Use the driver's processID property if available, otherwise query it
+        let pid = (client as any).processID;
+        
+        if (!pid) {
+          console.log(`[EXECUTE] processID missing on client, querying database...`);
+          const pidResult = await client.query("SELECT pg_backend_pid()");
+          pid = pidResult.rows[0]?.pg_backend_pid;
         }
 
         if (pid) {
           this.runningPostgresQueries.set(executionId, { database, pid });
         } else {
-          console.warn(`[EXECUTE] Failed to get PID for executionId=${executionId}`, {
-            rowCount: pidResult.rowCount,
-            rowKeys: pidResult.rows[0] ? Object.keys(pidResult.rows[0]) : [],
-            rows: pidResult.rows
-          });
+          console.warn(`[EXECUTE] Failed to get PID for executionId=${executionId}`);
         }
       }
 
