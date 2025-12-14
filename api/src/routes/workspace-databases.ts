@@ -804,7 +804,7 @@ workspaceExecuteRoutes.post(
   },
 );
 
-// POST /api/workspaces/:workspaceId/execute/cancel - Cancel a running query (BigQuery only)
+// POST /api/workspaces/:workspaceId/execute/cancel - Cancel a running query
 workspaceExecuteRoutes.post(
   "/cancel",
   authMiddleware,
@@ -821,8 +821,7 @@ workspaceExecuteRoutes.post(
         );
       }
 
-      const result =
-        await databaseConnectionService.cancelBigQueryJob(executionId);
+      const result = await databaseConnectionService.cancelQuery(executionId);
       return c.json(result);
     } catch (error) {
       console.error("Error cancelling query:", error);
