@@ -742,6 +742,10 @@ export class DatabaseConnectionService {
     executionId: string,
   ): Promise<{ success: boolean; error?: string }> {
     const query = this.runningPostgresQueries.get(executionId);
+    console.log(`[CANCEL] Request to cancel ExecutionID=${executionId}`);
+    console.log(`[CANCEL] Active queries map keys: ${Array.from(this.runningPostgresQueries.keys()).join(', ')}`);
+    console.log(`[CANCEL] Found entry? ${!!query} - PID=${query?.pid}`);
+
     if (!query) {
       return { success: false, error: "Query not found or already completed" };
     }
@@ -1615,17 +1619,24 @@ export class DatabaseConnectionService {
       if (executionId) {
         // Use the driver's processID property if available, otherwise query it
         let pid = (client as any).processID;
+        console.log(`[EXECUTE] ExecutionID=${executionId} - Initial Client PID check: ${pid}`);
         
         if (!pid) {
           console.log(`[EXECUTE] processID missing on client, querying database...`);
-          const pidResult = await client.query("SELECT pg_backend_pid()");
-          pid = pidResult.rows[0]?.pg_backend_pid;
+          try {
+            const pidResult = await client.query("SELECT pg_backend_pid() as pid");
+            pid = pidResult.rows[0]?.pid;
+            console.log(`[EXECUTE] Query result PID: ${pid}`);
+          } catch (e) {
+            console.error(`[EXECUTE] Failed to query PID:`, e);
+          }
         }
 
         if (pid) {
+          console.log(`[EXECUTE] Registering ExecutionID=${executionId} -> PID=${pid}`);
           this.runningPostgresQueries.set(executionId, { database, pid });
         } else {
-          console.warn(`[EXECUTE] Failed to get PID for executionId=${executionId}`);
+          console.warn(`[EXECUTE] Failed to resolve PID for executionId=${executionId}`);
         }
       }
 
