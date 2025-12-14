@@ -5,8 +5,10 @@ name = "mako-pr-router"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
-# Routes - routes all *.dev-app.mako.ai traffic through this worker
-routes = [{ pattern = "*.dev-app.mako.ai/*", zone_name = "mako.ai" }]
+# Routes - routes all *.mako.ai traffic through this worker
+# The worker filters to only handle pr-{number} subdomains
+# Other subdomains (app, dev-app, www) have explicit DNS records and won't hit this
+routes = [{ pattern = "*.mako.ai/*", zone_name = "mako.ai" }]
 
 # KV Namespace binding
 [[kv_namespaces]]

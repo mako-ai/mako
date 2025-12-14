@@ -55,12 +55,12 @@ jobs:
     needs: detect-changes
     environment:
       name: pr-${{ github.event.pull_request.number }}
-      url: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai
+      url: https://pr-${{ github.event.pull_request.number }}.mako.ai
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      BASE_URL: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai
-      CLIENT_URL: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai
-      VITE_API_URL: https://pr-${{ github.event.pull_request.number }}.dev-app.mako.ai/api
+      BASE_URL: https://pr-${{ github.event.pull_request.number }}.mako.ai
+      CLIENT_URL: https://pr-${{ github.event.pull_request.number }}.mako.ai
+      VITE_API_URL: https://pr-${{ github.event.pull_request.number }}.mako.ai/api
       # PR previews disable OAuth since redirect URLs can't be dynamically registered
       DISABLE_OAUTH: "true"
       # Staging secrets (from staging environment)
@@ -249,7 +249,7 @@ jobs:
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
-            const previewUrl = `https://pr-${prNumber}.dev-app.mako.ai`;
+            const previewUrl = `https://pr-${prNumber}.mako.ai`;
             const cloudRunUrl = `${{ steps.deploy.outputs.cloud_run_url }}`;
             const migrationsChanged = '${{ needs.detect-changes.outputs.migrations_changed }}' === 'true';
 
