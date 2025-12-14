@@ -964,7 +964,17 @@ export class DatabaseConnectionService {
           : false,
       });
       await cancelClient.connect();
-      await cancelClient.query(`SELECT pg_cancel_backend(${query.pid})`);
+      const res = await cancelClient.query<{ cancelled: boolean }>(
+        "SELECT pg_cancel_backend($1) as cancelled",
+        [query.pid],
+      );
+      const cancelled = res.rows?.[0]?.cancelled;
+      if (!cancelled) {
+        return {
+          success: false,
+          error: "Failed to cancel query (pg_cancel_backend returned false)",
+        };
+      }
       this.runningPostgresQueries.delete(executionId);
       return { success: true };
     } catch (error: any) {
@@ -993,6 +1003,22 @@ export class DatabaseConnectionService {
     if (this.runningPostgresQueries.has(executionId)) {
       return this.cancelPostgresQuery(executionId);
     }
+
+    // Delegate to drivers that support cancellation (e.g., cloudsql-postgres)
+    for (const driver of this.drivers.values()) {
+      if (typeof (driver as any).cancelQuery === "function") {
+        const res = await (driver as any).cancelQuery(executionId);
+        if (res?.success) return res;
+        // If the driver found the executionId but failed to cancel, return that error.
+        if (
+          res?.error &&
+          res.error !== "Query not found or already completed"
+        ) {
+          return res;
+        }
+      }
+    }
+
     return { success: false, error: "Query not found or already completed" };
   }
 
