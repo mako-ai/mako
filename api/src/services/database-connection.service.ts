@@ -88,6 +88,12 @@ export class DatabaseConnectionService {
       client: AxiosInstance;
     }
   > = new Map();
+
+  // Track running PostgreSQL queries for cancellation
+  private runningPostgresQueries: Map<
+    string,
+    { database: IDatabaseConnection; pid: number }
+  > = new Map();
   private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly maxIdleTime = 15 * 60 * 1000; // 15 minutes to be safe
 
@@ -727,6 +733,63 @@ export class DatabaseConnectionService {
           "Failed to cancel job",
       };
     }
+  }
+
+  /**
+   * Cancel a running PostgreSQL query
+   */
+  async cancelPostgresQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const query = this.runningPostgresQueries.get(executionId);
+    if (!query) {
+      return { success: false, error: "Query not found or already completed" };
+    }
+
+    let cancelClient: PgClient | null = null;
+    try {
+      // Create a new connection to cancel the query
+      cancelClient = new PgClient({
+        host: query.database.connection.host,
+        port: query.database.connection.port || 5432,
+        database: query.database.connection.database,
+        user: query.database.connection.username,
+        password: query.database.connection.password,
+        ssl: query.database.connection.ssl
+          ? { rejectUnauthorized: false }
+          : false,
+      });
+      await cancelClient.connect();
+      await cancelClient.query(`SELECT pg_cancel_backend(${query.pid})`);
+      this.runningPostgresQueries.delete(executionId);
+      return { success: true };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error?.message || "Failed to cancel query",
+      };
+    } finally {
+      if (cancelClient) {
+        await cancelClient.end().catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Cancel a running query (auto-detects database type)
+   */
+  async cancelQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    // Try BigQuery first
+    if (this.runningBigQueryJobs.has(executionId)) {
+      return this.cancelBigQueryJob(executionId);
+    }
+    // Try PostgreSQL
+    if (this.runningPostgresQueries.has(executionId)) {
+      return this.cancelPostgresQuery(executionId);
+    }
+    return { success: false, error: "Query not found or already completed" };
   }
 
   // New: list BigQuery datasets and tables via REST (fast, no deprecated auth)
@@ -1518,6 +1581,9 @@ export class DatabaseConnectionService {
     query: string,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
+    const executionId = options?.executionId;
+    const signal = options?.signal;
+
     // Determine the target database: options override or connection default
     const targetDatabase =
       options?.databaseName || database.connection.database;
@@ -1525,54 +1591,62 @@ export class DatabaseConnectionService {
     // Check if we need a different database than what's cached in the connection
     const connectionDatabase = database.connection.database;
     let client: PgClient;
+    let isTemporaryConnection = false;
 
-    if (targetDatabase && targetDatabase !== connectionDatabase) {
-      // Need to create a new connection for the target database
-      client = new PgClient({
-        host: database.connection.host,
-        port: database.connection.port || 5432,
-        database: targetDatabase,
-        user: database.connection.username,
-        password: database.connection.password,
-        ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
-      });
-      await client.connect();
-
-      try {
-        const result = await client.query(query);
-        return {
-          success: true,
-          data: result.rows,
-          rowCount: result.rowCount ?? undefined,
-          fields: result.fields,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "PostgreSQL query failed",
-        };
-      } finally {
-        // Close the temporary connection
-        await client.end();
+    try {
+      if (targetDatabase && targetDatabase !== connectionDatabase) {
+        // Need to create a new connection for the target database
+        client = new PgClient({
+          host: database.connection.host,
+          port: database.connection.port || 5432,
+          database: targetDatabase,
+          user: database.connection.username,
+          password: database.connection.password,
+          ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
+        });
+        await client.connect();
+        isTemporaryConnection = true;
+      } else {
+        // Use the cached connection
+        client = (await this.getConnection(database)) as PgClient;
       }
-    } else {
-      // Use the cached connection
-      client = (await this.getConnection(database)) as PgClient;
-      try {
-        const result = await client.query(query);
-        return {
-          success: true,
-          data: result.rows,
-          rowCount: result.rowCount ?? undefined,
-          fields: result.fields,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "PostgreSQL query failed",
-        };
+
+      // Get backend PID for cancellation support
+      if (executionId) {
+        const pidResult = await client.query("SELECT pg_backend_pid()");
+        const pid = pidResult.rows[0]?.pg_backend_pid;
+        if (pid) {
+          this.runningPostgresQueries.set(executionId, { database, pid });
+        }
+      }
+
+      // Check if already cancelled
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
+
+      const result = await client.query(query);
+      return {
+        success: true,
+        data: result.rows,
+        rowCount: result.rowCount ?? undefined,
+        fields: result.fields,
+      };
+    } catch (error: any) {
+      if (error?.message?.includes("canceling statement")) {
+        return { success: false, error: "Query cancelled" };
+      }
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "PostgreSQL query failed",
+      };
+    } finally {
+      if (executionId) {
+        this.runningPostgresQueries.delete(executionId);
+      }
+      if (isTemporaryConnection && client!) {
+        await client.end().catch(() => {});
       }
     }
   }
