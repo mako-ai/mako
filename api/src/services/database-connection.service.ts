@@ -775,12 +775,22 @@ export class DatabaseConnectionService {
     private_key: string;
     token_uri: string;
   } {
-    const obj = typeof sa === "string" ? JSON.parse(sa) : sa;
+    let obj: any;
+    try {
+      obj = typeof sa === "string" ? JSON.parse(sa) : sa;
+    } catch (e) {
+      console.error("Failed to parse service_account_json:", e);
+      throw new Error("Invalid service_account_json: Not a valid JSON string");
+    }
+
+    if (!obj || typeof obj !== "object") {
+      throw new Error("Invalid service_account_json: Content is not an object");
+    }
+
     return {
-      client_email: (obj as any).client_email,
-      private_key: (obj as any).private_key,
-      token_uri:
-        (obj as any).token_uri || "https://oauth2.googleapis.com/token",
+      client_email: obj.client_email,
+      private_key: obj.private_key,
+      token_uri: obj.token_uri || "https://oauth2.googleapis.com/token",
     };
   }
 
