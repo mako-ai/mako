@@ -33,4 +33,13 @@ export interface DatabaseDriver {
     error?: string;
     rowCount?: number;
   }>;
+
+  /**
+   * Optional: cancel an in-flight query started via executeQuery that was provided an executionId.
+   * Implementations should return { success: false, error: "Query not found or already completed" }
+   * when the executionId is unknown.
+   */
+  cancelQuery?(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }>;
 }
