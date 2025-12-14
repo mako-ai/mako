@@ -160,6 +160,7 @@ export interface IDatabaseConnection extends Document {
     | "sqlite"
     | "mssql"
     | "bigquery"
+    | "clickhouse"
     | "cloudflare-d1"
     | "cloudflare-kv";
   connection: {
@@ -640,6 +641,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
         "sqlite",
         "mssql",
         "bigquery",
+        "clickhouse",
         "cloudflare-d1",
         "cloudflare-kv",
       ],

@@ -1,3 +1,4 @@
+import { createClient } from "@clickhouse/client";
 import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
 import { Client as PgClient, Pool as PgPool } from "pg";
 import * as mysql from "mysql2/promise";
@@ -160,6 +161,8 @@ export class DatabaseConnectionService {
           return await this.testMSSQLConnection(database);
         case "bigquery":
           return await this.testBigQueryConnection(database);
+        case "clickhouse":
+          return await this.testClickHouseConnection(database);
         case "cloudsql-postgres":
           return await (
             this.drivers.get("cloudsql-postgres") as any
@@ -210,6 +213,8 @@ export class DatabaseConnectionService {
           return await this.executeMSSQLQuery(database, query);
         case "bigquery":
           return await this.executeBigQueryQuery(database, query, options);
+        case "clickhouse":
+          return await this.executeClickHouseQuery(database, query);
         case "cloudflare-d1":
           return await this.drivers
             .get("cloudflare-d1")!
@@ -277,6 +282,9 @@ export class DatabaseConnectionService {
         break;
       case "bigquery":
         // BigQuery uses stateless HTTP requests; no persistent connection
+        connection = null;
+        break;
+      case "clickhouse":
         connection = null;
         break;
       default:
@@ -2279,6 +2287,79 @@ export class DatabaseConnectionService {
       return {
         success: false,
         error: error instanceof Error ? error.message : "MSSQL query failed",
+      };
+    }
+  }
+
+  // ClickHouse specific methods
+  private async testClickHouseConnection(
+    database: IDatabaseConnection,
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      // Ensure host has protocol
+      let host = database.connection.host || "http://localhost";
+      if (!host.startsWith("http://") && !host.startsWith("https://")) {
+        host = (database.connection.ssl ? "https://" : "http://") + host;
+      }
+
+      const client = createClient({
+        url: `${host}:${database.connection.port || 8123}`,
+        username: database.connection.username || "default",
+        password: database.connection.password || "",
+        database: database.connection.database || "default",
+        // tls is handled by https in url for clickhouse client mostly, but we can pass ca/cert if needed.
+        // For basic usage, the client infers from URL.
+      });
+      await client.ping();
+      await client.close();
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "ClickHouse connection failed",
+      };
+    }
+  }
+
+  private async executeClickHouseQuery(
+    database: IDatabaseConnection,
+    query: string,
+  ): Promise<QueryResult> {
+    try {
+      // Ensure host has protocol
+      let host = database.connection.host || "http://localhost";
+      if (!host.startsWith("http://") && !host.startsWith("https://")) {
+        host = (database.connection.ssl ? "https://" : "http://") + host;
+      }
+
+      const client = createClient({
+        url: `${host}:${database.connection.port || 8123}`,
+        username: database.connection.username || "default",
+        password: database.connection.password || "",
+        database: database.connection.database || "default",
+      });
+
+      const resultSet = await client.query({
+        query: query,
+        format: "JSONEachRow",
+      });
+
+      const data = await resultSet.json();
+      await client.close();
+
+      return {
+        success: true,
+        data: data as any[],
+        rowCount: (data as any[]).length,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "ClickHouse query failed",
       };
     }
   }
