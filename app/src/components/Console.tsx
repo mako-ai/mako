@@ -37,6 +37,8 @@ import {
   useMonacoConsole,
   ConsoleModification,
 } from "../hooks/useMonacoConsole";
+import { useBigQuerySqlAutocomplete } from "../hooks/useBigQuerySqlAutocomplete";
+import { useSchemaSqlAutocomplete } from "../hooks/useSchemaSqlAutocomplete";
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import { hashContent } from "../utils/hash";
 
@@ -184,7 +186,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const filePathRef = useRef(filePath);
   const monacoRef = useRef<any>(null);
-  const completionProviderRef = useRef<any>(null);
 
   // Update filePathRef when props change
   useEffect(() => {
@@ -310,165 +311,34 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // Fetch autocomplete data when connection changes
   useEffect(() => {
+    // BigQuery uses incremental autocomplete via a dedicated store/hook.
+    if (selectedConnection?.type === "bigquery") return;
+
     if (connectionId && currentWorkspace?.id) {
       fetchAutocompleteData(currentWorkspace.id, connectionId);
     }
-  }, [connectionId, currentWorkspace?.id, fetchAutocompleteData]);
+  }, [
+    connectionId,
+    currentWorkspace?.id,
+    fetchAutocompleteData,
+    selectedConnection?.type,
+  ]);
 
-  // Register completion provider
-  useEffect(() => {
-    if (!monacoInstance || !connectionId) return;
+  // Monaco autocomplete providers are registered via dedicated hooks:
+  // - BigQuery uses incremental (datasets -> tables -> columns) requests
+  // - Other SQL DBs use cached schema from the database store
+  useBigQuerySqlAutocomplete({
+    enabled: selectedConnection?.type === "bigquery",
+    monaco: monacoInstance,
+    workspaceId: currentWorkspace?.id,
+    connectionId,
+  });
 
-    const schema = autocompleteData[connectionId];
-    if (!schema) return;
-
-    // Dispose previous provider
-    if (completionProviderRef.current) {
-      completionProviderRef.current.dispose();
-    }
-
-    // Register new provider
-    completionProviderRef.current =
-      monacoInstance.languages.registerCompletionItemProvider("sql", {
-        triggerCharacters: [".", " ", "`"],
-        provideCompletionItems: (model: any, position: any) => {
-          const textUntilPosition = model.getValueInRange({
-            startLineNumber: position.lineNumber,
-            startColumn: 1,
-            endLineNumber: position.lineNumber,
-            endColumn: position.column,
-          });
-
-          const word = model.getWordUntilPosition(position);
-          const range = {
-            startLineNumber: position.lineNumber,
-            endLineNumber: position.lineNumber,
-            startColumn: word.startColumn,
-            endColumn: word.endColumn,
-          };
-
-          // 1. Handle Dot Trigger (dataset. -> tables, table. -> columns)
-          if (textUntilPosition.endsWith(".")) {
-            // Match the identifier before the dot, handling backticks and dashes
-            // Group 1: Optional opening backtick
-            // Group 2: The identifier (no dots)
-            // Group 3: Optional closing backtick
-            const match = textUntilPosition.match(/(`?)([^`.]+)\1\.$/);
-            if (match) {
-              const parent = match[2];
-
-              // Check if parent is a dataset (key in schema)
-              if (schema[parent]) {
-                const tables = Object.keys(schema[parent]);
-                return {
-                  suggestions: tables.map(t => ({
-                    label: t,
-                    kind: monacoInstance.languages.CompletionItemKind.Class,
-                    insertText: t,
-                    detail: "Table",
-                    range,
-                  })),
-                };
-              }
-
-              // Check if parent is a table (search across all datasets)
-              for (const ds of Object.keys(schema)) {
-                if (schema[ds][parent]) {
-                  return {
-                    suggestions: schema[ds][parent].map((c: any) => ({
-                      label: c.name,
-                      kind: monacoInstance.languages.CompletionItemKind.Field,
-                      insertText: c.name,
-                      detail: c.type,
-                      range,
-                    })),
-                  };
-                }
-              }
-            }
-          }
-
-          // 2. Handle FROM/JOIN Trigger -> Suggest Datasets & Tables
-          // Check if we are after FROM or JOIN (ignoring case)
-          // Simple regex to check the last significant token
-          const lastTokenMatch = textUntilPosition.match(/(?:FROM|JOIN)\s+$/i);
-          const isFromOrJoin = !!lastTokenMatch;
-
-          // Also check if we are typing a potential dataset/table name (partially typed)
-          const isTypingIdentifier = textUntilPosition.match(
-            /(?:FROM|JOIN)\s+[`\w]*$/i,
-          );
-
-          if (isFromOrJoin || isTypingIdentifier) {
-            const suggestions: any[] = [];
-
-            // Suggest Datasets
-            Object.keys(schema).forEach(ds => {
-              suggestions.push({
-                label: ds,
-                kind: monacoInstance.languages.CompletionItemKind.Module,
-                insertText: ds,
-                detail: "Dataset",
-                range,
-              });
-
-              // Suggest Tables (fully qualified if possible or just table name)
-              // Users often want dataset.table, but typing table name directly is also common if unique
-              Object.keys(schema[ds]).forEach(table => {
-                suggestions.push({
-                  label: table,
-                  kind: monacoInstance.languages.CompletionItemKind.Class,
-                  insertText: table, // Or `${ds}.${table}` ? Let's stick to name for now, or let them type dataset.
-                  detail: `Table in ${ds}`,
-                  range,
-                });
-                // Also suggest fully qualified for convenience
-                suggestions.push({
-                  label: `${ds}.${table}`,
-                  kind: monacoInstance.languages.CompletionItemKind.Class,
-                  insertText: `${ds}.${table}`,
-                  detail: "Full Table Path",
-                  filterText: `${ds}.${table} ${table}`, // Match on both
-                  range,
-                });
-              });
-            });
-
-            return { suggestions };
-          }
-
-          // 3. Global suggestions (default fallback when typing query)
-          // Limit this to avoid noise? Or just provide keywords + schema?
-          // Monaco has built-in SQL keywords. We just add schema items.
-          const suggestions: any[] = [];
-          Object.keys(schema).forEach(ds => {
-            suggestions.push({
-              label: ds,
-              kind: monacoInstance.languages.CompletionItemKind.Module,
-              insertText: ds,
-              range,
-            });
-            Object.keys(schema[ds]).forEach(table => {
-              suggestions.push({
-                label: table,
-                kind: monacoInstance.languages.CompletionItemKind.Class,
-                insertText: table,
-                detail: `Table in ${ds}`,
-                range,
-              });
-            });
-          });
-
-          return { suggestions };
-        },
-      });
-
-    return () => {
-      if (completionProviderRef.current) {
-        completionProviderRef.current.dispose();
-      }
-    };
-  }, [connectionId, autocompleteData, monacoInstance]);
+  useSchemaSqlAutocomplete({
+    enabled: selectedConnection?.type !== "bigquery",
+    monaco: monacoInstance,
+    schema: connectionId ? (autocompleteData[connectionId] as any) : null,
+  });
 
   // Debounced validation for error highlighting
   useEffect(() => {
