@@ -10,6 +10,7 @@ compatibility_date = "2024-01-01"
 # Other subdomains (app, dev-app, www) have explicit DNS records and won't hit this
 routes = [{ pattern = "*.mako.ai/*", zone_name = "mako.ai" }]
 
+
 # KV Namespace binding
 [[kv_namespaces]]
 binding = "MAKO_PR_DEPLOYMENTS"

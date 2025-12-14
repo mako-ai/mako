@@ -37,6 +37,9 @@ This creates a wildcard DNS record that catches all subdomains without explicit 
 **Important**: Existing subdomains (`app`, `dev-app`, `www`) with their own DNS records will continue to work normally. The worker filters these out.
 
 Cloudflare's free Universal SSL covers `*.mako.ai`, so no additional SSL configuration is needed.
+1. Go to Workers & Pages → your worker → Settings → Triggers
+2. Add Route: `pr-*.mako.ai/*` for zone `mako.ai`
+
 
 ### 4. Deploy the Worker
 
