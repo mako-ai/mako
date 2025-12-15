@@ -183,7 +183,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             if (doc) {
               // Extract top-level keys
               const fields = Object.keys(doc).map(key => {
-                let type = typeof doc[key];
+                let type: string = typeof doc[key];
                 if (doc[key] === null) type = "null";
                 else if (Array.isArray(doc[key])) type = "array";
                 else if (doc[key] instanceof Date) type = "date";

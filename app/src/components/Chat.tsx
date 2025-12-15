@@ -115,7 +115,7 @@ const CodeBlock = React.memo(
         setIsCopied(true);
         setTimeout(() => setIsCopied(false), 2000);
       } catch (err) {
-        // console.error("Failed to copy code:", err);
+        console.error("Failed to copy code:", err);
       }
     };
 
@@ -849,7 +849,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             const parsed = JSON.parse(data);
 
             // Debug log all events
-            // console.log("Chat received event:", parsed);
+            console.log("Chat received event:", parsed);
 
             // Handle different event types
             if (parsed.type === "text") {
@@ -927,12 +927,12 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               parsed.modification
             ) {
               // Handle console modification event
-              // console.log(
-              //   "Console modification event received:",
-              //   parsed.modification,
-              //   "consoleId:",
-              //   parsed.consoleId,
-              // );
+              console.log(
+                "Console modification event received:",
+                parsed.modification,
+                "consoleId:",
+                parsed.consoleId,
+              );
               if (onConsoleModification) {
                 // Pass the modification with the consoleId if available
                 onConsoleModification({
@@ -942,11 +942,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               }
             } else if (parsed.type === "console_creation") {
               // Handle console creation event
-              // console.log(
-              //   "Console creation event received:",
-              //   parsed.consoleId,
-              //   parsed.title,
-              // );
+              console.log(
+                "Console creation event received:",
+                parsed.consoleId,
+                parsed.title,
+              );
               if (onConsoleModification) {
                 // Use the modification handler to create a new console
                 onConsoleModification({
@@ -958,7 +958,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               }
             } else if (parsed.type === "handoff") {
               // Handle handoff events - show a status message but don't save it
-              // console.log("Handoff event:", parsed);
+              console.log("Handoff event:", parsed);
               // Don't add to assistantContent, just show in UI temporarily
               setSteps(prev => [
                 ...prev,
@@ -966,7 +966,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               ]);
             } else if (parsed.type === "error") {
               // Handle error events
-              // console.error("Error from agent:", parsed.message);
+              console.error("Error from agent:", parsed.message);
               setError(parsed.message || "An error occurred");
               // Still add the error to messages so it's visible in chat history
               assistantContent = `Error: ${parsed.message || "An unknown error occurred"}`;
