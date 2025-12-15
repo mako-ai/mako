@@ -231,7 +231,17 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
 
     try {
       // Cancel from a different session in the same pool
-      await running.pool.query("SELECT pg_cancel_backend($1)", [running.pid]);
+      const res = await running.pool.query<{ cancelled: boolean }>(
+        "SELECT pg_cancel_backend($1) as cancelled",
+        [running.pid],
+      );
+      const cancelled = res.rows?.[0]?.cancelled;
+      if (!cancelled) {
+        return {
+          success: false,
+          error: "Failed to cancel query (pg_cancel_backend returned false)",
+        };
+      }
       this.runningQueries.delete(executionId);
       return { success: true };
     } catch (error) {
