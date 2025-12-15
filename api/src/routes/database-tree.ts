@@ -88,12 +88,15 @@ databaseTreeRoutes.get(
       const datasetId = datasetIdRaw ? String(datasetIdRaw) : undefined;
       const tableId = tableIdRaw ? String(tableIdRaw) : undefined;
 
-      // Basic validation for BigQuery identifiers (dataset/table ids)
-      const isValidId = (v: string) => /^[A-Za-z0-9_]+$/.test(v);
-      if (datasetId && !isValidId(datasetId)) {
+      // Basic validation for BigQuery identifiers.
+      // - Dataset IDs: letters, numbers, underscores (no hyphens)
+      // - Table IDs: letters, numbers, underscores, hyphens
+      const isValidDatasetId = (v: string) => /^[A-Za-z0-9_]+$/.test(v);
+      const isValidTableId = (v: string) => /^[A-Za-z0-9_-]+$/.test(v);
+      if (datasetId && !isValidDatasetId(datasetId)) {
         return c.json({ success: false, error: "Invalid datasetId" }, 400);
       }
-      if (tableId && !isValidId(tableId)) {
+      if (tableId && !isValidTableId(tableId)) {
         return c.json({ success: false, error: "Invalid tableId" }, 400);
       }
 
