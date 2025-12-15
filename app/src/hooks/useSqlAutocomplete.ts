@@ -283,11 +283,14 @@ async function provideLazyCompletions(
     }
 
     const allSchemas = await getSchemas();
-    const schemas = token
-      ? allSchemas.filter(s => s.toLowerCase().startsWith(token.toLowerCase()))
+    const tokenLower = token.toLowerCase();
+
+    // Filter schemas that match the prefix
+    const matchingSchemas = token
+      ? allSchemas.filter(s => s.toLowerCase().startsWith(tokenLower))
       : allSchemas;
 
-    const schemaSuggestions = schemas.map(s => ({
+    const schemaSuggestions = matchingSchemas.map(s => ({
       label: s,
       kind: m.languages.CompletionItemKind.Module,
       insertText: s,
@@ -295,8 +298,9 @@ async function provideLazyCompletions(
       range,
     }));
 
-    if (schemas.length === 1) {
-      const s = schemas[0];
+    // If exactly one schema matches, also show its tables
+    if (matchingSchemas.length === 1) {
+      const s = matchingSchemas[0];
       const tables = await getTables(s);
       const fullTableSuggestions = tables.slice(0, 100).map(t => ({
         label: `${s}.${t}`,
@@ -312,6 +316,50 @@ async function provideLazyCompletions(
           ...schemaSuggestions,
           ...fullTableSuggestions,
         ]),
+      };
+    }
+
+    // If no schemas match but user typed something, fetch tables from all schemas
+    // and filter by table name (for smaller datasets this is okay)
+    if (matchingSchemas.length === 0 && token && allSchemas.length <= 10) {
+      const allTableSuggestions: typeof schemaSuggestions = [];
+
+      for (const s of allSchemas) {
+        const tables = await getTables(s);
+        const matchingTables = tables.filter(t =>
+          t.toLowerCase().startsWith(tokenLower),
+        );
+
+        for (const t of matchingTables) {
+          allTableSuggestions.push({
+            label: `${s}.${t}`,
+            kind: m.languages.CompletionItemKind.Class,
+            insertText: `${s}.${t}`,
+            detail: "Full Table Path",
+            range,
+          });
+          if (allTableSuggestions.length >= 50) break;
+        }
+        if (allTableSuggestions.length >= 50) break;
+      }
+
+      if (allTableSuggestions.length > 0) {
+        return { suggestions: limitSuggestions(allTableSuggestions) };
+      }
+    }
+
+    // Fallback: show all schemas so user can navigate
+    if (matchingSchemas.length === 0) {
+      return {
+        suggestions: limitSuggestions(
+          allSchemas.map(s => ({
+            label: s,
+            kind: m.languages.CompletionItemKind.Module,
+            insertText: s,
+            detail: "Schema",
+            range,
+          })),
+        ),
       };
     }
 
@@ -589,7 +637,7 @@ function providePreloadedCompletions(
       }
     }
 
-    const prefix = token;
+    const prefix = token.toLowerCase();
     const suggestions: Array<{
       label: string;
       kind: number;
@@ -599,28 +647,38 @@ function providePreloadedCompletions(
       range: typeof range;
     }> = [];
 
-    const datasets = Object.keys(schema)
-      .filter(ds => (prefix ? ds.startsWith(prefix) : true))
-      .sort((a, b) => a.localeCompare(b));
+    const allSchemas = Object.keys(schema).sort((a, b) => a.localeCompare(b));
 
-    for (const ds of datasets) {
-      suggestions.push({
-        label: ds,
-        kind: m.languages.CompletionItemKind.Module,
-        insertText: ds,
-        detail: "Schema",
-        range,
-      });
-
-      for (const table of Object.keys(schema[ds] || {})) {
+    for (const ds of allSchemas) {
+      // Include schema if it matches the prefix
+      if (!prefix || ds.toLowerCase().startsWith(prefix)) {
         suggestions.push({
-          label: `${ds}.${table}`,
-          kind: m.languages.CompletionItemKind.Class,
-          insertText: `${ds}.${table}`,
-          detail: "Full Table Path",
-          filterText: `${ds}.${table} ${table}`,
+          label: ds,
+          kind: m.languages.CompletionItemKind.Module,
+          insertText: ds,
+          detail: "Schema",
           range,
         });
+      }
+
+      // Include tables that match the prefix (by table name or full path)
+      for (const table of Object.keys(schema[ds] || {})) {
+        const fullPath = `${ds}.${table}`;
+        const matchesPrefix =
+          !prefix ||
+          table.toLowerCase().startsWith(prefix) ||
+          fullPath.toLowerCase().startsWith(prefix);
+
+        if (matchesPrefix) {
+          suggestions.push({
+            label: fullPath,
+            kind: m.languages.CompletionItemKind.Class,
+            insertText: fullPath,
+            detail: "Full Table Path",
+            filterText: `${fullPath} ${table}`,
+            range,
+          });
+        }
         if (suggestions.length >= 150) break;
       }
       if (suggestions.length >= 150) break;
