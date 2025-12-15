@@ -182,7 +182,7 @@ export const useSchemaStore = create<SchemaState>()(
 
       ensureConnections: async (workspaceId: string) => {
         const cached = get().connections[workspaceId];
-        if (cached && cached.length > 0) return cached;
+        if (cached) return cached;
 
         return ensureWithDedup(`connections:${workspaceId}`, async () => {
           const key = `connections:${workspaceId}`;
