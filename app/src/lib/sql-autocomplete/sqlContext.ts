@@ -10,7 +10,9 @@ export type SqlParseResult = {
 };
 
 export function stripSqlIdentifierQuotes(value: string) {
-  return String(value || "").replace(/[`"]/g, "");
+  return String(value || "")
+    .replace(/[`"]/g, "")
+    .trim();
 }
 
 export function parseTableContext(sql: string): SqlParseResult {
@@ -92,12 +94,21 @@ export function getDotContext(
     };
   }
 
-  // alias.
-  const single = textUntilCursor.match(/(`?)([^`.]+)\1\.$/);
-  if (!single) return null;
-
-  return {
-    kind: "dot",
-    ident: stripSqlIdentifierQuotes(single[2] || ""),
-  };
+  // alias. / dataset. (capture only the last identifier token, not whitespace/newlines)
+  const backticked = textUntilCursor.match(/`([^`]+)`\.$/);
+  if (backticked) {
+    return {
+      kind: "dot",
+      ident: stripSqlIdentifierQuotes(backticked[1] || ""),
+    };
+  }
+  const quoted = textUntilCursor.match(/"([^"]+)"\.$/);
+  if (quoted) {
+    return { kind: "dot", ident: stripSqlIdentifierQuotes(quoted[1] || "") };
+  }
+  const bare = textUntilCursor.match(/([A-Za-z0-9_-]+)\.$/);
+  if (bare) {
+    return { kind: "dot", ident: stripSqlIdentifierQuotes(bare[1] || "") };
+  }
+  return null;
 }

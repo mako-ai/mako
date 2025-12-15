@@ -210,18 +210,16 @@ function MainApp() {
               // Try server-provided template first
               let prefill = `db.getCollection("${collection.name}").find({}).limit(500)`;
               try {
-                const { useDatabaseContentStore } = await import(
-                  "./store/databaseContentStore"
-                );
+                const { useSchemaStore } = await import("./store/schemaStore");
                 const workspaceId = localStorage.getItem("activeWorkspaceId");
                 if (workspaceId) {
-                  const tpl = await useDatabaseContentStore
+                  const tpl = await useSchemaStore
                     .getState()
                     .fetchConsoleTemplate(workspaceId, dbId, {
                       id: collection.name,
                       kind: collection.type || "collection",
-                      metadata: collection.options,
-                    } as any);
+                      metadata: collection.options as Record<string, unknown>,
+                    });
                   if (tpl?.template) prefill = tpl.template;
                 }
               } catch {
@@ -250,7 +248,7 @@ function MainApp() {
                 undefined, // filePath
                 undefined, // consoleId
                 undefined, // isPlaceholder
-                collection.options, // queryOptions - contains D1 databaseName (UUID), MongoDB dbName, etc.
+                collection.options as Record<string, unknown> | undefined, // queryOptions - contains D1 databaseName (UUID), MongoDB dbName, etc.
               );
             }}
           />

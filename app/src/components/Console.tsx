@@ -32,13 +32,11 @@ import {
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useDatabaseStore } from "../store/databaseStore";
+import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import {
   useMonacoConsole,
   ConsoleModification,
 } from "../hooks/useMonacoConsole";
-import { useBigQuerySqlAutocomplete } from "../hooks/useBigQuerySqlAutocomplete";
-import { useSchemaSqlAutocomplete } from "../hooks/useSchemaSqlAutocomplete";
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import { hashContent } from "../utils/hash";
 
@@ -192,17 +190,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     filePathRef.current = filePath;
   }, [filePath]);
 
-  const fetchDatabasesForConnection = useDatabaseStore(
-    state => state.fetchDatabasesForConnection,
+  // Use unified schema store
+  const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
+  const treeNodes = useSchemaStore(s => s.treeNodes);
+  const schemaLoading = useSchemaStore(s => s.loading);
+  const ensureAutocompleteSchema = useSchemaStore(
+    s => s.ensureAutocompleteSchema,
   );
-  const databasesInConnection = useDatabaseStore(
-    state => state.databasesInConnection,
-  );
-  const loadingStore = useDatabaseStore(state => state.loading);
-  const fetchAutocompleteData = useDatabaseStore(
-    state => state.fetchAutocompleteData,
-  );
-  const autocompleteData = useDatabaseStore(state => state.autocompleteData);
+  const autocompleteSchemas = useSchemaStore(s => s.autocompleteSchemas);
 
   // Use the Monaco console hook for version management
   const {
@@ -286,65 +281,50 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     [databases, connectionId],
   );
 
-  const availableDatabases = useMemo(
-    () => databasesInConnection[connectionId || ""] || [],
-    [databasesInConnection, connectionId],
-  );
+  // Get available databases (sub-databases for cluster mode) from tree nodes
+  const availableDatabases: TreeNode[] = useMemo(() => {
+    if (!connectionId) return [];
+    const rootNodes = treeNodes[connectionId]?.["root"] || [];
+    // For cluster mode, root nodes are databases
+    return rootNodes;
+  }, [treeNodes, connectionId]);
 
-  const isLoadingDatabases = loadingStore[`dbs-in:${connectionId}`] || false;
+  const isLoadingDatabases =
+    schemaLoading[`tree:${connectionId}:root`] || false;
 
-  // Fetch sub-databases if needed
+  // Fetch sub-databases if needed (for cluster mode)
   useEffect(() => {
     if (
       selectedConnection?.isClusterMode &&
       connectionId &&
       currentWorkspace?.id
     ) {
-      fetchDatabasesForConnection(currentWorkspace.id, connectionId);
+      ensureTreeRoot(currentWorkspace.id, connectionId);
     }
-  }, [
-    selectedConnection,
-    connectionId,
-    fetchDatabasesForConnection,
-    currentWorkspace?.id,
-  ]);
+  }, [selectedConnection, connectionId, ensureTreeRoot, currentWorkspace?.id]);
 
   // Fetch autocomplete data when connection changes
   useEffect(() => {
-    // BigQuery uses incremental autocomplete via a dedicated store/hook.
+    // Lazy autocomplete connections use schemaStore (ensureTreeChildren, ensureColumns).
     if (selectedConnection?.type === "bigquery") return;
 
     if (connectionId && currentWorkspace?.id) {
-      fetchAutocompleteData(currentWorkspace.id, connectionId);
+      ensureAutocompleteSchema(currentWorkspace.id, connectionId);
     }
   }, [
     connectionId,
     currentWorkspace?.id,
-    fetchAutocompleteData,
+    ensureAutocompleteSchema,
     selectedConnection?.type,
   ]);
 
-  // Monaco autocomplete providers are registered via dedicated hooks:
-  // - BigQuery uses incremental (datasets -> tables -> columns) requests
-  // - Other SQL DBs use cached schema from the database store
-  useBigQuerySqlAutocomplete({
-    enabled: selectedConnection?.type === "bigquery",
-    monaco: monacoInstance,
-    workspaceId: currentWorkspace?.id,
-    connectionId,
-  });
-
-  useSchemaSqlAutocomplete({
-    enabled: selectedConnection?.type !== "bigquery",
-    monaco: monacoInstance,
-    schema: connectionId ? (autocompleteData[connectionId] as any) : null,
-  });
+  // SQL autocomplete is now handled at the Editor level (single global provider)
 
   // Debounced validation for error highlighting
   useEffect(() => {
     if (!monacoInstance || !connectionId || !editorRef.current) return;
 
-    const schema = autocompleteData[connectionId];
+    const schema = autocompleteSchemas[connectionId];
     if (!schema) return;
 
     // Use a separate timeout ref for validation so we don't interfere with the main save/undo debounce
@@ -450,7 +430,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         monacoInstance.editor.setModelMarkers(model, "sql-validation", []);
       }
     };
-  }, [connectionId, autocompleteData, monacoInstance]);
+  }, [connectionId, autocompleteSchemas, monacoInstance]);
 
   // Helper function to get full editor content (ignores selection)
   const getFullEditorContent = useCallback(() => {
