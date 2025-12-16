@@ -18,6 +18,7 @@ import { useAuth } from "./auth-context";
 import { useAppStore } from "../store";
 
 import { useFlowStore } from "../store/flowStore";
+import { useSchemaStore } from "../store/schemaStore";
 
 interface WorkspaceContextState {
   // State
@@ -98,6 +99,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     if (currentWorkspace) {
       loadMembers();
       loadInvites();
+    }
+  }, [currentWorkspace?.id]);
+
+  // Background preload schema data (connections and databases) when workspace changes
+  useEffect(() => {
+    if (currentWorkspace?.id) {
+      // Trigger background preloading - this loads connections first, then tree roots
+      useSchemaStore
+        .getState()
+        .preloadConnectionsAndDatabases(currentWorkspace.id);
     }
   }, [currentWorkspace?.id]);
 

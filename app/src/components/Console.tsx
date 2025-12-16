@@ -32,7 +32,7 @@ import {
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useDatabaseStore } from "../store/databaseStore";
+import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import {
   useMonacoConsole,
   ConsoleModification,
@@ -144,6 +144,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // State to track if there are unsaved changes (content only)
   const [hasContentChanges, setHasContentChanges] = useState(false);
+  const [monacoInstance, setMonacoInstance] = useState<any>(null);
 
   // Compute database dirty state from props (comparing current vs saved values)
   const hasDatabaseChanges = useMemo(() => {
@@ -182,19 +183,21 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const lastInitialContentRef = useRef(initialContent);
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const filePathRef = useRef(filePath);
+  const monacoRef = useRef<any>(null);
 
   // Update filePathRef when props change
   useEffect(() => {
     filePathRef.current = filePath;
   }, [filePath]);
 
-  const fetchDatabasesForConnection = useDatabaseStore(
-    state => state.fetchDatabasesForConnection,
+  // Use unified schema store
+  const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
+  const treeNodes = useSchemaStore(s => s.treeNodes);
+  const schemaLoading = useSchemaStore(s => s.loading);
+  const ensureAutocompleteSchema = useSchemaStore(
+    s => s.ensureAutocompleteSchema,
   );
-  const databasesInConnection = useDatabaseStore(
-    state => state.databasesInConnection,
-  );
-  const loadingStore = useDatabaseStore(state => state.loading);
+  const autocompleteSchemas = useSchemaStore(s => s.autocompleteSchemas);
 
   // Use the Monaco console hook for version management
   const {
@@ -278,28 +281,156 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     [databases, connectionId],
   );
 
-  const availableDatabases = useMemo(
-    () => databasesInConnection[connectionId || ""] || [],
-    [databasesInConnection, connectionId],
-  );
+  // Get available databases (sub-databases for cluster mode) from tree nodes
+  const availableDatabases: TreeNode[] = useMemo(() => {
+    if (!connectionId) return [];
+    const rootNodes = treeNodes[connectionId]?.["root"] || [];
+    // For cluster mode, root nodes are databases
+    return rootNodes;
+  }, [treeNodes, connectionId]);
 
-  const isLoadingDatabases = loadingStore[`dbs-in:${connectionId}`] || false;
+  const isLoadingDatabases =
+    schemaLoading[`tree:${connectionId}:root`] || false;
 
-  // Fetch sub-databases if needed
+  // Fetch sub-databases if needed (for cluster mode)
   useEffect(() => {
     if (
       selectedConnection?.isClusterMode &&
       connectionId &&
       currentWorkspace?.id
     ) {
-      fetchDatabasesForConnection(currentWorkspace.id, connectionId);
+      ensureTreeRoot(currentWorkspace.id, connectionId);
+    }
+  }, [selectedConnection, connectionId, ensureTreeRoot, currentWorkspace?.id]);
+
+  // Fetch autocomplete data when connection changes
+  useEffect(() => {
+    // Lazy autocomplete connections use schemaStore (ensureTreeChildren, ensureColumns).
+    if (selectedConnection?.type === "bigquery") return;
+
+    if (connectionId && currentWorkspace?.id) {
+      ensureAutocompleteSchema(currentWorkspace.id, connectionId);
     }
   }, [
-    selectedConnection,
     connectionId,
-    fetchDatabasesForConnection,
     currentWorkspace?.id,
+    ensureAutocompleteSchema,
+    selectedConnection?.type,
   ]);
+
+  // SQL autocomplete is now handled at the Editor level (single global provider)
+
+  // Debounced validation for error highlighting
+  useEffect(() => {
+    if (!monacoInstance || !connectionId || !editorRef.current) return;
+
+    const schema = autocompleteSchemas[connectionId];
+    if (!schema) return;
+
+    // Use a separate timeout ref for validation so we don't interfere with the main save/undo debounce
+    const validationTimeoutRef = { current: null as NodeJS.Timeout | null };
+
+    const validateContent = () => {
+      const model = editorRef.current?.getModel();
+      if (!model) return;
+
+      const content = model.getValue();
+      const markers: any[] = [];
+
+      // Simple regex to find table references in FROM/JOIN clauses
+      // Matches: FROM `dataset.table` or FROM dataset.table or FROM table
+      // Capture the full identifier sequence, stopping at whitespace, comma, semicolon, or parenthesis
+      const tableRegex = /(?:FROM|JOIN)\s+([^\s,;()]+)(?:\s+AS\s+\w+)?/gi;
+      let match;
+
+      while ((match = tableRegex.exec(content)) !== null) {
+        const fullMatch = match[0];
+        const tableNameRaw = match[1];
+
+        // Skip if it contains template variables or special chars that might indicate partial query
+        if (tableNameRaw.includes("{") || tableNameRaw.includes("$")) continue;
+
+        // Clean up backticks from the whole string or parts
+        // Handle potentially complex backticking like `project`.`dataset`.table
+        const cleanRaw = tableNameRaw.replace(/`/g, "");
+        const parts = cleanRaw.split(".");
+
+        let isValid = false;
+
+        if (parts.length === 1) {
+          // Just table name - check if it exists in any dataset
+          const table = parts[0];
+          for (const ds of Object.keys(schema)) {
+            if (schema[ds][table]) {
+              isValid = true;
+              break;
+            }
+          }
+        } else if (parts.length === 2) {
+          // dataset.table
+          const [ds, table] = parts;
+          if (schema[ds] && schema[ds][table]) {
+            isValid = true;
+          }
+        } else if (parts.length === 3) {
+          // project.dataset.table - verify dataset and table
+          // Note: schema keys are dataset names, we assume the second part is dataset
+          const [_, ds, table] = parts;
+
+          if (schema[ds] && schema[ds][table]) {
+            isValid = true;
+          }
+        }
+
+        if (!isValid && parts.length <= 3) {
+          // Calculate position
+          // We need to find the position of tableNameRaw within the full match to get accurate offset
+          const tableIndex = fullMatch.indexOf(tableNameRaw);
+          // Ensure indices are valid
+          if (tableIndex !== -1) {
+            const startPos = model.getPositionAt(match.index + tableIndex);
+            const endPos = model.getPositionAt(
+              match.index + tableIndex + tableNameRaw.length,
+            );
+
+            markers.push({
+              severity: monacoInstance.MarkerSeverity.Warning,
+              startLineNumber: startPos.lineNumber,
+              startColumn: startPos.column,
+              endLineNumber: endPos.lineNumber,
+              endColumn: endPos.column,
+              message: `Table '${cleanRaw}' not found in schema`,
+            });
+          }
+        }
+      }
+
+      monacoInstance.editor.setModelMarkers(model, "sql-validation", markers);
+    };
+
+    // Run validation initially
+    validateContent();
+
+    // Set up debounced validation on change
+    const disposer = editorRef.current.onDidChangeModelContent(() => {
+      if (validationTimeoutRef.current) {
+        clearTimeout(validationTimeoutRef.current);
+      }
+      validationTimeoutRef.current = setTimeout(validateContent, 1000);
+    });
+
+    return () => {
+      disposer.dispose();
+      if (validationTimeoutRef.current) {
+        clearTimeout(validationTimeoutRef.current);
+      }
+      // Clear markers on unmount
+      const model = editorRef.current?.getModel();
+      if (model) {
+        monacoInstance.editor.setModelMarkers(model, "sql-validation", []);
+      }
+    };
+  }, [connectionId, autocompleteSchemas, monacoInstance]);
 
   // Helper function to get full editor content (ignores selection)
   const getFullEditorContent = useCallback(() => {
@@ -472,6 +603,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const handleEditorDidMount = useCallback(
     (editor: any, monaco: any) => {
       editorRef.current = editor;
+      monacoRef.current = monaco;
+      setMonacoInstance(monaco);
 
       // Always connect editor to the hook (needed for AI modifications)
       setEditor(editor);

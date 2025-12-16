@@ -20,6 +20,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "axios": "^1.6.2",
     "date-fns": "^4.1.0",
+    "idb-keyval": "^6.2.2",
     "immer": "^10.1.1",
     "lucide-react": "^0.511.0",
     "openai": "^4.103.0",

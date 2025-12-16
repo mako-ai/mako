@@ -25,7 +25,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
-import { useDatabaseStore } from "../store/databaseStore";
+import { useSchemaStore } from "../store/schemaStore";
 import { apiClient } from "../lib/api-client";
 
 interface WebhookFlowFormProps {
@@ -68,10 +68,10 @@ export function WebhookFlowForm({
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
     : null;
-  const databasesMap = useDatabaseStore(state => state.databases);
-  const fetchDatabases = useDatabaseStore(state => state.fetchDatabases);
+  const connectionsMap = useSchemaStore(state => state.connections);
+  const ensureConnections = useSchemaStore(state => state.ensureConnections);
   const databases = currentWorkspace
-    ? databasesMap[currentWorkspace.id] || []
+    ? connectionsMap[currentWorkspace.id] || []
     : [];
 
   const [connectors, setConnectors] = useState<any[]>([]);
@@ -128,9 +128,9 @@ export function WebhookFlowForm({
   useEffect(() => {
     if (currentWorkspace?.id) {
       fetchDataSources(currentWorkspace.id);
-      fetchDatabases();
+      ensureConnections(currentWorkspace.id);
     }
-  }, [currentWorkspace?.id, fetchDatabases]);
+  }, [currentWorkspace?.id, ensureConnections]);
 
   // Load flow data if editing
   useEffect(() => {

@@ -37,11 +37,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
-import { useDatabaseStore } from "../store/databaseStore";
-import {
-  useDatabaseContentStore,
-  TreeNode,
-} from "../store/databaseContentStore";
+import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { apiClient } from "../lib/api-client";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
@@ -124,13 +120,13 @@ export function ScheduledFlowForm({
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
     : null;
-  const databasesMap = useDatabaseStore(state => state.databases);
+  const connectionsMap = useSchemaStore(state => state.connections);
   const databases = useMemo(
-    () => (currentWorkspace ? databasesMap[currentWorkspace.id] || [] : []),
-    [currentWorkspace, databasesMap],
+    () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, connectionsMap],
   );
-  const fetchDatabases = useDatabaseStore(state => state.fetchDatabases);
-  const fetchRoot = useDatabaseContentStore(state => state.fetchRoot);
+  const ensureConnections = useSchemaStore(state => state.ensureConnections);
+  const ensureTreeRoot = useSchemaStore(state => state.ensureTreeRoot);
 
   // Note: We no longer rely on static catalog metadata for entities. We fetch
   // dynamic entities from the backend per-connector endpoint instead.
@@ -248,7 +244,7 @@ export function ScheduledFlowForm({
       setAvailableDatabases([]);
       setIsLoadingDatabases(true);
       try {
-        const nodes = await fetchRoot(
+        const nodes = await ensureTreeRoot(
           currentWorkspace.id,
           watchDestinationDatabaseId,
         );
@@ -278,7 +274,7 @@ export function ScheduledFlowForm({
   }, [
     watchDestinationDatabaseId,
     currentWorkspace?.id,
-    fetchRoot,
+    ensureTreeRoot,
     getValues,
     setValue,
   ]);
@@ -462,9 +458,9 @@ export function ScheduledFlowForm({
   useEffect(() => {
     if (currentWorkspace?.id) {
       fetchDataSources(currentWorkspace.id);
-      fetchDatabases();
+      ensureConnections(currentWorkspace.id);
     }
-  }, [currentWorkspace?.id, fetchDatabases]);
+  }, [currentWorkspace?.id, ensureConnections]);
 
   // Update entities when data source changes
   useEffect(() => {

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import {
   Box,
   Tabs,
@@ -24,6 +24,7 @@ import {
   CirclePause as PauseIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { loader } from "@monaco-editor/react";
 import Console, { ConsoleRef } from "./Console";
 import ResultsTable from "./ResultsTable";
 import Settings from "../pages/Settings";
@@ -34,6 +35,7 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, useAppDispatch } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
+import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 
 interface QueryResult {
   results: any[];
@@ -160,6 +162,39 @@ function Editor() {
     };
     fetchDatabases();
   }, [currentWorkspace]);
+
+  // Load Monaco instance for unified SQL autocomplete
+  const [monacoInstance, setMonacoInstance] = useState<unknown>(null);
+  useEffect(() => {
+    loader.init().then(monaco => setMonacoInstance(monaco));
+  }, []);
+
+  // Dynamic getters for unified SQL autocomplete (reads from active console)
+  const getWorkspaceId = useCallback(
+    () => currentWorkspace?.id,
+    [currentWorkspace?.id],
+  );
+
+  const getConnectionId = useCallback(() => {
+    const activeTab = consoleTabs.find(tab => tab.id === activeConsoleId);
+    return activeTab?.connectionId;
+  }, [consoleTabs, activeConsoleId]);
+
+  const getConnectionType = useCallback(() => {
+    const activeTab = consoleTabs.find(tab => tab.id === activeConsoleId);
+    const connection = availableDatabases.find(
+      db => db.id === activeTab?.connectionId,
+    );
+    return connection?.type;
+  }, [consoleTabs, activeConsoleId, availableDatabases]);
+
+  // Unified SQL autocomplete - single global provider for all consoles
+  useSqlAutocomplete({
+    monaco: monacoInstance,
+    getWorkspaceId,
+    getConnectionId,
+    getConnectionType,
+  });
 
   // Listen for console modification events from AI
   useEffect(() => {

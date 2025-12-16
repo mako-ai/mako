@@ -76,6 +76,16 @@ export class DatabaseConnectionService {
   private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly maxIdleTime = 15 * 60 * 1000; // 15 minutes to be safe
 
+  // BigQuery auth/client caching (in-memory)
+  private bigQueryClientCache: Map<
+    string,
+    { client: AxiosInstance; token: string; expiresAtMs: number }
+  > = new Map();
+  private bigQueryTokenInFlight: Map<
+    string,
+    Promise<{ token: string; expiresAtMs: number }>
+  > = new Map();
+
   // Default MongoDB connection options
   private readonly defaultMongoOptions: MongoClientOptions = {
     maxPoolSize: 10,
@@ -459,6 +469,209 @@ export class DatabaseConnectionService {
     return datasets.sort((a, b) => a.localeCompare(b));
   }
 
+  // Public (autocomplete): list BigQuery datasets with prefix/limit and early-stop pagination
+  async listBigQueryDatasetsForAutocomplete(
+    database: IDatabaseConnection,
+    opts?: { prefix?: string; limit?: number },
+  ): Promise<string[]> {
+    const { project_id, service_account_json, api_base_url } =
+      (database.connection as any) || {};
+    if (!project_id || !service_account_json) {
+      throw new Error(
+        "BigQuery requires 'project_id' and 'service_account_json' in connection",
+      );
+    }
+
+    const prefix = String(opts?.prefix || "");
+    const limit = Math.max(1, Math.min(200, Number(opts?.limit || 100)));
+
+    const client = await this.getBigQueryHttpClient(
+      service_account_json,
+      api_base_url,
+    );
+
+    const datasets: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params: any = { maxResults: 1000 };
+      if (pageToken) params.pageToken = pageToken;
+      const res = await client.get(`/projects/${project_id}/datasets`, {
+        params,
+      });
+      const data = res.data || {};
+      const items: any[] = Array.isArray(data.datasets) ? data.datasets : [];
+      for (const ds of items) {
+        const id = ds?.datasetReference?.datasetId;
+        if (!id) continue;
+        if (prefix && !String(id).startsWith(prefix)) continue;
+        datasets.push(String(id));
+        if (datasets.length >= limit) {
+          return datasets;
+        }
+      }
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+
+    return datasets.sort((a, b) => a.localeCompare(b));
+  }
+
+  // Public: get columns for a single BigQuery table (for incremental autocomplete)
+  async getBigQueryTableColumns(
+    database: IDatabaseConnection,
+    datasetId: string,
+    tableId: string,
+  ): Promise<Array<{ name: string; type: string }>> {
+    const { project_id, service_account_json, api_base_url } =
+      (database.connection as any) || {};
+    if (!project_id || !service_account_json) {
+      throw new Error(
+        "BigQuery requires 'project_id' and 'service_account_json' in connection",
+      );
+    }
+    if (!datasetId || !tableId) return [];
+
+    const client = await this.getBigQueryHttpClient(
+      service_account_json,
+      api_base_url,
+    );
+    const res = await client.get(
+      `/projects/${project_id}/datasets/${encodeURIComponent(
+        datasetId,
+      )}/tables/${encodeURIComponent(tableId)}`,
+    );
+    const fields: any[] = Array.isArray(res?.data?.schema?.fields)
+      ? res.data.schema.fields
+      : [];
+
+    const out: Array<{ name: string; type: string }> = [];
+    const flatten = (prefix: string, field: any) => {
+      const name = String(field?.name || "");
+      const type = String(field?.type || "");
+      if (!name) return;
+      const full = prefix ? `${prefix}.${name}` : name;
+      out.push({ name: full, type });
+      const nested: any[] = Array.isArray(field?.fields) ? field.fields : [];
+      if (String(type).toUpperCase() === "RECORD" && nested.length > 0) {
+        nested.forEach(f => flatten(full, f));
+      }
+    };
+    fields.forEach(f => flatten("", f));
+    return out;
+  }
+
+  // Public (autocomplete): list BigQuery tableIds for a dataset with prefix/limit and early-stop
+  async listBigQueryTableIdsForAutocomplete(
+    database: IDatabaseConnection,
+    datasetId: string,
+    opts?: { prefix?: string; limit?: number },
+  ): Promise<string[]> {
+    const { project_id, service_account_json, api_base_url } =
+      (database.connection as any) || {};
+    if (!project_id || !service_account_json) {
+      throw new Error(
+        "BigQuery requires 'project_id' and 'service_account_json' in connection",
+      );
+    }
+    const prefix = String(opts?.prefix || "");
+    const limit = Math.max(1, Math.min(200, Number(opts?.limit || 100)));
+
+    const client = await this.getBigQueryHttpClient(
+      service_account_json,
+      api_base_url,
+    );
+    const out: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params: any = { maxResults: 1000 };
+      if (pageToken) params.pageToken = pageToken;
+      const res = await client.get(
+        `/projects/${project_id}/datasets/${encodeURIComponent(
+          datasetId,
+        )}/tables`,
+        { params },
+      );
+      const data = res.data || {};
+      const tables: any[] = Array.isArray(data.tables) ? data.tables : [];
+      for (const t of tables) {
+        const tableId = t?.tableReference?.tableId;
+        if (!tableId) continue;
+        const tid = String(tableId);
+        if (prefix && !tid.startsWith(prefix)) continue;
+        out.push(tid);
+        if (out.length >= limit) {
+          return out;
+        }
+      }
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+    return out.sort((a, b) => a.localeCompare(b));
+  }
+
+  // Public: Get BigQuery schema (tables and columns) for autocomplete
+  async getBigQuerySchema(
+    database: IDatabaseConnection,
+  ): Promise<
+    Record<string, Record<string, Array<{ name: string; type: string }>>>
+  > {
+    const { project_id } = (database.connection as any) || {};
+    if (!project_id) {
+      throw new Error("BigQuery requires 'project_id' in connection");
+    }
+
+    // List all datasets first
+    const datasetIds = await this.listBigQueryDatasets(database);
+
+    const schema: Record<
+      string,
+      Record<string, Array<{ name: string; type: string }>>
+    > = {};
+
+    // Fetch schema for each dataset in parallel with concurrency limit
+    const fetchDatasetSchema = async (datasetId: string) => {
+      try {
+        const query = `
+          SELECT table_name, column_name, data_type 
+          FROM \`${project_id}.${datasetId}.INFORMATION_SCHEMA.COLUMNS\`
+          ORDER BY table_name, ordinal_position
+        `;
+
+        const result = await this.executeBigQueryQuery(database, query);
+        if (result.success && Array.isArray(result.data)) {
+          if (!schema[datasetId]) schema[datasetId] = {};
+
+          for (const row of result.data) {
+            const tableName = row.table_name;
+            const colName = row.column_name;
+            const colType = row.data_type;
+
+            if (!schema[datasetId][tableName]) {
+              schema[datasetId][tableName] = [];
+            }
+            schema[datasetId][tableName].push({ name: colName, type: colType });
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to fetch schema for dataset ${datasetId}`, e);
+      }
+    };
+
+    const limit = 5;
+    const runners: Promise<void>[] = [];
+    let index = 0;
+    const runNext = async () => {
+      while (index < datasetIds.length) {
+        const current = datasetIds[index++];
+        await fetchDatasetSchema(current);
+      }
+    };
+    for (let i = 0; i < Math.min(limit, datasetIds.length); i++) {
+      runners.push(runNext());
+    }
+    await Promise.all(runners);
+
+    return schema;
+  }
+
   // Public: list BigQuery tables in a dataset
   async listBigQueryTables(
     database: IDatabaseConnection,
@@ -695,13 +908,45 @@ export class DatabaseConnectionService {
     apiBaseUrl?: string,
   ): Promise<AxiosInstance> {
     const sa = this.parseServiceAccount(serviceAccountJson);
-    const token = await this.createGoogleAccessToken(sa);
     const base = (apiBaseUrl || "https://bigquery.googleapis.com").trim();
     const normalized = /^https?:\/\//i.test(base) ? base : `https://${base}`;
     const baseURL = normalized.replace(/\/+$/, "") + "/bigquery/v2";
-    const client = axios.create({ baseURL });
+
+    const cacheKey = crypto
+      .createHash("sha256")
+      .update(`${sa.client_email}|${sa.token_uri}|${baseURL}`)
+      .digest("hex");
+
+    const cached = this.bigQueryClientCache.get(cacheKey);
+    const now = Date.now();
+    // Refresh token if expiring soon (within 2 minutes)
+    const needsRefresh = !cached || cached.expiresAtMs - now < 2 * 60 * 1000;
+
+    if (!needsRefresh && cached) {
+      return cached.client;
+    }
+
+    const inFlight = this.bigQueryTokenInFlight.get(cacheKey);
+    const tokenPromise =
+      inFlight ||
+      (async () => {
+        try {
+          return await this.createGoogleAccessTokenWithExpiry(sa);
+        } finally {
+          this.bigQueryTokenInFlight.delete(cacheKey);
+        }
+      })();
+
+    if (!inFlight) {
+      this.bigQueryTokenInFlight.set(cacheKey, tokenPromise);
+    }
+
+    const { token, expiresAtMs } = await tokenPromise;
+
+    const client = cached?.client || axios.create({ baseURL });
     client.defaults.headers.common["Authorization"] = `Bearer ${token}`;
     client.defaults.headers.common["Content-Type"] = "application/json";
+    this.bigQueryClientCache.set(cacheKey, { client, token, expiresAtMs });
     return client;
   }
 
@@ -710,20 +955,30 @@ export class DatabaseConnectionService {
     private_key: string;
     token_uri: string;
   } {
-    const obj = typeof sa === "string" ? JSON.parse(sa) : sa;
+    let obj: any;
+    try {
+      obj = typeof sa === "string" ? JSON.parse(sa) : sa;
+    } catch (e) {
+      console.error("Failed to parse service_account_json:", e);
+      throw new Error("Invalid service_account_json: Not a valid JSON string");
+    }
+
+    if (!obj || typeof obj !== "object") {
+      throw new Error("Invalid service_account_json: Content is not an object");
+    }
+
     return {
-      client_email: (obj as any).client_email,
-      private_key: (obj as any).private_key,
-      token_uri:
-        (obj as any).token_uri || "https://oauth2.googleapis.com/token",
+      client_email: obj.client_email,
+      private_key: obj.private_key,
+      token_uri: obj.token_uri || "https://oauth2.googleapis.com/token",
     };
   }
 
-  private async createGoogleAccessToken(sa: {
+  private async createGoogleAccessTokenWithExpiry(sa: {
     client_email: string;
     private_key: string;
     token_uri: string;
-  }): Promise<string> {
+  }): Promise<{ token: string; expiresAtMs: number }> {
     const now = Math.floor(Date.now() / 1000);
     const header = { alg: "RS256", typ: "JWT" };
     const payload = {
@@ -755,7 +1010,11 @@ export class DatabaseConnectionService {
       }),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
     );
-    return res.data.access_token as string;
+    const token = res.data.access_token as string;
+    const expiresInSec = Number(res.data.expires_in || 3600);
+    // Refresh a bit early by setting the stored expiry slightly before real expiry
+    const expiresAtMs = Date.now() + Math.max(60, expiresInSec - 60) * 1000;
+    return { token, expiresAtMs };
   }
 
   private bqMapRowsToObjects(rows: any[], schema: any): any[] {

@@ -8,6 +8,7 @@ import { DatabaseConnection } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { databaseRegistry } from "../databases/registry";
 import { DatabaseDriver } from "../databases/driver";
+import { databaseConnectionService } from "../services/database-connection.service";
 
 export const databaseTreeRoutes = new Hono();
 
@@ -47,6 +48,138 @@ databaseTreeRoutes.get(
       metadata,
     });
     return c.json({ success: true, data: nodes });
+  },
+);
+
+// GET /api/workspaces/:workspaceId/databases/:id/autocomplete
+databaseTreeRoutes.get(
+  "/:id/autocomplete",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    const workspace = c.get("workspace");
+    const databaseId = c.req.param("id");
+    if (!Types.ObjectId.isValid(databaseId)) {
+      return c.json({ success: false, error: "Invalid database ID" }, 400);
+    }
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(databaseId),
+      workspaceId: workspace._id,
+    });
+    if (!database) {
+      return c.json({ success: false, error: "Database not found" }, 404);
+    }
+    const driver = databaseRegistry.getDriver(database.type);
+    if (!driver) {
+      return c.json({ success: false, error: "Driver not found" }, 404);
+    }
+
+    // BigQuery: incremental autocomplete to avoid fetching full schema
+    if (database.type === "bigquery") {
+      const datasetIdRaw = c.req.query("datasetId");
+      const tableIdRaw = c.req.query("tableId");
+      const prefix = String(c.req.query("prefix") || "");
+      const limitRaw = String(c.req.query("limit") || "100");
+      const limit = Math.max(
+        1,
+        Math.min(200, Number.parseInt(limitRaw, 10) || 100),
+      );
+
+      const datasetId = datasetIdRaw ? String(datasetIdRaw) : undefined;
+      const tableId = tableIdRaw ? String(tableIdRaw) : undefined;
+
+      // Basic validation for BigQuery identifiers.
+      // - Dataset IDs: letters, numbers, underscores (no hyphens)
+      // - Table IDs: letters, numbers, underscores, hyphens
+      const isValidDatasetId = (v: string) => /^[A-Za-z0-9_]+$/.test(v);
+      const isValidTableId = (v: string) => /^[A-Za-z0-9_-]+$/.test(v);
+      if (datasetId && !isValidDatasetId(datasetId)) {
+        return c.json({ success: false, error: "Invalid datasetId" }, 400);
+      }
+      if (tableId && !isValidTableId(tableId)) {
+        return c.json({ success: false, error: "Invalid tableId" }, 400);
+      }
+
+      try {
+        // 1) Datasets
+        if (!datasetId) {
+          const filtered =
+            await databaseConnectionService.listBigQueryDatasetsForAutocomplete(
+              database as any,
+              { prefix, limit },
+            );
+          return c.json({
+            success: true,
+            data: { kind: "datasets", datasets: filtered },
+          });
+        }
+
+        // 2) Tables for a dataset
+        if (!tableId) {
+          const filtered =
+            await databaseConnectionService.listBigQueryTableIdsForAutocomplete(
+              database as any,
+              datasetId,
+              { prefix, limit },
+            );
+          return c.json({
+            success: true,
+            data: { kind: "tables", datasetId, tables: filtered },
+          });
+        }
+
+        // 3) Columns for a table
+        const columns = await databaseConnectionService.getBigQueryTableColumns(
+          database as any,
+          datasetId,
+          tableId,
+        );
+        const filtered = columns
+          .filter(c => (prefix ? c.name.startsWith(prefix) : true))
+          .slice(0, limit);
+        return c.json({
+          success: true,
+          data: { kind: "columns", datasetId, tableId, columns: filtered },
+        });
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to fetch BigQuery autocomplete data",
+          },
+          500,
+        );
+      }
+    }
+
+    if (!driver.getAutocompleteData) {
+      return c.json(
+        {
+          success: false,
+          error: "Autocomplete not supported for this database type",
+        },
+        400,
+      );
+    }
+
+    try {
+      const schema = await driver.getAutocompleteData(database as any);
+      return c.json({ success: true, data: schema });
+    } catch (error) {
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to fetch autocomplete data",
+        },
+        500,
+      );
+    }
   },
 );
 

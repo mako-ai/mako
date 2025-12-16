@@ -138,6 +138,78 @@ export class MongoDatabaseDriver implements DatabaseDriver {
     return [];
   }
 
+  async getAutocompleteData(
+    database: IDatabaseConnection,
+  ): Promise<
+    Record<string, Record<string, Array<{ name: string; type: string }>>>
+  > {
+    const client = await databaseConnectionService.getConnection(database);
+    const schema: Record<
+      string,
+      Record<string, Array<{ name: string; type: string }>>
+    > = {};
+
+    // Determine which databases to scan
+    let dbNames: string[] = [];
+    if (database.connection.database) {
+      dbNames = [database.connection.database];
+    } else {
+      // Cluster mode - list all databases
+      const adminDb = client.db("admin");
+      const result = await adminDb.admin().listDatabases();
+      dbNames = (result.databases || [])
+        .map((db: any) => db.name)
+        .filter((name: string) => !["admin", "local", "config"].includes(name));
+    }
+
+    // Scan each database
+    for (const dbName of dbNames) {
+      schema[dbName] = {};
+      const db = client.db(dbName);
+
+      try {
+        const collections = await db
+          .listCollections({ type: { $ne: "view" } })
+          .toArray();
+
+        // For each collection, sample one document to get fields
+        for (const col of collections) {
+          const colName = col.name;
+          schema[dbName][colName] = [];
+
+          try {
+            // Sample one document
+            const doc = await db.collection(colName).findOne({});
+            if (doc) {
+              // Extract top-level keys
+              const fields = Object.keys(doc).map(key => {
+                let type: string = typeof doc[key];
+                if (doc[key] === null) type = "null";
+                else if (Array.isArray(doc[key])) type = "array";
+                else if (doc[key] instanceof Date) type = "date";
+                return { name: key, type };
+              });
+              schema[dbName][colName] = fields;
+            } else {
+              // Empty collection, at least add _id
+              schema[dbName][colName] = [{ name: "_id", type: "ObjectId" }];
+            }
+          } catch (err) {
+            // Ignore error for single collection
+            console.warn(
+              `Failed to sample collection ${dbName}.${colName}`,
+              err,
+            );
+          }
+        }
+      } catch (err) {
+        console.warn(`Failed to list collections for ${dbName}`, err);
+      }
+    }
+
+    return schema;
+  }
+
   async executeQuery(
     database: IDatabaseConnection,
     query: string,

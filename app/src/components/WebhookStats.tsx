@@ -27,9 +27,6 @@ import {
   Tooltip,
 } from "@mui/material";
 import {
-  CheckCircle as SuccessIcon,
-  Error as ErrorIcon,
-  Pending as PendingIcon,
   Refresh as RefreshIcon,
   Visibility as ViewIcon,
   Replay as RetryIcon,
@@ -125,7 +122,10 @@ export function WebhookStats({
 
   const fetchEventDetails = async (eventId: string) => {
     try {
-      const response = await apiClient.get(
+      const response = await apiClient.get<{
+        success: boolean;
+        data: any;
+      }>(
         `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}`,
       );
 
@@ -139,7 +139,7 @@ export function WebhookStats({
 
   const retryEvent = async (eventId: string) => {
     try {
-      const response = await apiClient.post(
+      const response = await apiClient.post<{ success: boolean }>(
         `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}/retry`,
       );
 
@@ -168,19 +168,6 @@ export function WebhookStats({
     setSelectedEvent(event);
     setEventDialogOpen(true);
     await fetchEventDetails(event.id);
-  };
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case "completed":
-        return <SuccessIcon color="success" fontSize="small" />;
-      case "failed":
-        return <ErrorIcon color="error" fontSize="small" />;
-      case "processing":
-        return <CircularProgress size={16} />;
-      default:
-        return <PendingIcon color="warning" fontSize="small" />;
-    }
   };
 
   const getStatusChip = (status: string) => {
@@ -220,7 +207,7 @@ export function WebhookStats({
       {/* Stats Overview */}
       {stats && (
         <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid item xs={12} md={3}>
+          <Grid size={{ xs: 12, md: 3 }}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
@@ -230,7 +217,7 @@ export function WebhookStats({
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid size={{ xs: 12, md: 3 }}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
@@ -240,7 +227,7 @@ export function WebhookStats({
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid size={{ xs: 12, md: 3 }}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
@@ -250,7 +237,7 @@ export function WebhookStats({
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid size={{ xs: 12, md: 3 }}>
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>

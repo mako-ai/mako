@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Box,
   Typography,
@@ -31,15 +31,16 @@ import {
 import { useDatabaseExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
-import { useDatabaseStore, CollectionInfo } from "../store/databaseStore";
+import { useSchemaStore, Connection, TreeNode } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
-import {
-  useDatabaseContentStore,
-  TreeNode,
-} from "../store/databaseContentStore";
 import { useConsoleStore } from "../store/consoleStore";
 
-// Removed inline MongoDB icon; icons are served by API per database type
+// For backward compatibility with existing props
+export interface CollectionInfo {
+  name: string;
+  type: string;
+  options: unknown;
+}
 
 const IconImg = React.memo(
   ({ src, alt, size = 20 }: { src: string; alt: string; size?: number }) => (
@@ -81,43 +82,46 @@ function DatabaseExplorer({
   onCollectionSelect,
   onCollectionClick,
 }: DatabaseExplorerProps) {
-  const {
-    databases: databasesMap,
-    loading: loadingMap,
-    refreshServers,
-    initServers,
-    deleteDatabase,
-  } = useDatabaseStore();
-  const {
-    fetchRoot,
-    fetchChildren,
-    nodes,
-    loading: treeLoading,
-  } = useDatabaseContentStore();
+  // Use the unified schema store
+  const connections = useSchemaStore(s => s.connections);
+  const treeNodes = useSchemaStore(s => s.treeNodes);
+  const loading = useSchemaStore(s => s.loading);
+  const error = useSchemaStore(s => s.error);
+  const ensureConnections = useSchemaStore(s => s.ensureConnections);
+  const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
+  const ensureTreeChildren = useSchemaStore(s => s.ensureTreeChildren);
+  const refreshConnections = useSchemaStore(s => s.refreshConnections);
+  const deleteConnection = useSchemaStore(s => s.deleteConnection);
 
   const { currentWorkspace } = useWorkspace();
 
-  // Don't subscribe to console store - it causes re-renders on every keystroke
-  // Use getState() in handlers instead
-
-  const databases = currentWorkspace
-    ? databasesMap[currentWorkspace.id] || []
+  const databases: Connection[] = currentWorkspace
+    ? connections[currentWorkspace.id] || []
     : [];
-  const loading = currentWorkspace ? !!loadingMap[currentWorkspace.id] : false;
+
+  const isLoadingConnections = currentWorkspace
+    ? !!loading[`connections:${currentWorkspace.id}`]
+    : false;
+
+  const connectionError = currentWorkspace
+    ? error[`connections:${currentWorkspace.id}`]
+    : null;
+
   const { types: dbTypes, fetchTypes } = useDatabaseCatalogStore();
 
   useEffect(() => {
     fetchTypes().catch(() => undefined);
   }, [fetchTypes]);
 
-  const typeToIconUrl = (type: string): string | null => {
-    const meta = (dbTypes || []).find(t => t.type === type);
-    return meta?.iconUrl || null;
-  };
+  const typeToIconUrl = useCallback(
+    (type: string): string | null => {
+      const meta = (dbTypes || []).find(t => t.type === type);
+      return meta?.iconUrl || null;
+    },
+    [dbTypes],
+  );
+
   const [loadingData, setLoadingData] = useState<Set<string>>(new Set());
-  const error = currentWorkspace
-    ? useDatabaseStore.getState().error[currentWorkspace.id]
-    : null;
 
   const {
     expandedDatabases,
@@ -132,64 +136,67 @@ function DatabaseExplorer({
     string | undefined
   >(undefined);
 
-  const refreshDatabasesLocal = async () => {
-    if (!currentWorkspace) return;
-    await refreshServers(currentWorkspace.id);
-  };
-
+  // Initialize connections on mount
   useEffect(() => {
     if (currentWorkspace) {
-      initServers(currentWorkspace.id);
+      ensureConnections(currentWorkspace.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id]);
+  }, [currentWorkspace?.id, ensureConnections]);
 
-  const fetchDatabaseDataLocal = async (databaseId: string) => {
-    if (!currentWorkspace) return;
-    setLoadingData(prev => new Set(prev).add(databaseId));
-    await fetchRoot(currentWorkspace.id, databaseId);
-    setLoadingData(prev => {
-      const next = new Set(prev);
-      next.delete(databaseId);
-      return next;
-    });
-  };
+  // Fetch tree roots for all databases
+  const fetchDatabaseDataLocal = useCallback(
+    async (connectionId: string) => {
+      if (!currentWorkspace) return;
+      setLoadingData(prev => new Set(prev).add(connectionId));
+      await ensureTreeRoot(currentWorkspace.id, connectionId);
+      setLoadingData(prev => {
+        const next = new Set(prev);
+        next.delete(connectionId);
+        return next;
+      });
+    },
+    [currentWorkspace, ensureTreeRoot],
+  );
 
   useEffect(() => {
     if (!currentWorkspace) return;
     databases.forEach(db => {
-      const hasNodes = nodes[db.id] && nodes[db.id]["root"];
+      const hasNodes = treeNodes[db.id] && treeNodes[db.id]["root"];
       if (!hasNodes) {
         fetchDatabaseDataLocal(db.id);
       }
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [databases, currentWorkspace?.id]);
+  }, [databases, currentWorkspace?.id, treeNodes, fetchDatabaseDataLocal]);
 
-  const handleDatabaseToggle = (databaseId: string) => {
-    toggleDatabase(databaseId);
-    const hasNodes = nodes[databaseId] && nodes[databaseId]["root"];
-    if (!isDatabaseExpanded(databaseId) && !hasNodes) {
-      fetchDatabaseDataLocal(databaseId);
-    }
-  };
+  const handleDatabaseToggle = useCallback(
+    (connectionId: string) => {
+      toggleDatabase(connectionId);
+      const hasNodes =
+        treeNodes[connectionId] && treeNodes[connectionId]["root"];
+      if (!isDatabaseExpanded(connectionId) && !hasNodes) {
+        fetchDatabaseDataLocal(connectionId);
+      }
+    },
+    [toggleDatabase, treeNodes, isDatabaseExpanded, fetchDatabaseDataLocal],
+  );
 
-  const handleCollectionClick = (
-    databaseId: string,
-    collection: CollectionInfo,
-  ) => {
-    onCollectionSelect?.(databaseId, collection.name, collection);
-    onCollectionClick?.(databaseId, collection);
-  };
+  const handleCollectionClick = useCallback(
+    (connectionId: string, collection: CollectionInfo) => {
+      onCollectionSelect?.(connectionId, collection.name, collection);
+      onCollectionClick?.(connectionId, collection);
+    },
+    [onCollectionSelect, onCollectionClick],
+  );
 
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(async () => {
+    if (!currentWorkspace) return;
     setLoadingData(new Set());
-    refreshDatabasesLocal();
-  };
+    await refreshConnections(currentWorkspace.id);
+  }, [currentWorkspace, refreshConnections]);
 
-  const handleDatabaseCreated = () => {
+  const handleDatabaseCreated = useCallback(() => {
     handleRefresh();
-  };
+  }, [handleRefresh]);
 
   const renderSkeletonItems = () => {
     return Array.from({ length: 3 }).map((_, index) => (
@@ -237,8 +244,6 @@ function DatabaseExplorer({
   };
 
   const renderNodeSkeleton = (level: number) => {
-    // level is parent level. We are rendering children at level + 1
-    // Formula: 1 + (level + 1) * 1.5 + 2.75 (assuming skeleton mimics leaf)
     const pl = 1 + (level + 1) * 1.5 + 2.75;
     return Array.from({ length: 3 }).map((_, index) => (
       <ListItem key={`node-skeleton-${index}`} disablePadding>
@@ -267,33 +272,39 @@ function DatabaseExplorer({
     item: { databaseId: string; databaseName: string };
   } | null>(null);
 
-  const handleDatabaseContextMenu = (
-    event: React.MouseEvent,
-    databaseId: string,
-    databaseName: string,
-  ) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setDatabaseContextMenu(
-      contextMenu === null
-        ? {
-            mouseX: event.clientX + 2,
-            mouseY: event.clientY - 6,
-            item: { databaseId, databaseName },
-          }
-        : null,
-    );
-  };
+  // ---------------- Context menu for collections ----------------
+  const [contextMenu, setContextMenu] = useState<{
+    mouseX: number;
+    mouseY: number;
+    item: { databaseId: string; collectionName: string };
+  } | null>(null);
 
-  const handleEditDatabase = () => {
+  const handleDatabaseContextMenu = useCallback(
+    (event: React.MouseEvent, databaseId: string, databaseName: string) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setDatabaseContextMenu(
+        contextMenu === null
+          ? {
+              mouseX: event.clientX + 2,
+              mouseY: event.clientY - 6,
+              item: { databaseId, databaseName },
+            }
+          : null,
+      );
+    },
+    [contextMenu],
+  );
+
+  const handleEditDatabase = useCallback(() => {
     if (!databaseContextMenu) return;
     const { databaseId } = databaseContextMenu.item;
     setEditingDatabaseId(databaseId);
     setCreateDialogOpen(true);
     setDatabaseContextMenu(null);
-  };
+  }, [databaseContextMenu]);
 
-  const handleDropDatabase = async () => {
+  const handleDropDatabase = useCallback(async () => {
     if (!databaseContextMenu) return;
     const { databaseId, databaseName } = databaseContextMenu.item;
 
@@ -308,23 +319,18 @@ function DatabaseExplorer({
 
     try {
       if (currentWorkspace) {
-        await deleteDatabase(currentWorkspace.id, databaseId);
+        await deleteConnection(currentWorkspace.id, databaseId);
       }
-    } catch (error: any) {
-      alert(error.message || "Failed to delete database");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to delete database";
+      alert(message);
     } finally {
       setDatabaseContextMenu(null);
     }
-  };
+  }, [databaseContextMenu, currentWorkspace, deleteConnection]);
 
-  // ---------------- Context menu for collections ----------------
-  const [contextMenu, setContextMenu] = useState<{
-    mouseX: number;
-    mouseY: number;
-    item: { databaseId: string; collectionName: string };
-  } | null>(null);
-
-  const handleDropCollection = () => {
+  const handleDropCollection = useCallback(() => {
     if (!contextMenu) return;
     const { databaseId, collectionName } = contextMenu.item;
     const command = `db.getCollection("${collectionName}").drop()`;
@@ -337,13 +343,13 @@ function DatabaseExplorer({
     });
     setActiveConsole(tabId);
     setContextMenu(null);
-  };
+  }, [contextMenu]);
 
-  if (error) {
+  if (connectionError) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+          {connectionError}
         </Alert>
         <Box sx={{ textAlign: "center" }}>
           <IconButton onClick={handleRefresh} color="primary">
@@ -355,15 +361,15 @@ function DatabaseExplorer({
   }
 
   const renderNode = (
-    databaseId: string,
+    connectionId: string,
     node: TreeNode,
     level: number,
   ): React.ReactNode => {
-    const nodeKey = `${databaseId}:${node.kind}:${node.id}`;
+    const nodeKey = `${connectionId}:${node.kind}:${node.id}`;
     const isExpanded = expandedNodes.has(nodeKey);
     const childKey = `${node.kind}:${node.id}`;
-    const children = nodes[databaseId]?.[childKey];
-    const isLoading = treeLoading[`${databaseId}:${childKey}`];
+    const children = treeNodes[connectionId]?.[childKey];
+    const isLoading = loading[`tree:${connectionId}:${childKey}`];
 
     const getIcon = () => {
       switch (node.kind) {
@@ -396,15 +402,19 @@ function DatabaseExplorer({
                 toggleNode(nodeKey);
                 if (!children && !isExpanded) {
                   if (currentWorkspace) {
-                    fetchChildren(currentWorkspace.id, databaseId, node);
+                    ensureTreeChildren(currentWorkspace.id, connectionId, {
+                      id: node.id,
+                      kind: node.kind,
+                      metadata: node.metadata,
+                    });
                   }
                 }
               } else {
-                handleCollectionClick(databaseId, {
-                  name: node.label, // Use label (display name) instead of id for console title
+                handleCollectionClick(connectionId, {
+                  name: node.label,
                   type: node.kind,
                   options: node.metadata,
-                } as any);
+                });
               }
             }}
             sx={{
@@ -453,7 +463,7 @@ function DatabaseExplorer({
                 />
               </ListItem>
             ) : (
-              children?.map(child => renderNode(databaseId, child, level + 1))
+              children?.map(child => renderNode(connectionId, child, level + 1))
             )}
           </List>
         )}
@@ -510,7 +520,7 @@ function DatabaseExplorer({
 
       <Box sx={{ flexGrow: 1, overflow: "auto" }}>
         <List dense>
-          {loading ? (
+          {isLoadingConnections ? (
             renderSkeletonItems()
           ) : databases.length === 0 ? (
             <Box
@@ -526,10 +536,12 @@ function DatabaseExplorer({
             </Box>
           ) : (
             databases.map(database => {
-              const isDatabaseExpanded = expandedDatabases.has(database.id);
+              const isDatabaseExpandedLocal = expandedDatabases.has(
+                database.id,
+              );
               const isLoadingData = loadingData.has(database.id);
               const dbRootNodes: TreeNode[] =
-                nodes[database.id]?.["root"] || [];
+                treeNodes[database.id]?.["root"] || [];
 
               return (
                 <React.Fragment key={database.id}>
@@ -547,7 +559,7 @@ function DatabaseExplorer({
                       sx={{ py: 0.5, pl: 1 }}
                     >
                       <ListItemIcon sx={{ minWidth: 22 }}>
-                        {isDatabaseExpanded ? (
+                        {isDatabaseExpandedLocal ? (
                           <ChevronDownIcon strokeWidth={1.5} size={20} />
                         ) : (
                           <ChevronRightIcon strokeWidth={1.5} size={20} />
@@ -585,7 +597,7 @@ function DatabaseExplorer({
                     </ListItemButton>
                   </ListItem>
 
-                  {isDatabaseExpanded && (
+                  {isDatabaseExpandedLocal && (
                     <List dense disablePadding>
                       {isLoadingData
                         ? renderCollectionSkeletonItems()

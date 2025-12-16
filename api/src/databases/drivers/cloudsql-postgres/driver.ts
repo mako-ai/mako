@@ -148,6 +148,47 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     }));
   }
 
+  async getAutocompleteData(
+    database: IDatabaseConnection,
+  ): Promise<
+    Record<string, Record<string, Array<{ name: string; type: string }>>>
+  > {
+    const result = await this.executeQuery(
+      database,
+      `SELECT table_schema, table_name, column_name, data_type 
+       FROM information_schema.columns 
+       WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+       ORDER BY table_schema, table_name, ordinal_position;`,
+    );
+
+    if (!result.success || !result.data) {
+      return {};
+    }
+
+    const schema: Record<
+      string,
+      Record<string, Array<{ name: string; type: string }>>
+    > = {};
+
+    for (const row of result.data) {
+      const { table_schema, table_name, column_name, data_type } = row;
+
+      if (!schema[table_schema]) {
+        schema[table_schema] = {};
+      }
+      if (!schema[table_schema][table_name]) {
+        schema[table_schema][table_name] = [];
+      }
+
+      schema[table_schema][table_name].push({
+        name: column_name,
+        type: data_type,
+      });
+    }
+
+    return schema;
+  }
+
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
