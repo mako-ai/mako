@@ -52,6 +52,7 @@ import { ModelSelector } from "./ModelSelector";
 
 // Note: Using simplified Message interface for this component
 interface ToolCall {
+  toolCallId?: string;
   toolName: string;
   timestamp?: Date | string;
   status?: "started" | "completed";
@@ -252,27 +253,14 @@ const ToolCallsDisplay = React.memo(
   }) => {
     if (!toolCalls || toolCalls.length === 0) return null;
 
-    // De-duplicate tool calls - keep only the most recent status for each tool
-    const uniqueToolCalls = toolCalls.reduce(
-      (acc, toolCall) => {
-        const existing = acc.find(tc => tc.toolName === toolCall.toolName);
-        if (!existing || toolCall.status === "completed") {
-          // Replace with newer status or add if new
-          return [
-            ...acc.filter(tc => tc.toolName !== toolCall.toolName),
-            toolCall,
-          ];
-        }
-        return acc;
-      },
-      [] as typeof toolCalls,
-    );
-
     return (
       <Box sx={{ mt: 1, display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-        {uniqueToolCalls.map((toolCall, idx) => (
+        {toolCalls.map((toolCall, idx) => (
           <Chip
-            key={`${toolCall.toolName}-${idx}`}
+            key={
+              toolCall.toolCallId ||
+              `${toolCall.toolName}-${String(toolCall.timestamp ?? idx)}`
+            }
             icon={
               toolCall.status === "completed" ? (
                 <Check sx={{ fontSize: 16 }} />
@@ -497,6 +485,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const [error, setError] = useState<string | null>(null);
   const [streamingToolCalls, setStreamingToolCalls] = useState<
     Array<{
+      toolCallId: string;
       toolName: string;
       timestamp: string;
       status: "started" | "completed";
@@ -506,6 +495,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   >([]);
   const streamingToolCallsRef = useRef<
     Array<{
+      toolCallId: string;
       toolName: string;
       timestamp: string;
       status: "started" | "completed";
@@ -878,57 +868,85 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               // Track tool calls from step events
               if (parsed.name.startsWith("tool_called:")) {
                 const toolName = parsed.name.replace("tool_called:", "");
+                const toolCallId =
+                  parsed.toolCallId ||
+                  `${toolName}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
                 setStreamingToolCalls(prev => {
-                  const existing = prev.find(tc => tc.toolName === toolName);
-                  let updated: typeof prev;
-                  if (existing) {
-                    updated = prev.map(tc =>
-                      tc.toolName === toolName
-                        ? {
-                            ...tc,
-                            status: "started" as const,
-                            timestamp: new Date().toISOString(),
-                            input:
-                              parsed.input ??
-                              parsed.args ??
-                              parsed.parameters ??
-                              parsed.payload ??
-                              tc.input,
-                          }
-                        : tc,
-                    );
-                  } else {
-                    updated = [
-                      ...prev,
-                      {
-                        toolName,
-                        timestamp: new Date().toISOString(),
-                        status: "started" as const,
-                        input:
-                          parsed.input ??
-                          parsed.args ??
-                          parsed.parameters ??
-                          parsed.payload,
-                      },
-                    ];
-                  }
+                  const existing = prev.find(
+                    tc => tc.toolCallId === toolCallId,
+                  );
+                  const updated = existing
+                    ? prev.map(tc =>
+                        tc.toolCallId === toolCallId
+                          ? {
+                              ...tc,
+                              status: "started" as const,
+                              timestamp: new Date().toISOString(),
+                              input:
+                                parsed.input ??
+                                parsed.args ??
+                                parsed.parameters ??
+                                parsed.payload ??
+                                tc.input,
+                            }
+                          : tc,
+                      )
+                    : [
+                        ...prev,
+                        {
+                          toolCallId,
+                          toolName,
+                          timestamp: new Date().toISOString(),
+                          status: "started" as const,
+                          input:
+                            parsed.input ??
+                            parsed.args ??
+                            parsed.parameters ??
+                            parsed.payload,
+                        },
+                      ];
                   streamingToolCallsRef.current = updated;
                   return updated;
                 });
               } else if (parsed.name.startsWith("tool_output:")) {
                 const toolName = parsed.name.replace("tool_output:", "");
+                const toolCallId = parsed.toolCallId as string | undefined;
                 setStreamingToolCalls(prev => {
                   const maybeResult =
                     parsed.output ?? parsed.result ?? parsed.data;
-                  const updated = prev.map(tc =>
-                    tc.toolName === toolName
-                      ? {
-                          ...tc,
-                          status: "completed" as const,
-                          result: maybeResult ?? tc.result,
-                        }
-                      : tc,
-                  );
+                  let updated: typeof prev;
+                  if (toolCallId) {
+                    updated = prev.map(tc =>
+                      tc.toolCallId === toolCallId
+                        ? {
+                            ...tc,
+                            status: "completed" as const,
+                            result: maybeResult ?? tc.result,
+                          }
+                        : tc,
+                    );
+                  } else {
+                    const reverseIndex = [...prev]
+                      .reverse()
+                      .findIndex(
+                        tc =>
+                          tc.toolName === toolName && tc.status === "started",
+                      );
+                    if (reverseIndex === -1) {
+                      updated = prev;
+                    } else {
+                      const targetIndex = prev.length - 1 - reverseIndex;
+                      updated = prev.map((tc, idx) =>
+                        idx === targetIndex
+                          ? {
+                              ...tc,
+                              status: "completed" as const,
+                              result: maybeResult ?? tc.result,
+                            }
+                          : tc,
+                      );
+                    }
+                  }
                   streamingToolCallsRef.current = updated;
                   return updated;
                 });

@@ -25,24 +25,6 @@ export const ALL_MODELS: AIModel[] = [
     description: "Latest flagship model with enhanced intelligence",
   },
   {
-    id: "gpt-5.2-thinking",
-    provider: "openai",
-    name: "GPT-5.2 Thinking",
-    description: "Optimized for complex reasoning and coding",
-  },
-  {
-    id: "gpt-5.2-instant",
-    provider: "openai",
-    name: "GPT-5.2 Instant",
-    description: "Fast responses for writing and research",
-  },
-  {
-    id: "gpt-4.5",
-    provider: "openai",
-    name: "GPT-4.5",
-    description: "Real-time web analysis capabilities",
-  },
-  {
     id: "gpt-4o",
     provider: "openai",
     name: "GPT-4o",
@@ -50,53 +32,41 @@ export const ALL_MODELS: AIModel[] = [
   },
   // Anthropic - Claude 4.5 series (latest)
   {
-    id: "claude-opus-4.5",
+    id: "claude-opus-4-5",
     provider: "anthropic",
     name: "Claude Opus 4.5",
     description: "Most capable, autonomous coding for 30+ hours",
   },
   {
-    id: "claude-sonnet-4.5",
+    id: "claude-sonnet-4-5",
     provider: "anthropic",
     name: "Claude Sonnet 4.5",
     description: "Best balance of speed and intelligence",
   },
   {
-    id: "claude-sonnet-4-20250514",
-    provider: "anthropic",
-    name: "Claude Sonnet 4",
-    description: "Previous generation Sonnet",
-  },
-  {
-    id: "claude-haiku-4",
+    id: "claude-3-5-haiku-latest",
     provider: "anthropic",
     name: "Claude Haiku 4",
     description: "Fastest Claude model",
   },
   // Google - Gemini 3 series (released Nov 18, 2025)
   {
-    id: "gemini-3-pro",
+    id: "gemini-3-pro-preview",
     provider: "google",
     name: "Gemini 3 Pro",
     description: "Flagship multimodal reasoning across text, code, images",
   },
   {
-    id: "gemini-3-pro-deepthink",
+    id: "gemini-2.5-pro",
     provider: "google",
     name: "Gemini 3 Pro DeepThink",
-    description: "Advanced reasoning for complex problem-solving",
+    description: "Previous generation, reliable performance",
   },
   {
     id: "gemini-2.5-flash",
     provider: "google",
     name: "Gemini 2.5 Flash",
     description: "Fast and efficient for quick tasks",
-  },
-  {
-    id: "gemini-2.5-pro",
-    provider: "google",
-    name: "Gemini 2.5 Pro",
-    description: "Previous generation, reliable performance",
   },
 ];
 

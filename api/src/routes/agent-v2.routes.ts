@@ -30,7 +30,7 @@ import type { AgentKind } from "../agent/types";
 
 export const agentV2Routes = new Hono();
 
-// Apply unified auth middleware
+// Apply unified auth middleware to all routes
 agentV2Routes.use("*", unifiedAuthMiddleware);
 
 /**
@@ -93,6 +93,7 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
       let assistantReply = "";
       const errorPersisted = false;
       const toolCalls: Array<{
+        toolCallId?: string;
         toolName: string;
         timestamp: Date;
         status: "started" | "completed";
@@ -215,6 +216,7 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             sendEvent({ type: "text", content: textContent });
           } else if (chunk.type === "tool-call") {
             const toolName = chunk.toolName;
+            const toolCallId = (chunk as { toolCallId?: string }).toolCallId;
             console.log(`[Agent V2] Tool called: ${toolName}`);
 
             // AI SDK v5 uses 'input' instead of 'args'
@@ -223,11 +225,13 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             sendEvent({
               type: "step",
               name: `tool_called:${toolName}`,
+              toolCallId,
               status: "started",
               input: toolInput,
             });
 
             toolCalls.push({
+              toolCallId,
               toolName,
               timestamp: new Date(),
               status: "started",
@@ -235,21 +239,29 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             });
           } else if (chunk.type === "tool-result") {
             const toolName = chunk.toolName;
+            const toolCallId = (chunk as { toolCallId?: string }).toolCallId;
             // AI SDK v5 uses 'output' instead of 'result'
             const toolResult = (chunk as { output?: unknown }).output;
 
             console.log(`[Agent V2] Tool result for ${toolName}`);
 
             // Update tool call status
-            const lastToolCall = toolCalls
-              .filter(tc => tc.toolName === toolName && tc.status === "started")
-              .pop();
+            const lastToolCall = toolCallId
+              ? toolCalls.find(
+                  tc => tc.toolCallId === toolCallId && tc.status === "started",
+                )
+              : toolCalls
+                  .filter(
+                    tc => tc.toolName === toolName && tc.status === "started",
+                  )
+                  .pop();
 
             if (lastToolCall) {
               lastToolCall.status = "completed";
               lastToolCall.result = toolResult;
             } else {
               toolCalls.push({
+                toolCallId,
                 toolName,
                 timestamp: new Date(),
                 status: "completed",
@@ -260,6 +272,7 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             sendEvent({
               type: "step",
               name: `tool_output:${toolName}`,
+              toolCallId: toolCallId || lastToolCall?.toolCallId,
               status: "completed",
               output: toolResult,
             });

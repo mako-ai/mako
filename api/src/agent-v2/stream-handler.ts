@@ -225,6 +225,7 @@ export async function streamAgentResponse(params: StreamAgentParams) {
 
   // Get the model instance based on the provided modelId
   const model = getModelInstance(modelId);
+  // eslint-disable-next-line no-console -- helpful for debugging model selection in dev
   console.log(`[Agent V2] Using model: ${modelId || "gpt-4o (default)"}`);
 
   // Build context about available consoles
@@ -246,10 +247,12 @@ export async function streamAgentResponse(params: StreamAgentParams) {
     model,
     system: systemPrompt + consoleContext,
     messages,
-    tools,
-    stopWhen: stepCountIs(10), // Allow up to 10 tool usage steps
+    tools: tools as Parameters<typeof streamText>[0]["tools"],
+    // AI SDK defaults to stopWhen: stepCountIs(1). We want high multi-step tool usage.
+    stopWhen: stepCountIs(1024),
     onStepFinish: ({ toolCalls, toolResults }) => {
       // This fires reliably after each tool execution
+      // eslint-disable-next-line no-console -- helpful for debugging tool usage in dev
       console.log("[Agent V2] Step finished:", {
         toolCallCount: toolCalls?.length,
         toolResultCount: toolResults?.length,

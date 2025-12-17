@@ -58,9 +58,7 @@ export const ModelSelector: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
-      const response = await apiClient.get<ModelsResponse>(
-        "/api/agent/v2/models",
-      );
+      const response = await apiClient.get<ModelsResponse>("/agent/v2/models");
       setModels(response.models || []);
 
       // If the currently selected model isn't available, select the first available one
