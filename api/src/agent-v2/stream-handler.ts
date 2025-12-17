@@ -226,7 +226,7 @@ export async function streamAgentResponse(params: StreamAgentParams) {
   // Get the model instance based on the provided modelId
   const model = getModelInstance(modelId);
   // eslint-disable-next-line no-console -- helpful for debugging model selection in dev
-  console.log(`[Agent V2] Using model: ${modelId || "gpt-4o (default)"}`);
+  console.log(`[Agent V2] Using model: ${modelId || "gpt-5.2 (default)"}`);
 
   // Build context about available consoles
   const consoleContext =

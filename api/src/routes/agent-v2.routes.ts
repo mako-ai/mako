@@ -91,7 +91,7 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
       let isClosed = false;
       let currentSessionId = sessionId;
       let assistantReply = "";
-      const errorPersisted = false;
+      let errorPersisted = false;
       const toolCalls: Array<{
         toolCallId?: string;
         toolName: string;
@@ -313,6 +313,7 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             }
           } else if (chunk.type === "error") {
             console.error("[Agent V2] Stream error:", chunk.error);
+            errorPersisted = true;
             sendEvent({
               type: "error",
               message: String(chunk.error) || "An error occurred",
