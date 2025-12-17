@@ -27,6 +27,45 @@ import {
 // Create a router that will be mounted at /api/agent
 export const agentRoutes = new Hono();
 
+// Track 1.1: Comprehensive tool output extraction helper
+// Handles various SDK output formats robustly
+function extractToolOutput(item: any): any {
+  const sources = [
+    item.output,
+    item.result,
+    item.rawItem?.output,
+    item.rawItem?.result,
+    item.rawItem?.providerData?.output,
+    item.providerData?.output,
+    // Additional potential locations for different SDK versions
+    item.rawItem?.content,
+    item.content,
+    item.data,
+    item.rawItem?.data,
+  ];
+
+  for (const source of sources) {
+    if (source !== undefined && source !== null) {
+      // If it's a string, try to parse it as JSON
+      if (typeof source === "string") {
+        try {
+          return JSON.parse(source);
+        } catch {
+          // If it's not valid JSON, return as-is
+          return source;
+        }
+      }
+      return source;
+    }
+  }
+
+  console.error(
+    "[extractToolOutput] No output found in item:",
+    Object.keys(item),
+  );
+  return null;
+}
+
 // Apply unified auth middleware to all agent routes
 agentRoutes.use("*", unifiedAuthMiddleware);
 
@@ -438,11 +477,9 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
                 });
               }
 
-              if (
-                item?.type === "tool_call_output_item" &&
-                (itemEvent.name === "output_added" ||
-                  itemEvent.name === "tool_output")
-              ) {
+              // Track 1.1: Broadened condition - don't rely on itemEvent.name
+              // Process any tool_call_output_item regardless of event name
+              if (item?.type === "tool_call_output_item") {
                 // Get tool name from various possible locations
                 const toolName =
                   item.rawItem?.function?.name ||
@@ -473,14 +510,8 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
                   ),
                 );
 
-                // Compute output before sending event
-                const output =
-                  item.output ||
-                  item.result ||
-                  item.rawItem?.output ||
-                  item.rawItem?.result ||
-                  item.rawItem?.providerData?.output ||
-                  item.providerData?.output;
+                // Track 1.1: Robust output extraction using helper function
+                const output = extractToolOutput(item);
 
                 sendEvent({
                   type: "step",
@@ -542,15 +573,20 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
                       outputData?._eventType === "console_modification" &&
                       outputData?.success
                     ) {
+                      // Track 1.3: Enhanced logging with modificationId for tracking
+                      const modificationId = `mod-${Date.now()}`;
                       console.log(
                         "[Agent Stream] Sending console_modification event:",
                         {
-                          modification: outputData.modification,
+                          modificationId,
                           consoleId: outputData.consoleId || effectiveConsoleId,
+                          action: outputData.modification?.action,
+                          contentLength: outputData.modification?.content?.length,
                         },
                       );
                       sendEvent({
                         type: "console_modification",
+                        modificationId,
                         modification: outputData.modification,
                         consoleId: outputData.consoleId || effectiveConsoleId,
                       });
@@ -558,11 +594,13 @@ agentRoutes.post("/stream", async (c: AuthenticatedContext) => {
                       outputData?._eventType === "console_creation" &&
                       outputData?.success
                     ) {
+                      // Track 1.3: Enhanced logging with creation details
                       console.log(
                         "[Agent Stream] Sending console_creation event:",
                         {
                           consoleId: outputData.consoleId,
                           title: outputData.title,
+                          contentLength: outputData.content?.length,
                         },
                       );
                       sendEvent({

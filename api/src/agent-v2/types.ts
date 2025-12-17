@@ -1,0 +1,64 @@
+/**
+ * Agent V2 Type Definitions
+ * Using Vercel AI SDK patterns
+ */
+
+export type AgentKindV2 = "mongo" | "bigquery" | "postgres" | "triage";
+
+export interface ConsoleDataV2 {
+  id: string;
+  title: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  // Connection context
+  connectionId?: string;
+  connectionType?: string;
+  databaseId?: string;
+  databaseName?: string;
+}
+
+export interface StreamAgentParams {
+  message: string;
+  workspaceId: string;
+  consoles: ConsoleDataV2[];
+  consoleId?: string;
+  agentType: AgentKindV2;
+  sessionId?: string;
+}
+
+export interface ConsoleModificationV2 {
+  action: "replace" | "insert" | "append";
+  content: string;
+  position?: number;
+}
+
+export interface ToolResultBase {
+  success: boolean;
+  _eventType?: string;
+}
+
+export interface ConsoleModificationResult extends ToolResultBase {
+  _eventType: "console_modification";
+  modification: ConsoleModificationV2;
+  consoleId?: string;
+  message?: string;
+}
+
+export interface ConsoleCreationResult extends ToolResultBase {
+  _eventType: "console_creation";
+  consoleId: string;
+  title: string;
+  content: string;
+  message?: string;
+}
+
+export interface ReadConsoleResult extends ToolResultBase {
+  consoleId?: string;
+  title?: string;
+  content?: string;
+  connectionId?: string;
+  connectionType?: string;
+  databaseId?: string;
+  databaseName?: string;
+  error?: string;
+}

@@ -19,6 +19,9 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Switch,
+  FormControlLabel,
+  Tooltip,
 } from "@mui/material";
 import SendIcon from "@mui/icons-material/Send";
 import ReactMarkdown from "react-markdown";
@@ -44,6 +47,7 @@ import {
 import { useTheme as useMuiTheme } from "@mui/material/styles";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { useSettingsStore } from "../store/settingsStore";
 
 // Note: Using simplified Message interface for this component
 interface ToolCall {
@@ -479,6 +483,8 @@ interface ChatProps {
 
 const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const { currentWorkspace } = useWorkspace();
+  const agentVersion = useSettingsStore(s => s.agentVersion);
+  const setAgentVersion = useSettingsStore(s => s.setAgentVersion);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -789,7 +795,15 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     const attachedConsole = attachedContext.find(ctx => ctx.type === "console");
     const consoleIdToPin = attachedConsole?.metadata?.consoleId;
 
-    const response = await fetch("/api/agent/stream", {
+    // Use dynamic endpoint based on agent version setting
+    const endpoint =
+      agentVersion === "v2" ? "/api/agent/v2/stream" : "/api/agent/stream";
+
+    console.log(
+      `[Chat] Using agent version: ${agentVersion}, endpoint: ${endpoint}`,
+    );
+
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -926,13 +940,13 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               parsed.type === "console_modification" &&
               parsed.modification
             ) {
-              // Handle console modification event
-              console.log(
-                "Console modification event received:",
-                parsed.modification,
-                "consoleId:",
-                parsed.consoleId,
-              );
+              // Track 1.3: Enhanced logging for console modifications
+              console.log("[Chat] Received console_modification:", {
+                modificationId: parsed.modificationId,
+                consoleId: parsed.consoleId,
+                action: parsed.modification.action,
+                contentLength: parsed.modification.content?.length,
+              });
               if (onConsoleModification) {
                 // Pass the modification with the consoleId if available
                 onConsoleModification({
@@ -972,8 +986,23 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               assistantContent = `Error: ${parsed.message || "An unknown error occurred"}`;
               setStreamingContent(assistantContent);
             }
-          } catch (_) {
-            /* ignore */
+          } catch (parseError) {
+            // Track 1.2: Surface parse errors instead of silent ignore
+            console.error(
+              "[Chat] SSE parse error:",
+              parseError,
+              "Raw data:",
+              data,
+            );
+            // Surface critical failures for console modifications
+            if (
+              data.includes("console_modification") ||
+              data.includes("console_creation")
+            ) {
+              setError(
+                "Failed to apply console changes. The AI response may be incomplete.",
+              );
+            }
           }
         }
       }
@@ -1077,7 +1106,43 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               Chat
             </Typography>
           </Box>
-          <Box sx={{ display: "flex" }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            {/* Agent Version Switcher */}
+            <Tooltip
+              title={
+                agentVersion === "v2"
+                  ? "Using new AI engine (beta)"
+                  : "Using stable AI engine"
+              }
+            >
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={agentVersion === "v2"}
+                    onChange={e =>
+                      setAgentVersion(e.target.checked ? "v2" : "v1")
+                    }
+                    sx={{ mr: 0 }}
+                  />
+                }
+                label={
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontSize: "0.7rem",
+                      color:
+                        agentVersion === "v2"
+                          ? "primary.main"
+                          : "text.secondary",
+                    }}
+                  >
+                    v2
+                  </Typography>
+                }
+                sx={{ m: 0, mr: 0.5 }}
+              />
+            </Tooltip>
             <IconButton size="small" onClick={createNewSession}>
               <AddIcon />
             </IconButton>
