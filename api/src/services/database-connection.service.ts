@@ -94,6 +94,18 @@ export class DatabaseConnectionService {
     string,
     { database: IDatabaseConnection; pid: number }
   > = new Map();
+
+  // Track running MongoDB queries for cancellation
+  private runningMongoQueries: Map<
+    string,
+    {
+      database: IDatabaseConnection;
+      client: MongoClient;
+      abortController: AbortController;
+      startTime: Date;
+    }
+  > = new Map();
+
   private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly maxIdleTime = 15 * 60 * 1000; // 15 minutes to be safe
 
@@ -786,6 +798,113 @@ export class DatabaseConnectionService {
   }
 
   /**
+   * Cancel a running MongoDB query
+   */
+  async cancelMongoDBQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const running = this.runningMongoQueries.get(executionId);
+    if (!running) {
+      return { success: false, error: "Query not found or already completed" };
+    }
+
+    try {
+      // First, abort the AbortController to stop the JavaScript promise
+      running.abortController.abort();
+      console.log(`[MongoDB] Aborted controller for execution ${executionId}`);
+
+      // Try to kill any running operations on this connection using killOp
+      // We'll find operations that started around the same time from the same client
+      try {
+        const adminDb = running.client.db("admin");
+
+        // Get current operations
+        const currentOps = await adminDb.command({
+          currentOp: true,
+          active: true,
+          $ownOps: false, // Include all operations, not just our own
+        });
+
+        if (currentOps.inprog && Array.isArray(currentOps.inprog)) {
+          // Find operations that match our criteria:
+          // - Started after our query started
+          // - Not finished yet
+          // - Not system operations
+          const queryStartTime = running.startTime.getTime();
+          const opsToKill = currentOps.inprog.filter((op: any) => {
+            // Skip if no opid or if it's a system operation
+            if (!op.opid || op.ns?.startsWith("admin.") || op.op === "none") {
+              return false;
+            }
+
+            // Try to match by connection/client info or timing
+            // Check if this operation started around the same time as our query
+            if (op.microsecs_running) {
+              const opStartTime = Date.now() - op.microsecs_running / 1000;
+              // Allow a 1 second tolerance for timing
+              if (Math.abs(opStartTime - queryStartTime) < 1000) {
+                return true;
+              }
+            }
+
+            // Also consider operations that have been running since before our query started
+            // and are still active (these might be our long-running operations)
+            if (op.secs_running && op.secs_running > 0) {
+              const runningMs = op.secs_running * 1000;
+              const opApproxStart = Date.now() - runningMs;
+              // Check if the operation started within a reasonable window of our query
+              if (opApproxStart >= queryStartTime - 2000) {
+                return true;
+              }
+            }
+
+            return false;
+          });
+
+          // Kill the identified operations
+          for (const op of opsToKill) {
+            try {
+              await adminDb.command({ killOp: 1, op: op.opid });
+              console.log(
+                `[MongoDB] Killed operation ${op.opid} (${op.op} on ${op.ns})`,
+              );
+            } catch (killErr) {
+              console.warn(
+                `[MongoDB] Failed to kill operation ${op.opid}:`,
+                killErr,
+              );
+            }
+          }
+
+          if (opsToKill.length > 0) {
+            console.log(
+              `[MongoDB] Killed ${opsToKill.length} operation(s) for execution ${executionId}`,
+            );
+          }
+        }
+      } catch (killOpErr) {
+        // killOp might fail if user doesn't have admin privileges
+        // This is okay - the AbortController should still work
+        console.warn(
+          `[MongoDB] Could not kill operations via killOp (may lack admin privileges):`,
+          killOpErr,
+        );
+      }
+
+      // Remove from tracking
+      this.runningMongoQueries.delete(executionId);
+      return { success: true };
+    } catch (error) {
+      console.error(`[MongoDB] Error cancelling query ${executionId}:`, error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to cancel query",
+      };
+    }
+  }
+
+  /**
    * Cancel a running query (auto-detects database type)
    */
   async cancelQuery(
@@ -798,6 +917,10 @@ export class DatabaseConnectionService {
     // Try PostgreSQL
     if (this.runningPostgresQueries.has(executionId)) {
       return this.cancelPostgresQuery(executionId);
+    }
+    // Try MongoDB
+    if (this.runningMongoQueries.has(executionId)) {
+      return this.cancelMongoDBQuery(executionId);
     }
 
     // Delegate to drivers that support cancellation (e.g., cloudsql-postgres)
@@ -1252,11 +1375,34 @@ export class DatabaseConnectionService {
     const dbName = options?.databaseName || database.connection.database;
     const db = client.db(dbName);
 
+    const executionId = options?.executionId;
+    let abortController: AbortController | undefined;
+
+    // Track this query for cancellation if executionId is provided
+    if (executionId) {
+      abortController = new AbortController();
+      this.runningMongoQueries.set(executionId, {
+        database,
+        client,
+        abortController,
+        startTime: new Date(),
+      });
+    }
+
     try {
+      // Check if aborted before starting
+      if (abortController?.signal.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
+
       // Handle different MongoDB operations
       if (typeof query === "string") {
         // Parse JavaScript-style query
-        const result = await this.executeMongoDBJavaScriptQuery(db, query);
+        const result = await this.executeMongoDBJavaScriptQuery(
+          db,
+          query,
+          abortController?.signal,
+        );
         return { success: true, data: result };
       } else if (query.collection && query.operation) {
         // Handle structured query
@@ -1324,18 +1470,38 @@ export class DatabaseConnectionService {
         return { success: false, error: "Invalid MongoDB query format" };
       }
     } catch (error) {
+      // Check if this was a cancellation
+      if (
+        error instanceof Error &&
+        (error.message.includes("cancelled") ||
+          error.message.includes("aborted") ||
+          error.name === "AbortError")
+      ) {
+        return { success: false, error: "Query cancelled" };
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : "MongoDB query failed",
       };
+    } finally {
+      // Clean up tracking
+      if (executionId) {
+        this.runningMongoQueries.delete(executionId);
+      }
     }
   }
 
   private async executeMongoDBJavaScriptQuery(
     db: Db,
     query: string,
+    signal?: AbortSignal,
   ): Promise<any> {
     console.log("🔍 Executing query:", query.substring(0, 200) + "...");
+
+    // Check if already aborted
+    if (signal?.aborted) {
+      throw new Error("Query cancelled");
+    }
 
     // Track async index operations to surface errors even if not awaited by the user
     const trackedIndexPromises: Promise<any>[] = [];
@@ -1458,12 +1624,28 @@ export class DatabaseConnectionService {
       );
       console.log(`📤 Has then method: ${typeof result?.then === "function"}`);
 
+      // Helper to race a promise against abort signal
+      const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
+        if (!signal) return promise;
+        return Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            if (signal.aborted) {
+              reject(new Error("Query cancelled"));
+            }
+            signal.addEventListener("abort", () => {
+              reject(new Error("Query cancelled"));
+            });
+          }),
+        ]);
+      };
+
       // Handle MongoDB cursors and promises
-      let finalResult;
+      let finalResult: any;
       if (result && typeof result.then === "function") {
         // It's a promise, await it
         console.log("⏳ Awaiting promise...");
-        finalResult = await result;
+        finalResult = await raceWithAbort(result);
         console.log(`✅ Promise resolved, result type: ${typeof finalResult}`);
         console.log(
           `✅ Promise resolved constructor: ${finalResult?.constructor?.name}`,
@@ -1471,7 +1653,7 @@ export class DatabaseConnectionService {
       } else if (result && typeof result.toArray === "function") {
         // It's a MongoDB cursor, convert to array
         console.log("📋 Converting cursor to array...");
-        finalResult = await result.toArray();
+        finalResult = await raceWithAbort(result.toArray());
         console.log(
           `✅ Cursor converted, array length: ${finalResult?.length}`,
         );
