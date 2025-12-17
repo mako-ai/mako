@@ -8,6 +8,7 @@ export type {
   AgentKindV2,
   ConsoleDataV2,
   StreamAgentParams,
+  ConversationMessage,
   ConsoleModificationV2,
   ToolResultBase,
   ConsoleModificationResult,
@@ -32,3 +33,13 @@ export { createBigQueryToolsV2 } from "./tools/bigquery-tools";
 export { MONGO_PROMPT_V2 } from "./prompts/mongodb";
 export { POSTGRES_PROMPT_V2 } from "./prompts/postgres";
 export { BIGQUERY_PROMPT_V2 } from "./prompts/bigquery";
+
+// AI Models
+export type { AIModel, AIProvider } from "./ai-models";
+export {
+  ALL_MODELS,
+  getAvailableModels,
+  getModelById,
+  getDefaultModel,
+  getConfiguredProviders,
+} from "./ai-models";

@@ -48,6 +48,7 @@ import { useTheme as useMuiTheme } from "@mui/material/styles";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSettingsStore } from "../store/settingsStore";
+import { ModelSelector } from "./ModelSelector";
 
 // Note: Using simplified Message interface for this component
 interface ToolCall {
@@ -485,6 +486,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const { currentWorkspace } = useWorkspace();
   const agentVersion = useSettingsStore(s => s.agentVersion);
   const setAgentVersion = useSettingsStore(s => s.setAgentVersion);
+  const selectedModelId = useSettingsStore(s => s.selectedModelId);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -812,6 +814,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         workspaceId: currentWorkspace.id,
         consoles: consolesData, // Pass consoles array to backend
         consoleId: consoleIdToPin, // Pin the console if attached
+        modelId: agentVersion === "v2" ? selectedModelId : undefined, // Pass model ID for v2 agent
       }),
     });
 
@@ -1514,14 +1517,19 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           }}
         />
 
-        {/* Bottom action bar with Send button on right */}
+        {/* Bottom action bar with Model Selector on left, Send button on right */}
         <Box
           sx={{
             display: "flex",
-            justifyContent: "flex-end",
+            justifyContent: "space-between",
             alignItems: "center",
           }}
         >
+          {/* Model Selector - only show for v2 agent */}
+          <Box sx={{ display: "flex", alignItems: "center" }}>
+            {agentVersion === "v2" && <ModelSelector />}
+          </Box>
+
           {/* Send Button */}
           <IconButton
             onClick={sendMessage}

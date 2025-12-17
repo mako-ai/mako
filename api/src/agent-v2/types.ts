@@ -17,13 +17,30 @@ export interface ConsoleDataV2 {
   databaseName?: string;
 }
 
+/**
+ * Conversation message format compatible with AI SDK CoreMessage
+ */
+export interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+  toolCalls?: Array<{
+    toolName: string;
+    timestamp?: Date;
+    status?: "started" | "completed";
+    input?: unknown;
+    result?: unknown;
+  }>;
+}
+
 export interface StreamAgentParams {
-  message: string;
+  conversationHistory: ConversationMessage[];
+  newMessage: string;
   workspaceId: string;
   consoles: ConsoleDataV2[];
   consoleId?: string;
   agentType: AgentKindV2;
   sessionId?: string;
+  modelId?: string;
 }
 
 export interface ConsoleModificationV2 {

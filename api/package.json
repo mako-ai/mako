@@ -15,6 +15,8 @@
     "lint:fix": "eslint . --ext ts --fix"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.56",
+    "@ai-sdk/google": "^2.0.47",
     "@ai-sdk/openai": "^2.0.88",
     "@google-cloud/bigquery": "^8.1.1",
     "@google-cloud/cloud-sql-connector": "^1.8.4",

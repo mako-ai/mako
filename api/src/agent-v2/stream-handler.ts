@@ -3,9 +3,21 @@
  * Using Vercel AI SDK for streaming responses
  */
 
-import { streamText, stepCountIs } from "ai";
+import {
+  streamText,
+  stepCountIs,
+  type CoreMessage,
+  type LanguageModel,
+} from "ai";
 import { openai } from "@ai-sdk/openai";
-import type { StreamAgentParams, AgentKindV2, ConsoleDataV2 } from "./types";
+import { anthropic } from "@ai-sdk/anthropic";
+import { google } from "@ai-sdk/google";
+import type {
+  StreamAgentParams,
+  AgentKindV2,
+  ConsoleDataV2,
+  ConversationMessage,
+} from "./types";
 import { createMongoToolsV2 } from "./tools/mongodb-tools";
 import { createPostgresToolsV2 } from "./tools/postgres-tools";
 import { createBigQueryToolsV2 } from "./tools/bigquery-tools";
@@ -13,6 +25,39 @@ import { createConsoleToolsV2 } from "./tools/console-tools";
 import { MONGO_PROMPT_V2 } from "./prompts/mongodb";
 import { POSTGRES_PROMPT_V2 } from "./prompts/postgres";
 import { BIGQUERY_PROMPT_V2 } from "./prompts/bigquery";
+import { getModelById } from "./ai-models";
+
+/**
+ * Get the AI SDK model instance based on the model ID
+ * Falls back to gpt-5.2 if the model is not found
+ */
+function getModelInstance(modelId?: string): LanguageModel {
+  if (!modelId) {
+    return openai("gpt-5.2");
+  }
+
+  const model = getModelById(modelId);
+  if (!model) {
+    console.warn(
+      `[Agent V2] Model "${modelId}" not found, falling back to gpt-5.2`,
+    );
+    return openai("gpt-5.2");
+  }
+
+  switch (model.provider) {
+    case "openai":
+      return openai(modelId);
+    case "anthropic":
+      return anthropic(modelId);
+    case "google":
+      return google(modelId);
+    default:
+      console.warn(
+        `[Agent V2] Unknown provider for model "${modelId}", falling back to gpt-5.2`,
+      );
+      return openai("gpt-5.2");
+  }
+}
 
 // Simple tool type to avoid complex AI SDK type inference
 type SimpleTool = {
@@ -136,10 +181,40 @@ export function detectAgentType(
 }
 
 /**
+ * Convert conversation history to AI SDK CoreMessage format
+ */
+function convertToAIMessages(
+  history: ConversationMessage[],
+  newMessage: string,
+): CoreMessage[] {
+  const messages: CoreMessage[] = [];
+
+  for (const msg of history) {
+    messages.push({
+      role: msg.role,
+      content: msg.content,
+    });
+  }
+
+  // Add the new user message
+  messages.push({ role: "user", content: newMessage });
+
+  return messages;
+}
+
+/**
  * Stream an agent response using Vercel AI SDK
  */
 export async function streamAgentResponse(params: StreamAgentParams) {
-  const { message, workspaceId, consoles, consoleId, agentType } = params;
+  const {
+    conversationHistory,
+    newMessage,
+    workspaceId,
+    consoles,
+    consoleId,
+    agentType,
+    modelId,
+  } = params;
 
   const tools = getToolsForAgent(agentType, {
     workspaceId,
@@ -147,6 +222,10 @@ export async function streamAgentResponse(params: StreamAgentParams) {
     consoleId,
   });
   const systemPrompt = getPromptForAgent(agentType);
+
+  // Get the model instance based on the provided modelId
+  const model = getModelInstance(modelId);
+  console.log(`[Agent V2] Using model: ${modelId || "gpt-4o (default)"}`);
 
   // Build context about available consoles
   const consoleContext =
@@ -159,12 +238,14 @@ export async function streamAgentResponse(params: StreamAgentParams) {
           .join("\n")}`
       : "";
 
+  // Convert conversation history to proper AI SDK message format
+  const messages = convertToAIMessages(conversationHistory, newMessage);
+
   // Tools are structurally compatible at runtime - cast through unknown to bypass type checking
   const result = streamText({
-    model: openai("gpt-4o"),
+    model,
     system: systemPrompt + consoleContext,
-    messages: [{ role: "user", content: message }],
-    // @ts-expect-error - Tools are structurally compatible but AI SDK types are too complex
+    messages,
     tools,
     stopWhen: stepCountIs(10), // Allow up to 10 tool usage steps
     onStepFinish: ({ toolCalls, toolResults }) => {

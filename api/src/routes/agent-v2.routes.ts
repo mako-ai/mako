@@ -12,10 +12,10 @@ import {
   detectAgentType,
   processToolResult,
   ConsoleDataV2,
+  getAvailableModels,
 } from "../agent-v2";
 import {
   getOrCreateThreadContext,
-  buildAgentContext,
   persistUserMessage,
   updateChatWithResponse,
   persistChatError,
@@ -33,6 +33,14 @@ export const agentV2Routes = new Hono();
 // Apply unified auth middleware
 agentV2Routes.use("*", unifiedAuthMiddleware);
 
+/**
+ * GET /models - List available AI models based on configured API keys
+ */
+agentV2Routes.get("/models", async (c: AuthenticatedContext) => {
+  const models = getAvailableModels();
+  return c.json({ models });
+});
+
 agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
   const user = c.get("user");
   const userId = user?.id;
@@ -48,13 +56,15 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
     console.error("[Agent V2] Error parsing request body", e);
   }
 
-  const { message, sessionId, workspaceId, consoles, consoleId } = body as {
-    message?: string;
-    sessionId?: string;
-    workspaceId?: string;
-    consoles?: ConsoleDataV2[];
-    consoleId?: string;
-  };
+  const { message, sessionId, workspaceId, consoles, consoleId, modelId } =
+    body as {
+      message?: string;
+      sessionId?: string;
+      workspaceId?: string;
+      consoles?: ConsoleDataV2[];
+      consoleId?: string;
+      modelId?: string;
+    };
 
   if (!message || typeof message !== "string" || message.trim().length === 0) {
     return c.json({ error: "'message' is required" }, 400);
@@ -73,9 +83,6 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
     workspaceId,
     userId.toString(),
   );
-
-  // Build context for logging
-  const agentInput = buildAgentContext(threadContext, message.trim());
 
   const encoder = new TextEncoder();
 
@@ -143,13 +150,16 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             ...c,
             connectionType:
               c.connectionType ||
-              (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined),
+              (c.connectionId
+                ? databaseTypeMap.get(c.connectionId)
+                : undefined),
           }),
         );
 
         // Use pinned console ID if available
         const effectiveConsoleId =
-          consoleId || (pinned as { pinnedConsoleId?: string } | null)?.pinnedConsoleId;
+          consoleId ||
+          (pinned as { pinnedConsoleId?: string } | null)?.pinnedConsoleId;
 
         // Detect agent type based on context
         const workspaceHasMongoDB = workspaceDatabases.some(
@@ -162,8 +172,9 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
           db => db.type === "postgresql" || db.type === "cloudsql-postgres",
         );
 
-        const sessionActiveAgent = (pinned as { activeAgent?: AgentKind } | null)
-          ?.activeAgent;
+        const sessionActiveAgent = (
+          pinned as { activeAgent?: AgentKind } | null
+        )?.activeAgent;
         const selectedAgent = selectInitialAgent({
           sessionActiveAgent,
           userMessage: message,
@@ -175,21 +186,24 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
 
         // Use our detection or fall back to the selected agent
         const detectedType = detectAgentType(enrichedConsoles, message);
-        const agentType = detectedType !== "triage" ? detectedType : selectedAgent;
+        const agentType =
+          detectedType !== "triage" ? detectedType : selectedAgent;
 
         console.log(`[Agent V2] Using agent type: ${agentType}`);
 
         // Send agent mode event
         sendEvent({ type: "agent_mode", mode: agentType });
 
-        // Stream the response using Vercel AI SDK
+        // Stream the response using Vercel AI SDK with proper conversation history
         const result = await streamAgentResponse({
-          message: agentInput,
+          conversationHistory: threadContext.recentMessages,
+          newMessage: message.trim(),
           workspaceId,
           consoles: enrichedConsoles,
           consoleId: effectiveConsoleId,
           agentType: agentType as "mongo" | "bigquery" | "postgres" | "triage",
           sessionId: currentSessionId,
+          modelId,
         });
 
         // Process the stream
@@ -294,7 +308,10 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
         }
 
         // Update chat with assistant response
-        if (!errorPersisted && (assistantReply.trim() || toolCalls.length > 0)) {
+        if (
+          !errorPersisted &&
+          (assistantReply.trim() || toolCalls.length > 0)
+        ) {
           await updateChatWithResponse(
             currentSessionId,
             assistantReply,

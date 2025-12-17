@@ -1,6 +1,6 @@
 /**
  * Settings Store
- * Manages application settings including AI agent version preference
+ * Manages application settings including AI agent version preference and model selection
  */
 
 import { create } from "zustand";
@@ -12,6 +12,10 @@ interface SettingsState {
   // Agent version preference
   agentVersion: AgentVersion;
   setAgentVersion: (version: AgentVersion) => void;
+
+  // AI Model selection
+  selectedModelId: string;
+  setSelectedModelId: (modelId: string) => void;
 
   // General settings
   theme: "light" | "dark" | "system";
@@ -25,6 +29,10 @@ export const useSettingsStore = create<SettingsState>()(
       agentVersion: "v1",
       setAgentVersion: version => set({ agentVersion: version }),
 
+      // Default to GPT-5.2 (latest flagship model)
+      selectedModelId: "gpt-5.2",
+      setSelectedModelId: modelId => set({ selectedModelId: modelId }),
+
       // Theme defaults to system
       theme: "system",
       setTheme: theme => set({ theme: theme }),
@@ -34,6 +42,7 @@ export const useSettingsStore = create<SettingsState>()(
       // Only persist specific fields
       partialize: state => ({
         agentVersion: state.agentVersion,
+        selectedModelId: state.selectedModelId,
         theme: state.theme,
       }),
     },
