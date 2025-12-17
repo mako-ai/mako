@@ -853,7 +853,8 @@ export class DatabaseConnectionService {
               const runningMs = op.secs_running * 1000;
               const opApproxStart = Date.now() - runningMs;
               // Check if the operation started within a reasonable window of our query
-              if (opApproxStart >= queryStartTime - 2000) {
+              // Use a symmetric tolerance window to avoid matching unrelated newer ops.
+              if (Math.abs(opApproxStart - queryStartTime) < 2000) {
                 return true;
               }
             }
