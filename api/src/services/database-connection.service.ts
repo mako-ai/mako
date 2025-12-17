@@ -1660,53 +1660,78 @@ export class DatabaseConnectionService {
         const collection = db.collection(query.collection);
         let result: any;
 
+        // Helper to race a promise against abort signal for cancellation support
+        const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
+          if (!abortController?.signal) return promise;
+          const signal = abortController.signal;
+          return Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+              if (signal.aborted) {
+                reject(new Error("Query cancelled"));
+              }
+              signal.addEventListener(
+                "abort",
+                () => {
+                  reject(new Error("Query cancelled"));
+                },
+                { once: true },
+              );
+            }),
+          ]);
+        };
+
         switch (query.operation) {
           case "find":
-            result = await collection
-              .find(query.filter || {}, query.options || {})
-              .toArray();
+            result = await raceWithAbort(
+              collection
+                .find(query.filter || {}, query.options || {})
+                .toArray(),
+            );
             break;
           case "findOne":
-            result = await collection.findOne(
-              query.filter || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.findOne(query.filter || {}, query.options || {}),
             );
             break;
           case "aggregate":
-            result = await collection
-              .aggregate(query.pipeline || [], query.options || {})
-              .toArray();
+            result = await raceWithAbort(
+              collection
+                .aggregate(query.pipeline || [], query.options || {})
+                .toArray(),
+            );
             break;
           case "insertMany":
-            result = await collection.insertMany(
-              query.documents || [],
-              query.options || {},
+            result = await raceWithAbort(
+              collection.insertMany(query.documents || [], query.options || {}),
             );
             break;
           case "updateMany":
-            result = await collection.updateMany(
-              query.filter || {},
-              query.update || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.updateMany(
+                query.filter || {},
+                query.update || {},
+                query.options || {},
+              ),
             );
             break;
           case "deleteMany":
-            result = await collection.deleteMany(
-              query.filter || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.deleteMany(query.filter || {}, query.options || {}),
             );
             break;
           case "updateOne":
-            result = await collection.updateOne(
-              query.filter || {},
-              query.update || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.updateOne(
+                query.filter || {},
+                query.update || {},
+                query.options || {},
+              ),
             );
             break;
           case "deleteOne":
-            result = await collection.deleteOne(
-              query.filter || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.deleteOne(query.filter || {}, query.options || {}),
             );
             break;
           default:
