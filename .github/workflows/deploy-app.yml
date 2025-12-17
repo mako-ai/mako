@@ -75,6 +75,8 @@ jobs:
       IMAGE_NAME: mako-pr-${{ github.event.pull_request.number }}
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
@@ -210,6 +212,8 @@ jobs:
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
+            --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
+            --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
             --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
             --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
@@ -315,6 +319,8 @@ jobs:
       IMAGE_NAME: mako
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
@@ -422,6 +428,8 @@ jobs:
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
+            --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
+            --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
             --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
             --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \

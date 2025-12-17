@@ -15,11 +15,15 @@
     "lint:fix": "eslint . --ext ts --fix"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.56",
+    "@ai-sdk/google": "^2.0.47",
+    "@ai-sdk/openai": "^2.0.88",
     "@google-cloud/bigquery": "^8.1.1",
     "@google-cloud/cloud-sql-connector": "^1.8.4",
     "@hono/node-server": "^1.14.4",
     "@logtape/logtape": "^1.0.4",
     "@openai/agents": "^0.0.5",
+    "ai": "^5.0.114",
     "arctic": "^3.7.0",
     "axios": "^1.6.2",
     "bcrypt": "^6.0.0",
@@ -28,6 +32,7 @@
     "cron-parser": "^5.3.0",
     "dotenv": "^16.5.0",
     "express-rate-limit": "^7.5.0",
+    "google-auth-library": "^10.4.0",
     "hono": "^4.7.11",
     "inngest": "^3.39.2",
     "inquirer": "^8.2.6",
@@ -38,11 +43,11 @@
     "mysql2": "^3.14.1",
     "openai": "^5.2.0",
     "pg": "^8.16.0",
-    "google-auth-library": "^10.4.0",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "stripe": "^14.25.0",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
