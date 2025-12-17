@@ -1884,9 +1884,13 @@ export class DatabaseConnectionService {
             if (signal.aborted) {
               reject(new Error("Query cancelled"));
             }
-            signal.addEventListener("abort", () => {
-              reject(new Error("Query cancelled"));
-            });
+            signal.addEventListener(
+              "abort",
+              () => {
+                reject(new Error("Query cancelled"));
+              },
+              { once: true },
+            );
           }),
         ]);
       };
