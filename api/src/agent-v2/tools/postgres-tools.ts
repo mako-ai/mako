@@ -1,13 +1,9 @@
 /**
  * Postgres Tools for Agent V2
- * Using Vercel AI SDK's tool() function
+ * Using plain tool definitions to avoid complex type inference
  */
 
-import { tool, Tool } from "ai";
 import { z } from "zod";
-
-// Type helper for creating tools - works around AI SDK type inference issues
-type AnyTool = Tool<any, any>;
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
@@ -75,6 +71,32 @@ const fetchPostgresDatabase = async (
   return database;
 };
 
+// Define schemas separately to avoid inline inference overhead
+const emptySchema = z.object({});
+const connectionIdSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+});
+const connectionAndDbSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  databaseName: z.string().describe("The target database name"),
+});
+const listTablesSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  databaseName: z.string().describe("The target database name"),
+  schema: z.string().describe("The schema name"),
+});
+const describeTableSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  databaseName: z.string().describe("The target database name"),
+  schema: z.string().describe("The schema name"),
+  table: z.string().describe("The table name"),
+});
+const executeQuerySchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  databaseName: z.string().describe("The target database name"),
+  query: z.string().describe("The SQL query to execute"),
+});
+
 // Helper function for listing connections
 async function listPostgresConnectionsImpl(workspaceId: string) {
   const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
@@ -85,9 +107,9 @@ async function listPostgresConnectionsImpl(workspaceId: string) {
   }).sort({ name: 1 });
 
   return databases.map(db => {
-    const connection = (
-      db as unknown as { connection: Record<string, unknown> }
-    ).connection || {};
+    const connection =
+      (db as unknown as { connection: Record<string, unknown> }).connection ||
+      {};
     const host = (connection.host || connection.instanceConnectionName) as
       | string
       | undefined;
@@ -279,48 +301,39 @@ export const createPostgresToolsV2 = (
   workspaceId: string,
   consoles: ConsoleDataV2[],
   preferredConsoleId?: string,
-): Record<string, AnyTool> => {
+) => {
   const consoleTools = createConsoleToolsV2(consoles, preferredConsoleId);
 
   return {
     ...consoleTools,
 
-    pg_list_connections: tool({
+    pg_list_connections: {
       description:
         "Return a list of Postgres database connections available in this workspace.",
-      inputSchema: z.object({}),
+      inputSchema: emptySchema,
       execute: async () => listPostgresConnectionsImpl(workspaceId),
-    }) as AnyTool,
+    },
 
-    pg_list_databases: tool({
+    pg_list_databases: {
       description:
         "List logical databases available in the specified Postgres connection.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-      }),
+      inputSchema: connectionIdSchema,
       execute: async (params: { connectionId: string }) =>
         listDatabasesImpl(params.connectionId, workspaceId),
-    }) as AnyTool,
+    },
 
-    pg_list_schemas: tool({
+    pg_list_schemas: {
       description:
         "List schemas available in the specified Postgres database connection.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        databaseName: z.string().describe("The target database name"),
-      }),
+      inputSchema: connectionAndDbSchema,
       execute: async (params: { connectionId: string; databaseName: string }) =>
         listSchemasImpl(params.connectionId, params.databaseName, workspaceId),
-    }) as AnyTool,
+    },
 
-    pg_list_tables: tool({
+    pg_list_tables: {
       description:
         "List tables for a specific schema within the selected Postgres database.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        databaseName: z.string().describe("The target database name"),
-        schema: z.string().describe("The schema name"),
-      }),
+      inputSchema: listTablesSchema,
       execute: async (params: {
         connectionId: string;
         databaseName: string;
@@ -332,17 +345,12 @@ export const createPostgresToolsV2 = (
           params.schema,
           workspaceId,
         ),
-    }) as AnyTool,
+    },
 
-    pg_describe_table: tool({
+    pg_describe_table: {
       description:
         "Describe a Postgres table, including columns, data types, nullability, and default values.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        databaseName: z.string().describe("The target database name"),
-        schema: z.string().describe("The schema name"),
-        table: z.string().describe("The table name"),
-      }),
+      inputSchema: describeTableSchema,
       execute: async (params: {
         connectionId: string;
         databaseName: string;
@@ -356,16 +364,12 @@ export const createPostgresToolsV2 = (
           params.table,
           workspaceId,
         ),
-    }) as AnyTool,
+    },
 
-    pg_execute_query: tool({
+    pg_execute_query: {
       description:
         "Execute a Postgres SQL query and return the results (adds LIMIT 500 when missing).",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        databaseName: z.string().describe("The target database name"),
-        query: z.string().describe("The SQL query to execute"),
-      }),
+      inputSchema: executeQuerySchema,
       execute: async (params: {
         connectionId: string;
         databaseName: string;
@@ -377,6 +381,6 @@ export const createPostgresToolsV2 = (
           params.query,
           workspaceId,
         ),
-    }) as AnyTool,
+    },
   };
 };

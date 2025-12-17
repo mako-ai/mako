@@ -14,8 +14,17 @@ import { MONGO_PROMPT_V2 } from "./prompts/mongodb";
 import { POSTGRES_PROMPT_V2 } from "./prompts/postgres";
 import { BIGQUERY_PROMPT_V2 } from "./prompts/bigquery";
 
+// Simple tool type to avoid complex AI SDK type inference
+type SimpleTool = {
+  description: string;
+  inputSchema: unknown;
+  execute: (input: unknown) => Promise<unknown>;
+};
+type SimpleToolSet = Record<string, SimpleTool>;
+
 /**
  * Get the appropriate tools for the agent type
+ * Returns tools compatible with streamText
  */
 function getToolsForAgent(
   agentType: AgentKindV2,
@@ -24,21 +33,33 @@ function getToolsForAgent(
     consoles: ConsoleDataV2[];
     consoleId?: string;
   },
-) {
+): SimpleToolSet {
   const { workspaceId, consoles, consoleId } = config;
 
   switch (agentType) {
     case "mongo":
-      return createMongoToolsV2(workspaceId, consoles, consoleId);
+      return createMongoToolsV2(
+        workspaceId,
+        consoles,
+        consoleId,
+      ) as SimpleToolSet;
     case "postgres":
-      return createPostgresToolsV2(workspaceId, consoles, consoleId);
+      return createPostgresToolsV2(
+        workspaceId,
+        consoles,
+        consoleId,
+      ) as SimpleToolSet;
     case "bigquery":
-      return createBigQueryToolsV2(workspaceId, consoles, consoleId);
+      return createBigQueryToolsV2(
+        workspaceId,
+        consoles,
+        consoleId,
+      ) as SimpleToolSet;
     case "triage":
     default:
       // For triage, return just console tools - in a full implementation,
       // this would include handoff tools to specialized agents
-      return createConsoleToolsV2(consoles, consoleId);
+      return createConsoleToolsV2(consoles, consoleId) as SimpleToolSet;
   }
 }
 
@@ -120,20 +141,30 @@ export function detectAgentType(
 export async function streamAgentResponse(params: StreamAgentParams) {
   const { message, workspaceId, consoles, consoleId, agentType } = params;
 
-  const tools = getToolsForAgent(agentType, { workspaceId, consoles, consoleId });
+  const tools = getToolsForAgent(agentType, {
+    workspaceId,
+    consoles,
+    consoleId,
+  });
   const systemPrompt = getPromptForAgent(agentType);
 
   // Build context about available consoles
-  const consoleContext = consoles.length > 0
-    ? `\n\nAvailable consoles:\n${consoles.map((c, i) => 
-        `${i + 1}. "${c.title}" (ID: ${c.id}, Type: ${c.connectionType || "unknown"}${c.databaseName ? `, DB: ${c.databaseName}` : ""})`
-      ).join("\n")}`
-    : "";
+  const consoleContext =
+    consoles.length > 0
+      ? `\n\nAvailable consoles:\n${consoles
+          .map(
+            (c, i) =>
+              `${i + 1}. "${c.title}" (ID: ${c.id}, Type: ${c.connectionType || "unknown"}${c.databaseName ? `, DB: ${c.databaseName}` : ""})`,
+          )
+          .join("\n")}`
+      : "";
 
+  // Tools are structurally compatible at runtime - cast through unknown to bypass type checking
   const result = streamText({
     model: openai("gpt-4o"),
     system: systemPrompt + consoleContext,
     messages: [{ role: "user", content: message }],
+    // @ts-expect-error - Tools are structurally compatible but AI SDK types are too complex
     tools,
     stopWhen: stepCountIs(10), // Allow up to 10 tool usage steps
     onStepFinish: ({ toolCalls, toolResults }) => {

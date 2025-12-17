@@ -1,13 +1,9 @@
 /**
  * MongoDB Tools for Agent V2
- * Using Vercel AI SDK's tool() function
+ * Using plain tool definitions to avoid complex type inference
  */
 
-import { tool, Tool } from "ai";
 import { z } from "zod";
-
-// Type helper for creating tools - works around AI SDK type inference issues
-type AnyTool = Tool<any, any>;
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
@@ -30,16 +26,18 @@ const inferBsonType = (value: unknown): string => {
     value !== null &&
     "_bsontype" in value &&
     (value as { _bsontype: string })._bsontype === "ObjectId"
-  )
-    {return "objectId";}
+  ) {
+    return "objectId";
+  }
   if (value instanceof Date) return "date";
   if (
     typeof value === "object" &&
     value !== null &&
     "_bsontype" in value &&
     (value as { _bsontype: string })._bsontype === "Decimal128"
-  )
-    {return "decimal";}
+  ) {
+    return "decimal";
+  }
   if (typeof value === "object") return "object";
   return typeof value;
 };
@@ -100,7 +98,8 @@ const truncateValue = (value: unknown, depth = 0): unknown => {
     }
 
     if (keys.length > MAX_OBJECT_KEYS) {
-      truncatedObj["_truncated"] = `${keys.length - MAX_OBJECT_KEYS} more keys omitted`;
+      truncatedObj["_truncated"] =
+        `${keys.length - MAX_OBJECT_KEYS} more keys omitted`;
     }
 
     return truncatedObj;
@@ -149,6 +148,26 @@ const truncateQueryResults = (results: unknown): unknown => {
   return results;
 };
 
+// Define schemas separately to avoid inline inference overhead
+const emptySchema = z.object({});
+const connectionIdSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+});
+const connectionAndDbSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  databaseName: z.string().describe("The target database name"),
+});
+const inspectCollectionSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  collectionName: z.string().describe("The collection name to inspect"),
+  databaseName: z.string().describe("The target database name"),
+});
+const executeQuerySchema = z.object({
+  query: z.string().describe("The MongoDB query to execute"),
+  connectionId: z.string().describe("The target connection ID"),
+  databaseName: z.string().describe("The target database name"),
+});
+
 // Helper implementations
 async function listMongoConnectionsImpl(workspaceId: string) {
   if (!Types.ObjectId.isValid(workspaceId)) {
@@ -164,9 +183,8 @@ async function listMongoConnectionsImpl(workspaceId: string) {
       id: db._id.toString(),
       name: db.name,
       description: "",
-      databaseName: (
-        db as unknown as { connection: { database?: string } }
-      ).connection?.database,
+      databaseName: (db as unknown as { connection: { database?: string } })
+        .connection?.database,
       type: db.type,
       active: true,
       displayName:
@@ -237,7 +255,9 @@ async function listCollectionsImpl(
     database as Parameters<typeof databaseConnectionService.getConnection>[0],
   );
   const db = connection.db(databaseName);
-  const collections = await db.listCollections({ type: "collection" }).toArray();
+  const collections = await db
+    .listCollections({ type: "collection" })
+    .toArray();
   return collections.map(
     (col: { name: string; type?: string; options?: unknown }) => ({
       name: col.name,
@@ -367,48 +387,43 @@ export const createMongoToolsV2 = (
   workspaceId: string,
   consoles: ConsoleDataV2[],
   preferredConsoleId?: string,
-): Record<string, AnyTool> => {
+) => {
   const consoleTools = createConsoleToolsV2(consoles, preferredConsoleId);
 
   return {
     ...consoleTools,
 
-    list_connections: tool({
+    list_connections: {
       description:
         "Return a list of all active MongoDB connections available for the current workspace.",
-      inputSchema: z.object({}),
+      inputSchema: emptySchema,
       execute: async () => listMongoConnectionsImpl(workspaceId),
-    }) as AnyTool,
+    },
 
-    list_databases: tool({
+    list_databases: {
       description:
         "List logical databases available on the MongoDB server for a specific connection.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-      }),
+      inputSchema: connectionIdSchema,
       execute: async (params: { connectionId: string }) =>
         listMongoDatabasesImpl(params.connectionId, workspaceId),
-    }) as AnyTool,
+    },
 
-    list_collections: tool({
+    list_collections: {
       description:
         "Return a list of collections for the provided connection and database.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        databaseName: z.string().describe("The target database name"),
-      }),
+      inputSchema: connectionAndDbSchema,
       execute: async (params: { connectionId: string; databaseName: string }) =>
-        listCollectionsImpl(params.connectionId, params.databaseName, workspaceId),
-    }) as AnyTool,
+        listCollectionsImpl(
+          params.connectionId,
+          params.databaseName,
+          workspaceId,
+        ),
+    },
 
-    inspect_collection: tool({
+    inspect_collection: {
       description:
         "Sample documents from a collection to infer field names and BSON data types. Returns the sample set and a schema summary.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        collectionName: z.string().describe("The collection name to inspect"),
-        databaseName: z.string().describe("The target database name"),
-      }),
+      inputSchema: inspectCollectionSchema,
       execute: async (params: {
         connectionId: string;
         collectionName: string;
@@ -420,16 +435,12 @@ export const createMongoToolsV2 = (
           params.databaseName,
           workspaceId,
         ),
-    }) as AnyTool,
+    },
 
-    execute_query: tool({
+    execute_query: {
       description:
         "Execute an arbitrary MongoDB query and return the results. The query should be written in JavaScript using MongoDB Node.js driver syntax.",
-      inputSchema: z.object({
-        query: z.string().describe("The MongoDB query to execute"),
-        connectionId: z.string().describe("The target connection ID"),
-        databaseName: z.string().describe("The target database name"),
-      }),
+      inputSchema: executeQuerySchema,
       execute: async (params: {
         query: string;
         connectionId: string;
@@ -441,6 +452,6 @@ export const createMongoToolsV2 = (
           params.databaseName,
           workspaceId,
         ),
-    }) as AnyTool,
+    },
   };
 };

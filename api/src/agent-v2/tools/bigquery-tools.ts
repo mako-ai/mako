@@ -1,13 +1,9 @@
 /**
  * BigQuery Tools for Agent V2
- * Using Vercel AI SDK's tool() function
+ * Using plain tool definitions to avoid complex type inference
  */
 
-import { tool, Tool } from "ai";
 import { z } from "zod";
-
-// Type helper for creating tools - works around AI SDK type inference issues
-type AnyTool = Tool<any, any>;
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
@@ -21,16 +17,46 @@ const appendLimitIfMissing = (sql: string): string => {
   return `${trimmed}\nLIMIT 500;`;
 };
 
+// Escape identifiers for BigQuery to prevent SQL injection
+const escapeIdentifier = (value: string): string => value.replace(/`/g, "\\`");
+
+const escapeLiteral = (value: string): string => value.replace(/'/g, "\\'");
+
 const buildInspectTableSql = (
   projectId: string,
   datasetId: string,
   tableId: string,
-) =>
-  "SELECT column_name, data_type, is_nullable, ordinal_position\n" +
-  `FROM \`${projectId}.${datasetId}.INFORMATION_SCHEMA.COLUMNS\`\n` +
-  `WHERE table_name = '${tableId}'\n` +
-  "ORDER BY ordinal_position\n" +
-  "LIMIT 1000";
+) => {
+  const safeProject = escapeIdentifier(projectId);
+  const safeDataset = escapeIdentifier(datasetId);
+  const safeTable = escapeLiteral(tableId);
+  return (
+    "SELECT column_name, data_type, is_nullable, ordinal_position\n" +
+    `FROM \`${safeProject}.${safeDataset}.INFORMATION_SCHEMA.COLUMNS\`\n` +
+    `WHERE table_name = '${safeTable}'\n` +
+    "ORDER BY ordinal_position\n" +
+    "LIMIT 1000"
+  );
+};
+
+// Define schemas separately to avoid inline inference overhead
+const emptySchema = z.object({});
+const connectionIdSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+});
+const listTablesSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  datasetId: z.string().describe("The dataset ID"),
+});
+const inspectTableSchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  datasetId: z.string().describe("The dataset ID"),
+  tableId: z.string().describe("The table ID"),
+});
+const executeQuerySchema = z.object({
+  connectionId: z.string().describe("The connection ID"),
+  query: z.string().describe("The SQL query to execute"),
+});
 
 // Helper functions for implementations
 async function listBigQueryConnectionsImpl(workspaceId: string) {
@@ -44,9 +70,9 @@ async function listBigQueryConnectionsImpl(workspaceId: string) {
   return databases
     .filter(db => db.type === "bigquery")
     .map(db => {
-      const conn = (
-        db as unknown as { connection?: { project_id?: string } }
-      ).connection || {};
+      const conn =
+        (db as unknown as { connection?: { project_id?: string } })
+          .connection || {};
       const projectId = conn.project_id || "unknown-project";
       return {
         id: db._id.toString(),
@@ -188,47 +214,38 @@ export const createBigQueryToolsV2 = (
   workspaceId: string,
   consoles: ConsoleDataV2[],
   preferredConsoleId?: string,
-): Record<string, AnyTool> => {
+) => {
   const consoleTools = createConsoleToolsV2(consoles, preferredConsoleId);
 
   return {
     ...consoleTools,
 
-    bq_list_connections: tool({
+    bq_list_connections: {
       description:
         "Return a list of all active BigQuery connections for the current workspace.",
-      inputSchema: z.object({}),
+      inputSchema: emptySchema,
       execute: async () => listBigQueryConnectionsImpl(workspaceId),
-    }) as AnyTool,
+    },
 
-    bq_list_datasets: tool({
+    bq_list_datasets: {
       description:
         "List BigQuery datasets for the provided connection identifier.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-      }),
+      inputSchema: connectionIdSchema,
       execute: async (params: { connectionId: string }) =>
         listDatasetsImpl(params.connectionId, workspaceId),
-    }) as AnyTool,
+    },
 
-    bq_list_tables: tool({
+    bq_list_tables: {
       description: "List BigQuery tables for a given dataset.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        datasetId: z.string().describe("The dataset ID"),
-      }),
+      inputSchema: listTablesSchema,
       execute: async (params: { connectionId: string; datasetId: string }) =>
         listTablesImpl(params.connectionId, params.datasetId, workspaceId),
-    }) as AnyTool,
+    },
 
-    bq_inspect_table: tool({
+    bq_inspect_table: {
       description:
         "Return columns with data types and nullability for a given table via INFORMATION_SCHEMA.",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        datasetId: z.string().describe("The dataset ID"),
-        tableId: z.string().describe("The table ID"),
-      }),
+      inputSchema: inspectTableSchema,
       execute: async (params: {
         connectionId: string;
         datasetId: string;
@@ -240,17 +257,14 @@ export const createBigQueryToolsV2 = (
           params.tableId,
           workspaceId,
         ),
-    }) as AnyTool,
+    },
 
-    bq_execute_query: tool({
+    bq_execute_query: {
       description:
         "Execute a BigQuery SQL query and return the results (LIMIT 500 enforced by default).",
-      inputSchema: z.object({
-        connectionId: z.string().describe("The connection ID"),
-        query: z.string().describe("The SQL query to execute"),
-      }),
+      inputSchema: executeQuerySchema,
       execute: async (params: { connectionId: string; query: string }) =>
         executeQueryImpl(params.connectionId, params.query, workspaceId),
-    }) as AnyTool,
+    },
   };
 };
