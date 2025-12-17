@@ -70,6 +70,15 @@ function MainApp() {
     const { activeConsoleId, consoleTabs, addConsoleTab, setActiveConsole } =
       useConsoleStore.getState();
 
+    const realConsoleTabs = (consoleTabs || []).filter(
+      (t: any) => t?.kind === undefined || t?.kind === "console",
+    );
+    const activeRealConsoleId = realConsoleTabs.some(
+      (t: any) => t.id === activeConsoleId,
+    )
+      ? activeConsoleId
+      : null;
+
     // Handle console creation
     if (modification.action === "create" && modification.title) {
       const newConsoleId = addConsoleTab({
@@ -82,14 +91,22 @@ function MainApp() {
     }
 
     // Use the provided consoleId if available, otherwise use the active console
-    let targetConsoleId = modification.consoleId || activeConsoleId;
+    let targetConsoleId = modification.consoleId || activeRealConsoleId;
     let isNewConsole = false;
+
+    // If a consoleId was provided but doesn't exist as a real console tab, fall back.
+    if (
+      targetConsoleId &&
+      !realConsoleTabs.some((t: any) => t.id === targetConsoleId)
+    ) {
+      targetConsoleId = activeRealConsoleId;
+    }
 
     if (!targetConsoleId) {
       // If no active console, try to open one
-      if (consoleTabs.length > 0) {
-        // Focus the first available console
-        targetConsoleId = consoleTabs[0].id;
+      if (realConsoleTabs.length > 0) {
+        // Focus the first available real console
+        targetConsoleId = realConsoleTabs[0].id;
         setActiveConsole(targetConsoleId);
       } else {
         // Create a new console if none exist

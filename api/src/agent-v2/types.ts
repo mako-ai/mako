@@ -3,7 +3,12 @@
  * Using Vercel AI SDK patterns
  */
 
-export type AgentKindV2 = "mongo" | "bigquery" | "postgres" | "triage";
+export type AgentKindV2 =
+  | "universal"
+  | "mongo"
+  | "bigquery"
+  | "postgres"
+  | "triage";
 
 export interface ConsoleDataV2 {
   id: string;
@@ -41,6 +46,7 @@ export interface StreamAgentParams {
   agentType: AgentKindV2;
   sessionId?: string;
   modelId?: string;
+  workspaceCustomPrompt?: string;
 }
 
 export interface ConsoleModificationV2 {
@@ -52,11 +58,12 @@ export interface ConsoleModificationV2 {
 export interface ToolResultBase {
   success: boolean;
   _eventType?: string;
+  error?: string;
 }
 
 export interface ConsoleModificationResult extends ToolResultBase {
-  _eventType: "console_modification";
-  modification: ConsoleModificationV2;
+  _eventType?: "console_modification";
+  modification?: ConsoleModificationV2;
   consoleId?: string;
   message?: string;
 }

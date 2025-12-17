@@ -49,6 +49,17 @@ export const createConsoleToolsV2 = (
       position: number | null;
     }): Promise<ConsoleModificationResult> => {
       const { action, content, position } = input;
+
+      // If the client has no real consoles open, we cannot safely modify anything.
+      // Return a structured failure so the model can call `create_console` first.
+      if (!consoles || consoles.length === 0) {
+        return {
+          success: false,
+          error:
+            "No console is currently open. Call create_console first, then write the final query there.",
+        };
+      }
+
       if (
         action === "insert" &&
         (position === undefined || position === null)
@@ -64,7 +75,8 @@ export const createConsoleToolsV2 = (
           content,
           position: position ?? undefined,
         },
-        consoleId: preferredConsoleId,
+        // Prefer pinned console, otherwise fall back to the first provided console
+        consoleId: preferredConsoleId ?? consoles[0]?.id,
         message: `✓ Console ${action}d successfully`,
       };
     },

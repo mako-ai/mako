@@ -20,7 +20,11 @@ import {
   updateChatWithResponse,
   persistChatError,
 } from "../services/agent-thread.service";
-import { Chat, DatabaseConnection } from "../database/workspace-schema";
+import {
+  Chat,
+  DatabaseConnection,
+  Workspace,
+} from "../database/workspace-schema";
 import {
   shouldGenerateTitle,
   generateChatTitle,
@@ -162,6 +166,12 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
           consoleId ||
           (pinned as { pinnedConsoleId?: string } | null)?.pinnedConsoleId;
 
+        // Workspace custom prompt (from Settings) - appended to system prompt for context
+        const workspace = await Workspace.findById(workspaceId).select({
+          settings: 1,
+        });
+        const workspaceCustomPrompt = workspace?.settings?.customPrompt;
+
         // Detect agent type based on context
         const workspaceHasMongoDB = workspaceDatabases.some(
           db => db.type === "mongodb",
@@ -185,15 +195,22 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
           workspaceHasPostgres,
         });
 
-        // Use our detection or fall back to the selected agent
+        // Universal v2: always run the universal agent (single prompt + unified tools).
+        // We still compute a UI-friendly "mode" (mongo/postgres/bigquery/triage) for display
+        // and for persisting the legacy activeAgent field on the chat.
         const detectedType = detectAgentType(enrichedConsoles, message);
-        const agentType =
-          detectedType !== "triage" ? detectedType : selectedAgent;
+        const uiAgentMode: AgentKind =
+          detectedType !== "triage"
+            ? (detectedType as AgentKind)
+            : selectedAgent;
+        const agentType = "universal" as const;
 
-        console.log(`[Agent V2] Using agent type: ${agentType}`);
+        console.log(
+          `[Agent V2] Using agent type: ${agentType} (mode: ${uiAgentMode})`,
+        );
 
-        // Send agent mode event
-        sendEvent({ type: "agent_mode", mode: agentType });
+        // Send agent mode event (legacy modes for UI compatibility)
+        sendEvent({ type: "agent_mode", mode: uiAgentMode });
 
         // Stream the response using Vercel AI SDK with proper conversation history
         const result = await streamAgentResponse({
@@ -202,9 +219,10 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
           workspaceId,
           consoles: enrichedConsoles,
           consoleId: effectiveConsoleId,
-          agentType: agentType as "mongo" | "bigquery" | "postgres" | "triage",
+          agentType,
           sessionId: currentSessionId,
           modelId,
+          workspaceCustomPrompt,
         });
 
         // Process the stream
@@ -330,7 +348,7 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             currentSessionId,
             assistantReply,
             toolCalls.length > 0 ? toolCalls : undefined,
-            agentType,
+            uiAgentMode,
           );
         }
 
