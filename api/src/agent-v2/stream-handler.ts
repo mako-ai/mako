@@ -325,6 +325,9 @@ export function processToolResult(result: unknown): {
         consoleId: resultObj.consoleId,
         title: resultObj.title,
         content: resultObj.content,
+        connectionId: resultObj.connectionId,
+        databaseId: resultObj.databaseId,
+        databaseName: resultObj.databaseName,
       },
     };
   }

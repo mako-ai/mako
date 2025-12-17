@@ -320,12 +320,18 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
                   consoleId: string;
                   title: string;
                   content: string;
+                  connectionId?: string;
+                  databaseId?: string;
+                  databaseName?: string;
                 };
                 sendEvent({
                   type: "console_creation",
                   consoleId: data.consoleId,
                   title: data.title,
                   content: data.content,
+                  connectionId: data.connectionId,
+                  databaseId: data.databaseId,
+                  databaseName: data.databaseName,
                 });
               }
             }

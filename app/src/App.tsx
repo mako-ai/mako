@@ -63,7 +63,13 @@ function MainApp() {
 
   // Handle console modification from AI
   const handleConsoleModification = async (
-    modification: ConsoleModification & { consoleId?: string; title?: string },
+    modification: ConsoleModification & {
+      consoleId?: string;
+      title?: string;
+      connectionId?: string;
+      databaseId?: string;
+      databaseName?: string;
+    },
   ) => {
     // handleConsoleModification called
 
@@ -82,9 +88,14 @@ function MainApp() {
     // Handle console creation
     if (modification.action === "create" && modification.title) {
       const newConsoleId = addConsoleTab({
+        id: modification.consoleId,
         title: modification.title,
         content: modification.content || "",
         initialContent: modification.content || "",
+        connectionId: modification.connectionId,
+        databaseId: modification.databaseId,
+        databaseName: modification.databaseName,
+        kind: "console",
       });
       setActiveConsole(newConsoleId);
       return;

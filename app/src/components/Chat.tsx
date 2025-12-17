@@ -1028,6 +1028,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                   content: parsed.content || "",
                   consoleId: parsed.consoleId,
                   title: parsed.title,
+                  connectionId: parsed.connectionId,
+                  databaseId: parsed.databaseId,
+                  databaseName: parsed.databaseName,
                 });
               }
             } else if (parsed.type === "handoff") {

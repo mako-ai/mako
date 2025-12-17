@@ -73,6 +73,9 @@ export interface ConsoleCreationResult extends ToolResultBase {
   consoleId: string;
   title: string;
   content: string;
+  connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
   message?: string;
 }
 
