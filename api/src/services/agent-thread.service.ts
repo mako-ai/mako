@@ -1,7 +1,7 @@
 import { ObjectId } from "mongodb";
 import { v4 as uuidv4 } from "uuid";
 import { Chat } from "../database/workspace-schema";
-import { AgentKind } from "../agent/types";
+import type { AgentKind } from "../agent-v2";
 
 const CONTEXT_WINDOW_SIZE = 10;
 const MAX_CONTEXT_LENGTH = 4000;

@@ -5,6 +5,8 @@
 
 // Types
 export type {
+  AgentKind,
+  DatabaseAgentKind,
   ConsoleDataV2,
   StreamAgentParams,
   ConversationMessage,

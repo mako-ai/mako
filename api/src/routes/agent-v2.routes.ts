@@ -10,9 +10,9 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   streamAgentResponse,
   processToolResult,
-  ConsoleDataV2,
   getAvailableModels,
 } from "../agent-v2";
+import type { ConsoleDataV2, AgentKind } from "../agent-v2/types";
 import {
   getOrCreateThreadContext,
   persistUserMessage,
@@ -29,7 +29,6 @@ import {
   generateChatTitle,
 } from "../services/title-generator";
 import { selectInitialAgent } from "../services/agent-selection.service";
-import type { AgentKind } from "../agent/types";
 
 export const agentV2Routes = new Hono();
 

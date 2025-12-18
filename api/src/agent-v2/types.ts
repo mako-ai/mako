@@ -3,6 +3,16 @@
  * Using Vercel AI SDK patterns
  */
 
+/**
+ * Database agent types for routing/selection
+ */
+export type DatabaseAgentKind = "mongo" | "bigquery" | "postgres" | "sqlite";
+
+/**
+ * All agent types including triage
+ */
+export type AgentKind = DatabaseAgentKind | "triage";
+
 export interface ConsoleDataV2 {
   id: string;
   title: string;

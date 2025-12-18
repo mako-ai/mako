@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { Message, AttachedContext } from "../types/chat";
+import { Message } from "../types/chat";
 
 /*********************
  * State definitions *
@@ -10,7 +10,6 @@ export interface ChatSession {
   id: string;
   title: string;
   messages: Message[];
-  attachedContext: AttachedContext[];
   createdAt: Date;
   lastMessageAt?: Date;
   error?: string | null;
@@ -130,7 +129,6 @@ const getInitialState = (): GlobalState => {
           id: defaultChatId,
           title: "New Chat",
           messages: [],
-          attachedContext: [],
           createdAt: new Date(),
         },
       },
@@ -183,10 +181,6 @@ export type Action =
   | {
       type: "UPDATE_CONSOLE_FILE_PATH";
       payload: { id: string; filePath: string };
-    }
-  | {
-      type: "SET_ATTACHED_CONTEXT";
-      payload: { chatId: string; items: AttachedContext[] };
     }
   | { type: "ADD_MESSAGE"; payload: { chatId: string; message: Message } }
   | {
@@ -273,22 +267,6 @@ export const reducer = (state: GlobalState, action: Action): void => {
         metadata,
       };
       state.consoles.activeTabId = id;
-
-      // auto-attach console context for virgin chat
-      if (state.chat.currentChatId) {
-        const chat = state.chat.sessions[state.chat.currentChatId];
-        if (chat && chat.messages.length === 0) {
-          chat.attachedContext = [
-            {
-              id,
-              type: "console",
-              title,
-              content,
-              metadata: { consoleId: id },
-            },
-          ];
-        }
-      }
       break;
     }
     case "CLOSE_CONSOLE_TAB": {
@@ -297,84 +275,15 @@ export const reducer = (state: GlobalState, action: Action): void => {
         state.consoles.activeTabId =
           Object.keys(state.consoles.tabs)[0] || null;
       }
-
-      // Handle chat context for virgin chats
-      if (state.chat.currentChatId) {
-        const chat = state.chat.sessions[state.chat.currentChatId];
-        if (chat && chat.messages.length === 0) {
-          if (state.consoles.activeTabId) {
-            // Another console became active - attach it to virgin chat
-            const newActiveTab =
-              state.consoles.tabs[state.consoles.activeTabId];
-            if (newActiveTab) {
-              chat.attachedContext = [
-                {
-                  id: newActiveTab.id,
-                  type: "console",
-                  title: newActiveTab.title,
-                  content: newActiveTab.content,
-                  metadata: { consoleId: newActiveTab.id },
-                },
-              ];
-            }
-          } else {
-            // No tabs remain - clear context in virgin chat
-            chat.attachedContext = [];
-          }
-        }
-      }
       break;
     }
     case "FOCUS_CONSOLE_TAB": {
       state.consoles.activeTabId = action.payload.id;
-
-      // Handle chat context attachment for virgin chats
-      if (state.chat.currentChatId) {
-        const chat = state.chat.sessions[state.chat.currentChatId];
-        if (chat && chat.messages.length === 0) {
-          if (action.payload.id) {
-            // Console focused - attach it to virgin chat
-            const tab = state.consoles.tabs[action.payload.id];
-            if (tab) {
-              chat.attachedContext = [
-                {
-                  id: tab.id,
-                  type: "console",
-                  title: tab.title,
-                  content: tab.content,
-                  metadata: { consoleId: tab.id },
-                },
-              ];
-            }
-          } else {
-            // No console focused - clear virgin chat context
-            chat.attachedContext = [];
-          }
-        }
-      }
       break;
     }
     case "UPDATE_CONSOLE_CONTENT": {
       const tab = state.consoles.tabs[action.payload.id];
       if (tab) tab.content = action.payload.content;
-
-      // Update any attached console context in current chat
-      if (state.chat.currentChatId) {
-        const chat = state.chat.sessions[state.chat.currentChatId];
-        if (chat && tab) {
-          const contextIndex = chat.attachedContext.findIndex(
-            ctx =>
-              ctx.type === "console" &&
-              ctx.metadata?.consoleId === action.payload.id,
-          );
-          if (contextIndex !== -1) {
-            chat.attachedContext[contextIndex] = {
-              ...chat.attachedContext[contextIndex],
-              content: `Console: ${tab.title}\n\nCurrent Content:\n${tab.content}`,
-            };
-          }
-        }
-      }
       break;
     }
     case "UPDATE_CONSOLE_TITLE": {
@@ -426,14 +335,10 @@ export const reducer = (state: GlobalState, action: Action): void => {
     }
     case "CREATE_CHAT": {
       const { id } = action.payload;
-      // If current chat is empty with no context, reuse it
+      // If current chat is empty, reuse it
       if (state.chat.currentChatId) {
         const currentChat = state.chat.sessions[state.chat.currentChatId];
-        if (
-          currentChat &&
-          currentChat.messages.length === 0 &&
-          currentChat.attachedContext.length === 0
-        ) {
+        if (currentChat && currentChat.messages.length === 0) {
           // Just clear any error and return existing id
           currentChat.error = null;
           return;
@@ -445,7 +350,6 @@ export const reducer = (state: GlobalState, action: Action): void => {
         id,
         title: "New Chat",
         messages: [],
-        attachedContext: [],
         createdAt: new Date(),
       };
       state.chat.currentChatId = id;
@@ -472,12 +376,6 @@ export const reducer = (state: GlobalState, action: Action): void => {
         const msg = chat.messages.find(m => m.id === messageId);
         if (msg) msg.content += delta;
       }
-      break;
-    }
-    case "SET_ATTACHED_CONTEXT": {
-      const { chatId, items } = action.payload;
-      const chat = state.chat.sessions[chatId];
-      if (chat) chat.attachedContext = items;
       break;
     }
     case "SET_LOADING": {
@@ -695,7 +593,6 @@ export const useAppStore = create<
               id: newChatId,
               title: "New Chat",
               messages: [],
-              attachedContext: [],
               createdAt: new Date(),
             };
             data.state = {
