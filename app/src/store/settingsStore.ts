@@ -14,6 +14,10 @@ interface SettingsState {
   // General settings
   theme: "light" | "dark" | "system";
   setTheme: (theme: "light" | "dark" | "system") => void;
+
+  // Chat version toggle (v1 = original, v3 = AI SDK useChat)
+  useChatV3: boolean;
+  setUseChatV3: (useV3: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -26,6 +30,10 @@ export const useSettingsStore = create<SettingsState>()(
       // Theme defaults to system
       theme: "system",
       setTheme: theme => set({ theme: theme }),
+
+      // Chat version toggle (default to original v1)
+      useChatV3: false,
+      setUseChatV3: useV3 => set({ useChatV3: useV3 }),
     }),
     {
       name: "settings-storage",
@@ -33,6 +41,7 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: state => ({
         selectedModelId: state.selectedModelId,
         theme: state.theme,
+        useChatV3: state.useChatV3,
       }),
     },
   ),

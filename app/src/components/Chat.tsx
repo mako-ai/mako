@@ -19,6 +19,8 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Switch,
+  Tooltip,
 } from "@mui/material";
 import SendIcon from "@mui/icons-material/Send";
 import ReactMarkdown from "react-markdown";
@@ -456,6 +458,8 @@ interface ChatProps {
 const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
+  const useChatV3 = useSettingsStore(s => s.useChatV3);
+  const setUseChatV3 = useSettingsStore(s => s.setUseChatV3);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1053,7 +1057,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             sx={{
               flexGrow: 1,
               overflow: "hidden",
-              maxWidth: "calc(100% - 120px)",
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
             }}
           >
             <Typography
@@ -1066,6 +1072,22 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             >
               Chat
             </Typography>
+            <Tooltip
+              title="Switch to AI SDK v3 (experimental)"
+              placement="bottom"
+            >
+              <Switch
+                size="small"
+                checked={useChatV3}
+                onChange={e => setUseChatV3(e.target.checked)}
+                sx={{ ml: 0.5 }}
+              />
+            </Tooltip>
+            {useChatV3 && (
+              <Typography variant="caption" color="text.secondary">
+                v3
+              </Typography>
+            )}
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
             <IconButton size="small" onClick={createNewSession}>
