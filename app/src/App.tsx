@@ -7,7 +7,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
-import { useAppStore, useChatStore } from "./store";
+import { useAppStore } from "./store";
 import { useConsoleStore } from "./store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import Chat from "./components/Chat";
@@ -151,7 +151,6 @@ function MainApp() {
     title: string,
     content: string,
     connectionId?: string, // DatabaseConnection ID (renamed from databaseId)
-    extraContextItems: any[] = [],
     filePath?: string,
     consoleId?: string, // Add optional consoleId parameter
     isPlaceholder?: boolean,
@@ -177,16 +176,6 @@ function MainApp() {
       setActiveConsole(existing.id);
       // Update the content in case it changed on the server
       updateConsoleContent(existing.id, content);
-      useChatStore.getState().ensureContextItems([
-        {
-          id: existing.id,
-          type: "console",
-          title,
-          content,
-          metadata: { consoleId: existing.id, filePath },
-        },
-        ...extraContextItems,
-      ]);
       return;
     }
 
@@ -215,17 +204,6 @@ function MainApp() {
       metadata: queryOptions ? { queryOptions } : undefined,
     });
     setActiveConsole(id);
-
-    useChatStore.getState().ensureContextItems([
-      {
-        id,
-        type: "console",
-        title,
-        content,
-        metadata: { consoleId: id, filePath },
-      },
-      ...extraContextItems,
-    ]);
   };
 
   // Left pane content renderer
@@ -261,18 +239,6 @@ function MainApp() {
                 collection.name,
                 prefill,
                 dbId, // connectionId
-                [
-                  {
-                    id: "collection-" + collection.name,
-                    type: "collection",
-                    title: collection.name,
-                    content: `Collection: ${collection.name}`,
-                    metadata: {
-                      connectionId: dbId,
-                      collectionName: collection.name,
-                    },
-                  },
-                ],
                 undefined, // filePath
                 undefined, // consoleId
                 undefined, // isPlaceholder
@@ -297,7 +263,6 @@ function MainApp() {
                 path,
                 content,
                 connectionId,
-                [],
                 path,
                 consoleId,
                 isPlaceholder,

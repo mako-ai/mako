@@ -14,19 +14,11 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import type {
   StreamAgentParams,
-  AgentKindV2,
   ConsoleDataV2,
   ConversationMessage,
 } from "./types";
 import { createUniversalToolsV2 } from "./tools/universal-tools";
-import { createMongoToolsV2 } from "./tools/mongodb-tools";
-import { createPostgresToolsV2 } from "./tools/postgres-tools";
-import { createBigQueryToolsV2 } from "./tools/bigquery-tools";
-import { createConsoleToolsV2 } from "./tools/console-tools";
 import { UNIVERSAL_PROMPT_V2 } from "./prompts/universal";
-import { MONGO_PROMPT_V2 } from "./prompts/mongodb";
-import { POSTGRES_PROMPT_V2 } from "./prompts/postgres";
-import { BIGQUERY_PROMPT_V2 } from "./prompts/bigquery";
 import { getModelById } from "./ai-models";
 
 /**
@@ -70,124 +62,20 @@ type SimpleTool = {
 type SimpleToolSet = Record<string, SimpleTool>;
 
 /**
- * Get the appropriate tools for the agent type
- * Returns tools compatible with streamText
+ * Get the universal tools for the agent
+ * Always returns the full universal toolset (MongoDB + SQL)
  */
-function getToolsForAgent(
-  agentType: AgentKindV2,
-  config: {
-    workspaceId: string;
-    consoles: ConsoleDataV2[];
-    consoleId?: string;
-  },
-): SimpleToolSet {
+function getToolsForAgent(config: {
+  workspaceId: string;
+  consoles: ConsoleDataV2[];
+  consoleId?: string;
+}): SimpleToolSet {
   const { workspaceId, consoles, consoleId } = config;
-
-  switch (agentType) {
-    case "universal":
-      return createUniversalToolsV2(
-        workspaceId,
-        consoles,
-        consoleId,
-      ) as SimpleToolSet;
-    case "mongo":
-      return createMongoToolsV2(
-        workspaceId,
-        consoles,
-        consoleId,
-      ) as SimpleToolSet;
-    case "postgres":
-      return createPostgresToolsV2(
-        workspaceId,
-        consoles,
-        consoleId,
-      ) as SimpleToolSet;
-    case "bigquery":
-      return createBigQueryToolsV2(
-        workspaceId,
-        consoles,
-        consoleId,
-      ) as SimpleToolSet;
-    case "triage":
-    default:
-      // For triage, return just console tools - in a full implementation,
-      // this would include handoff tools to specialized agents
-      return createConsoleToolsV2(consoles, consoleId) as SimpleToolSet;
-  }
-}
-
-/**
- * Get the appropriate system prompt for the agent type
- */
-function getPromptForAgent(agentType: AgentKindV2): string {
-  switch (agentType) {
-    case "universal":
-      return UNIVERSAL_PROMPT_V2;
-    case "mongo":
-      return MONGO_PROMPT_V2;
-    case "postgres":
-      return POSTGRES_PROMPT_V2;
-    case "bigquery":
-      return BIGQUERY_PROMPT_V2;
-    case "triage":
-    default:
-      return `You are a helpful database assistant. Based on the user's question and the available consoles, help them write and execute database queries. If you're unsure which database type to use, examine the console's connection type.`;
-  }
-}
-
-/**
- * Detect the agent type from consoles and message content
- */
-export function detectAgentType(
-  consoles: ConsoleDataV2[],
-  message: string,
-): AgentKindV2 {
-  // Check message for explicit database mentions
-  const messageLower = message.toLowerCase();
-  if (
-    messageLower.includes("mongodb") ||
-    messageLower.includes("mongo") ||
-    messageLower.includes("aggregate") ||
-    messageLower.includes("collection")
-  ) {
-    return "mongo";
-  }
-  if (
-    messageLower.includes("postgres") ||
-    messageLower.includes("postgresql") ||
-    messageLower.includes("pg_")
-  ) {
-    return "postgres";
-  }
-  if (
-    messageLower.includes("bigquery") ||
-    messageLower.includes("bq_") ||
-    messageLower.includes("google cloud")
-  ) {
-    return "bigquery";
-  }
-
-  // Check active console's connection type
-  if (consoles.length > 0) {
-    const activeConsole = consoles[0];
-    const connectionType = activeConsole.connectionType?.toLowerCase();
-
-    if (connectionType === "mongodb") {
-      return "mongo";
-    }
-    if (
-      connectionType === "postgresql" ||
-      connectionType === "cloudsql-postgres"
-    ) {
-      return "postgres";
-    }
-    if (connectionType === "bigquery") {
-      return "bigquery";
-    }
-  }
-
-  // Default to triage if we can't determine
-  return "triage";
+  return createUniversalToolsV2(
+    workspaceId,
+    consoles,
+    consoleId,
+  ) as SimpleToolSet;
 }
 
 /**
@@ -222,17 +110,16 @@ export async function streamAgentResponse(params: StreamAgentParams) {
     workspaceId,
     consoles,
     consoleId,
-    agentType,
     modelId,
     workspaceCustomPrompt,
   } = params;
 
-  const tools = getToolsForAgent(agentType, {
+  const tools = getToolsForAgent({
     workspaceId,
     consoles,
     consoleId,
   });
-  const systemPrompt = getPromptForAgent(agentType);
+  const systemPrompt = UNIVERSAL_PROMPT_V2;
   const customPromptContext =
     typeof workspaceCustomPrompt === "string" &&
     workspaceCustomPrompt.trim().length > 0
@@ -276,7 +163,6 @@ export async function streamAgentResponse(params: StreamAgentParams) {
       // This fires reliably after each tool execution
       // eslint-disable-next-line no-console -- helpful for debugging tool usage in dev
       console.log("[Agent V2] Step finished:", {
-        agentType,
         step: stepsCompleted,
         maxSteps: MAX_STEPS,
         toolCallCount: toolCalls?.length,
@@ -286,7 +172,6 @@ export async function streamAgentResponse(params: StreamAgentParams) {
       if (stepsCompleted >= MAX_STEPS) {
         console.warn(
           `[Agent V2] Step limit reached (${MAX_STEPS}). Terminating tool loop to prevent runaway execution.`,
-          { agentType },
         );
       }
     },

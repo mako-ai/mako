@@ -1,5 +1,5 @@
 import { useAppStore, ChatSession } from "./appStore";
-import { AttachedContext, Message } from "../types/chat";
+import { Message } from "../types/chat";
 import { useMemo } from "react";
 
 export const useChatStore = () => {
@@ -19,11 +19,7 @@ export const useChatStore = () => {
       // Check if current chat is empty and can be reused
       if (currentChatId) {
         const currentChat = sessions[currentChatId];
-        if (
-          currentChat &&
-          currentChat.messages.length === 0 &&
-          currentChat.attachedContext.length === 0
-        ) {
+        if (currentChat && currentChat.messages.length === 0) {
           // Reuse existing empty chat
           return currentChatId;
         }
@@ -56,57 +52,6 @@ export const useChatStore = () => {
       } as any);
     };
 
-    const attachedContext = getCurrentChat()?.attachedContext || [];
-
-    const addContextItem = (item: AttachedContext) => {
-      if (!currentChatId) return;
-      dispatch({
-        type: "SET_ATTACHED_CONTEXT",
-        payload: {
-          chatId: currentChatId,
-          items: [...attachedContext, item],
-        },
-      } as any);
-    };
-
-    const removeContextItem = (id: string) => {
-      if (!currentChatId) return;
-      dispatch({
-        type: "SET_ATTACHED_CONTEXT",
-        payload: {
-          chatId: currentChatId,
-          items: attachedContext.filter(c => c.id !== id),
-        },
-      } as any);
-    };
-
-    const updateContextItem = (
-      id: string,
-      updates: Partial<AttachedContext>,
-    ) => {
-      if (!currentChatId) return;
-      dispatch({
-        type: "SET_ATTACHED_CONTEXT",
-        payload: {
-          chatId: currentChatId,
-          items: attachedContext.map(c =>
-            c.id === id ? { ...c, ...updates } : c,
-          ),
-        },
-      } as any);
-    };
-
-    const ensureContextItems = (items: AttachedContext[]) => {
-      if (!currentChatId) return;
-      const chat = getCurrentChat();
-      if (chat && chat.messages.length === 0) {
-        dispatch({
-          type: "SET_ATTACHED_CONTEXT",
-          payload: { chatId: currentChatId, items },
-        } as any);
-      }
-    };
-
     const setSelectedModel = (model: string) =>
       dispatch({ type: "SET_SELECTED_MODEL", payload: { model } } as any);
 
@@ -124,12 +69,6 @@ export const useChatStore = () => {
       addMessage,
       updateMessage,
       clearCurrentMessages: () => {},
-      attachedContext,
-      addContextItem,
-      removeContextItem,
-      clearAttachedContext: () => {},
-      updateContextItem,
-      ensureContextItems,
       selectedModel: selectedModelGlobal,
       setSelectedModel,
       error,
@@ -150,7 +89,6 @@ useChatStore.getState = () => {
   const currentChat = currentChatId
     ? global.chat.sessions[currentChatId]
     : null;
-  const attachedContext = currentChat?.attachedContext || [];
 
   const buildFacade = (): any => {
     const chatSessions: ChatSession[] = Object.values(global.chat.sessions);
@@ -174,55 +112,6 @@ useChatStore.getState = () => {
     const setSelectedModel = (model: string) =>
       dispatch({ type: "SET_SELECTED_MODEL", payload: { model } });
 
-    const addContextItem = (item: AttachedContext) => {
-      if (!currentChatId) return;
-      dispatch({
-        type: "SET_ATTACHED_CONTEXT",
-        payload: {
-          chatId: currentChatId,
-          items: [...attachedContext, item],
-        },
-      });
-    };
-
-    const removeContextItem = (id: string) => {
-      if (!currentChatId) return;
-      dispatch({
-        type: "SET_ATTACHED_CONTEXT",
-        payload: {
-          chatId: currentChatId,
-          items: attachedContext.filter(c => c.id !== id),
-        },
-      });
-    };
-
-    const updateContextItem = (
-      id: string,
-      updates: Partial<AttachedContext>,
-    ) => {
-      if (!currentChatId) return;
-      dispatch({
-        type: "SET_ATTACHED_CONTEXT",
-        payload: {
-          chatId: currentChatId,
-          items: attachedContext.map(c =>
-            c.id === id ? { ...c, ...updates } : c,
-          ),
-        },
-      });
-    };
-
-    const ensureContextItems = (items: AttachedContext[]) => {
-      if (!currentChatId) return;
-      const chat = global.chat.sessions[currentChatId];
-      if (chat.messages.length === 0) {
-        dispatch({
-          type: "SET_ATTACHED_CONTEXT",
-          payload: { chatId: currentChatId, items },
-        });
-      }
-    };
-
     return {
       chatSessions,
       currentChatId,
@@ -232,11 +121,7 @@ useChatStore.getState = () => {
         // Check if current chat is empty and can be reused
         if (currentChatId) {
           const currentChat = global.chat.sessions[currentChatId];
-          if (
-            currentChat &&
-            currentChat.messages.length === 0 &&
-            currentChat.attachedContext.length === 0
-          ) {
+          if (currentChat && currentChat.messages.length === 0) {
             // Reuse existing empty chat
             return currentChatId;
           }
@@ -253,12 +138,6 @@ useChatStore.getState = () => {
       addMessage,
       updateMessage,
       clearCurrentMessages: () => {},
-      attachedContext,
-      addContextItem,
-      removeContextItem,
-      clearAttachedContext: () => {},
-      updateContextItem,
-      ensureContextItems,
       selectedModel: global.settings.modelId,
       setSelectedModel,
       error: currentChat?.error || null,

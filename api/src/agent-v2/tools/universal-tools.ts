@@ -1,6 +1,6 @@
 /**
  * Universal Tools for Agent V2
- * A single tool surface that supports MongoDB + Postgres + BigQuery without handoffs.
+ * A single tool surface that supports MongoDB + all SQL engines without handoffs.
  */
 
 import { z } from "zod";
@@ -9,16 +9,22 @@ import { DatabaseConnection } from "../../database/workspace-schema";
 import type { ConsoleDataV2 } from "../types";
 import { createConsoleToolsV2 } from "./console-tools";
 import { createMongoToolsV2 } from "./mongodb-tools";
-import { createPostgresToolsV2 } from "./postgres-tools";
-import { createBigQueryToolsV2 } from "./bigquery-tools";
+import { createSqlToolsV2 } from "./sql-tools";
 
 const emptySchema = z.object({});
 
-const POSTGRES_TYPES = new Set(["postgresql", "cloudsql-postgres"]);
+// All supported connection types
 const SUPPORTED_CONNECTION_TYPES = new Set([
+  // MongoDB
   "mongodb",
+  // PostgreSQL
+  "postgresql",
+  "cloudsql-postgres",
+  // BigQuery
   "bigquery",
-  ...Array.from(POSTGRES_TYPES),
+  // SQLite/D1
+  "sqlite",
+  "cloudflare-d1",
 ]);
 
 async function listAllConnectionsImpl(workspaceId: string) {
@@ -32,10 +38,12 @@ async function listAllConnectionsImpl(workspaceId: string) {
   }).sort({ name: 1 });
 
   return databases.map(db => {
-    const connection: any = (db as any).connection || {};
+    const connection: Record<string, unknown> =
+      (db as unknown as { connection: Record<string, unknown> }).connection ||
+      {};
 
     if (db.type === "mongodb") {
-      const databaseName = connection.database || undefined;
+      const databaseName = (connection.database as string) || undefined;
       const displayInfo = databaseName || "Unknown Database";
       return {
         id: db._id.toString(),
@@ -48,35 +56,53 @@ async function listAllConnectionsImpl(workspaceId: string) {
     }
 
     if (db.type === "bigquery") {
-      const project = connection.project_id || undefined;
+      const project = (connection.project_id as string) || undefined;
       const displayInfo = project || "Unknown Project";
       return {
         id: db._id.toString(),
         name: db.name,
         type: db.type,
+        sqlDialect: "bigquery",
         project,
         displayName: `${db.name} (bigquery: ${displayInfo})`,
         active: true,
       };
     }
 
-    if (POSTGRES_TYPES.has(db.type)) {
-      const host =
-        connection.host || connection.instanceConnectionName || undefined;
-      const databaseName = connection.database || connection.db || undefined;
-      const displayInfo = `${host || "unknown-host"}/${databaseName || "unknown-database"}`;
+    if (db.type === "postgresql" || db.type === "cloudsql-postgres") {
+      const host = (connection.host || connection.instanceConnectionName) as
+        | string
+        | undefined;
+      const databaseName = (connection.database || connection.db) as
+        | string
+        | undefined;
+      const displayInfo = `${host || "unknown-host"}/${databaseName || "unknown-db"}`;
       return {
         id: db._id.toString(),
         name: db.name,
         type: db.type,
+        sqlDialect: "postgresql",
         host,
         databaseName,
-        displayName: `${db.name} (${db.type}: ${displayInfo})`,
+        displayName: `${db.name} (postgresql: ${displayInfo})`,
         active: true,
       };
     }
 
-    // Should be unreachable due to SUPPORTED_CONNECTION_TYPES filter
+    if (db.type === "sqlite" || db.type === "cloudflare-d1") {
+      const databaseId = (connection.database_id as string) || "main";
+      return {
+        id: db._id.toString(),
+        name: db.name,
+        type: db.type,
+        sqlDialect: "sqlite",
+        databaseId,
+        displayName: `${db.name} (sqlite: ${databaseId})`,
+        active: true,
+      };
+    }
+
+    // Fallback for any new types
     return {
       id: db._id.toString(),
       name: db.name,
@@ -88,12 +114,13 @@ async function listAllConnectionsImpl(workspaceId: string) {
 }
 
 /**
- * Create a unified toolset for a single universal agent.
+ * Create a unified toolset for the universal agent.
  *
- * Notes:
- * - Console tools are included once.
- * - Mongo tools are exposed under `mongo_*` aliases to avoid generic-name collisions.
- * - Postgres tools are already `pg_*`; BigQuery tools are already `bq_*`.
+ * Includes:
+ * - Console tools (read, modify, create)
+ * - list_connections (cross-database discovery)
+ * - MongoDB tools (mongo_*)
+ * - SQL tools (sql_*) - supports PostgreSQL, BigQuery, SQLite, Cloudflare D1
  */
 export const createUniversalToolsV2 = (
   workspaceId: string,
@@ -102,17 +129,18 @@ export const createUniversalToolsV2 = (
 ) => {
   const consoleTools = createConsoleToolsV2(consoles, preferredConsoleId);
 
+  // Get MongoDB tools and extract just the database-specific ones
   const mongoTools = createMongoToolsV2(
     workspaceId,
     consoles,
     preferredConsoleId,
   );
   const {
-    // strip console tools (we provide them once)
+    // Strip console tools (we provide them once)
     modify_console: _mongoModify,
     read_console: _mongoRead,
     create_console: _mongoCreate,
-    // mongo tools (to be namespaced)
+    // MongoDB tools (to be namespaced)
     list_connections: mongoListConnections,
     list_databases: mongoListDatabases,
     list_collections: mongoListCollections,
@@ -120,53 +148,37 @@ export const createUniversalToolsV2 = (
     execute_query: mongoExecuteQuery,
   } = mongoTools;
 
-  const pgTools = createPostgresToolsV2(
-    workspaceId,
-    consoles,
-    preferredConsoleId,
-  );
+  // Get SQL tools and extract just the database-specific ones
+  const sqlTools = createSqlToolsV2(workspaceId, consoles, preferredConsoleId);
   const {
-    // strip console tools
-    modify_console: _pgModify,
-    read_console: _pgRead,
-    create_console: _pgCreate,
-    ...pgOnlyTools
-  } = pgTools;
-
-  const bqTools = createBigQueryToolsV2(
-    workspaceId,
-    consoles,
-    preferredConsoleId,
-  );
-  const {
-    // strip console tools
-    modify_console: _bqModify,
-    read_console: _bqRead,
-    create_console: _bqCreate,
-    ...bqOnlyTools
-  } = bqTools;
+    // Strip console tools
+    modify_console: _sqlModify,
+    read_console: _sqlRead,
+    create_console: _sqlCreate,
+    // SQL tools (already namespaced as sql_*)
+    ...sqlOnlyTools
+  } = sqlTools;
 
   return {
+    // Console tools (provided once)
     ...consoleTools,
 
+    // Cross-database connection discovery
     list_connections: {
       description:
-        "List all available database connections in this workspace (MongoDB, Postgres, BigQuery). Use this when the console is not attached to a database and you need to choose where the data lives.",
+        "List all database connections in this workspace (MongoDB, PostgreSQL, BigQuery, SQLite, Cloudflare D1). Use this to discover available databases before running queries.",
       inputSchema: emptySchema,
       execute: async () => listAllConnectionsImpl(workspaceId),
     },
 
-    // MongoDB tools (namespaced)
+    // MongoDB tools (namespaced with mongo_ prefix)
     mongo_list_connections: mongoListConnections,
     mongo_list_databases: mongoListDatabases,
     mongo_list_collections: mongoListCollections,
     mongo_inspect_collection: mongoInspectCollection,
     mongo_execute_query: mongoExecuteQuery,
 
-    // Postgres tools (namespaced already)
-    ...pgOnlyTools,
-
-    // BigQuery tools (namespaced already)
-    ...bqOnlyTools,
+    // SQL tools (already namespaced with sql_ prefix)
+    ...sqlOnlyTools,
   };
 };

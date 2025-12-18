@@ -19,9 +19,6 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  Switch,
-  FormControlLabel,
-  Tooltip,
 } from "@mui/material";
 import SendIcon from "@mui/icons-material/Send";
 import ReactMarkdown from "react-markdown";
@@ -40,9 +37,6 @@ import {
   Add as AddIcon,
   Chat as ChatIcon,
   Delete as DeleteIcon,
-  AlternateEmailOutlined,
-  Close,
-  Code,
 } from "@mui/icons-material";
 import { useTheme as useMuiTheme } from "@mui/material/styles";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -72,17 +66,6 @@ interface ChatSessionMeta {
   title: string;
   createdAt?: string;
   updatedAt?: string;
-}
-
-interface AttachedContext {
-  id: string;
-  type: "console";
-  title: string;
-  content: string;
-  metadata?: {
-    consoleId?: string;
-    filePath?: string;
-  };
 }
 
 const CodeBlock = React.memo(
@@ -472,8 +455,6 @@ interface ChatProps {
 
 const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const { currentWorkspace } = useWorkspace();
-  const agentVersion = useSettingsStore(s => s.agentVersion);
-  const setAgentVersion = useSettingsStore(s => s.setAgentVersion);
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -507,12 +488,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCall | null>(
     null,
   );
-
-  // Attachment state
-  const [attachedContext, setAttachedContext] = useState<AttachedContext[]>([]);
-  const [attachmentMenuAnchor, setAttachmentMenuAnchor] =
-    useState<null | HTMLElement>(null);
-  const attachmentMenuOpen = Boolean(attachmentMenuAnchor);
 
   // Get console store
   const { consoleTabs, activeConsoleId } = useConsoleStore();
@@ -563,7 +538,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     const loadSession = async () => {
       if (!sessionId || !currentWorkspace) {
         setMessages([]);
-        setAttachedContext([]); // Clear attachments when no session
         return;
       }
       try {
@@ -573,7 +547,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         if (res.ok) {
           const data = await res.json();
           setMessages(data.messages || []);
-          setAttachedContext([]); // Clear attachments when loading new session
         }
       } catch (_) {
         /* ignore */
@@ -673,38 +646,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     }
   };
 
-  // Attachment menu handlers
-  const handleAttachmentMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
-    setAttachmentMenuAnchor(event.currentTarget);
-  };
-
-  const handleAttachmentMenuClose = () => {
-    setAttachmentMenuAnchor(null);
-  };
-
-  const handleAttachConsole = (consoleId: string) => {
-    const consoleTab = consoleTabs.find(tab => tab.id === consoleId);
-    if (!consoleTab) return;
-
-    const contextItem: AttachedContext = {
-      id: `console-${consoleId}-${Date.now()}`,
-      type: "console",
-      title: `${consoleTab.title} (Console)`,
-      content: "", // Don't store content - we'll read it from store when needed
-      metadata: {
-        consoleId: consoleId,
-        filePath: consoleTab.filePath, // Include filePath for saved consoles
-      },
-    };
-
-    setAttachedContext([contextItem]); // Replace any existing context
-    handleAttachmentMenuClose();
-  };
-
-  const removeContextItem = (id: string) => {
-    setAttachedContext(prev => prev.filter(item => item.id !== id));
-  };
-
   // ---------------------------------------------------------------------------
   // Messaging helpers
   // ---------------------------------------------------------------------------
@@ -712,15 +653,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const streamResponse = async (latestMessage: string) => {
     if (!currentWorkspace) {
       throw new Error("No workspace selected");
-    }
-
-    // Include attached context reference in the message (not the full content)
-    let messageWithContext = latestMessage;
-    if (attachedContext.length > 0) {
-      const contextInfo = attachedContext
-        .map(ctx => `[Attached Console: ${ctx.title}]`)
-        .join("\n");
-      messageWithContext = `${contextInfo}\n\n${latestMessage}`;
     }
 
     // Helper to extract database context from console tab
@@ -738,55 +670,34 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       return { connectionId, databaseId, databaseName };
     };
 
-    // Prepare consoles data for the backend - read current values from store
-    const consolesData = attachedContext
-      .filter(ctx => ctx.type === "console")
-      .map(ctx => {
-        const consoleId = ctx.metadata?.consoleId || ctx.id;
-        const currentConsole = realConsoleTabs.find(
-          tab => tab.id === consoleId,
-        );
-        const { connectionId, databaseId, databaseName } =
-          extractDatabaseContext(currentConsole);
+    // Prepare consoles data for the backend
+    const consolesData: Array<{
+      id: string;
+      title: string;
+      content: string;
+      connectionId?: string;
+      databaseId?: string;
+      databaseName?: string;
+      metadata?: Record<string, any>;
+    }> = [];
 
-        return {
-          id: consoleId,
-          title: currentConsole?.title || ctx.title,
-          content: currentConsole?.content || "",
-          // Clean connection context
-          connectionId,
-          databaseId, // D1 database UUID
-          databaseName, // MongoDB/Postgres database name
-          metadata: {
-            connectionId,
-            databaseId,
-            databaseName,
-            queryOptions: currentConsole?.metadata?.queryOptions,
-          },
-        };
-      });
-
-    // Always include the active console (only if it's a real console tab)
+    // Include the active console (only if it's a real console tab)
     if (activeConsoleId && realConsoleTabs.length > 0) {
       const activeConsole = realConsoleTabs.find(
         tab => tab.id === activeConsoleId,
       );
-      const isAlreadyAttached = consolesData.some(
-        c => c.id === activeConsoleId,
-      );
 
-      if (activeConsole && !isAlreadyAttached) {
+      if (activeConsole) {
         const { connectionId, databaseId, databaseName } =
           extractDatabaseContext(activeConsole);
 
-        consolesData.unshift({
+        consolesData.push({
           id: activeConsoleId,
           title: activeConsole.title,
           content: activeConsole.content || "",
-          // Clean connection context
           connectionId,
-          databaseId, // D1 database UUID
-          databaseName, // MongoDB/Postgres database name
+          databaseId,
+          databaseName,
           metadata: {
             connectionId,
             databaseId,
@@ -822,28 +733,15 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       });
     }
 
-    // Get the console ID if we have an attached console
-    const attachedConsole = attachedContext.find(ctx => ctx.type === "console");
-    const consoleIdToPin = attachedConsole?.metadata?.consoleId;
-
-    // Use dynamic endpoint based on agent version setting
-    const endpoint =
-      agentVersion === "v2" ? "/api/agent/v2/stream" : "/api/agent/stream";
-
-    console.log(
-      `[Chat] Using agent version: ${agentVersion}, endpoint: ${endpoint}`,
-    );
-
-    const response = await fetch(endpoint, {
+    const response = await fetch("/api/agent/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId,
-        message: messageWithContext,
+        message: latestMessage,
         workspaceId: currentWorkspace.id,
-        consoles: consolesData, // Pass consoles array to backend
-        consoleId: consoleIdToPin, // Pin the console if attached
-        modelId: agentVersion === "v2" ? selectedModelId : undefined, // Pass model ID for v2 agent
+        consoles: consolesData,
+        modelId: selectedModelId,
       }),
     });
 
@@ -1170,42 +1068,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             </Typography>
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-            {/* Agent Version Switcher */}
-            <Tooltip
-              title={
-                agentVersion === "v2"
-                  ? "Using new AI engine (beta)"
-                  : "Using stable AI engine"
-              }
-            >
-              <FormControlLabel
-                control={
-                  <Switch
-                    size="small"
-                    checked={agentVersion === "v2"}
-                    onChange={e =>
-                      setAgentVersion(e.target.checked ? "v2" : "v1")
-                    }
-                    sx={{ mr: 0 }}
-                  />
-                }
-                label={
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      fontSize: "0.7rem",
-                      color:
-                        agentVersion === "v2"
-                          ? "primary.main"
-                          : "text.secondary",
-                    }}
-                  >
-                    v2
-                  </Typography>
-                }
-                sx={{ m: 0, mr: 0.5 }}
-              />
-            </Tooltip>
             <IconButton size="small" onClick={createNewSession}>
               <AddIcon />
             </IconButton>
@@ -1278,50 +1140,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           <MenuItem disabled>
             <Typography variant="body2" color="text.secondary">
               No chat history yet
-            </Typography>
-          </MenuItem>
-        )}
-      </Menu>
-
-      {/* Attachment Menu */}
-      <Menu
-        anchorEl={attachmentMenuAnchor}
-        open={attachmentMenuOpen}
-        onClose={handleAttachmentMenuClose}
-        PaperProps={{
-          sx: { maxHeight: 300, width: 250 },
-        }}
-      >
-        {consoleTabs.length > 0 ? (
-          consoleTabs.map(consoleTab => (
-            <MenuItem
-              key={consoleTab.id}
-              onClick={() => handleAttachConsole(consoleTab.id)}
-              selected={attachedContext.some(
-                ctx => ctx.metadata?.consoleId === consoleTab.id,
-              )}
-            >
-              <ListItemIcon>
-                <Code fontSize="small" />
-              </ListItemIcon>
-              <ListItemText
-                primary={consoleTab.title}
-                secondary={
-                  consoleTab.content
-                    ? `${consoleTab.content.split("\n").length} lines${consoleTab.id === activeConsoleId ? " (Active)" : ""}`
-                    : "Empty"
-                }
-                primaryTypographyProps={{
-                  noWrap: true,
-                  sx: { maxWidth: 180 },
-                }}
-              />
-            </MenuItem>
-          ))
-        ) : (
-          <MenuItem disabled>
-            <Typography variant="body2" color="text.secondary">
-              No consoles available
             </Typography>
           </MenuItem>
         )}
@@ -1477,63 +1295,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           gap: 1,
         }}
       >
-        {/* Attachment area */}
-        <Box sx={{ display: "flex", flexDirection: "row", gap: 1 }}>
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={handleAttachmentMenuOpen}
-            disabled={loading || consoleTabs.length === 0}
-            startIcon={<AlternateEmailOutlined />}
-            sx={{
-              height: 24,
-              fontSize: "0.8125rem",
-              py: 0,
-              px: 1,
-              minWidth: "auto",
-              "& .MuiButton-startIcon": {
-                marginLeft: -0.5,
-                marginRight: attachedContext.length === 0 ? 0.5 : -0.5,
-              },
-              "& .MuiSvgIcon-root": {
-                fontSize: 16,
-              },
-            }}
-          >
-            {attachedContext.length === 0 && "Attach console"}
-          </Button>
-
-          {/* Attached Context Display */}
-          {attachedContext.length > 0 && (
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-              {attachedContext.map(context => (
-                <Chip
-                  key={context.id}
-                  label={context.title}
-                  size="small"
-                  icon={<Code />}
-                  onDelete={() => removeContextItem(context.id)}
-                  deleteIcon={<Close />}
-                  variant="outlined"
-                  sx={{
-                    borderRadius: 1,
-                    maxWidth: 200,
-                    backgroundColor: "background.paper",
-                    "&:hover": {
-                      backgroundColor: "action.hover",
-                    },
-                  }}
-                  title={
-                    context.metadata?.filePath
-                      ? `Saved console: ${context.metadata.filePath}`
-                      : "Temporary console"
-                  }
-                />
-              ))}
-            </Box>
-          )}
-        </Box>
-
         {/* Text Area */}
         <TextField
           fullWidth
@@ -1554,7 +1315,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           variant="outlined"
           inputRef={inputRef}
           sx={{
-            mb: 0.5,
+            m: 0.5,
             maxHeight: "50vh",
             overflowY: "auto",
             "& .MuiInputBase-input": {
@@ -1585,9 +1346,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             alignItems: "center",
           }}
         >
-          {/* Model Selector - only show for v2 agent */}
+          {/* Model Selector */}
           <Box sx={{ display: "flex", alignItems: "center" }}>
-            {agentVersion === "v2" && <ModelSelector />}
+            <ModelSelector />
           </Box>
 
           {/* Send Button */}

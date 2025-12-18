@@ -3,22 +3,6 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
-  attachedContext?: AttachedContext[];
-}
-
-export interface AttachedContext {
-  id: string;
-  type: "collection" | "definition" | "editor" | "view" | "console";
-  title: string;
-  content: string;
-  metadata?: {
-    fileName?: string;
-    language?: string;
-    lineNumbers?: string;
-    collectionName?: string;
-    consoleId?: string;
-    consoleRef?: any;
-  };
 }
 
 export interface Collection {

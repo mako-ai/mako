@@ -1,10 +1,9 @@
-import { AgentKind } from "../agent/types";
-import { ConsoleData } from "../agent/shared/console-tools";
+import type { AgentKind, ConsoleDataV2 } from "../agent-v2";
 
 interface SelectionContext {
   sessionActiveAgent?: AgentKind;
   userMessage: string;
-  consoles?: ConsoleData[];
+  consoles?: ConsoleDataV2[];
   workspaceHasBigQuery?: boolean;
   workspaceHasMongoDB?: boolean;
   workspaceHasPostgres?: boolean;
