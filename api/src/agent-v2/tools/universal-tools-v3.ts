@@ -25,8 +25,7 @@ const SUPPORTED_CONNECTION_TYPES = new Set([
   "cloudsql-postgres",
   // BigQuery
   "bigquery",
-  // SQLite/D1
-  "sqlite",
+  // Cloudflare D1
   "cloudflare-d1",
 ]);
 

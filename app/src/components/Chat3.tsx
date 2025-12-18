@@ -514,7 +514,9 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
         // Notify parent component about the modification - this will trigger the diff UI
         // The actual content update happens when the user accepts the diff
         onConsoleModification?.({
-          modification: { action, content, position },
+          action,
+          content,
+          position,
           consoleId: resolvedConsoleId,
         });
 
@@ -565,8 +567,13 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
 
         // Notify parent
         onConsoleModification?.({
-          modification: { action: "replace", content },
+          action: "create",
+          content,
+          title,
           consoleId: newConsoleId,
+          connectionId: effectiveConnectionId,
+          databaseId: effectiveDatabaseId,
+          databaseName: effectiveDatabaseName,
         });
 
         addToolOutput({
