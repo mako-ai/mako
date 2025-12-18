@@ -105,8 +105,11 @@ function MainApp() {
     let targetConsoleId = modification.consoleId || activeRealConsoleId;
     let isNewConsole = false;
 
-    // If a consoleId was provided but doesn't exist as a real console tab, fall back.
+    // If a consoleId was explicitly provided by the agent, trust it - the console was just created
+    // and may not be in realConsoleTabs yet due to React state update timing.
+    // Only fall back if no explicit consoleId was provided AND the resolved ID doesn't exist.
     if (
+      !modification.consoleId &&
       targetConsoleId &&
       !realConsoleTabs.some((t: any) => t.id === targetConsoleId)
     ) {

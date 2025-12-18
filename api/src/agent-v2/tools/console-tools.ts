@@ -21,6 +21,13 @@ const modifyConsoleSchema = z.object({
     .number()
     .nullable()
     .describe("Position for insert action (null for replace/append)"),
+  consoleId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Target console ID. Required when modifying a newly created console - use the consoleId returned by create_console.",
+    ),
 });
 
 const readConsoleSchema = z.object({
@@ -62,22 +69,27 @@ export const createConsoleToolsV2 = (
 ) => ({
   modify_console: {
     description:
-      "Modify the console editor content. Use this to write, replace, or append code to the user's active console.",
+      "Modify the console editor content. Use this to write, replace, or append code to the user's active console. If you just created a console with create_console, you MUST pass the returned consoleId here.",
     inputSchema: modifyConsoleSchema,
     execute: async (input: {
       action: "replace" | "insert" | "append";
       content: string;
       position: number | null;
+      consoleId?: string | null;
     }): Promise<ConsoleModificationResult> => {
-      const { action, content, position } = input;
+      const { action, content, position, consoleId: targetConsoleId } = input;
 
-      // If the client has no real consoles open, we cannot safely modify anything.
-      // Return a structured failure so the model can call `create_console` first.
-      if (!consoles || consoles.length === 0) {
+      // Determine the target console: explicit ID > preferred > first available
+      const resolvedConsoleId =
+        targetConsoleId ?? preferredConsoleId ?? consoles[0]?.id;
+
+      // If no console can be resolved (no explicit ID, no preferred, no existing consoles),
+      // return a structured failure so the model can call `create_console` first.
+      if (!resolvedConsoleId) {
         return {
           success: false,
           error:
-            "No console is currently open. Call create_console first, then write the final query there.",
+            "No console is currently open. Call create_console first, then pass the returned consoleId to modify_console.",
         };
       }
 
@@ -96,8 +108,7 @@ export const createConsoleToolsV2 = (
           content,
           position: position ?? undefined,
         },
-        // Prefer pinned console, otherwise fall back to the first provided console
-        consoleId: preferredConsoleId ?? consoles[0]?.id,
+        consoleId: resolvedConsoleId,
         message: `✓ Console ${action}d successfully`,
       };
     },
@@ -139,7 +150,8 @@ export const createConsoleToolsV2 = (
   },
 
   create_console: {
-    description: "Create a new console editor tab with the specified content.",
+    description:
+      "Create a new console editor tab with the specified content. Returns a consoleId that you MUST pass to modify_console when writing to this new console.",
     inputSchema: createConsoleSchema,
     execute: async (input: {
       title: string;
