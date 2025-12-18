@@ -21,7 +21,19 @@ import type { ConsoleDataV2 } from "../agent-v2/types";
 import { createUniversalToolsV3 } from "../agent-v2/tools/universal-tools-v3";
 import { UNIVERSAL_PROMPT_V2 } from "../agent-v2/prompts/universal";
 import { getModelById } from "../agent-v2/ai-models";
-import { Workspace, DatabaseConnection } from "../database/workspace-schema";
+import {
+  Workspace,
+  DatabaseConnection,
+  Chat,
+} from "../database/workspace-schema";
+import {
+  getOrCreateThreadContext,
+  updateChatWithResponse,
+} from "../services/agent-thread.service";
+import {
+  shouldGenerateTitle,
+  generateChatTitle,
+} from "../services/title-generator";
 
 export const agentV3Routes = new Hono();
 
@@ -79,13 +91,15 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     return c.json({ error: "Invalid request body" }, 400);
   }
 
-  const { messages, workspaceId, consoles, consoleId, modelId } = body as {
-    messages?: UIMessage[];
-    workspaceId?: string;
-    consoles?: ConsoleDataV2[];
-    consoleId?: string;
-    modelId?: string;
-  };
+  const { messages, sessionId, workspaceId, consoles, consoleId, modelId } =
+    body as {
+      messages?: UIMessage[];
+      sessionId?: string;
+      workspaceId?: string;
+      consoles?: ConsoleDataV2[];
+      consoleId?: string;
+      modelId?: string;
+    };
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return c.json({ error: "'messages' array is required" }, 400);
@@ -96,6 +110,37 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
       { error: "'workspaceId' is required and must be valid" },
       400,
     );
+  }
+
+  // Get or create thread context for persistence
+  const threadContext = await getOrCreateThreadContext(
+    sessionId,
+    workspaceId,
+    userId.toString(),
+  );
+
+  // Get the current session ID (either provided or newly created)
+  let currentSessionId = sessionId;
+  if (!currentSessionId) {
+    // If no sessionId was provided, use the one from threadContext
+    const existingChat = await Chat.findOne({
+      workspaceId: new ObjectId(workspaceId),
+      createdBy: userId.toString(),
+    }).sort({ createdAt: -1 });
+
+    if (existingChat) {
+      currentSessionId = existingChat._id.toString();
+    } else {
+      // Create a new chat session
+      const newChat = new Chat({
+        workspaceId: new ObjectId(workspaceId),
+        createdBy: userId.toString(),
+        title: "New Chat",
+        messages: [],
+      });
+      await newChat.save();
+      currentSessionId = newChat._id.toString();
+    }
   }
 
   // Load workspace for custom prompt
@@ -186,6 +231,42 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
         console.warn(
           `[Agent V3] Step limit reached (${MAX_STEPS}). Terminating tool loop to prevent runaway execution.`,
         );
+      }
+    },
+    onFinish: async ({ text, finishReason }) => {
+      console.log("[Agent V3] Stream finished:", {
+        sessionId: currentSessionId,
+        textLength: text.length,
+        finishReason,
+      });
+
+      try {
+        // Extract the last user message from the messages array
+        const lastUserMessage = messages
+          .filter(m => m.role === "user")
+          .pop();
+        const userContent =
+          lastUserMessage && "parts" in lastUserMessage
+            ? lastUserMessage.parts
+                ?.filter((p: any) => p.type === "text")
+                .map((p: any) => p.text)
+                .join("") || ""
+            : "";
+
+        // Save the conversation to the database
+        await updateChatWithResponse(
+          currentSessionId!,
+          userContent,
+          text,
+          threadContext,
+        );
+
+        // Generate title if this is a new conversation
+        if (await shouldGenerateTitle(currentSessionId!)) {
+          await generateChatTitle(currentSessionId!, workspaceId, modelId);
+        }
+      } catch (error) {
+        console.error("[Agent V3] Error persisting messages:", error);
       }
     },
   });

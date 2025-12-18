@@ -373,9 +373,16 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
           consoles: consolesData,
           consoleId: activeConsoleId,
           modelId: selectedModelId,
+          sessionId: sessionId || undefined,
         },
       }),
-    [currentWorkspace?.id, consolesData, activeConsoleId, selectedModelId],
+    [
+      currentWorkspace?.id,
+      consolesData,
+      activeConsoleId,
+      selectedModelId,
+      sessionId,
+    ],
   );
 
   // Console store for client-side tool execution
@@ -631,6 +638,35 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
     };
     fetchSessions();
   }, [currentWorkspace, sessionId]);
+
+  // Load messages when switching sessions
+  useEffect(() => {
+    const loadSession = async () => {
+      if (!sessionId || !currentWorkspace) {
+        setMessages([]);
+        return;
+      }
+      try {
+        const res = await fetch(
+          `/api/workspaces/${currentWorkspace.id}/chats/${sessionId}`,
+        );
+        if (res.ok) {
+          const data = await res.json();
+          // Convert stored messages to AI SDK v6 format with parts
+          const convertedMessages =
+            data.messages?.map((msg: any) => ({
+              id: msg.id || `${Date.now()}-${Math.random()}`,
+              role: msg.role,
+              parts: [{ type: "text", text: msg.content || "" }],
+            })) || [];
+          setMessages(convertedMessages);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    loadSession();
+  }, [sessionId, currentWorkspace, setMessages]);
 
   // Focus input
   useEffect(() => {
