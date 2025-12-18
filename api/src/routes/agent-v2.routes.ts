@@ -9,7 +9,6 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   streamAgentResponse,
-  detectAgentType,
   processToolResult,
   ConsoleDataV2,
   getAvailableModels,
@@ -196,17 +195,11 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
         });
 
         // Universal v2: always run the universal agent (single prompt + unified tools).
-        // We still compute a UI-friendly "mode" (mongo/postgres/bigquery/triage) for display
-        // and for persisting the legacy activeAgent field on the chat.
-        const detectedType = detectAgentType(enrichedConsoles, message);
-        const uiAgentMode: AgentKind =
-          detectedType !== "triage"
-            ? (detectedType as AgentKind)
-            : selectedAgent;
-        const agentType = "universal" as const;
+        // We use selectedAgent for the UI display mode (legacy compatibility).
+        const uiAgentMode: AgentKind = selectedAgent;
 
         console.log(
-          `[Agent V2] Using agent type: ${agentType} (mode: ${uiAgentMode})`,
+          `[Agent V2] Using universal agent (UI mode: ${uiAgentMode})`,
         );
 
         // Send agent mode event (legacy modes for UI compatibility)
@@ -219,7 +212,6 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
           workspaceId,
           consoles: enrichedConsoles,
           consoleId: effectiveConsoleId,
-          agentType,
           sessionId: currentSessionId,
           modelId,
           workspaceCustomPrompt,

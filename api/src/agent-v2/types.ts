@@ -3,13 +3,6 @@
  * Using Vercel AI SDK patterns
  */
 
-export type AgentKindV2 =
-  | "universal"
-  | "mongo"
-  | "bigquery"
-  | "postgres"
-  | "triage";
-
 export interface ConsoleDataV2 {
   id: string;
   title: string;
@@ -43,7 +36,6 @@ export interface StreamAgentParams {
   workspaceId: string;
   consoles: ConsoleDataV2[];
   consoleId?: string;
-  agentType: AgentKindV2;
   sessionId?: string;
   modelId?: string;
   workspaceCustomPrompt?: string;
