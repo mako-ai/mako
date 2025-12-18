@@ -206,9 +206,9 @@ function Editor() {
 
       const { consoleId: eventConsoleId, modification } = customEvent.detail;
 
-      // Use the current activeConsoleId instead of the one from the event
-      // This ensures we're always targeting the currently active console
-      const targetConsoleId = activeConsoleId || eventConsoleId;
+      // Prefer the explicitly provided consoleId from the event (e.g., from create_console),
+      // only fall back to activeConsoleId if no explicit ID was provided
+      const targetConsoleId = eventConsoleId || activeConsoleId;
 
       // Function to show diff with retry
       const showDiffWithRetry = (retries = 10, delay = 100) => {
