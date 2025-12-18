@@ -33,6 +33,27 @@ const readConsoleSchema = z.object({
 const createConsoleSchema = z.object({
   title: z.string().describe("Title for the new console tab"),
   content: z.string().describe("Initial content for the console"),
+  connectionId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Optional: DatabaseConnection ID to attach this console to (MongoDB ObjectId).",
+    ),
+  databaseId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Optional: sub-database ID for cluster mode (e.g., D1 UUID). Usually null.",
+    ),
+  databaseName: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Optional: database name to attach (e.g., MongoDB database name, Postgres database name).",
+    ),
 });
 
 export const createConsoleToolsV2 = (
@@ -49,6 +70,17 @@ export const createConsoleToolsV2 = (
       position: number | null;
     }): Promise<ConsoleModificationResult> => {
       const { action, content, position } = input;
+
+      // If the client has no real consoles open, we cannot safely modify anything.
+      // Return a structured failure so the model can call `create_console` first.
+      if (!consoles || consoles.length === 0) {
+        return {
+          success: false,
+          error:
+            "No console is currently open. Call create_console first, then write the final query there.",
+        };
+      }
+
       if (
         action === "insert" &&
         (position === undefined || position === null)
@@ -64,7 +96,8 @@ export const createConsoleToolsV2 = (
           content,
           position: position ?? undefined,
         },
-        consoleId: preferredConsoleId,
+        // Prefer pinned console, otherwise fall back to the first provided console
+        consoleId: preferredConsoleId ?? consoles[0]?.id,
         message: `✓ Console ${action}d successfully`,
       };
     },
@@ -111,9 +144,25 @@ export const createConsoleToolsV2 = (
     execute: async (input: {
       title: string;
       content: string;
+      connectionId?: string | null;
+      databaseId?: string | null;
+      databaseName?: string | null;
     }): Promise<ConsoleCreationResult> => {
       const { title, content } = input;
       const newConsoleId = `console-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+      // If not explicitly provided, inherit connection context from the active/preferred console.
+      const baseConsole =
+        (preferredConsoleId
+          ? consoles.find(c => c.id === preferredConsoleId)
+          : undefined) ?? consoles[0];
+
+      const effectiveConnectionId =
+        input.connectionId ?? baseConsole?.connectionId ?? undefined;
+      const effectiveDatabaseId =
+        input.databaseId ?? baseConsole?.databaseId ?? undefined;
+      const effectiveDatabaseName =
+        input.databaseName ?? baseConsole?.databaseName ?? undefined;
 
       return {
         success: true,
@@ -121,6 +170,9 @@ export const createConsoleToolsV2 = (
         consoleId: newConsoleId,
         title,
         content,
+        connectionId: effectiveConnectionId || undefined,
+        databaseId: effectiveDatabaseId || undefined,
+        databaseName: effectiveDatabaseName || undefined,
         message: `✓ New console "${title}" created successfully`,
       };
     },

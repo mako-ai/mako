@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import {
   Box,
   Button,
@@ -517,6 +517,16 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   // Get console store
   const { consoleTabs, activeConsoleId } = useConsoleStore();
 
+  // Only real console tabs count as "consoles" for the agent.
+  // Tabs like Settings/Connectors/etc must never be sent as console context.
+  const realConsoleTabs = useMemo(
+    () =>
+      (consoleTabs || []).filter(
+        (t: any) => t?.kind === undefined || t?.kind === "console",
+      ),
+    [consoleTabs],
+  );
+
   // History menu state
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
@@ -733,7 +743,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       .filter(ctx => ctx.type === "console")
       .map(ctx => {
         const consoleId = ctx.metadata?.consoleId || ctx.id;
-        const currentConsole = consoleTabs.find(tab => tab.id === consoleId);
+        const currentConsole = realConsoleTabs.find(
+          tab => tab.id === consoleId,
+        );
         const { connectionId, databaseId, databaseName } =
           extractDatabaseContext(currentConsole);
 
@@ -754,9 +766,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         };
       });
 
-    // Always include the active console if it exists and isn't already attached
-    if (activeConsoleId && consoleTabs.length > 0) {
-      const activeConsole = consoleTabs.find(tab => tab.id === activeConsoleId);
+    // Always include the active console (only if it's a real console tab)
+    if (activeConsoleId && realConsoleTabs.length > 0) {
+      const activeConsole = realConsoleTabs.find(
+        tab => tab.id === activeConsoleId,
+      );
       const isAlreadyAttached = consolesData.some(
         c => c.id === activeConsoleId,
       );
@@ -781,6 +795,31 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           },
         });
       }
+    }
+
+    // Include other open console tabs (metadata + content) so the backend can pick a valid
+    // console even when the user is focused on a non-console tab (e.g., Settings).
+    for (const tab of realConsoleTabs) {
+      if (!tab?.id) continue;
+      if (consolesData.some(c => c.id === tab.id)) continue;
+
+      const { connectionId, databaseId, databaseName } =
+        extractDatabaseContext(tab);
+
+      consolesData.push({
+        id: tab.id,
+        title: tab.title,
+        content: tab.content || "",
+        connectionId,
+        databaseId,
+        databaseName,
+        metadata: {
+          connectionId,
+          databaseId,
+          databaseName,
+          queryOptions: tab.metadata?.queryOptions,
+        },
+      });
     }
 
     // Get the console ID if we have an attached console
@@ -989,6 +1028,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                   content: parsed.content || "",
                   consoleId: parsed.consoleId,
                   title: parsed.title,
+                  connectionId: parsed.connectionId,
+                  databaseId: parsed.databaseId,
+                  databaseName: parsed.databaseName,
                 });
               }
             } else if (parsed.type === "handoff") {

@@ -18,10 +18,12 @@ import type {
   ConsoleDataV2,
   ConversationMessage,
 } from "./types";
+import { createUniversalToolsV2 } from "./tools/universal-tools";
 import { createMongoToolsV2 } from "./tools/mongodb-tools";
 import { createPostgresToolsV2 } from "./tools/postgres-tools";
 import { createBigQueryToolsV2 } from "./tools/bigquery-tools";
 import { createConsoleToolsV2 } from "./tools/console-tools";
+import { UNIVERSAL_PROMPT_V2 } from "./prompts/universal";
 import { MONGO_PROMPT_V2 } from "./prompts/mongodb";
 import { POSTGRES_PROMPT_V2 } from "./prompts/postgres";
 import { BIGQUERY_PROMPT_V2 } from "./prompts/bigquery";
@@ -82,6 +84,12 @@ function getToolsForAgent(
   const { workspaceId, consoles, consoleId } = config;
 
   switch (agentType) {
+    case "universal":
+      return createUniversalToolsV2(
+        workspaceId,
+        consoles,
+        consoleId,
+      ) as SimpleToolSet;
     case "mongo":
       return createMongoToolsV2(
         workspaceId,
@@ -113,6 +121,8 @@ function getToolsForAgent(
  */
 function getPromptForAgent(agentType: AgentKindV2): string {
   switch (agentType) {
+    case "universal":
+      return UNIVERSAL_PROMPT_V2;
     case "mongo":
       return MONGO_PROMPT_V2;
     case "postgres":
@@ -214,6 +224,7 @@ export async function streamAgentResponse(params: StreamAgentParams) {
     consoleId,
     agentType,
     modelId,
+    workspaceCustomPrompt,
   } = params;
 
   const tools = getToolsForAgent(agentType, {
@@ -222,6 +233,11 @@ export async function streamAgentResponse(params: StreamAgentParams) {
     consoleId,
   });
   const systemPrompt = getPromptForAgent(agentType);
+  const customPromptContext =
+    typeof workspaceCustomPrompt === "string" &&
+    workspaceCustomPrompt.trim().length > 0
+      ? `\n\n---\n\n### Workspace Context\n${workspaceCustomPrompt.trim()}`
+      : "";
 
   // Get the model instance based on the provided modelId
   const model = getModelInstance(modelId);
@@ -242,21 +258,37 @@ export async function streamAgentResponse(params: StreamAgentParams) {
   // Convert conversation history to proper AI SDK message format
   const messages = convertToAIMessages(conversationHistory, newMessage);
 
+  // Guardrail: prevent runaway multi-step tool loops in production.
+  // The AI SDK defaults to stopWhen: stepCountIs(1). We intentionally allow multi-step,
+  // but keep a firm upper bound.
+  const MAX_STEPS = 256;
+  let stepsCompleted = 0;
+
   // Tools are structurally compatible at runtime - cast through unknown to bypass type checking
   const result = streamText({
     model,
-    system: systemPrompt + consoleContext,
+    system: systemPrompt + customPromptContext + consoleContext,
     messages,
     tools: tools as Parameters<typeof streamText>[0]["tools"],
-    // AI SDK defaults to stopWhen: stepCountIs(1). We want high multi-step tool usage.
-    stopWhen: stepCountIs(1024),
+    stopWhen: stepCountIs(MAX_STEPS),
     onStepFinish: ({ toolCalls, toolResults }) => {
+      stepsCompleted += 1;
       // This fires reliably after each tool execution
       // eslint-disable-next-line no-console -- helpful for debugging tool usage in dev
       console.log("[Agent V2] Step finished:", {
+        agentType,
+        step: stepsCompleted,
+        maxSteps: MAX_STEPS,
         toolCallCount: toolCalls?.length,
         toolResultCount: toolResults?.length,
       });
+
+      if (stepsCompleted >= MAX_STEPS) {
+        console.warn(
+          `[Agent V2] Step limit reached (${MAX_STEPS}). Terminating tool loop to prevent runaway execution.`,
+          { agentType },
+        );
+      }
     },
   });
 
@@ -293,6 +325,9 @@ export function processToolResult(result: unknown): {
         consoleId: resultObj.consoleId,
         title: resultObj.title,
         content: resultObj.content,
+        connectionId: resultObj.connectionId,
+        databaseId: resultObj.databaseId,
+        databaseName: resultObj.databaseName,
       },
     };
   }
