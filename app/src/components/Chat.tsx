@@ -311,7 +311,7 @@ const MessageItem = React.memo(
               const codeString = String(children).replace(/\n$/, "");
               return !isInline ? (
                 <CodeBlock
-                  language={match![1]}
+                  language={match ? match[1] : "text"}
                   key={codeString}
                   isGenerating={false}
                 >
@@ -536,7 +536,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       }
     };
     fetchSessions();
-  }, [currentWorkspace]);
+  }, [currentWorkspace, sessionId]);
 
   useEffect(() => {
     const loadSession = async () => {
@@ -796,9 +796,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           try {
             const parsed = JSON.parse(data);
 
-            // Debug log all events
-            console.log("Chat received event:", parsed);
-
             // Handle different event types
             if (parsed.type === "text") {
               assistantContent += parsed.content;
@@ -902,13 +899,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               parsed.type === "console_modification" &&
               parsed.modification
             ) {
-              // Track 1.3: Enhanced logging for console modifications
-              console.log("[Chat] Received console_modification:", {
-                modificationId: parsed.modificationId,
-                consoleId: parsed.consoleId,
-                action: parsed.modification.action,
-                contentLength: parsed.modification.content?.length,
-              });
               if (onConsoleModification) {
                 // Pass the modification with the consoleId if available
                 onConsoleModification({
@@ -918,11 +908,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               }
             } else if (parsed.type === "console_creation") {
               // Handle console creation event
-              console.log(
-                "Console creation event received:",
-                parsed.consoleId,
-                parsed.title,
-              );
               if (onConsoleModification) {
                 // Use the modification handler to create a new console
                 onConsoleModification({
@@ -937,8 +922,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               }
             } else if (parsed.type === "handoff") {
               // Handle handoff events - show a status message but don't save it
-              console.log("Handoff event:", parsed);
-              // Don't add to assistantContent, just show in UI temporarily
               setSteps(prev => [
                 ...prev,
                 `Switching to ${parsed.agent} assistant`,
@@ -1223,7 +1206,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                         const codeString = String(children).replace(/\n$/, "");
                         return !isInline ? (
                           <CodeBlock
-                            language={match![1]}
+                            language={match ? match[1] : "text"}
                             key={codeString}
                             isGenerating
                           >
