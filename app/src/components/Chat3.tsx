@@ -394,7 +394,7 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
   } = useConsoleStore();
 
   // useChat hook from Vercel AI SDK v6
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // @typescript-eslint/no-explicit-any
   const {
     messages,
     sendMessage,
