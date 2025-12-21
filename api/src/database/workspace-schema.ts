@@ -308,6 +308,7 @@ export interface IChat extends Document {
   messages: Array<{
     role: "user" | "assistant";
     content: string;
+    reasoning?: string[]; // Array of reasoning/thinking blocks
     toolCalls?: Array<{
       toolCallId?: string;
       toolName: string;
@@ -904,7 +905,12 @@ const ChatSchema = new Schema<IChat>(
         },
         content: {
           type: String,
-          required: true,
+          required: false,
+          default: "",
+        },
+        reasoning: {
+          type: [String],
+          required: false,
         },
         toolCalls: [
           {

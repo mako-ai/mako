@@ -515,7 +515,7 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
 
   return {
     role: msg.role as "user" | "assistant",
-    content: textContent,
+    content: textContent || msg.content || "",
     reasoning: reasoningParts.length > 0 ? reasoningParts : undefined,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
   };

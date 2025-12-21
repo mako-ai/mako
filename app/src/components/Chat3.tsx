@@ -293,6 +293,66 @@ const ToolCallsDisplay = React.memo(
 
 ToolCallsDisplay.displayName = "ToolCallsDisplay";
 
+// ReasoningDisplay for showing reasoning/thinking parts
+const ReasoningDisplay = React.memo(
+  ({ messageParts }: { messageParts?: Array<Record<string, unknown>> }) => {
+    const [expanded, setExpanded] = React.useState(false);
+
+    if (!messageParts) return null;
+
+    const reasoningParts = messageParts.filter(
+      (p): p is { type: "reasoning"; text: string } =>
+        p.type === "reasoning" && typeof p.text === "string",
+    );
+
+    if (reasoningParts.length === 0) return null;
+
+    return (
+      <Box sx={{ my: 1 }}>
+        <Button
+          size="small"
+          onClick={() => setExpanded(!expanded)}
+          startIcon={expanded ? <ExpandLess /> : <ExpandMore />}
+          sx={{
+            color: "text.secondary",
+            textTransform: "none",
+            fontSize: "0.8rem",
+            p: 0,
+            minWidth: "auto",
+            "&:hover": {
+              backgroundColor: "transparent",
+              textDecoration: "underline",
+            },
+          }}
+          disableRipple
+        >
+          Thinking Process
+        </Button>
+        {expanded && (
+          <Box
+            sx={{
+              mt: 1,
+              pl: 2,
+              borderLeft: 2,
+              borderColor: "divider",
+              color: "text.secondary",
+              fontSize: "0.875rem",
+            }}
+          >
+            {reasoningParts.map((part, i) => (
+              <Box key={i} sx={{ mb: 1, whiteSpace: "pre-wrap" }}>
+                {part.text}
+              </Box>
+            ))}
+          </Box>
+        )}
+      </Box>
+    );
+  },
+);
+
+ReasoningDisplay.displayName = "ReasoningDisplay";
+
 interface Chat3Props {
   onConsoleModification?: (modification: unknown) => void;
 }
@@ -390,7 +450,7 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
   // Console store for client-side tool execution
   // Note: We use getState() inside callbacks to avoid stale closure issues
   const consoleStore = useConsoleStore();
-  const { addConsoleTab, setActiveConsole } = consoleStore;
+  const { setActiveConsole } = consoleStore;
 
   // useChat hook from Vercel AI SDK v6
   // @typescript-eslint/no-explicit-any
@@ -571,21 +631,11 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
         const effectiveDatabaseId = databaseId ?? baseConsole?.databaseId;
         const effectiveDatabaseName = databaseName ?? baseConsole?.databaseName;
 
-        // Create the new console tab
-        const newConsoleId = addConsoleTab({
-          title,
-          content,
-          initialContent: content,
-          connectionId: effectiveConnectionId,
-          databaseId: effectiveDatabaseId,
-          databaseName: effectiveDatabaseName,
-          kind: "console",
-        });
+        // Generate a new ID for the console
+        const newConsoleId = generateObjectId();
 
-        // Make the new console active
-        setActiveConsole(newConsoleId);
-
-        // Notify parent
+        // Notify parent to create the console (App.tsx handles the store update)
+        // This prevents double creation which triggers the reducer twice
         onConsoleModification?.({
           action: "create",
           content,
@@ -682,6 +732,16 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
                     state: "output-available",
                     input: tc.input,
                     output: tc.result,
+                  });
+                }
+              }
+
+              // Add reasoning parts (if any)
+              if (msg.reasoning && Array.isArray(msg.reasoning)) {
+                for (const reasoningText of msg.reasoning) {
+                  parts.push({
+                    type: "reasoning",
+                    text: reasoningText,
                   });
                 }
               }
@@ -1066,6 +1126,12 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
                       message.parts as Array<Record<string, unknown>>,
                     )}
                     onToolClick={handleToolClick}
+                  />
+                  {/* Display reasoning */}
+                  <ReasoningDisplay
+                    messageParts={
+                      message.parts as Array<Record<string, unknown>>
+                    }
                   />
                   {/* Display message content */}
                   {renderMessageContent(
