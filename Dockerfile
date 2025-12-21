@@ -35,7 +35,8 @@ COPY --from=builder /app/pnpm-lock.yaml ./pnpm-lock.yaml
 
 # Install production dependencies and rebuild native modules
 RUN pnpm install --prod
-RUN cd node_modules/.pnpm/sqlite3@*/node_modules/sqlite3 && npm run install --target_platform=linux --target_arch=x64
+# uncomment this if you are using sqlite3
+# RUN cd node_modules/.pnpm/sqlite3@*/node_modules/sqlite3 && npm run install --target_platform=linux --target_arch=x64
 
 # Copy built files
 COPY --from=builder /app/api/dist ./dist
