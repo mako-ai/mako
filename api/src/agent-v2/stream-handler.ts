@@ -19,10 +19,11 @@ import { getModelById } from "./ai-models";
 /**
  * Get the AI SDK model instance based on the model ID
  * Falls back to gpt-5.2 if the model is not found
+ * Note: Type assertion needed due to AI SDK beta version conflicts with @ai-sdk/provider
  */
 function getModelInstance(modelId?: string): LanguageModel {
   if (!modelId) {
-    return openai("gpt-5.2");
+    return openai("gpt-5.2") as unknown as LanguageModel;
   }
 
   const model = getModelById(modelId);
@@ -30,21 +31,21 @@ function getModelInstance(modelId?: string): LanguageModel {
     console.warn(
       `[Agent V2] Model "${modelId}" not found, falling back to gpt-5.2`,
     );
-    return openai("gpt-5.2");
+    return openai("gpt-5.2") as unknown as LanguageModel;
   }
 
   switch (model.provider) {
     case "openai":
-      return openai(modelId);
+      return openai(modelId) as unknown as LanguageModel;
     case "anthropic":
-      return anthropic(modelId);
+      return anthropic(modelId) as unknown as LanguageModel;
     case "google":
-      return google(modelId);
+      return google(modelId) as unknown as LanguageModel;
     default:
       console.warn(
         `[Agent V2] Unknown provider for model "${modelId}", falling back to gpt-5.2`,
       );
-      return openai("gpt-5.2");
+      return openai("gpt-5.2") as unknown as LanguageModel;
   }
 }
 

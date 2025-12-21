@@ -252,7 +252,7 @@ importers:
     dependencies:
       '@ai-sdk/react':
         specifier: 3.0.0-beta.162
-        version: 3.0.0-beta.162(react@18.3.1)(zod@3.25.67)
+        version: 3.0.0-beta.162(react@18.3.1)(zod@3.25.76)
       '@emotion/react':
         specifier: ^11.11.1
         version: 11.14.0(@types/react@18.3.23)(react@18.3.1)
@@ -279,7 +279,7 @@ importers:
         version: 15.5.13
       ai:
         specifier: 6.0.0-beta.159
-        version: 6.0.0-beta.159(zod@3.25.67)
+        version: 6.0.0-beta.159(zod@3.25.76)
       axios:
         specifier: ^1.6.2
         version: 1.9.0
@@ -297,7 +297,7 @@ importers:
         version: 0.511.0(react@18.3.1)
       openai:
         specifier: ^4.103.0
-        version: 4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@3.25.67)
+        version: 4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@3.25.76)
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -323,8 +323,8 @@ importers:
         specifier: ^4.0.1
         version: 4.0.1
       zod:
-        specifier: ^3.25.67
-        version: 3.25.67
+        specifier: ^3.25.76
+        version: 3.25.76
       zustand:
         specifier: ^5.0.5
         version: 5.0.5(@types/react@18.3.23)(immer@10.1.1)(react@18.3.1)(use-sync-external-store@1.6.0(react@18.3.1))
@@ -8548,12 +8548,12 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.0-beta.57(zod@4.2.1)
       zod: 4.2.1
 
-  '@ai-sdk/gateway@2.0.0-beta.85(zod@3.25.67)':
+  '@ai-sdk/gateway@2.0.0-beta.85(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 3.0.0-beta.27
-      '@ai-sdk/provider-utils': 4.0.0-beta.53(zod@3.25.67)
+      '@ai-sdk/provider-utils': 4.0.0-beta.53(zod@3.25.76)
       '@vercel/oidc': 3.0.5
-      zod: 3.25.67
+      zod: 3.25.76
 
   '@ai-sdk/gateway@2.0.0-beta.85(zod@4.2.1)':
     dependencies:
@@ -8574,12 +8574,12 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.0-beta.57(zod@4.2.1)
       zod: 4.2.1
 
-  '@ai-sdk/provider-utils@4.0.0-beta.53(zod@3.25.67)':
+  '@ai-sdk/provider-utils@4.0.0-beta.53(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 3.0.0-beta.27
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.0.6
-      zod: 3.25.67
+      zod: 3.25.76
 
   '@ai-sdk/provider-utils@4.0.0-beta.53(zod@4.2.1)':
     dependencies:
@@ -8603,10 +8603,10 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@3.0.0-beta.162(react@18.3.1)(zod@3.25.67)':
+  '@ai-sdk/react@3.0.0-beta.162(react@18.3.1)(zod@3.25.76)':
     dependencies:
-      '@ai-sdk/provider-utils': 4.0.0-beta.53(zod@3.25.67)
-      ai: 6.0.0-beta.159(zod@3.25.67)
+      '@ai-sdk/provider-utils': 4.0.0-beta.53(zod@3.25.76)
+      ai: 6.0.0-beta.159(zod@3.25.76)
       react: 18.3.1
       swr: 2.3.8(react@18.3.1)
       throttleit: 2.1.0
@@ -12438,13 +12438,13 @@ snapshots:
     dependencies:
       humanize-ms: 1.2.1
 
-  ai@6.0.0-beta.159(zod@3.25.67):
+  ai@6.0.0-beta.159(zod@3.25.76):
     dependencies:
-      '@ai-sdk/gateway': 2.0.0-beta.85(zod@3.25.67)
+      '@ai-sdk/gateway': 2.0.0-beta.85(zod@3.25.76)
       '@ai-sdk/provider': 3.0.0-beta.27
-      '@ai-sdk/provider-utils': 4.0.0-beta.53(zod@3.25.67)
+      '@ai-sdk/provider-utils': 4.0.0-beta.53(zod@3.25.76)
       '@opentelemetry/api': 1.9.0
-      zod: 3.25.67
+      zod: 3.25.76
 
   ai@6.0.0-beta.159(zod@4.2.1):
     dependencies:
@@ -16664,7 +16664,7 @@ snapshots:
       is-inside-container: 1.0.0
       is-wsl: 3.1.0
 
-  openai@4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@3.25.67):
+  openai@4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@3.25.76):
     dependencies:
       '@types/node': 18.19.111
       '@types/node-fetch': 2.6.12
@@ -16675,7 +16675,7 @@ snapshots:
       node-fetch: 2.7.0(encoding@0.1.13)
     optionalDependencies:
       ws: 8.18.2
-      zod: 3.25.67
+      zod: 3.25.76
     transitivePeerDependencies:
       - encoding
 

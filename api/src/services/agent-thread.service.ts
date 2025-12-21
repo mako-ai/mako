@@ -515,7 +515,8 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
 
   return {
     role: msg.role as "user" | "assistant",
-    content: textContent || msg.content || "",
+    // AI SDK v6 uses parts array; content property no longer exists on UIMessage
+    content: textContent || "",
     reasoning: reasoningParts.length > 0 ? reasoningParts : undefined,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
   };
