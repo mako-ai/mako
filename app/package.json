@@ -10,7 +10,7 @@
     "lint:fix": "eslint . --ext ts,tsx --fix"
   },
   "dependencies": {
-    "@ai-sdk/react": "3.0.0-beta.162",
+    "@ai-sdk/react": "3.0.0-beta.169",
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
     "@monaco-editor/react": "^4.6.0",
@@ -19,7 +19,7 @@
     "@mui/x-data-grid-premium": "^8.4.0",
     "@mui/x-license": "^8.4.0",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "ai": "6.0.0-beta.159",
+    "ai": "6.0.0-beta.166",
     "axios": "^1.6.2",
     "date-fns": "^4.1.0",
     "idb-keyval": "^6.2.2",

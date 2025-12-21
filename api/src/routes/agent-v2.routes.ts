@@ -26,7 +26,7 @@ import {
 } from "../database/workspace-schema";
 import {
   shouldGenerateTitle,
-  generateChatTitle,
+  generateChatTitleFromMessages,
 } from "../services/title-generator";
 import { selectInitialAgent } from "../services/agent-selection.service";
 
@@ -367,7 +367,7 @@ agentV2Routes.post("/stream", async (c: AuthenticatedContext) => {
             if (!chat || chat.titleGenerated) return;
             const allMessages = chat.messages || [];
             if (!shouldGenerateTitle(allMessages)) return;
-            const title = await generateChatTitle(allMessages);
+            const title = await generateChatTitleFromMessages(allMessages);
             const trimmed = (title || "").trim();
             if (!trimmed) return;
             await Chat.findOneAndUpdate(

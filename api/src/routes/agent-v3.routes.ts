@@ -21,12 +21,13 @@ import type { ConsoleDataV2 } from "../agent-v2/types";
 import { createUniversalToolsV3 } from "../agent-v2/tools/universal-tools-v3";
 import { UNIVERSAL_PROMPT_V2 } from "../agent-v2/prompts/universal";
 import { getModelById } from "../agent-v2/ai-models";
-import { Workspace, DatabaseConnection } from "../database/workspace-schema";
-import { saveChat } from "../services/agent-thread.service";
 import {
-  shouldGenerateTitle,
-  generateChatTitle,
-} from "../services/title-generator";
+  Workspace,
+  DatabaseConnection,
+  Chat,
+} from "../database/workspace-schema";
+import { saveChat } from "../services/agent-thread.service";
+import { generateChatTitle } from "../services/title-generator";
 
 export const agentV3Routes = new Hono();
 
@@ -108,6 +109,51 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
 
   if (!chatId) {
     return c.json({ error: "'chatId' is required" }, 400);
+  }
+
+  // Check if this is a new chat (first message)
+  const existingChat = await Chat.findById(chatId);
+  const isNewChat = !existingChat;
+
+  // For new chats: create chat document immediately, then fire-and-forget title generation
+  // IMPORTANT: Title generation uses generateText() which would interfere with the main
+  // streamText() response if awaited. We fire-and-forget to keep streams separate.
+  if (isNewChat && messages.length > 0) {
+    // Create chat document immediately (await this to ensure persistence)
+    await Chat.create({
+      _id: new ObjectId(chatId),
+      workspaceId: new ObjectId(workspaceId),
+      createdBy: userId.toString(),
+      title: "New Chat",
+      titleGenerated: false,
+      messages: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Extract text content for title generation
+    const firstUserMessage = messages.find(m => m.role === "user");
+    const userContent = firstUserMessage?.parts
+      ? firstUserMessage.parts
+          .filter((p): p is { type: "text"; text: string } => p.type === "text")
+          .map(p => p.text)
+          .join("")
+      : "";
+
+    // Fire-and-forget: generate title in background (don't await - separate from main stream)
+    if (userContent.length >= 3) {
+      void (async () => {
+        try {
+          const title = await generateChatTitle(userContent);
+          await Chat.updateOne(
+            { _id: new ObjectId(chatId), titleGenerated: false },
+            { title, titleGenerated: true },
+          );
+        } catch (err) {
+          console.error("[Agent V3] Background title generation failed:", err);
+        }
+      })();
+    }
   }
 
   // Load workspace for custom prompt
@@ -220,30 +266,8 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
 
       try {
         // Save all messages in one atomic operation (AI SDK best practice)
-        const savedChat = await saveChat(
-          chatId,
-          workspaceId,
-          userId.toString(),
-          allMessages,
-        );
-
-        // Generate title if this is a new conversation without a generated title
-        if (savedChat && !savedChat.titleGenerated && allMessages.length > 0) {
-          const shouldGenerate = shouldGenerateTitle(allMessages);
-          console.log("[Agent V3] Should generate title:", shouldGenerate);
-
-          if (shouldGenerate) {
-            try {
-              const title = await generateChatTitle(allMessages);
-              console.log("[Agent V3] Generated title:", title);
-              savedChat.title = title;
-              savedChat.titleGenerated = true;
-              await savedChat.save();
-            } catch (titleError) {
-              console.error("[Agent V3] Title generation failed:", titleError);
-            }
-          }
-        }
+        // Title was already generated in parallel at the start for new chats
+        await saveChat(chatId, workspaceId, userId.toString(), allMessages);
       } catch (error) {
         console.error("[Agent V3] Error saving chat:", error);
       }
