@@ -55,6 +55,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
+import { generateObjectId } from "../utils/objectId";
 
 interface ChatSessionMeta {
   _id: string;
@@ -305,7 +306,8 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
   const { consoleTabs, activeConsoleId } = useConsoleStore();
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
-  const [sessionId, setSessionId] = useState<string>("");
+  // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
+  const [chatId, setChatId] = useState<string>(() => generateObjectId());
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
@@ -373,7 +375,7 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
           consoles: consolesData,
           consoleId: activeConsoleId,
           modelId: selectedModelId,
-          sessionId: sessionId || undefined,
+          chatId, // Frontend-owned ID (AI SDK best practice)
         },
       }),
     [
@@ -381,17 +383,14 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
       consolesData,
       activeConsoleId,
       selectedModelId,
-      sessionId,
+      chatId,
     ],
   );
 
   // Console store for client-side tool execution
-  const {
-    addConsoleTab,
-    setActiveConsole,
-    consoleTabs: localConsoleTabs,
-    activeConsoleId: localActiveConsoleId,
-  } = useConsoleStore();
+  // Note: We use getState() inside callbacks to avoid stale closure issues
+  const consoleStore = useConsoleStore();
+  const { addConsoleTab, setActiveConsole } = consoleStore;
 
   // useChat hook from Vercel AI SDK v6
   // @typescript-eslint/no-explicit-any
@@ -421,12 +420,16 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
 
       // Handle read_console
       if (toolName === "read_console") {
-        const consoleId =
-          (input.consoleId as string | null) ?? localActiveConsoleId;
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+        const currentActiveId = currentStore.activeConsoleId;
+
+        const consoleId = (input.consoleId as string | null) ?? currentActiveId;
         const targetConsole = consoleId
-          ? localConsoleTabs.find(c => c.id === consoleId)
-          : localConsoleTabs.find(c => c.id === localActiveConsoleId) ||
-            localConsoleTabs[0];
+          ? currentTabs.find((c: any) => c.id === consoleId)
+          : currentTabs.find((c: any) => c.id === currentActiveId) ||
+            currentTabs[0];
 
         if (!targetConsole) {
           addToolOutput({
@@ -463,6 +466,11 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
 
       // Handle modify_console
       if (toolName === "modify_console") {
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+        const currentActiveId = currentStore.activeConsoleId;
+
         const action = input.action as "replace" | "insert" | "append";
         const content = input.content as string;
         const position = input.position as number | null;
@@ -470,7 +478,7 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
 
         // Determine target console
         const resolvedConsoleId =
-          inputConsoleId ?? localActiveConsoleId ?? localConsoleTabs[0]?.id;
+          inputConsoleId ?? currentActiveId ?? currentTabs[0]?.id;
 
         if (!resolvedConsoleId) {
           addToolOutput({
@@ -484,8 +492,8 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
           return;
         }
 
-        const targetConsole = localConsoleTabs.find(
-          c => c.id === resolvedConsoleId,
+        const targetConsole = currentTabs.find(
+          (c: any) => c.id === resolvedConsoleId,
         );
         if (!targetConsole) {
           addToolOutput({
@@ -543,6 +551,11 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
 
       // Handle create_console
       if (toolName === "create_console") {
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+        const currentActiveId = currentStore.activeConsoleId;
+
         const title = input.title as string;
         const content = input.content as string;
         const connectionId = (input.connectionId as string | null) ?? undefined;
@@ -551,8 +564,8 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
 
         // If connection info not provided, inherit from active console
         const baseConsole =
-          localConsoleTabs.find(c => c.id === localActiveConsoleId) ||
-          localConsoleTabs[0];
+          currentTabs.find((c: any) => c.id === currentActiveId) ||
+          currentTabs[0];
 
         const effectiveConnectionId = connectionId ?? baseConsole?.connectionId;
         const effectiveDatabaseId = databaseId ?? baseConsole?.databaseId;
@@ -619,7 +632,7 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Session management
+  // Session management - fetch available chat sessions for history menu
   useEffect(() => {
     const fetchSessions = async () => {
       if (!currentWorkspace) return;
@@ -628,37 +641,65 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
         if (res.ok) {
           const data = await res.json();
           setSessions(data);
-          if (data.length > 0 && !sessionId) {
-            setSessionId(data[0]._id);
-          }
         }
       } catch {
         /* ignore */
       }
     };
     fetchSessions();
-  }, [currentWorkspace, sessionId]);
+  }, [currentWorkspace]);
 
-  // Load messages when switching sessions
+  // Track if we're viewing an existing chat from history (vs a new chat)
+  const [isExistingChat, setIsExistingChat] = useState(false);
+
+  // Load messages when selecting an existing chat from history
   useEffect(() => {
     const loadSession = async () => {
-      if (!sessionId || !currentWorkspace) {
-        setMessages([]);
+      if (!isExistingChat || !currentWorkspace) {
         return;
       }
       try {
         const res = await fetch(
-          `/api/workspaces/${currentWorkspace.id}/chats/${sessionId}`,
+          `/api/workspaces/${currentWorkspace.id}/chats/${chatId}`,
         );
         if (res.ok) {
           const data = await res.json();
-          // Convert stored messages to AI SDK v6 format with parts
+          // Convert stored messages to AI SDK v6 format with parts including tool calls
           const convertedMessages =
-            data.messages?.map((msg: any) => ({
-              id: msg.id || `${Date.now()}-${Math.random()}`,
-              role: msg.role,
-              parts: [{ type: "text", text: msg.content || "" }],
-            })) || [];
+            data.messages?.map((msg: any) => {
+              const parts: Array<Record<string, unknown>> = [];
+
+              // Add tool call parts first (they execute before text response)
+              if (msg.toolCalls && msg.toolCalls.length > 0) {
+                for (const tc of msg.toolCalls) {
+                  parts.push({
+                    type: `tool-${tc.toolName}`,
+                    toolCallId:
+                      tc.toolCallId ||
+                      tc._id?.toString() ||
+                      `saved-${tc.toolName}-${Date.now()}-${Math.random()}`,
+                    toolName: tc.toolName,
+                    state: "output-available",
+                    input: tc.input,
+                    output: tc.result,
+                  });
+                }
+              }
+
+              // Add text content part
+              if (msg.content) {
+                parts.push({ type: "text", text: msg.content });
+              }
+
+              return {
+                id:
+                  msg._id?.toString() ||
+                  msg.id ||
+                  `${Date.now()}-${Math.random()}`,
+                role: msg.role,
+                parts,
+              };
+            }) || [];
           setMessages(convertedMessages);
         }
       } catch {
@@ -666,36 +707,19 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
       }
     };
     loadSession();
-  }, [sessionId, currentWorkspace, setMessages]);
+  }, [chatId, isExistingChat, currentWorkspace, setMessages]);
 
   // Focus input
   useEffect(() => {
     const timer = setTimeout(() => inputRef.current?.focus(), 100);
     return () => clearTimeout(timer);
-  }, [sessionId, messages.length]);
+  }, [chatId, messages.length]);
 
-  const createNewSession = async () => {
-    if (!currentWorkspace) return;
-    try {
-      const res = await fetch(`/api/workspaces/${currentWorkspace.id}/chats`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "New Chat" }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSessionId(data.chatId);
-        setMessages([]);
-        const sessionsRes = await fetch(
-          `/api/workspaces/${currentWorkspace.id}/chats`,
-        );
-        if (sessionsRes.ok) {
-          setSessions(await sessionsRes.json());
-        }
-      }
-    } catch {
-      /* ignore */
-    }
+  // Create new chat session - just generate a new ID locally (no API call needed)
+  const createNewSession = () => {
+    setChatId(generateObjectId());
+    setMessages([]);
+    setIsExistingChat(false);
   };
 
   const handleHistoryMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
@@ -707,8 +731,9 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
   };
 
   const handleSelectSession = (id: string) => {
-    setSessionId(id);
+    setChatId(id);
     setMessages([]);
+    setIsExistingChat(true);
     handleHistoryMenuClose();
   };
 
@@ -723,13 +748,9 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
       if (res.ok) {
         const newSessions = sessions.filter(s => s._id !== id);
         setSessions(newSessions);
-        if (sessionId === id) {
-          if (newSessions.length > 0) {
-            setSessionId(newSessions[0]._id);
-          } else {
-            setSessionId("");
-            setMessages([]);
-          }
+        if (chatId === id) {
+          // If we deleted the current chat, start a new one
+          createNewSession();
         }
       }
     } catch {
@@ -924,14 +945,14 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
         {sessions
           .filter(
             session =>
-              session._id === sessionId ||
+              session._id === chatId ||
               (session.title && session.title.length > 0),
           )
           .map(session => (
             <MenuItem
               key={session._id}
               onClick={() => handleSelectSession(session._id)}
-              selected={session._id === sessionId}
+              selected={session._id === chatId}
               sx={{ display: "flex", justifyContent: "space-between" }}
             >
               <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>

@@ -10,7 +10,7 @@ import {
   convertToModelMessages,
   stepCountIs,
   type UIMessage,
-  type LanguageModel,
+  type LanguageModelV2,
 } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
@@ -21,15 +21,8 @@ import type { ConsoleDataV2 } from "../agent-v2/types";
 import { createUniversalToolsV3 } from "../agent-v2/tools/universal-tools-v3";
 import { UNIVERSAL_PROMPT_V2 } from "../agent-v2/prompts/universal";
 import { getModelById } from "../agent-v2/ai-models";
-import {
-  Workspace,
-  DatabaseConnection,
-  Chat,
-} from "../database/workspace-schema";
-import {
-  getOrCreateThreadContext,
-  updateChatWithResponse,
-} from "../services/agent-thread.service";
+import { Workspace, DatabaseConnection } from "../database/workspace-schema";
+import { saveChat } from "../services/agent-thread.service";
 import {
   shouldGenerateTitle,
   generateChatTitle,
@@ -43,7 +36,7 @@ agentV3Routes.use("*", unifiedAuthMiddleware);
 /**
  * Get the AI SDK model instance based on the model ID
  */
-function getModelInstance(modelId?: string): LanguageModel {
+function getModelInstance(modelId?: string): LanguageModelV2 {
   if (!modelId) {
     return openai("gpt-5.2");
   }
@@ -91,10 +84,10 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     return c.json({ error: "Invalid request body" }, 400);
   }
 
-  const { messages, sessionId, workspaceId, consoles, consoleId, modelId } =
+  const { messages, chatId, workspaceId, consoles, consoleId, modelId } =
     body as {
       messages?: UIMessage[];
-      sessionId?: string;
+      chatId?: string; // Frontend-owned chat ID (AI SDK best practice)
       workspaceId?: string;
       consoles?: ConsoleDataV2[];
       consoleId?: string;
@@ -112,35 +105,8 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     );
   }
 
-  // Get or create thread context for persistence
-  const threadContext = await getOrCreateThreadContext(
-    sessionId,
-    workspaceId,
-    userId.toString(),
-  );
-
-  // Get the current session ID (either provided or newly created)
-  let currentSessionId = sessionId;
-  if (!currentSessionId) {
-    // If no sessionId was provided, use the one from threadContext
-    const existingChat = await Chat.findOne({
-      workspaceId: new ObjectId(workspaceId),
-      createdBy: userId.toString(),
-    }).sort({ createdAt: -1 });
-
-    if (existingChat) {
-      currentSessionId = existingChat._id.toString();
-    } else {
-      // Create a new chat session
-      const newChat = new Chat({
-        workspaceId: new ObjectId(workspaceId),
-        createdBy: userId.toString(),
-        title: "New Chat",
-        messages: [],
-      });
-      await newChat.save();
-      currentSessionId = newChat._id.toString();
-    }
+  if (!chatId) {
+    return c.json({ error: "'chatId' is required" }, 400);
   }
 
   // Load workspace for custom prompt
@@ -153,6 +119,9 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
   } catch (err) {
     console.warn("[Agent V3] Failed to load workspace custom prompt:", err);
   }
+
+  // Build system prompt
+  const systemPrompt = UNIVERSAL_PROMPT_V2;
 
   // Get workspace database capabilities for enriching consoles
   const workspaceDatabases = await DatabaseConnection.find({
@@ -181,8 +150,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     consoleId,
   );
 
-  // Build system prompt
-  const systemPrompt = UNIVERSAL_PROMPT_V2;
+  // Build custom prompt context for the full system message
   const customPromptContext =
     workspaceCustomPrompt.trim().length > 0
       ? `\n\n---\n\n### Workspace Context\n${workspaceCustomPrompt.trim()}`
@@ -218,13 +186,13 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     messages: modelMessages,
     tools: tools as Parameters<typeof streamText>[0]["tools"],
     stopWhen: stepCountIs(MAX_STEPS),
-    onStepFinish: ({ toolCalls, toolResults }) => {
+    onStepFinish: ({ toolCalls }) => {
       stepsCompleted += 1;
+
       console.log("[Agent V3] Step finished:", {
         step: stepsCompleted,
         maxSteps: MAX_STEPS,
         toolCallCount: toolCalls?.length,
-        toolResultCount: toolResults?.length,
       });
 
       if (stepsCompleted >= MAX_STEPS) {
@@ -233,44 +201,51 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
         );
       }
     },
-    onFinish: async ({ text, finishReason }) => {
-      console.log("[Agent V3] Stream finished:", {
-        sessionId: currentSessionId,
-        textLength: text.length,
-        finishReason,
-      });
-
-      try {
-        // Extract the last user message from the messages array
-        const lastUserMessage = messages
-          .filter(m => m.role === "user")
-          .pop();
-        const userContent =
-          lastUserMessage && "parts" in lastUserMessage
-            ? lastUserMessage.parts
-                ?.filter((p: any) => p.type === "text")
-                .map((p: any) => p.text)
-                .join("") || ""
-            : "";
-
-        // Save the conversation to the database
-        await updateChatWithResponse(
-          currentSessionId!,
-          userContent,
-          text,
-          threadContext,
-        );
-
-        // Generate title if this is a new conversation
-        if (await shouldGenerateTitle(currentSessionId!)) {
-          await generateChatTitle(currentSessionId!, workspaceId, modelId);
-        }
-      } catch (error) {
-        console.error("[Agent V3] Error persisting messages:", error);
-      }
-    },
   });
 
   // Return native AI SDK UI message stream response (for useChat compatibility)
-  return result.toUIMessageStreamResponse();
+  // Using AI SDK best practice: save once at the end with all messages
+  return result.toUIMessageStreamResponse({
+    originalMessages: messages,
+    generateMessageId: () => new ObjectId().toString(),
+    // Forward reasoning tokens from models that support extended thinking
+    // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
+    sendReasoning: true,
+    onFinish: async ({ messages: allMessages }) => {
+      console.log("[Agent V3] Stream finished, saving chat:", {
+        chatId,
+        messageCount: allMessages.length,
+      });
+
+      try {
+        // Save all messages in one atomic operation (AI SDK best practice)
+        const savedChat = await saveChat(
+          chatId,
+          workspaceId,
+          userId.toString(),
+          allMessages,
+        );
+
+        // Generate title if this is a new conversation without a generated title
+        if (savedChat && !savedChat.titleGenerated && allMessages.length > 0) {
+          const shouldGenerate = shouldGenerateTitle(allMessages);
+          console.log("[Agent V3] Should generate title:", shouldGenerate);
+
+          if (shouldGenerate) {
+            try {
+              const title = await generateChatTitle(allMessages);
+              console.log("[Agent V3] Generated title:", title);
+              savedChat.title = title;
+              savedChat.titleGenerated = true;
+              await savedChat.save();
+            } catch (titleError) {
+              console.error("[Agent V3] Title generation failed:", titleError);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("[Agent V3] Error saving chat:", error);
+      }
+    },
+  });
 });

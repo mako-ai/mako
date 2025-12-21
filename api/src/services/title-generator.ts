@@ -24,6 +24,26 @@ Return only the title, nothing else.`,
 });
 
 /**
+ * Extract text content from a message (handles both v2 .content and v6 .parts formats)
+ */
+const getMessageContent = (message: any): string => {
+  // V2 format: message.content is a string
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+
+  // V6 format: message.parts is an array with { type: "text", text: string }
+  if (Array.isArray(message.parts)) {
+    return message.parts
+      .filter((p: any) => p.type === "text" && typeof p.text === "string")
+      .map((p: any) => p.text)
+      .join("");
+  }
+
+  return "";
+};
+
+/**
  * Count approximate tokens in a string (rough estimation)
  */
 const estimateTokens = (text: string): number => {
@@ -46,14 +66,19 @@ export const shouldGenerateTitle = (messages: any[]): boolean => {
 
   // Check token count of the first user message to ensure it's substantial
   const firstUserMessage = userMessages[0];
-  const userTokens = estimateTokens(firstUserMessage.content);
+  const userTokens = estimateTokens(getMessageContent(firstUserMessage));
 
-  // Need at least 20 tokens in the first user message (more lenient than before)
-  // OR if we have multiple exchanges, we're definitely ready
-  const hasSubstantialContent = userTokens >= 20;
+  // Generate title from the very first exchange (user + assistant)
+  // A minimum of 3 tokens ensures it's not just "hi" or similar trivial inputs
+  const hasSubstantialContent = userTokens >= 3;
   const hasMultipleExchanges = userMessages.length >= 2;
 
-  const shouldGenerate = hasSubstantialContent || hasMultipleExchanges;
+  // Always generate on first complete exchange (1 user + 1 assistant message)
+  const hasFirstExchange =
+    userMessages.length >= 1 && assistantMessages.length >= 1;
+
+  const shouldGenerate =
+    hasFirstExchange && (hasSubstantialContent || hasMultipleExchanges);
 
   console.log("Title generation check:", {
     messageCount: messages.length,
@@ -61,6 +86,7 @@ export const shouldGenerateTitle = (messages: any[]): boolean => {
     assistantMessages: assistantMessages.length,
     firstUserTokens: userTokens,
     hasSubstantialContent,
+    hasFirstExchange,
     hasMultipleExchanges,
     shouldGenerate,
   });
@@ -92,7 +118,10 @@ export const generateChatTitle = async (messages: any[]): Promise<string> => {
 
     // Build context string for title generation
     const conversationContext = contextMessages
-      .map(m => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+      .map(
+        m =>
+          `${m.role === "user" ? "User" : "Assistant"}: ${getMessageContent(m)}`,
+      )
       .join("\n\n");
 
     const titlePrompt = `Based on this conversation, generate a concise title (3-8 words) that captures the main topic or task:\n\n${conversationContext}`;
@@ -160,7 +189,7 @@ export const generateChatTitle = async (messages: any[]): Promise<string> => {
       // Fallback: try to extract key terms from user messages
       const userContent = contextMessages
         .filter(m => m.role === "user")
-        .map(m => m.content)
+        .map(m => getMessageContent(m))
         .join(" ");
 
       // Simple keyword extraction for fallback
