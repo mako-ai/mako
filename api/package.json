@@ -15,9 +15,9 @@
     "lint:fix": "eslint . --ext ts --fix"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^2.0.56",
-    "@ai-sdk/google": "^2.0.47",
-    "@ai-sdk/openai": "^2.0.88",
+    "@ai-sdk/anthropic": "3.0.0-beta.95",
+    "@ai-sdk/google": "3.0.0-beta.87",
+    "@ai-sdk/openai": "3.0.0-beta.109",
     "@google-cloud/bigquery": "^8.1.1",
     "@google-cloud/cloud-sql-connector": "^1.8.4",
     "@hono/node-server": "^1.14.4",
@@ -45,7 +45,7 @@
     "pg": "^8.16.0",
     "stripe": "^14.25.0",
     "uuid": "^9.0.0",
-    "zod": "^3.25.76"
+    "zod": "^4.2.1"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",

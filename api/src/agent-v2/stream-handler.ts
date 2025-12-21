@@ -3,12 +3,7 @@
  * Using Vercel AI SDK for streaming responses
  */
 
-import {
-  streamText,
-  stepCountIs,
-  type CoreMessage,
-  type LanguageModel,
-} from "ai";
+import { streamText, stepCountIs, type LanguageModel } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
@@ -84,8 +79,8 @@ function getToolsForAgent(config: {
 function convertToAIMessages(
   history: ConversationMessage[],
   newMessage: string,
-): CoreMessage[] {
-  const messages: CoreMessage[] = [];
+): any[] {
+  const messages: any[] = [];
 
   for (const msg of history) {
     messages.push({

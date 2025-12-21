@@ -10,7 +10,7 @@ import {
   convertToModelMessages,
   stepCountIs,
   type UIMessage,
-  type LanguageModelV2,
+  type LanguageModel,
 } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
@@ -36,7 +36,7 @@ agentV3Routes.use("*", unifiedAuthMiddleware);
 /**
  * Get the AI SDK model instance based on the model ID
  */
-function getModelInstance(modelId?: string): LanguageModelV2 {
+function getModelInstance(modelId?: string): LanguageModel {
   if (!modelId) {
     return openai("gpt-5.2");
   }
@@ -184,7 +184,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     model,
     system: systemPrompt + customPromptContext + consoleContext,
     messages: modelMessages,
-    tools: tools as Parameters<typeof streamText>[0]["tools"],
+    tools: tools as any,
     stopWhen: stepCountIs(MAX_STEPS),
     onStepFinish: ({ toolCalls }) => {
       stepsCompleted += 1;
