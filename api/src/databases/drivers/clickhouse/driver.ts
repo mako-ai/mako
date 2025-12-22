@@ -35,18 +35,20 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
       "INFORMATION_SCHEMA",
     ]);
 
-    return result.data
+    const databases: DatabaseTreeNode[] = result.data
       .map((row: { name?: string }) => row.name)
       .filter((name: string | undefined): name is string => {
         return !!name && !systemDatabases.has(name);
       })
-      .map<DatabaseTreeNode>((dbName: string) => ({
+      .map((dbName: string) => ({
         id: dbName,
         label: dbName,
-        kind: "database",
+        kind: "database" as const,
         hasChildren: true,
         metadata: { databaseName: dbName },
       }));
+
+    return databases;
   }
 
   async getChildren(
