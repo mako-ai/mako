@@ -107,8 +107,11 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     );
   }
 
-  if (!chatId) {
-    return c.json({ error: "'chatId' is required" }, 400);
+  if (!chatId || !ObjectId.isValid(chatId)) {
+    return c.json(
+      { error: "'chatId' is required and must be a valid ObjectId" },
+      400,
+    );
   }
 
   // Check if this is a new chat (first message)

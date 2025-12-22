@@ -948,9 +948,9 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
                 const match = /language-(\w+)/.exec(className || "");
                 const isInline = !match;
                 const codeString = String(children).replace(/\n$/, "");
-                return !isInline && match ? (
+                return !isInline ? (
                   <CodeBlock
-                    language={match[1]}
+                    language={match ? match[1] : "text"}
                     key={codeString}
                     isGenerating={false}
                   >
