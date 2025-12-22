@@ -1096,18 +1096,8 @@ export class DatabaseConnectionService {
 
       // Then try to kill the query on the server side
       try {
-        let host = query.database.connection.host || "http://localhost";
-        if (!host.startsWith("http://") && !host.startsWith("https://")) {
-          host =
-            (query.database.connection.ssl ? "https://" : "http://") + host;
-        }
-
-        const client = createClient({
-          url: `${host}:${query.database.connection.port || 8123}`,
-          username: query.database.connection.username || "default",
-          password: query.database.connection.password || "",
-          database: query.database.connection.database || "default",
-        });
+        const config = this.buildClickHouseClientConfig(query.database);
+        const client = createClient(config);
 
         // Kill the query using its query_id
         await client.query({
@@ -2361,24 +2351,102 @@ export class DatabaseConnectionService {
   }
 
   // ClickHouse specific methods
+
+  /**
+   * Parse a JDBC-style ClickHouse URL and return connection config
+   * Supports formats:
+   * - jdbc:clickhouse://host:port?user=default&password=xxx&ssl=true
+   * - clickhouse://host:port?user=default&password=xxx
+   * - https://host:port (ClickHouse Cloud style)
+   */
+  private parseClickHouseConnectionString(connectionString: string): {
+    url: string;
+    username: string;
+    password: string;
+    database: string;
+  } {
+    let urlToParse = connectionString.trim();
+
+    // Remove jdbc: prefix if present
+    if (urlToParse.startsWith("jdbc:")) {
+      urlToParse = urlToParse.slice(5);
+    }
+
+    // Replace clickhouse:// with https:// for URL parsing
+    if (urlToParse.startsWith("clickhouse://")) {
+      urlToParse = "https://" + urlToParse.slice("clickhouse://".length);
+    }
+
+    // Parse the URL
+    const parsedUrl = new URL(urlToParse);
+
+    // Extract query parameters
+    const user =
+      parsedUrl.searchParams.get("user") ||
+      parsedUrl.searchParams.get("username") ||
+      parsedUrl.username ||
+      "default";
+    const password =
+      parsedUrl.searchParams.get("password") || parsedUrl.password || "";
+    const database =
+      parsedUrl.searchParams.get("database") ||
+      parsedUrl.pathname.slice(1) ||
+      "default";
+    const ssl =
+      parsedUrl.searchParams.get("ssl") === "true" ||
+      parsedUrl.searchParams.get("secure") === "true" ||
+      parsedUrl.protocol === "https:";
+
+    // Build the base URL with protocol
+    const protocol = ssl ? "https" : "http";
+    const host = parsedUrl.hostname;
+    const port = parsedUrl.port || (ssl ? "8443" : "8123");
+
+    return {
+      url: `${protocol}://${host}:${port}`,
+      username: user,
+      password: password,
+      database: database,
+    };
+  }
+
+  /**
+   * Build ClickHouse client config from database connection
+   * Supports both connection string and individual fields
+   */
+  private buildClickHouseClientConfig(database: IDatabaseConnection): {
+    url: string;
+    username: string;
+    password: string;
+    database: string;
+  } {
+    const conn = database.connection;
+
+    // If connection string is provided, parse it
+    if (conn.connectionString) {
+      return this.parseClickHouseConnectionString(conn.connectionString);
+    }
+
+    // Build from individual fields
+    let host = conn.host || "http://localhost";
+    if (!host.startsWith("http://") && !host.startsWith("https://")) {
+      host = (conn.ssl ? "https://" : "http://") + host;
+    }
+
+    return {
+      url: `${host}:${conn.port || 8123}`,
+      username: conn.username || "default",
+      password: conn.password || "",
+      database: conn.database || "default",
+    };
+  }
+
   private async testClickHouseConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Ensure host has protocol
-      let host = database.connection.host || "http://localhost";
-      if (!host.startsWith("http://") && !host.startsWith("https://")) {
-        host = (database.connection.ssl ? "https://" : "http://") + host;
-      }
-
-      const client = createClient({
-        url: `${host}:${database.connection.port || 8123}`,
-        username: database.connection.username || "default",
-        password: database.connection.password || "",
-        database: database.connection.database || "default",
-        // tls is handled by https in url for clickhouse client mostly, but we can pass ca/cert if needed.
-        // For basic usage, the client infers from URL.
-      });
+      const config = this.buildClickHouseClientConfig(database);
+      const client = createClient(config);
       await client.ping();
       await client.close();
       return { success: true };
@@ -2411,18 +2479,8 @@ export class DatabaseConnectionService {
         return { success: false, error: "Query cancelled" };
       }
 
-      // Ensure host has protocol
-      let host = database.connection.host || "http://localhost";
-      if (!host.startsWith("http://") && !host.startsWith("https://")) {
-        host = (database.connection.ssl ? "https://" : "http://") + host;
-      }
-
-      const client = createClient({
-        url: `${host}:${database.connection.port || 8123}`,
-        username: database.connection.username || "default",
-        password: database.connection.password || "",
-        database: database.connection.database || "default",
-      });
+      const config = this.buildClickHouseClientConfig(database);
+      const client = createClient(config);
 
       // Track running query for cancellation
       if (executionId) {

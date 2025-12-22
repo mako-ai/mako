@@ -29,6 +29,7 @@ import { PostgreSQLDatabaseDriver } from "./databases/drivers/postgresql/driver"
 import { CloudSQLPostgresDatabaseDriver } from "./databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "./databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/driver";
+import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver";
 import { flowRoutes } from "./routes/flows";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest } from "./inngest";
@@ -108,6 +109,7 @@ databaseRegistry.register(new PostgreSQLDatabaseDriver());
 databaseRegistry.register(new CloudSQLPostgresDatabaseDriver());
 databaseRegistry.register(new CloudflareD1DatabaseDriver());
 databaseRegistry.register(new CloudflareKVDatabaseDriver());
+databaseRegistry.register(new ClickHouseDatabaseDriver());
 app.route("/api", webhookRoutes);
 
 // Inngest endpoint
