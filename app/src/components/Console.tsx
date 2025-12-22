@@ -39,6 +39,7 @@ import {
 } from "../hooks/useMonacoConsole";
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import { hashContent } from "../utils/hash";
+import { useAppStore } from "../store/appStore";
 
 interface DatabaseConnection {
   id: string;
@@ -103,6 +104,7 @@ export interface ConsoleRef {
   canUndo: boolean;
   canRedo: boolean;
   showDiff: (modification: ConsoleModification) => void;
+  focus: () => void;
 }
 
 const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
@@ -610,8 +612,16 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       setEditor(editor);
 
       // CMD/CTRL + Enter execution support
+      // Guard: Only execute if this console is the currently active one
+      // This prevents executing a hidden console when focus wasn't properly transferred
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-        // Use handleExecute which already has diff mode logic
+        // Get fresh state from store to check if this console is active
+        const activeId = useAppStore.getState().consoles.activeTabId;
+        if (activeId !== consoleId) {
+          // Not the active console - don't execute
+          // Focus should be transferred by Editor.tsx, but this is a safety check
+          return;
+        }
         handleExecute();
       });
 
@@ -655,6 +665,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         setMonacoCanRedo(model.canRedo());
       }
     },
+    // Note: consoleId is intentionally not in deps - it's stable for the lifetime of this component
+    // and we want to capture it once when the editor mounts
     [
       enableVersionControl,
       setEditor,
@@ -663,6 +675,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       onSave,
       dbContentHash,
       saveUserEdit,
+      consoleId,
     ],
   );
 
@@ -912,6 +925,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       canUndo,
       canRedo,
       showDiff,
+      focus: () => {
+        if (isDiffMode && diffEditorRef.current) {
+          diffEditorRef.current.getModifiedEditor()?.focus();
+        } else if (editorRef.current) {
+          editorRef.current.focus();
+        }
+      },
     }),
     [
       getFullEditorContent,
@@ -922,6 +942,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       canUndo,
       canRedo,
       showDiff,
+      isDiffMode,
     ],
   );
 

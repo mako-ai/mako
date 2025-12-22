@@ -56,6 +56,7 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
+import { ConsoleModification } from "../hooks/useMonacoConsole";
 
 interface ChatSessionMeta {
   _id: string;
@@ -353,8 +354,17 @@ const ReasoningDisplay = React.memo(
 
 ReasoningDisplay.displayName = "ReasoningDisplay";
 
+// Extended ConsoleModification with fields for console creation
+type ConsoleModificationPayload = ConsoleModification & {
+  consoleId?: string;
+  title?: string;
+  connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
+};
+
 interface Chat3Props {
-  onConsoleModification?: (modification: unknown) => void;
+  onConsoleModification?: (modification: ConsoleModificationPayload) => void;
 }
 
 const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
@@ -381,6 +391,10 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
   // Refs for accessing current values in callbacks (avoids stale closures)
   const isExistingChatRef = useRef(isExistingChat);
   isExistingChatRef.current = isExistingChat;
+
+  // Ref for onConsoleModification to avoid stale closure in onToolCall
+  const onConsoleModificationRef = useRef(onConsoleModification);
+  onConsoleModificationRef.current = onConsoleModification;
 
   // Function to fetch sessions - defined before useChat so it can be used in onFinish
   // Using a ref-based pattern to always access the current workspace
@@ -471,12 +485,11 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
     ],
   );
 
-  // Console store for client-side tool execution
-  // Note: We use getState() inside callbacks to avoid stale closure issues
-  const consoleStore = useConsoleStore();
-  const { setActiveConsole } = consoleStore;
+  // Note: We use (useConsoleStore as any).getState() inside callbacks to avoid stale closure issues
 
   // useChat hook from Vercel AI SDK v6
+  // IMPORTANT: The 'id' prop is critical - it resets the hook's internal message state
+  // when chatId changes. Without it, switching chats causes stale messages to persist.
   // @typescript-eslint/no-explicit-any
   const {
     messages,
@@ -487,6 +500,7 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
     setMessages,
     addToolOutput,
   } = useChat({
+    id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
     transport: transport as any, // Type assertion to handle pnpm version resolution
 
     // Automatically submit when all tool results are available
@@ -548,7 +562,7 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
         return;
       }
 
-      // Handle modify_console
+      // Handle modify_console - dispatch through event system for proper Monaco update
       if (toolName === "modify_console") {
         // Get fresh state to avoid stale closure issues
         const currentStore = (useConsoleStore as any).getState();
@@ -607,33 +621,66 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
           return;
         }
 
-        // Make sure the target console is active
-        setActiveConsole(resolvedConsoleId);
+        // Dispatch through the event system - this ensures Monaco editor gets updated
+        // The App.tsx handleConsoleModification callback will:
+        // 1. Dispatch a CustomEvent that Editor.tsx listens to
+        // 2. Editor.tsx calls showDiff() on the Console ref
+        // 3. Console.tsx updates Monaco editor via the diff mode
+        if (onConsoleModificationRef.current) {
+          onConsoleModificationRef.current({
+            action,
+            content,
+            // Convert line number to position format expected by ConsoleModification
+            position:
+              position !== null && position !== undefined
+                ? { line: position, column: 1 }
+                : undefined,
+            consoleId: resolvedConsoleId,
+          });
+        }
 
-        // Notify parent component about the modification - this will trigger the diff UI
-        // The actual content update happens when the user accepts the diff
-        onConsoleModification?.({
-          action,
-          content,
-          position,
-          consoleId: resolvedConsoleId,
-        });
+        // Also update store for consistency
+        const currentContent = targetConsole.content || "";
+        let newContent: string;
+
+        switch (action) {
+          case "replace":
+            newContent = content;
+            break;
+          case "append":
+            newContent =
+              currentContent +
+              (currentContent.endsWith("\n") ? "" : "\n") +
+              content;
+            break;
+          case "insert":
+            if (position !== null && position !== undefined) {
+              const lines = currentContent.split("\n");
+              const insertIndex = Math.max(0, position - 1);
+              lines.splice(insertIndex, 0, content);
+              newContent = lines.join("\n");
+            } else {
+              newContent = content + currentContent;
+            }
+            break;
+          default:
+            newContent = content;
+        }
+        currentStore.updateConsoleContent(resolvedConsoleId, newContent);
 
         addToolOutput({
           tool: "modify_console",
           toolCallId: toolCall.toolCallId,
           output: {
             success: true,
-            _eventType: "console_modification",
-            modification: { action, content, position },
             consoleId: resolvedConsoleId,
-            message: `✓ Console ${action}d successfully`,
+            message: `Console ${action}d successfully`,
           },
         });
         return;
       }
 
-      // Handle create_console
+      // Handle create_console - dispatch through event system
       if (toolName === "create_console") {
         // Get fresh state to avoid stale closure issues
         const currentStore = (useConsoleStore as any).getState();
@@ -658,17 +705,20 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
         // Generate a new ID for the console
         const newConsoleId = generateObjectId();
 
-        // Notify parent to create the console (App.tsx handles the store update)
-        // This prevents double creation which triggers the reducer twice
-        onConsoleModification?.({
-          action: "create",
-          content,
-          title,
-          consoleId: newConsoleId,
-          connectionId: effectiveConnectionId,
-          databaseId: effectiveDatabaseId,
-          databaseName: effectiveDatabaseName,
-        });
+        // Dispatch through the event system - App.tsx handleConsoleModification will:
+        // 1. Call addConsoleTab with the provided consoleId
+        // 2. Call setActiveConsole
+        if (onConsoleModificationRef.current) {
+          onConsoleModificationRef.current({
+            action: "create",
+            content,
+            consoleId: newConsoleId,
+            title,
+            connectionId: effectiveConnectionId,
+            databaseId: effectiveDatabaseId,
+            databaseName: effectiveDatabaseName,
+          });
+        }
 
         addToolOutput({
           tool: "create_console",
@@ -898,9 +948,9 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
                 const match = /language-(\w+)/.exec(className || "");
                 const isInline = !match;
                 const codeString = String(children).replace(/\n$/, "");
-                return !isInline ? (
+                return !isInline && match ? (
                   <CodeBlock
-                    language={match![1]}
+                    language={match[1]}
                     key={codeString}
                     isGenerating={false}
                   >

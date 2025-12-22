@@ -121,12 +121,22 @@ function Editor() {
     state => state.setActiveEditorContent,
   );
 
-  // Update active editor content when tab focus changes
+  // Update active editor content when tab focus changes AND focus the Monaco editor
   useEffect(() => {
     if (activeConsoleId && consoleRefs.current[activeConsoleId]?.current) {
-      const content =
-        consoleRefs.current[activeConsoleId].current.getCurrentContent();
+      const consoleRef = consoleRefs.current[activeConsoleId].current;
+      const content = consoleRef.getCurrentContent();
       setActiveEditorContent(content);
+
+      // Focus the Monaco editor in the active console
+      // This ensures CMD+Enter executes the correct console after tab switching
+      // Use requestAnimationFrame to ensure the tab visibility CSS has been applied
+      requestAnimationFrame(() => {
+        // Double RAF to ensure layout is complete
+        requestAnimationFrame(() => {
+          consoleRef.focus();
+        });
+      });
     } else {
       setActiveEditorContent(undefined);
     }
