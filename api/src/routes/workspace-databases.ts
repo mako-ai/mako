@@ -741,7 +741,8 @@ workspaceExecuteRoutes.post(
       const workspace = c.get("workspace");
       const body = await c.req.json();
 
-      const { connectionId, databaseId, databaseName, query } = body;
+      const { connectionId, databaseId, databaseName, query, executionId } =
+        body;
 
       // Validate required fields
       if (!connectionId) {
@@ -779,6 +780,7 @@ workspaceExecuteRoutes.post(
       const options = {
         databaseId,
         databaseName,
+        executionId,
       };
 
       const result = await databaseConnectionService.executeQuery(
@@ -795,6 +797,39 @@ workspaceExecuteRoutes.post(
           success: false,
           error:
             error instanceof Error ? error.message : "Failed to execute query",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/execute/cancel - Cancel a running query
+workspaceExecuteRoutes.post(
+  "/cancel",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const body = await c.req.json();
+      const { executionId } = body;
+
+      if (!executionId) {
+        return c.json(
+          { success: false, error: "executionId is required" },
+          400,
+        );
+      }
+
+      const result = await databaseConnectionService.cancelQuery(executionId);
+      return c.json(result);
+    } catch (error) {
+      console.error("Error cancelling query:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to cancel query",
         },
         500,
       );

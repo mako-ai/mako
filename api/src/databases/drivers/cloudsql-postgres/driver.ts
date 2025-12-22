@@ -29,6 +29,10 @@ const CLOUDSQL_SCOPES = [
 export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   private connectors: Map<string, Connector> = new Map();
   private pools: Map<string, PgPool> = new Map();
+  private runningQueries: Map<
+    string,
+    { pid: number; poolKey: string; pool: PgPool }
+  > = new Map();
 
   getMetadata(): DatabaseDriverMetadata {
     return {
@@ -192,12 +196,54 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { databaseName?: string; databaseId?: string; dbName?: string },
+    options?: {
+      databaseName?: string;
+      databaseId?: string;
+      dbName?: string;
+      executionId?: string;
+    },
   ): Promise<QueryResult> {
     try {
       // Support both databaseName and dbName for compatibility
       const targetDb = options?.databaseName || options?.dbName;
       const pool = await this.getConnection(database, targetDb);
+
+      // If executionId is provided, run the query on a dedicated pooled client
+      // so we can reliably capture the backend PID for cancellation.
+      const executionId = options?.executionId;
+      if (executionId) {
+        const client = await pool.connect();
+        const poolKey = `${database._id.toString()}:${targetDb || "default"}`;
+        try {
+          const pidResult = await client.query(
+            "SELECT pg_backend_pid() as pid",
+          );
+          const pid = pidResult.rows?.[0]?.pid as number | undefined;
+          if (typeof pid === "number") {
+            this.runningQueries.set(executionId, { pid, poolKey, pool });
+          }
+
+          const result = await client.query(query);
+          return {
+            success: true,
+            data: result.rows,
+            rowCount: result.rowCount ?? undefined,
+            fields: result.fields,
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Cloud SQL PostgreSQL query failed",
+          };
+        } finally {
+          this.runningQueries.delete(executionId);
+          client.release();
+        }
+      }
+
       const result = await pool.query(query);
       return {
         success: true,
@@ -212,6 +258,38 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
           error instanceof Error
             ? error.message
             : "Cloud SQL PostgreSQL query failed",
+      };
+    }
+  }
+
+  async cancelQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const running = this.runningQueries.get(executionId);
+    if (!running) {
+      return { success: false, error: "Query not found or already completed" };
+    }
+
+    try {
+      // Cancel from a different session in the same pool
+      const res = await running.pool.query<{ cancelled: boolean }>(
+        "SELECT pg_cancel_backend($1) as cancelled",
+        [running.pid],
+      );
+      const cancelled = res.rows?.[0]?.cancelled;
+      if (!cancelled) {
+        return {
+          success: false,
+          error: "Failed to cancel query (pg_cancel_backend returned false)",
+        };
+      }
+      this.runningQueries.delete(executionId);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to cancel query",
       };
     }
   }

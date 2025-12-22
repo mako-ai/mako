@@ -1,4 +1,4 @@
-import { MongoClient, Db, MongoClientOptions } from "mongodb";
+import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
 import { Client as PgClient, Pool as PgPool } from "pg";
 import * as mysql from "mysql2/promise";
 import { ConnectionPool } from "mssql";
@@ -44,6 +44,10 @@ export interface QueryExecuteOptions {
   batchSize?: number;
   /** Location/region for query execution (BigQuery) */
   location?: string;
+  /** Abort signal for cancellation */
+  signal?: AbortSignal;
+  /** Execution ID for job tracking (enables cancellation) */
+  executionId?: string;
 }
 
 interface PooledConnection {
@@ -71,6 +75,35 @@ export class DatabaseConnectionService {
 
   // MongoDB-specific pooling
   private mongoConnections: Map<string, PooledConnection> = new Map();
+
+  // Track running BigQuery jobs for cancellation
+  private runningBigQueryJobs: Map<
+    string,
+    {
+      projectId: string;
+      jobId: string;
+      location?: string;
+      client: AxiosInstance;
+    }
+  > = new Map();
+
+  // Track running PostgreSQL queries for cancellation
+  private runningPostgresQueries: Map<
+    string,
+    { database: IDatabaseConnection; pid: number }
+  > = new Map();
+
+  // Track running MongoDB queries for cancellation
+  private runningMongoQueries: Map<
+    string,
+    {
+      database: IDatabaseConnection;
+      client: MongoClient;
+      abortController: AbortController;
+      session: ClientSession;
+    }
+  > = new Map();
+
   private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly maxIdleTime = 15 * 60 * 1000; // 15 minutes to be safe
 
@@ -750,7 +783,15 @@ export class DatabaseConnectionService {
     query: string,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
+    const executionId = options?.executionId;
+    const signal = options?.signal;
+
+    const checkAborted = () => {
+      if (signal?.aborted) throw new Error("Query cancelled");
+    };
+
     try {
+      checkAborted();
       if (typeof query !== "string" || !query.trim()) {
         return { success: false, error: "Query must be a non-empty string" };
       }
@@ -785,6 +826,7 @@ export class DatabaseConnectionService {
         maxResults: batchSize,
       };
       if (configuredLocation) startBody.location = configuredLocation;
+      checkAborted();
       let response = await client.post(
         `/projects/${project_id}/queries`,
         startBody,
@@ -792,26 +834,34 @@ export class DatabaseConnectionService {
 
       let data = response.data || {};
       const jobId: string | undefined = data.jobReference?.jobId;
-      // Extract location from job reference - this is critical for multi-region setups
-      // BigQuery returns the actual location where the job was created
       const jobLocation: string | undefined =
         data.jobReference?.location || configuredLocation;
       let schema: any = data.schema;
       let pageToken: string | undefined = data.pageToken;
       const rowsAccum: any[] = [];
 
-      // Wait for job completion if not immediately complete
-      // BigQuery may return jobComplete: false for complex/long-running queries
-      const maxWaitMs = 5 * 60 * 1000; // 5 minutes max wait
-      const pollIntervalMs = 1000; // 1 second between polls
+      // Track running job for cancellation
+      if (executionId && jobId) {
+        this.runningBigQueryJobs.set(executionId, {
+          projectId: project_id,
+          jobId,
+          location: jobLocation,
+          client,
+        });
+      }
+
+      // Wait for job completion
+      const maxWaitMs = 5 * 60 * 1000;
+      const pollIntervalMs = 1000;
       let waitedMs = 0;
 
       while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+        checkAborted();
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
         waitedMs += pollIntervalMs;
+        checkAborted();
 
         const params: any = { maxResults: batchSize };
-        // Must use the job's actual location for polling
         if (jobLocation) params.location = jobLocation;
         response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
@@ -821,6 +871,7 @@ export class DatabaseConnectionService {
         schema = data.schema || schema;
       }
 
+      checkAborted();
       if (data.jobComplete === false) {
         return {
           success: false,
@@ -828,17 +879,16 @@ export class DatabaseConnectionService {
         };
       }
 
-      // Collect first page of results
+      // Collect results
       if (Array.isArray(data.rows) && schema) {
         rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
       }
       pageToken = data.pageToken;
 
-      // Paginate through remaining results
       while (pageToken) {
+        checkAborted();
         const params: any = { maxResults: batchSize };
         if (pageToken) params.pageToken = pageToken;
-        // Must use the job's actual location for pagination
         if (jobLocation) params.location = jobLocation;
         response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
@@ -852,12 +902,11 @@ export class DatabaseConnectionService {
         pageToken = data.pageToken;
       }
 
-      return {
-        success: true,
-        data: rowsAccum,
-        rowCount: rowsAccum.length,
-      };
+      return { success: true, data: rowsAccum, rowCount: rowsAccum.length };
     } catch (error: any) {
+      if (error?.message === "Query cancelled") {
+        return { success: false, error: "Query cancelled" };
+      }
       return {
         success: false,
         error:
@@ -865,7 +914,188 @@ export class DatabaseConnectionService {
           (error?.message as string) ||
           "BigQuery query failed",
       };
+    } finally {
+      if (executionId) this.runningBigQueryJobs.delete(executionId);
     }
+  }
+
+  /**
+   * Cancel a running BigQuery job
+   */
+  async cancelBigQueryJob(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const job = this.runningBigQueryJobs.get(executionId);
+    if (!job) {
+      return { success: false, error: "Job not found or already completed" };
+    }
+
+    try {
+      const params: any = {};
+      if (job.location) params.location = job.location;
+      await job.client.post(
+        `/projects/${job.projectId}/jobs/${job.jobId}/cancel`,
+        {},
+        { params },
+      );
+      this.runningBigQueryJobs.delete(executionId);
+      return { success: true };
+    } catch (error: any) {
+      return {
+        success: false,
+        error:
+          error?.response?.data?.error?.message ||
+          error?.message ||
+          "Failed to cancel job",
+      };
+    }
+  }
+
+  /**
+   * Cancel a running PostgreSQL query
+   */
+  async cancelPostgresQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const query = this.runningPostgresQueries.get(executionId);
+    if (!query) {
+      return { success: false, error: "Query not found or already completed" };
+    }
+
+    let cancelClient: PgClient | null = null;
+    try {
+      // Create a new connection to cancel the query
+      cancelClient = new PgClient({
+        host: query.database.connection.host,
+        port: query.database.connection.port || 5432,
+        database: query.database.connection.database,
+        user: query.database.connection.username,
+        password: query.database.connection.password,
+        ssl: query.database.connection.ssl
+          ? { rejectUnauthorized: false }
+          : false,
+      });
+      await cancelClient.connect();
+      const res = await cancelClient.query<{ cancelled: boolean }>(
+        "SELECT pg_cancel_backend($1) as cancelled",
+        [query.pid],
+      );
+      const cancelled = res.rows?.[0]?.cancelled;
+      if (!cancelled) {
+        return {
+          success: false,
+          error: "Failed to cancel query (pg_cancel_backend returned false)",
+        };
+      }
+      this.runningPostgresQueries.delete(executionId);
+      return { success: true };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error?.message || "Failed to cancel query",
+      };
+    } finally {
+      if (cancelClient) {
+        await cancelClient.end().catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Cancel a running MongoDB query using session-based cancellation.
+   * This uses the session's lsid (logical session ID) to precisely kill
+   * only operations belonging to this specific session.
+   */
+  async cancelMongoDBQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const running = this.runningMongoQueries.get(executionId);
+    if (!running) {
+      return { success: false, error: "Query not found or already completed" };
+    }
+
+    try {
+      // First, abort the AbortController to stop the JavaScript promise
+      running.abortController.abort();
+      console.log(`[MongoDB] Aborted controller for execution ${executionId}`);
+
+      // Kill all operations associated with this session using killSessions.
+      // This precisely targets only operations from our session, avoiding
+      // any risk of killing other users' queries.
+      try {
+        const adminDb = running.client.db("admin");
+        const sessionId = running.session.id;
+
+        if (sessionId) {
+          await adminDb.command({
+            killSessions: [sessionId],
+          });
+          console.log(`[MongoDB] Killed session for execution ${executionId}`);
+        }
+      } catch (killErr) {
+        // killSessions might fail if user doesn't have sufficient privileges
+        // This is okay - the AbortController should still work for the JS side
+        console.warn(
+          `[MongoDB] Could not kill session (may lack privileges):`,
+          killErr,
+        );
+      }
+
+      // End the session
+      try {
+        await running.session.endSession();
+      } catch {
+        // Ignore errors when ending session
+      }
+
+      // Remove from tracking
+      this.runningMongoQueries.delete(executionId);
+      return { success: true };
+    } catch (error) {
+      console.error(`[MongoDB] Error cancelling query ${executionId}:`, error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to cancel query",
+      };
+    }
+  }
+
+  /**
+   * Cancel a running query (auto-detects database type)
+   */
+  async cancelQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    // Try BigQuery first
+    if (this.runningBigQueryJobs.has(executionId)) {
+      return this.cancelBigQueryJob(executionId);
+    }
+    // Try PostgreSQL
+    if (this.runningPostgresQueries.has(executionId)) {
+      return this.cancelPostgresQuery(executionId);
+    }
+    // Try MongoDB
+    if (this.runningMongoQueries.has(executionId)) {
+      return this.cancelMongoDBQuery(executionId);
+    }
+
+    // Delegate to drivers that support cancellation (e.g., cloudsql-postgres)
+    for (const driver of this.drivers.values()) {
+      if (typeof (driver as any).cancelQuery === "function") {
+        const res = await (driver as any).cancelQuery(executionId);
+        if (res?.success) return res;
+        // If the driver found the executionId but failed to cancel, return that error.
+        if (
+          res?.error &&
+          res.error !== "Query not found or already completed"
+        ) {
+          return res;
+        }
+      }
+    }
+
+    return { success: false, error: "Query not found or already completed" };
   }
 
   // New: list BigQuery datasets and tables via REST (fast, no deprecated auth)
@@ -1348,64 +1578,114 @@ export class DatabaseConnectionService {
     const dbName = options?.databaseName || database.connection.database;
     const db = client.db(dbName);
 
+    const executionId = options?.executionId;
+    let abortController: AbortController | undefined;
+    let session: ClientSession | undefined;
+
+    // Track this query for cancellation if executionId is provided
+    if (executionId) {
+      abortController = new AbortController();
+      session = client.startSession();
+      this.runningMongoQueries.set(executionId, {
+        database,
+        client,
+        abortController,
+        session,
+      });
+    }
+
     try {
+      // Check if aborted before starting
+      if (abortController?.signal.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
+
       // Handle different MongoDB operations
       if (typeof query === "string") {
         // Parse JavaScript-style query
-        const result = await this.executeMongoDBJavaScriptQuery(db, query);
+        const result = await this.executeMongoDBJavaScriptQuery(
+          db,
+          query,
+          abortController?.signal,
+        );
         return { success: true, data: result };
       } else if (query.collection && query.operation) {
         // Handle structured query
         const collection = db.collection(query.collection);
         let result: any;
 
+        // Helper to race a promise against abort signal for cancellation support
+        const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
+          if (!abortController?.signal) return promise;
+          const signal = abortController.signal;
+          return Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+              if (signal.aborted) {
+                reject(new Error("Query cancelled"));
+              }
+              signal.addEventListener(
+                "abort",
+                () => {
+                  reject(new Error("Query cancelled"));
+                },
+                { once: true },
+              );
+            }),
+          ]);
+        };
+
         switch (query.operation) {
           case "find":
-            result = await collection
-              .find(query.filter || {}, query.options || {})
-              .toArray();
+            result = await raceWithAbort(
+              collection
+                .find(query.filter || {}, query.options || {})
+                .toArray(),
+            );
             break;
           case "findOne":
-            result = await collection.findOne(
-              query.filter || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.findOne(query.filter || {}, query.options || {}),
             );
             break;
           case "aggregate":
-            result = await collection
-              .aggregate(query.pipeline || [], query.options || {})
-              .toArray();
+            result = await raceWithAbort(
+              collection
+                .aggregate(query.pipeline || [], query.options || {})
+                .toArray(),
+            );
             break;
           case "insertMany":
-            result = await collection.insertMany(
-              query.documents || [],
-              query.options || {},
+            result = await raceWithAbort(
+              collection.insertMany(query.documents || [], query.options || {}),
             );
             break;
           case "updateMany":
-            result = await collection.updateMany(
-              query.filter || {},
-              query.update || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.updateMany(
+                query.filter || {},
+                query.update || {},
+                query.options || {},
+              ),
             );
             break;
           case "deleteMany":
-            result = await collection.deleteMany(
-              query.filter || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.deleteMany(query.filter || {}, query.options || {}),
             );
             break;
           case "updateOne":
-            result = await collection.updateOne(
-              query.filter || {},
-              query.update || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.updateOne(
+                query.filter || {},
+                query.update || {},
+                query.options || {},
+              ),
             );
             break;
           case "deleteOne":
-            result = await collection.deleteOne(
-              query.filter || {},
-              query.options || {},
+            result = await raceWithAbort(
+              collection.deleteOne(query.filter || {}, query.options || {}),
             );
             break;
           default:
@@ -1420,18 +1700,45 @@ export class DatabaseConnectionService {
         return { success: false, error: "Invalid MongoDB query format" };
       }
     } catch (error) {
+      // Check if this was a cancellation
+      if (
+        error instanceof Error &&
+        (error.message.includes("cancelled") ||
+          error.message.includes("aborted") ||
+          error.name === "AbortError")
+      ) {
+        return { success: false, error: "Query cancelled" };
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : "MongoDB query failed",
       };
+    } finally {
+      // Clean up tracking and end session
+      if (executionId) {
+        this.runningMongoQueries.delete(executionId);
+      }
+      if (session) {
+        try {
+          await session.endSession();
+        } catch {
+          // Ignore errors when ending session
+        }
+      }
     }
   }
 
   private async executeMongoDBJavaScriptQuery(
     db: Db,
     query: string,
+    signal?: AbortSignal,
   ): Promise<any> {
     console.log("🔍 Executing query:", query.substring(0, 200) + "...");
+
+    // Check if already aborted
+    if (signal?.aborted) {
+      throw new Error("Query cancelled");
+    }
 
     // Track async index operations to surface errors even if not awaited by the user
     const trackedIndexPromises: Promise<any>[] = [];
@@ -1554,12 +1861,32 @@ export class DatabaseConnectionService {
       );
       console.log(`📤 Has then method: ${typeof result?.then === "function"}`);
 
+      // Helper to race a promise against abort signal
+      const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
+        if (!signal) return promise;
+        return Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            if (signal.aborted) {
+              reject(new Error("Query cancelled"));
+            }
+            signal.addEventListener(
+              "abort",
+              () => {
+                reject(new Error("Query cancelled"));
+              },
+              { once: true },
+            );
+          }),
+        ]);
+      };
+
       // Handle MongoDB cursors and promises
-      let finalResult;
+      let finalResult: any;
       if (result && typeof result.then === "function") {
         // It's a promise, await it
         console.log("⏳ Awaiting promise...");
-        finalResult = await result;
+        finalResult = await raceWithAbort(result);
         console.log(`✅ Promise resolved, result type: ${typeof finalResult}`);
         console.log(
           `✅ Promise resolved constructor: ${finalResult?.constructor?.name}`,
@@ -1567,7 +1894,7 @@ export class DatabaseConnectionService {
       } else if (result && typeof result.toArray === "function") {
         // It's a MongoDB cursor, convert to array
         console.log("📋 Converting cursor to array...");
-        finalResult = await result.toArray();
+        finalResult = await raceWithAbort(result.toArray());
         console.log(
           `✅ Cursor converted, array length: ${finalResult?.length}`,
         );
@@ -1646,7 +1973,15 @@ export class DatabaseConnectionService {
 
       return serializedResult;
     } catch (error) {
-      console.error("❌ Error in executeMongoDBJavaScriptQuery:", error);
+      // Don't log cancellation as an error - it's expected behavior
+      const isCancellation =
+        error instanceof Error &&
+        (error.message.includes("cancelled") ||
+          error.message.includes("aborted") ||
+          error.name === "AbortError");
+      if (!isCancellation) {
+        console.error("❌ Error in executeMongoDBJavaScriptQuery:", error);
+      }
       throw error;
     }
   }
@@ -1703,6 +2038,9 @@ export class DatabaseConnectionService {
     query: string,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
+    const executionId = options?.executionId;
+    const signal = options?.signal;
+
     // Determine the target database: options override or connection default
     const targetDatabase =
       options?.databaseName || database.connection.database;
@@ -1710,54 +2048,62 @@ export class DatabaseConnectionService {
     // Check if we need a different database than what's cached in the connection
     const connectionDatabase = database.connection.database;
     let client: PgClient;
+    let isTemporaryConnection = false;
 
-    if (targetDatabase && targetDatabase !== connectionDatabase) {
-      // Need to create a new connection for the target database
-      client = new PgClient({
-        host: database.connection.host,
-        port: database.connection.port || 5432,
-        database: targetDatabase,
-        user: database.connection.username,
-        password: database.connection.password,
-        ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
-      });
-      await client.connect();
-
-      try {
-        const result = await client.query(query);
-        return {
-          success: true,
-          data: result.rows,
-          rowCount: result.rowCount ?? undefined,
-          fields: result.fields,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "PostgreSQL query failed",
-        };
-      } finally {
-        // Close the temporary connection
-        await client.end();
+    try {
+      if (targetDatabase && targetDatabase !== connectionDatabase) {
+        // Need to create a new connection for the target database
+        client = new PgClient({
+          host: database.connection.host,
+          port: database.connection.port || 5432,
+          database: targetDatabase,
+          user: database.connection.username,
+          password: database.connection.password,
+          ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
+        });
+        await client.connect();
+        isTemporaryConnection = true;
+      } else {
+        // Use the cached connection
+        client = (await this.getConnection(database)) as PgClient;
       }
-    } else {
-      // Use the cached connection
-      client = (await this.getConnection(database)) as PgClient;
-      try {
-        const result = await client.query(query);
-        return {
-          success: true,
-          data: result.rows,
-          rowCount: result.rowCount ?? undefined,
-          fields: result.fields,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "PostgreSQL query failed",
-        };
+
+      // Get backend PID for cancellation support
+      if (executionId) {
+        const pidResult = await client.query("SELECT pg_backend_pid()");
+        const pid = pidResult.rows[0]?.pg_backend_pid;
+        if (pid) {
+          this.runningPostgresQueries.set(executionId, { database, pid });
+        }
+      }
+
+      // Check if already cancelled
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
+
+      const result = await client.query(query);
+      return {
+        success: true,
+        data: result.rows,
+        rowCount: result.rowCount ?? undefined,
+        fields: result.fields,
+      };
+    } catch (error: any) {
+      if (error?.message?.includes("canceling statement")) {
+        return { success: false, error: "Query cancelled" };
+      }
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "PostgreSQL query failed",
+      };
+    } finally {
+      if (executionId) {
+        this.runningPostgresQueries.delete(executionId);
+      }
+      if (isTemporaryConnection && client!) {
+        await client.end().catch(() => {});
       }
     }
   }
