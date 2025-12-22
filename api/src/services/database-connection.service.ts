@@ -1,4 +1,4 @@
-import { MongoClient, Db, MongoClientOptions } from "mongodb";
+import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
 import { Client as PgClient, Pool as PgPool } from "pg";
 import * as mysql from "mysql2/promise";
 import { ConnectionPool } from "mssql";
@@ -100,7 +100,7 @@ export class DatabaseConnectionService {
       database: IDatabaseConnection;
       client: MongoClient;
       abortController: AbortController;
-      startTime: Date;
+      session: ClientSession;
     }
   > = new Map();
 
@@ -1002,7 +1002,9 @@ export class DatabaseConnectionService {
   }
 
   /**
-   * Cancel a running MongoDB query
+   * Cancel a running MongoDB query using session-based cancellation.
+   * This uses the session's lsid (logical session ID) to precisely kill
+   * only operations belonging to this specific session.
    */
   async cancelMongoDBQuery(
     executionId: string,
@@ -1017,83 +1019,33 @@ export class DatabaseConnectionService {
       running.abortController.abort();
       console.log(`[MongoDB] Aborted controller for execution ${executionId}`);
 
-      // Try to kill any running operations on this connection using killOp
-      // We'll find operations that started around the same time from the same client
+      // Kill all operations associated with this session using killSessions.
+      // This precisely targets only operations from our session, avoiding
+      // any risk of killing other users' queries.
       try {
         const adminDb = running.client.db("admin");
+        const sessionId = running.session.id;
 
-        // Get current operations
-        const currentOps = await adminDb.command({
-          currentOp: true,
-          active: true,
-          $ownOps: false, // Include all operations, not just our own
-        });
-
-        if (currentOps.inprog && Array.isArray(currentOps.inprog)) {
-          // Find operations that match our criteria:
-          // - Started after our query started
-          // - Not finished yet
-          // - Not system operations
-          const queryStartTime = running.startTime.getTime();
-          const opsToKill = currentOps.inprog.filter((op: any) => {
-            // Skip if no opid or if it's a system operation
-            if (!op.opid || op.ns?.startsWith("admin.") || op.op === "none") {
-              return false;
-            }
-
-            // Try to match by connection/client info or timing
-            // Check if this operation started around the same time as our query
-            if (op.microsecs_running) {
-              const opStartTime = Date.now() - op.microsecs_running / 1000;
-              // Allow a 1 second tolerance for timing
-              if (Math.abs(opStartTime - queryStartTime) < 1000) {
-                return true;
-              }
-            }
-
-            // Also consider operations that have been running since before our query started
-            // and are still active (these might be our long-running operations)
-            if (op.secs_running && op.secs_running > 0) {
-              const runningMs = op.secs_running * 1000;
-              const opApproxStart = Date.now() - runningMs;
-              // Check if the operation started within a reasonable window of our query
-              // Use a symmetric tolerance window to avoid matching unrelated newer ops.
-              if (Math.abs(opApproxStart - queryStartTime) < 2000) {
-                return true;
-              }
-            }
-
-            return false;
+        if (sessionId) {
+          await adminDb.command({
+            killSessions: [sessionId],
           });
-
-          // Kill the identified operations
-          for (const op of opsToKill) {
-            try {
-              await adminDb.command({ killOp: 1, op: op.opid });
-              console.log(
-                `[MongoDB] Killed operation ${op.opid} (${op.op} on ${op.ns})`,
-              );
-            } catch (killErr) {
-              console.warn(
-                `[MongoDB] Failed to kill operation ${op.opid}:`,
-                killErr,
-              );
-            }
-          }
-
-          if (opsToKill.length > 0) {
-            console.log(
-              `[MongoDB] Killed ${opsToKill.length} operation(s) for execution ${executionId}`,
-            );
-          }
+          console.log(`[MongoDB] Killed session for execution ${executionId}`);
         }
-      } catch (killOpErr) {
-        // killOp might fail if user doesn't have admin privileges
-        // This is okay - the AbortController should still work
+      } catch (killErr) {
+        // killSessions might fail if user doesn't have sufficient privileges
+        // This is okay - the AbortController should still work for the JS side
         console.warn(
-          `[MongoDB] Could not kill operations via killOp (may lack admin privileges):`,
-          killOpErr,
+          `[MongoDB] Could not kill session (may lack privileges):`,
+          killErr,
         );
+      }
+
+      // End the session
+      try {
+        await running.session.endSession();
+      } catch {
+        // Ignore errors when ending session
       }
 
       // Remove from tracking
@@ -1628,15 +1580,17 @@ export class DatabaseConnectionService {
 
     const executionId = options?.executionId;
     let abortController: AbortController | undefined;
+    let session: ClientSession | undefined;
 
     // Track this query for cancellation if executionId is provided
     if (executionId) {
       abortController = new AbortController();
+      session = client.startSession();
       this.runningMongoQueries.set(executionId, {
         database,
         client,
         abortController,
-        startTime: new Date(),
+        session,
       });
     }
 
@@ -1760,9 +1714,16 @@ export class DatabaseConnectionService {
         error: error instanceof Error ? error.message : "MongoDB query failed",
       };
     } finally {
-      // Clean up tracking
+      // Clean up tracking and end session
       if (executionId) {
         this.runningMongoQueries.delete(executionId);
+      }
+      if (session) {
+        try {
+          await session.endSession();
+        } catch {
+          // Ignore errors when ending session
+        }
       }
     }
   }
@@ -2012,7 +1973,15 @@ export class DatabaseConnectionService {
 
       return serializedResult;
     } catch (error) {
-      console.error("❌ Error in executeMongoDBJavaScriptQuery:", error);
+      // Don't log cancellation as an error - it's expected behavior
+      const isCancellation =
+        error instanceof Error &&
+        (error.message.includes("cancelled") ||
+          error.message.includes("aborted") ||
+          error.name === "AbortError");
+      if (!isCancellation) {
+        console.error("❌ Error in executeMongoDBJavaScriptQuery:", error);
+      }
       throw error;
     }
   }
