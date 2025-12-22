@@ -8,7 +8,7 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import type { ConsoleDataV2 } from "../types";
-import { createConsoleToolsV2 } from "./console-tools";
+import { clientConsoleTools } from "./console-tools-client";
 import {
   inferBsonType,
   truncateSamples,
@@ -247,13 +247,11 @@ async function executeQueryImpl(
 
 export const createMongoToolsV2 = (
   workspaceId: string,
-  consoles: ConsoleDataV2[],
-  preferredConsoleId?: string,
+  _consoles: ConsoleDataV2[],
+  _preferredConsoleId?: string,
 ) => {
-  const consoleTools = createConsoleToolsV2(consoles, preferredConsoleId);
-
   return {
-    ...consoleTools,
+    ...clientConsoleTools,
 
     list_connections: {
       description:

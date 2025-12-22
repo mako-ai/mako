@@ -11,8 +11,6 @@ import { useAppStore } from "./store";
 import { useConsoleStore } from "./store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import Chat from "./components/Chat";
-import Chat3 from "./components/Chat3";
-import { useSettingsStore } from "./store/settingsStore";
 import DatabaseExplorer from "./components/DatabaseExplorer";
 import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
@@ -61,7 +59,6 @@ import { UrlSync } from "./components/UrlSync";
 // Main application component (extracted from original App)
 function MainApp() {
   const activeView = useAppStore(s => s.activeView);
-  const useChatV3 = useSettingsStore(s => s.useChatV3);
   // Avoid re-rendering MainApp on console state changes; use getState on demand
 
   // Handle console modification from AI
@@ -332,11 +329,7 @@ function MainApp() {
                 borderColor: "divider",
               }}
             >
-              {useChatV3 ? (
-                <Chat3 onConsoleModification={handleConsoleModification} />
-              ) : (
-                <Chat onConsoleModification={handleConsoleModification} />
-              )}
+              <Chat onConsoleModification={handleConsoleModification} />
             </Box>
           </Panel>
         </PanelGroup>

@@ -1,13 +1,16 @@
 /**
- * Universal Tools for Agent V2
- * A single tool surface that supports MongoDB + all SQL engines without handoffs.
+ * Universal Tools for Agent
+ *
+ * This version uses client-side console tools for better responsiveness
+ * and accuracy. Console tools (read, modify, create) are executed on the
+ * client via the onToolCall callback.
  */
 
 import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import type { ConsoleDataV2 } from "../types";
-import { createConsoleToolsV2 } from "./console-tools";
+import { clientConsoleTools } from "./console-tools-client";
 import { createMongoToolsV2 } from "./mongodb-tools";
 import { createSqlToolsV2 } from "./sql-tools";
 
@@ -22,8 +25,7 @@ const SUPPORTED_CONNECTION_TYPES = new Set([
   "cloudsql-postgres",
   // BigQuery
   "bigquery",
-  // SQLite/D1
-  "sqlite",
+  // Cloudflare D1
   "cloudflare-d1",
 ]);
 
@@ -114,21 +116,23 @@ async function listAllConnectionsImpl(workspaceId: string) {
 }
 
 /**
- * Create a unified toolset for the universal agent.
+ * Create a unified toolset for the universal agent with client-side console tools.
  *
- * Includes:
- * - Console tools (read, modify, create)
+ * Client-side tools (handled via onToolCall on frontend):
+ * - read_console
+ * - modify_console
+ * - create_console
+ *
+ * Server-side tools (executed on server):
  * - list_connections (cross-database discovery)
  * - MongoDB tools (mongo_*)
  * - SQL tools (sql_*) - supports PostgreSQL, BigQuery, SQLite, Cloudflare D1
  */
-export const createUniversalToolsV2 = (
+export const createUniversalTools = (
   workspaceId: string,
   consoles: ConsoleDataV2[],
   preferredConsoleId?: string,
 ) => {
-  const consoleTools = createConsoleToolsV2(consoles, preferredConsoleId);
-
   // Get MongoDB tools and extract just the database-specific ones
   const mongoTools = createMongoToolsV2(
     workspaceId,
@@ -136,7 +140,7 @@ export const createUniversalToolsV2 = (
     preferredConsoleId,
   );
   const {
-    // Strip console tools (we provide them once)
+    // Strip console tools (we use client-side versions)
     modify_console: _mongoModify,
     read_console: _mongoRead,
     create_console: _mongoCreate,
@@ -160,10 +164,10 @@ export const createUniversalToolsV2 = (
   } = sqlTools;
 
   return {
-    // Console tools (provided once)
-    ...consoleTools,
+    // Client-side console tools (no execute function - handled by frontend)
+    ...clientConsoleTools,
 
-    // Cross-database connection discovery
+    // Cross-database connection discovery (server-side)
     list_connections: {
       description:
         "List all database connections in this workspace (MongoDB, PostgreSQL, BigQuery, SQLite, Cloudflare D1). Use this to discover available databases before running queries.",
@@ -171,14 +175,14 @@ export const createUniversalToolsV2 = (
       execute: async () => listAllConnectionsImpl(workspaceId),
     },
 
-    // MongoDB tools (namespaced with mongo_ prefix)
+    // MongoDB tools (namespaced with mongo_ prefix) - server-side
     mongo_list_connections: mongoListConnections,
     mongo_list_databases: mongoListDatabases,
     mongo_list_collections: mongoListCollections,
     mongo_inspect_collection: mongoInspectCollection,
     mongo_execute_query: mongoExecuteQuery,
 
-    // SQL tools (already namespaced with sql_ prefix)
+    // SQL tools (already namespaced with sql_ prefix) - server-side
     ...sqlOnlyTools,
   };
 };

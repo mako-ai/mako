@@ -1,5 +1,5 @@
 /**
- * Agent V3 Routes
+ * Agent Routes
  * Native Vercel AI SDK streaming protocol for useChat compatibility
  */
 
@@ -18,9 +18,9 @@ import { google } from "@ai-sdk/google";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import type { ConsoleDataV2 } from "../agent-v2/types";
-import { createUniversalToolsV3 } from "../agent-v2/tools/universal-tools-v3";
+import { createUniversalTools } from "../agent-v2/tools/universal-tools";
 import { UNIVERSAL_PROMPT_V2 } from "../agent-v2/prompts/universal";
-import { getModelById } from "../agent-v2/ai-models";
+import { getModelById, getAvailableModels } from "../agent-v2/ai-models";
 import {
   Workspace,
   DatabaseConnection,
@@ -29,10 +29,18 @@ import {
 import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
 
-export const agentV3Routes = new Hono();
+export const agentRoutes = new Hono();
 
 // Apply unified auth middleware to all routes
-agentV3Routes.use("*", unifiedAuthMiddleware);
+agentRoutes.use("*", unifiedAuthMiddleware);
+
+/**
+ * GET /models - List available AI models based on configured API keys
+ */
+agentRoutes.get("/models", async (c: AuthenticatedContext) => {
+  const models = getAvailableModels();
+  return c.json({ models });
+});
 
 /**
  * Get the AI SDK model instance based on the model ID
@@ -46,7 +54,7 @@ function getModelInstance(modelId?: string): LanguageModel {
   const model = getModelById(modelId);
   if (!model) {
     console.warn(
-      `[Agent V3] Model "${modelId}" not found, falling back to gpt-5.2`,
+      `[Agent] Model "${modelId}" not found, falling back to gpt-5.2`,
     );
     return openai("gpt-5.2") as unknown as LanguageModel;
   }
@@ -60,17 +68,17 @@ function getModelInstance(modelId?: string): LanguageModel {
       return google(modelId) as unknown as LanguageModel;
     default:
       console.warn(
-        `[Agent V3] Unknown provider for model "${modelId}", falling back to gpt-5.2`,
+        `[Agent] Unknown provider for model "${modelId}", falling back to gpt-5.2`,
       );
       return openai("gpt-5.2") as unknown as LanguageModel;
   }
 }
 
 /**
- * POST /api/agent-v3/chat
+ * POST /api/agent/chat
  * useChat-compatible endpoint using native AI SDK streaming
  */
-agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
+agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const user = c.get("user");
   const userId = user?.id;
 
@@ -82,7 +90,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
   try {
     body = await c.req.json();
   } catch (e) {
-    console.error("[Agent V3] Error parsing request body", e);
+    console.error("[Agent] Error parsing request body", e);
     return c.json({ error: "Invalid request body" }, 400);
   }
 
@@ -153,7 +161,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
             { title, titleGenerated: true },
           );
         } catch (err) {
-          console.error("[Agent V3] Background title generation failed:", err);
+          console.error("[Agent] Background title generation failed:", err);
         }
       })();
     }
@@ -167,7 +175,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     });
     workspaceCustomPrompt = workspace?.settings?.customPrompt || "";
   } catch (err) {
-    console.warn("[Agent V3] Failed to load workspace custom prompt:", err);
+    console.warn("[Agent] Failed to load workspace custom prompt:", err);
   }
 
   // Build system prompt
@@ -193,12 +201,8 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     }),
   );
 
-  // Get tools (V3 uses client-side console tools)
-  const tools = createUniversalToolsV3(
-    workspaceId,
-    enrichedConsoles,
-    consoleId,
-  );
+  // Get tools (uses client-side console tools)
+  const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
 
   // Build custom prompt context for the full system message
   const customPromptContext =
@@ -218,10 +222,10 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Get model instance
   const model = getModelInstance(modelId);
-  console.log(`[Agent V3] Using model: ${modelId || "gpt-5.2 (default)"}`);
+  console.log(`[Agent] Using model: ${modelId || "gpt-5.2 (default)"}`);
 
   // Convert UI messages (from useChat) to model messages (for streamText)
-  // Note: convertToModelMessages is async in AI SDK v6
+  // Note: convertToModelMessages is async in AI SDK
   const modelMessages = await convertToModelMessages(messages);
 
   // Guardrail: prevent runaway multi-step tool loops in production.
@@ -239,7 +243,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     onStepFinish: ({ toolCalls }) => {
       stepsCompleted += 1;
 
-      console.log("[Agent V3] Step finished:", {
+      console.log("[Agent] Step finished:", {
         step: stepsCompleted,
         maxSteps: MAX_STEPS,
         toolCallCount: toolCalls?.length,
@@ -247,7 +251,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
 
       if (stepsCompleted >= MAX_STEPS) {
         console.warn(
-          `[Agent V3] Step limit reached (${MAX_STEPS}). Terminating tool loop to prevent runaway execution.`,
+          `[Agent] Step limit reached (${MAX_STEPS}). Terminating tool loop to prevent runaway execution.`,
         );
       }
     },
@@ -262,7 +266,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
     // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
     sendReasoning: true,
     onFinish: async ({ messages: allMessages }) => {
-      console.log("[Agent V3] Stream finished, saving chat:", {
+      console.log("[Agent] Stream finished, saving chat:", {
         chatId,
         messageCount: allMessages.length,
       });
@@ -272,7 +276,7 @@ agentV3Routes.post("/chat", async (c: AuthenticatedContext) => {
         // Title was already generated in parallel at the start for new chats
         await saveChat(chatId, workspaceId, userId.toString(), allMessages);
       } catch (error) {
-        console.error("[Agent V3] Error saving chat:", error);
+        console.error("[Agent] Error saving chat:", error);
       }
     },
   });
