@@ -1,8 +1,6 @@
 import { MongoClient, Db, MongoClientOptions } from "mongodb";
 import { Client as PgClient, Pool as PgPool } from "pg";
 import * as mysql from "mysql2/promise";
-import { Database as SqliteDatabase } from "sqlite3";
-import { open } from "sqlite";
 import { ConnectionPool } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
@@ -61,7 +59,7 @@ interface PooledConnection {
  *
  * Provides unified connection management for all database types with:
  * - Advanced MongoDB connection pooling with health checks
- * - Multi-database support (PostgreSQL, MySQL, SQLite, MSSQL)
+ * - Multi-database support (PostgreSQL, MySQL, MSSQL, BigQuery, Cloudflare D1/KV)
  * - Automatic reconnection and idle cleanup
  * - Unified query execution interface
  */
@@ -125,8 +123,6 @@ export class DatabaseConnectionService {
           return await this.testPostgreSQLConnection(database);
         case "mysql":
           return await this.testMySQLConnection(database);
-        case "sqlite":
-          return await this.testSQLiteConnection(database);
         case "mssql":
           return await this.testMSSQLConnection(database);
         case "bigquery":
@@ -177,8 +173,6 @@ export class DatabaseConnectionService {
             .executeQuery(database, query, options);
         case "mysql":
           return await this.executeMySQLQuery(database, query, options);
-        case "sqlite":
-          return await this.executeSQLiteQuery(database, query);
         case "mssql":
           return await this.executeMSSQLQuery(database, query);
         case "bigquery":
@@ -244,9 +238,6 @@ export class DatabaseConnectionService {
         break;
       case "mysql":
         connection = await this.createMySQLConnection(database);
-        break;
-      case "sqlite":
-        connection = await this.createSQLiteConnection(database);
         break;
       case "mssql":
         connection = await this.createMSSQLConnection(database);
@@ -1872,56 +1863,6 @@ export class DatabaseConnectionService {
           error: error instanceof Error ? error.message : "MySQL query failed",
         };
       }
-    }
-  }
-
-  // SQLite specific methods
-  private async testSQLiteConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const db = await open({
-        filename: database.connection.database || ":memory:",
-        driver: SqliteDatabase,
-      });
-      await db.get("SELECT 1");
-      await db.close();
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "SQLite connection failed",
-      };
-    }
-  }
-
-  private async createSQLiteConnection(
-    database: IDatabaseConnection,
-  ): Promise<any> {
-    const db = await open({
-      filename: database.connection.database || ":memory:",
-      driver: SqliteDatabase,
-    });
-    return db;
-  }
-
-  private async executeSQLiteQuery(
-    database: IDatabaseConnection,
-    query: string,
-  ): Promise<QueryResult> {
-    const db = await this.getConnection(database);
-    try {
-      const result = await db.all(query);
-      return {
-        success: true,
-        data: result,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "SQLite query failed",
-      };
     }
   }
 

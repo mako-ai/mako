@@ -308,18 +308,22 @@ export interface IChat extends Document {
   messages: Array<{
     role: "user" | "assistant";
     content: string;
+    reasoning?: string[]; // Array of reasoning/thinking blocks
     toolCalls?: Array<{
+      toolCallId?: string;
       toolName: string;
       timestamp?: Date;
       status?: "started" | "completed";
-      input?: any;
-      result?: any;
+      input?: unknown;
+      result?: unknown;
     }>;
   }>;
   activeAgent?: "mongo" | "bigquery" | "triage"; // Pinned specialist for this thread
   pinnedConsoleId?: string; // Console ID that this chat session is bound to
   createdBy: string;
   titleGenerated: boolean;
+  systemPrompt?: string; // System prompt used for this conversation
+  workspacePrompt?: string; // Workspace custom prompt appended to system prompt
   createdAt: Date;
   updatedAt: Date;
 }
@@ -901,10 +905,19 @@ const ChatSchema = new Schema<IChat>(
         },
         content: {
           type: String,
-          required: true,
+          required: false,
+          default: "",
+        },
+        reasoning: {
+          type: [String],
+          required: false,
         },
         toolCalls: [
           {
+            toolCallId: {
+              type: String,
+              required: false,
+            },
             toolName: {
               type: String,
               required: true,
@@ -945,6 +958,14 @@ const ChatSchema = new Schema<IChat>(
     titleGenerated: {
       type: Boolean,
       default: false,
+    },
+    systemPrompt: {
+      type: String,
+      required: false,
+    },
+    workspacePrompt: {
+      type: String,
+      required: false,
     },
   },
   {

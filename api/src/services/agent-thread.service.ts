@@ -1,5 +1,6 @@
 import { ObjectId } from "mongodb";
 import { v4 as uuidv4 } from "uuid";
+import type { UIMessage } from "ai";
 import { Chat } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-v2";
 
@@ -146,6 +147,8 @@ export const persistUserMessage = async (
   workspaceId: string,
   userId?: string,
   pinnedConsoleId?: string,
+  systemPrompt?: string,
+  workspacePrompt?: string,
 ): Promise<string> => {
   const now = new Date();
   const userMessageObj = { role: "user" as const, content: userMessage };
@@ -162,6 +165,8 @@ export const persistUserMessage = async (
       createdAt: now,
       updatedAt: now,
       pinnedConsoleId,
+      systemPrompt,
+      workspacePrompt,
     });
     await newChat.save();
     return newChat._id.toString();
@@ -183,26 +188,123 @@ export const persistUserMessage = async (
       createdAt: now,
       updatedAt: now,
       pinnedConsoleId,
+      systemPrompt,
+      workspacePrompt,
     });
     await newChat.save();
     return newChat._id.toString();
   }
 
   const existingMessages = existingChat.messages || [];
-  const updateData: any = {
+  const updateData: Record<string, unknown> = {
     messages: [...existingMessages, userMessageObj],
     updatedAt: now,
   };
   if (pinnedConsoleId !== undefined) {
     updateData.pinnedConsoleId = pinnedConsoleId;
   }
+  // Update prompts if provided (only on first message of a new session or if they changed)
+  if (systemPrompt !== undefined && !existingChat.systemPrompt) {
+    updateData.systemPrompt = systemPrompt;
+  }
+  if (workspacePrompt !== undefined && !existingChat.workspacePrompt) {
+    updateData.workspacePrompt = workspacePrompt;
+  }
   await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
   return sessionId;
 };
 
 /**
+ * Append tool calls incrementally to the current assistant message.
+ * Creates an assistant message if one doesn't exist after the last user message.
+ * Called during streaming as tool calls complete.
+ */
+export const appendToolCalls = async (
+  sessionId: string,
+  toolCalls: Array<{
+    toolCallId?: string;
+    toolName: string;
+    timestamp?: Date;
+    status?: "started" | "completed";
+    input?: unknown;
+    result?: unknown;
+  }>,
+): Promise<void> => {
+  if (!toolCalls || toolCalls.length === 0) return;
+
+  const now = new Date();
+  const chat = await Chat.findById(sessionId);
+  if (!chat) return;
+
+  const messages = [...(chat.messages || [])];
+  const lastMessage = messages[messages.length - 1];
+
+  if (lastMessage && lastMessage.role === "assistant") {
+    // Append to existing assistant message
+    const existingToolCalls = lastMessage.toolCalls || [];
+    lastMessage.toolCalls = [...existingToolCalls, ...toolCalls];
+  } else {
+    // Create new assistant message with tool calls (content will be updated later)
+    messages.push({
+      role: "assistant" as const,
+      content: "", // Placeholder - will be updated in finalizeAssistantMessage
+      toolCalls,
+    });
+  }
+
+  await Chat.findByIdAndUpdate(
+    sessionId,
+    { messages, updatedAt: now },
+    { new: true },
+  );
+};
+
+/**
+ * Finalize the assistant message with the final text content.
+ * Called after streaming completes.
+ */
+export const finalizeAssistantMessage = async (
+  sessionId: string,
+  assistantContent: string,
+  activeAgent?: AgentKind,
+): Promise<void> => {
+  const now = new Date();
+  const chat = await Chat.findById(sessionId);
+  if (!chat) return;
+
+  const messages = [...(chat.messages || [])];
+  const lastMessage = messages[messages.length - 1];
+
+  if (lastMessage && lastMessage.role === "assistant") {
+    // Update existing assistant message with final content
+    lastMessage.content = assistantContent;
+  } else if (assistantContent.trim()) {
+    // No assistant message exists yet (no tool calls were made) - create one
+    messages.push({
+      role: "assistant" as const,
+      content: assistantContent,
+    });
+  }
+
+  const updateData: {
+    messages: typeof messages;
+    updatedAt: Date;
+    activeAgent?: AgentKind;
+  } = {
+    messages,
+    updatedAt: now,
+  };
+  if (activeAgent) {
+    updateData.activeAgent = activeAgent;
+  }
+
+  await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
+};
+
+/**
  * Update chat with assistant response and tool calls.
  * Called after agent completes (or partially completes).
+ * @deprecated Use appendToolCalls + finalizeAssistantMessage for incremental persistence
  */
 export const updateChatWithResponse = async (
   sessionId: string,
@@ -211,8 +313,8 @@ export const updateChatWithResponse = async (
     toolName: string;
     timestamp?: Date;
     status?: "started" | "completed";
-    input?: any;
-    result?: any;
+    input?: unknown;
+    result?: unknown;
   }>,
   activeAgent?: AgentKind,
 ): Promise<void> => {
@@ -237,7 +339,14 @@ export const updateChatWithResponse = async (
     });
   }
 
-  const updateData: any = { messages, updatedAt: now };
+  const updateData: {
+    messages: typeof messages;
+    updatedAt: Date;
+    activeAgent?: AgentKind;
+  } = {
+    messages,
+    updatedAt: now,
+  };
   if (activeAgent) {
     updateData.activeAgent = activeAgent;
   }
@@ -353,4 +462,118 @@ export const persistChatError = async (
     // Don't throw - this is best-effort error logging
     console.error("Failed to persist chat error:", persistError);
   }
+};
+
+/**
+ * Convert UIMessage to stored format.
+ * UIMessage (AI SDK v6) uses parts array, we convert to our stored format.
+ *
+ * AI SDK Recommendation: Reasoning/thinking parts should be stored separately
+ * from regular text content. We extract them as a `reasoning` array.
+ */
+function convertUIMessageToStoredFormat(msg: UIMessage): {
+  role: "user" | "assistant";
+  content: string;
+  reasoning?: string[];
+  toolCalls?: Array<{
+    toolCallId: string;
+    toolName: string;
+    input?: unknown;
+    result?: unknown;
+  }>;
+} {
+  // Extract text content from parts (excluding reasoning)
+  const textContent = (msg.parts || [])
+    .filter(
+      (p): p is { type: "text"; text: string } =>
+        p.type === "text" && "text" in p,
+    )
+    .map(p => p.text)
+    .join("");
+
+  // Extract reasoning/thinking parts separately (AI SDK v6 best practice)
+  // These are emitted by models like Claude with extended thinking or DeepSeek
+  const reasoningParts = (msg.parts || [])
+    .filter(
+      (p): p is { type: "reasoning"; text: string } =>
+        p.type === "reasoning" && "text" in p,
+    )
+    .map(p => p.text);
+
+  // Extract tool calls from parts
+  // AI SDK v6 has two tool part types:
+  // - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
+  // - Dynamic tools: type is "dynamic-tool" with toolName as separate property
+  const toolCalls = (msg.parts || [])
+    .filter(p => {
+      const type = p.type;
+      if (typeof type !== "string") return false;
+      // Match static tools (type starts with "tool-") or dynamic tools (type === "dynamic-tool")
+      return type.startsWith("tool-") || type === "dynamic-tool";
+    })
+    .map(p => {
+      const part = p as Record<string, unknown>;
+      const partType = part.type as string;
+      // For dynamic tools, use the toolName property; for static tools, extract from type
+      // Static tool names: "tool-{name}" -> split on "-" and rejoin (handles names with hyphens)
+      const toolName =
+        partType === "dynamic-tool"
+          ? (part.toolName as string)
+          : partType.split("-").slice(1).join("-");
+      return {
+        toolCallId: (part.toolCallId as string) || "",
+        toolName: toolName || "",
+        // IMPORTANT: input must never be undefined - OpenAI API requires 'arguments' when reloading
+        input: part.input ?? {},
+        result: part.output ?? null,
+      };
+    })
+    // Filter out tool calls without valid toolName
+    .filter(tc => tc.toolName.length > 0);
+
+  return {
+    role: msg.role as "user" | "assistant",
+    // AI SDK v6 uses parts array; content property no longer exists on UIMessage
+    content: textContent || "",
+    reasoning: reasoningParts.length > 0 ? reasoningParts : undefined,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+  };
+}
+
+/**
+ * Save chat using AI SDK best practice: single atomic save at the end.
+ * Uses upsert to create or update the chat document.
+ *
+ * chatId must be a valid 24-character MongoDB ObjectId hex string.
+ * The frontend generates this using generateObjectId() utility.
+ */
+export const saveChat = async (
+  chatId: string,
+  workspaceId: string,
+  userId: string,
+  messages: UIMessage[],
+): Promise<typeof Chat.prototype | null> => {
+  const now = new Date();
+  const storedMessages = messages.map(convertUIMessageToStoredFormat);
+
+  const result = await Chat.findOneAndUpdate(
+    { _id: new ObjectId(chatId) },
+    {
+      $set: {
+        messages: storedMessages,
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        workspaceId: new ObjectId(workspaceId),
+        createdBy: userId,
+        title: "New Chat",
+        titleGenerated: false,
+        threadId: uuidv4(),
+        createdAt: now,
+      },
+    },
+    { upsert: true, new: true },
+  );
+
+  return result;
 };
