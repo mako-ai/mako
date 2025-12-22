@@ -374,6 +374,30 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Track if we're viewing an existing chat from history (vs a new chat)
+  // Moved before useChat so onFinish callback can access it
+  const [isExistingChat, setIsExistingChat] = useState(false);
+
+  // Refs for accessing current values in callbacks (avoids stale closures)
+  const isExistingChatRef = useRef(isExistingChat);
+  isExistingChatRef.current = isExistingChat;
+
+  // Function to fetch sessions - defined before useChat so it can be used in onFinish
+  // Using a ref-based pattern to always access the current workspace
+  const fetchSessionsRef = useRef<() => Promise<void>>();
+  fetchSessionsRef.current = async () => {
+    if (!currentWorkspace) return;
+    try {
+      const res = await fetch(`/api/workspaces/${currentWorkspace.id}/chats`);
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(data);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
   // Tool debug dialog
   const [toolDialogOpen, setToolDialogOpen] = useState(false);
   const [selectedTool, setSelectedTool] = useState<ToolInvocationInfo | null>(
@@ -671,7 +695,11 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
       console.error("[Chat3] Error:", err);
     },
     onFinish: () => {
-      // Note: Console modifications are now handled in onToolCall
+      // When a new chat's first message exchange completes, refresh the sessions list
+      // so the newly saved chat appears in the history menu
+      if (!isExistingChatRef.current) {
+        fetchSessionsRef.current?.();
+      }
     },
   });
 
@@ -684,23 +712,8 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
 
   // Session management - fetch available chat sessions for history menu
   useEffect(() => {
-    const fetchSessions = async () => {
-      if (!currentWorkspace) return;
-      try {
-        const res = await fetch(`/api/workspaces/${currentWorkspace.id}/chats`);
-        if (res.ok) {
-          const data = await res.json();
-          setSessions(data);
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-    fetchSessions();
+    fetchSessionsRef.current?.();
   }, [currentWorkspace]);
-
-  // Track if we're viewing an existing chat from history (vs a new chat)
-  const [isExistingChat, setIsExistingChat] = useState(false);
 
   // Load messages when selecting an existing chat from history
   useEffect(() => {
@@ -720,8 +733,13 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
               const parts: Array<Record<string, unknown>> = [];
 
               // Add tool call parts first (they execute before text response)
+              // IMPORTANT: input must always be defined (at least {}) for OpenAI API compatibility
+              // The API requires 'arguments' field which comes from 'input'
               if (msg.toolCalls && msg.toolCalls.length > 0) {
                 for (const tc of msg.toolCalls) {
+                  // Skip tool calls without a valid toolName
+                  if (!tc.toolName) continue;
+
                   parts.push({
                     type: `tool-${tc.toolName}`,
                     toolCallId:
@@ -730,8 +748,9 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
                       `saved-${tc.toolName}-${Date.now()}-${Math.random()}`,
                     toolName: tc.toolName,
                     state: "output-available",
-                    input: tc.input,
-                    output: tc.result,
+                    // CRITICAL: input must never be undefined - OpenAI API requires 'arguments'
+                    input: tc.input ?? {},
+                    output: tc.result ?? null,
                   });
                 }
               }
@@ -830,22 +849,36 @@ const Chat3: React.FC<Chat3Props> = ({ onConsoleModification }) => {
   };
 
   // Extract tool invocations from message parts (v6 API)
-  // In v6, tool parts have type "tool-{toolName}" with state/input/output directly on part
+  // AI SDK v6 has two tool part types:
+  // - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
+  // - Dynamic tools: type is "dynamic-tool" with toolName as separate property
   const getToolInvocations = (
     messageParts: Array<Record<string, unknown>> | undefined,
   ): ToolInvocationInfo[] => {
     if (!messageParts) return [];
     return messageParts
-      .filter(
-        part => typeof part.type === "string" && part.type.startsWith("tool-"),
-      )
-      .map(part => ({
-        toolCallId: (part.toolCallId as string) || "",
-        toolName: (part.type as string).replace("tool-", ""),
-        state: part.state as ToolInvocationInfo["state"],
-        input: part.input,
-        output: part.output,
-      }));
+      .filter(part => {
+        const type = part.type;
+        if (typeof type !== "string") return false;
+        // Match static tools (type starts with "tool-") or dynamic tools
+        return type.startsWith("tool-") || type === "dynamic-tool";
+      })
+      .map(part => {
+        const partType = part.type as string;
+        // For dynamic tools, use the toolName property; for static tools, extract from type
+        // Static tool names: "tool-{name}" -> split on "-" and rejoin (handles names with hyphens)
+        const toolName =
+          partType === "dynamic-tool"
+            ? (part.toolName as string)
+            : partType.split("-").slice(1).join("-");
+        return {
+          toolCallId: (part.toolCallId as string) || "",
+          toolName: toolName || "",
+          state: part.state as ToolInvocationInfo["state"],
+          input: part.input,
+          output: part.output,
+        };
+      });
   };
 
   // Render message content from parts (v6 API - no content property, only parts)

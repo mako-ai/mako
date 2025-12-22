@@ -500,18 +500,36 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     )
     .map(p => p.text);
 
-  // Extract tool calls from parts (tool parts have type "tool-{toolName}")
+  // Extract tool calls from parts
+  // AI SDK v6 has two tool part types:
+  // - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
+  // - Dynamic tools: type is "dynamic-tool" with toolName as separate property
   const toolCalls = (msg.parts || [])
-    .filter(p => typeof p.type === "string" && p.type.startsWith("tool-"))
+    .filter(p => {
+      const type = p.type;
+      if (typeof type !== "string") return false;
+      // Match static tools (type starts with "tool-") or dynamic tools (type === "dynamic-tool")
+      return type.startsWith("tool-") || type === "dynamic-tool";
+    })
     .map(p => {
       const part = p as Record<string, unknown>;
+      const partType = part.type as string;
+      // For dynamic tools, use the toolName property; for static tools, extract from type
+      // Static tool names: "tool-{name}" -> split on "-" and rejoin (handles names with hyphens)
+      const toolName =
+        partType === "dynamic-tool"
+          ? (part.toolName as string)
+          : partType.split("-").slice(1).join("-");
       return {
         toolCallId: (part.toolCallId as string) || "",
-        toolName: (part.type as string).replace("tool-", ""),
-        input: part.input,
-        result: part.output,
+        toolName: toolName || "",
+        // IMPORTANT: input must never be undefined - OpenAI API requires 'arguments' when reloading
+        input: part.input ?? {},
+        result: part.output ?? null,
       };
-    });
+    })
+    // Filter out tool calls without valid toolName
+    .filter(tc => tc.toolName.length > 0);
 
   return {
     role: msg.role as "user" | "assistant",

@@ -527,8 +527,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         if (res.ok) {
           const data = await res.json();
           setSessions(data);
-          if (data.length > 0 && !sessionId) {
-            setSessionId(data[0]._id);
+          // Use functional update to avoid sessionId dependency
+          if (data.length > 0) {
+            setSessionId(current => (current ? current : data[0]._id));
           }
         }
       } catch (_) {
@@ -536,7 +537,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       }
     };
     fetchSessions();
-  }, [currentWorkspace, sessionId]);
+  }, [currentWorkspace]);
 
   useEffect(() => {
     const loadSession = async () => {
