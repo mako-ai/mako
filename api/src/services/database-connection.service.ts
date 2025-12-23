@@ -197,16 +197,21 @@ async function withRetry<T>(
 
       // Wait before retrying
       await new Promise<void>((resolve, reject) => {
-        const timeoutId = setTimeout(resolve, delayMs);
+        const abortHandler = () => {
+          clearTimeout(timeoutId);
+          reject(new Error("Operation cancelled"));
+        };
+
+        const timeoutId = setTimeout(() => {
+          // Clean up abort listener when timeout completes normally
+          if (signal) {
+            signal.removeEventListener("abort", abortHandler);
+          }
+          resolve();
+        }, delayMs);
+
         if (signal) {
-          signal.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timeoutId);
-              reject(new Error("Operation cancelled"));
-            },
-            { once: true },
-          );
+          signal.addEventListener("abort", abortHandler, { once: true });
         }
       });
     }
@@ -2735,9 +2740,15 @@ export class DatabaseConnectionService {
       const client = await withRetry(
         async () => {
           const newClient = createClient(config);
-          // Verify connection is working before returning
-          await newClient.ping();
-          return newClient;
+          try {
+            // Verify connection is working before returning
+            await newClient.ping();
+            return newClient;
+          } catch (error) {
+            // Close the client if ping fails to prevent resource leaks
+            await newClient.close().catch(() => {});
+            throw error;
+          }
         },
         {
           maxRetries: this.clickHouseMaxRetries,
