@@ -185,23 +185,41 @@ function Editor() {
   }, []);
 
   // Dynamic getters for unified SQL autocomplete (reads from active console)
+  // These getters read directly from the store at call time to avoid stale closures.
+  // This is critical for autocomplete to work correctly when switching consoles.
   const getWorkspaceId = useCallback(
     () => currentWorkspace?.id,
     [currentWorkspace?.id],
   );
 
+  // Use a ref to track availableDatabases so getConnectionType can access fresh values
+  const availableDatabasesRef = useRef(availableDatabases);
+  useEffect(() => {
+    availableDatabasesRef.current = availableDatabases;
+  }, [availableDatabases]);
+
   const getConnectionId = useCallback(() => {
-    const activeTab = consoleTabs.find(tab => tab.id === activeConsoleId);
+    // Read fresh state from the store at call time (not from closed-over React state)
+    const state = useAppStore.getState();
+    const tabs = state.consoles.tabs;
+    const activeTabId = state.consoles.activeTabId;
+    const activeTab = activeTabId ? tabs[activeTabId] : null;
     return activeTab?.connectionId;
-  }, [consoleTabs, activeConsoleId]);
+  }, []); // Empty deps - always reads fresh from store
 
   const getConnectionType = useCallback(() => {
-    const activeTab = consoleTabs.find(tab => tab.id === activeConsoleId);
-    const connection = availableDatabases.find(
-      db => db.id === activeTab?.connectionId,
+    // Read fresh state from the store at call time
+    const state = useAppStore.getState();
+    const tabs = state.consoles.tabs;
+    const activeTabId = state.consoles.activeTabId;
+    const activeTab = activeTabId ? tabs[activeTabId] : null;
+    const connectionId = activeTab?.connectionId;
+    // Use ref to get current availableDatabases without causing effect re-runs
+    const connection = availableDatabasesRef.current.find(
+      db => db.id === connectionId,
     );
     return connection?.type;
-  }, [consoleTabs, activeConsoleId, availableDatabases]);
+  }, []); // Empty deps - reads fresh from store and ref
 
   // Unified SQL autocomplete - single global provider for all consoles
   useSqlAutocomplete({
