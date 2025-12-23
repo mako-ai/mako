@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   Box,
   Paper,
@@ -6,13 +6,10 @@ import {
   Button,
   CircularProgress,
   Container,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
   Divider,
   Stack,
   Alert,
+  useTheme,
 } from "@mui/material";
 import { Building2, Plus, ChevronRight } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -31,9 +28,14 @@ export function WorkspaceSelector({
   workspaces,
   onCreateNew,
 }: WorkspaceSelectorProps) {
+  const theme = useTheme();
   const { switchWorkspace } = useWorkspace();
   const [selectingId, setSelectingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const sortedWorkspaces = useMemo(() => {
+    return [...workspaces].sort((a, b) => a.name.localeCompare(b.name));
+  }, [workspaces]);
 
   const handleSelectWorkspace = useCallback(
     async (workspaceId: string) => {
@@ -62,81 +64,162 @@ export function WorkspaceSelector({
           py: 4,
         }}
       >
-        <Paper sx={{ p: 4, width: "100%" }}>
-          <Box sx={{ textAlign: "center", mb: 4 }}>
-            <Building2 size={60} style={{ marginBottom: 16 }} />
-            <Typography variant="h4" gutterBottom>
-              Select a Workspace
+        <Paper
+          elevation={0}
+          sx={{
+            p: { xs: 3, sm: 5 },
+            width: "100%",
+            borderRadius: 3,
+            border: "1px solid",
+            borderColor: "divider",
+          }}
+        >
+          <Box sx={{ textAlign: "center", mb: 5 }}>
+            <Box
+              component="img"
+              src="/mako-icon.svg"
+              alt="Mako"
+              sx={{
+                width: 64,
+                height: "auto",
+                margin: "0 auto",
+                mb: 3,
+                display: "block",
+                filter:
+                  theme.palette.mode === "dark"
+                    ? "brightness(0) invert(1)"
+                    : "none",
+              }}
+            />
+            <Typography variant="h4" fontWeight="bold" gutterBottom>
+              Select Workspace
             </Typography>
-            <Typography color="text.secondary">
-              Choose which workspace you'd like to work in today.
+            <Typography color="text.secondary" variant="body1">
+              Choose an existing workspace to continue your work
             </Typography>
           </Box>
 
           {error && (
-            <Alert severity="error" sx={{ mb: 3 }}>
+            <Alert severity="error" sx={{ mb: 4, borderRadius: 2 }}>
               {error}
             </Alert>
           )}
 
-          <List sx={{ mb: 3 }}>
-            {workspaces.map((workspace, index) => (
-              <Box key={workspace.id}>
-                {index > 0 && <Divider />}
-                <ListItemButton
-                  onClick={() => handleSelectWorkspace(workspace.id)}
-                  disabled={selectingId !== null}
+          <Stack spacing={2} sx={{ mb: 4 }}>
+            {sortedWorkspaces.map(workspace => (
+              <Box
+                key={workspace.id}
+                component="button"
+                onClick={() => handleSelectWorkspace(workspace.id)}
+                disabled={selectingId !== null}
+                sx={{
+                  width: "100%",
+                  textAlign: "left",
+                  p: 3,
+                  borderRadius: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: "background.paper",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease-in-out",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 2,
+                  "&:hover": {
+                    borderColor: "text.primary",
+                    bgcolor: "action.hover",
+                  },
+                  "&:disabled": {
+                    opacity: 0.6,
+                    cursor: "default",
+                  },
+                }}
+              >
+                <Box
                   sx={{
-                    py: 2,
-                    borderRadius: 1,
-                    "&:hover": {
-                      backgroundColor: "action.hover",
-                    },
+                    p: 1.5,
+                    borderRadius: 1.5,
+                    bgcolor: "action.selected",
+                    color: "text.primary",
+                    display: "flex",
                   }}
                 >
-                  <ListItemIcon>
-                    {selectingId === workspace.id ? (
-                      <CircularProgress size={24} />
-                    ) : (
-                      <Building2 size={24} />
-                    )}
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={workspace.name}
-                    secondary={
-                      workspace.slug ? `/${workspace.slug}` : undefined
-                    }
-                    primaryTypographyProps={{
-                      fontWeight: "medium",
+                  {selectingId === workspace.id ? (
+                    <CircularProgress size={24} thickness={4} />
+                  ) : (
+                    <Building2 size={24} strokeWidth={1.5} />
+                  )}
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography
+                    variant="h6"
+                    sx={{
+                      fontSize: "1.05rem",
+                      fontWeight: 600,
+                      mb: 0.5,
+                      color: "text.primary",
                     }}
-                  />
+                  >
+                    {workspace.name}
+                  </Typography>
+                  {workspace.slug && (
+                    <Typography variant="body2" color="text.secondary" noWrap>
+                      /{workspace.slug}
+                    </Typography>
+                  )}
+                </Box>
+                <Box
+                  sx={{
+                    color: "text.secondary",
+                    opacity: 0.4,
+                    display: "flex",
+                  }}
+                >
                   <ChevronRight size={20} />
-                </ListItemButton>
+                </Box>
               </Box>
             ))}
-          </List>
-
-          <Divider sx={{ my: 3 }} />
-
-          <Stack spacing={2}>
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              textAlign="center"
-            >
-              Or start fresh with a new workspace
-            </Typography>
-            <Button
-              variant="outlined"
-              fullWidth
-              size="large"
-              startIcon={<Plus size={20} />}
-              onClick={onCreateNew}
-              disabled={selectingId !== null}
-            >
-              Create New Workspace
-            </Button>
           </Stack>
+
+          <Box sx={{ position: "relative", my: 4 }}>
+            <Divider />
+            <Box
+              sx={{
+                position: "absolute",
+                top: "50%",
+                left: "50%",
+                transform: "translate(-50%, -50%)",
+                bgcolor: "background.paper",
+                px: 2,
+                color: "text.secondary",
+                typography: "caption",
+                fontWeight: 500,
+              }}
+            >
+              OR
+            </Box>
+          </Box>
+
+          <Button
+            variant="text"
+            fullWidth
+            size="large"
+            startIcon={<Plus size={20} />}
+            onClick={onCreateNew}
+            disabled={selectingId !== null}
+            sx={{
+              py: 1.5,
+              textTransform: "none",
+              fontSize: "1rem",
+              fontWeight: 500,
+              color: "text.primary",
+              "&:hover": {
+                bgcolor: "action.hover",
+              },
+            }}
+          >
+            Create new workspace
+          </Button>
         </Paper>
       </Box>
     </Container>
