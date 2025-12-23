@@ -60,6 +60,167 @@ interface PooledConnection {
 }
 
 /**
+ * Options for the retry utility
+ */
+interface RetryOptions {
+  /** Maximum number of retry attempts */
+  maxRetries: number;
+  /** Base delay in milliseconds (doubles with each retry) */
+  baseDelayMs: number;
+  /** Optional: only retry if error matches these patterns */
+  retryableErrorPatterns?: RegExp[];
+  /** Optional: abort signal to cancel retries */
+  signal?: AbortSignal;
+}
+
+/**
+ * Default patterns for retryable connection errors
+ * These indicate transient failures that may succeed on retry
+ */
+const DEFAULT_RETRYABLE_ERROR_PATTERNS: RegExp[] = [
+  // Connection errors
+  /ECONNREFUSED/i,
+  /ECONNRESET/i,
+  /ETIMEDOUT/i,
+  /ENOTFOUND/i,
+  /ENETUNREACH/i,
+  /EHOSTUNREACH/i,
+  /EAI_AGAIN/i,
+  // Timeout errors
+  /timeout/i,
+  /timed out/i,
+  // Connection closed/reset
+  /connection.*closed/i,
+  /connection.*reset/i,
+  /connection.*terminated/i,
+  /socket hang up/i,
+  // Server temporarily unavailable (cold start)
+  /service unavailable/i,
+  /503/i,
+  /502/i,
+  /temporarily unavailable/i,
+  // ClickHouse specific
+  /Code: 159/i, // TIMEOUT_EXCEEDED
+  /Code: 209/i, // SOCKET_TIMEOUT
+  /Code: 210/i, // NETWORK_ERROR
+];
+
+/**
+ * Patterns for errors that should NOT be retried
+ * These indicate permanent failures (syntax errors, auth issues, etc.)
+ */
+const NON_RETRYABLE_ERROR_PATTERNS: RegExp[] = [
+  // SQL syntax errors
+  /syntax error/i,
+  /parse error/i,
+  // Authentication/authorization
+  /authentication failed/i,
+  /access denied/i,
+  /permission denied/i,
+  /unauthorized/i,
+  /invalid.*password/i,
+  /invalid.*credentials/i,
+  // Invalid queries
+  /unknown.*table/i,
+  /unknown.*column/i,
+  /unknown.*database/i,
+  /does not exist/i,
+  /no such/i,
+  // Query cancelled by user
+  /cancelled/i,
+  /aborted/i,
+];
+
+/**
+ * Check if an error is retryable based on error patterns
+ */
+function isRetryableError(error: Error, customPatterns?: RegExp[]): boolean {
+  const errorMessage = error.message || "";
+  const errorName = error.name || "";
+  const fullErrorString = `${errorName}: ${errorMessage}`;
+
+  // First check if it's explicitly non-retryable
+  for (const pattern of NON_RETRYABLE_ERROR_PATTERNS) {
+    if (pattern.test(fullErrorString)) {
+      return false;
+    }
+  }
+
+  // Then check if it matches retryable patterns
+  const patterns = customPatterns || DEFAULT_RETRYABLE_ERROR_PATTERNS;
+  for (const pattern of patterns) {
+    if (pattern.test(fullErrorString)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Execute a function with retry logic and exponential backoff
+ * Used for transient connection failures and cold starts
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: RetryOptions,
+): Promise<T> {
+  const { maxRetries, baseDelayMs, retryableErrorPatterns, signal } = options;
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Check if cancelled
+    if (signal?.aborted) {
+      throw new Error("Operation cancelled");
+    }
+
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Don't retry if this is the last attempt
+      if (attempt >= maxRetries) {
+        break;
+      }
+
+      // Don't retry non-retryable errors
+      if (!isRetryableError(lastError, retryableErrorPatterns)) {
+        break;
+      }
+
+      // Calculate delay with exponential backoff
+      const delayMs = baseDelayMs * Math.pow(2, attempt);
+      console.log(
+        `[Retry] Attempt ${attempt + 1}/${maxRetries + 1} failed: ${lastError.message}. Retrying in ${delayMs}ms...`,
+      );
+
+      // Wait before retrying
+      await new Promise<void>((resolve, reject) => {
+        const abortHandler = () => {
+          clearTimeout(timeoutId);
+          reject(new Error("Operation cancelled"));
+        };
+
+        const timeoutId = setTimeout(() => {
+          // Clean up abort listener when timeout completes normally
+          if (signal) {
+            signal.removeEventListener("abort", abortHandler);
+          }
+          resolve();
+        }, delayMs);
+
+        if (signal) {
+          signal.addEventListener("abort", abortHandler, { once: true });
+        }
+      });
+    }
+  }
+
+  throw lastError;
+}
+
+/**
  * Enhanced Database Connection Service
  *
  * Provides unified connection management for all database types with:
@@ -982,17 +1143,9 @@ export class DatabaseConnectionService {
 
     let cancelClient: PgClient | null = null;
     try {
-      // Create a new connection to cancel the query
-      cancelClient = new PgClient({
-        host: query.database.connection.host,
-        port: query.database.connection.port || 5432,
-        database: query.database.connection.database,
-        user: query.database.connection.username,
-        password: query.database.connection.password,
-        ssl: query.database.connection.ssl
-          ? { rejectUnauthorized: false }
-          : false,
-      });
+      // Create a new connection to cancel the query (with timeout settings)
+      const config = this.buildPostgreSQLClientConfig(query.database);
+      cancelClient = new PgClient(config);
       await cancelClient.connect();
       const res = await cancelClient.query<{ cancelled: boolean }>(
         "SELECT pg_cancel_backend($1) as cancelled",
@@ -2054,21 +2207,50 @@ export class DatabaseConnectionService {
   }
 
   // PostgreSQL specific methods
+
+  /**
+   * Build PostgreSQL client configuration with timeout settings
+   */
+  private buildPostgreSQLClientConfig(
+    database: IDatabaseConnection,
+    targetDatabase?: string,
+  ) {
+    return {
+      host: database.connection.host,
+      port: database.connection.port || 5432,
+      database: targetDatabase || database.connection.database,
+      user: database.connection.username,
+      password: database.connection.password,
+      ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
+      connectionTimeoutMillis: this.postgresConnectionTimeoutMs,
+      query_timeout: this.postgresQueryTimeoutMs,
+      statement_timeout: this.postgresQueryTimeoutMs,
+    };
+  }
+
   private async testPostgreSQLConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
-    let client: PgClient | null = null;
     try {
-      client = new PgClient({
-        host: database.connection.host,
-        port: database.connection.port || 5432,
-        database: database.connection.database,
-        user: database.connection.username,
-        password: database.connection.password,
-        ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
-      });
-      await client.connect();
-      await client.query("SELECT 1");
+      const config = this.buildPostgreSQLClientConfig(database);
+
+      // Use retry logic to handle transient connection failures
+      await withRetry(
+        async () => {
+          const client = new PgClient(config);
+          try {
+            await client.connect();
+            await client.query("SELECT 1");
+          } finally {
+            await client.end();
+          }
+        },
+        {
+          maxRetries: this.postgresMaxRetries,
+          baseDelayMs: this.postgresRetryBaseDelayMs,
+        },
+      );
+
       return { success: true };
     } catch (error) {
       return {
@@ -2078,26 +2260,26 @@ export class DatabaseConnectionService {
             ? error.message
             : "PostgreSQL connection failed",
       };
-    } finally {
-      if (client) {
-        await client.end();
-      }
     }
   }
 
   private async createPostgreSQLConnection(
     database: IDatabaseConnection,
   ): Promise<PgClient> {
-    const client = new PgClient({
-      host: database.connection.host,
-      port: database.connection.port || 5432,
-      database: database.connection.database,
-      user: database.connection.username,
-      password: database.connection.password,
-      ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
-    });
-    await client.connect();
-    return client;
+    const config = this.buildPostgreSQLClientConfig(database);
+
+    // Use retry logic to handle transient connection failures and cold starts
+    return withRetry(
+      async () => {
+        const client = new PgClient(config);
+        await client.connect();
+        return client;
+      },
+      {
+        maxRetries: this.postgresMaxRetries,
+        baseDelayMs: this.postgresRetryBaseDelayMs,
+      },
+    );
   }
 
   private async executePostgreSQLQuery(
@@ -2114,21 +2296,34 @@ export class DatabaseConnectionService {
 
     // Check if we need a different database than what's cached in the connection
     const connectionDatabase = database.connection.database;
-    let client: PgClient;
+    let client: PgClient | null = null;
     let isTemporaryConnection = false;
 
     try {
+      // Check if already cancelled
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
+
       if (targetDatabase && targetDatabase !== connectionDatabase) {
         // Need to create a new connection for the target database
-        client = new PgClient({
-          host: database.connection.host,
-          port: database.connection.port || 5432,
-          database: targetDatabase,
-          user: database.connection.username,
-          password: database.connection.password,
-          ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
-        });
-        await client.connect();
+        // Use retry logic for connection establishment
+        const config = this.buildPostgreSQLClientConfig(
+          database,
+          targetDatabase,
+        );
+        client = await withRetry(
+          async () => {
+            const newClient = new PgClient(config);
+            await newClient.connect();
+            return newClient;
+          },
+          {
+            maxRetries: this.postgresMaxRetries,
+            baseDelayMs: this.postgresRetryBaseDelayMs,
+            signal,
+          },
+        );
         isTemporaryConnection = true;
       } else {
         // Use the cached connection
@@ -2169,7 +2364,7 @@ export class DatabaseConnectionService {
       if (executionId) {
         this.runningPostgresQueries.delete(executionId);
       }
-      if (isTemporaryConnection && client!) {
+      if (isTemporaryConnection && client) {
         await client.end().catch(() => {});
       }
     }
@@ -2410,21 +2605,47 @@ export class DatabaseConnectionService {
     };
   }
 
+  // ClickHouse client configuration constants
+  private readonly clickHouseRequestTimeout = 120_000; // 120 seconds for cold starts
+  private readonly clickHouseMaxRetries = 3;
+  private readonly clickHouseRetryBaseDelayMs = 1000; // 1 second base delay
+
+  // PostgreSQL client configuration constants
+  private readonly postgresConnectionTimeoutMs = 30_000; // 30 seconds connection timeout
+  private readonly postgresQueryTimeoutMs = 120_000; // 120 seconds query timeout
+  private readonly postgresMaxRetries = 3;
+  private readonly postgresRetryBaseDelayMs = 1000; // 1 second base delay
+
   /**
    * Build ClickHouse client config from database connection
    * Supports both connection string and individual fields
+   * Includes timeout and keep_alive settings for resilience
    */
   private buildClickHouseClientConfig(database: IDatabaseConnection): {
     url: string;
     username: string;
     password: string;
     database: string;
+    request_timeout: number;
+    keep_alive: { enabled: boolean; idle_socket_ttl: number };
   } {
     const conn = database.connection;
 
+    // Base config with timeout and keep_alive settings
+    const baseConfig = {
+      request_timeout: this.clickHouseRequestTimeout,
+      keep_alive: {
+        enabled: true,
+        idle_socket_ttl: 2500, // Default: 2.5 seconds
+      },
+    };
+
     // If connection string is provided, parse it
     if (conn.connectionString) {
-      return this.parseClickHouseConnectionString(conn.connectionString);
+      const parsed = this.parseClickHouseConnectionString(
+        conn.connectionString,
+      );
+      return { ...parsed, ...baseConfig };
     }
 
     // Build from individual fields
@@ -2438,6 +2659,7 @@ export class DatabaseConnectionService {
       username: conn.username || "default",
       password: conn.password || "",
       database: conn.database || "default",
+      ...baseConfig,
     };
   }
 
@@ -2446,9 +2668,23 @@ export class DatabaseConnectionService {
   ): Promise<{ success: boolean; error?: string }> {
     try {
       const config = this.buildClickHouseClientConfig(database);
-      const client = createClient(config);
-      await client.ping();
-      await client.close();
+
+      // Use retry logic to handle cold starts and transient failures
+      await withRetry(
+        async () => {
+          const client = createClient(config);
+          try {
+            await client.ping();
+          } finally {
+            await client.close();
+          }
+        },
+        {
+          maxRetries: this.clickHouseMaxRetries,
+          baseDelayMs: this.clickHouseRetryBaseDelayMs,
+        },
+      );
+
       return { success: true };
     } catch (error) {
       return {
@@ -2473,6 +2709,15 @@ export class DatabaseConnectionService {
     // Generate unique query_id for this execution
     const queryId = executionId || crypto.randomUUID();
 
+    // Set up abort signal listener
+    // Store reference to remove it in finally block to prevent memory leaks
+    const abortHandler = () => {
+      abortController.abort();
+    };
+    if (signal) {
+      signal.addEventListener("abort", abortHandler);
+    }
+
     try {
       // Check if already cancelled
       if (signal?.aborted) {
@@ -2480,7 +2725,6 @@ export class DatabaseConnectionService {
       }
 
       const config = this.buildClickHouseClientConfig(database);
-      const client = createClient(config);
 
       // Track running query for cancellation
       if (executionId) {
@@ -2491,27 +2735,47 @@ export class DatabaseConnectionService {
         });
       }
 
-      // Set up abort signal listener
-      if (signal) {
-        signal.addEventListener("abort", () => {
-          abortController.abort();
-        });
-      }
-
-      // Execute query with query_id for cancellation support
-      const resultSet = await client.query({
-        query: query,
-        format: "JSONEachRow",
-        query_id: queryId,
-        clickhouse_settings: {
-          // Allow query to be cancelled
-          cancel_http_readonly_queries_on_client_close: 1,
+      // Use retry logic only for connection establishment (not query execution)
+      // to avoid re-executing queries with side effects (INSERT, UPDATE, etc.)
+      const client = await withRetry(
+        async () => {
+          const newClient = createClient(config);
+          try {
+            // Verify connection is working before returning
+            await newClient.ping();
+            return newClient;
+          } catch (error) {
+            // Close the client if ping fails to prevent resource leaks
+            await newClient.close().catch(() => {});
+            throw error;
+          }
         },
-        abort_signal: abortController.signal,
-      });
+        {
+          maxRetries: this.clickHouseMaxRetries,
+          baseDelayMs: this.clickHouseRetryBaseDelayMs,
+          signal: abortController.signal,
+        },
+      );
 
-      const data = await resultSet.json();
-      await client.close();
+      let data: any[];
+      try {
+        // Execute query with query_id for cancellation support
+        // Note: Query execution is NOT retried to avoid duplicate side effects
+        const resultSet = await client.query({
+          query: query,
+          format: "JSONEachRow",
+          query_id: queryId,
+          clickhouse_settings: {
+            // Allow query to be cancelled
+            cancel_http_readonly_queries_on_client_close: 1,
+          },
+          abort_signal: abortController.signal,
+        });
+
+        data = await resultSet.json();
+      } finally {
+        await client.close();
+      }
 
       return {
         success: true,
@@ -2534,6 +2798,10 @@ export class DatabaseConnectionService {
           error instanceof Error ? error.message : "ClickHouse query failed",
       };
     } finally {
+      // Clean up abort listener to prevent memory leaks when signal is reused
+      if (signal) {
+        signal.removeEventListener("abort", abortHandler);
+      }
       if (executionId) {
         this.runningClickHouseQueries.delete(executionId);
       }
