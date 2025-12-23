@@ -253,6 +253,11 @@ databaseTreeRoutes.get(
     } else if (dbType === "cloudflare-kv") {
       // KV uses JavaScript-like syntax mirroring Cloudflare Workers API
       template = "kv.list({ limit: 100 })";
+    } else if (dbType === "clickhouse") {
+      // ClickHouse uses database.table format
+      const dbName = metadata?.databaseName || "default";
+      const table = metadata?.tableName || nodeId || "table_name";
+      template = `SELECT * FROM "${dbName}"."${table}" LIMIT 500;`;
     } else {
       // Fallback SQL-like template
       const table = nodeId || "table_name";

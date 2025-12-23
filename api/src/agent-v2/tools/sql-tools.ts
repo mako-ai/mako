@@ -16,24 +16,27 @@ import {
 } from "./shared/truncation";
 
 // SQL dialect types for routing
-type SqlDialect = "postgresql" | "bigquery" | "sqlite";
+type SqlDialect = "postgresql" | "bigquery" | "sqlite" | "clickhouse";
 
 const SQL_TYPES = {
   postgres: new Set(["postgresql", "cloudsql-postgres"]),
   bigquery: new Set(["bigquery"]),
   sqlite: new Set(["sqlite", "cloudflare-d1"]),
+  clickhouse: new Set(["clickhouse"]),
 };
 
 const ALL_SQL_TYPES = new Set([
   ...SQL_TYPES.postgres,
   ...SQL_TYPES.bigquery,
   ...SQL_TYPES.sqlite,
+  ...SQL_TYPES.clickhouse,
 ]);
 
 const getDialect = (type: string): SqlDialect => {
   if (SQL_TYPES.postgres.has(type)) return "postgresql";
   if (SQL_TYPES.bigquery.has(type)) return "bigquery";
   if (SQL_TYPES.sqlite.has(type)) return "sqlite";
+  if (SQL_TYPES.clickhouse.has(type)) return "clickhouse";
   throw new Error(`Unknown SQL type: ${type}`);
 };
 
@@ -219,6 +222,31 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
     }));
   }
 
+  if (dialect === "clickhouse") {
+    // List ClickHouse databases
+    const result = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      "SHOW DATABASES",
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || "Failed to list databases");
+    }
+
+    const systemDatabases = new Set([
+      "system",
+      "information_schema",
+      "INFORMATION_SCHEMA",
+    ]);
+
+    return (result.data || [])
+      .filter((row: { name: string }) => !systemDatabases.has(row.name))
+      .map((row: { name: string }) => ({
+        name: row.name,
+        sqlDialect: dialect,
+      }));
+  }
+
   // SQLite/D1
   const connection: Record<string, unknown> =
     (database as unknown as { connection: Record<string, unknown> })
@@ -292,6 +320,30 @@ async function listTablesImpl(
     return tables.map(t => ({
       name: t.name,
       type: t.type === "VIEW" ? "view" : "table",
+      sqlDialect: dialect,
+    }));
+  }
+
+  if (dialect === "clickhouse") {
+    // List ClickHouse tables in the database
+    const result = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT name, engine 
+       FROM system.tables 
+       WHERE database = '${databaseName.replace(/'/g, "''")}'
+       ORDER BY name`,
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || "Failed to list tables");
+    }
+
+    return (result.data || []).map((row: { name: string; engine: string }) => ({
+      name: row.name,
+      type:
+        row.engine === "View" || row.engine === "MaterializedView"
+          ? "view"
+          : "table",
       sqlDialect: dialect,
     }));
   }
@@ -464,6 +516,56 @@ async function inspectTableImpl(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS}`,
+    );
+
+    if (samplesResult.success && samplesResult.data) {
+      samples = samplesResult.data;
+    }
+  } else if (dialect === "clickhouse") {
+    // ClickHouse table inspection
+    const safeDatabase = databaseName.replace(/'/g, "''");
+    const safeTable = tableName.replace(/'/g, "''");
+
+    // Get columns from system.columns
+    const columnsResult = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT name, type, default_kind, default_expression
+       FROM system.columns
+       WHERE database = '${safeDatabase}' AND table = '${safeTable}'
+       ORDER BY position`,
+    );
+
+    if (!columnsResult.success) {
+      throw new Error(columnsResult.error || "Failed to get columns");
+    }
+
+    columns = (columnsResult.data || []).map(
+      (row: Record<string, unknown>) => ({
+        name: row.name as string,
+        types: [row.type as string],
+        nullable: (row.type as string).startsWith("Nullable"),
+        defaultValue: row.default_expression as string | undefined,
+      }),
+    );
+
+    // Check if it's a view
+    const typeResult = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT engine FROM system.tables 
+       WHERE database = '${safeDatabase}' AND name = '${safeTable}'`,
+    );
+    if (
+      typeResult.success &&
+      (typeResult.data?.[0]?.engine === "View" ||
+        typeResult.data?.[0]?.engine === "MaterializedView")
+    ) {
+      entityKind = "view";
+    }
+
+    // Get samples
+    const samplesResult = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT * FROM "${databaseName.replace(/"/g, '""')}"."${tableName.replace(/"/g, '""')}" LIMIT ${MAX_SAMPLE_ROWS}`,
     );
 
     if (samplesResult.success && samplesResult.data) {
