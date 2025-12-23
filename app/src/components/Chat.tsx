@@ -2,7 +2,13 @@
  * Chat Component - Using Vercel AI SDK useChat hook
  * Native AI SDK streaming protocol for improved compatibility
  */
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+  useCallback,
+} from "react";
 import {
   Box,
   Button,
@@ -49,7 +55,10 @@ import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
+import { useShallow } from "zustand/react/shallow";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAppStore } from "../store";
+import { ConsoleTab } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
@@ -170,8 +179,8 @@ const CodeBlock = React.memo(
             overflow: "auto",
             maxWidth: "100%",
             maxHeight: isScrollable ? "50vh" : undefined,
-            paddingBottom: needsExpansion && !isScrollable ? "2rem" : undefined,
-            paddingTop: "2rem",
+            paddingBottom: needsExpansion && !isScrollable ? "2rem" : "1rem",
+            padding: "1rem",
           }}
         >
           {displayedCode}
@@ -352,6 +361,219 @@ const ReasoningDisplay = React.memo(
 
 ReasoningDisplay.displayName = "ReasoningDisplay";
 
+// Extract tool invocations from message parts
+// AI SDK has two tool part types:
+// - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
+// - Dynamic tools: type is "dynamic-tool" with toolName as separate property
+const getToolInvocations = (
+  messageParts: Array<Record<string, unknown>> | undefined,
+): ToolInvocationInfo[] => {
+  if (!messageParts) return [];
+  return messageParts
+    .filter(part => {
+      const type = part.type;
+      if (typeof type !== "string") return false;
+      // Match static tools (type starts with "tool-") or dynamic tools
+      return type.startsWith("tool-") || type === "dynamic-tool";
+    })
+    .map(part => {
+      const partType = part.type as string;
+      // For dynamic tools, use the toolName property; for static tools, extract from type
+      // Static tool names: "tool-{name}" -> split on "-" and rejoin (handles names with hyphens)
+      const toolName =
+        partType === "dynamic-tool"
+          ? (part.toolName as string)
+          : partType.split("-").slice(1).join("-");
+      return {
+        toolCallId: (part.toolCallId as string) || "",
+        toolName: toolName || "",
+        state: part.state as ToolInvocationInfo["state"],
+        input: part.input,
+        output: part.output,
+      };
+    });
+};
+
+// Memoized message item component to prevent re-rendering all messages on every token
+interface MessageItemProps {
+  message: {
+    id: string;
+    role: string;
+    parts?: Array<Record<string, unknown>>;
+  };
+  onToolClick: (tool: ToolInvocationInfo) => void;
+}
+
+const MessageItem = React.memo(({ message, onToolClick }: MessageItemProps) => {
+  const muiTheme = useMuiTheme();
+
+  // Render message content from parts (no content property, only parts)
+  const renderMessageContent = (
+    messageParts: Array<{ type: string; text?: string }> | undefined,
+  ) => {
+    // Messages only have parts, no content property
+    if (messageParts && messageParts.length > 0) {
+      const textParts = messageParts.filter(p => p.type === "text" && p.text);
+      if (textParts.length > 0) {
+        return textParts.map((part, idx) => (
+          <ReactMarkdown
+            key={idx}
+            remarkPlugins={[remarkGfm]}
+            components={{
+              code({ className, children }) {
+                const match = /language-(\w+)/.exec(className || "");
+                const isInline = !match;
+                const codeString = String(children).replace(/\n$/, "");
+                return !isInline ? (
+                  <CodeBlock
+                    language={match ? match[1] : "text"}
+                    key={codeString}
+                    isGenerating={false}
+                  >
+                    {codeString}
+                  </CodeBlock>
+                ) : (
+                  <code className={className} style={{ fontSize: "0.8rem" }}>
+                    {children}
+                  </code>
+                );
+              },
+              table({ children }) {
+                return (
+                  <Box sx={{ overflow: "auto", my: 1 }}>
+                    <table
+                      style={{
+                        borderCollapse: "collapse",
+                        width: "100%",
+                        fontSize: "0.875rem",
+                        border: `1px solid ${muiTheme.palette.divider}`,
+                      }}
+                    >
+                      {children}
+                    </table>
+                  </Box>
+                );
+              },
+              th({ children }) {
+                return (
+                  <th
+                    style={{
+                      padding: "8px 12px",
+                      textAlign: "left",
+                      backgroundColor: muiTheme.palette.background.paper,
+                      borderBottom: `2px solid ${muiTheme.palette.divider}`,
+                      borderRight: `1px solid ${muiTheme.palette.divider}`,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {children}
+                  </th>
+                );
+              },
+              td({ children }) {
+                return (
+                  <td
+                    style={{
+                      padding: "8px 12px",
+                      borderBottom: `1px solid ${muiTheme.palette.divider}`,
+                      borderRight: `1px solid ${muiTheme.palette.divider}`,
+                      backgroundColor: muiTheme.palette.background.paper,
+                    }}
+                  >
+                    {children}
+                  </td>
+                );
+              },
+            }}
+          >
+            {part.text || ""}
+          </ReactMarkdown>
+        ));
+      }
+    }
+
+    return null;
+  };
+
+  if (message.role === "user") {
+    return (
+      <ListItem alignItems="flex-start" sx={{ p: 0 }}>
+        <Box sx={{ flex: 1 }}>
+          <Paper
+            variant="outlined"
+            sx={{
+              p: 1,
+              borderRadius: 1,
+              backgroundColor: "background.paper",
+              overflow: "hidden",
+            }}
+          >
+            <Box
+              sx={{
+                overflow: "auto",
+                maxWidth: "100%",
+              }}
+            >
+              <ListItemText
+                primary={
+                  // Extract text from parts
+                  (message.parts || [])
+                    .filter(
+                      (p): p is { type: "text"; text: string } =>
+                        p.type === "text" && "text" in p,
+                    )
+                    .map(p => p.text)
+                    .join("") || ""
+                }
+                primaryTypographyProps={{
+                  variant: "body2",
+                  color: "text.primary",
+                  sx: {
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    overflowWrap: "break-word",
+                  },
+                }}
+              />
+            </Box>
+          </Paper>
+        </Box>
+      </ListItem>
+    );
+  }
+
+  return (
+    <ListItem alignItems="flex-start" sx={{ p: 0 }}>
+      <Box
+        sx={{
+          flex: 1,
+          overflow: "hidden",
+          fontSize: "0.875rem",
+          "& pre": { margin: 0, overflow: "hidden" },
+        }}
+      >
+        {/* Display tool invocations */}
+        <ToolCallsDisplay
+          toolInvocations={getToolInvocations(
+            message.parts as Array<Record<string, unknown>>,
+          )}
+          onToolClick={onToolClick}
+        />
+        {/* Display reasoning */}
+        <ReasoningDisplay
+          messageParts={message.parts as Array<Record<string, unknown>>}
+        />
+        {/* Display message content */}
+        {renderMessageContent(
+          message.parts as Array<{ type: string; text?: string }>,
+        )}
+      </Box>
+    </ListItem>
+  );
+});
+
+MessageItem.displayName = "MessageItem";
+
 // Extended ConsoleModification with fields for console creation
 type ConsoleModificationPayload = ConsoleModification & {
   consoleId?: string;
@@ -366,10 +588,15 @@ interface ChatProps {
 }
 
 const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
-  const muiTheme = useMuiTheme();
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
-  const { consoleTabs, activeConsoleId } = useConsoleStore();
+
+  // Use direct selectors with shallow comparison to avoid re-renders when content changes
+  // Only re-render when tabs are added/removed, not when content changes
+  const consoleTabs: ConsoleTab[] = useAppStore(
+    useShallow(state => Object.values(state.consoles.tabs) as ConsoleTab[]),
+  );
+  const activeConsoleId = useAppStore(state => state.consoles.activeTabId);
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
@@ -417,56 +644,47 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   // Filter to only real console tabs
   const realConsoleTabs = useMemo(
     () =>
-      (consoleTabs || []).filter(
-        t => t?.kind === undefined || t?.kind === "console",
+      consoleTabs.filter(
+        (t: ConsoleTab) => t?.kind === undefined || t?.kind === "console",
       ),
     [consoleTabs],
   );
 
-  // Build consoles data for the backend
-  const consolesData = useMemo(() => {
-    const data: Array<{
-      id: string;
-      title: string;
-      content: string;
-      connectionId?: string;
-      databaseId?: string;
-      databaseName?: string;
-    }> = [];
+  // Build stable console IDs string for dependency tracking
+  // This only changes when tabs are added/removed, not when content changes
+  const consoleIds = useMemo(
+    () => realConsoleTabs.map((t: ConsoleTab) => t.id).join(","),
+    [realConsoleTabs],
+  );
 
-    for (const tab of realConsoleTabs) {
-      if (!tab?.id) continue;
-      const connectionId = tab?.connectionId;
-      const databaseId =
-        tab?.databaseId || tab?.metadata?.queryOptions?.databaseId;
-      const databaseName =
-        tab?.databaseName ||
-        tab?.metadata?.queryOptions?.databaseName ||
-        tab?.metadata?.queryOptions?.dbName;
-
-      data.push({
-        id: tab.id,
-        title: tab.title,
-        content: tab.content || "",
-        connectionId,
-        databaseId,
-        databaseName,
-      });
-    }
-    return data;
-  }, [realConsoleTabs]);
+  // Build consoles metadata for the backend (without content to avoid re-renders)
+  // Content is read on-demand in onToolCall via getState()
+  const consolesMetadata = useMemo(() => {
+    return realConsoleTabs.map((tab: ConsoleTab) => ({
+      id: tab.id,
+      title: tab.title,
+      connectionId: tab.connectionId,
+      databaseId:
+        tab.databaseId || (tab.metadata?.queryOptions as any)?.databaseId,
+      databaseName:
+        tab.databaseName ||
+        (tab.metadata?.queryOptions as any)?.databaseName ||
+        (tab.metadata?.queryOptions as any)?.dbName,
+    }));
+  }, [consoleIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Local input state
   const [input, setInput] = useState("");
 
   // Create transport with dynamic body based on current state
+  // Uses consolesMetadata (without content) to prevent transport recreation on content changes
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/agent/chat",
         body: {
           workspaceId: currentWorkspace?.id,
-          consoles: consolesData,
+          consoles: consolesMetadata,
           consoleId: activeConsoleId,
           modelId: selectedModelId,
           chatId, // Frontend-owned ID (AI SDK best practice)
@@ -474,7 +692,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       }),
     [
       currentWorkspace?.id,
-      consolesData,
+      consolesMetadata,
       activeConsoleId,
       selectedModelId,
       chatId,
@@ -783,8 +1001,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               // The API requires 'arguments' field which comes from 'input'
               if (msg.toolCalls && msg.toolCalls.length > 0) {
                 for (const tc of msg.toolCalls) {
-                  // Skip tool calls without a valid toolName
-                  if (!tc.toolName) continue;
+                  // Skip incomplete tool calls (no toolName or no result)
+                  // The API requires every tool_use to have a matching tool_result
+                  if (!tc.toolName || tc.result === undefined) continue;
 
                   parts.push({
                     type: `tool-${tc.toolName}`,
@@ -796,7 +1015,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                     state: "output-available",
                     // CRITICAL: input must never be undefined - OpenAI API requires 'arguments'
                     input: tc.input ?? {},
-                    output: tc.result ?? null,
+                    output: tc.result,
                   });
                 }
               }
@@ -883,137 +1102,16 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     }
   };
 
-  // Tool debug dialog handlers
-  const handleToolClick = (tool: ToolInvocationInfo) => {
+  // Tool debug dialog handlers - memoized for stable reference
+  const handleToolClick = useCallback((tool: ToolInvocationInfo) => {
     setSelectedTool(tool);
     setToolDialogOpen(true);
-  };
+  }, []);
 
-  const handleCloseToolDialog = () => {
+  const handleCloseToolDialog = useCallback(() => {
     setToolDialogOpen(false);
     setSelectedTool(null);
-  };
-
-  // Extract tool invocations from message parts
-  // AI SDK has two tool part types:
-  // - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
-  // - Dynamic tools: type is "dynamic-tool" with toolName as separate property
-  const getToolInvocations = (
-    messageParts: Array<Record<string, unknown>> | undefined,
-  ): ToolInvocationInfo[] => {
-    if (!messageParts) return [];
-    return messageParts
-      .filter(part => {
-        const type = part.type;
-        if (typeof type !== "string") return false;
-        // Match static tools (type starts with "tool-") or dynamic tools
-        return type.startsWith("tool-") || type === "dynamic-tool";
-      })
-      .map(part => {
-        const partType = part.type as string;
-        // For dynamic tools, use the toolName property; for static tools, extract from type
-        // Static tool names: "tool-{name}" -> split on "-" and rejoin (handles names with hyphens)
-        const toolName =
-          partType === "dynamic-tool"
-            ? (part.toolName as string)
-            : partType.split("-").slice(1).join("-");
-        return {
-          toolCallId: (part.toolCallId as string) || "",
-          toolName: toolName || "",
-          state: part.state as ToolInvocationInfo["state"],
-          input: part.input,
-          output: part.output,
-        };
-      });
-  };
-
-  // Render message content from parts (no content property, only parts)
-  const renderMessageContent = (
-    messageParts: Array<{ type: string; text?: string }> | undefined,
-  ) => {
-    // Messages only have parts, no content property
-    if (messageParts && messageParts.length > 0) {
-      const textParts = messageParts.filter(p => p.type === "text" && p.text);
-      if (textParts.length > 0) {
-        return textParts.map((part, idx) => (
-          <ReactMarkdown
-            key={idx}
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({ className, children }) {
-                const match = /language-(\w+)/.exec(className || "");
-                const isInline = !match;
-                const codeString = String(children).replace(/\n$/, "");
-                return !isInline ? (
-                  <CodeBlock
-                    language={match ? match[1] : "text"}
-                    key={codeString}
-                    isGenerating={false}
-                  >
-                    {codeString}
-                  </CodeBlock>
-                ) : (
-                  <code className={className} style={{ fontSize: "0.8rem" }}>
-                    {children}
-                  </code>
-                );
-              },
-              table({ children }) {
-                return (
-                  <Box sx={{ overflow: "auto", my: 1 }}>
-                    <table
-                      style={{
-                        borderCollapse: "collapse",
-                        width: "100%",
-                        fontSize: "0.875rem",
-                        border: `1px solid ${muiTheme.palette.divider}`,
-                      }}
-                    >
-                      {children}
-                    </table>
-                  </Box>
-                );
-              },
-              th({ children }) {
-                return (
-                  <th
-                    style={{
-                      padding: "8px 12px",
-                      textAlign: "left",
-                      backgroundColor: muiTheme.palette.background.paper,
-                      borderBottom: `2px solid ${muiTheme.palette.divider}`,
-                      borderRight: `1px solid ${muiTheme.palette.divider}`,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {children}
-                  </th>
-                );
-              },
-              td({ children }) {
-                return (
-                  <td
-                    style={{
-                      padding: "8px 12px",
-                      borderBottom: `1px solid ${muiTheme.palette.divider}`,
-                      borderRight: `1px solid ${muiTheme.palette.divider}`,
-                      backgroundColor: muiTheme.palette.background.paper,
-                    }}
-                  >
-                    {children}
-                  </td>
-                );
-              },
-            }}
-          >
-            {part.text || ""}
-          </ReactMarkdown>
-        ));
-      }
-    }
-
-    return null;
-  };
+  }, []);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -1137,77 +1235,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       <Box sx={{ flex: messages.length > 0 ? 1 : 0, overflow: "auto", p: 1 }}>
         <List dense>
           {messages.map(message => (
-            <ListItem key={message.id} alignItems="flex-start" sx={{ p: 0 }}>
-              {message.role === "user" ? (
-                <Box sx={{ flex: 1 }}>
-                  <Paper
-                    variant="outlined"
-                    sx={{
-                      p: 1,
-                      borderRadius: 1,
-                      backgroundColor: "background.paper",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        overflow: "auto",
-                        maxWidth: "100%",
-                      }}
-                    >
-                      <ListItemText
-                        primary={
-                          // Extract text from parts
-                          (message.parts || [])
-                            .filter(
-                              (p): p is { type: "text"; text: string } =>
-                                p.type === "text" && "text" in p,
-                            )
-                            .map(p => p.text)
-                            .join("") || ""
-                        }
-                        primaryTypographyProps={{
-                          variant: "body2",
-                          color: "text.primary",
-                          sx: {
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            overflowWrap: "break-word",
-                          },
-                        }}
-                      />
-                    </Box>
-                  </Paper>
-                </Box>
-              ) : (
-                <Box
-                  sx={{
-                    flex: 1,
-                    overflow: "hidden",
-                    fontSize: "0.875rem",
-                    "& pre": { margin: 0, overflow: "hidden" },
-                  }}
-                >
-                  {/* Display tool invocations */}
-                  <ToolCallsDisplay
-                    toolInvocations={getToolInvocations(
-                      message.parts as Array<Record<string, unknown>>,
-                    )}
-                    onToolClick={handleToolClick}
-                  />
-                  {/* Display reasoning */}
-                  <ReasoningDisplay
-                    messageParts={
-                      message.parts as Array<Record<string, unknown>>
-                    }
-                  />
-                  {/* Display message content */}
-                  {renderMessageContent(
-                    message.parts as Array<{ type: string; text?: string }>,
-                  )}
-                </Box>
-              )}
-            </ListItem>
+            <MessageItem
+              key={message.id}
+              message={message as MessageItemProps["message"]}
+              onToolClick={handleToolClick}
+            />
           ))}
 
           {/* Loading indicator */}
