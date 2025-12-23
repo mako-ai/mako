@@ -117,40 +117,56 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       setLoading(true);
       setError(null);
 
-      const [workspaceList, current] = await Promise.all([
-        workspaceClient.listWorkspaces(),
-        workspaceClient.getCurrentWorkspace(),
-      ]);
-
+      const workspaceList = await workspaceClient.listWorkspaces();
       setWorkspaces(workspaceList);
-      // Prefer persisted workspace if available and exists in list
-      const persistedId =
-        currentWorkspaceId || localStorage.getItem("activeWorkspaceId");
-      const persisted = persistedId
-        ? workspaceList.find(ws => ws.id === persistedId)
-        : undefined;
-      if (persisted) {
-        // If backend's current workspace differs from persisted, switch it
-        if (!current || current.id !== persisted.id) {
+
+      // Workspace selection logic:
+      // - 0 workspaces: set currentWorkspace = null (triggers onboarding)
+      // - 1 workspace: auto-select it
+      // - 2+ workspaces: check localStorage, if not found set null (triggers selector)
+
+      if (workspaceList.length === 0) {
+        // No workspaces - will trigger onboarding
+        setCurrentWorkspace(null);
+        localStorage.removeItem("activeWorkspaceId");
+      } else if (workspaceList.length === 1) {
+        // Exactly one workspace - auto-select it
+        const workspace = workspaceList[0];
+        setCurrentWorkspace(workspace);
+        setCurrentWorkspaceId(workspace.id);
+        localStorage.setItem("activeWorkspaceId", workspace.id);
+
+        // Sync with backend
+        try {
+          await workspaceClient.switchWorkspace(workspace.id);
+        } catch {
+          // Ignore switch errors for auto-selection
+        }
+      } else {
+        // Multiple workspaces - check for persisted selection
+        const persistedId =
+          currentWorkspaceId || localStorage.getItem("activeWorkspaceId");
+        const persisted = persistedId
+          ? workspaceList.find(ws => ws.id === persistedId)
+          : undefined;
+
+        if (persisted) {
+          // Valid persisted workspace - use it
+          setCurrentWorkspace(persisted);
+          setCurrentWorkspaceId(persisted.id);
+
+          // Sync with backend
           try {
             await workspaceClient.switchWorkspace(persisted.id);
-          } catch (switchErr) {
-            console.error(
-              "Failed to switch workspace to persisted id:",
-              switchErr,
-            );
+          } catch {
+            // Ignore switch errors
           }
+        } else {
+          // No valid persisted workspace - show selector
+          setCurrentWorkspace(null);
+          localStorage.removeItem("activeWorkspaceId");
         }
-        setCurrentWorkspace(persisted);
-        setCurrentWorkspaceId(persisted.id);
-      } else {
-        setCurrentWorkspace(current);
-        if (current) setCurrentWorkspaceId(current.id);
       }
-
-      // Store active workspace ID
-      const activeId = (persisted && persisted.id) || (current && current.id);
-      if (activeId) localStorage.setItem("activeWorkspaceId", activeId);
     } catch (err: any) {
       setError(err.message || "Failed to load workspaces");
       console.error("Load workspaces error:", err);
@@ -158,7 +174,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       setLoading(false);
       setInitialized(true);
     }
-  }, []);
+  }, [currentWorkspaceId, setCurrentWorkspaceId]);
 
   const createWorkspace = useCallback(
     async (data: CreateWorkspaceData): Promise<Workspace> => {
@@ -227,16 +243,24 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const workspace = workspaces.find(ws => ws.id === id);
         if (workspace) {
           setCurrentWorkspace(workspace);
+
           // Clear local storage to reset app state for new workspace
+          // But preserve the activeWorkspaceId by setting it AFTER clear
           localStorage.clear();
+          localStorage.setItem("activeWorkspaceId", id);
+          setCurrentWorkspaceId(id);
 
           // Also reset in-memory store state to prevent leaks if reload is delayed
           useAppStore.getState().reset();
           useFlowStore.getState().reset();
 
+          // Reload the page to refresh all data with new workspace context
+          window.location.reload();
+        } else {
+          // Workspace not in current list - this can happen during invite acceptance
+          // Just set the ID and let the reload fetch the workspace
           localStorage.setItem("activeWorkspaceId", id);
           setCurrentWorkspaceId(id);
-          // Reload the page to refresh all data with new workspace context
           window.location.reload();
         }
       } catch (err: any) {
@@ -349,16 +373,35 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       try {
         setError(null);
         const workspace = await workspaceClient.acceptInvite(token);
-        // Reload workspaces and switch to the accepted workspace
-        await loadWorkspaces();
-        await switchWorkspace(workspace.id);
+
+        // Set localStorage FIRST to ensure the invited workspace is selected after redirect
+        // This prevents the race condition where loadWorkspaces() picks a different workspace
+        localStorage.setItem("activeWorkspaceId", workspace.id);
+
+        // Add workspace to local list and set as current
+        setWorkspaces(prev => {
+          // Check if workspace already exists in list
+          if (prev.some(ws => ws.id === workspace.id)) {
+            return prev;
+          }
+          return [...prev, workspace];
+        });
+
+        // Switch to the accepted workspace on the backend
+        await workspaceClient.switchWorkspace(workspace.id);
+        setCurrentWorkspace(workspace);
+        setCurrentWorkspaceId(workspace.id);
+
+        // Don't reload here - let the calling component (AcceptInvite) handle the redirect
+        // after showing the success message
+
         return workspace;
       } catch (err: any) {
         setError(err.message || "Failed to accept invite");
         throw err;
       }
     },
-    [loadWorkspaces, switchWorkspace],
+    [setCurrentWorkspaceId],
   );
 
   const value: WorkspaceContextState = {

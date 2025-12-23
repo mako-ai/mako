@@ -204,25 +204,27 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 ? "Or Create a New Workspace"
                 : "Create Your Workspace"}
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
               {pendingInvites.length > 0
                 ? "Prefer to start fresh? Create your own workspace."
-                : "Enter a name for your new workspace to get started."}
+                : "Choose a name that represents your team, company, or project."}
             </Typography>
 
             <Stack spacing={2}>
               <TextField
                 fullWidth
                 label="Workspace Name"
-                placeholder="My Workspace"
+                placeholder="e.g., Acme Corp, Engineering Team, Personal"
                 value={workspaceName}
                 onChange={e => setWorkspaceName(e.target.value)}
-                disabled={state === "creating"}
+                disabled={state === "creating" || acceptingToken !== null}
                 onKeyDown={e => {
-                  if (e.key === "Enter") {
+                  if (e.key === "Enter" && workspaceName.trim()) {
                     handleCreateWorkspace();
                   }
                 }}
+                autoFocus={pendingInvites.length === 0}
+                helperText="You can always change this later in settings"
               />
               <Button
                 variant={pendingInvites.length > 0 ? "outlined" : "contained"}
@@ -236,7 +238,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   )
                 }
                 onClick={handleCreateWorkspace}
-                disabled={state === "creating" || acceptingToken !== null}
+                disabled={
+                  state === "creating" ||
+                  acceptingToken !== null ||
+                  !workspaceName.trim()
+                }
               >
                 {state === "creating" ? "Creating..." : "Create Workspace"}
               </Button>
