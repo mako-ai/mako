@@ -2262,9 +2262,19 @@ export class DatabaseConnectionService {
     database: IDatabaseConnection,
   ): Promise<PgClient> {
     const config = this.buildPostgreSQLClientConfig(database);
-    const client = new PgClient(config);
-    await client.connect();
-    return client;
+
+    // Use retry logic to handle transient connection failures and cold starts
+    return withRetry(
+      async () => {
+        const client = new PgClient(config);
+        await client.connect();
+        return client;
+      },
+      {
+        maxRetries: this.postgresMaxRetries,
+        baseDelayMs: this.postgresRetryBaseDelayMs,
+      },
+    );
   }
 
   private async executePostgreSQLQuery(
@@ -2306,6 +2316,7 @@ export class DatabaseConnectionService {
           {
             maxRetries: this.postgresMaxRetries,
             baseDelayMs: this.postgresRetryBaseDelayMs,
+            signal,
           },
         );
         isTemporaryConnection = true;
@@ -2693,6 +2704,15 @@ export class DatabaseConnectionService {
     // Generate unique query_id for this execution
     const queryId = executionId || crypto.randomUUID();
 
+    // Set up abort signal listener
+    // Store reference to remove it in finally block to prevent memory leaks
+    const abortHandler = () => {
+      abortController.abort();
+    };
+    if (signal) {
+      signal.addEventListener("abort", abortHandler);
+    }
+
     try {
       // Check if already cancelled
       if (signal?.aborted) {
@@ -2710,34 +2730,14 @@ export class DatabaseConnectionService {
         });
       }
 
-      // Set up abort signal listener
-      if (signal) {
-        signal.addEventListener("abort", () => {
-          abortController.abort();
-        });
-      }
-
-      // Use retry logic to handle cold starts and transient connection failures
-      const data = await withRetry(
+      // Use retry logic only for connection establishment (not query execution)
+      // to avoid re-executing queries with side effects (INSERT, UPDATE, etc.)
+      const client = await withRetry(
         async () => {
-          const client = createClient(config);
-          try {
-            // Execute query with query_id for cancellation support
-            const resultSet = await client.query({
-              query: query,
-              format: "JSONEachRow",
-              query_id: queryId,
-              clickhouse_settings: {
-                // Allow query to be cancelled
-                cancel_http_readonly_queries_on_client_close: 1,
-              },
-              abort_signal: abortController.signal,
-            });
-
-            return await resultSet.json();
-          } finally {
-            await client.close();
-          }
+          const newClient = createClient(config);
+          // Verify connection is working before returning
+          await newClient.ping();
+          return newClient;
         },
         {
           maxRetries: this.clickHouseMaxRetries,
@@ -2745,6 +2745,26 @@ export class DatabaseConnectionService {
           signal: abortController.signal,
         },
       );
+
+      let data: any[];
+      try {
+        // Execute query with query_id for cancellation support
+        // Note: Query execution is NOT retried to avoid duplicate side effects
+        const resultSet = await client.query({
+          query: query,
+          format: "JSONEachRow",
+          query_id: queryId,
+          clickhouse_settings: {
+            // Allow query to be cancelled
+            cancel_http_readonly_queries_on_client_close: 1,
+          },
+          abort_signal: abortController.signal,
+        });
+
+        data = await resultSet.json();
+      } finally {
+        await client.close();
+      }
 
       return {
         success: true,
@@ -2767,6 +2787,10 @@ export class DatabaseConnectionService {
           error instanceof Error ? error.message : "ClickHouse query failed",
       };
     } finally {
+      // Clean up abort listener to prevent memory leaks when signal is reused
+      if (signal) {
+        signal.removeEventListener("abort", abortHandler);
+      }
       if (executionId) {
         this.runningClickHouseQueries.delete(executionId);
       }
