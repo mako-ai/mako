@@ -170,6 +170,44 @@ export default function V1MinimalDark() {
         </div>
       </section>
 
+      {/* Pain Points */}
+      <section className="py-20 px-6 border-t border-zinc-800">
+        <div className="max-w-4xl mx-auto">
+          <h2 className="text-3xl font-bold text-center mb-4">
+            Tired of clunky SQL clients?
+          </h2>
+          <p className="text-zinc-400 text-center mb-12 max-w-2xl mx-auto">
+            We were too. That&apos;s why we built Mako.
+          </p>
+          <div className="grid md:grid-cols-2 gap-6">
+            <PainPointCard
+              pain="Slow startup times"
+              solution="Opens instantly in your browser. No Java, no Electron bloat."
+            />
+            <PainPointCard
+              pain="$199/year for DataGrip"
+              solution="Free forever. No credit card, no trial, no feature gates."
+            />
+            <PainPointCard
+              pain="Different clients for each database"
+              solution="One tool for PostgreSQL, MySQL, MongoDB, BigQuery, and more."
+            />
+            <PainPointCard
+              pain="Can't share queries with your team"
+              solution="Built-in collaboration. Shared connections, version-controlled snippets."
+            />
+            <PainPointCard
+              pain="Writing SQL from scratch"
+              solution="AI writes your queries. Just describe what you need."
+            />
+            <PainPointCard
+              pain="Need to install on every machine"
+              solution="Web-based. Access from anywhere, any device."
+            />
+          </div>
+        </div>
+      </section>
+
       {/* Features */}
       <section id="features" className="py-20 px-6 border-t border-zinc-800">
         <div className="max-w-6xl mx-auto">
@@ -212,6 +250,36 @@ export default function V1MinimalDark() {
               title="Multi-Database"
               description="PostgreSQL, MySQL, MongoDB, BigQuery, and more. One tool for all your databases."
             />
+            <FeatureCard
+              icon={<KeyboardIcon />}
+              title="Keyboard-First"
+              description="Cmd+K command palette, vim keybindings, and shortcuts for everything. Built for power users."
+            />
+            <FeatureCard
+              icon={<HistoryIcon />}
+              title="Query History"
+              description="Every query you run is saved and synced across devices. Never lose your work again."
+            />
+            <FeatureCard
+              icon={<LockIcon />}
+              title="Enterprise Security"
+              description="Credentials encrypted at rest, audit logs, data masking for PII, and SOC2 compliance."
+            />
+            <FeatureCard
+              icon={<ChartIcon />}
+              title="Visual Results"
+              description="Beautiful charts and graphs from your query results. Export to CSV, JSON, or shareable links."
+            />
+            <FeatureCard
+              icon={<TerminalIcon />}
+              title="SSH Tunneling"
+              description="Connect to databases behind firewalls with one-click SSH tunnel setup. No terminal needed."
+            />
+            <FeatureCard
+              icon={<ClockIcon />}
+              title="Query Scheduling"
+              description="Schedule recurring queries and get results via Slack, email, or webhook. Set it and forget it."
+            />
           </div>
         </div>
       </section>
@@ -241,6 +309,12 @@ export default function V1MinimalDark() {
                 <ComparisonRow label="One-Click APIs" mako={true} datagrip={false} dbeaver={false} postico={false} />
                 <ComparisonRow label="Free & Open Source" mako={true} datagrip={false} dbeaver="partial" postico={false} />
                 <ComparisonRow label="No Installation" mako={true} datagrip={false} dbeaver={false} postico={false} />
+                <ComparisonRow label="Query History Sync" mako={true} datagrip={false} dbeaver={false} postico={false} />
+                <ComparisonRow label="Instant Startup" mako={true} datagrip={false} dbeaver={false} postico={true} />
+                <ComparisonRow label="Visual EXPLAIN Plans" mako={true} datagrip={true} dbeaver="partial" postico={false} />
+                <ComparisonRow label="Query Scheduling" mako={true} datagrip={false} dbeaver={false} postico={false} />
+                <ComparisonRow label="Data Masking (PII)" mako={true} datagrip={false} dbeaver={false} postico={false} />
+                <ComparisonRow label="Audit Logs" mako={true} datagrip={false} dbeaver={false} postico={false} />
               </tbody>
             </table>
           </div>
@@ -402,5 +476,77 @@ function DatabaseIcon() {
       <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
     </svg>
+  );
+}
+
+function KeyboardIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M8 16h8" />
+    </svg>
+  );
+}
+
+function HistoryIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0110 0v4" />
+    </svg>
+  );
+}
+
+function ChartIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <line x1="18" y1="20" x2="18" y2="10" />
+      <line x1="12" y1="20" x2="12" y2="4" />
+      <line x1="6" y1="20" x2="6" y2="14" />
+    </svg>
+  );
+}
+
+function TerminalIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function PainPointCard({ pain, solution }: { pain: string; solution: string }) {
+  return (
+    <div className="p-5 rounded-xl border border-zinc-800 bg-zinc-900/30">
+      <div className="flex items-start gap-3">
+        <span className="text-red-400 mt-0.5">✗</span>
+        <div>
+          <div className="text-zinc-400 line-through mb-2">{pain}</div>
+          <div className="flex items-start gap-2">
+            <span className="text-emerald-400 mt-0.5">✓</span>
+            <span className="text-white">{solution}</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

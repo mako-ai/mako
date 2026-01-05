@@ -193,6 +193,124 @@ export default function V5BentoGrid() {
                 <span className="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-sm">$0/month</span>
               </div>
             </div>
+
+            {/* Blazing Fast Card - Large */}
+            <div className="lg:col-span-2 p-8 rounded-3xl bg-gradient-to-br from-orange-500/20 via-neutral-900 to-neutral-900 border border-neutral-800">
+              <div className="grid md:grid-cols-2 gap-8 h-full">
+                <div>
+                  <div className="text-4xl mb-4">🚀</div>
+                  <h3 className="text-2xl font-bold mb-2">Blazing Fast</h3>
+                  <p className="text-neutral-400">
+                    No Java. No Electron bloat. Opens instantly and runs silky smooth.
+                    Because your time matters more than waiting for software to load.
+                  </p>
+                </div>
+                <div className="flex flex-col justify-center gap-4">
+                  <div className="flex items-center gap-4">
+                    <span className="text-2xl font-bold text-orange-400">&lt;1s</span>
+                    <span className="text-neutral-500">startup time</span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className="text-2xl font-bold text-orange-400">60fps</span>
+                    <span className="text-neutral-500">smooth scrolling</span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className="text-2xl font-bold text-orange-400">0MB</span>
+                    <span className="text-neutral-500">disk space</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Keyboard First */}
+            <div className="p-8 rounded-3xl bg-neutral-900 border border-neutral-800">
+              <div className="text-4xl mb-4">⌨️</div>
+              <h3 className="text-xl font-bold mb-2">Keyboard-First</h3>
+              <p className="text-neutral-400 text-sm">
+                Cmd+K command palette, vim bindings, shortcuts for everything.
+                Built for developers who live in the keyboard.
+              </p>
+              <div className="mt-6 flex gap-2">
+                <kbd className="px-2 py-1 bg-neutral-800 rounded text-xs">⌘K</kbd>
+                <kbd className="px-2 py-1 bg-neutral-800 rounded text-xs">⌘↵</kbd>
+                <kbd className="px-2 py-1 bg-neutral-800 rounded text-xs">⌘S</kbd>
+              </div>
+            </div>
+
+            {/* Query History */}
+            <div className="p-8 rounded-3xl bg-neutral-900 border border-neutral-800">
+              <div className="text-4xl mb-4">📜</div>
+              <h3 className="text-xl font-bold mb-2">Query History</h3>
+              <p className="text-neutral-400 text-sm">
+                Every query saved and synced across devices.
+                Full-text search your history. Never lose your work again.
+              </p>
+            </div>
+
+            {/* Security Card */}
+            <div className="p-8 rounded-3xl bg-neutral-900 border border-neutral-800">
+              <div className="text-4xl mb-4">🔒</div>
+              <h3 className="text-xl font-bold mb-2">Enterprise Security</h3>
+              <p className="text-neutral-400 text-sm">
+                Credentials encrypted at rest. Audit logs. Data masking for PII.
+                SOC2 compliant or self-host for full control.
+              </p>
+            </div>
+
+            {/* SSH Tunneling - Large */}
+            <div className="lg:col-span-2 p-8 rounded-3xl bg-gradient-to-br from-cyan-500/20 via-neutral-900 to-neutral-900 border border-neutral-800">
+              <div className="grid md:grid-cols-2 gap-8 h-full">
+                <div>
+                  <div className="text-4xl mb-4">🔐</div>
+                  <h3 className="text-2xl font-bold mb-2">SSH Tunneling Made Easy</h3>
+                  <p className="text-neutral-400">
+                    Connect to databases behind firewalls with one-click setup.
+                    No terminal commands, no config files, no headaches.
+                  </p>
+                </div>
+                <div className="p-4 rounded-xl bg-neutral-900/80 font-mono text-sm flex flex-col justify-center">
+                  <div className="text-neutral-500 mb-2"># Before (terminal hell)</div>
+                  <div className="text-red-400 line-through text-xs mb-4">ssh -L 5432:db:5432 bastion...</div>
+                  <div className="text-neutral-500 mb-2"># Now (one click)</div>
+                  <div className="text-cyan-400">✓ SSH tunnel connected</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Query Scheduling */}
+            <div className="p-8 rounded-3xl bg-neutral-900 border border-neutral-800">
+              <div className="text-4xl mb-4">⏰</div>
+              <h3 className="text-xl font-bold mb-2">Query Scheduling</h3>
+              <p className="text-neutral-400 text-sm">
+                Schedule recurring queries. Get results via Slack, email, or webhook.
+                Set it and forget it.
+              </p>
+            </div>
+
+            {/* Visual EXPLAIN */}
+            <div className="p-8 rounded-3xl bg-neutral-900 border border-neutral-800">
+              <div className="text-4xl mb-4">📊</div>
+              <h3 className="text-xl font-bold mb-2">Visual EXPLAIN</h3>
+              <p className="text-neutral-400 text-sm">
+                See exactly how your queries run. Identify slow operations.
+                Optimize performance with visual execution plans.
+              </p>
+            </div>
+
+            {/* Export Options */}
+            <div className="p-8 rounded-3xl bg-neutral-900 border border-neutral-800">
+              <div className="text-4xl mb-4">📤</div>
+              <h3 className="text-xl font-bold mb-2">Export Anywhere</h3>
+              <p className="text-neutral-400 text-sm">
+                Export to CSV, JSON, Excel. Create shareable links.
+                Build charts from your results.
+              </p>
+              <div className="mt-6 flex gap-2">
+                <span className="px-2 py-1 bg-neutral-800 rounded text-xs text-neutral-400">.csv</span>
+                <span className="px-2 py-1 bg-neutral-800 rounded text-xs text-neutral-400">.json</span>
+                <span className="px-2 py-1 bg-neutral-800 rounded text-xs text-neutral-400">.xlsx</span>
+              </div>
+            </div>
           </div>
         </div>
       </section>

@@ -107,6 +107,42 @@ export default function V3TerminalAesthetic() {
               description="MIT licensed. Self-host it, fork it, contribute to it. Your data, your rules."
               code="git clone https://github.com/mako-ai/mono && pnpm dev"
             />
+            <FeatureBlock
+              flag="--fast"
+              title="Blazing Fast Performance"
+              description="No Java, no Electron bloat. Opens instantly. Because waiting for software to load is so 2010."
+              code="time mako open  # 0.2s — try that with DataGrip"
+            />
+            <FeatureBlock
+              flag="--history"
+              title="Query History Sync"
+              description="Every query saved and synced across all your devices. Full-text search. Never lose work."
+              code="mako history search 'revenue' --since '30 days ago'"
+            />
+            <FeatureBlock
+              flag="--ssh"
+              title="One-Click SSH Tunnels"
+              description="Connect to databases behind firewalls without terminal wizardry. Just works."
+              code="mako tunnel --via bastion.example.com --to db.internal:5432"
+            />
+            <FeatureBlock
+              flag="--schedule"
+              title="Scheduled Queries"
+              description="Run queries on a schedule. Get results via Slack, email, or webhook."
+              code="mako schedule ./daily-report.sql --cron '0 9 * * *' --slack #reports"
+            />
+            <FeatureBlock
+              flag="--security"
+              title="Enterprise Security"
+              description="Encrypted credentials, audit logs, data masking for PII, role-based access."
+              code="mako config --encrypt-credentials --audit-log --mask-pii"
+            />
+            <FeatureBlock
+              flag="--explain"
+              title="Visual EXPLAIN Plans"
+              description="See how your queries execute. Find bottlenecks. Optimize like a pro."
+              code="mako explain ./slow-query.sql --visual"
+            />
           </div>
         </div>
       </section>
@@ -138,6 +174,12 @@ export default function V3TerminalAesthetic() {
                 <CompareRow feature="Free" mako="✓" others={["✗", "~", "✗"]} />
                 <CompareRow feature="Open source" mako="✓" others={["✗", "~", "✗"]} />
                 <CompareRow feature="Cross-platform" mako="✓" others={["✓", "✓", "✗"]} />
+                <CompareRow feature="Instant startup" mako="✓" others={["✗", "✗", "✓"]} />
+                <CompareRow feature="Query history sync" mako="✓" others={["✗", "✗", "✗"]} />
+                <CompareRow feature="SSH tunneling" mako="✓" others={["✓", "✓", "✓"]} />
+                <CompareRow feature="Query scheduling" mako="✓" others={["✗", "✗", "✗"]} />
+                <CompareRow feature="Data masking" mako="✓" others={["✗", "✗", "✗"]} />
+                <CompareRow feature="Audit logs" mako="✓" others={["✗", "✗", "✗"]} />
               </tbody>
             </table>
           </div>

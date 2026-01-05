@@ -142,7 +142,7 @@ export default function DesignsIndex() {
 
         {/* Value Props */}
         <section className="mt-8 p-8 rounded-2xl border border-zinc-800 bg-zinc-900/30">
-          <h2 className="text-2xl font-bold mb-6">Core Value Propositions</h2>
+          <h2 className="text-2xl font-bold mb-6">Core Value Propositions (12 total)</h2>
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
             <div>
               <div className="text-2xl mb-2">✨</div>
@@ -163,6 +163,46 @@ export default function DesignsIndex() {
               <div className="text-2xl mb-2">💚</div>
               <h3 className="font-semibold mb-1">Free &amp; Open Source</h3>
               <p className="text-sm text-zinc-400">MIT licensed, self-hostable, no feature gates</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">🚀</div>
+              <h3 className="font-semibold mb-1">Blazing Fast</h3>
+              <p className="text-sm text-zinc-400">No Java/Electron bloat. Opens instantly, runs smooth</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">⌨️</div>
+              <h3 className="font-semibold mb-1">Keyboard-First</h3>
+              <p className="text-sm text-zinc-400">Cmd+K palette, vim bindings, shortcuts for everything</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">📜</div>
+              <h3 className="font-semibold mb-1">Query History Sync</h3>
+              <p className="text-sm text-zinc-400">Every query saved and synced. Full-text search</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">🔒</div>
+              <h3 className="font-semibold mb-1">Enterprise Security</h3>
+              <p className="text-sm text-zinc-400">Encrypted credentials, audit logs, PII masking</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">🔐</div>
+              <h3 className="font-semibold mb-1">SSH Tunneling</h3>
+              <p className="text-sm text-zinc-400">One-click tunnels to databases behind firewalls</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">⏰</div>
+              <h3 className="font-semibold mb-1">Query Scheduling</h3>
+              <p className="text-sm text-zinc-400">Recurring queries with Slack/email/webhook delivery</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">📊</div>
+              <h3 className="font-semibold mb-1">Visual EXPLAIN</h3>
+              <p className="text-sm text-zinc-400">See query execution plans, find bottlenecks</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-2">📤</div>
+              <h3 className="font-semibold mb-1">Export Anywhere</h3>
+              <p className="text-sm text-zinc-400">CSV, JSON, Excel, shareable links, charts</p>
             </div>
           </div>
         </section>

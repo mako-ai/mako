@@ -176,6 +176,82 @@ export default function V6ComparisonTable() {
                   others={[false, false, false, false]}
                 />
 
+                <ComparisonSection title="Developer Experience" />
+                <ComparisonRow
+                  feature="Instant Startup"
+                  mako={true}
+                  others={[false, false, true, true]}
+                />
+                <ComparisonRow
+                  feature="Keyboard Shortcuts"
+                  mako={true}
+                  others={[true, true, true, true]}
+                />
+                <ComparisonRow
+                  feature="Vim Keybindings"
+                  mako={true}
+                  others={[true, "partial", false, false]}
+                />
+                <ComparisonRow
+                  feature="Cmd+K Palette"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+                <ComparisonRow
+                  feature="Query History Sync"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+                <ComparisonRow
+                  feature="Monaco Editor"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+
+                <ComparisonSection title="Security & Compliance" />
+                <ComparisonRow
+                  feature="Encrypted Credentials"
+                  mako={true}
+                  others={[true, true, true, true]}
+                />
+                <ComparisonRow
+                  feature="SSH Tunneling"
+                  mako={true}
+                  others={[true, true, true, true]}
+                />
+                <ComparisonRow
+                  feature="Data Masking (PII)"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+                <ComparisonRow
+                  feature="Audit Logs"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+                <ComparisonRow
+                  feature="Role-Based Access"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+
+                <ComparisonSection title="Automation" />
+                <ComparisonRow
+                  feature="Query Scheduling"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+                <ComparisonRow
+                  feature="Slack/Email Alerts"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+                <ComparisonRow
+                  feature="Webhook Triggers"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+
                 <ComparisonSection title="Platform" />
                 <ComparisonRow
                   feature="macOS"
@@ -194,6 +270,11 @@ export default function V6ComparisonTable() {
                 />
                 <ComparisonRow
                   feature="Browser"
+                  mako={true}
+                  others={[false, false, false, false]}
+                />
+                <ComparisonRow
+                  feature="Mobile (iPad)"
                   mako={true}
                   others={[false, false, false, false]}
                 />

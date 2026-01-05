@@ -132,6 +132,42 @@ export default function V2GradientHero() {
               description="MIT licensed. Self-host it, fork it, customize it. Your data stays yours."
               icon="💚"
             />
+            <FeatureCard
+              gradient="from-yellow-500/20 to-orange-500/20"
+              title="Blazing Fast"
+              description="No Java, no Electron bloat. Opens instantly and runs smooth. Your queries, not your patience."
+              icon="🚀"
+            />
+            <FeatureCard
+              gradient="from-indigo-500/20 to-purple-500/20"
+              title="Query History Sync"
+              description="Every query saved and synced across devices. Search your history, never lose your work."
+              icon="📜"
+            />
+            <FeatureCard
+              gradient="from-rose-500/20 to-pink-500/20"
+              title="Visual EXPLAIN Plans"
+              description="See exactly how your queries run. Optimize performance with visual execution plans."
+              icon="📊"
+            />
+            <FeatureCard
+              gradient="from-teal-500/20 to-cyan-500/20"
+              title="Keyboard-First Design"
+              description="Cmd+K palette, vim bindings, shortcuts for everything. Built for developers who live in the keyboard."
+              icon="⌨️"
+            />
+            <FeatureCard
+              gradient="from-red-500/20 to-orange-500/20"
+              title="Enterprise Security"
+              description="Encrypted credentials, audit logs, data masking for PII. Self-host for complete control."
+              icon="🔒"
+            />
+            <FeatureCard
+              gradient="from-violet-500/20 to-indigo-500/20"
+              title="Query Scheduling"
+              description="Schedule recurring queries. Get results via Slack, email, or webhooks automatically."
+              icon="⏰"
+            />
           </div>
         </div>
       </section>
