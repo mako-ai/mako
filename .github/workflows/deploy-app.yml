@@ -23,22 +23,24 @@ permissions:
   pull-requests: write
 
 jobs:
-  # Detect if migrations have changed (for PR previews)
+  # Detect if app or migrations have changed (for PR previews)
   detect-changes:
-    name: Detect migration changes
+    name: Detect changes
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     outputs:
       migrations_changed: ${{ steps.check.outputs.migrations_changed }}
+      app_changed: ${{ steps.check.outputs.app_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check for migration changes
+      - name: Check for changes
         id: check
         run: |
+          # Check for migration changes
           MIGRATION_CHANGES=$(git diff origin/master...HEAD --name-only -- 'api/src/migrations/*.ts' | wc -l | tr -d ' ')
           echo "Found $MIGRATION_CHANGES migration file(s) changed"
           if [ "$MIGRATION_CHANGES" -gt 0 ]; then
@@ -47,11 +49,29 @@ jobs:
             echo "migrations_changed=false" >> $GITHUB_OUTPUT
           fi
 
+          # Check for app-related changes (api, app, docker, dependencies, workflow)
+          APP_CHANGES=$(git diff origin/master...HEAD --name-only -- \
+            'api/**' \
+            'app/**' \
+            'Dockerfile' \
+            'package.json' \
+            'pnpm-lock.yaml' \
+            'pnpm-workspace.yaml' \
+            'tsconfig.json' \
+            '.github/workflows/deploy-app.yml' \
+            | wc -l | tr -d ' ')
+          echo "Found $APP_CHANGES app-related file(s) changed"
+          if [ "$APP_CHANGES" -gt 0 ]; then
+            echo "app_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "app_changed=false" >> $GITHUB_OUTPUT
+          fi
+
   # PR Preview Deployment
   deploy-preview:
     name: Deploy PR Preview
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.app_changed == 'true'
     needs: detect-changes
     environment:
       name: pr-${{ github.event.pull_request.number }}
@@ -276,9 +296,62 @@ jobs:
               issue_number: prNumber,
             });
 
-            const botComment = comments.find(comment => 
-              comment.user.type === 'Bot' && 
-              comment.body.includes('Preview Deployment Ready')
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              (comment.body.includes('Preview Deployment Ready') || comment.body.includes('Preview Deployment Skipped'))
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: body,
+              });
+            }
+
+  # Skip notification when no app changes detected
+  skip-preview:
+    name: Skip PR Preview (No Changes)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.app_changed == 'false'
+    needs: detect-changes
+    steps:
+      - name: Comment on PR about skipped deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            const body = `## ⏭️ Preview Deployment Skipped
+
+            No changes detected in app-related files. Deployment not needed.
+
+            **Files that trigger deployment:**
+            - \`api/**\` - Backend code
+            - \`app/**\` - Frontend code
+            - \`Dockerfile\` - Container definition
+            - \`package.json\`, \`pnpm-lock.yaml\` - Dependencies
+            - \`.github/workflows/deploy-app.yml\` - Workflow config
+            `;
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              (comment.body.includes('Preview Deployment Ready') || comment.body.includes('Preview Deployment Skipped'))
             );
 
             if (botComment) {
