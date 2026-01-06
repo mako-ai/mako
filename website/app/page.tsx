@@ -113,7 +113,7 @@ export default function Home() {
               NEW
             </span>
             <span className="text-zinc-600 dark:text-zinc-300">
-              AI Agents for Database Queries
+              AI for database queries
             </span>
           </div>
 
@@ -125,9 +125,9 @@ export default function Home() {
           </h1>
 
           <p className="text-xl md:text-2xl text-zinc-500 dark:text-zinc-400 max-w-3xl mx-auto mb-12 leading-relaxed">
-            Mako is an open-source SQL client with AI that writes your queries,
-            team collaboration, and instant API generation. No installation
-            required.
+            Mako is an AI-native SQL client that generates queries from your
+            schema, helps teams collaborate, and turns queries into APIs—right
+            in your browser.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
@@ -195,9 +195,8 @@ export default function Home() {
                 <div className="text-4xl mb-4">✨</div>
                 <h3 className="text-2xl font-bold mb-2">AI Query Generation</h3>
                 <p className="text-zinc-500 dark:text-zinc-400 mb-6 flex-grow">
-                  Describe what you need in plain English. Our AI understands
-                  your database schema and writes optimized queries that
-                  actually work.
+                  Ask in plain English. Mako uses your schema to generate a
+                  query you can run and iterate on.
                 </p>
                 <div className="p-4 rounded-xl bg-white/50 dark:bg-zinc-900/80 font-mono text-sm">
                   <div className="text-zinc-400 dark:text-zinc-500 mb-2">
@@ -258,8 +257,8 @@ export default function Home() {
               <div className="text-4xl mb-4">☁️</div>
               <h3 className="text-xl font-bold mb-2">Nothing to Install</h3>
               <p className="text-zinc-500 dark:text-zinc-400 text-sm">
-                Works entirely in your browser. No downloads, no config, no
-                updates. Just open and query.
+                Runs in your browser. No downloads or setup. Open it and start
+                querying.
               </p>
             </div>
 
@@ -268,7 +267,7 @@ export default function Home() {
               <div className="text-4xl mb-4">🆓</div>
               <h3 className="text-xl font-bold mb-2">Free Forever</h3>
               <p className="text-zinc-500 dark:text-zinc-400 text-sm">
-                No credit card. No trial period. No feature gates. Just free.
+                Free to use. No credit card.
               </p>
               <div className="mt-6">
                 <span className="px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-sm">
@@ -324,9 +323,7 @@ export default function Home() {
                   <div className="text-4xl mb-4">🚀</div>
                   <h3 className="text-2xl font-bold mb-2">Blazing Fast</h3>
                   <p className="text-zinc-500 dark:text-zinc-400">
-                    No Java. No Electron bloat. Opens instantly and runs silky
-                    smooth. Because your time matters more than waiting for
-                    software to load.
+                    Fast to open, smooth to use—built to stay lightweight.
                   </p>
                 </div>
                 <div className="flex flex-col justify-center gap-4">
@@ -395,7 +392,7 @@ export default function Home() {
               <h3 className="text-xl font-bold mb-2">Enterprise Security</h3>
               <p className="text-zinc-500 dark:text-zinc-400 text-sm">
                 Credentials encrypted at rest. Audit logs. Data masking for PII.
-                SOC2 compliant or self-host for full control.
+                Self-host for full control.
               </p>
             </div>
 
@@ -487,7 +484,7 @@ export default function Home() {
       <section className="relative z-10 py-24 px-6 border-t border-zinc-200 dark:border-white/10">
         <div className="max-w-4xl mx-auto">
           <h2 className="text-4xl font-bold text-center mb-4">
-            Why developers choose Mako
+            How Mako compares
           </h2>
           <p className="text-xl text-zinc-500 dark:text-zinc-400 text-center mb-16">
             See how we compare to the alternatives.
@@ -610,8 +607,7 @@ export default function Home() {
             What the galaxy is saying
           </h2>
           <p className="text-xl text-zinc-500 dark:text-zinc-400 text-center mb-12">
-            Don&apos;t just take our word for it. *These are totally real
-            testimonials.*
+            Fun quotes for now—real customer stories coming soon.
           </p>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
