@@ -54,6 +54,7 @@ async function listMongoConnectionsImpl(workspaceId: string) {
       databaseName: (db as unknown as { connection: { database?: string } })
         .connection?.database,
       type: db.type,
+      summary: db.summary || undefined,
       active: true,
       displayName:
         (db as unknown as { connection: { database?: string } }).connection
@@ -88,9 +89,20 @@ async function listMongoDatabasesImpl(
   const adminDb = connection.db("admin");
   const result = await adminDb.admin().listDatabases();
 
+  // Build a map of database descriptions from the connection
+  const descriptionMap = new Map<string, string>();
+  if (database.databases) {
+    for (const db of database.databases) {
+      if (db.description) {
+        descriptionMap.set(db.name, db.description);
+      }
+    }
+  }
+
   return result.databases.map(
     (db: { name: string; sizeOnDisk?: number; empty?: boolean }) => ({
       name: db.name,
+      description: descriptionMap.get(db.name) || undefined,
       sizeOnDisk: db.sizeOnDisk,
       empty: db.empty,
     }),

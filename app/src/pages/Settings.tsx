@@ -12,8 +12,14 @@ import {
   InputLabel,
   Alert,
   Snackbar,
+  CircularProgress,
 } from "@mui/material";
-import { Save as SaveIcon, Refresh as RefreshIcon } from "@mui/icons-material";
+import {
+  Save as SaveIcon,
+  Refresh as RefreshIcon,
+  DeleteForever as ResetIcon,
+  Storage as IndexIcon,
+} from "@mui/icons-material";
 import ThemeSelector from "../components/ThemeSelector";
 import { useCustomPrompt } from "../hooks/useCustomPrompt";
 import { WorkspaceMembers } from "../components/WorkspaceMembers";
@@ -39,6 +45,13 @@ function Settings() {
   const [customPromptModified, setCustomPromptModified] = useState(false);
   const [showSnackbar, setShowSnackbar] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error">(
+    "success",
+  );
+
+  // Memory management state
+  const [memoryResetLoading, setMemoryResetLoading] = useState(false);
+  const [indexingLoading, setIndexingLoading] = useState(false);
 
   // Update local state when custom prompt content changes
   useEffect(() => {
@@ -95,6 +108,95 @@ function Settings() {
       }
     } catch (error) {
       console.error("Error resetting custom prompt:", error);
+    }
+  };
+
+  const handleResetMemory = async () => {
+    if (!currentWorkspace?.id) {
+      setSnackbarMessage("No workspace selected");
+      setSnackbarSeverity("error");
+      setShowSnackbar(true);
+      return;
+    }
+
+    // Confirm before resetting
+    if (
+      !window.confirm(
+        "Are you sure you want to reset all AI memory for this workspace? This will delete all learned descriptions and rules for all databases. This action cannot be undone.",
+      )
+    ) {
+      return;
+    }
+
+    setMemoryResetLoading(true);
+    try {
+      const response = await fetch(
+        `/api/workspaces/${currentWorkspace.id}/memory/reset`,
+        {
+          method: "DELETE",
+          credentials: "include",
+        },
+      );
+
+      const data = await response.json();
+
+      if (data.success) {
+        setSnackbarMessage(
+          data.message || "All AI memory has been reset for this workspace.",
+        );
+        setSnackbarSeverity("success");
+      } else {
+        setSnackbarMessage(data.error || "Failed to reset memory");
+        setSnackbarSeverity("error");
+      }
+      setShowSnackbar(true);
+    } catch (error) {
+      console.error("Error resetting memory:", error);
+      setSnackbarMessage("Failed to reset memory");
+      setSnackbarSeverity("error");
+      setShowSnackbar(true);
+    } finally {
+      setMemoryResetLoading(false);
+    }
+  };
+
+  const handleIndexDatabases = async () => {
+    if (!currentWorkspace?.id) {
+      setSnackbarMessage("No workspace selected");
+      setSnackbarSeverity("error");
+      setShowSnackbar(true);
+      return;
+    }
+
+    setIndexingLoading(true);
+    try {
+      const response = await fetch(
+        `/api/workspaces/${currentWorkspace.id}/memory/index`,
+        {
+          method: "POST",
+          credentials: "include",
+        },
+      );
+
+      const data = await response.json();
+
+      if (data.success) {
+        setSnackbarMessage(
+          "Database indexing started! The AI will inspect your schemas and generate descriptions.",
+        );
+        setSnackbarSeverity("success");
+      } else {
+        setSnackbarMessage(data.error || "Failed to start database indexing");
+        setSnackbarSeverity("error");
+      }
+      setShowSnackbar(true);
+    } catch (error) {
+      console.error("Error starting database indexing:", error);
+      setSnackbarMessage("Failed to start database indexing");
+      setSnackbarSeverity("error");
+      setShowSnackbar(true);
+    } finally {
+      setIndexingLoading(false);
     }
   };
 
@@ -190,6 +292,79 @@ function Settings() {
               Reset to Default
             </Button>
           </Box>
+        </Box>
+
+        {/* AI Memory & Learning */}
+        <Box sx={{ mb: 4 }}>
+          <Typography
+            variant="subtitle1"
+            gutterBottom
+            sx={{ fontWeight: 600, mb: 1 }}
+          >
+            Database Descriptions
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Generate descriptions for your databases to help the AI understand
+            your data and provide better query assistance.
+          </Typography>
+
+          <Box
+            sx={{
+              p: 2,
+              bgcolor: "action.hover",
+              borderRadius: 1,
+              mb: 2,
+            }}
+          >
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              <strong>Index Databases:</strong> Inspects your database schemas
+              (tables, columns, sample data) to generate descriptions for all
+              connections in this workspace.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              <strong>Reset:</strong> Clears all descriptions for all databases
+              in this workspace.
+            </Typography>
+          </Box>
+
+          {currentWorkspace?.role === "owner" ||
+          currentWorkspace?.role === "admin" ? (
+            <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+              <Button
+                variant="outlined"
+                startIcon={
+                  indexingLoading ? (
+                    <CircularProgress size={16} />
+                  ) : (
+                    <IndexIcon />
+                  )
+                }
+                onClick={handleIndexDatabases}
+                disabled={memoryResetLoading || indexingLoading}
+              >
+                {indexingLoading ? "Indexing..." : "Index Databases"}
+              </Button>
+              <Button
+                variant="outlined"
+                color="error"
+                startIcon={
+                  memoryResetLoading ? (
+                    <CircularProgress size={16} />
+                  ) : (
+                    <ResetIcon />
+                  )
+                }
+                onClick={handleResetMemory}
+                disabled={memoryResetLoading || indexingLoading}
+              >
+                {memoryResetLoading ? "Resetting..." : "Reset All Descriptions"}
+              </Button>
+            </Box>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              Only workspace owners and admins can manage descriptions.
+            </Typography>
+          )}
         </Box>
 
         {/* Workspace Members */}
@@ -325,7 +500,10 @@ function Settings() {
         autoHideDuration={6000}
         onClose={() => setShowSnackbar(false)}
       >
-        <Alert onClose={() => setShowSnackbar(false)} severity="success">
+        <Alert
+          onClose={() => setShowSnackbar(false)}
+          severity={snackbarSeverity}
+        >
           {snackbarMessage}
         </Alert>
       </Snackbar>

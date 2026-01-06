@@ -145,6 +145,14 @@ export interface IWorkspaceInvite extends Document {
 }
 
 /**
+ * Per-database description within a connection
+ */
+export interface IDatabaseDescription {
+  name: string; // database name (e.g., "analytics", "production")
+  description?: string; // AI-generated or user-provided description
+}
+
+/**
  * DatabaseConnection model interface
  * Represents a saved connection to a database server (may contain multiple databases)
  */
@@ -193,6 +201,10 @@ export interface IDatabaseConnection extends Document {
   createdAt: Date;
   updatedAt: Date;
   lastConnectedAt?: Date;
+
+  // AI-generated descriptions
+  summary?: string; // High-level connection summary
+  databases?: IDatabaseDescription[]; // Per-database descriptions
 }
 
 /** @deprecated Use IDatabaseConnection instead */
@@ -661,6 +673,18 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
     lastConnectedAt: {
       type: Date,
     },
+    // AI-augmented memory fields (per-database)
+    summary: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+    },
+    databases: [
+      {
+        name: { type: String, required: true },
+        description: { type: String, trim: true, maxlength: 500 },
+      },
+    ],
   },
   {
     timestamps: true,

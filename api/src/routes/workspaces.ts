@@ -8,8 +8,9 @@ import {
   AuthenticatedContext,
 } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
-import { Workspace } from "../database/workspace-schema";
+import { Workspace, DatabaseConnection } from "../database/workspace-schema";
 import { normalizeEmail } from "../utils/email.utils";
+import { inngest } from "../inngest";
 
 export const workspaceRoutes = new Hono();
 
@@ -1010,6 +1011,95 @@ workspaceRoutes.delete(
           success: false,
           error:
             error instanceof Error ? error.message : "Failed to delete API key",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// DELETE /api/workspaces/:id/memory/reset - Reset all descriptions for workspace
+workspaceRoutes.delete(
+  "/:id/memory/reset",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const workspaceId = c.req.param("id");
+
+      if (workspaceId !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+
+      // Clear all descriptions for all connections in the workspace
+      const result = await DatabaseConnection.updateMany(
+        { workspaceId: workspace._id },
+        {
+          $unset: { summary: "" },
+          $set: { databases: [] },
+        },
+      );
+
+      return c.json({
+        success: true,
+        message: `Descriptions reset for ${result.modifiedCount} connection(s).`,
+        connectionsUpdated: result.modifiedCount,
+      });
+    } catch (error) {
+      console.error("Error resetting descriptions:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to reset descriptions",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:id/memory/index - Trigger database indexing for workspace
+workspaceRoutes.post(
+  "/:id/memory/index",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const workspaceId = c.req.param("id");
+
+      if (workspaceId !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+
+      // Trigger the database indexing Inngest event
+      await inngest.send({
+        name: "database/index.manual",
+        data: {
+          workspaceId: workspace._id.toString(),
+        },
+      });
+
+      return c.json({
+        success: true,
+        message:
+          "Database indexing triggered. This will inspect your database schemas and generate descriptions.",
+      });
+    } catch (error) {
+      console.error("Error triggering database indexing:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to trigger database indexing",
         },
         500,
       );

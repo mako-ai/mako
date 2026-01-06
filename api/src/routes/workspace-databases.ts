@@ -12,6 +12,7 @@ import {
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
+import { inngest } from "../inngest";
 
 export const workspaceDatabaseRoutes = new Hono();
 
@@ -830,6 +831,479 @@ workspaceExecuteRoutes.post(
           success: false,
           error:
             error instanceof Error ? error.message : "Failed to cancel query",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// ============================================================================
+// Database Description Routes (Simplified)
+// ============================================================================
+
+// GET /api/workspaces/:workspaceId/databases/:id/memory - Get descriptions for connection
+workspaceDatabaseRoutes.get(
+  "/:id/memory",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const connectionId = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json({ success: false, error: "Invalid connection ID" }, 400);
+      }
+
+      const connection = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(connectionId),
+        workspaceId: workspace._id,
+      }).select({ databases: 1, summary: 1, name: 1 });
+
+      if (!connection) {
+        return c.json({ success: false, error: "Connection not found" }, 404);
+      }
+
+      return c.json({
+        success: true,
+        data: {
+          connectionId: connection._id.toString(),
+          connectionName: connection.name,
+          connectionSummary: connection.summary || null,
+          databases: (connection.databases || []).map(db => ({
+            name: db.name,
+            description: db.description || null,
+          })),
+        },
+      });
+    } catch (error) {
+      console.error("Error getting database descriptions:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get database descriptions",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// PUT /api/workspaces/:workspaceId/databases/:id/memory/summary - Update connection summary
+workspaceDatabaseRoutes.put(
+  "/:id/memory/summary",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const connectionId = c.req.param("id");
+      const body = await c.req.json();
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json({ success: false, error: "Invalid connection ID" }, 400);
+      }
+
+      const { summary } = body as { summary: string };
+
+      if (typeof summary !== "string") {
+        return c.json(
+          { success: false, error: "Summary must be a string" },
+          400,
+        );
+      }
+
+      if (summary.length > 500) {
+        return c.json(
+          { success: false, error: "Summary must be 500 characters or less" },
+          400,
+        );
+      }
+
+      const result = await DatabaseConnection.updateOne(
+        {
+          _id: new Types.ObjectId(connectionId),
+          workspaceId: workspace._id,
+        },
+        { $set: { summary: summary.trim() } },
+      );
+
+      if (result.matchedCount === 0) {
+        return c.json({ success: false, error: "Connection not found" }, 404);
+      }
+
+      return c.json({
+        success: true,
+        message: "Summary updated successfully",
+      });
+    } catch (error) {
+      console.error("Error updating summary:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to update summary",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/databases/:id/memory/description - Set description for a database
+workspaceDatabaseRoutes.post(
+  "/:id/memory/description",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const connectionId = c.req.param("id");
+      const body = await c.req.json();
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json({ success: false, error: "Invalid connection ID" }, 400);
+      }
+
+      const { databaseName, content } = body as {
+        databaseName: string;
+        content: string;
+      };
+
+      if (!databaseName || typeof databaseName !== "string") {
+        return c.json(
+          { success: false, error: "Database name is required" },
+          400,
+        );
+      }
+
+      if (!content || typeof content !== "string") {
+        return c.json(
+          { success: false, error: "Description content is required" },
+          400,
+        );
+      }
+
+      if (content.length > 500) {
+        return c.json(
+          {
+            success: false,
+            error: "Description must be 500 characters or less",
+          },
+          400,
+        );
+      }
+
+      // Check if database entry exists
+      const connection = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(connectionId),
+        workspaceId: workspace._id,
+      }).select({ databases: 1 });
+
+      if (!connection) {
+        return c.json({ success: false, error: "Connection not found" }, 404);
+      }
+
+      const existingDb = connection.databases?.find(
+        db => db.name === databaseName,
+      );
+
+      if (existingDb) {
+        // Update existing database entry
+        await DatabaseConnection.updateOne(
+          {
+            _id: new Types.ObjectId(connectionId),
+            workspaceId: workspace._id,
+            "databases.name": databaseName,
+          },
+          {
+            $set: { "databases.$.description": content.trim() },
+          },
+        );
+      } else {
+        // Create new database entry
+        await DatabaseConnection.updateOne(
+          {
+            _id: new Types.ObjectId(connectionId),
+            workspaceId: workspace._id,
+          },
+          {
+            $push: {
+              databases: {
+                name: databaseName,
+                description: content.trim(),
+              },
+            },
+          },
+        );
+      }
+
+      return c.json({
+        success: true,
+        message: "Description updated successfully",
+      });
+    } catch (error) {
+      console.error("Error updating description:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to update description",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// DELETE /api/workspaces/:workspaceId/databases/:id/memory/wipe - Wipe all descriptions
+workspaceDatabaseRoutes.delete(
+  "/:id/memory/wipe",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const connectionId = c.req.param("id");
+      const databaseName = c.req.query("database");
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json({ success: false, error: "Invalid connection ID" }, 400);
+      }
+
+      if (!databaseName) {
+        // Wipe ALL descriptions for the connection (summary + all databases)
+        const result = await DatabaseConnection.updateOne(
+          {
+            _id: new Types.ObjectId(connectionId),
+            workspaceId: workspace._id,
+          },
+          {
+            $unset: { summary: "" },
+            $set: { databases: [] },
+          },
+        );
+
+        if (result.matchedCount === 0) {
+          return c.json({ success: false, error: "Connection not found" }, 404);
+        }
+
+        return c.json({
+          success: true,
+          message: "All descriptions wiped for connection",
+        });
+      } else {
+        // Clear description for specific database
+        const result = await DatabaseConnection.updateOne(
+          {
+            _id: new Types.ObjectId(connectionId),
+            workspaceId: workspace._id,
+            "databases.name": databaseName,
+          },
+          {
+            $unset: { "databases.$.description": "" },
+          },
+        );
+
+        if (result.matchedCount === 0) {
+          return c.json({ success: false, error: "Connection not found" }, 404);
+        }
+
+        return c.json({
+          success: true,
+          message: `Description wiped for database "${databaseName}"`,
+        });
+      }
+    } catch (error) {
+      console.error("Error wiping descriptions:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to wipe descriptions",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/databases/:id/memory/index - Index a specific database
+workspaceDatabaseRoutes.post(
+  "/:id/memory/index",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const connectionId = c.req.param("id");
+      const body = await c.req.json();
+      const { databaseName } = body;
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json({ success: false, error: "Invalid connection ID" }, 400);
+      }
+
+      if (!databaseName) {
+        return c.json(
+          { success: false, error: "databaseName is required" },
+          400,
+        );
+      }
+
+      // Verify connection belongs to workspace
+      const connection = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(connectionId),
+        workspaceId: workspace._id,
+      });
+
+      if (!connection) {
+        return c.json({ success: false, error: "Connection not found" }, 404);
+      }
+
+      // Trigger the database indexing Inngest event for this specific database
+      await inngest.send({
+        name: "database/index.manual",
+        data: {
+          connectionId,
+          databaseName,
+        },
+      });
+
+      return c.json({
+        success: true,
+        message: `Indexing triggered for database "${databaseName}". This will inspect the schema and generate a description.`,
+      });
+    } catch (error) {
+      console.error("Error triggering database indexing:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to trigger database indexing",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/databases/:id/memory/index-all - Index all databases in a connection
+workspaceDatabaseRoutes.post(
+  "/:id/memory/index-all",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const connectionId = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json({ success: false, error: "Invalid connection ID" }, 400);
+      }
+
+      // Verify connection belongs to workspace
+      const connection = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(connectionId),
+        workspaceId: workspace._id,
+      });
+
+      if (!connection) {
+        return c.json({ success: false, error: "Connection not found" }, 404);
+      }
+
+      // Trigger the database indexing Inngest event for this connection (no specific database)
+      await inngest.send({
+        name: "database/index.manual",
+        data: {
+          connectionId,
+          // No databaseName = index all databases in this connection
+        },
+      });
+
+      return c.json({
+        success: true,
+        message:
+          "Indexing triggered for all databases in this connection. This will inspect schemas and generate descriptions.",
+      });
+    } catch (error) {
+      console.error("Error triggering connection indexing:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to trigger connection indexing",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/databases/:id/memory/summarize - Generate summary for connection
+workspaceDatabaseRoutes.post(
+  "/:id/memory/summarize",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const connectionId = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(connectionId)) {
+        return c.json({ success: false, error: "Invalid connection ID" }, 400);
+      }
+
+      // Verify connection belongs to workspace
+      const connection = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(connectionId),
+        workspaceId: workspace._id,
+      });
+
+      if (!connection) {
+        return c.json({ success: false, error: "Connection not found" }, 404);
+      }
+
+      // Trigger the connection summarize Inngest event
+      await inngest.send({
+        name: "connection/summarize.manual",
+        data: {
+          connectionId,
+        },
+      });
+
+      return c.json({
+        success: true,
+        message:
+          "Summarization triggered for this connection. It will generate a summary based on database descriptions.",
+      });
+    } catch (error) {
+      console.error("Error triggering connection summarization:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to trigger connection summarization",
         },
         500,
       );

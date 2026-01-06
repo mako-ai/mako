@@ -43,6 +43,7 @@ async function listAllConnectionsImpl(workspaceId: string) {
     const connection: Record<string, unknown> =
       (db as unknown as { connection: Record<string, unknown> }).connection ||
       {};
+    const summary = db.summary || undefined;
 
     if (db.type === "mongodb") {
       const databaseName = (connection.database as string) || undefined;
@@ -53,6 +54,7 @@ async function listAllConnectionsImpl(workspaceId: string) {
         type: db.type,
         databaseName,
         displayName: `${db.name} (mongodb: ${displayInfo})`,
+        summary,
         active: true,
       };
     }
@@ -67,6 +69,7 @@ async function listAllConnectionsImpl(workspaceId: string) {
         sqlDialect: "bigquery",
         project,
         displayName: `${db.name} (bigquery: ${displayInfo})`,
+        summary,
         active: true,
       };
     }
@@ -87,6 +90,7 @@ async function listAllConnectionsImpl(workspaceId: string) {
         host,
         databaseName,
         displayName: `${db.name} (postgresql: ${displayInfo})`,
+        summary,
         active: true,
       };
     }
@@ -100,6 +104,7 @@ async function listAllConnectionsImpl(workspaceId: string) {
         sqlDialect: "sqlite",
         databaseId,
         displayName: `${db.name} (sqlite: ${databaseId})`,
+        summary,
         active: true,
       };
     }
@@ -110,6 +115,7 @@ async function listAllConnectionsImpl(workspaceId: string) {
       name: db.name,
       type: db.type,
       displayName: `${db.name} (${db.type})`,
+      summary,
       active: true,
     };
   });

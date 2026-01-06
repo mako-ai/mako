@@ -11,6 +11,10 @@ import {
   webhookCleanupFunction,
   webhookRetryFunction,
 } from "./functions/webhook-flow";
+import {
+  indexDatabases,
+  summarizeConnectionFunction,
+} from "./functions/database-indexing";
 
 // Check if we're running in development mode
 const isDevelopment =
@@ -26,9 +30,11 @@ const baseFunctions = [
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  indexDatabases,
+  summarizeConnectionFunction,
 ];
 
-// Conditionally add flow scheduler (only in production)
+// Conditionally add scheduled functions (only in production)
 export const functions = isDevelopment
   ? baseFunctions
   : [...baseFunctions, flowSchedulerFunction];
@@ -50,4 +56,6 @@ export {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  indexDatabases,
+  summarizeConnectionFunction,
 };

@@ -179,6 +179,7 @@ async function listSqlConnectionsImpl(workspaceId: string) {
       name: db.name,
       type: db.type,
       sqlDialect: dialect,
+      summary: db.summary || undefined,
       displayName: `${db.name} (${dialect}: ${displayInfo})`,
       active: true,
     };
@@ -191,6 +192,16 @@ async function listSqlConnectionsImpl(workspaceId: string) {
 async function listDatabasesImpl(connectionId: string, workspaceId: string) {
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
+
+  // Build a map of database descriptions from the connection
+  const descriptionMap = new Map<string, string>();
+  if (database.databases) {
+    for (const db of database.databases) {
+      if (db.description) {
+        descriptionMap.set(db.name, db.description);
+      }
+    }
+  }
 
   if (dialect === "postgresql") {
     // List Postgres databases
@@ -205,6 +216,7 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
 
     return (result.data || []).map((row: { datname: string }) => ({
       name: row.datname,
+      description: descriptionMap.get(row.datname) || undefined,
       sqlDialect: dialect,
     }));
   }
@@ -218,6 +230,7 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
     );
     return datasets.map(ds => ({
       name: ds,
+      description: descriptionMap.get(ds) || undefined,
       sqlDialect: dialect,
     }));
   }
@@ -243,6 +256,7 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
       .filter((row: { name: string }) => !systemDatabases.has(row.name))
       .map((row: { name: string }) => ({
         name: row.name,
+        description: descriptionMap.get(row.name) || undefined,
         sqlDialect: dialect,
       }));
   }
@@ -252,11 +266,15 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
     (database as unknown as { connection: Record<string, unknown> })
       .connection || {};
   const databaseId = connection.database_id as string | undefined;
+  const dbName = databaseId || "main";
 
-  if (databaseId) {
-    return [{ name: databaseId, sqlDialect: dialect }];
-  }
-  return [{ name: "main", sqlDialect: dialect }];
+  return [
+    {
+      name: dbName,
+      description: descriptionMap.get(dbName) || undefined,
+      sqlDialect: dialect,
+    },
+  ];
 }
 
 // ============================================================================

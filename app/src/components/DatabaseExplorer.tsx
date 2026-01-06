@@ -13,6 +13,8 @@ import {
   Menu,
   MenuItem,
   Tooltip,
+  Dialog,
+  DialogContent,
 } from "@mui/material";
 import {
   ChevronRight as ChevronRightIcon,
@@ -27,10 +29,12 @@ import {
   Trash2 as DeleteIcon,
   Settings as SettingsIcon,
   Layers as LayersIcon,
+  Brain as MemoryIcon,
 } from "lucide-react";
 import { useDatabaseExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
+import { DatabaseMemoryPanel } from "./DatabaseMemoryPanel";
 import { useSchemaStore, Connection, TreeNode } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -135,6 +139,13 @@ function DatabaseExplorer({
   const [editingDatabaseId, setEditingDatabaseId] = useState<
     string | undefined
   >(undefined);
+
+  // Memory panel state
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  const [memoryPanelConnection, setMemoryPanelConnection] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   // Initialize connections on mount
   useEffect(() => {
@@ -301,6 +312,14 @@ function DatabaseExplorer({
     const { databaseId } = databaseContextMenu.item;
     setEditingDatabaseId(databaseId);
     setCreateDialogOpen(true);
+    setDatabaseContextMenu(null);
+  }, [databaseContextMenu]);
+
+  const handleOpenMemory = useCallback(() => {
+    if (!databaseContextMenu) return;
+    const { databaseId, databaseName } = databaseContextMenu.item;
+    setMemoryPanelConnection({ id: databaseId, name: databaseName });
+    setMemoryPanelOpen(true);
     setDatabaseContextMenu(null);
   }, [databaseContextMenu]);
 
@@ -695,6 +714,21 @@ function DatabaseExplorer({
           Edit connection
         </MenuItem>
         <MenuItem
+          onClick={handleOpenMemory}
+          sx={{
+            pl: 1,
+            pr: 1,
+            "& .MuiListItemIcon-root": {
+              minWidth: 26,
+            },
+          }}
+        >
+          <ListItemIcon>
+            <MemoryIcon size={18} strokeWidth={1.5} />
+          </ListItemIcon>
+          Memory & Rules
+        </MenuItem>
+        <MenuItem
           onClick={handleDropDatabase}
           sx={{
             pl: 1,
@@ -710,6 +744,30 @@ function DatabaseExplorer({
           Delete database
         </MenuItem>
       </Menu>
+
+      {/* Memory Panel Dialog */}
+      <Dialog
+        open={memoryPanelOpen}
+        onClose={() => {
+          setMemoryPanelOpen(false);
+          setMemoryPanelConnection(null);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogContent sx={{ p: 0 }}>
+          {memoryPanelConnection && (
+            <DatabaseMemoryPanel
+              connectionId={memoryPanelConnection.id}
+              connectionName={memoryPanelConnection.name}
+              onClose={() => {
+                setMemoryPanelOpen(false);
+                setMemoryPanelConnection(null);
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 }

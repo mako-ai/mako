@@ -181,10 +181,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Build system prompt
   const systemPrompt = UNIVERSAL_PROMPT_V2;
 
-  // Get workspace database capabilities for enriching consoles
+  // Get workspace database capabilities for enriching consoles and description context
   const workspaceDatabases = await DatabaseConnection.find({
     workspaceId: new ObjectId(workspaceId),
-  }).select({ type: 1, name: 1 });
+  }).select({ type: 1, name: 1, summary: 1, databases: 1 });
 
   const databaseTypeMap = new Map<string, string>();
   workspaceDatabases.forEach(db => {
@@ -220,6 +220,43 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           .join("\n")}`
       : "";
 
+  // Build database knowledge context from per-database descriptions
+  const databaseContextEntries: string[] = [];
+
+  for (const conn of workspaceDatabases) {
+    // Check if connection has any description content
+    const hasDescriptions =
+      conn.summary?.trim() ||
+      conn.databases?.some((db: { name: string; description?: string }) =>
+        db.description?.trim(),
+      );
+
+    if (!hasDescriptions) continue;
+
+    let entry = `**${conn.name}** (${conn.type})`;
+
+    // Add connection-level summary if present
+    if (conn.summary?.trim()) {
+      entry += `\n  Summary: ${conn.summary.trim()}`;
+    }
+
+    // Add per-database descriptions
+    if (conn.databases && conn.databases.length > 0) {
+      for (const db of conn.databases) {
+        if (db.description?.trim()) {
+          entry += `\n  Database "${db.name}": ${db.description.trim()}`;
+        }
+      }
+    }
+
+    databaseContextEntries.push(entry);
+  }
+
+  const databaseContext =
+    databaseContextEntries.length > 0
+      ? `\n\n### Database Knowledge\n${databaseContextEntries.join("\n\n")}`
+      : "";
+
   // Get model instance
   const model = getModelInstance(modelId);
   console.log(`[Agent] Using model: ${modelId || "gpt-5.2 (default)"}`);
@@ -236,7 +273,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   const result = streamText({
     model,
-    system: systemPrompt + customPromptContext + consoleContext,
+    system:
+      systemPrompt + customPromptContext + databaseContext + consoleContext,
     messages: modelMessages,
     tools: tools as any,
     stopWhen: stepCountIs(MAX_STEPS),
