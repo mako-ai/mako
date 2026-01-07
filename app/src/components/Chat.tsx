@@ -24,8 +24,6 @@ import {
   DialogContent,
   DialogActions,
 } from "@mui/material";
-import SendIcon from "@mui/icons-material/Send";
-import StopIcon from "@mui/icons-material/Stop";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -34,16 +32,17 @@ import {
   tomorrow,
 } from "react-syntax-highlighter/dist/esm/styles/prism";
 import {
-  ExpandMore,
-  ExpandLess,
-  ContentCopy,
+  ArrowUp,
+  ChevronDown,
+  ChevronUp,
+  Copy,
   Check,
-  History as HistoryIcon,
-  Add as AddIcon,
-  Chat as ChatIcon,
-  Delete as DeleteIcon,
-} from "@mui/icons-material";
-import { useTheme as useMuiTheme } from "@mui/material/styles";
+  History,
+  Plus,
+  MessageSquare,
+  Trash2,
+} from "lucide-react";
+import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
@@ -153,9 +152,12 @@ const CodeBlock = React.memo(
             }}
           >
             {isCopied ? (
-              <Check sx={{ fontSize: 16, color: "success.main" }} />
+              <Check
+                size={16}
+                style={{ color: "var(--mui-palette-success-main, #4caf50)" }}
+              />
             ) : (
-              <ContentCopy sx={{ fontSize: 16 }} />
+              <Copy size={16} />
             )}
           </IconButton>
         </Box>
@@ -207,7 +209,7 @@ const CodeBlock = React.memo(
                 },
               }}
             >
-              {isExpanded ? <ExpandLess /> : <ExpandMore />}
+              {isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
             </Button>
           </Box>
         )}
@@ -250,9 +252,12 @@ const ToolCallsDisplay = React.memo(
             key={tool.toolCallId}
             icon={
               tool.state === "output-available" ? (
-                <Check sx={{ fontSize: 16 }} />
+                <Check size={16} />
               ) : tool.state === "error" ? (
-                <Check sx={{ fontSize: 16, color: "error.main" }} />
+                <Check
+                  size={16}
+                  style={{ color: "var(--mui-palette-error-main, #f44336)" }}
+                />
               ) : (
                 <CircularProgress size={14} thickness={5} />
               )
@@ -311,7 +316,9 @@ const ReasoningDisplay = React.memo(
         <Button
           size="small"
           onClick={() => setExpanded(!expanded)}
-          startIcon={expanded ? <ExpandLess /> : <ExpandMore />}
+          startIcon={
+            expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />
+          }
           sx={{
             color: "text.secondary",
             textTransform: "none",
@@ -351,6 +358,39 @@ const ReasoningDisplay = React.memo(
 );
 
 ReasoningDisplay.displayName = "ReasoningDisplay";
+
+// Stable keyframes animation defined outside component to prevent re-renders
+const pulseAnimation = keyframes`
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.35); }
+`;
+
+// Stable style objects to prevent re-renders
+const streamingIndicatorContainerSx = {
+  display: "inline-flex",
+  alignItems: "center",
+  ml: 0.5,
+  verticalAlign: "middle",
+} as const;
+
+const streamingIndicatorDotSx = {
+  width: 8,
+  height: 8,
+  borderRadius: "50%",
+  backgroundColor: "primary.main",
+  animation: `${pulseAnimation} 1s infinite ease-in-out`,
+} as const;
+
+// StreamingIndicator - Shows pulsing dot while content is being streamed
+const StreamingIndicator = React.memo(() => {
+  return (
+    <Box component="span" sx={streamingIndicatorContainerSx}>
+      <Box sx={streamingIndicatorDotSx} />
+    </Box>
+  );
+});
+
+StreamingIndicator.displayName = "StreamingIndicator";
 
 // Extended ConsoleModification with fields for console creation
 type ConsoleModificationPayload = ConsoleModification & {
@@ -1048,14 +1088,14 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
             <IconButton size="small" onClick={createNewSession}>
-              <AddIcon />
+              <Plus size={20} />
             </IconButton>
             <IconButton
               size="small"
               onClick={handleHistoryMenuOpen}
               disabled={sessions.length === 0}
             >
-              <HistoryIcon />
+              <History size={20} />
             </IconButton>
           </Box>
         </Box>
@@ -1085,7 +1125,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             >
               <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
                 <ListItemIcon>
-                  <ChatIcon fontSize="small" />
+                  <MessageSquare size={18} />
                 </ListItemIcon>
                 <Box>
                   <ListItemText
@@ -1110,7 +1150,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                   onClick={e => handleDeleteSession(session._id, e)}
                   sx={{ ml: 1 }}
                 >
-                  <DeleteIcon fontSize="small" />
+                  <Trash2 size={18} />
                 </IconButton>
               )}
             </MenuItem>
@@ -1205,27 +1245,15 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                   {renderMessageContent(
                     message.parts as Array<{ type: string; text?: string }>,
                   )}
+                  {/* Show streaming indicator on last message while streaming */}
+                  {status === "streaming" &&
+                    message.id === messages[messages.length - 1]?.id && (
+                      <StreamingIndicator />
+                    )}
                 </Box>
               )}
             </ListItem>
           ))}
-
-          {/* Loading indicator */}
-          {status === "submitted" && (
-            <ListItem alignItems="flex-start" sx={{ p: 0 }}>
-              <Box
-                sx={{
-                  flex: 1,
-                  overflow: "hidden",
-                  fontSize: "0.875rem",
-                }}
-              >
-                <Typography variant="body2" color="text.secondary">
-                  Assistant is thinking...
-                </Typography>
-              </Box>
-            </ListItem>
-          )}
         </List>
         <div ref={messagesEndRef} />
       </Box>
@@ -1316,14 +1344,26 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                 onClick={stop}
                 size="small"
                 sx={{
-                  color: "error.main",
-                  p: 0,
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  backgroundColor: "action.hover",
+                  border: 1,
+                  borderColor: "divider",
                   "&:hover": {
-                    backgroundColor: "action.hover",
+                    backgroundColor: "action.selected",
                   },
                 }}
               >
-                <StopIcon sx={{ fontSize: 20 }} />
+                {/* Square stop icon */}
+                <Box
+                  sx={{
+                    width: 10,
+                    height: 10,
+                    backgroundColor: "text.primary",
+                    borderRadius: 0.5,
+                  }}
+                />
               </IconButton>
             ) : (
               <IconButton
@@ -1331,17 +1371,30 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                 disabled={!input.trim() || !currentWorkspace}
                 size="small"
                 sx={{
-                  color:
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  backgroundColor:
                     input.trim() && currentWorkspace
                       ? "primary.main"
+                      : "action.disabledBackground",
+                  color:
+                    input.trim() && currentWorkspace
+                      ? "primary.contrastText"
                       : "text.disabled",
-                  p: 0,
                   "&:hover": {
-                    backgroundColor: "action.hover",
+                    backgroundColor:
+                      input.trim() && currentWorkspace
+                        ? "primary.dark"
+                        : "action.disabledBackground",
+                  },
+                  "&.Mui-disabled": {
+                    backgroundColor: "action.disabledBackground",
+                    color: "text.disabled",
                   },
                 }}
               >
-                <SendIcon sx={{ fontSize: 20 }} />
+                <ArrowUp size={18} />
               </IconButton>
             )}
           </Box>
