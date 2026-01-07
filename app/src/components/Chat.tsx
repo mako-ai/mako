@@ -1058,7 +1058,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Header with history and new chat */}
-      <Box sx={{ px: 1, py: 0.25, borderBottom: 1, borderColor: "divider" }}>
+      <Box sx={{ px: 1, py: 0.5, borderBottom: 1, borderColor: "divider" }}>
         <Box
           sx={{
             display: "flex",
