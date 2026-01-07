@@ -157,6 +157,58 @@ workspaceDatabaseRoutes.get(
   },
 );
 
+// Test database connection (without saving)
+// This allows testing a connection before creating the database
+workspaceDatabaseRoutes.post(
+  "/test-connection",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const body = await c.req.json();
+
+      // Validate required fields
+      if (!body.type) {
+        return c.json(
+          { success: false, error: "Database type is required" },
+          400,
+        );
+      }
+
+      if (!body.connection) {
+        return c.json(
+          { success: false, error: "Connection configuration is required" },
+          400,
+        );
+      }
+
+      // Create a temporary database object for testing
+      const tempDatabase = {
+        _id: new Types.ObjectId(),
+        type: body.type,
+        connection: body.connection,
+      } as IDatabaseConnection;
+
+      const result =
+        await databaseConnectionService.testConnection(tempDatabase);
+
+      return c.json(result);
+    } catch (error) {
+      console.error("Error testing database connection:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to test connection",
+        },
+        500,
+      );
+    }
+  },
+);
+
 // Create new database
 workspaceDatabaseRoutes.post(
   "/",
