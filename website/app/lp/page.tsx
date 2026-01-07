@@ -103,11 +103,6 @@ export default function LandingPagesIndex() {
               href={`/lp/${design.slug}`}
               className="group p-6 rounded-2xl border border-zinc-800 bg-zinc-900/50 hover:bg-zinc-900 hover:border-zinc-700 transition-all relative"
             >
-              {design.isCurrent && (
-                <span className="absolute top-4 right-4 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs border border-emerald-500/30">
-                  Current
-                </span>
-              )}
               <div className="flex items-start justify-between mb-4">
                 <div>
                   <span className="text-xs font-mono text-zinc-500 uppercase">

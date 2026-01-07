@@ -82,6 +82,9 @@
     "api/**/*.ts": [
       "eslint --fix",
       "prettier --write"
+    ],
+    "website/**/*.{ts,tsx}": [
+      "prettier --write"
     ]
   },
   "devDependencies": {
