@@ -448,23 +448,12 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
             <Box
               component="form"
               autoComplete="off"
+              data-form-type="other"
+              data-lpignore="true"
+              data-1p-ignore
               sx={{ pt: 1 }}
               onSubmit={e => e.preventDefault()}
             >
-              {/* Hidden fields to prevent Chrome autofill */}
-              <input
-                type="text"
-                name="prevent_autofill"
-                style={{ display: "none" }}
-                tabIndex={-1}
-              />
-              <input
-                type="password"
-                name="prevent_autofill_pwd"
-                style={{ display: "none" }}
-                tabIndex={-1}
-              />
-
               {error && (
                 <Alert severity="error" sx={{ mb: 2 }}>
                   {error}
@@ -592,7 +581,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               {...register(fieldName as any, requiredRule)}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
-                              autoComplete="new-password"
+                              autoComplete="off"
                               slotProps={{
                                 input: {
                                   endAdornment: (
@@ -617,6 +606,11 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                                       </IconButton>
                                     </InputAdornment>
                                   ),
+                                },
+                                htmlInput: {
+                                  "data-1p-ignore": true,
+                                  "data-lpignore": "true",
+                                  "data-form-type": "other",
                                 },
                               }}
                             />
@@ -701,6 +695,17 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
                               autoComplete="off"
+                              slotProps={
+                                field.name === "username"
+                                  ? {
+                                      htmlInput: {
+                                        "data-1p-ignore": true,
+                                        "data-lpignore": "true",
+                                        "data-form-type": "other",
+                                      },
+                                    }
+                                  : undefined
+                              }
                             />
                           );
                       }
