@@ -172,8 +172,8 @@ const CodeBlock = React.memo(
             overflow: "auto",
             maxWidth: "100%",
             maxHeight: isScrollable ? "50vh" : undefined,
-            paddingBottom: needsExpansion && !isScrollable ? "2rem" : undefined,
-            paddingTop: "2rem",
+            paddingBottom: needsExpansion && !isScrollable ? "2rem" : "0.75rem",
+            paddingTop: "0.75rem",
           }}
         >
           {displayedCode}
@@ -1179,7 +1179,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           {messages.map(message => (
             <ListItem key={message.id} alignItems="flex-start" sx={{ p: 0 }}>
               {message.role === "user" ? (
-                <Box sx={{ flex: 1 }}>
+                <Box sx={{ flex: 1, mt: 2 }}>
                   <Paper
                     variant="outlined"
                     sx={{
