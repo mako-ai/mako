@@ -419,8 +419,23 @@ function PageViewTracker() {
   const location = useLocation();
 
   useEffect(() => {
-    // Track page view on route change
-    trackPageView(location.pathname, document.title);
+    // Defer tracking to allow child components to update document.title first.
+    // Child components (like Editor) set the title in their own useEffect hooks,
+    // which run after this effect. Using requestAnimationFrame + setTimeout
+    // ensures we capture the title after React's render cycle completes.
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const rafId = requestAnimationFrame(() => {
+      timeoutId = setTimeout(() => {
+        trackPageView(location.pathname, document.title);
+      }, 0);
+    });
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    };
   }, [location.pathname]);
 
   return null;
