@@ -10,3 +10,8 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// GTM dataLayer for analytics
+interface Window {
+  dataLayer: Array<Record<string, unknown>>;
+}

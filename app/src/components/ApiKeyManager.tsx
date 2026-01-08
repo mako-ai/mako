@@ -32,6 +32,7 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import { apiClient } from "../lib/api-client";
 import { useWorkspace } from "../contexts/workspace-context";
+import { trackEvent } from "../lib/analytics";
 
 interface ApiKey {
   id: string;
@@ -107,6 +108,11 @@ export function ApiKeyManager() {
         apiKey: NewApiKeyResponse;
       }>(`/workspaces/${currentWorkspace.id}/api-keys`, {
         name: newKeyName.trim(),
+      });
+
+      // Track API key creation
+      trackEvent("api_key_created", {
+        key_name: newKeyName.trim(),
       });
 
       setNewApiKey(response.apiKey);

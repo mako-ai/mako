@@ -6,6 +6,7 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
 import { useConnectorStore } from "../store/connectorStore";
+import { trackEvent } from "../lib/analytics";
 
 interface ConnectorType {
   type: string;
@@ -156,6 +157,12 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
 
         const newId = data.data._id;
         if (!effectiveSourceId && newId) {
+          // Track connector creation
+          trackEvent("connector_created", {
+            connector_type: data.data.type,
+            connector_id: newId,
+          });
+
           // Persist the newly created connector id as the tab's content
           updateConsoleContent(tabId, newId);
           setLocalSourceId(newId);

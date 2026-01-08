@@ -20,6 +20,7 @@ import {
 import { useAuth } from "../hooks/useAuth";
 import { authClient } from "../lib/auth-client";
 import { AuthLayout } from "./AuthLayout";
+import { trackEvent } from "../lib/analytics";
 
 interface RegisterPageProps {
   onSwitchToLogin: () => void;
@@ -76,6 +77,8 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
         email,
         password,
       });
+
+      trackEvent("sign_up", { method: "email" });
 
       if (requiresVerification) {
         navigate(`/verify-email?email=${encodeURIComponent(email)}`);

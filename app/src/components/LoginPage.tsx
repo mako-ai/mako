@@ -20,6 +20,7 @@ import { useAuth } from "../hooks/useAuth";
 import { handleInviteRedirectIfPresent } from "../utils/invite-redirect";
 import { authClient } from "../lib/auth-client";
 import { AuthLayout } from "./AuthLayout";
+import { trackEvent } from "../lib/analytics";
 
 interface LoginPageProps {
   onSwitchToRegister: () => void;
@@ -64,6 +65,7 @@ export function LoginPage({
 
     try {
       await login({ email, password });
+      trackEvent("login", { method: "email" });
       handleInviteRedirectIfPresent();
     } catch {
       // Error displayed in UI via error state from context

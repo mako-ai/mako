@@ -16,6 +16,7 @@ import {
   getAndClearInviteRedirect,
   hasInviteRedirect,
 } from "../utils/invite-redirect";
+import { trackEvent } from "../lib/analytics";
 
 export function VerifyEmailPage() {
   const { verifyEmail, resendVerification, error, loading, clearError } =
@@ -37,6 +38,10 @@ export function VerifyEmailPage() {
     async (emailParam: string, codeParam: string) => {
       try {
         await verifyEmail(emailParam, codeParam);
+
+        // Track email verification
+        trackEvent("email_verified", { method: "link" });
+
         setVerified(true);
         // Redirect after short delay, checking for invite redirect first
         setTimeout(() => {
@@ -85,6 +90,10 @@ export function VerifyEmailPage() {
 
     try {
       await verifyEmail(email, code);
+
+      // Track email verification
+      trackEvent("email_verified", { method: "code" });
+
       setVerified(true);
       // Redirect after short delay, checking for invite redirect first
       setTimeout(() => {

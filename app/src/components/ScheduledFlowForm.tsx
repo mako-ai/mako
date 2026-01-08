@@ -41,6 +41,7 @@ import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { apiClient } from "../lib/api-client";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
+import { trackEvent } from "../lib/analytics";
 
 interface ScheduledFlowFormProps {
   flowId?: string;
@@ -626,6 +627,13 @@ export function ScheduledFlowForm({
       let newFlow;
       if (isNewMode) {
         newFlow = await createFlow(currentWorkspace.id, payload);
+
+        // Track flow creation
+        trackEvent("flow_created", {
+          flow_type: "scheduled",
+          connector_type: selectedConnector?.type,
+        });
+
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 

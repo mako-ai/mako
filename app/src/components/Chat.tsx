@@ -54,6 +54,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
+import { trackEvent } from "../lib/analytics";
 
 interface ChatSessionMeta {
   _id: string;
@@ -1276,6 +1277,13 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           onSubmit={e => {
             e.preventDefault();
             if (input.trim() && !isLoading) {
+              const activeConsole = consoleTabs.find(
+                t => t.id === activeConsoleId,
+              );
+              trackEvent("ai_chat_message_sent", {
+                model: selectedModelId,
+                has_context: !!activeConsole?.content,
+              });
               sendMessage({ text: input });
               setInput("");
             }
@@ -1294,6 +1302,13 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (input.trim() && !isLoading) {
+                  const activeConsole = consoleTabs.find(
+                    t => t.id === activeConsoleId,
+                  );
+                  trackEvent("ai_chat_message_sent", {
+                    model: selectedModelId,
+                    has_context: !!activeConsole?.content,
+                  });
                   sendMessage({ text: input });
                   setInput("");
                 }

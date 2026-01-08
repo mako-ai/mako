@@ -25,6 +25,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
+import { trackEvent, resetIdentity } from "../lib/analytics";
 
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive",
@@ -82,6 +83,10 @@ function Sidebar() {
   const handleLogout = async () => {
     handleUserMenuClose();
     try {
+      // Track logout event
+      trackEvent("logout");
+      resetIdentity();
+
       // Clear all local storage to prevent data leaks
       localStorage.clear();
 
