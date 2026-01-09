@@ -32,6 +32,10 @@ export type AnalyticsEvent = MarketingEvent | ProductEvent;
 /**
  * Push an event to the GTM dataLayer.
  * GTM will handle routing to appropriate destinations (GA4, PostHog, etc.)
+ *
+ * Properties are structured two ways for compatibility:
+ * - Spread at root level for GA4/Google Ads (they expect flat parameters)
+ * - Nested in `event_properties` for PostHog (easier to extract as single object)
  */
 export function trackEvent(
   event: AnalyticsEvent,
@@ -42,11 +46,17 @@ export function trackEvent(
   // Ensure dataLayer exists
   window.dataLayer = window.dataLayer || [];
 
+  const eventProps = {
+    ...properties,
+    event_timestamp: new Date().toISOString(),
+  };
+
   window.dataLayer.push({
     event,
-    ...properties,
-    // Add timestamp for all events
-    event_timestamp: new Date().toISOString(),
+    // Flat properties for GA4/Google Ads
+    ...eventProps,
+    // Nested object for PostHog (easier to grab all props at once)
+    event_properties: eventProps,
   });
 }
 
@@ -65,6 +75,11 @@ export function trackPageView(path: string, title: string): void {
 /**
  * Identify a user for analytics purposes.
  * Pushes user traits to dataLayer for GTM to forward to destinations.
+ *
+ * Structure:
+ * - user_id: The unique user identifier
+ * - Flat traits at root for GA4 (user properties)
+ * - user_traits: Nested object for PostHog
  */
 export function identify(
   userId: string,
@@ -74,10 +89,15 @@ export function identify(
 
   window.dataLayer = window.dataLayer || [];
 
+  const userTraits = traits || {};
+
   window.dataLayer.push({
     event: "identify",
     user_id: userId,
-    ...traits,
+    // Flat traits for GA4 user properties
+    ...userTraits,
+    // Nested object for PostHog
+    user_traits: userTraits,
   });
 }
 
