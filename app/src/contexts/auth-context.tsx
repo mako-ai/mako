@@ -59,8 +59,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       const currentUser = await authClient.getMe();
       setUser(currentUser);
-      // Identify user for analytics on app start
-      identify(currentUser.id, { email: currentUser.email });
+      // Identify user for analytics on app start (only if authenticated)
+      if (currentUser) {
+        identify(currentUser.id, { email: currentUser.email });
+      }
     } catch (err) {
       console.error("Auth check failed:", err);
       setUser(null);
