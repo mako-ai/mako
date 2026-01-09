@@ -11,6 +11,7 @@ import {
   type LoginCredentials,
   type RegisterCredentials,
 } from "../lib/auth-client";
+import { identify } from "../lib/analytics";
 
 /**
  * Auth context state interface
@@ -58,6 +59,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       const currentUser = await authClient.getMe();
       setUser(currentUser);
+      // Identify user for analytics on app start (only if authenticated)
+      if (currentUser) {
+        identify(currentUser.id, { email: currentUser.email });
+      }
     } catch (err) {
       console.error("Auth check failed:", err);
       setUser(null);
@@ -75,6 +80,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       const user = await authClient.login(credentials);
       setUser(user);
+      // Identify user for analytics on login
+      identify(user.id, { email: user.email });
     } catch (err: any) {
       setError(err.message || "Login failed");
       throw err;
@@ -100,6 +107,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // (shouldn't happen with new flow, but for safety)
         if (!requiresVerification) {
           setUser(user);
+          // Identify user for analytics on registration
+          identify(user.id, { email: user.email });
         }
 
         return { requiresVerification };
@@ -122,6 +131,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       const user = await authClient.verifyEmail(email, code);
       setUser(user);
+      // Identify user for analytics after email verification
+      identify(user.id, { email: user.email });
     } catch (err: any) {
       setError(err.message || "Verification failed");
       throw err;
