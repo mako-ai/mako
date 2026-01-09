@@ -27,6 +27,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
+import { trackEvent } from "../lib/analytics";
 
 export function WorkspaceSwitcher() {
   const { user } = useAuth();
@@ -69,7 +70,16 @@ export function WorkspaceSwitcher() {
     setCreateError(null);
 
     try {
-      await createWorkspace({ name: newWorkspaceName.trim() });
+      const workspace = await createWorkspace({
+        name: newWorkspaceName.trim(),
+      });
+
+      // Track workspace creation
+      trackEvent("workspace_created", {
+        workspace_id: workspace.id,
+        is_onboarding: false,
+      });
+
       setCreateDialogOpen(false);
       setNewWorkspaceName("");
       handleClose();

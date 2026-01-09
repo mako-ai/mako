@@ -22,6 +22,7 @@ import { useAuth } from "../contexts/auth-context";
 import { workspaceClient, type InviteDetails } from "../lib/workspace-client";
 import { normalizeEmail } from "../utils/email";
 import { setInviteRedirect } from "../utils/invite-redirect";
+import { trackEvent } from "../lib/analytics";
 
 interface AcceptInviteProps {
   token: string;
@@ -125,6 +126,12 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
     setState("accepting");
     try {
       const workspace = await acceptInvite(token);
+
+      // Track invite accepted
+      trackEvent("invite_accepted", {
+        workspace_id: workspace.id,
+      });
+
       setSuccessWorkspace(workspace.name);
       setState("success");
 

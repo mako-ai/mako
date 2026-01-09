@@ -2,6 +2,7 @@ import { useState, FormEvent } from "react";
 import { Box, TextField, Button, Typography, Alert, Link } from "@mui/material";
 import { authClient } from "../lib/auth-client";
 import { AuthLayout } from "./AuthLayout";
+import { trackEvent } from "../lib/analytics";
 
 interface ForgotPasswordPageProps {
   onBackToLogin: () => void;
@@ -34,6 +35,10 @@ export function ForgotPasswordPage({ onBackToLogin }: ForgotPasswordPageProps) {
     if (!validateForm()) return;
 
     setLoading(true);
+
+    // Track password reset request (before the actual API call)
+    trackEvent("password_reset_requested");
+
     try {
       await authClient.requestPasswordReset(email);
       setSuccess(true);

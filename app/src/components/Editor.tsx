@@ -36,6 +36,7 @@ import { useAppStore, useAppDispatch } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
+import { trackEvent } from "../lib/analytics";
 
 interface QueryResult {
   results: any[];
@@ -336,6 +337,13 @@ function Editor() {
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
+        // Track successful query execution
+        trackEvent("query_executed", {
+          connection_id: connectionId,
+          success: true,
+          duration_ms: executionTime,
+        });
+
         setTabResults(prev => ({
           ...prev,
           [tabId]: {
@@ -437,6 +445,12 @@ function Editor() {
           databaseId,
           databaseName,
         );
+
+        // Track console save
+        trackEvent("console_saved", {
+          console_id: tabId,
+          is_new: isNew,
+        });
 
         setSnackbarMessage(
           `Console saved ${isNew ? "as" : "to"} '${savePath}.js'`,

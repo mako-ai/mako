@@ -24,6 +24,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { apiClient } from "../lib/api-client";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useForm, Controller } from "react-hook-form";
+import { trackEvent } from "../lib/analytics";
 
 interface CreateDatabaseDialogProps {
   open: boolean;
@@ -151,6 +152,15 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
       if (!res.success) {
         throw new Error((res as any).error || "Failed to save database");
       }
+
+      // Track database connection creation (not updates)
+      if (!databaseId) {
+        trackEvent("database_connection_created", {
+          connection_type: values.type,
+          connection_id: res.data?._id,
+        });
+      }
+
       onSuccess();
       handleClose();
     } catch (err) {

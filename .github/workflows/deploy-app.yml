@@ -109,6 +109,7 @@ jobs:
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
+      VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -141,6 +142,7 @@ jobs:
           NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
           VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
+          VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
           VITE_DISABLE_OAUTH: "true"
 
       - name: Authenticate to Google Cloud
@@ -169,6 +171,7 @@ jobs:
           cat <<EOF > .env.production
           VITE_API_URL=${VITE_API_URL}
           VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
+          VITE_GTM_ID=${VITE_GTM_ID}
           VITE_DISABLE_OAUTH=true
           EOF
 
@@ -407,6 +410,7 @@ jobs:
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       VITE_API_URL: https://app.mako.ai/api
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
+      VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -439,6 +443,7 @@ jobs:
           NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
           VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
+          VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -466,6 +471,7 @@ jobs:
           cat <<EOF > .env.production
           VITE_API_URL=${VITE_API_URL}
           VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
+          VITE_GTM_ID=${VITE_GTM_ID}
           EOF
 
       - name: Build Docker image

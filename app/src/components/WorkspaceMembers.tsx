@@ -35,6 +35,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
+import { trackEvent } from "../lib/analytics";
 
 interface MemberRow {
   id: string;
@@ -79,6 +80,12 @@ export function WorkspaceMembers() {
 
     try {
       await inviteMember({ email: inviteEmail.trim(), role: inviteRole });
+
+      // Track invite sent
+      trackEvent("invite_sent", {
+        invite_role: inviteRole,
+      });
+
       setInviteDialogOpen(false);
       setInviteEmail("");
       setInviteRole("member");

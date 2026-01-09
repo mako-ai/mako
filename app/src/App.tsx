@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Box, CircularProgress, styled } from "@mui/material";
 import {
   Routes,
@@ -5,7 +6,9 @@ import {
   useParams,
   Navigate,
   useNavigate,
+  useLocation,
 } from "react-router-dom";
+import { trackPageView } from "./lib/analytics";
 import Sidebar from "./components/Sidebar";
 import { useAppStore } from "./store";
 import { useConsoleStore } from "./store/consoleStore";
@@ -411,22 +414,52 @@ function VerifyEmailRoute() {
   return <VerifyEmailPage />;
 }
 
+// Track page views on route changes for SPA
+function PageViewTracker() {
+  const location = useLocation();
+
+  useEffect(() => {
+    // Defer tracking to allow child components to update document.title first.
+    // Child components (like Editor) set the title in their own useEffect hooks,
+    // which run after this effect. Using requestAnimationFrame + setTimeout
+    // ensures we capture the title after React's render cycle completes.
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const rafId = requestAnimationFrame(() => {
+      timeoutId = setTimeout(() => {
+        trackPageView(location.pathname, document.title);
+      }, 0);
+    });
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [location.pathname]);
+
+  return null;
+}
+
 function App() {
   return (
-    <Routes>
-      {/* Invite route - no authentication required */}
-      <Route path="/invite/:token" element={<InvitePage />} />
+    <>
+      <PageViewTracker />
+      <Routes>
+        {/* Invite route - no authentication required */}
+        <Route path="/invite/:token" element={<InvitePage />} />
 
-      {/* Auth routes - redirect to "/" if already logged in */}
-      <Route path="/login" element={<LoginRoute />} />
-      <Route path="/register" element={<RegisterRoute />} />
-      <Route path="/verify-email" element={<VerifyEmailRoute />} />
-      <Route path="/forgot-password" element={<ForgotPasswordRoute />} />
-      <Route path="/reset-password" element={<ResetPasswordRoute />} />
+        {/* Auth routes - redirect to "/" if already logged in */}
+        <Route path="/login" element={<LoginRoute />} />
+        <Route path="/register" element={<RegisterRoute />} />
+        <Route path="/verify-email" element={<VerifyEmailRoute />} />
+        <Route path="/forgot-password" element={<ForgotPasswordRoute />} />
+        <Route path="/reset-password" element={<ResetPasswordRoute />} />
 
-      {/* Main app route - authentication required */}
-      <Route path="/*" element={<MainApp />} />
-    </Routes>
+        {/* Main app route - authentication required */}
+        <Route path="/*" element={<MainApp />} />
+      </Routes>
+    </>
   );
 }
 

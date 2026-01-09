@@ -75,6 +75,7 @@ echo "Building Docker image..."
 # Create a temporary .env.production file for the build to pick up variables
 echo "VITE_API_URL=$VITE_API_URL" > .env.production
 echo "VITE_MUI_LICENSE_KEY=$VITE_MUI_LICENSE_KEY" >> .env.production
+echo "VITE_GTM_ID=$VITE_GTM_ID" >> .env.production
 
 if ! docker build --platform linux/amd64 -t $IMAGE_NAME:latest .; then
     echo "❌ Docker build failed!"

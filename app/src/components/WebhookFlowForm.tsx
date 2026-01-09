@@ -27,6 +27,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { apiClient } from "../lib/api-client";
+import { trackEvent } from "../lib/analytics";
 
 interface WebhookFlowFormProps {
   flowId?: string;
@@ -198,6 +199,13 @@ export function WebhookFlowForm({
       let newFlow;
       if (isNewMode) {
         newFlow = await createFlow(currentWorkspace.id, payload);
+
+        // Track flow creation
+        trackEvent("flow_created", {
+          flow_type: "webhook",
+          connector_type: selectedConnector?.type,
+        });
+
         setSuccess(true);
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);

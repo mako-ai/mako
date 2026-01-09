@@ -23,6 +23,7 @@ import {
 } from "@mui/icons-material";
 import { workspaceClient, type PendingInvite } from "../lib/workspace-client";
 import { useWorkspace } from "../contexts/workspace-context";
+import { trackEvent } from "../lib/analytics";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -63,13 +64,21 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
       try {
         await acceptInvite(token);
+
+        // Track onboarding completion via invite
+        // Use > 1 to check for OTHER pending invites beyond the one being accepted
+        trackEvent("onboarding_completed", {
+          has_pending_invites: pendingInvites.length > 1,
+          action: "joined",
+        });
+
         onComplete();
       } catch (error: any) {
         setErrorMessage(error.message || "Failed to accept invitation");
         setAcceptingToken(null);
       }
     },
-    [acceptInvite, onComplete],
+    [acceptInvite, onComplete, pendingInvites.length],
   );
 
   const handleCreateWorkspace = useCallback(async () => {
@@ -82,13 +91,26 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setErrorMessage("");
 
     try {
-      await createWorkspace({ name: workspaceName.trim() });
+      const workspace = await createWorkspace({ name: workspaceName.trim() });
+
+      // Track workspace creation during onboarding
+      trackEvent("workspace_created", {
+        workspace_id: workspace.id,
+        is_onboarding: true,
+      });
+
+      // Track onboarding completion
+      trackEvent("onboarding_completed", {
+        has_pending_invites: pendingInvites.length > 0,
+        action: "created",
+      });
+
       onComplete();
     } catch (error: any) {
       setErrorMessage(error.message || "Failed to create workspace");
       setState("choose");
     }
-  }, [workspaceName, createWorkspace, onComplete]);
+  }, [workspaceName, createWorkspace, onComplete, pendingInvites.length]);
 
   // Loading state
   if (state === "loading") {
