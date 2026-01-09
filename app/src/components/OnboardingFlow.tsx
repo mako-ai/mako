@@ -66,8 +66,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         await acceptInvite(token);
 
         // Track onboarding completion via invite
+        // Use > 1 to check for OTHER pending invites beyond the one being accepted
         trackEvent("onboarding_completed", {
-          has_pending_invites: pendingInvites.length > 0,
+          has_pending_invites: pendingInvites.length > 1,
           action: "joined",
         });
 
