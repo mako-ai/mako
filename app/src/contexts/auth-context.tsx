@@ -11,7 +11,7 @@ import {
   type LoginCredentials,
   type RegisterCredentials,
 } from "../lib/auth-client";
-import { identify } from "../lib/analytics";
+import { identify, trackEvent } from "../lib/analytics";
 
 /**
  * Auth context state interface
@@ -59,9 +59,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       const currentUser = await authClient.getMe();
       setUser(currentUser);
+
       // Identify user for analytics on app start (only if authenticated)
       if (currentUser) {
         identify(currentUser.id, { email: currentUser.email });
+
+        // Check for OAuth sign-up flag (set by backend after OAuth callback)
+        // Value is the provider name: "google" or "github"
+        const params = new URLSearchParams(window.location.search);
+        const oauthProvider = params.get("new_user");
+        if (oauthProvider) {
+          // Clean up URL by removing the new_user param (always, even if invalid)
+          params.delete("new_user");
+          const newUrl =
+            params.toString().length > 0
+              ? `${window.location.pathname}?${params.toString()}`
+              : window.location.pathname;
+          window.history.replaceState({}, "", newUrl);
+
+          // Validate that the provider is a legitimate OAuth provider to prevent
+          // analytics pollution from crafted URLs
+          const validOAuthProviders = ["google", "github"] as const;
+          if (
+            validOAuthProviders.includes(
+              oauthProvider as (typeof validOAuthProviders)[number],
+            )
+          ) {
+            // Track sign_up event for OAuth users with specific provider
+            trackEvent("sign_up", { method: oauthProvider });
+          }
+        }
       }
     } catch (err) {
       console.error("Auth check failed:", err);
