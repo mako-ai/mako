@@ -49,7 +49,10 @@ authRoutes.post("/register", authRateLimiter, async c => {
   try {
     const { email, password } = await c.req.json();
 
-    const { user, requiresVerification } = await authService.register(email, password);
+    const { user, requiresVerification } = await authService.register(
+      email,
+      password,
+    );
 
     return c.json({
       user: {
@@ -266,13 +269,17 @@ authRoutes.post("/set-password", authMiddleware, async c => {
     const { password, code } = await c.req.json();
 
     if (!password || !code) {
-      return c.json({ error: "Password and verification code are required" }, 400);
+      return c.json(
+        { error: "Password and verification code are required" },
+        400,
+      );
     }
 
     await authService.linkPassword(user.email, password, code);
 
     return c.json({
-      message: "Password set successfully. You can now login with your email and password.",
+      message:
+        "Password set successfully. You can now login with your email and password.",
     });
   } catch (error: any) {
     return c.json({ error: error.message }, 400);
@@ -338,9 +345,7 @@ authRoutes.post("/reset-password", authRateLimiter, async c => {
 authRoutes.get("/google", async c => {
   // Check if OAuth is disabled (PR preview environments)
   if (isOAuthDisabled()) {
-    return c.redirect(
-      `${process.env.CLIENT_URL}/login?error=oauth_disabled`,
-    );
+    return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_disabled`);
   }
 
   const state = generateState();
@@ -444,7 +449,7 @@ authRoutes.get("/google/callback", async c => {
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
-    const { session } = await authService.handleOAuthCallback(
+    const { session, isNewUser } = await authService.handleOAuthCallback(
       "google",
       googleUser.sub.toString(),
       googleUser.email,
@@ -463,7 +468,11 @@ authRoutes.get("/google/callback", async c => {
     setCookie(c, "google_oauth_state", "", { maxAge: 0 });
     setCookie(c, "google_code_verifier", "", { maxAge: 0 });
 
-    return c.redirect(`${process.env.CLIENT_URL}/`);
+    // Include new_user flag for analytics tracking on client
+    const redirectUrl = isNewUser
+      ? `${process.env.CLIENT_URL}/?new_user=google`
+      : `${process.env.CLIENT_URL}/`;
+    return c.redirect(redirectUrl);
   } catch (error: any) {
     console.error("Google OAuth error:", error);
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
@@ -476,9 +485,7 @@ authRoutes.get("/google/callback", async c => {
 authRoutes.get("/github", async c => {
   // Check if OAuth is disabled (PR preview environments)
   if (isOAuthDisabled()) {
-    return c.redirect(
-      `${process.env.CLIENT_URL}/login?error=oauth_disabled`,
-    );
+    return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_disabled`);
   }
 
   const state = generateState();
@@ -534,7 +541,7 @@ authRoutes.get("/github/callback", async c => {
     const emails = (await emailResponse.json()) as any[];
     const primaryEmail = emails.find(e => e.primary)?.email;
 
-    const { session } = await authService.handleOAuthCallback(
+    const { session, isNewUser } = await authService.handleOAuthCallback(
       "github",
       githubUser.id.toString(),
       primaryEmail || githubUser.email,
@@ -552,7 +559,11 @@ authRoutes.get("/github/callback", async c => {
     // Clear OAuth cookie
     setCookie(c, "github_oauth_state", "", { maxAge: 0 });
 
-    return c.redirect(`${process.env.CLIENT_URL}/`);
+    // Include new_user flag for analytics tracking on client
+    const redirectUrl = isNewUser
+      ? `${process.env.CLIENT_URL}/?new_user=github`
+      : `${process.env.CLIENT_URL}/`;
+    return c.redirect(redirectUrl);
   } catch (error: any) {
     console.error("GitHub OAuth error:", error);
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
