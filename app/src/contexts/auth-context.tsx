@@ -69,15 +69,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const params = new URLSearchParams(window.location.search);
         const oauthProvider = params.get("new_user");
         if (oauthProvider) {
-          // Track sign_up event for OAuth users with specific provider
-          trackEvent("sign_up", { method: oauthProvider });
-          // Clean up URL by removing the new_user param
+          // Clean up URL by removing the new_user param (always, even if invalid)
           params.delete("new_user");
           const newUrl =
             params.toString().length > 0
               ? `${window.location.pathname}?${params.toString()}`
               : window.location.pathname;
           window.history.replaceState({}, "", newUrl);
+
+          // Validate that the provider is a legitimate OAuth provider to prevent
+          // analytics pollution from crafted URLs
+          const validOAuthProviders = ["google", "github"] as const;
+          if (
+            validOAuthProviders.includes(
+              oauthProvider as (typeof validOAuthProviders)[number],
+            )
+          ) {
+            // Track sign_up event for OAuth users with specific provider
+            trackEvent("sign_up", { method: oauthProvider });
+          }
         }
       }
     } catch (err) {
