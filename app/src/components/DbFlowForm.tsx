@@ -233,10 +233,12 @@ export function DbFlowForm({
       const flow = flows.find(j => j._id === currentFlowId);
       if (flow && flow.sourceType === "database") {
         const formData: FormData = {
-          sourceConnectionId: flow.databaseSource?.connectionId?.toString() || "",
+          sourceConnectionId:
+            flow.databaseSource?.connectionId?.toString() || "",
           sourceDatabase: flow.databaseSource?.database || "",
           query: flow.databaseSource?.query || "",
-          destinationConnectionId: flow.tableDestination?.connectionId?.toString() || "",
+          destinationConnectionId:
+            flow.tableDestination?.connectionId?.toString() || "",
           destinationDatabase: flow.tableDestination?.database || "",
           destinationSchema: flow.tableDestination?.schema || "",
           destinationTable: flow.tableDestination?.tableName || "",
@@ -249,7 +251,8 @@ export function DbFlowForm({
           conflictStrategy: (flow.conflictConfig?.strategy as any) || "update",
           batchSize: flow.batchSize || 2000,
           enabled: flow.enabled,
-          createTableIfNotExists: flow.tableDestination?.createIfNotExists ?? true,
+          createTableIfNotExists:
+            flow.tableDestination?.createIfNotExists ?? true,
         };
 
         reset(formData);
@@ -319,7 +322,10 @@ export function DbFlowForm({
 
       // Parse key columns
       const keyColumns = data.keyColumns
-        ? data.keyColumns.split(",").map(k => k.trim()).filter(Boolean)
+        ? data.keyColumns
+            .split(",")
+            .map(k => k.trim())
+            .filter(Boolean)
         : [];
 
       // Create payload
@@ -479,7 +485,10 @@ export function DbFlowForm({
             <Stack spacing={3}>
               {/* Source Configuration */}
               <Box>
-                <Typography variant="subtitle2" sx={{ mb: 1, display: "flex", alignItems: "center", gap: 1 }}>
+                <Typography
+                  variant="subtitle2"
+                  sx={{ mb: 1, display: "flex", alignItems: "center", gap: 1 }}
+                >
                   <DatabaseIcon fontSize="small" />
                   Source Database
                 </Typography>
@@ -489,12 +498,21 @@ export function DbFlowForm({
                     control={control}
                     rules={{ required: "Source connection is required" }}
                     render={({ field }) => (
-                      <FormControl fullWidth error={!!errors.sourceConnectionId}>
+                      <FormControl
+                        fullWidth
+                        error={!!errors.sourceConnectionId}
+                      >
                         <InputLabel>Source Connection</InputLabel>
                         <Select {...field} label="Source Connection">
                           {databases.map(db => (
                             <MenuItem key={db.id} value={db.id}>
-                              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 1,
+                                }}
+                              >
                                 {db.name}
                                 <Chip label={db.type} size="small" />
                               </Box>
@@ -502,7 +520,9 @@ export function DbFlowForm({
                           ))}
                         </Select>
                         {errors.sourceConnectionId && (
-                          <FormHelperText>{errors.sourceConnectionId.message}</FormHelperText>
+                          <FormHelperText>
+                            {errors.sourceConnectionId.message}
+                          </FormHelperText>
                         )}
                       </FormControl>
                     )}
@@ -511,7 +531,9 @@ export function DbFlowForm({
                   {watchSourceConnectionId && (
                     <>
                       {isLoadingSourceDbs ? (
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                        <Box
+                          sx={{ display: "flex", alignItems: "center", gap: 2 }}
+                        >
                           <CircularProgress size={20} />
                           <Typography variant="body2" color="text.secondary">
                             Loading databases...
@@ -576,7 +598,10 @@ export function DbFlowForm({
 
               {/* Destination Configuration */}
               <Box>
-                <Typography variant="subtitle2" sx={{ mb: 1, display: "flex", alignItems: "center", gap: 1 }}>
+                <Typography
+                  variant="subtitle2"
+                  sx={{ mb: 1, display: "flex", alignItems: "center", gap: 1 }}
+                >
                   <DatabaseIcon fontSize="small" />
                   Destination Database
                 </Typography>
@@ -586,12 +611,21 @@ export function DbFlowForm({
                     control={control}
                     rules={{ required: "Destination connection is required" }}
                     render={({ field }) => (
-                      <FormControl fullWidth error={!!errors.destinationConnectionId}>
+                      <FormControl
+                        fullWidth
+                        error={!!errors.destinationConnectionId}
+                      >
                         <InputLabel>Destination Connection</InputLabel>
                         <Select {...field} label="Destination Connection">
                           {databases.map(db => (
                             <MenuItem key={db.id} value={db.id}>
-                              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 1,
+                                }}
+                              >
                                 {db.name}
                                 <Chip label={db.type} size="small" />
                               </Box>
@@ -599,7 +633,9 @@ export function DbFlowForm({
                           ))}
                         </Select>
                         {errors.destinationConnectionId && (
-                          <FormHelperText>{errors.destinationConnectionId.message}</FormHelperText>
+                          <FormHelperText>
+                            {errors.destinationConnectionId.message}
+                          </FormHelperText>
                         )}
                       </FormControl>
                     )}
@@ -608,7 +644,9 @@ export function DbFlowForm({
                   {watchDestConnectionId && (
                     <>
                       {isLoadingDestDbs ? (
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                        <Box
+                          sx={{ display: "flex", alignItems: "center", gap: 2 }}
+                        >
                           <CircularProgress size={20} />
                           <Typography variant="body2" color="text.secondary">
                             Loading databases...
@@ -769,7 +807,9 @@ export function DbFlowForm({
                       <InputLabel>Sync Mode</InputLabel>
                       <Select {...field} label="Sync Mode">
                         <MenuItem value="full">Full Sync</MenuItem>
-                        <MenuItem value="incremental">Incremental Sync</MenuItem>
+                        <MenuItem value="incremental">
+                          Incremental Sync
+                        </MenuItem>
                       </Select>
                       <FormHelperText>
                         {field.value === "full"
