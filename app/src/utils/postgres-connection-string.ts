@@ -62,7 +62,9 @@ export function parsePostgresConnectionString(
     return {
       host: url.hostname || undefined,
       port: url.port ? parseInt(url.port, 10) : 5432,
-      database: url.pathname.slice(1) || undefined, // Remove leading /, convert "" to undefined
+      database: url.pathname.slice(1)
+        ? decodeURIComponent(url.pathname.slice(1))
+        : undefined, // Remove leading /, decode, convert "" to undefined
       username: url.username ? decodeURIComponent(url.username) : undefined,
       password: url.password ? decodeURIComponent(url.password) : undefined,
       ssl,
@@ -108,7 +110,7 @@ export function buildPostgresConnectionString(
 
   // Add database if present
   if (database) {
-    connectionString += `/${database}`;
+    connectionString += `/${encodeURIComponent(database)}`;
   }
 
   // Add SSL mode if enabled
