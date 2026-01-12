@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   Dialog,
   DialogTitle,
@@ -18,13 +18,22 @@ import {
   CardActionArea,
   Avatar,
   IconButton,
+  InputAdornment,
 } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import Visibility from "@mui/icons-material/Visibility";
+import VisibilityOff from "@mui/icons-material/VisibilityOff";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import ErrorIcon from "@mui/icons-material/Error";
 import { useWorkspace } from "../contexts/workspace-context";
 import { apiClient } from "../lib/api-client";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useForm, Controller } from "react-hook-form";
 import { trackEvent } from "../lib/analytics";
+import {
+  parsePostgresConnectionString,
+  buildPostgresConnectionString,
+} from "../utils/postgres-connection-string";
 
 interface CreateDatabaseDialogProps {
   open: boolean;
@@ -43,6 +52,20 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [step, setStep] = useState<"select" | "configure">("select");
+
+  // Password visibility state (keyed by field name)
+  const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
+
+  // Test connection state
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    error?: string;
+  } | null>(null);
+
+  // Ref to prevent infinite loops in two-way binding
+  const isUpdatingFromConnectionString = useRef(false);
+  const isUpdatingFromFields = useRef(false);
 
   type FormValues = {
     name: string;
@@ -70,6 +93,134 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     types: dbTypes,
     schemas,
   } = useDatabaseCatalogStore();
+
+  // Toggle password visibility for a field
+  const togglePasswordVisibility = useCallback((fieldName: string) => {
+    setShowPassword(prev => ({ ...prev, [fieldName]: !prev[fieldName] }));
+  }, []);
+
+  // Test connection without saving
+  const handleTestConnection = useCallback(async () => {
+    if (!currentWorkspace) return;
+
+    const values = watch();
+    if (!values.type) {
+      setTestResult({ success: false, error: "Database type is required" });
+      return;
+    }
+
+    setTestingConnection(true);
+    setTestResult(null);
+
+    try {
+      const res = await apiClient.post<{ success: boolean; error?: string }>(
+        `/workspaces/${currentWorkspace.id}/databases/test-connection`,
+        {
+          type: values.type,
+          connection: values.connection,
+        },
+      );
+      setTestResult(res);
+    } catch (err) {
+      setTestResult({
+        success: false,
+        error: err instanceof Error ? err.message : "Connection test failed",
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  }, [currentWorkspace, watch]);
+
+  // Watch PostgreSQL fields for two-way binding
+  const watchedConnection = watch("connection");
+  const watchedType = watch("type");
+
+  // Two-way binding: Connection string -> Individual fields (for PostgreSQL)
+  useEffect(() => {
+    if (watchedType !== "postgresql") return;
+    if (isUpdatingFromFields.current) return;
+    if (!watchedConnection?.connectionString) return;
+
+    const parsed = parsePostgresConnectionString(
+      watchedConnection.connectionString,
+    );
+    if (!parsed) return;
+
+    isUpdatingFromConnectionString.current = true;
+
+    // Update individual fields from parsed connection string
+    if (parsed.host !== undefined && parsed.host !== watchedConnection.host) {
+      setValue("connection.host", parsed.host);
+    }
+    if (parsed.port !== undefined && parsed.port !== watchedConnection.port) {
+      setValue("connection.port", parsed.port);
+    }
+    if (
+      parsed.database !== undefined &&
+      parsed.database !== watchedConnection.database
+    ) {
+      setValue("connection.database", parsed.database);
+    }
+    if (
+      parsed.username !== undefined &&
+      parsed.username !== watchedConnection.username
+    ) {
+      setValue("connection.username", parsed.username);
+    }
+    if (
+      parsed.password !== undefined &&
+      parsed.password !== watchedConnection.password
+    ) {
+      setValue("connection.password", parsed.password);
+    }
+    if (parsed.ssl !== undefined && parsed.ssl !== watchedConnection.ssl) {
+      setValue("connection.ssl", parsed.ssl);
+    }
+
+    // Reset flag after a tick to allow re-triggering
+    setTimeout(() => {
+      isUpdatingFromConnectionString.current = false;
+    }, 0);
+  }, [watchedType, watchedConnection?.connectionString, setValue]);
+
+  // Two-way binding: Individual fields -> Connection string (for PostgreSQL)
+  useEffect(() => {
+    if (watchedType !== "postgresql") return;
+    if (isUpdatingFromConnectionString.current) return;
+    if (!watchedConnection?.use_connection_string) return;
+
+    // Only build if we have at least a host
+    if (!watchedConnection.host) return;
+
+    isUpdatingFromFields.current = true;
+
+    const builtString = buildPostgresConnectionString({
+      host: watchedConnection.host,
+      port: watchedConnection.port,
+      database: watchedConnection.database,
+      username: watchedConnection.username,
+      password: watchedConnection.password,
+      ssl: watchedConnection.ssl,
+    });
+
+    if (builtString && builtString !== watchedConnection.connectionString) {
+      setValue("connection.connectionString", builtString);
+    }
+
+    setTimeout(() => {
+      isUpdatingFromFields.current = false;
+    }, 0);
+  }, [
+    watchedType,
+    watchedConnection?.use_connection_string,
+    watchedConnection?.host,
+    watchedConnection?.port,
+    watchedConnection?.database,
+    watchedConnection?.username,
+    watchedConnection?.password,
+    watchedConnection?.ssl,
+    setValue,
+  ]);
 
   // Reset or fetch data when dialog opens
   useEffect(() => {
@@ -118,6 +269,8 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     reset({ name: "", type: "", connection: {} });
     setError(null);
     setStep("select");
+    setShowPassword({});
+    setTestResult(null);
     onClose();
   };
 
@@ -292,7 +445,15 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
             {databaseId ? "Edit Database" : "Configure Database"}
           </DialogTitle>
           <DialogContent>
-            <Box sx={{ pt: 1 }}>
+            <Box
+              component="form"
+              autoComplete="off"
+              data-form-type="other"
+              data-lpignore="true"
+              data-1p-ignore
+              sx={{ pt: 1 }}
+              onSubmit={e => e.preventDefault()}
+            >
               {error && (
                 <Alert severity="error" sx={{ mb: 2 }}>
                   {error}
@@ -308,6 +469,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                 placeholder="My Database"
                 error={Boolean(errors.name)}
                 helperText={errors.name?.message as string}
+                autoComplete="off"
               />
 
               {/* Hidden input to register 'type' as required for validation */}
@@ -402,6 +564,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               {...register(fieldName as any, requiredRule)}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
                             />
                           );
                         case "password":
@@ -409,13 +572,47 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                             <TextField
                               key={field.name}
                               fullWidth
-                              type="password"
+                              type={
+                                showPassword[field.name] ? "text" : "password"
+                              }
                               label={field.label}
                               margin="normal"
                               placeholder={field.placeholder}
                               {...register(fieldName as any, requiredRule)}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
+                              slotProps={{
+                                input: {
+                                  endAdornment: (
+                                    <InputAdornment position="end">
+                                      <IconButton
+                                        aria-label={
+                                          showPassword[field.name]
+                                            ? "Hide password"
+                                            : "Show password"
+                                        }
+                                        onClick={() =>
+                                          togglePasswordVisibility(field.name)
+                                        }
+                                        edge="end"
+                                        size="small"
+                                      >
+                                        {showPassword[field.name] ? (
+                                          <VisibilityOff fontSize="small" />
+                                        ) : (
+                                          <Visibility fontSize="small" />
+                                        )}
+                                      </IconButton>
+                                    </InputAdornment>
+                                  ),
+                                },
+                                htmlInput: {
+                                  "data-1p-ignore": true,
+                                  "data-lpignore": "true",
+                                  "data-form-type": "other",
+                                },
+                              }}
                             />
                           );
                         case "number":
@@ -433,6 +630,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               })}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
                             />
                           );
                         case "select":
@@ -496,6 +694,18 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               {...register(fieldName as any, requiredRule)}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
+                              slotProps={
+                                field.name === "username"
+                                  ? {
+                                      htmlInput: {
+                                        "data-1p-ignore": true,
+                                        "data-lpignore": "true",
+                                        "data-form-type": "other",
+                                      },
+                                    }
+                                  : undefined
+                              }
                             />
                           );
                       }
@@ -505,22 +715,69 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
               )}
             </Box>
           </DialogContent>
-          <DialogActions>
-            <Button onClick={handleClose} disabled={loading}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSubmit(onSubmit)}
-              variant="contained"
-              disabled={loading}
-              startIcon={loading ? <CircularProgress size={16} /> : null}
+          <DialogActions
+            sx={{
+              flexDirection: "column",
+              alignItems: "stretch",
+              gap: 1,
+              px: 3,
+              pb: 2,
+            }}
+          >
+            {/* Test connection result */}
+            {testResult && (
+              <Alert
+                severity={testResult.success ? "success" : "error"}
+                icon={
+                  testResult.success ? (
+                    <CheckCircleIcon fontSize="inherit" />
+                  ) : (
+                    <ErrorIcon fontSize="inherit" />
+                  )
+                }
+                sx={{ width: "100%" }}
+              >
+                {testResult.success
+                  ? "Connection successful!"
+                  : testResult.error || "Connection failed"}
+              </Alert>
+            )}
+
+            {/* Action buttons */}
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 1,
+                width: "100%",
+              }}
             >
-              {loading
-                ? "Saving..."
-                : databaseId
-                  ? "Update Database"
-                  : "Create Database"}
-            </Button>
+              <Button onClick={handleClose} disabled={loading}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleTestConnection}
+                disabled={loading || testingConnection}
+                variant="outlined"
+                startIcon={
+                  testingConnection ? <CircularProgress size={16} /> : null
+                }
+              >
+                {testingConnection ? "Testing..." : "Test Connection"}
+              </Button>
+              <Button
+                onClick={handleSubmit(onSubmit)}
+                variant="contained"
+                disabled={loading}
+                startIcon={loading ? <CircularProgress size={16} /> : null}
+              >
+                {loading
+                  ? "Saving..."
+                  : databaseId
+                    ? "Update Database"
+                    : "Create Database"}
+              </Button>
+            </Box>
           </DialogActions>
         </>
       )}

@@ -2210,21 +2210,50 @@ export class DatabaseConnectionService {
 
   /**
    * Build PostgreSQL client configuration with timeout settings
+   * Supports both connection string and individual fields
    */
   private buildPostgreSQLClientConfig(
     database: IDatabaseConnection,
     targetDatabase?: string,
   ) {
-    return {
-      host: database.connection.host,
-      port: database.connection.port || 5432,
-      database: targetDatabase || database.connection.database,
-      user: database.connection.username,
-      password: database.connection.password,
-      ssl: database.connection.ssl ? { rejectUnauthorized: false } : false,
+    const conn = database.connection;
+    const baseConfig = {
       connectionTimeoutMillis: this.postgresConnectionTimeoutMs,
       query_timeout: this.postgresQueryTimeoutMs,
       statement_timeout: this.postgresQueryTimeoutMs,
+    };
+
+    // If connection string is provided, use it directly
+    if (conn.connectionString) {
+      let connectionString = conn.connectionString;
+
+      // If a target database is specified, we need to modify the connection string
+      if (targetDatabase) {
+        try {
+          const url = new URL(connectionString);
+          url.pathname = `/${targetDatabase}`;
+          connectionString = url.toString();
+        } catch {
+          // If URL parsing fails, just use the original connection string
+        }
+      }
+
+      return {
+        connectionString,
+        ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
+        ...baseConfig,
+      };
+    }
+
+    // Build from individual fields
+    return {
+      host: conn.host,
+      port: conn.port || 5432,
+      database: targetDatabase || conn.database,
+      user: conn.username,
+      password: conn.password,
+      ssl: conn.ssl ? { rejectUnauthorized: false } : false,
+      ...baseConfig,
     };
   }
 
