@@ -510,7 +510,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     if (!capturedId) return null;
     const tab = realConsoleTabs.find(t => t.id === capturedId);
     return tab?.title || null;
-  }, [realConsoleTabs, isLoading]); // Re-evaluate when loading state changes
+  }, [realConsoleTabs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Create transport with dynamic body based on current state
   const transport = useMemo(
@@ -575,7 +575,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         // Use captured console ID (from message submission time) as the primary fallback
         // This prevents the race condition where user switches consoles while agent is thinking
         const capturedId = capturedConsoleIdRef.current;
-        const consoleId = (input.consoleId as string | null) ?? capturedId ?? currentActiveId;
+        const consoleId =
+          (input.consoleId as string | null) ?? capturedId ?? currentActiveId;
         const targetConsole = consoleId
           ? currentTabs.find((c: any) => c.id === consoleId)
           : currentTabs.find((c: any) => c.id === capturedId) ||
@@ -811,14 +812,19 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         const capturedId = capturedConsoleIdRef.current;
 
         const consoles = currentTabs
-          .filter((tab: any) => tab?.kind === undefined || tab?.kind === "console")
+          .filter(
+            (tab: any) => tab?.kind === undefined || tab?.kind === "console",
+          )
           .map((tab: any) => ({
             id: tab.id,
             title: tab.title || "Untitled",
             connectionId: tab.connectionId,
             connectionName: tab.metadata?.connectionName || tab.connectionId,
-            databaseName: tab.databaseName || tab.metadata?.queryOptions?.databaseName,
-            contentPreview: (tab.content || "").slice(0, 100) + ((tab.content || "").length > 100 ? "..." : ""),
+            databaseName:
+              tab.databaseName || tab.metadata?.queryOptions?.databaseName,
+            contentPreview:
+              (tab.content || "").slice(0, 100) +
+              ((tab.content || "").length > 100 ? "..." : ""),
             isActive: tab.id === currentActiveId,
             isContextConsole: tab.id === capturedId,
           }));
@@ -851,7 +857,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
 
         // Use captured console ID as the primary fallback
         const capturedId = capturedConsoleIdRef.current;
-        const resolvedConsoleId = inputConsoleId ?? capturedId ?? currentActiveId;
+        const resolvedConsoleId =
+          inputConsoleId ?? capturedId ?? currentActiveId;
 
         if (!resolvedConsoleId) {
           addToolOutput({
@@ -883,7 +890,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         // Update the console's connection and database
         currentStore.updateConsoleConnection(resolvedConsoleId, connectionId);
         if (databaseId !== undefined || databaseName !== undefined) {
-          currentStore.updateConsoleDatabase(resolvedConsoleId, databaseId, databaseName);
+          currentStore.updateConsoleDatabase(
+            resolvedConsoleId,
+            databaseId,
+            databaseName,
+          );
         }
 
         addToolOutput({
