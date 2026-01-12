@@ -70,9 +70,15 @@ export function FlowsExplorer() {
     setAnchorEl(null);
   };
 
-  const handleCreateNew = (flowType: "scheduled" | "webhook") => {
+  const handleCreateNew = (flowType: "scheduled" | "webhook" | "db-scheduled") => {
+    const title =
+      flowType === "scheduled"
+        ? "New Scheduled Flow"
+        : flowType === "webhook"
+          ? "New Webhook Flow"
+          : "New Database Sync";
     const id = openTab({
-      title: `New ${flowType === "scheduled" ? "Scheduled" : "Webhook"} Flow`,
+      title,
       content: "",
       kind: "flow-editor",
       metadata: { isNew: true, flowType },
@@ -376,11 +382,17 @@ export function FlowsExplorer() {
           horizontal: "right",
         }}
       >
+        <MenuItem onClick={() => handleCreateNew("db-scheduled")}>
+          <ListItemIcon>
+            <ScheduleIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Database Sync</ListItemText>
+        </MenuItem>
         <MenuItem onClick={() => handleCreateNew("scheduled")}>
           <ListItemIcon>
             <ScheduleIcon fontSize="small" />
           </ListItemIcon>
-          <ListItemText>Scheduled Sync</ListItemText>
+          <ListItemText>Connector Sync</ListItemText>
         </MenuItem>
         <MenuItem onClick={() => handleCreateNew("webhook")}>
           <ListItemIcon>
