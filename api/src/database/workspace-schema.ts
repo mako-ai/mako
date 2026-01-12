@@ -405,15 +405,60 @@ export interface IFlowQuery {
 }
 
 /**
+ * Database source configuration for db-to-db flows
+ */
+export interface IDatabaseSource {
+  connectionId: Types.ObjectId;
+  database?: string; // Database name within the connection
+  query: string; // SQL query to fetch data
+}
+
+/**
+ * Table destination configuration for writing to SQL tables
+ */
+export interface ITableDestination {
+  connectionId: Types.ObjectId;
+  database?: string; // Database name within the connection
+  schema?: string; // Schema name (PostgreSQL) or dataset (BigQuery)
+  tableName: string; // Target table name
+  createIfNotExists?: boolean; // Auto-create table if it doesn't exist
+}
+
+/**
+ * Incremental sync configuration
+ */
+export interface IIncrementalConfig {
+  trackingColumn: string; // e.g., 'updated_at' or 'id'
+  trackingType: "timestamp" | "numeric";
+  lastValue?: string; // Last synced value (stored as string for flexibility)
+}
+
+/**
+ * Conflict resolution configuration for upserts
+ */
+export interface IConflictConfig {
+  keyColumns: string[]; // Columns that form the unique key
+  strategy: "upsert" | "ignore" | "replace";
+}
+
+/**
  * Flow model interface (data sync flow configuration)
  */
 export interface IFlow extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   type: "scheduled" | "webhook"; // Required field
-  dataSourceId: Types.ObjectId;
+
+  // Source configuration - either connector or database
+  sourceType: "connector" | "database";
+  dataSourceId?: Types.ObjectId; // For connector sources (Stripe, Close, etc.)
+  databaseSource?: IDatabaseSource; // For database sources (SQL queries)
+
+  // Destination configuration
   destinationDatabaseId: Types.ObjectId;
   destinationDatabaseName?: string;
+  tableDestination?: ITableDestination; // For writing to SQL tables instead of MongoDB collections
+
   schedule: {
     cron: string;
     timezone?: string;
@@ -425,9 +470,15 @@ export interface IFlow extends Document {
     totalReceived: number;
     enabled: boolean;
   };
-  entityFilter?: string[]; // Optional: specific entities to sync
+  entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
+
+  // Incremental and conflict config (for database sources)
+  incrementalConfig?: IIncrementalConfig;
+  conflictConfig?: IConflictConfig;
+  batchSize?: number; // Batch size for processing (default: 2000)
+
   enabled: boolean;
   lastRunAt?: Date;
   lastSuccessAt?: Date;
@@ -524,111 +575,6 @@ export interface IQueryExecution extends Document {
 
   // Optional resource tracking (some DBs provide this)
   bytesScanned?: number; // BigQuery, ClickHouse report this
-}
-
-/**
- * DbSync model interface (database-to-database sync configuration)
- */
-export interface IDbSync extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  name: string;
-
-  // Source configuration
-  source: {
-    databaseConnectionId: Types.ObjectId;
-    database?: string; // Database name within the connection (for cluster mode)
-    query: string; // SELECT statement to fetch data
-  };
-
-  // Target configuration
-  target: {
-    databaseConnectionId: Types.ObjectId;
-    database?: string; // Database name within the connection
-    schema?: string; // Schema name (PostgreSQL) or dataset (BigQuery)
-    tableName: string; // Target table name
-    createIfNotExists: boolean; // Auto-create table if it doesn't exist
-  };
-
-  // Sync configuration
-  syncMode: "full" | "incremental";
-  schedule: {
-    cron: string;
-    timezone?: string;
-  };
-
-  // Incremental config (required if syncMode = 'incremental')
-  incrementalConfig?: {
-    trackingColumn: string; // e.g., 'updated_at' or 'id'
-    trackingType: "timestamp" | "numeric";
-    lastValue?: string; // Last synced value (stored as string for flexibility)
-  };
-
-  // Conflict resolution (for incremental upserts)
-  conflictConfig?: {
-    keyColumns: string[]; // Columns that form the unique key
-    strategy: "upsert" | "ignore" | "replace";
-  };
-
-  // Performance tuning
-  batchSize: number; // Default: 2000
-
-  // Status tracking
-  enabled: boolean;
-  lastRunAt?: Date;
-  lastSuccessAt?: Date;
-  lastError?: string;
-  nextRunAt?: Date;
-  runCount: number;
-  avgDurationMs?: number;
-
-  // Metadata
-  createdBy: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-/**
- * DbSyncExecution model interface (execution log for db-to-db syncs)
- */
-export interface IDbSyncExecution extends Document {
-  _id: Types.ObjectId;
-  dbSyncId: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  startedAt: Date;
-  completedAt?: Date;
-  lastHeartbeat?: Date;
-  status: "running" | "completed" | "failed" | "cancelled" | "abandoned";
-  success: boolean;
-  duration?: number;
-  logs: Array<{
-    timestamp: Date;
-    level: "debug" | "info" | "warn" | "error";
-    message: string;
-    metadata?: any;
-  }>;
-  error?: {
-    message: string;
-    stack?: string;
-    code?: string | number | null;
-  } | null;
-  stats?: {
-    rowsRead?: number;
-    rowsWritten?: number;
-    batchesProcessed?: number;
-  };
-  context?: {
-    sourceDatabaseId: Types.ObjectId;
-    targetDatabaseId: Types.ObjectId;
-    syncMode: "full" | "incremental";
-    query: string;
-  };
-  system?: {
-    workerId: string;
-    workerVersion?: string;
-    nodeVersion: string;
-    hostname: string;
-  };
 }
 
 /**
@@ -1263,10 +1209,28 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["scheduled", "webhook"],
       required: true,
     },
+    // Source type discriminator - defaults to "connector" for backward compatibility
+    sourceType: {
+      type: String,
+      enum: ["connector", "database"],
+      default: "connector",
+    },
+    // For connector sources (Stripe, Close, GraphQL, etc.)
     dataSourceId: {
       type: Schema.Types.ObjectId,
       ref: "Connector",
-      required: true,
+      required: function () {
+        return (this as any).sourceType !== "database";
+      },
+    },
+    // For database sources (SQL queries)
+    databaseSource: {
+      connectionId: {
+        type: Schema.Types.ObjectId,
+        ref: "DatabaseConnection",
+      },
+      database: String,
+      query: String,
     },
     destinationDatabaseId: {
       type: Schema.Types.ObjectId,
@@ -1276,6 +1240,20 @@ const FlowSchema = new Schema<IFlow>(
     destinationDatabaseName: {
       type: String,
       required: false,
+    },
+    // For writing to SQL tables instead of MongoDB collections
+    tableDestination: {
+      connectionId: {
+        type: Schema.Types.ObjectId,
+        ref: "DatabaseConnection",
+      },
+      database: String,
+      schema: String,
+      tableName: String,
+      createIfNotExists: {
+        type: Boolean,
+        default: true,
+      },
     },
     schedule: {
       cron: {
@@ -1341,6 +1319,30 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["full", "incremental"],
       default: "full",
     },
+    // Incremental config for database sources
+    incrementalConfig: {
+      trackingColumn: String,
+      trackingType: {
+        type: String,
+        enum: ["timestamp", "numeric"],
+      },
+      lastValue: String,
+    },
+    // Conflict resolution for upserts
+    conflictConfig: {
+      keyColumns: [String],
+      strategy: {
+        type: String,
+        enum: ["upsert", "ignore", "replace"],
+        default: "upsert",
+      },
+    },
+    batchSize: {
+      type: Number,
+      default: 2000,
+      min: 100,
+      max: 50000,
+    },
     enabled: {
       type: Boolean,
       default: true,
@@ -1370,8 +1372,11 @@ const FlowSchema = new Schema<IFlow>(
 
 // Indexes
 FlowSchema.index({ workspaceId: 1, enabled: 1 });
-FlowSchema.index({ dataSourceId: 1 });
+FlowSchema.index({ workspaceId: 1, sourceType: 1 });
+FlowSchema.index({ dataSourceId: 1 }, { sparse: true }); // Sparse since not required for database sources
+FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ destinationDatabaseId: 1 });
+FlowSchema.index({ "tableDestination.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ nextRunAt: 1 });
 
 /**
@@ -1461,6 +1466,7 @@ WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 
+<<<<<<< HEAD
 /**
  * QueryExecution Schema
  * Tracks all query executions for usage analytics and billing
@@ -1532,179 +1538,6 @@ QueryExecutionSchema.index({ apiKeyId: 1, executedAt: -1 }, { sparse: true }); /
 QueryExecutionSchema.index({ workspaceId: 1, status: 1 }); // Error rate monitoring
 QueryExecutionSchema.index({ executedAt: 1 }, { expireAfterSeconds: 7776000 }); // TTL: 90 days
 
-/**
- * DbSync Schema (database-to-database sync configuration)
- */
-const DbSyncSchema = new Schema<IDbSync>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    source: {
-      databaseConnectionId: {
-        type: Schema.Types.ObjectId,
-        ref: "DatabaseConnection",
-        required: true,
-      },
-      database: String,
-      query: {
-        type: String,
-        required: true,
-      },
-    },
-    target: {
-      databaseConnectionId: {
-        type: Schema.Types.ObjectId,
-        ref: "DatabaseConnection",
-        required: true,
-      },
-      database: String,
-      schema: String,
-      tableName: {
-        type: String,
-        required: true,
-      },
-      createIfNotExists: {
-        type: Boolean,
-        default: true,
-      },
-    },
-    syncMode: {
-      type: String,
-      enum: ["full", "incremental"],
-      default: "full",
-    },
-    schedule: {
-      cron: {
-        type: String,
-        required: true,
-        validate: {
-          validator: function (v: string) {
-            const fields = v.split(" ");
-            return fields.length === 5 || fields.length === 6;
-          },
-          message: "Invalid cron expression",
-        },
-      },
-      timezone: {
-        type: String,
-        default: "UTC",
-      },
-    },
-    incrementalConfig: {
-      trackingColumn: String,
-      trackingType: {
-        type: String,
-        enum: ["timestamp", "numeric"],
-      },
-      lastValue: String,
-    },
-    conflictConfig: {
-      keyColumns: [String],
-      strategy: {
-        type: String,
-        enum: ["upsert", "ignore", "replace"],
-        default: "upsert",
-      },
-    },
-    batchSize: {
-      type: Number,
-      default: 2000,
-      min: 100,
-      max: 50000,
-    },
-    enabled: {
-      type: Boolean,
-      default: true,
-    },
-    lastRunAt: Date,
-    lastSuccessAt: Date,
-    lastError: String,
-    nextRunAt: Date,
-    runCount: {
-      type: Number,
-      default: 0,
-    },
-    avgDurationMs: Number,
-    createdBy: {
-      type: String,
-      ref: "User",
-      required: true,
-    },
-  },
-  {
-    timestamps: true,
-    toJSON: { getters: true },
-    toObject: { getters: true },
-    collection: "db_syncs",
-  },
-);
-
-// Indexes
-DbSyncSchema.index({ workspaceId: 1, enabled: 1 });
-DbSyncSchema.index({ "source.databaseConnectionId": 1 });
-DbSyncSchema.index({ "target.databaseConnectionId": 1 });
-DbSyncSchema.index({ nextRunAt: 1 });
-
-/**
- * DbSyncExecution Schema (binds to 'db_sync_executions' collection)
- */
-const DbSyncExecutionSchema = new Schema<IDbSyncExecution>(
-  {
-    dbSyncId: { type: Schema.Types.ObjectId, ref: "DbSync", required: true },
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    startedAt: { type: Date, required: true },
-    completedAt: Date,
-    lastHeartbeat: Date,
-    status: {
-      type: String,
-      enum: ["running", "completed", "failed", "cancelled", "abandoned"],
-      required: true,
-    },
-    success: { type: Boolean, required: true },
-    duration: Number,
-    logs: [
-      {
-        timestamp: { type: Date, required: true },
-        level: {
-          type: String,
-          enum: ["debug", "info", "warn", "error"],
-          required: true,
-        },
-        message: { type: String, required: true },
-        metadata: Schema.Types.Mixed,
-      },
-    ],
-    error: Schema.Types.Mixed,
-    stats: {
-      rowsRead: Number,
-      rowsWritten: Number,
-      batchesProcessed: Number,
-    },
-    context: Schema.Types.Mixed,
-    system: Schema.Types.Mixed,
-  },
-  {
-    collection: "db_sync_executions",
-    timestamps: false,
-  },
-);
-
-// Indexes
-DbSyncExecutionSchema.index({ dbSyncId: 1, startedAt: -1 });
-DbSyncExecutionSchema.index({ workspaceId: 1, startedAt: -1 });
-
 // Models
 export const Workspace = mongoose.model<IWorkspace>(
   "Workspace",
@@ -1749,9 +1582,4 @@ export const WebhookEvent = mongoose.model<IWebhookEvent>(
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,
-);
-export const DbSync = mongoose.model<IDbSync>("DbSync", DbSyncSchema);
-export const DbSyncExecution = mongoose.model<IDbSyncExecution>(
-  "DbSyncExecution",
-  DbSyncExecutionSchema,
 );

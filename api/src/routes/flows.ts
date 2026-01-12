@@ -71,32 +71,71 @@ flowRoutes.use("*", async (c: AuthenticatedContext, next) => {
 flowRoutes.get("/", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
+    const sourceType = c.req.query("sourceType"); // Optional filter
 
-    const buildPipeline = (sourceCollection: string): PipelineStage[] => [
-      { $match: { workspaceId: new Types.ObjectId(workspaceId) } },
+    const pipeline: PipelineStage[] = [
       {
-        $lookup: {
-          from: sourceCollection,
-          localField: "dataSourceId",
-          foreignField: "_id",
-          as: "dataSourceId",
+        $match: {
+          workspaceId: new Types.ObjectId(workspaceId),
+          ...(sourceType && { sourceType }),
         },
       },
+      // Lookup for connector sources (optional)
+      {
+        $lookup: {
+          from: "connectors",
+          localField: "dataSourceId",
+          foreignField: "_id",
+          as: "dataSourceLookup",
+        },
+      },
+      // Lookup for database sources (optional)
+      {
+        $lookup: {
+          from: "databaseconnections",
+          localField: "databaseSource.connectionId",
+          foreignField: "_id",
+          as: "databaseSourceLookup",
+        },
+      },
+      // Lookup for destination database
       {
         $lookup: {
           from: "databaseconnections",
           localField: "destinationDatabaseId",
           foreignField: "_id",
-          as: "destinationDatabaseId",
+          as: "destinationDatabaseLookup",
         },
       },
-      { $unwind: "$dataSourceId" },
-      { $unwind: "$destinationDatabaseId" },
+      // Lookup for table destination (optional)
+      {
+        $lookup: {
+          from: "databaseconnections",
+          localField: "tableDestination.connectionId",
+          foreignField: "_id",
+          as: "tableDestinationLookup",
+        },
+      },
+      {
+        $addFields: {
+          // Normalize source info based on sourceType
+          dataSourceId: {
+            $cond: {
+              if: { $eq: ["$sourceType", "database"] },
+              then: { $arrayElemAt: ["$databaseSourceLookup", 0] },
+              else: { $arrayElemAt: ["$dataSourceLookup", 0] },
+            },
+          },
+          destinationDatabaseId: { $arrayElemAt: ["$destinationDatabaseLookup", 0] },
+          tableDestinationConnection: { $arrayElemAt: ["$tableDestinationLookup", 0] },
+        },
+      },
       {
         $project: {
           _id: 1,
           workspaceId: 1,
           type: 1,
+          sourceType: { $ifNull: ["$sourceType", "connector"] },
           destinationDatabaseName: 1,
           schedule: 1,
           webhookConfig: 1,
@@ -113,23 +152,35 @@ flowRoutes.get("/", async c => {
           createdBy: 1,
           createdAt: 1,
           updatedAt: 1,
+          // Source info
           "dataSourceId._id": 1,
           "dataSourceId.name": 1,
           "dataSourceId.type": 1,
+          // Database source details
+          databaseSource: 1,
+          // Destination info
           "destinationDatabaseId._id": 1,
           "destinationDatabaseId.name": 1,
           "destinationDatabaseId.type": 1,
+          // Table destination details
+          tableDestination: 1,
+          "tableDestinationConnection._id": 1,
+          "tableDestinationConnection.name": 1,
+          "tableDestinationConnection.type": 1,
+          // Database source specific config
+          incrementalConfig: 1,
+          conflictConfig: 1,
+          batchSize: 1,
         },
       },
       {
         $sort: {
-          "dataSourceId.name": 1,
-          "destinationDatabaseId.name": 1,
+          createdAt: -1,
         },
       },
     ];
 
-    const flows = await Flow.aggregate(buildPipeline("connectors"));
+    const flows = await Flow.aggregate(pipeline);
 
     return c.json({
       success: true,
@@ -158,41 +209,108 @@ flowRoutes.post("/", async c => {
     const userId = "system";
     const body = await c.req.json();
 
-    // Validate required fields based on flow type
+    // Validate required fields based on flow type and source type
     const flowType = body.type || "scheduled";
-    const requiredFields = ["dataSourceId", "destinationDatabaseId"];
+    const sourceType = body.sourceType || "connector";
 
-    // Schedule is only required for scheduled flows
-    if (flowType === "scheduled") {
-      requiredFields.push("schedule");
+    // Schedule is required for scheduled flows
+    if (flowType === "scheduled" && !body.schedule) {
+      return c.json({ success: false, error: "schedule is required" }, 400);
     }
 
-    for (const field of requiredFields) {
-      if (!body[field]) {
-        return c.json({ success: false, error: `${field} is required` }, 400);
+    // Validate source configuration based on sourceType
+    if (sourceType === "database") {
+      // Database source validation
+      if (!body.databaseSource?.connectionId) {
+        return c.json(
+          { success: false, error: "databaseSource.connectionId is required" },
+          400,
+        );
+      }
+      if (!body.databaseSource?.query) {
+        return c.json(
+          { success: false, error: "databaseSource.query is required" },
+          400,
+        );
+      }
+
+      // Validate source database connection exists and belongs to workspace
+      const sourceDb = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(body.databaseSource.connectionId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!sourceDb) {
+        return c.json(
+          { success: false, error: "Source database connection not found" },
+          404,
+        );
+      }
+    } else {
+      // Connector source validation (default)
+      if (!body.dataSourceId) {
+        return c.json(
+          { success: false, error: "dataSourceId is required" },
+          400,
+        );
+      }
+
+      // Validate data source exists and belongs to workspace
+      const dataSource = await DataSource.findOne({
+        _id: new Types.ObjectId(body.dataSourceId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!dataSource) {
+        return c.json({ success: false, error: "Data source not found" }, 404);
       }
     }
 
-    // Validate data source exists and belongs to workspace
-    const dataSource = await DataSource.findOne({
-      _id: new Types.ObjectId(body.dataSourceId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    // Validate destination - either destinationDatabaseId or tableDestination
+    let destinationDatabaseId: Types.ObjectId | undefined;
 
-    if (!dataSource) {
-      return c.json({ success: false, error: "Data source not found" }, 404);
-    }
+    if (body.tableDestination?.connectionId) {
+      // Table destination validation
+      const destDb = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(body.tableDestination.connectionId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
 
-    // Validate destination database exists and belongs to workspace
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(body.destinationDatabaseId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+      if (!destDb) {
+        return c.json(
+          { success: false, error: "Destination database connection not found" },
+          404,
+        );
+      }
 
-    if (!database) {
+      if (!body.tableDestination.tableName) {
+        return c.json(
+          { success: false, error: "tableDestination.tableName is required" },
+          400,
+        );
+      }
+
+      // Use the table destination connection as the destinationDatabaseId
+      destinationDatabaseId = new Types.ObjectId(body.tableDestination.connectionId);
+    } else if (body.destinationDatabaseId) {
+      // MongoDB destination validation
+      const database = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(body.destinationDatabaseId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!database) {
+        return c.json(
+          { success: false, error: "Destination database not found" },
+          404,
+        );
+      }
+
+      destinationDatabaseId = new Types.ObjectId(body.destinationDatabaseId);
+    } else {
       return c.json(
-        { success: false, error: "Destination database not found" },
-        404,
+        { success: false, error: "destinationDatabaseId or tableDestination is required" },
+        400,
       );
     }
 
@@ -200,19 +318,52 @@ flowRoutes.post("/", async c => {
     const flowData: any = {
       workspaceId: new Types.ObjectId(workspaceId),
       type: flowType,
-      dataSourceId: new Types.ObjectId(body.dataSourceId),
-      destinationDatabaseId: new Types.ObjectId(body.destinationDatabaseId),
+      sourceType,
+      destinationDatabaseId,
       destinationDatabaseName:
         typeof body.destinationDatabaseName === "string" &&
         body.destinationDatabaseName.trim().length > 0
           ? body.destinationDatabaseName.trim()
           : undefined,
-      entityFilter: body.entityFilter || [],
-      queries: body.queries || [], // GraphQL/PostHog queries
       syncMode: body.syncMode || "full",
       enabled: body.enabled !== false,
       createdBy: userId,
     };
+
+    // Add source-specific fields
+    if (sourceType === "database") {
+      flowData.databaseSource = {
+        connectionId: new Types.ObjectId(body.databaseSource.connectionId),
+        database: body.databaseSource.database,
+        query: body.databaseSource.query,
+      };
+
+      // Database source specific config
+      if (body.incrementalConfig) {
+        flowData.incrementalConfig = body.incrementalConfig;
+      }
+      if (body.conflictConfig) {
+        flowData.conflictConfig = body.conflictConfig;
+      }
+      if (body.batchSize) {
+        flowData.batchSize = body.batchSize;
+      }
+    } else {
+      flowData.dataSourceId = new Types.ObjectId(body.dataSourceId);
+      flowData.entityFilter = body.entityFilter || [];
+      flowData.queries = body.queries || [];
+    }
+
+    // Add table destination if specified
+    if (body.tableDestination?.connectionId) {
+      flowData.tableDestination = {
+        connectionId: new Types.ObjectId(body.tableDestination.connectionId),
+        database: body.tableDestination.database,
+        schema: body.tableDestination.schema,
+        tableName: body.tableDestination.tableName,
+        createIfNotExists: body.tableDestination.createIfNotExists !== false,
+      };
+    }
 
     if (flowType === "scheduled") {
       flowData.schedule = {
@@ -247,9 +398,17 @@ flowRoutes.post("/", async c => {
 
     await flow.save();
 
-    // Populate references for response
-    await flow.populate("dataSourceId", "name type");
+    // Populate references for response based on source type
+    if (sourceType === "connector" && flow.dataSourceId) {
+      await flow.populate("dataSourceId", "name type");
+    }
+    if (flow.databaseSource?.connectionId) {
+      await flow.populate("databaseSource.connectionId", "name type");
+    }
     await flow.populate("destinationDatabaseId", "name type");
+    if (flow.tableDestination?.connectionId) {
+      await flow.populate("tableDestination.connectionId", "name type");
+    }
 
     return c.json({
       success: true,
@@ -276,12 +435,22 @@ flowRoutes.get("/:flowId", async c => {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
-    })
-      .populate("dataSourceId", "name type config")
-      .populate("destinationDatabaseId", "name type");
+    });
 
     if (!flow) {
       return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+
+    // Populate references based on source type
+    if (flow.sourceType !== "database" && flow.dataSourceId) {
+      await flow.populate("dataSourceId", "name type config");
+    }
+    if (flow.databaseSource?.connectionId) {
+      await flow.populate("databaseSource.connectionId", "name type");
+    }
+    await flow.populate("destinationDatabaseId", "name type");
+    if (flow.tableDestination?.connectionId) {
+      await flow.populate("tableDestination.connectionId", "name type");
     }
 
     return c.json({
@@ -317,7 +486,7 @@ flowRoutes.put("/:flowId", async c => {
       return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
-    // Update allowed fields
+    // Update common fields
     if (flow.type === "scheduled" && body.schedule) {
       flow.schedule = {
         cron: body.schedule.cron || body.schedule,
@@ -331,19 +500,55 @@ flowRoutes.put("/:flowId", async c => {
           ? body.destinationDatabaseName.trim()
           : undefined;
     }
-    if (body.entityFilter !== undefined) flow.entityFilter = body.entityFilter;
-    if (body.queries !== undefined) flow.queries = body.queries; // GraphQL/PostHog queries
     if (body.syncMode) flow.syncMode = body.syncMode;
     if (body.enabled !== undefined) flow.enabled = body.enabled;
 
+    // Update connector source specific fields
+    if (flow.sourceType !== "database") {
+      if (body.entityFilter !== undefined) flow.entityFilter = body.entityFilter;
+      if (body.queries !== undefined) flow.queries = body.queries;
+    }
+
+    // Update database source specific fields
+    if (flow.sourceType === "database") {
+      if (body.databaseSource?.query !== undefined && flow.databaseSource) {
+        flow.databaseSource.query = body.databaseSource.query;
+      }
+      if (body.databaseSource?.database !== undefined && flow.databaseSource) {
+        flow.databaseSource.database = body.databaseSource.database;
+      }
+      if (body.incrementalConfig !== undefined) {
+        flow.incrementalConfig = body.incrementalConfig;
+      }
+      if (body.conflictConfig !== undefined) {
+        flow.conflictConfig = body.conflictConfig;
+      }
+      if (body.batchSize !== undefined) {
+        flow.batchSize = body.batchSize;
+      }
+    }
+
+    // Update table destination specific fields
+    if (flow.tableDestination && body.tableDestination) {
+      if (body.tableDestination.tableName !== undefined) {
+        flow.tableDestination.tableName = body.tableDestination.tableName;
+      }
+      if (body.tableDestination.schema !== undefined) {
+        flow.tableDestination.schema = body.tableDestination.schema;
+      }
+      if (body.tableDestination.database !== undefined) {
+        flow.tableDestination.database = body.tableDestination.database;
+      }
+      if (body.tableDestination.createIfNotExists !== undefined) {
+        flow.tableDestination.createIfNotExists = body.tableDestination.createIfNotExists;
+      }
+    }
+
     // Update webhook-specific fields
     if (flow.type === "webhook" && flow.webhookConfig) {
-      // Handle webhookSecret directly from body
       if (body.webhookSecret !== undefined) {
         flow.webhookConfig.secret = body.webhookSecret;
       }
-
-      // Handle other webhook config fields
       if (body.webhookConfig) {
         if (body.webhookConfig.enabled !== undefined) {
           flow.webhookConfig.enabled = body.webhookConfig.enabled;
@@ -353,9 +558,17 @@ flowRoutes.put("/:flowId", async c => {
 
     await flow.save();
 
-    // Populate references for response
-    await flow.populate("dataSourceId", "name type");
+    // Populate references for response based on source type
+    if (flow.sourceType !== "database" && flow.dataSourceId) {
+      await flow.populate("dataSourceId", "name type");
+    }
+    if (flow.databaseSource?.connectionId) {
+      await flow.populate("databaseSource.connectionId", "name type");
+    }
     await flow.populate("destinationDatabaseId", "name type");
+    if (flow.tableDestination?.connectionId) {
+      await flow.populate("tableDestination.connectionId", "name type");
+    }
 
     return c.json({
       success: true,
