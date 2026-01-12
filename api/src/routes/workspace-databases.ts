@@ -163,6 +163,7 @@ workspaceDatabaseRoutes.post(
   "/test-connection",
   authMiddleware,
   requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
     try {
       const body = await c.req.json();
