@@ -17,6 +17,8 @@ import {
   IDatabaseConnection,
   ITableDestination,
   IIncrementalConfig,
+  IPaginationConfig,
+  ITypeCoercion,
 } from "../database/workspace-schema";
 import { getDatabaseDriver } from "../databases/registry";
 import {
@@ -66,6 +68,7 @@ export interface DbSyncChunkState {
   totalProcessed: number;
   hasMore: boolean;
   lastTrackingValue?: string;
+  lastKeysetValue?: string; // For keyset pagination
   estimatedTotal?: number;
   stagingPrepared?: boolean;
 }
@@ -836,7 +839,221 @@ function inferJsType(value: unknown): string {
 }
 
 /**
+ * Dangerous SQL statement patterns that should be rejected
+ */
+const DANGEROUS_PATTERNS = [
+  { pattern: /^\s*DROP\s+/i, name: "DROP" },
+  { pattern: /^\s*DELETE\s+/i, name: "DELETE" },
+  { pattern: /^\s*TRUNCATE\s+/i, name: "TRUNCATE" },
+  { pattern: /^\s*ALTER\s+/i, name: "ALTER" },
+  { pattern: /^\s*CREATE\s+/i, name: "CREATE" },
+  { pattern: /^\s*INSERT\s+/i, name: "INSERT" },
+  { pattern: /^\s*UPDATE\s+/i, name: "UPDATE" },
+  { pattern: /^\s*GRANT\s+/i, name: "GRANT" },
+  { pattern: /^\s*REVOKE\s+/i, name: "REVOKE" },
+  { pattern: /;\s*(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|GRANT|REVOKE)\s+/i, name: "multi-statement" },
+];
+
+/**
+ * Result of query safety check
+ */
+export interface QuerySafetyResult {
+  safe: boolean;
+  warnings: string[];
+  errors: string[];
+  suggestedFixes?: string[];
+}
+
+/**
+ * Check if a query is safe for sync operations (read-only)
+ * Returns errors for dangerous statements and warnings for best practices
+ */
+export function checkQuerySafety(query: string): QuerySafetyResult {
+  const result: QuerySafetyResult = {
+    safe: true,
+    warnings: [],
+    errors: [],
+    suggestedFixes: [],
+  };
+
+  const trimmedQuery = query.trim();
+
+  // Check for dangerous patterns
+  for (const { pattern, name } of DANGEROUS_PATTERNS) {
+    if (pattern.test(trimmedQuery)) {
+      result.safe = false;
+      result.errors.push(
+        `Query contains dangerous ${name} statement. Only SELECT queries are allowed for sync operations.`
+      );
+    }
+  }
+
+  // Check if query starts with SELECT
+  if (!trimmedQuery.match(/^\s*SELECT\s+/i) && !trimmedQuery.match(/^\s*WITH\s+/i)) {
+    result.safe = false;
+    result.errors.push("Query must start with SELECT or WITH (CTE). Only read operations are allowed.");
+  }
+
+  // Check for ORDER BY (warning, not error)
+  if (!trimmedQuery.match(/ORDER\s+BY\s+/i)) {
+    result.warnings.push(
+      "Query does not have ORDER BY clause. For consistent pagination results, consider adding ORDER BY."
+    );
+    result.suggestedFixes?.push("Add ORDER BY clause with a unique column (e.g., ORDER BY id ASC)");
+  }
+
+  // Check for multiple statements (semicolons)
+  const semicolonCount = (trimmedQuery.match(/;/g) || []).length;
+  if (semicolonCount > 1 || (semicolonCount === 1 && !trimmedQuery.endsWith(";"))) {
+    result.safe = false;
+    result.errors.push("Query contains multiple statements. Only single SELECT queries are allowed.");
+  }
+
+  // Check for LIMIT without ORDER BY (warning)
+  if (trimmedQuery.match(/LIMIT\s+\d+/i) && !trimmedQuery.match(/ORDER\s+BY\s+/i)) {
+    result.warnings.push(
+      "Query has LIMIT without ORDER BY. Results may be non-deterministic across runs."
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Extract ORDER BY column from a query
+ */
+export function extractOrderByColumn(query: string): string | null {
+  const match = query.match(/ORDER\s+BY\s+(\w+(?:\.\w+)?)\s*(ASC|DESC)?/i);
+  if (match) {
+    return match[1];
+  }
+  return null;
+}
+
+/**
+ * Extract ORDER BY direction from a query
+ */
+export function extractOrderByDirection(query: string): "asc" | "desc" {
+  const match = query.match(/ORDER\s+BY\s+\w+(?:\.\w+)?\s*(ASC|DESC)?/i);
+  if (match && match[1]?.toUpperCase() === "DESC") {
+    return "desc";
+  }
+  return "asc";
+}
+
+/**
+ * Apply type coercions to a row of data
+ */
+export function applyTypeCoercions(
+  row: Record<string, unknown>,
+  coercions: ITypeCoercion[]
+): Record<string, unknown> {
+  const result = { ...row };
+
+  for (const coercion of coercions) {
+    const { column, targetType, format, nullValue, transformer } = coercion;
+
+    if (!(column in result)) {
+      continue;
+    }
+
+    let value = result[column];
+
+    // Handle null values
+    if (value === null || value === undefined) {
+      if (nullValue !== undefined) {
+        result[column] = nullValue;
+      }
+      continue;
+    }
+
+    // Apply transformer first
+    if (transformer && typeof value === "string") {
+      switch (transformer) {
+        case "lowercase":
+          value = value.toLowerCase();
+          break;
+        case "uppercase":
+          value = value.toUpperCase();
+          break;
+        case "trim":
+          value = value.trim();
+          break;
+        case "json_parse":
+          try {
+            value = JSON.parse(value);
+          } catch {
+            // Keep original value if parse fails
+          }
+          break;
+        case "json_stringify":
+          value = JSON.stringify(value);
+          break;
+      }
+    }
+
+    // Apply type coercion
+    switch (targetType) {
+      case "string":
+        result[column] = String(value);
+        break;
+      case "integer":
+        result[column] = parseInt(String(value), 10);
+        break;
+      case "number":
+      case "float":
+      case "double":
+        result[column] = parseFloat(String(value));
+        break;
+      case "boolean":
+        if (typeof value === "string") {
+          result[column] = ["true", "1", "yes", "on"].includes(value.toLowerCase());
+        } else {
+          result[column] = Boolean(value);
+        }
+        break;
+      case "timestamp":
+      case "date":
+      case "datetime":
+        if (value instanceof Date) {
+          result[column] = value;
+        } else if (typeof value === "string" || typeof value === "number") {
+          const date = new Date(value);
+          if (!isNaN(date.getTime())) {
+            // Apply format if specified (for output formatting)
+            if (format === "ISO") {
+              result[column] = date.toISOString();
+            } else if (format === "YYYY-MM-DD") {
+              result[column] = date.toISOString().split("T")[0];
+            } else {
+              result[column] = date;
+            }
+          }
+        }
+        break;
+      case "json":
+        if (typeof value === "string") {
+          try {
+            result[column] = JSON.parse(value);
+          } catch {
+            result[column] = value;
+          }
+        } else {
+          result[column] = value;
+        }
+        break;
+      default:
+        // Unknown type, keep as-is but apply transformer result
+        result[column] = value;
+    }
+  }
+
+  return result;
+}
+
+/**
  * Execute a single chunk of database sync with pagination
+ * Supports both offset-based and keyset pagination
  * Returns state for resumption in the next chunk
  */
 export async function executeDbSyncChunk(options: {
@@ -847,6 +1064,8 @@ export async function executeDbSyncChunk(options: {
   batchSize?: number;
   syncMode: "full" | "incremental";
   incrementalConfig?: IIncrementalConfig;
+  paginationConfig?: IPaginationConfig;
+  typeCoercions?: ITypeCoercion[];
   keyColumns?: string[];
   state?: DbSyncChunkState;
   maxRowsPerChunk?: number;
@@ -860,6 +1079,8 @@ export async function executeDbSyncChunk(options: {
     batchSize = 2000,
     syncMode,
     incrementalConfig,
+    paginationConfig,
+    typeCoercions,
     keyColumns,
     state,
     maxRowsPerChunk = 10000,
@@ -902,6 +1123,11 @@ export async function executeDbSyncChunk(options: {
     currentState.stagingPrepared = true;
   }
 
+  // Determine pagination mode
+  const paginationMode = paginationConfig?.mode || "offset";
+  const keysetColumn = paginationConfig?.keysetColumn;
+  const keysetDirection = paginationConfig?.keysetDirection || "asc";
+
   // Build paginated query
   let effectiveQuery = sourceQuery;
 
@@ -924,17 +1150,45 @@ export async function executeDbSyncChunk(options: {
     }
   }
 
-  // Add ORDER BY for consistent pagination (use tracking column if available)
-  const orderColumn = incrementalConfig?.trackingColumn || "1";
-  if (!effectiveQuery.toLowerCase().includes("order by")) {
-    effectiveQuery = `${effectiveQuery} ORDER BY ${orderColumn}`;
-  }
+  // Handle pagination based on mode
+  let paginatedQuery: string;
 
-  // Add LIMIT and OFFSET for pagination
-  const paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`;
+  if (paginationMode === "keyset" && keysetColumn) {
+    // Keyset pagination: use WHERE column > last_value
+    const lastKeyset = currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
+
+    if (lastKeyset) {
+      // Add keyset filter
+      const keysetOperator = keysetDirection === "asc" ? ">" : "<";
+      const keysetValue = isNaN(Number(lastKeyset)) ? `'${lastKeyset}'` : lastKeyset;
+
+      if (effectiveQuery.toLowerCase().includes("where")) {
+        effectiveQuery = `${effectiveQuery} AND ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+      } else {
+        effectiveQuery = `${effectiveQuery} WHERE ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+      }
+    }
+
+    // Ensure ORDER BY matches keyset column and direction
+    if (!effectiveQuery.toLowerCase().includes("order by")) {
+      effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
+    }
+
+    // Add LIMIT only (no OFFSET needed for keyset)
+    paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk}`;
+  } else {
+    // Offset pagination: use LIMIT/OFFSET
+    const orderColumn = incrementalConfig?.trackingColumn || "1";
+    if (!effectiveQuery.toLowerCase().includes("order by")) {
+      effectiveQuery = `${effectiveQuery} ORDER BY ${orderColumn}`;
+    }
+
+    paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`;
+  }
 
   let rowsProcessedInChunk = 0;
   let lastTrackingValue: string | undefined;
+  let lastKeysetValue: string | undefined;
 
   try {
     const result = await driver.executeQuery(sourceConnection, paginatedQuery, {
@@ -950,7 +1204,12 @@ export async function executeDbSyncChunk(options: {
       };
     }
 
-    const rows = result.data || [];
+    let rows = result.data || [];
+
+    // Apply type coercions if configured
+    if (typeCoercions && typeCoercions.length > 0) {
+      rows = rows.map(row => applyTypeCoercions(row, typeCoercions));
+    }
 
     // Process in smaller batches for writing
     for (let i = 0; i < rows.length; i += batchSize) {
@@ -985,14 +1244,35 @@ export async function executeDbSyncChunk(options: {
         }
       }
 
+      // Track the last keyset value for keyset pagination
+      if (paginationMode === "keyset" && keysetColumn && batch.length > 0) {
+        const lastRow = batch[batch.length - 1];
+        const keysetValue = lastRow[keysetColumn];
+        if (keysetValue !== null && keysetValue !== undefined) {
+          lastKeysetValue =
+            keysetValue instanceof Date
+              ? keysetValue.toISOString()
+              : String(keysetValue);
+        }
+      }
+
       onProgress?.(currentState.totalProcessed, currentState.estimatedTotal);
     }
 
     // Check if there's more data
     const hasMore = rows.length === maxRowsPerChunk;
 
-    // Update state
-    currentState.offset += rows.length;
+    // Update state based on pagination mode
+    if (paginationMode === "keyset") {
+      // For keyset pagination, don't use offset
+      if (lastKeysetValue) {
+        currentState.lastKeysetValue = lastKeysetValue;
+      }
+    } else {
+      // For offset pagination
+      currentState.offset += rows.length;
+    }
+
     currentState.hasMore = hasMore;
     if (lastTrackingValue) {
       currentState.lastTrackingValue = lastTrackingValue;
@@ -1008,6 +1288,174 @@ export async function executeDbSyncChunk(options: {
       state: currentState,
       rowsProcessed: rowsProcessedInChunk,
       completed: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Dry run a sync configuration: execute 3 pages and return preview data
+ */
+export async function dryRunDbSync(options: {
+  sourceConnection: IDatabaseConnection;
+  sourceQuery: string;
+  sourceDatabase?: string;
+  paginationConfig?: IPaginationConfig;
+  typeCoercions?: ITypeCoercion[];
+  pageSize?: number;
+  pages?: number;
+}): Promise<{
+  success: boolean;
+  totalRows: number;
+  sampleData: Record<string, unknown>[];
+  columns: Array<{ name: string; type: string }>;
+  estimatedTotal?: number;
+  safetyCheck: QuerySafetyResult;
+  error?: string;
+}> {
+  const {
+    sourceConnection,
+    sourceQuery,
+    sourceDatabase,
+    paginationConfig,
+    typeCoercions,
+    pageSize = 100,
+    pages = 3,
+  } = options;
+
+  // First, run safety checks
+  const safetyCheck = checkQuerySafety(sourceQuery);
+  if (!safetyCheck.safe) {
+    return {
+      success: false,
+      totalRows: 0,
+      sampleData: [],
+      columns: [],
+      safetyCheck,
+      error: safetyCheck.errors.join("; "),
+    };
+  }
+
+  const driver = getDatabaseDriver(sourceConnection.type);
+  if (!driver) {
+    return {
+      success: false,
+      totalRows: 0,
+      sampleData: [],
+      columns: [],
+      safetyCheck,
+      error: `No driver found for type: ${sourceConnection.type}`,
+    };
+  }
+
+  // Estimate total
+  const countResult = await estimateQueryRowCount(
+    sourceConnection,
+    sourceQuery,
+    sourceDatabase,
+  );
+
+  const allRows: Record<string, unknown>[] = [];
+  let lastKeysetValue: string | undefined;
+  const paginationMode = paginationConfig?.mode || "offset";
+  const keysetColumn = paginationConfig?.keysetColumn;
+  const keysetDirection = paginationConfig?.keysetDirection || "asc";
+
+  try {
+    // Execute specified number of pages
+    for (let page = 0; page < pages; page++) {
+      let paginatedQuery: string;
+
+      if (paginationMode === "keyset" && keysetColumn) {
+        let effectiveQuery = sourceQuery;
+
+        if (lastKeysetValue) {
+          const keysetOperator = keysetDirection === "asc" ? ">" : "<";
+          const keysetValue = isNaN(Number(lastKeysetValue)) ? `'${lastKeysetValue}'` : lastKeysetValue;
+
+          if (effectiveQuery.toLowerCase().includes("where")) {
+            effectiveQuery = `${effectiveQuery} AND ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+          } else {
+            effectiveQuery = `${effectiveQuery} WHERE ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+          }
+        }
+
+        if (!effectiveQuery.toLowerCase().includes("order by")) {
+          effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
+        }
+
+        paginatedQuery = `${effectiveQuery} LIMIT ${pageSize}`;
+      } else {
+        let effectiveQuery = sourceQuery;
+        if (!effectiveQuery.toLowerCase().includes("order by")) {
+          effectiveQuery = `${effectiveQuery} ORDER BY 1`;
+        }
+        paginatedQuery = `${effectiveQuery} LIMIT ${pageSize} OFFSET ${page * pageSize}`;
+      }
+
+      const result = await driver.executeQuery(sourceConnection, paginatedQuery, {
+        databaseName: sourceDatabase,
+      });
+
+      if (!result.success) {
+        return {
+          success: false,
+          totalRows: allRows.length,
+          sampleData: allRows,
+          columns: [],
+          estimatedTotal: countResult.estimatedCount,
+          safetyCheck,
+          error: result.error,
+        };
+      }
+
+      let rows = result.data || [];
+      if (rows.length === 0) break;
+
+      // Apply type coercions
+      if (typeCoercions && typeCoercions.length > 0) {
+        rows = rows.map(row => applyTypeCoercions(row, typeCoercions));
+      }
+
+      allRows.push(...rows);
+
+      // Update keyset value for next page
+      if (paginationMode === "keyset" && keysetColumn && rows.length > 0) {
+        const lastRow = rows[rows.length - 1];
+        const value = lastRow[keysetColumn];
+        if (value !== null && value !== undefined) {
+          lastKeysetValue = value instanceof Date ? value.toISOString() : String(value);
+        }
+      }
+
+      // Stop if we got fewer rows than requested
+      if (rows.length < pageSize) break;
+    }
+
+    // Infer columns from results
+    const columns: Array<{ name: string; type: string }> = [];
+    if (allRows.length > 0) {
+      for (const [name, value] of Object.entries(allRows[0])) {
+        columns.push({ name, type: inferJsType(value) });
+      }
+    }
+
+    return {
+      success: true,
+      totalRows: allRows.length,
+      sampleData: allRows,
+      columns,
+      estimatedTotal: countResult.estimatedCount,
+      safetyCheck,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      totalRows: allRows.length,
+      sampleData: allRows,
+      columns: [],
+      estimatedTotal: countResult.estimatedCount,
+      safetyCheck,
       error: error instanceof Error ? error.message : String(error),
     };
   }

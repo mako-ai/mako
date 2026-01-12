@@ -607,7 +607,7 @@ export const flowFunction = inngest.createFunction(
                   `${sourceConnection.name}_sync`;
               }
 
-              // Execute chunk
+              // Execute chunk with pagination and type coercions
               const result = await executeDbSyncChunk({
                 sourceConnection,
                 sourceQuery: flow.databaseSource!.query,
@@ -616,6 +616,8 @@ export const flowFunction = inngest.createFunction(
                 batchSize: flow.batchSize || 2000,
                 syncMode: flow.syncMode,
                 incrementalConfig: flow.incrementalConfig,
+                paginationConfig: flow.paginationConfig,
+                typeCoercions: flow.typeCoercions,
                 keyColumns: flow.conflictConfig?.keyColumns,
                 state: chunkState,
                 maxRowsPerChunk: 10000, // Process 10k rows per Inngest step

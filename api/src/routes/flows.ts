@@ -13,7 +13,11 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { validateQuery } from "../services/destination-writer.service";
+import {
+  validateQuery,
+  checkQuerySafety,
+  dryRunDbSync,
+} from "../services/destination-writer.service";
 
 const logger = loggers.inngest("flow");
 
@@ -346,6 +350,12 @@ flowRoutes.post("/", async c => {
       if (body.conflictConfig) {
         flowData.conflictConfig = body.conflictConfig;
       }
+      if (body.paginationConfig) {
+        flowData.paginationConfig = body.paginationConfig;
+      }
+      if (body.typeCoercions) {
+        flowData.typeCoercions = body.typeCoercions;
+      }
       if (body.batchSize) {
         flowData.batchSize = body.batchSize;
       }
@@ -523,6 +533,12 @@ flowRoutes.put("/:flowId", async c => {
       }
       if (body.conflictConfig !== undefined) {
         flow.conflictConfig = body.conflictConfig;
+      }
+      if (body.paginationConfig !== undefined) {
+        flow.paginationConfig = body.paginationConfig;
+      }
+      if (body.typeCoercions !== undefined) {
+        flow.typeCoercions = body.typeCoercions;
       }
       if (body.batchSize !== undefined) {
         flow.batchSize = body.batchSize;
@@ -1143,6 +1159,19 @@ flowRoutes.post("/validate-query", async c => {
       return c.json({ success: false, error: "query is required" }, 400);
     }
 
+    // Run safety checks first
+    const safetyCheck = checkQuerySafety(query);
+    if (!safetyCheck.safe) {
+      return c.json(
+        {
+          success: false,
+          error: safetyCheck.errors.join("; "),
+          safetyCheck,
+        },
+        400,
+      );
+    }
+
     // Validate connection exists and belongs to workspace
     const connection = await DatabaseConnection.findOne({
       _id: new Types.ObjectId(connectionId),
@@ -1164,6 +1193,7 @@ flowRoutes.post("/validate-query", async c => {
         {
           success: false,
           error: result.error || "Query validation failed",
+          safetyCheck,
         },
         400,
       );
@@ -1176,10 +1206,94 @@ flowRoutes.post("/validate-query", async c => {
         sampleRow: result.sampleRow,
         connectionName: connection.name,
         connectionType: connection.type,
+        safetyCheck,
       },
     });
   } catch (error) {
     console.error("Error validating query:", error);
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/dry-run - Dry run a sync configuration
+flowRoutes.post("/dry-run", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const body = await c.req.json();
+
+    const {
+      connectionId,
+      query,
+      database,
+      paginationConfig,
+      typeCoercions,
+      pageSize = 100,
+      pages = 3,
+    } = body;
+
+    if (!connectionId) {
+      return c.json({ success: false, error: "connectionId is required" }, 400);
+    }
+
+    if (!query) {
+      return c.json({ success: false, error: "query is required" }, 400);
+    }
+
+    // Validate connection exists and belongs to workspace
+    const connection = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(connectionId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!connection) {
+      return c.json(
+        { success: false, error: "Database connection not found" },
+        404,
+      );
+    }
+
+    // Run dry run
+    const result = await dryRunDbSync({
+      sourceConnection: connection,
+      sourceQuery: query,
+      sourceDatabase: database,
+      paginationConfig,
+      typeCoercions,
+      pageSize: Math.min(pageSize, 1000), // Cap at 1000 per page
+      pages: Math.min(pages, 5), // Cap at 5 pages
+    });
+
+    if (!result.success) {
+      return c.json(
+        {
+          success: false,
+          error: result.error,
+          safetyCheck: result.safetyCheck,
+        },
+        400,
+      );
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        totalRows: result.totalRows,
+        sampleData: result.sampleData,
+        columns: result.columns,
+        estimatedTotal: result.estimatedTotal,
+        safetyCheck: result.safetyCheck,
+        connectionName: connection.name,
+        connectionType: connection.type,
+      },
+    });
+  } catch (error) {
+    console.error("Error running dry-run:", error);
     return c.json(
       {
         success: false,
