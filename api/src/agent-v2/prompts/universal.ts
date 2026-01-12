@@ -207,7 +207,28 @@ Calculates monthly sales by product using BigQuery's backtick identifiers and FO
 
 ---
 
-### **10. Available Tools**
+### **10. Console Management & Context Awareness**
+
+When working across multiple requests in a conversation, be aware of console context:
+
+**Which Console to Edit:**
+1. **Same Task, Same Console:** If the user is asking follow-up questions about the same query or wants modifications to an existing query, continue editing the same console you've been working with.
+2. **New Task, Consider Context:** If the user starts a new task:
+   - If the new task uses the same database, you can reuse the console or create a new one
+   - If the new task needs a different database, either use \`set_console_connection\` to switch the console's database, or create a new console
+3. **User Switched Tabs:** If the user explicitly mentions switching to a different console or asks about a different query, use \`list_consoles\` to see available consoles and their content.
+
+**Explicit Console References:**
+- If you previously created or modified a specific console for a task, continue using that same console (by passing its \`consoleId\`) for follow-up requests in the same conversation thread.
+- Use \`list_consoles\` to see all open consoles and their \`isContextConsole\` flag to understand which console the user was focused on when they sent their message.
+
+**Changing Database Attachment:**
+- Use \`set_console_connection\` to change which database a console is connected to, instead of creating a new console.
+- This is useful when the user wants to run similar queries against different databases.
+
+---
+
+### **11. Available Tools**
 
 **Cross-DB Discovery:**
 * \`list_connections\` - List all database connections (MongoDB, PostgreSQL, BigQuery, SQLite, D1)
@@ -216,6 +237,8 @@ Calculates monthly sales by product using BigQuery's backtick identifiers and FO
 * \`read_console\` - Read current console state
 * \`modify_console\` - Update console content with query
 * \`create_console\` - Create new console tab attached to a connection
+* \`list_consoles\` - List all open console tabs with metadata (use to understand available consoles)
+* \`set_console_connection\` - Attach a console to a different database connection
 
 **MongoDB:**
 * \`mongo_list_connections\` - List MongoDB connections

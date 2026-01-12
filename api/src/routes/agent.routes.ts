@@ -276,18 +276,16 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         // Title was already generated in parallel at the start for new chats
         await saveChat(chatId, workspaceId, userId.toString(), allMessages);
 
-        // Save the draft console linked to this chat (if it's not already a saved console)
-        // This allows reopening the console when user opens an old chat
-        if (consoleId && consoles) {
-          const activeConsole = consoles.find(c => c.id === consoleId);
-          if (activeConsole) {
-            await saveDraftConsole(
-              chatId,
-              workspaceId,
-              userId.toString(),
-              activeConsole,
-            );
-          }
+        // Save ALL draft consoles linked to this chat (if they're not already saved consoles)
+        // This allows reopening all consoles the user interacted with when opening an old chat
+        if (consoles && consoles.length > 0) {
+          await Promise.all(
+            consoles
+              .filter(c => c.content?.trim()) // Only save consoles with content
+              .map(c =>
+                saveDraftConsole(chatId, workspaceId, userId.toString(), c),
+              ),
+          );
         }
       } catch (error) {
         console.error("[Agent] Error saving chat:", error);

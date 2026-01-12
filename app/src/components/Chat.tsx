@@ -366,6 +366,12 @@ const pulseAnimation = keyframes`
   50% { opacity: 1; transform: scale(1.35); }
 `;
 
+// Shimmer animation for "Working on" indicator
+const shimmerAnimation = keyframes`
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+`;
+
 // Stable style objects to prevent re-renders
 const streamingIndicatorContainerSx = {
   display: "inline-flex",
@@ -1332,27 +1338,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         )}
       </Menu>
 
-      {/* Working on console indicator - shows which console the agent is targeting */}
-      {isLoading && capturedConsoleTitle && (
-        <Box
-          sx={{
-            px: 1.5,
-            py: 0.5,
-            backgroundColor: "action.hover",
-            borderBottom: 1,
-            borderColor: "divider",
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-          }}
-        >
-          <CircularProgress size={12} thickness={5} />
-          <Typography variant="caption" color="text.secondary">
-            Working on: <strong>{capturedConsoleTitle}</strong>
-          </Typography>
-        </Box>
-      )}
-
       {/* Error display */}
       {error && (
         <Box sx={{ p: 1 }}>
@@ -1417,23 +1402,169 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                     "& pre": { margin: 0, overflow: "hidden" },
                   }}
                 >
-                  {/* Display tool invocations */}
-                  <ToolCallsDisplay
-                    toolInvocations={getToolInvocations(
-                      message.parts as Array<Record<string, unknown>>,
-                    )}
-                    onToolClick={handleToolClick}
-                  />
-                  {/* Display reasoning */}
+                  {/* Render message parts in chronological order */}
+                  {(message.parts || []).map((part, partIndex) => {
+                    const partType = (part as Record<string, unknown>)
+                      .type as string;
+
+                    // Render tool invocations
+                    if (
+                      partType?.startsWith("tool-") ||
+                      partType === "dynamic-tool"
+                    ) {
+                      const toolName =
+                        partType === "dynamic-tool"
+                          ? ((part as Record<string, unknown>).toolName as string)
+                          : partType.split("-").slice(1).join("-");
+                      const toolPart = part as Record<string, unknown>;
+                      return (
+                        <Box
+                          key={partIndex}
+                          sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, my: 0.5 }}
+                        >
+                          <Chip
+                            icon={
+                              toolPart.state === "output-available" ? (
+                                <Check size={16} />
+                              ) : toolPart.state === "error" ? (
+                                <Check
+                                  size={16}
+                                  style={{ color: "var(--mui-palette-error-main, #f44336)" }}
+                                />
+                              ) : (
+                                <CircularProgress size={14} thickness={5} />
+                              )
+                            }
+                            label={toolName}
+                            size="small"
+                            variant="outlined"
+                            sx={{
+                              backgroundColor: "background.paper",
+                              borderRadius: 2,
+                              opacity: 0.8,
+                              fontSize: "0.75rem",
+                              cursor: "pointer",
+                              "& .MuiChip-icon": {
+                                color:
+                                  toolPart.state === "output-available"
+                                    ? "success.main"
+                                    : toolPart.state === "error"
+                                      ? "error.main"
+                                      : "primary.main",
+                              },
+                            }}
+                            onClick={() =>
+                              handleToolClick({
+                                toolCallId: (toolPart.toolCallId as string) || "",
+                                toolName: toolName || "",
+                                state: toolPart.state as ToolInvocationInfo["state"],
+                                input: toolPart.input,
+                                output: toolPart.output,
+                              })
+                            }
+                            title={
+                              toolPart.state === "output-available"
+                                ? "Tool executed successfully"
+                                : toolPart.state === "error"
+                                  ? "Tool execution failed"
+                                  : "Tool executing..."
+                            }
+                          />
+                        </Box>
+                      );
+                    }
+
+                    // Render reasoning parts
+                    if (partType === "reasoning") {
+                      return null; // Skip inline, will be shown via ReasoningDisplay
+                    }
+
+                    // Render text parts
+                    if (partType === "text" && (part as { text?: string }).text) {
+                      return (
+                        <ReactMarkdown
+                          key={partIndex}
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            code({ className, children }) {
+                              const match = /language-(\w+)/.exec(className || "");
+                              const isInline = !match;
+                              const codeString = String(children).replace(/\n$/, "");
+                              return !isInline ? (
+                                <CodeBlock
+                                  language={match ? match[1] : "text"}
+                                  key={codeString}
+                                  isGenerating={false}
+                                >
+                                  {codeString}
+                                </CodeBlock>
+                              ) : (
+                                <code className={className} style={{ fontSize: "0.8rem" }}>
+                                  {children}
+                                </code>
+                              );
+                            },
+                            table({ children }) {
+                              return (
+                                <Box sx={{ overflow: "auto", my: 1 }}>
+                                  <table
+                                    style={{
+                                      borderCollapse: "collapse",
+                                      width: "100%",
+                                      fontSize: "0.875rem",
+                                      border: `1px solid ${muiTheme.palette.divider}`,
+                                    }}
+                                  >
+                                    {children}
+                                  </table>
+                                </Box>
+                              );
+                            },
+                            th({ children }) {
+                              return (
+                                <th
+                                  style={{
+                                    padding: "8px 12px",
+                                    textAlign: "left",
+                                    backgroundColor: muiTheme.palette.background.paper,
+                                    borderBottom: `2px solid ${muiTheme.palette.divider}`,
+                                    borderRight: `1px solid ${muiTheme.palette.divider}`,
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {children}
+                                </th>
+                              );
+                            },
+                            td({ children }) {
+                              return (
+                                <td
+                                  style={{
+                                    padding: "8px 12px",
+                                    borderBottom: `1px solid ${muiTheme.palette.divider}`,
+                                    borderRight: `1px solid ${muiTheme.palette.divider}`,
+                                    backgroundColor: muiTheme.palette.background.paper,
+                                  }}
+                                >
+                                  {children}
+                                </td>
+                              );
+                            },
+                          }}
+                        >
+                          {(part as { text: string }).text}
+                        </ReactMarkdown>
+                      );
+                    }
+
+                    return null;
+                  })}
+                  {/* Display reasoning (collapsible) */}
                   <ReasoningDisplay
                     messageParts={
                       message.parts as Array<Record<string, unknown>>
                     }
                   />
-                  {/* Display message content */}
-                  {renderMessageContent(
-                    message.parts as Array<{ type: string; text?: string }>,
-                  )}
                   {/* Show streaming indicator on last message while streaming */}
                   {status === "streaming" &&
                     message.id === messages[messages.length - 1]?.id && (
@@ -1446,6 +1577,36 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         </List>
         <div ref={messagesEndRef} />
       </Box>
+
+      {/* Working on console indicator - shows which console the agent is targeting */}
+      {isLoading && capturedConsoleTitle && (
+        <Box
+          sx={{
+            px: 1,
+            py: 0.5,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Typography
+            variant="caption"
+            sx={{
+              background: theme =>
+                theme.palette.mode === "dark"
+                  ? "linear-gradient(90deg, #666 0%, #999 50%, #666 100%)"
+                  : "linear-gradient(90deg, #999 0%, #333 50%, #999 100%)",
+              backgroundSize: "200% 100%",
+              backgroundClip: "text",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              animation: `${shimmerAnimation} 2s linear infinite`,
+            }}
+          >
+            {capturedConsoleTitle}
+          </Typography>
+        </Box>
+      )}
 
       {/* Input */}
       <Paper
