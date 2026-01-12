@@ -800,15 +800,21 @@ export const flowFunction = inngest.createFunction(
       }
 
       // ============ CONNECTOR SOURCE EXECUTION ============
+      // Ensure dataSourceId is defined for connector execution
+      if (!flow.dataSourceId) {
+        throw new Error("Flow dataSourceId is required for connector execution");
+      }
+      const dataSourceId = flow.dataSourceId;
+
       // Check if connector supports chunked execution
       const supportsChunking = await step.run(
         "check-chunking-support",
         async () => {
           const dataSource = await databaseDataSourceManager.getDataSource(
-            flow.dataSourceId.toString(),
+            dataSourceId.toString(),
           );
           if (!dataSource) {
-            throw new Error(`Data source not found: ${flow.dataSourceId}`);
+            throw new Error(`Data source not found: ${dataSourceId}`);
           }
 
           const connector =
@@ -835,10 +841,10 @@ export const flowFunction = inngest.createFunction(
           "get-entities-to-sync",
           async () => {
             const dataSource = await databaseDataSourceManager.getDataSource(
-              flow.dataSourceId.toString(),
+              dataSourceId.toString(),
             );
             if (!dataSource) {
-              throw new Error(`Data source not found: ${flow.dataSourceId}`);
+              throw new Error(`Data source not found: ${dataSourceId}`);
             }
 
             // Inject flow queries into dataSource for GraphQL/PostHog connectors
@@ -942,7 +948,7 @@ export const flowFunction = inngest.createFunction(
                 };
 
                 const result = await performSyncChunk({
-                  dataSourceId: flow.dataSourceId.toString(),
+                  dataSourceId: dataSourceId.toString(),
                   destinationId: flow.destinationDatabaseId.toString(),
                   destinationDatabaseName: flow.destinationDatabaseName,
                   entity,
@@ -1020,7 +1026,7 @@ export const flowFunction = inngest.createFunction(
         await step.run("execute-sync", async () => {
           // For non-chunked sync, we need to get the entities
           const dataSource = await databaseDataSourceManager.getDataSource(
-            flow.dataSourceId.toString(),
+            dataSourceId.toString(),
           );
           if (dataSource) {
             // Inject flow queries into dataSource for GraphQL/PostHog connectors
@@ -1081,7 +1087,7 @@ export const flowFunction = inngest.createFunction(
             };
 
             await performSync(
-              flow.dataSourceId.toString(),
+              dataSourceId.toString(),
               flow.destinationDatabaseId.toString(),
               flow.destinationDatabaseName,
               flow.entityFilter,
