@@ -32,6 +32,7 @@ import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/dr
 import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver";
 import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { flowRoutes } from "./routes/flows";
+import { dbSyncRoutes } from "./routes/db-syncs";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -101,6 +102,7 @@ app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
+app.route("/api/workspaces/:workspaceId/db-syncs", dbSyncRoutes);
 app.route("/api/run", executeRoutes);
 app.route("/api/execute", executeRoutes);
 app.route("/api/database", databaseRoutes);

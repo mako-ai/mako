@@ -12,6 +12,12 @@ import {
   webhookRetryFunction,
 } from "./functions/webhook-flow";
 import { loggers } from "../logging";
+import {
+  dbSyncFunction,
+  manualDbSyncFunction,
+  dbSyncSchedulerFunction,
+  cleanupAbandonedDbSyncsFunction,
+} from "./functions/db-sync";
 
 // Check if we're running in development mode
 const isDevelopment =
@@ -27,12 +33,16 @@ const baseFunctions = [
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  // DB-to-DB sync functions
+  dbSyncFunction,
+  manualDbSyncFunction,
+  cleanupAbandonedDbSyncsFunction,
 ];
 
-// Conditionally add flow scheduler (only in production)
+// Conditionally add schedulers (only in production)
 export const functions = isDevelopment
   ? baseFunctions
-  : [...baseFunctions, flowSchedulerFunction];
+  : [...baseFunctions, flowSchedulerFunction, dbSyncSchedulerFunction];
 
 /**
  * Log Inngest configuration status
@@ -58,4 +68,9 @@ export {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  // DB-to-DB sync exports
+  dbSyncFunction,
+  manualDbSyncFunction,
+  dbSyncSchedulerFunction,
+  cleanupAbandonedDbSyncsFunction,
 };
