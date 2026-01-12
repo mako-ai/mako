@@ -13,6 +13,7 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { validateQuery } from "../services/destination-writer.service";
 
 const logger = loggers.inngest("flow");
 
@@ -1123,5 +1124,68 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
   } catch (error) {
     logger.error("Error retrying webhook event", { error });
     return c.json({ success: false, error: "Server error" }, 500);
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/validate-query - Validate a database query before creating a flow
+flowRoutes.post("/validate-query", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const body = await c.req.json();
+
+    const { connectionId, query, database } = body;
+
+    if (!connectionId) {
+      return c.json({ success: false, error: "connectionId is required" }, 400);
+    }
+
+    if (!query) {
+      return c.json({ success: false, error: "query is required" }, 400);
+    }
+
+    // Validate connection exists and belongs to workspace
+    const connection = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(connectionId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!connection) {
+      return c.json(
+        { success: false, error: "Database connection not found" },
+        404,
+      );
+    }
+
+    // Validate the query
+    const result = await validateQuery(connection, query, database);
+
+    if (!result.success) {
+      return c.json(
+        {
+          success: false,
+          error: result.error || "Query validation failed",
+        },
+        400,
+      );
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        columns: result.columns,
+        sampleRow: result.sampleRow,
+        connectionName: connection.name,
+        connectionType: connection.type,
+      },
+    });
+  } catch (error) {
+    console.error("Error validating query:", error);
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
   }
 });

@@ -16,6 +16,7 @@ import {
   DatabaseConnection,
   IDatabaseConnection,
   ITableDestination,
+  IIncrementalConfig,
 } from "../database/workspace-schema";
 import { getDatabaseDriver } from "../databases/registry";
 import {
@@ -54,6 +55,28 @@ export interface WriteOptions {
 export interface WriteResult {
   success: boolean;
   rowsWritten: number;
+  error?: string;
+}
+
+/**
+ * State for resumable chunked execution
+ */
+export interface DbSyncChunkState {
+  offset: number;
+  totalProcessed: number;
+  hasMore: boolean;
+  lastTrackingValue?: string;
+  estimatedTotal?: number;
+  stagingPrepared?: boolean;
+}
+
+/**
+ * Result of a single chunk execution
+ */
+export interface DbSyncChunkResult {
+  state: DbSyncChunkState;
+  rowsProcessed: number;
+  completed: boolean;
   error?: string;
 }
 
@@ -660,5 +683,332 @@ export async function streamFromDatabaseToDestination(options: {
     await destinationWriter.cleanup();
 
     return { success: false, totalRows, error: lastError };
+  }
+}
+
+/**
+ * Estimate the total row count for a query (for progress tracking)
+ */
+export async function estimateQueryRowCount(
+  connection: IDatabaseConnection,
+  query: string,
+  database?: string,
+): Promise<{ success: boolean; estimatedCount?: number; error?: string }> {
+  const driver = getDatabaseDriver(connection.type);
+  if (!driver) {
+    return { success: false, error: `No driver found for type: ${connection.type}` };
+  }
+
+  try {
+    // Wrap query in COUNT(*) - works for most SQL databases
+    // Remove any ORDER BY clause as it's not needed for count
+    const cleanQuery = query.replace(/\s+ORDER\s+BY\s+[^)]+$/i, "");
+    const countQuery = `SELECT COUNT(*) as total FROM (${cleanQuery}) AS count_subquery`;
+
+    const result = await driver.executeQuery(connection, countQuery, {
+      databaseName: database,
+    });
+
+    if (result.success && result.data && result.data.length > 0) {
+      const count = result.data[0].total || result.data[0].count || result.data[0].COUNT;
+      return { success: true, estimatedCount: Number(count) };
+    }
+
+    return { success: false, error: "Could not determine row count" };
+  } catch (error) {
+    // Count estimation is optional, don't fail the sync
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Get the maximum value of a tracking column from the destination
+ * Used for updating incremental sync state after completion
+ */
+export async function getMaxTrackingValue(
+  connection: IDatabaseConnection,
+  tableName: string,
+  trackingColumn: string,
+  schema?: string,
+  database?: string,
+): Promise<{ success: boolean; maxValue?: string; error?: string }> {
+  const driver = getDatabaseDriver(connection.type);
+  if (!driver) {
+    return { success: false, error: `No driver found for type: ${connection.type}` };
+  }
+
+  try {
+    const qualifiedTable = schema ? `${schema}.${tableName}` : tableName;
+    const query = `SELECT MAX(${trackingColumn}) as max_value FROM ${qualifiedTable}`;
+
+    const result = await driver.executeQuery(connection, query, {
+      databaseName: database,
+    });
+
+    if (result.success && result.data && result.data.length > 0) {
+      const maxValue = result.data[0].max_value;
+      if (maxValue !== null && maxValue !== undefined) {
+        // Convert to string for storage
+        if (maxValue instanceof Date) {
+          return { success: true, maxValue: maxValue.toISOString() };
+        }
+        return { success: true, maxValue: String(maxValue) };
+      }
+    }
+
+    return { success: true, maxValue: undefined }; // No data in table
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Validate a query by executing with LIMIT 1 and return column info
+ */
+export async function validateQuery(
+  connection: IDatabaseConnection,
+  query: string,
+  database?: string,
+): Promise<{
+  success: boolean;
+  columns?: Array<{ name: string; type: string }>;
+  sampleRow?: Record<string, unknown>;
+  error?: string;
+}> {
+  const driver = getDatabaseDriver(connection.type);
+  if (!driver) {
+    return { success: false, error: `No driver found for type: ${connection.type}` };
+  }
+
+  try {
+    // Execute with LIMIT 1 to validate and get schema
+    const testQuery = `SELECT * FROM (${query}) AS validation_subquery LIMIT 1`;
+
+    const result = await driver.executeQuery(connection, testQuery, {
+      databaseName: database,
+    });
+
+    if (!result.success) {
+      return { success: false, error: result.error || "Query validation failed" };
+    }
+
+    // Infer columns from result
+    let columns: Array<{ name: string; type: string }> = [];
+    let sampleRow: Record<string, unknown> | undefined;
+
+    if (result.data && result.data.length > 0) {
+      sampleRow = result.data[0];
+      columns = Object.entries(sampleRow).map(([name, value]) => ({
+        name,
+        type: inferJsType(value),
+      }));
+    }
+
+    return { success: true, columns, sampleRow };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Infer JavaScript type from a value
+ */
+function inferJsType(value: unknown): string {
+  if (value === null || value === undefined) return "unknown";
+  if (value instanceof Date) return "timestamp";
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? "integer" : "number";
+  }
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "string") return "string";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "object") return "object";
+  return "unknown";
+}
+
+/**
+ * Execute a single chunk of database sync with pagination
+ * Returns state for resumption in the next chunk
+ */
+export async function executeDbSyncChunk(options: {
+  sourceConnection: IDatabaseConnection;
+  sourceQuery: string;
+  sourceDatabase?: string;
+  destinationWriter: DestinationWriter;
+  batchSize?: number;
+  syncMode: "full" | "incremental";
+  incrementalConfig?: IIncrementalConfig;
+  keyColumns?: string[];
+  state?: DbSyncChunkState;
+  maxRowsPerChunk?: number;
+  onProgress?: (rowsProcessed: number, estimatedTotal?: number) => void;
+}): Promise<DbSyncChunkResult> {
+  const {
+    sourceConnection,
+    sourceQuery,
+    sourceDatabase,
+    destinationWriter,
+    batchSize = 2000,
+    syncMode,
+    incrementalConfig,
+    keyColumns,
+    state,
+    maxRowsPerChunk = 10000,
+    onProgress,
+  } = options;
+
+  const driver = getDatabaseDriver(sourceConnection.type);
+  if (!driver) {
+    return {
+      state: { offset: 0, totalProcessed: 0, hasMore: false },
+      rowsProcessed: 0,
+      completed: true,
+      error: `No driver found for source type: ${sourceConnection.type}`,
+    };
+  }
+
+  // Initialize or restore state
+  let currentState: DbSyncChunkState = state || {
+    offset: 0,
+    totalProcessed: 0,
+    hasMore: true,
+    stagingPrepared: false,
+  };
+
+  // Estimate total rows on first chunk (if not already done)
+  if (!currentState.estimatedTotal && currentState.offset === 0) {
+    const countResult = await estimateQueryRowCount(
+      sourceConnection,
+      sourceQuery,
+      sourceDatabase,
+    );
+    if (countResult.success) {
+      currentState.estimatedTotal = countResult.estimatedCount;
+    }
+  }
+
+  // Prepare staging on first chunk for full sync
+  if (syncMode === "full" && !currentState.stagingPrepared) {
+    await destinationWriter.prepareFullSync();
+    currentState.stagingPrepared = true;
+  }
+
+  // Build paginated query
+  let effectiveQuery = sourceQuery;
+
+  // Add incremental filter if applicable
+  if (
+    syncMode === "incremental" &&
+    incrementalConfig?.trackingColumn &&
+    incrementalConfig?.lastValue
+  ) {
+    const operator = ">";
+    const value =
+      incrementalConfig.trackingType === "timestamp"
+        ? `'${incrementalConfig.lastValue}'`
+        : incrementalConfig.lastValue;
+
+    if (effectiveQuery.toLowerCase().includes("where")) {
+      effectiveQuery = `${effectiveQuery} AND ${incrementalConfig.trackingColumn} ${operator} ${value}`;
+    } else {
+      effectiveQuery = `${effectiveQuery} WHERE ${incrementalConfig.trackingColumn} ${operator} ${value}`;
+    }
+  }
+
+  // Add ORDER BY for consistent pagination (use tracking column if available)
+  const orderColumn = incrementalConfig?.trackingColumn || "1";
+  if (!effectiveQuery.toLowerCase().includes("order by")) {
+    effectiveQuery = `${effectiveQuery} ORDER BY ${orderColumn}`;
+  }
+
+  // Add LIMIT and OFFSET for pagination
+  const paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`;
+
+  let rowsProcessedInChunk = 0;
+  let lastTrackingValue: string | undefined;
+
+  try {
+    const result = await driver.executeQuery(sourceConnection, paginatedQuery, {
+      databaseName: sourceDatabase,
+    });
+
+    if (!result.success) {
+      return {
+        state: currentState,
+        rowsProcessed: 0,
+        completed: false,
+        error: result.error || "Query execution failed",
+      };
+    }
+
+    const rows = result.data || [];
+
+    // Process in smaller batches for writing
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = rows.slice(i, i + batchSize);
+
+      const writeResult = await destinationWriter.writeBatch(batch, {
+        keyColumns,
+        conflictStrategy: "update",
+      });
+
+      if (!writeResult.success) {
+        return {
+          state: currentState,
+          rowsProcessed: rowsProcessedInChunk,
+          completed: false,
+          error: `Failed to write batch: ${writeResult.error}`,
+        };
+      }
+
+      rowsProcessedInChunk += writeResult.rowsWritten;
+      currentState.totalProcessed += writeResult.rowsWritten;
+
+      // Track the last value for incremental column
+      if (incrementalConfig?.trackingColumn && batch.length > 0) {
+        const lastRow = batch[batch.length - 1];
+        const trackingValue = lastRow[incrementalConfig.trackingColumn];
+        if (trackingValue !== null && trackingValue !== undefined) {
+          lastTrackingValue =
+            trackingValue instanceof Date
+              ? trackingValue.toISOString()
+              : String(trackingValue);
+        }
+      }
+
+      onProgress?.(currentState.totalProcessed, currentState.estimatedTotal);
+    }
+
+    // Check if there's more data
+    const hasMore = rows.length === maxRowsPerChunk;
+
+    // Update state
+    currentState.offset += rows.length;
+    currentState.hasMore = hasMore;
+    if (lastTrackingValue) {
+      currentState.lastTrackingValue = lastTrackingValue;
+    }
+
+    return {
+      state: currentState,
+      rowsProcessed: rowsProcessedInChunk,
+      completed: !hasMore,
+    };
+  } catch (error) {
+    return {
+      state: currentState,
+      rowsProcessed: rowsProcessedInChunk,
+      completed: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
