@@ -510,7 +510,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     if (!capturedId) return null;
     const tab = realConsoleTabs.find(t => t.id === capturedId);
     return tab?.title || null;
-  }, [realConsoleTabs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [realConsoleTabs]);
 
   // Create transport with dynamic body based on current state
   const transport = useMemo(
