@@ -442,6 +442,28 @@ export interface IConflictConfig {
 }
 
 /**
+ * Pagination configuration for database syncs
+ */
+export interface IPaginationConfig {
+  mode: "offset" | "keyset"; // offset uses LIMIT/OFFSET, keyset uses WHERE col > last_value
+  keysetColumn?: string; // Column for keyset pagination (e.g., 'id', 'created_at')
+  keysetDirection?: "asc" | "desc"; // Sort direction (must match ORDER BY in query)
+  lastKeysetValue?: string; // Last processed keyset value for resumption
+}
+
+/**
+ * Type coercion configuration for column mapping between databases
+ */
+export interface ITypeCoercion {
+  column: string; // Column name
+  sourceType?: string; // Original type (informational)
+  targetType: string; // Target type to coerce to
+  format?: string; // Optional format string (e.g., for dates: 'YYYY-MM-DD')
+  nullValue?: unknown; // Value to use when source is null
+  transformer?: string; // Optional transformation: 'lowercase' | 'uppercase' | 'trim' | 'json_parse' | 'json_stringify'
+}
+
+/**
  * Flow model interface (data sync flow configuration)
  */
 export interface IFlow extends Document {
@@ -477,6 +499,8 @@ export interface IFlow extends Document {
   // Incremental and conflict config (for database sources)
   incrementalConfig?: IIncrementalConfig;
   conflictConfig?: IConflictConfig;
+  paginationConfig?: IPaginationConfig; // Pagination mode for database syncs
+  typeCoercions?: ITypeCoercion[]; // Type coercion rules for column mapping
   batchSize?: number; // Batch size for processing (default: 2000)
 
   enabled: boolean;
@@ -1337,6 +1361,35 @@ const FlowSchema = new Schema<IFlow>(
         default: "upsert",
       },
     },
+    // Pagination mode for database syncs
+    paginationConfig: {
+      mode: {
+        type: String,
+        enum: ["offset", "keyset"],
+        default: "offset",
+      },
+      keysetColumn: String,
+      keysetDirection: {
+        type: String,
+        enum: ["asc", "desc"],
+        default: "asc",
+      },
+      lastKeysetValue: String,
+    },
+    // Type coercion rules for column mapping
+    typeCoercions: [
+      {
+        column: { type: String, required: true },
+        sourceType: String,
+        targetType: { type: String, required: true },
+        format: String,
+        nullValue: Schema.Types.Mixed,
+        transformer: {
+          type: String,
+          enum: ["lowercase", "uppercase", "trim", "json_parse", "json_stringify"],
+        },
+      },
+    ],
     batchSize: {
       type: Number,
       default: 2000,
