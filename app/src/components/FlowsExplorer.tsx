@@ -70,7 +70,9 @@ export function FlowsExplorer() {
     setAnchorEl(null);
   };
 
-  const handleCreateNew = (flowType: "scheduled" | "webhook" | "db-scheduled") => {
+  const handleCreateNew = (
+    flowType: "scheduled" | "webhook" | "db-scheduled",
+  ) => {
     const title =
       flowType === "scheduled"
         ? "New Scheduled Flow"
