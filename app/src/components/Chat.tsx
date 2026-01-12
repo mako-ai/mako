@@ -1414,13 +1414,19 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                     ) {
                       const toolName =
                         partType === "dynamic-tool"
-                          ? ((part as Record<string, unknown>).toolName as string)
+                          ? ((part as Record<string, unknown>)
+                              .toolName as string)
                           : partType.split("-").slice(1).join("-");
                       const toolPart = part as Record<string, unknown>;
                       return (
                         <Box
                           key={partIndex}
-                          sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, my: 0.5 }}
+                          sx={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 0.5,
+                            my: 0.5,
+                          }}
                         >
                           <Chip
                             icon={
@@ -1429,7 +1435,10 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                               ) : toolPart.state === "error" ? (
                                 <Check
                                   size={16}
-                                  style={{ color: "var(--mui-palette-error-main, #f44336)" }}
+                                  style={{
+                                    color:
+                                      "var(--mui-palette-error-main, #f44336)",
+                                  }}
                                 />
                               ) : (
                                 <CircularProgress size={14} thickness={5} />
@@ -1455,9 +1464,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                             }}
                             onClick={() =>
                               handleToolClick({
-                                toolCallId: (toolPart.toolCallId as string) || "",
+                                toolCallId:
+                                  (toolPart.toolCallId as string) || "",
                                 toolName: toolName || "",
-                                state: toolPart.state as ToolInvocationInfo["state"],
+                                state:
+                                  toolPart.state as ToolInvocationInfo["state"],
                                 input: toolPart.input,
                                 output: toolPart.output,
                               })
@@ -1480,16 +1491,24 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                     }
 
                     // Render text parts
-                    if (partType === "text" && (part as { text?: string }).text) {
+                    if (
+                      partType === "text" &&
+                      (part as { text?: string }).text
+                    ) {
                       return (
                         <ReactMarkdown
                           key={partIndex}
                           remarkPlugins={[remarkGfm]}
                           components={{
                             code({ className, children }) {
-                              const match = /language-(\w+)/.exec(className || "");
+                              const match = /language-(\w+)/.exec(
+                                className || "",
+                              );
                               const isInline = !match;
-                              const codeString = String(children).replace(/\n$/, "");
+                              const codeString = String(children).replace(
+                                /\n$/,
+                                "",
+                              );
                               return !isInline ? (
                                 <CodeBlock
                                   language={match ? match[1] : "text"}
@@ -1499,7 +1518,10 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                                   {codeString}
                                 </CodeBlock>
                               ) : (
-                                <code className={className} style={{ fontSize: "0.8rem" }}>
+                                <code
+                                  className={className}
+                                  style={{ fontSize: "0.8rem" }}
+                                >
                                   {children}
                                 </code>
                               );
@@ -1526,7 +1548,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                                   style={{
                                     padding: "8px 12px",
                                     textAlign: "left",
-                                    backgroundColor: muiTheme.palette.background.paper,
+                                    backgroundColor:
+                                      muiTheme.palette.background.paper,
                                     borderBottom: `2px solid ${muiTheme.palette.divider}`,
                                     borderRight: `1px solid ${muiTheme.palette.divider}`,
                                     fontWeight: 600,
@@ -1543,7 +1566,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                                     padding: "8px 12px",
                                     borderBottom: `1px solid ${muiTheme.palette.divider}`,
                                     borderRight: `1px solid ${muiTheme.palette.divider}`,
-                                    backgroundColor: muiTheme.palette.background.paper,
+                                    backgroundColor:
+                                      muiTheme.palette.background.paper,
                                   }}
                                 >
                                   {children}
