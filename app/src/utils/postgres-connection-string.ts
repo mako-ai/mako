@@ -62,7 +62,7 @@ export function parsePostgresConnectionString(
     return {
       host: url.hostname || undefined,
       port: url.port ? parseInt(url.port, 10) : 5432,
-      database: url.pathname ? url.pathname.slice(1) : undefined, // Remove leading /
+      database: url.pathname.slice(1) || undefined, // Remove leading /, convert "" to undefined
       username: url.username ? decodeURIComponent(url.username) : undefined,
       password: url.password ? decodeURIComponent(url.password) : undefined,
       ssl,
