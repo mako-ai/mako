@@ -433,6 +433,10 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const onConsoleModificationRef = useRef(onConsoleModification);
   onConsoleModificationRef.current = onConsoleModification;
 
+  // Ref to capture the active console ID at the time the user submits a message
+  // This prevents the race condition where user switches consoles while agent is thinking
+  const capturedConsoleIdRef = useRef<string | null>(null);
+
   // Function to fetch sessions - defined before useChat so it can be used in onFinish
   // Using a ref-based pattern to always access the current workspace
   const fetchSessionsRef = useRef<() => Promise<void>>();
@@ -500,6 +504,14 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   // Local input state
   const [input, setInput] = useState("");
 
+  // Get the captured console's title for the visual indicator
+  const capturedConsoleTitle = useMemo(() => {
+    const capturedId = capturedConsoleIdRef.current;
+    if (!capturedId) return null;
+    const tab = realConsoleTabs.find(t => t.id === capturedId);
+    return tab?.title || null;
+  }, [realConsoleTabs, isLoading]); // Re-evaluate when loading state changes
+
   // Create transport with dynamic body based on current state
   const transport = useMemo(
     () =>
@@ -560,10 +572,14 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         const currentTabs = currentStore.consoleTabs;
         const currentActiveId = currentStore.activeConsoleId;
 
-        const consoleId = (input.consoleId as string | null) ?? currentActiveId;
+        // Use captured console ID (from message submission time) as the primary fallback
+        // This prevents the race condition where user switches consoles while agent is thinking
+        const capturedId = capturedConsoleIdRef.current;
+        const consoleId = (input.consoleId as string | null) ?? capturedId ?? currentActiveId;
         const targetConsole = consoleId
           ? currentTabs.find((c: any) => c.id === consoleId)
-          : currentTabs.find((c: any) => c.id === currentActiveId) ||
+          : currentTabs.find((c: any) => c.id === capturedId) ||
+            currentTabs.find((c: any) => c.id === currentActiveId) ||
             currentTabs[0];
 
         if (!targetConsole) {
@@ -611,9 +627,13 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         const position = input.position as number | null;
         const inputConsoleId = input.consoleId as string | null | undefined;
 
-        // Determine target console
+        // Use captured console ID (from message submission time) as the primary fallback
+        // This prevents the race condition where user switches consoles while agent is thinking
+        const capturedId = capturedConsoleIdRef.current;
+
+        // Determine target console - prioritize: explicit input > captured ID > current active > first tab
         const resolvedConsoleId =
-          inputConsoleId ?? currentActiveId ?? currentTabs[0]?.id;
+          inputConsoleId ?? capturedId ?? currentActiveId ?? currentTabs[0]?.id;
 
         if (!resolvedConsoleId) {
           addToolOutput({
@@ -730,8 +750,13 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         const databaseId = (input.databaseId as string | null) ?? undefined;
         const databaseName = (input.databaseName as string | null) ?? undefined;
 
-        // If connection info not provided, inherit from active console
+        // Use captured console ID (from message submission time) as the primary fallback
+        // This prevents the race condition where user switches consoles while agent is thinking
+        const capturedId = capturedConsoleIdRef.current;
+
+        // If connection info not provided, inherit from captured/active console
         const baseConsole =
+          currentTabs.find((c: any) => c.id === capturedId) ||
           currentTabs.find((c: any) => c.id === currentActiveId) ||
           currentTabs[0];
 
@@ -1165,6 +1190,27 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         )}
       </Menu>
 
+      {/* Working on console indicator - shows which console the agent is targeting */}
+      {isLoading && capturedConsoleTitle && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.5,
+            backgroundColor: "action.hover",
+            borderBottom: 1,
+            borderColor: "divider",
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+          }}
+        >
+          <CircularProgress size={12} thickness={5} />
+          <Typography variant="caption" color="text.secondary">
+            Working on: <strong>{capturedConsoleTitle}</strong>
+          </Typography>
+        </Box>
+      )}
+
       {/* Error display */}
       {error && (
         <Box sx={{ p: 1 }}>
@@ -1277,6 +1323,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           onSubmit={e => {
             e.preventDefault();
             if (input.trim() && !isLoading) {
+              // Capture the active console ID at message submission time
+              // This prevents the race condition where user switches consoles while agent is thinking
+              capturedConsoleIdRef.current = activeConsoleId;
               const activeConsole = consoleTabs.find(
                 t => t.id === activeConsoleId,
               );
@@ -1302,6 +1351,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (input.trim() && !isLoading) {
+                  // Capture the active console ID at message submission time
+                  // This prevents the race condition where user switches consoles while agent is thinking
+                  capturedConsoleIdRef.current = activeConsoleId;
                   const activeConsole = consoleTabs.find(
                     t => t.id === activeConsoleId,
                   );
