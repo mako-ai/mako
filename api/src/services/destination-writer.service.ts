@@ -47,7 +47,7 @@ export interface DestinationConfig {
 export interface WriteOptions {
   // For upsert operations
   keyColumns?: string[];
-  conflictStrategy?: "upsert" | "ignore" | "replace";
+  conflictStrategy?: "update" | "ignore" | "replace";
 
   // For full sync with staging
   useStaging?: boolean;
@@ -454,7 +454,7 @@ export class DestinationWriter {
             targetTable,
             rows,
             options.keyColumns,
-            { schema, conflictStrategy: options.conflictStrategy || "upsert" },
+            { schema, conflictStrategy: options.conflictStrategy || "update" },
           )) || { success: false, rowsWritten: 0, error: "Upsert not supported" };
       } else {
         // Insert for full sync (staging) or when no key columns
@@ -656,7 +656,7 @@ export async function streamFromDatabaseToDestination(options: {
         onBatch: async (rows: Record<string, unknown>[]) => {
           const writeResult = await destinationWriter.writeBatch(rows, {
             keyColumns,
-            conflictStrategy: "upsert",
+            conflictStrategy: "update",
           });
 
           if (!writeResult.success) {
@@ -1217,7 +1217,7 @@ export async function executeDbSyncChunk(options: {
 
       const writeResult = await destinationWriter.writeBatch(batch, {
         keyColumns,
-        conflictStrategy: "upsert",
+        conflictStrategy: "update",
       });
 
       if (!writeResult.success) {
