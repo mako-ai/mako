@@ -18,7 +18,6 @@ import {
 } from "../../services/destination-writer.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { databaseDataSourceManager } from "../../sync/database-data-source-manager";
-import { getDatabaseDriver } from "../../databases/registry";
 import { FetchState } from "../../connectors/base/BaseConnector";
 import { Types } from "mongoose";
 import * as os from "os";
@@ -519,7 +518,7 @@ export const flowFunction = inngest.createFunction(
         });
 
         // Validate database source configuration
-        const validation = await step.run("validate-db-source", async () => {
+        const _validation = await step.run("validate-db-source", async () => {
           if (!flow.databaseSource?.connectionId || !flow.databaseSource?.query) {
             throw new Error("Database source requires connectionId and query");
           }
@@ -540,7 +539,7 @@ export const flowFunction = inngest.createFunction(
         });
 
         // Initialize destination writer once
-        const writerConfig = await step.run("init-destination-writer", async () => {
+        const _writerConfig = await step.run("init-destination-writer", async () => {
           const sourceConnection = await DatabaseConnection.findById(
             flow.databaseSource!.connectionId,
           );
