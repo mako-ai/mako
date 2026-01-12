@@ -525,7 +525,7 @@ export async function createDestinationWriter(
   },
   dataSourceName?: string,
 ): Promise<DestinationWriter> {
-  let config: DestinationConfig = {
+  const config: DestinationConfig = {
     dataSourceId: flow.dataSourceId?.toString(),
     dataSourceName,
   };
@@ -1098,7 +1098,7 @@ export async function executeDbSyncChunk(options: {
   }
 
   // Initialize or restore state
-  let currentState: DbSyncChunkState = state || {
+  const currentState: DbSyncChunkState = state || {
     offset: 0,
     totalProcessed: 0,
     hasMore: true,
