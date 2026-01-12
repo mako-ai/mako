@@ -800,6 +800,107 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         return;
       }
 
+      // Handle list_consoles - return all open console tabs
+      if (toolName === "list_consoles") {
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+        const currentActiveId = currentStore.activeConsoleId;
+
+        // Use captured console ID as the context console
+        const capturedId = capturedConsoleIdRef.current;
+
+        const consoles = currentTabs
+          .filter((tab: any) => tab?.kind === undefined || tab?.kind === "console")
+          .map((tab: any) => ({
+            id: tab.id,
+            title: tab.title || "Untitled",
+            connectionId: tab.connectionId,
+            connectionName: tab.metadata?.connectionName || tab.connectionId,
+            databaseName: tab.databaseName || tab.metadata?.queryOptions?.databaseName,
+            contentPreview: (tab.content || "").slice(0, 100) + ((tab.content || "").length > 100 ? "..." : ""),
+            isActive: tab.id === currentActiveId,
+            isContextConsole: tab.id === capturedId,
+          }));
+
+        addToolOutput({
+          tool: "list_consoles",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            consoles,
+            activeConsoleId: currentActiveId,
+            contextConsoleId: capturedId,
+            message: `Found ${consoles.length} open console(s)`,
+          },
+        });
+        return;
+      }
+
+      // Handle set_console_connection - attach a console to a database connection
+      if (toolName === "set_console_connection") {
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+        const currentActiveId = currentStore.activeConsoleId;
+
+        const inputConsoleId = input.consoleId as string | undefined;
+        const connectionId = input.connectionId as string;
+        const databaseId = input.databaseId as string | undefined;
+        const databaseName = input.databaseName as string | undefined;
+
+        // Use captured console ID as the primary fallback
+        const capturedId = capturedConsoleIdRef.current;
+        const resolvedConsoleId = inputConsoleId ?? capturedId ?? currentActiveId;
+
+        if (!resolvedConsoleId) {
+          addToolOutput({
+            tool: "set_console_connection",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: "No console is currently open. Call create_console first.",
+            },
+          });
+          return;
+        }
+
+        const targetConsole = currentTabs.find(
+          (c: any) => c.id === resolvedConsoleId,
+        );
+        if (!targetConsole) {
+          addToolOutput({
+            tool: "set_console_connection",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: `Console with ID ${resolvedConsoleId} not found`,
+            },
+          });
+          return;
+        }
+
+        // Update the console's connection and database
+        currentStore.updateConsoleConnection(resolvedConsoleId, connectionId);
+        if (databaseId !== undefined || databaseName !== undefined) {
+          currentStore.updateConsoleDatabase(resolvedConsoleId, databaseId, databaseName);
+        }
+
+        addToolOutput({
+          tool: "set_console_connection",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            consoleId: resolvedConsoleId,
+            connectionId,
+            databaseId,
+            databaseName,
+            message: `Console "${targetConsole.title}" attached to connection ${connectionId}${databaseName ? ` (database: ${databaseName})` : ""}`,
+          },
+        });
+        return;
+      }
+
       // Unknown tool - not a client-side console tool, let it be handled server-side
     },
 
@@ -892,6 +993,36 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               };
             }) || [];
           setMessages(convertedMessages);
+
+          // Restore associated consoles from the chat
+          // These are draft consoles that were auto-saved when messages were sent
+          if (data.consoles && data.consoles.length > 0) {
+            const store = (useConsoleStore as any).getState();
+            const existingTabs = store.consoleTabs || [];
+
+            for (const console of data.consoles) {
+              // Check if console already exists in tabs (by ID)
+              const exists = existingTabs.some((t: any) => t.id === console.id);
+              if (!exists) {
+                // Add the console tab
+                store.addConsoleTab({
+                  id: console.id,
+                  title: console.title || "Untitled",
+                  content: console.content || "",
+                  connectionId: console.connectionId,
+                  databaseId: console.databaseId,
+                  databaseName: console.databaseName,
+                });
+              }
+            }
+
+            // Set the first restored console as active and capture it for this chat
+            const firstConsole = data.consoles[0];
+            if (firstConsole) {
+              store.setActiveConsole(firstConsole.id);
+              capturedConsoleIdRef.current = firstConsole.id;
+            }
+          }
         }
       } catch {
         /* ignore */

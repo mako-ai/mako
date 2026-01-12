@@ -1,8 +1,9 @@
 import { ObjectId } from "mongodb";
 import { v4 as uuidv4 } from "uuid";
 import type { UIMessage } from "ai";
-import { Chat } from "../database/workspace-schema";
+import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-v2";
+import type { ConsoleDataV2 } from "../agent-v2/types";
 
 const CONTEXT_WINDOW_SIZE = 10;
 const MAX_CONTEXT_LENGTH = 4000;
@@ -576,4 +577,93 @@ export const saveChat = async (
   );
 
   return result;
+};
+
+/**
+ * Save a draft console linked to a chat session.
+ * Draft consoles are auto-saved when chat messages are sent and have no folderId.
+ * They can be restored when the user opens an old chat.
+ *
+ * Only saves if the console has no folderId (is not already a saved console).
+ */
+export const saveDraftConsole = async (
+  chatId: string,
+  workspaceId: string,
+  userId: string,
+  console: ConsoleDataV2,
+): Promise<void> => {
+  // Skip if console has no content or no ID
+  if (!console.id || !console.content?.trim()) {
+    return;
+  }
+
+  const now = new Date();
+  const consoleId = ObjectId.isValid(console.id)
+    ? new ObjectId(console.id)
+    : new ObjectId();
+
+  // Check if this console already exists as a saved console (has folderId)
+  const existingConsole = await SavedConsole.findById(consoleId);
+  if (existingConsole?.folderId) {
+    // This is a saved console - don't auto-save as draft
+    return;
+  }
+
+  // Upsert the draft console
+  await SavedConsole.findOneAndUpdate(
+    { _id: consoleId },
+    {
+      $set: {
+        code: console.content,
+        name: console.title || "Untitled",
+        connectionId: console.connectionId
+          ? new ObjectId(console.connectionId)
+          : undefined,
+        databaseName: console.databaseName,
+        databaseId: console.databaseId,
+        chatId: new ObjectId(chatId),
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        workspaceId: new ObjectId(workspaceId),
+        createdBy: userId,
+        language: "sql" as const, // Default language
+        isPrivate: false,
+        executionCount: 0,
+        createdAt: now,
+      },
+    },
+    { upsert: true },
+  );
+};
+
+/**
+ * Get draft consoles associated with a chat.
+ * Returns consoles that have chatId set but no folderId.
+ */
+export const getDraftConsolesForChat = async (
+  chatId: string,
+): Promise<
+  Array<{
+    id: string;
+    title: string;
+    content: string;
+    connectionId?: string;
+    databaseId?: string;
+    databaseName?: string;
+  }>
+> => {
+  const consoles = await SavedConsole.find({
+    chatId: new ObjectId(chatId),
+    folderId: { $exists: false },
+  });
+
+  return consoles.map(c => ({
+    id: c._id.toString(),
+    title: c.name,
+    content: c.code,
+    connectionId: c.connectionId?.toString(),
+    databaseId: c.databaseId,
+    databaseName: c.databaseName,
+  }));
 };

@@ -3,6 +3,7 @@ import { Chat } from "../database/workspace-schema";
 import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { getDraftConsolesForChat } from "../services/agent-thread.service";
 
 export const chatsRoutes = new Hono();
 
@@ -98,7 +99,7 @@ chatsRoutes.post("/", async (c: AuthenticatedContext) => {
   }
 });
 
-// Get a single chat session with messages
+// Get a single chat session with messages and associated consoles
 chatsRoutes.get("/:id", async (c: AuthenticatedContext) => {
   try {
     // Get authenticated user
@@ -133,9 +134,14 @@ chatsRoutes.get("/:id", async (c: AuthenticatedContext) => {
       return c.json({ error: "Chat not found" }, 404);
     }
 
+    // Get draft consoles associated with this chat
+    // These are consoles that were auto-saved when chat messages were sent
+    const draftConsoles = await getDraftConsolesForChat(id);
+
     return c.json({
       ...chat.toObject(),
       _id: chat._id.toString(),
+      consoles: draftConsoles, // Include associated consoles for auto-restoration
     });
   } catch (error) {
     console.error("Error getting chat:", error);

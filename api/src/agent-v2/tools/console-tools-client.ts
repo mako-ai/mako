@@ -71,6 +71,30 @@ export const createConsoleSchema = z.object({
     ),
 });
 
+export const listConsolesSchema = z.object({});
+
+export const setConsoleConnectionSchema = z.object({
+  consoleId: z
+    .string()
+    .optional()
+    .describe(
+      "Console ID to attach. If not provided, uses the context console (the one the user was focused on when they sent the message).",
+    ),
+  connectionId: z.string().describe("Database connection ID to attach to"),
+  databaseId: z
+    .string()
+    .optional()
+    .describe(
+      "Specific database ID for cluster-mode connections (e.g., D1 UUID)",
+    ),
+  databaseName: z
+    .string()
+    .optional()
+    .describe(
+      "Database name for connections with multiple databases (e.g., PostgreSQL, MongoDB)",
+    ),
+});
+
 /**
  * Client-side console tools (no execute function = client-side execution)
  */
@@ -95,9 +119,27 @@ export const clientConsoleTools = {
     inputSchema: createConsoleSchema,
     // No execute function - this is a client-side tool
   },
+
+  list_consoles: {
+    description:
+      "List all open console tabs with their metadata including title, attached database connection, and content preview. Use this to understand what consoles are available before performing cross-console operations.",
+    inputSchema: listConsolesSchema,
+    // No execute function - this is a client-side tool
+  },
+
+  set_console_connection: {
+    description:
+      "Attach a console to a database connection, or change its current attachment. Use this when you need to run queries against a different database than what the console is currently attached to. After setting the connection, you can use the console to execute queries against that database.",
+    inputSchema: setConsoleConnectionSchema,
+    // No execute function - this is a client-side tool
+  },
 };
 
 // Export schema types for client-side use
 export type ModifyConsoleInput = z.infer<typeof modifyConsoleSchema>;
 export type ReadConsoleInput = z.infer<typeof readConsoleSchema>;
 export type CreateConsoleInput = z.infer<typeof createConsoleSchema>;
+export type ListConsolesInput = z.infer<typeof listConsolesSchema>;
+export type SetConsoleConnectionInput = z.infer<
+  typeof setConsoleConnectionSchema
+>;

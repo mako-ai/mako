@@ -266,11 +266,19 @@ export interface IConsoleFolder extends Document {
 
 /**
  * SavedConsole model interface
+ *
+ * Consoles can be:
+ * 1. Saved consoles: Have a folderId, managed by user through explicit save
+ * 2. Draft consoles: Have a chatId, auto-saved when chat messages are sent
+ *
+ * A console with chatId but no folderId is a "draft" - it will be restored
+ * when the user opens the associated chat.
  */
 export interface ISavedConsole extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   folderId?: Types.ObjectId;
+  chatId?: Types.ObjectId; // For draft consoles linked to a chat session
   connectionId?: Types.ObjectId;
   databaseName?: string;
   databaseId?: string;
@@ -804,6 +812,10 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: Schema.Types.ObjectId,
       ref: "ConsoleFolder",
     },
+    chatId: {
+      type: Schema.Types.ObjectId,
+      ref: "Chat",
+    },
     connectionId: {
       type: Schema.Types.ObjectId,
       ref: "DatabaseConnection",
@@ -877,6 +889,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
 SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
 SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
+SavedConsoleSchema.index({ chatId: 1 }, { sparse: true }); // For draft consoles linked to chats
 
 /**
  * Chat Schema
