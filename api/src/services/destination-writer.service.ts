@@ -20,7 +20,7 @@ import {
   IPaginationConfig,
   ITypeCoercion,
 } from "../database/workspace-schema";
-import { getDatabaseDriver } from "../databases/registry";
+import { databaseRegistry } from "../databases/registry";
 import {
   ColumnDefinition,
   BatchWriteResult,
@@ -114,7 +114,7 @@ export class DestinationWriter {
       this.connection = conn;
 
       // Get the appropriate driver
-      this.driver = getDatabaseDriver(conn.type);
+      this.driver = databaseRegistry.getDriver(conn.type);
       if (!this.driver) {
         throw new Error(`No driver found for database type: ${conn.type}`);
       }
@@ -454,7 +454,7 @@ export class DestinationWriter {
             targetTable,
             rows,
             options.keyColumns,
-            { schema, conflictStrategy: options.conflictStrategy || "update" },
+            { schema, conflictStrategy: options.conflictStrategy || "upsert" },
           )) || { success: false, rowsWritten: 0, error: "Upsert not supported" };
       } else {
         // Insert for full sync (staging) or when no key columns
@@ -598,7 +598,7 @@ export async function streamFromDatabaseToDestination(options: {
     signal,
   } = options;
 
-  const driver = getDatabaseDriver(sourceConnection.type);
+  const driver = databaseRegistry.getDriver(sourceConnection.type);
   if (!driver) {
     return {
       success: false,
@@ -653,10 +653,10 @@ export async function streamFromDatabaseToDestination(options: {
         batchSize,
         databaseName: sourceDatabase,
         signal,
-        onBatch: async rows => {
+        onBatch: async (rows: Record<string, unknown>[]) => {
           const writeResult = await destinationWriter.writeBatch(rows, {
             keyColumns,
-            conflictStrategy: "update",
+            conflictStrategy: "upsert",
           });
 
           if (!writeResult.success) {
@@ -697,7 +697,7 @@ export async function estimateQueryRowCount(
   query: string,
   database?: string,
 ): Promise<{ success: boolean; estimatedCount?: number; error?: string }> {
-  const driver = getDatabaseDriver(connection.type);
+  const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
     return { success: false, error: `No driver found for type: ${connection.type}` };
   }
@@ -738,7 +738,7 @@ export async function getMaxTrackingValue(
   schema?: string,
   database?: string,
 ): Promise<{ success: boolean; maxValue?: string; error?: string }> {
-  const driver = getDatabaseDriver(connection.type);
+  const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
     return { success: false, error: `No driver found for type: ${connection.type}` };
   }
@@ -784,7 +784,7 @@ export async function validateQuery(
   sampleRow?: Record<string, unknown>;
   error?: string;
 }> {
-  const driver = getDatabaseDriver(connection.type);
+  const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
     return { success: false, error: `No driver found for type: ${connection.type}` };
   }
@@ -806,8 +806,8 @@ export async function validateQuery(
     let sampleRow: Record<string, unknown> | undefined;
 
     if (result.data && result.data.length > 0) {
-      sampleRow = result.data[0];
-      columns = Object.entries(sampleRow).map(([name, value]) => ({
+      sampleRow = result.data[0] as Record<string, unknown>;
+      columns = Object.entries(sampleRow!).map(([name, value]) => ({
         name,
         type: inferJsType(value),
       }));
@@ -1087,7 +1087,7 @@ export async function executeDbSyncChunk(options: {
     onProgress,
   } = options;
 
-  const driver = getDatabaseDriver(sourceConnection.type);
+  const driver = databaseRegistry.getDriver(sourceConnection.type);
   if (!driver) {
     return {
       state: { offset: 0, totalProcessed: 0, hasMore: false },
@@ -1208,7 +1208,7 @@ export async function executeDbSyncChunk(options: {
 
     // Apply type coercions if configured
     if (typeCoercions && typeCoercions.length > 0) {
-      rows = rows.map(row => applyTypeCoercions(row, typeCoercions));
+      rows = rows.map((row: Record<string, unknown>) => applyTypeCoercions(row, typeCoercions));
     }
 
     // Process in smaller batches for writing
@@ -1217,7 +1217,7 @@ export async function executeDbSyncChunk(options: {
 
       const writeResult = await destinationWriter.writeBatch(batch, {
         keyColumns,
-        conflictStrategy: "update",
+        conflictStrategy: "upsert",
       });
 
       if (!writeResult.success) {
@@ -1336,7 +1336,7 @@ export async function dryRunDbSync(options: {
     };
   }
 
-  const driver = getDatabaseDriver(sourceConnection.type);
+  const driver = databaseRegistry.getDriver(sourceConnection.type);
   if (!driver) {
     return {
       success: false,
@@ -1414,7 +1414,7 @@ export async function dryRunDbSync(options: {
 
       // Apply type coercions
       if (typeCoercions && typeCoercions.length > 0) {
-        rows = rows.map(row => applyTypeCoercions(row, typeCoercions));
+        rows = rows.map((row: Record<string, unknown>) => applyTypeCoercions(row, typeCoercions));
       }
 
       allRows.push(...rows);
