@@ -957,35 +957,17 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         );
         if (res.ok) {
           const data = await res.json();
-          // Convert stored messages to AI SDK format with parts including tool calls
+          // Convert stored messages to AI SDK format
+          // NOTE: We do NOT include tool call parts when loading saved messages.
+          // The Anthropic API requires every tool_use to have a corresponding tool_result,
+          // and since these tool calls have already been executed, including them causes
+          // "tool_use ids were found without tool_result blocks" errors.
+          // The assistant's text response already reflects the outcome of any tool calls.
           const convertedMessages =
             data.messages?.map((msg: any) => {
               const parts: Array<Record<string, unknown>> = [];
 
-              // Add tool call parts first (they execute before text response)
-              // IMPORTANT: input must always be defined (at least {}) for OpenAI API compatibility
-              // The API requires 'arguments' field which comes from 'input'
-              if (msg.toolCalls && msg.toolCalls.length > 0) {
-                for (const tc of msg.toolCalls) {
-                  // Skip tool calls without a valid toolName
-                  if (!tc.toolName) continue;
-
-                  parts.push({
-                    type: `tool-${tc.toolName}`,
-                    toolCallId:
-                      tc.toolCallId ||
-                      tc._id?.toString() ||
-                      `saved-${tc.toolName}-${Date.now()}-${Math.random()}`,
-                    toolName: tc.toolName,
-                    state: "output-available",
-                    // CRITICAL: input must never be undefined - OpenAI API requires 'arguments'
-                    input: tc.input ?? {},
-                    output: tc.result ?? null,
-                  });
-                }
-              }
-
-              // Add reasoning parts (if any)
+              // Add reasoning parts (if any) - these are safe to include
               if (msg.reasoning && Array.isArray(msg.reasoning)) {
                 for (const reasoningText of msg.reasoning) {
                   parts.push({
