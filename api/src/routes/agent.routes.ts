@@ -224,9 +224,29 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const model = getModelInstance(modelId);
   console.log(`[Agent] Using model: ${modelId || "gpt-5.2 (default)"}`);
 
+  // Sanitize messages before conversion to model messages.
+  // When loading saved chats, the frontend includes tool call parts for UI display.
+  // However, the AI API requires every tool_use to have a corresponding tool_result
+  // in the next user message. Since historical tool calls are already complete,
+  // we filter them out to prevent "tool_use without tool_result" errors.
+  const sanitizedMessages: UIMessage[] = messages.map(msg => {
+    if (msg.role !== "assistant" || !msg.parts) {
+      return msg;
+    }
+    // Filter out completed tool call parts from assistant messages
+    // Tool parts have type like "tool-read_console", "tool-sql_execute_query", etc.
+    const filteredParts = msg.parts.filter(part => {
+      const partType = (part as { type?: string }).type;
+      // Keep text, reasoning, and other non-tool parts
+      // Remove tool-* parts (completed tool calls)
+      return !partType?.startsWith("tool-");
+    });
+    return { ...msg, parts: filteredParts };
+  });
+
   // Convert UI messages (from useChat) to model messages (for streamText)
   // Note: convertToModelMessages is async in AI SDK
-  const modelMessages = await convertToModelMessages(messages);
+  const modelMessages = await convertToModelMessages(sanitizedMessages);
 
   // Guardrail: prevent runaway multi-step tool loops in production.
   // The AI SDK defaults to stopWhen: stepCountIs(1). We intentionally allow multi-step,
