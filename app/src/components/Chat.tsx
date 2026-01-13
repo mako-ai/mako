@@ -407,37 +407,6 @@ type ConsoleModificationPayload = ConsoleModification & {
   databaseName?: string;
 };
 
-/**
- * Smart content truncation for console context.
- * - Full content for active console
- * - Smart truncation for others: full if <50 lines, first 30 + last 10 lines otherwise
- */
-function smartTruncateContent(
-  content: string,
-  isActive: boolean,
-): { content: string; truncated: boolean; lineCount: number } {
-  const lines = content.split("\n");
-  const lineCount = lines.length;
-
-  // Active console gets full content
-  if (isActive) {
-    return { content, truncated: false, lineCount };
-  }
-
-  // For inactive consoles: full if <50 lines
-  if (lineCount < 50) {
-    return { content, truncated: false, lineCount };
-  }
-
-  // Smart truncation: first 30 lines + truncation note + last 10 lines
-  const first30 = lines.slice(0, 30).join("\n");
-  const last10 = lines.slice(-10).join("\n");
-  const truncatedLines = lineCount - 40;
-  const truncatedContent = `${first30}\n\n[... ${truncatedLines} lines truncated ...]\n\n${last10}`;
-
-  return { content: truncatedContent, truncated: true, lineCount };
-}
-
 interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
 }
@@ -495,7 +464,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     null,
   );
 
-  // Filter to only real console tabs
+  // Filter to only real console tabs (used for capturedConsoleTitle)
   const realConsoleTabs = useMemo(
     () =>
       (consoleTabs || []).filter(
@@ -503,63 +472,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       ),
     [consoleTabs],
   );
-
-  // Build open consoles context for the backend with smart content truncation
-  // Note: We pass activeConsoleId separately to avoid re-creating transport on every tab switch
-  // The backend determines isActive using consoleId param
-  const openConsolesContext = useMemo(() => {
-    const data: Array<{
-      id: string;
-      title: string;
-      connectionId?: string;
-      connectionName?: string;
-      connectionType?: string;
-      databaseId?: string;
-      databaseName?: string;
-      content: string;
-      contentTruncated: boolean;
-      lineCount: number;
-    }> = [];
-
-    for (const tab of realConsoleTabs) {
-      if (!tab?.id) continue;
-      const rawContent = tab.content || "";
-      // For truncation, we can't know which is "active" without causing re-renders
-      // So we use a simpler heuristic: truncate all consoles the same way
-      const { content, truncated, lineCount } = smartTruncateContent(
-        rawContent,
-        false, // Don't give full content to any - backend gets activeConsoleId separately
-      );
-
-      const connectionId = tab?.connectionId;
-      const databaseId =
-        tab?.databaseId || tab?.metadata?.queryOptions?.databaseId;
-      const databaseName =
-        tab?.databaseName ||
-        tab?.metadata?.queryOptions?.databaseName ||
-        tab?.metadata?.queryOptions?.dbName;
-      const connectionName =
-        (tab?.metadata as { connectionName?: string })?.connectionName ||
-        undefined;
-      const connectionType =
-        (tab?.metadata as { connectionType?: string })?.connectionType ||
-        undefined;
-
-      data.push({
-        id: tab.id,
-        title: tab.title,
-        connectionId,
-        connectionName,
-        connectionType,
-        databaseId,
-        databaseName,
-        content,
-        contentTruncated: truncated,
-        lineCount,
-      });
-    }
-    return data;
-  }, [realConsoleTabs]); // Note: no activeConsoleId dependency to avoid re-render loops
 
   // Local input state
   const [input, setInput] = useState("");
@@ -572,26 +484,26 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     return tab?.title || null;
   }, [realConsoleTabs]);
 
-  // Create transport with dynamic body based on current state
+  // Ref to get current activeConsoleId at request time (avoids stale closure)
+  const activeConsoleIdRef = useRef(activeConsoleId);
+  activeConsoleIdRef.current = activeConsoleId;
+
+  // Create transport with STABLE dependencies only
+  // IMPORTANT: We removed openConsoles from the body to prevent infinite re-render loops.
+  // The issue was: keystroke → consoleTabs update → openConsolesContext update →
+  // transport recreation → useChat reinit → repeat.
+  // The AI uses list_open_consoles and read_console tools to get current console state.
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/agent/chat",
         body: {
           workspaceId: currentWorkspace?.id,
-          openConsoles: openConsolesContext,
-          consoleId: activeConsoleId,
           modelId: selectedModelId,
           chatId, // Frontend-owned ID (AI SDK best practice)
         },
       }),
-    [
-      currentWorkspace?.id,
-      openConsolesContext,
-      activeConsoleId,
-      selectedModelId,
-      chatId,
-    ],
+    [currentWorkspace?.id, selectedModelId, chatId],
   );
 
   // Note: We use (useConsoleStore as any).getState() inside callbacks to avoid stale closure issues

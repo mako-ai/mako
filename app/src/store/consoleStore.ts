@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useAppStore, useAppDispatch, ConsoleTab } from "./appStore";
 import { apiClient } from "../lib/api-client";
 import { generateObjectId } from "../utils/objectId";
@@ -97,8 +98,9 @@ export const useConsoleStore = () => {
   const dispatch = useAppDispatch();
   const { tabs, activeTabId } = useAppStore(selectConsoleState);
 
-  // Helper: convert Record to array for backward compatibility
-  const consoleTabs: ConsoleTab[] = Object.values(tabs);
+  // Memoize to prevent new array reference on every render
+  // This is critical to avoid infinite re-render loops in consumers
+  const consoleTabs: ConsoleTab[] = useMemo(() => Object.values(tabs), [tabs]);
 
   const addConsoleTab = (
     tab: Omit<ConsoleTab, "id"> & { id?: string },
