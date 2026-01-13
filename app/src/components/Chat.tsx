@@ -374,10 +374,9 @@ const shimmerAnimation = keyframes`
 
 // Stable style objects to prevent re-renders
 const streamingIndicatorContainerSx = {
-  display: "inline-flex",
+  display: "flex",
   alignItems: "center",
-  ml: 0.5,
-  verticalAlign: "middle",
+  mt: 0.5,
 } as const;
 
 const streamingIndicatorDotSx = {
@@ -407,6 +406,37 @@ type ConsoleModificationPayload = ConsoleModification & {
   databaseId?: string;
   databaseName?: string;
 };
+
+/**
+ * Smart content truncation for console context.
+ * - Full content for active console
+ * - Smart truncation for others: full if <50 lines, first 30 + last 10 lines otherwise
+ */
+function smartTruncateContent(
+  content: string,
+  isActive: boolean,
+): { content: string; truncated: boolean; lineCount: number } {
+  const lines = content.split("\n");
+  const lineCount = lines.length;
+
+  // Active console gets full content
+  if (isActive) {
+    return { content, truncated: false, lineCount };
+  }
+
+  // For inactive consoles: full if <50 lines
+  if (lineCount < 50) {
+    return { content, truncated: false, lineCount };
+  }
+
+  // Smart truncation: first 30 lines + truncation note + last 10 lines
+  const first30 = lines.slice(0, 30).join("\n");
+  const last10 = lines.slice(-10).join("\n");
+  const truncatedLines = lineCount - 40;
+  const truncatedContent = `${first30}\n\n[... ${truncatedLines} lines truncated ...]\n\n${last10}`;
+
+  return { content: truncatedContent, truncated: true, lineCount };
+}
 
 interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
@@ -474,19 +504,33 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     [consoleTabs],
   );
 
-  // Build consoles data for the backend
-  const consolesData = useMemo(() => {
+  // Build open consoles context for the backend with smart content truncation
+  // Note: We pass activeConsoleId separately to avoid re-creating transport on every tab switch
+  // The backend determines isActive using consoleId param
+  const openConsolesContext = useMemo(() => {
     const data: Array<{
       id: string;
       title: string;
-      content: string;
       connectionId?: string;
+      connectionName?: string;
+      connectionType?: string;
       databaseId?: string;
       databaseName?: string;
+      content: string;
+      contentTruncated: boolean;
+      lineCount: number;
     }> = [];
 
     for (const tab of realConsoleTabs) {
       if (!tab?.id) continue;
+      const rawContent = tab.content || "";
+      // For truncation, we can't know which is "active" without causing re-renders
+      // So we use a simpler heuristic: truncate all consoles the same way
+      const { content, truncated, lineCount } = smartTruncateContent(
+        rawContent,
+        false, // Don't give full content to any - backend gets activeConsoleId separately
+      );
+
       const connectionId = tab?.connectionId;
       const databaseId =
         tab?.databaseId || tab?.metadata?.queryOptions?.databaseId;
@@ -494,18 +538,28 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         tab?.databaseName ||
         tab?.metadata?.queryOptions?.databaseName ||
         tab?.metadata?.queryOptions?.dbName;
+      const connectionName =
+        (tab?.metadata as { connectionName?: string })?.connectionName ||
+        undefined;
+      const connectionType =
+        (tab?.metadata as { connectionType?: string })?.connectionType ||
+        undefined;
 
       data.push({
         id: tab.id,
         title: tab.title,
-        content: tab.content || "",
         connectionId,
+        connectionName,
+        connectionType,
         databaseId,
         databaseName,
+        content,
+        contentTruncated: truncated,
+        lineCount,
       });
     }
     return data;
-  }, [realConsoleTabs]);
+  }, [realConsoleTabs]); // Note: no activeConsoleId dependency to avoid re-render loops
 
   // Local input state
   const [input, setInput] = useState("");
@@ -525,7 +579,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         api: "/api/agent/chat",
         body: {
           workspaceId: currentWorkspace?.id,
-          consoles: consolesData,
+          openConsoles: openConsolesContext,
           consoleId: activeConsoleId,
           modelId: selectedModelId,
           chatId, // Frontend-owned ID (AI SDK best practice)
@@ -533,7 +587,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       }),
     [
       currentWorkspace?.id,
-      consolesData,
+      openConsolesContext,
       activeConsoleId,
       selectedModelId,
       chatId,
@@ -571,23 +625,27 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       const toolName = toolCall.toolName;
       const input = toolCall.input as Record<string, unknown>;
 
-      // Handle read_console
+      // Handle read_console - requires explicit consoleId
       if (toolName === "read_console") {
+        const consoleId = input.consoleId as string | undefined;
+
+        if (!consoleId) {
+          addToolOutput({
+            tool: "read_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error:
+                "consoleId is required. Use list_open_consoles first to get available console IDs.",
+            },
+          });
+          return;
+        }
+
         // Get fresh state to avoid stale closure issues
         const currentStore = (useConsoleStore as any).getState();
         const currentTabs = currentStore.consoleTabs;
-        const currentActiveId = currentStore.activeConsoleId;
-
-        // Use captured console ID (from message submission time) as the primary fallback
-        // This prevents the race condition where user switches consoles while agent is thinking
-        const capturedId = capturedConsoleIdRef.current;
-        const consoleId =
-          (input.consoleId as string | null) ?? capturedId ?? currentActiveId;
-        const targetConsole = consoleId
-          ? currentTabs.find((c: any) => c.id === consoleId)
-          : currentTabs.find((c: any) => c.id === capturedId) ||
-            currentTabs.find((c: any) => c.id === currentActiveId) ||
-            currentTabs[0];
+        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
 
         if (!targetConsole) {
           addToolOutput({
@@ -595,9 +653,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: consoleId
-                ? `Console with ID ${consoleId} not found`
-                : "No console is currently active",
+              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
             },
           });
           return;
@@ -622,48 +678,38 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         return;
       }
 
-      // Handle modify_console - dispatch through event system for proper Monaco update
+      // Handle modify_console - requires explicit consoleId
       if (toolName === "modify_console") {
-        // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
-        const currentActiveId = currentStore.activeConsoleId;
-
         const action = input.action as "replace" | "insert" | "append";
         const content = input.content as string;
         const position = input.position as number | null;
-        const inputConsoleId = input.consoleId as string | null | undefined;
+        const consoleId = input.consoleId as string | undefined;
 
-        // Use captured console ID (from message submission time) as the primary fallback
-        // This prevents the race condition where user switches consoles while agent is thinking
-        const capturedId = capturedConsoleIdRef.current;
-
-        // Determine target console - prioritize: explicit input > captured ID > current active > first tab
-        const resolvedConsoleId =
-          inputConsoleId ?? capturedId ?? currentActiveId ?? currentTabs[0]?.id;
-
-        if (!resolvedConsoleId) {
+        if (!consoleId) {
           addToolOutput({
             tool: "modify_console",
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: "No console is currently open. Call create_console first.",
+              error:
+                "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
             },
           });
           return;
         }
 
-        const targetConsole = currentTabs.find(
-          (c: any) => c.id === resolvedConsoleId,
-        );
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+
+        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
         if (!targetConsole) {
           addToolOutput({
             tool: "modify_console",
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: `Console with ID ${resolvedConsoleId} not found`,
+              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
             },
           });
           return;
@@ -699,7 +745,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               position !== null && position !== undefined
                 ? { line: position, column: 1 }
                 : undefined,
-            consoleId: resolvedConsoleId,
+            consoleId,
           });
         }
 
@@ -730,14 +776,14 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           default:
             newContent = content;
         }
-        currentStore.updateConsoleContent(resolvedConsoleId, newContent);
+        currentStore.updateConsoleContent(consoleId, newContent);
 
         addToolOutput({
           tool: "modify_console",
           toolCallId: toolCall.toolCallId,
           output: {
             success: true,
-            consoleId: resolvedConsoleId,
+            consoleId,
             message: `Console ${action}d successfully`,
           },
         });
@@ -807,15 +853,12 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         return;
       }
 
-      // Handle list_consoles - return all open console tabs
-      if (toolName === "list_consoles") {
+      // Handle list_open_consoles - return all open console tabs
+      if (toolName === "list_open_consoles") {
         // Get fresh state to avoid stale closure issues
         const currentStore = (useConsoleStore as any).getState();
         const currentTabs = currentStore.consoleTabs;
         const currentActiveId = currentStore.activeConsoleId;
-
-        // Use captured console ID as the context console
-        const capturedId = capturedConsoleIdRef.current;
 
         const consoles = currentTabs
           .filter(
@@ -832,72 +875,62 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               (tab.content || "").slice(0, 100) +
               ((tab.content || "").length > 100 ? "..." : ""),
             isActive: tab.id === currentActiveId,
-            isContextConsole: tab.id === capturedId,
           }));
 
         addToolOutput({
-          tool: "list_consoles",
+          tool: "list_open_consoles",
           toolCallId: toolCall.toolCallId,
           output: {
             success: true,
             consoles,
-            activeConsoleId: currentActiveId,
-            contextConsoleId: capturedId,
             message: `Found ${consoles.length} open console(s)`,
           },
         });
         return;
       }
 
-      // Handle set_console_connection - attach a console to a database connection
+      // Handle set_console_connection - requires explicit consoleId
       if (toolName === "set_console_connection") {
-        // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
-        const currentActiveId = currentStore.activeConsoleId;
-
-        const inputConsoleId = input.consoleId as string | undefined;
+        const consoleId = input.consoleId as string | undefined;
         const connectionId = input.connectionId as string;
         const databaseId = input.databaseId as string | undefined;
         const databaseName = input.databaseName as string | undefined;
 
-        // Use captured console ID as the primary fallback
-        const capturedId = capturedConsoleIdRef.current;
-        const resolvedConsoleId =
-          inputConsoleId ?? capturedId ?? currentActiveId;
-
-        if (!resolvedConsoleId) {
+        if (!consoleId) {
           addToolOutput({
             tool: "set_console_connection",
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: "No console is currently open. Call create_console first.",
+              error:
+                "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
             },
           });
           return;
         }
 
-        const targetConsole = currentTabs.find(
-          (c: any) => c.id === resolvedConsoleId,
-        );
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+
+        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
         if (!targetConsole) {
           addToolOutput({
             tool: "set_console_connection",
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: `Console with ID ${resolvedConsoleId} not found`,
+              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
             },
           });
           return;
         }
 
         // Update the console's connection and database
-        currentStore.updateConsoleConnection(resolvedConsoleId, connectionId);
+        currentStore.updateConsoleConnection(consoleId, connectionId);
         if (databaseId !== undefined || databaseName !== undefined) {
           currentStore.updateConsoleDatabase(
-            resolvedConsoleId,
+            consoleId,
             databaseId,
             databaseName,
           );
@@ -908,7 +941,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           toolCallId: toolCall.toolCallId,
           output: {
             success: true,
-            consoleId: resolvedConsoleId,
+            consoleId,
             connectionId,
             databaseId,
             databaseName,
@@ -1399,6 +1432,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                     flex: 1,
                     overflow: "hidden",
                     fontSize: "0.875rem",
+                    mt: 1,
                     "& pre": { margin: 0, overflow: "hidden" },
                   }}
                 >
@@ -1407,7 +1441,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                     const partType = (part as Record<string, unknown>)
                       .type as string;
 
-                    // Render tool invocations
+                    // Render tool invocations inline (no box wrapper)
                     if (
                       partType?.startsWith("tool-") ||
                       partType === "dynamic-tool"
@@ -1419,69 +1453,61 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                           : partType.split("-").slice(1).join("-");
                       const toolPart = part as Record<string, unknown>;
                       return (
-                        <Box
+                        <Chip
                           key={partIndex}
+                          icon={
+                            toolPart.state === "output-available" ? (
+                              <Check size={16} />
+                            ) : toolPart.state === "error" ? (
+                              <Check
+                                size={16}
+                                style={{
+                                  color:
+                                    "var(--mui-palette-error-main, #f44336)",
+                                }}
+                              />
+                            ) : (
+                              <CircularProgress size={14} thickness={5} />
+                            )
+                          }
+                          label={toolName}
+                          size="small"
+                          variant="outlined"
                           sx={{
-                            display: "flex",
-                            flexWrap: "wrap",
-                            gap: 0.5,
-                            my: 0.5,
+                            backgroundColor: "background.paper",
+                            borderRadius: 2,
+                            opacity: 0.8,
+                            fontSize: "0.75rem",
+                            cursor: "pointer",
+                            mr: 0.5,
+                            mb: 0.5,
+                            "& .MuiChip-icon": {
+                              color:
+                                toolPart.state === "output-available"
+                                  ? "success.main"
+                                  : toolPart.state === "error"
+                                    ? "error.main"
+                                    : "primary.main",
+                            },
                           }}
-                        >
-                          <Chip
-                            icon={
-                              toolPart.state === "output-available" ? (
-                                <Check size={16} />
-                              ) : toolPart.state === "error" ? (
-                                <Check
-                                  size={16}
-                                  style={{
-                                    color:
-                                      "var(--mui-palette-error-main, #f44336)",
-                                  }}
-                                />
-                              ) : (
-                                <CircularProgress size={14} thickness={5} />
-                              )
-                            }
-                            label={toolName}
-                            size="small"
-                            variant="outlined"
-                            sx={{
-                              backgroundColor: "background.paper",
-                              borderRadius: 2,
-                              opacity: 0.8,
-                              fontSize: "0.75rem",
-                              cursor: "pointer",
-                              "& .MuiChip-icon": {
-                                color:
-                                  toolPart.state === "output-available"
-                                    ? "success.main"
-                                    : toolPart.state === "error"
-                                      ? "error.main"
-                                      : "primary.main",
-                              },
-                            }}
-                            onClick={() =>
-                              handleToolClick({
-                                toolCallId:
-                                  (toolPart.toolCallId as string) || "",
-                                toolName: toolName || "",
-                                state:
-                                  toolPart.state as ToolInvocationInfo["state"],
-                                input: toolPart.input,
-                                output: toolPart.output,
-                              })
-                            }
-                            title={
-                              toolPart.state === "output-available"
-                                ? "Tool executed successfully"
-                                : toolPart.state === "error"
-                                  ? "Tool execution failed"
-                                  : "Tool executing..."
-                            }
-                          />
-                        </Box>
+                          onClick={() =>
+                            handleToolClick({
+                              toolCallId: (toolPart.toolCallId as string) || "",
+                              toolName: toolName || "",
+                              state:
+                                toolPart.state as ToolInvocationInfo["state"],
+                              input: toolPart.input,
+                              output: toolPart.output,
+                            })
+                          }
+                          title={
+                            toolPart.state === "output-available"
+                              ? "Tool executed successfully"
+                              : toolPart.state === "error"
+                                ? "Tool execution failed"
+                                : "Tool executing..."
+                          }
+                        />
                       );
                     }
 

@@ -94,12 +94,27 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     return c.json({ error: "Invalid request body" }, 400);
   }
 
-  const { messages, chatId, workspaceId, consoles, consoleId, modelId } =
+  // OpenConsoleContext matches frontend's smart truncation format
+  // Note: isActive is computed on backend using consoleId param to avoid frontend re-render loops
+  interface OpenConsoleContext {
+    id: string;
+    title: string;
+    connectionId?: string;
+    connectionName?: string;
+    connectionType?: string;
+    databaseId?: string;
+    databaseName?: string;
+    content: string;
+    contentTruncated: boolean;
+    lineCount: number;
+  }
+
+  const { messages, chatId, workspaceId, openConsoles, consoleId, modelId } =
     body as {
       messages?: UIMessage[];
       chatId?: string; // Frontend-owned chat ID (AI SDK best practice)
       workspaceId?: string;
-      consoles?: ConsoleDataV2[];
+      openConsoles?: OpenConsoleContext[];
       consoleId?: string;
       modelId?: string;
     };
@@ -181,25 +196,30 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Build system prompt
   const systemPrompt = UNIVERSAL_PROMPT_V2;
 
-  // Get workspace database capabilities for enriching consoles
+  // Get workspace database connections for context
   const workspaceDatabases = await DatabaseConnection.find({
     workspaceId: new ObjectId(workspaceId),
   }).select({ type: 1, name: 1 });
 
   const databaseTypeMap = new Map<string, string>();
+  const databaseNameMap = new Map<string, string>();
   workspaceDatabases.forEach(db => {
     databaseTypeMap.set(db._id.toString(), db.type);
+    databaseNameMap.set(db._id.toString(), db.name);
   });
 
-  // Enrich consoles with connection type information
-  const enrichedConsoles: ConsoleDataV2[] = (consoles || []).map(
-    (c: ConsoleDataV2) => ({
-      ...c,
-      connectionType:
-        c.connectionType ||
-        (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined),
-    }),
-  );
+  // Convert openConsoles to ConsoleDataV2 format for tools (enriched with connection type)
+  const enrichedConsoles: ConsoleDataV2[] = (openConsoles || []).map(c => ({
+    id: c.id,
+    title: c.title,
+    content: c.content,
+    connectionId: c.connectionId,
+    databaseId: c.databaseId,
+    databaseName: c.databaseName,
+    connectionType:
+      c.connectionType ||
+      (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined),
+  }));
 
   // Get tools (uses client-side console tools)
   const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
@@ -210,43 +230,80 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       ? `\n\n---\n\n### Workspace Context\n${workspaceCustomPrompt.trim()}`
       : "";
 
-  const consoleContext =
-    enrichedConsoles.length > 0
-      ? `\n\nAvailable consoles:\n${enrichedConsoles
-          .map(
-            (c, i) =>
-              `${i + 1}. "${c.title}" (ID: ${c.id}, Type: ${c.connectionType || "unknown"}${c.databaseName ? `, DB: ${c.databaseName}` : ""})`,
-          )
-          .join("\n")}`
-      : "";
+  // Build runtime context with open consoles and available connections
+  let runtimeContext = "";
+
+  if (
+    (openConsoles && openConsoles.length > 0) ||
+    workspaceDatabases.length > 0
+  ) {
+    runtimeContext += "\n\n---\n\n## Current State (auto-injected)\n";
+
+    // Open Consoles section
+    if (openConsoles && openConsoles.length > 0) {
+      runtimeContext += "\n### Open Consoles:\n";
+      for (let i = 0; i < openConsoles.length; i++) {
+        const c = openConsoles[i];
+        const connType =
+          c.connectionType ||
+          (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined);
+        const connName =
+          c.connectionName ||
+          (c.connectionId ? databaseNameMap.get(c.connectionId) : undefined);
+
+        // Determine active console using consoleId param (avoids frontend re-render loops)
+        const isActive = c.id === consoleId;
+        const activeLabel = isActive ? "[ACTIVE] " : "";
+        runtimeContext += `\n${i + 1}. ${activeLabel}"${c.title}" (id: ${c.id})\n`;
+
+        // Connection info
+        if (connType || connName || c.databaseName) {
+          const parts: string[] = [];
+          if (connType) parts.push(connType);
+          if (connName) parts.push(connName);
+          if (c.databaseName) parts.push(`db: ${c.databaseName}`);
+          runtimeContext += `   - Connection: ${parts.join(" / ")}\n`;
+        } else {
+          runtimeContext += `   - Connection: none\n`;
+        }
+
+        // Content
+        const trimmedContent = c.content.trim();
+        if (!trimmedContent) {
+          runtimeContext += `   - Content: empty\n`;
+        } else {
+          const truncatedNote = c.contentTruncated
+            ? ` (truncated from ${c.lineCount} lines)`
+            : "";
+          runtimeContext += `   - Content${truncatedNote}:\n`;
+          // Indent the content
+          const indentedContent = trimmedContent
+            .split("\n")
+            .map(line => `     ${line}`)
+            .join("\n");
+          runtimeContext += `${indentedContent}\n`;
+        }
+      }
+    }
+
+    // Available Connections section
+    if (workspaceDatabases.length > 0) {
+      runtimeContext += "\n### Available Connections:\n";
+      for (const db of workspaceDatabases) {
+        runtimeContext += `- ${db.type}: ${db.name} (id: ${db._id.toString()})\n`;
+      }
+    }
+
+    runtimeContext += "\n---";
+  }
 
   // Get model instance
   const model = getModelInstance(modelId);
   console.log(`[Agent] Using model: ${modelId || "gpt-5.2 (default)"}`);
 
-  // Sanitize messages before conversion to model messages.
-  // When loading saved chats, the frontend includes tool call parts for UI display.
-  // However, the AI API requires every tool_use to have a corresponding tool_result
-  // in the next user message. Since historical tool calls are already complete,
-  // we filter them out to prevent "tool_use without tool_result" errors.
-  const sanitizedMessages: UIMessage[] = messages.map(msg => {
-    if (msg.role !== "assistant" || !msg.parts) {
-      return msg;
-    }
-    // Filter out completed tool call parts from assistant messages
-    // Tool parts have type like "tool-read_console", "tool-sql_execute_query", etc.
-    const filteredParts = msg.parts.filter(part => {
-      const partType = (part as { type?: string }).type;
-      // Keep text, reasoning, and other non-tool parts
-      // Remove tool-* parts (completed tool calls)
-      return !partType?.startsWith("tool-");
-    });
-    return { ...msg, parts: filteredParts };
-  });
-
   // Convert UI messages (from useChat) to model messages (for streamText)
   // Note: convertToModelMessages is async in AI SDK
-  const modelMessages = await convertToModelMessages(sanitizedMessages);
+  const modelMessages = await convertToModelMessages(messages);
 
   // Guardrail: prevent runaway multi-step tool loops in production.
   // The AI SDK defaults to stopWhen: stepCountIs(1). We intentionally allow multi-step,
@@ -256,7 +313,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   const result = streamText({
     model,
-    system: systemPrompt + customPromptContext + consoleContext,
+    system: systemPrompt + customPromptContext + runtimeContext,
     messages: modelMessages,
     tools: tools as any,
     stopWhen: stepCountIs(MAX_STEPS),

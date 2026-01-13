@@ -28,20 +28,16 @@ export const modifyConsoleSchema = z.object({
     .describe("Position for insert action (null for replace/append)"),
   consoleId: z
     .string()
-    .nullable()
-    .optional()
     .describe(
-      "Target console ID. Required when modifying a newly created console - use the consoleId returned by create_console.",
+      "Target console ID (required). Get IDs from list_open_consoles or create_console.",
     ),
 });
 
 export const readConsoleSchema = z.object({
   consoleId: z
     .string()
-    .nullable()
-    .optional()
     .describe(
-      "Console ID to read from (null/undefined to read the active console)",
+      "Console ID to read from (required). Get IDs from list_open_consoles.",
     ),
 });
 
@@ -71,14 +67,13 @@ export const createConsoleSchema = z.object({
     ),
 });
 
-export const listConsolesSchema = z.object({});
+export const listOpenConsolesSchema = z.object({});
 
 export const setConsoleConnectionSchema = z.object({
   consoleId: z
     .string()
-    .optional()
     .describe(
-      "Console ID to attach. If not provided, uses the context console (the one the user was focused on when they sent the message).",
+      "Console ID to attach (required). Get IDs from list_open_consoles or create_console.",
     ),
   connectionId: z.string().describe("Database connection ID to attach to"),
   databaseId: z
@@ -101,14 +96,14 @@ export const setConsoleConnectionSchema = z.object({
 export const clientConsoleTools = {
   read_console: {
     description:
-      "Read the contents of the current console editor. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName) so you know which database to query.",
+      "Read the contents of a specific console by ID. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName). Use list_open_consoles first to get available console IDs.",
     inputSchema: readConsoleSchema,
     // No execute function - this is a client-side tool
   },
 
   modify_console: {
     description:
-      "Modify the console editor content. Use this to write, replace, or append code to the user's active console. If you just created a console with create_console, you MUST pass the returned consoleId here.",
+      "Modify a specific console's content by ID. Use this to write, replace, or append code. Get the consoleId from list_open_consoles or create_console.",
     inputSchema: modifyConsoleSchema,
     // No execute function - this is a client-side tool
   },
@@ -120,10 +115,10 @@ export const clientConsoleTools = {
     // No execute function - this is a client-side tool
   },
 
-  list_consoles: {
+  list_open_consoles: {
     description:
-      "List all open console tabs with their metadata including title, attached database connection, and content preview. Use this to understand what consoles are available before performing cross-console operations.",
-    inputSchema: listConsolesSchema,
+      "List all open console tabs in the UI. Returns each console's id, title, connectionId, databaseName, content preview, and isActive flag. Call this FIRST to get console IDs before using read_console or modify_console.",
+    inputSchema: listOpenConsolesSchema,
     // No execute function - this is a client-side tool
   },
 
@@ -139,7 +134,7 @@ export const clientConsoleTools = {
 export type ModifyConsoleInput = z.infer<typeof modifyConsoleSchema>;
 export type ReadConsoleInput = z.infer<typeof readConsoleSchema>;
 export type CreateConsoleInput = z.infer<typeof createConsoleSchema>;
-export type ListConsolesInput = z.infer<typeof listConsolesSchema>;
+export type ListOpenConsolesInput = z.infer<typeof listOpenConsolesSchema>;
 export type SetConsoleConnectionInput = z.infer<
   typeof setConsoleConnectionSchema
 >;
