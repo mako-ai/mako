@@ -291,6 +291,46 @@ export const useConsoleStore = () => {
     executeQuery,
     cancelQuery,
     saveConsole,
+    autoSaveConsole: (
+      workspaceId: string,
+      consoleId: string,
+      content: string,
+      title?: string,
+      connectionId?: string,
+      databaseId?: string,
+      databaseName?: string,
+    ): void => {
+      // Skip empty content
+      if (!content?.trim()) return;
+
+      // Clear existing timer for this console
+      const existingTimer = draftSaveTimers.get(consoleId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      // Set new debounced timer
+      const timer = setTimeout(async () => {
+        draftSaveTimers.delete(consoleId);
+        try {
+          await apiClient.put(
+            `/workspaces/${workspaceId}/consoles/${consoleId}`,
+            {
+              content,
+              title,
+              connectionId,
+              databaseId,
+              databaseName,
+            },
+          );
+        } catch (e) {
+          // Silently fail - auto-saves are best effort
+          console.debug("[AutoSave] Failed to save console:", e);
+        }
+      }, DRAFT_SAVE_DEBOUNCE_MS);
+
+      draftSaveTimers.set(consoleId, timer);
+    },
     loadConsole: async (id: string, workspaceId: string) => {
       // Check if console is already loaded
       const existing = consoleTabs.find(t => t.id === id);
@@ -498,7 +538,7 @@ useConsoleStore.getState = () => {
       draftSaveTimers.delete(consoleId);
       try {
         await apiClient.put(
-          `/workspaces/${workspaceId}/consoles/by-id/${consoleId}`,
+          `/workspaces/${workspaceId}/consoles/${consoleId}`,
           {
             content,
             title,

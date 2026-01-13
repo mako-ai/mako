@@ -891,6 +891,26 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             const hasChanges =
               !dbContentHash || currentContentHash !== dbContentHash;
             setHasContentChanges(hasChanges);
+
+            // Auto-save agent modifications (debounced internally)
+            // Skip if console is already persisted (has filePath) - user controls saving those
+            if (
+              hasChanges &&
+              !filePathRef.current &&
+              currentWorkspace?.id &&
+              consoleId &&
+              savedModifiedContent.trim()
+            ) {
+              autoSaveConsole(
+                currentWorkspace.id,
+                consoleId,
+                savedModifiedContent,
+                title,
+                connectionIdRef.current,
+                databaseIdRef.current,
+                databaseName,
+              );
+            }
           }
         }
         isProgrammaticUpdateRef.current = false;
@@ -904,6 +924,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     enableVersionControl,
     saveUserEdit,
     dbContentHash,
+    currentWorkspace,
+    consoleId,
+    title,
+    databaseName,
+    autoSaveConsole,
   ]);
 
   // Reject the changes

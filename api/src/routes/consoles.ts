@@ -224,11 +224,13 @@ consoleRoutes.post("/", async (c: Context) => {
   }
 });
 
-// PUT /api/workspaces/:workspaceId/consoles/:path - Update existing console
+// PUT /api/workspaces/:workspaceId/consoles/:pathOrId - Update/upsert console
+// If pathOrId is a valid ObjectId, upserts by ID (used for auto-save)
+// Otherwise, saves by path (used for explicit user save to folder)
 consoleRoutes.put("/:path{.+}", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const consolePath = c.req.param("path");
+    const pathOrId = c.req.param("path");
     const body = await c.req.json();
     const user = c.get("user");
 
@@ -246,6 +248,48 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         400,
       );
     }
+
+    // Check if pathOrId is a valid ObjectId - if so, do ID-based upsert
+    if (Types.ObjectId.isValid(pathOrId) && pathOrId.length === 24) {
+      // ID-based upsert (auto-save flow)
+      const now = new Date();
+      const result = await SavedConsole.findOneAndUpdate(
+        { _id: new Types.ObjectId(pathOrId) },
+        {
+          $set: {
+            code: body.content,
+            name: body.title || "Untitled",
+            connectionId: body.connectionId
+              ? new Types.ObjectId(body.connectionId)
+              : undefined,
+            databaseName: body.databaseName,
+            databaseId: body.databaseId,
+            updatedAt: now,
+          },
+          $setOnInsert: {
+            workspaceId: new Types.ObjectId(workspaceId),
+            createdBy: user.id,
+            language: "sql" as const,
+            isPrivate: false,
+            executionCount: 0,
+            createdAt: now,
+          },
+        },
+        { upsert: true, new: true },
+      );
+
+      return c.json({
+        success: true,
+        message: "Console saved",
+        console: {
+          id: result._id.toString(),
+          name: result.name,
+        },
+      });
+    }
+
+    // Path-based save (explicit user save to folder)
+    const consolePath = pathOrId;
 
     // connectionId is optional - consoles can be saved without being associated with a specific database
     let targetConnectionId = body.connectionId;
@@ -790,99 +834,6 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
           error instanceof Error
             ? error.message
             : "Failed to get console details",
-      },
-      500,
-    );
-  }
-});
-
-// PUT /api/workspaces/:workspaceId/consoles/by-id/:id - Upsert console by ID
-// Used for auto-saving console content when modified (by user or agent).
-// Only updates consoles that haven't been saved to a folder yet (no folderId).
-// Once a console is saved (has folderId), it should be updated via the regular save endpoint.
-consoleRoutes.put("/by-id/:id", async (c: Context) => {
-  try {
-    const access = await verifyWorkspaceAccess(c);
-    if (!access) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    const consoleId = c.req.param("id");
-    if (!consoleId || !Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console id" }, 400);
-    }
-
-    const body = await c.req.json();
-    const user = c.get("user");
-
-    if (typeof body.content !== "string" || !body.content.trim()) {
-      return c.json(
-        { success: false, error: "Content is required and must be non-empty" },
-        400,
-      );
-    }
-
-    // Check if console already exists and has a folderId (is a persisted/saved console)
-    const existingConsole = await SavedConsole.findById(consoleId);
-    if (existingConsole?.folderId) {
-      // Console is already saved to a folder - skip auto-save silently
-      // The user should use the regular save endpoint to update it
-      return c.json({
-        success: true,
-        message: "Console already persisted, skipping auto-save",
-        skipped: true,
-      });
-    }
-
-    const now = new Date();
-
-    // Upsert the draft console
-    const result = await SavedConsole.findOneAndUpdate(
-      { _id: new Types.ObjectId(consoleId) },
-      {
-        $set: {
-          code: body.content,
-          name: body.title || "Untitled",
-          connectionId: body.connectionId
-            ? new Types.ObjectId(body.connectionId)
-            : undefined,
-          databaseName: body.databaseName,
-          databaseId: body.databaseId,
-          updatedAt: now,
-        },
-        $setOnInsert: {
-          workspaceId: new Types.ObjectId(access.workspaceId),
-          createdBy: user?.id || "system",
-          language: "sql" as const,
-          isPrivate: false,
-          executionCount: 0,
-          createdAt: now,
-        },
-      },
-      { upsert: true, new: true },
-    );
-
-    return c.json({
-      success: true,
-      message: "Draft console saved",
-      console: {
-        id: result._id.toString(),
-        name: result.name,
-        code: result.code,
-      },
-    });
-  } catch (error) {
-    console.error("Error saving draft console:", error);
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to save draft console",
       },
       500,
     );
