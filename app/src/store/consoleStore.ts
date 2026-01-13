@@ -470,11 +470,12 @@ useConsoleStore.getState = () => {
   };
 
   /**
-   * Save a draft console (debounced).
+   * Auto-save console content (debounced).
    * Called when console content is modified by user or agent.
-   * Only saves consoles that don't have a folderId (are not already saved).
+   * The backend will skip if the console is already persisted (has folderId).
+   * Callers should check filePath before calling to avoid unnecessary API calls.
    */
-  const saveDraftConsole = (
+  const autoSaveConsole = (
     workspaceId: string,
     consoleId: string,
     content: string,
@@ -497,7 +498,7 @@ useConsoleStore.getState = () => {
       draftSaveTimers.delete(consoleId);
       try {
         await apiClient.put(
-          `/workspaces/${workspaceId}/consoles/draft/${consoleId}`,
+          `/workspaces/${workspaceId}/consoles/by-id/${consoleId}`,
           {
             content,
             title,
@@ -507,8 +508,8 @@ useConsoleStore.getState = () => {
           },
         );
       } catch (e) {
-        // Silently fail - draft saves are best effort
-        console.debug("[DraftSave] Failed to save draft console:", e);
+        // Silently fail - auto-saves are best effort
+        console.debug("[AutoSave] Failed to save console:", e);
       }
     }, DRAFT_SAVE_DEBOUNCE_MS);
 
@@ -532,7 +533,7 @@ useConsoleStore.getState = () => {
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
-    saveDraftConsole,
+    autoSaveConsole,
     loadConsole: async (id: string, workspaceId: string) => {
       const existing = consoleTabs.find(t => t.id === id);
       if (existing) {

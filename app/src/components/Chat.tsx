@@ -416,7 +416,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const muiTheme = useMuiTheme();
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
-  const { consoleTabs, activeConsoleId, saveDraftConsole } = useConsoleStore();
+  const { consoleTabs, activeConsoleId, autoSaveConsole } = useConsoleStore();
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
@@ -732,10 +732,10 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         }
         currentStore.updateConsoleContent(resolvedConsoleId, newContent);
 
-        // Save draft console to database (debounced)
-        // This ensures the modified console can be restored when opening the chat from history
-        if (currentWorkspace?.id) {
-          saveDraftConsole(
+        // Auto-save console to database (debounced)
+        // Skip if console is already persisted (has filePath) - user controls saving those
+        if (currentWorkspace?.id && !targetConsole?.filePath) {
+          autoSaveConsole(
             currentWorkspace.id,
             resolvedConsoleId,
             newContent,
@@ -803,10 +803,10 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           });
         }
 
-        // Save draft console to database (debounced)
-        // This ensures the created console can be restored when opening the chat from history
+        // Auto-save console to database (debounced)
+        // Newly created consoles don't have filePath, so they will be auto-saved
         if (currentWorkspace?.id && content?.trim()) {
-          saveDraftConsole(
+          autoSaveConsole(
             currentWorkspace.id,
             newConsoleId,
             content,

@@ -796,9 +796,11 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
   }
 });
 
-// PUT /api/workspaces/:workspaceId/consoles/draft/:id - Save/upsert a draft console
-// This is called when console content is modified (by user or agent) and auto-saved
-consoleRoutes.put("/draft/:id", async (c: Context) => {
+// PUT /api/workspaces/:workspaceId/consoles/by-id/:id - Upsert console by ID
+// Used for auto-saving console content when modified (by user or agent).
+// Only updates consoles that haven't been saved to a folder yet (no folderId).
+// Once a console is saved (has folderId), it should be updated via the regular save endpoint.
+consoleRoutes.put("/by-id/:id", async (c: Context) => {
   try {
     const access = await verifyWorkspaceAccess(c);
     if (!access) {
@@ -823,18 +825,16 @@ consoleRoutes.put("/draft/:id", async (c: Context) => {
       );
     }
 
-    // Check if console already exists and has a folderId (is a saved console)
+    // Check if console already exists and has a folderId (is a persisted/saved console)
     const existingConsole = await SavedConsole.findById(consoleId);
     if (existingConsole?.folderId) {
-      // This is a saved console - don't overwrite via draft endpoint
-      // The user should use the regular save endpoint
-      return c.json(
-        {
-          success: false,
-          error: "Console is already saved. Use the save endpoint instead.",
-        },
-        400,
-      );
+      // Console is already saved to a folder - skip auto-save silently
+      // The user should use the regular save endpoint to update it
+      return c.json({
+        success: true,
+        message: "Console already persisted, skipping auto-save",
+        skipped: true,
+      });
     }
 
     const now = new Date();

@@ -146,7 +146,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
-  const { saveDraftConsole } = useConsoleStore();
+  const { autoSaveConsole } = useConsoleStore();
 
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
@@ -751,11 +751,18 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         }, 500); // 500ms debounce for persistence
       }
 
-      // Auto-save draft console when content changes (debounced internally)
+      // Auto-save console when content changes (debounced internally)
+      // Skip if console is already persisted (has filePath) - user controls saving those
       // This saves modified consoles to the database so they can be restored
       // when opening a chat from history
-      if (hasChanges && currentWorkspace?.id && consoleId && content.trim()) {
-        saveDraftConsole(
+      if (
+        hasChanges &&
+        !filePath &&
+        currentWorkspace?.id &&
+        consoleId &&
+        content.trim()
+      ) {
+        autoSaveConsole(
           currentWorkspace.id,
           consoleId,
           content,
@@ -776,7 +783,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       consoleId,
       title,
       databaseName,
-      saveDraftConsole,
+      filePath,
+      autoSaveConsole,
     ],
   );
 
