@@ -3,7 +3,6 @@ import { v4 as uuidv4 } from "uuid";
 import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-v2";
-import type { ConsoleDataV2 } from "../agent-v2/types";
 
 const CONTEXT_WINDOW_SIZE = 10;
 const MAX_CONTEXT_LENGTH = 4000;
