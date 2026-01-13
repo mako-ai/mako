@@ -41,6 +41,7 @@ import {
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import { hashContent } from "../utils/hash";
 import { useAppStore } from "../store/appStore";
+import { useConsoleStore } from "../store/consoleStore";
 
 interface DatabaseConnection {
   id: string;
@@ -145,6 +146,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
+  const { saveDraftConsole } = useConsoleStore();
 
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
@@ -748,6 +750,21 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           onContentChange(content);
         }, 500); // 500ms debounce for persistence
       }
+
+      // Auto-save draft console when content changes (debounced internally)
+      // This saves modified consoles to the database so they can be restored
+      // when opening a chat from history
+      if (hasChanges && currentWorkspace?.id && consoleId && content.trim()) {
+        saveDraftConsole(
+          currentWorkspace.id,
+          consoleId,
+          content,
+          title,
+          connectionIdRef.current,
+          databaseIdRef.current,
+          databaseName,
+        );
+      }
     },
     [
       onContentChange,
@@ -755,6 +772,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       saveUserEdit,
       isApplyingModification,
       dbContentHash,
+      currentWorkspace?.id,
+      consoleId,
+      title,
+      databaseName,
+      saveDraftConsole,
     ],
   );
 

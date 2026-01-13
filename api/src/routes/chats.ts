@@ -3,7 +3,28 @@ import { Chat } from "../database/workspace-schema";
 import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { getDraftConsolesForChat } from "../services/agent-thread.service";
+import { getConsolesByIds } from "../services/agent-thread.service";
+
+/**
+ * Extract unique console IDs from modify_console tool calls in chat messages.
+ * This is used to determine which consoles should be restored when opening a chat.
+ */
+function extractModifiedConsoleIds(
+  messages: Array<{ toolCalls?: Array<{ toolName: string; input?: any }> }>,
+): string[] {
+  const consoleIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (!msg.toolCalls) continue;
+    for (const tc of msg.toolCalls) {
+      if (tc.toolName === "modify_console" && tc.input?.consoleId) {
+        consoleIds.add(tc.input.consoleId);
+      }
+    }
+  }
+
+  return Array.from(consoleIds);
+}
 
 export const chatsRoutes = new Hono();
 
@@ -134,14 +155,17 @@ chatsRoutes.get("/:id", async (c: AuthenticatedContext) => {
       return c.json({ error: "Chat not found" }, 404);
     }
 
-    // Get draft consoles associated with this chat
-    // These are consoles that were auto-saved when chat messages were sent
-    const draftConsoles = await getDraftConsolesForChat(id);
+    // Extract console IDs from modify_console tool calls in chat messages
+    // These are consoles that the agent modified during this conversation
+    const modifiedConsoleIds = extractModifiedConsoleIds(chat.messages || []);
+
+    // Fetch the consoles that were modified (they should be saved as drafts)
+    const consoles = await getConsolesByIds(modifiedConsoleIds);
 
     return c.json({
       ...chat.toObject(),
       _id: chat._id.toString(),
-      consoles: draftConsoles, // Include associated consoles for auto-restoration
+      consoles, // Include consoles that were modified by the agent
     });
   } catch (error) {
     console.error("Error getting chat:", error);

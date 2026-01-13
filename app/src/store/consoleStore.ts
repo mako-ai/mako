@@ -14,6 +14,10 @@ export type TabKind =
 // Store version managers for each console tab
 const versionManagers = new Map<string, ConsoleVersionManager>();
 
+// Debounce timers for draft console saves (per console ID)
+const draftSaveTimers = new Map<string, NodeJS.Timeout>();
+const DRAFT_SAVE_DEBOUNCE_MS = 2000; // 2 seconds debounce
+
 // Selector helpers
 const selectConsoleState = (state: any) => state.consoles;
 
@@ -465,6 +469,52 @@ useConsoleStore.getState = () => {
     return versionManagers.get(consoleId) || null;
   };
 
+  /**
+   * Save a draft console (debounced).
+   * Called when console content is modified by user or agent.
+   * Only saves consoles that don't have a folderId (are not already saved).
+   */
+  const saveDraftConsole = (
+    workspaceId: string,
+    consoleId: string,
+    content: string,
+    title?: string,
+    connectionId?: string,
+    databaseId?: string,
+    databaseName?: string,
+  ): void => {
+    // Skip empty content
+    if (!content?.trim()) return;
+
+    // Clear existing timer for this console
+    const existingTimer = draftSaveTimers.get(consoleId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    // Set new debounced timer
+    const timer = setTimeout(async () => {
+      draftSaveTimers.delete(consoleId);
+      try {
+        await apiClient.put(
+          `/workspaces/${workspaceId}/consoles/draft/${consoleId}`,
+          {
+            content,
+            title,
+            connectionId,
+            databaseId,
+            databaseName,
+          },
+        );
+      } catch (e) {
+        // Silently fail - draft saves are best effort
+        console.debug("[DraftSave] Failed to save draft console:", e);
+      }
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+
+    draftSaveTimers.set(consoleId, timer);
+  };
+
   return {
     consoleTabs,
     activeConsoleId: activeTabId,
@@ -482,6 +532,7 @@ useConsoleStore.getState = () => {
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
+    saveDraftConsole,
     loadConsole: async (id: string, workspaceId: string) => {
       const existing = consoleTabs.find(t => t.id === id);
       if (existing) {

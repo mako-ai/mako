@@ -416,7 +416,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const muiTheme = useMuiTheme();
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
-  const { consoleTabs, activeConsoleId } = useConsoleStore();
+  const { consoleTabs, activeConsoleId, saveDraftConsole } = useConsoleStore();
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
@@ -732,6 +732,20 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         }
         currentStore.updateConsoleContent(resolvedConsoleId, newContent);
 
+        // Save draft console to database (debounced)
+        // This ensures the modified console can be restored when opening the chat from history
+        if (currentWorkspace?.id) {
+          saveDraftConsole(
+            currentWorkspace.id,
+            resolvedConsoleId,
+            newContent,
+            targetConsole?.title,
+            targetConsole?.connectionId,
+            targetConsole?.databaseId,
+            targetConsole?.databaseName,
+          );
+        }
+
         addToolOutput({
           tool: "modify_console",
           toolCallId: toolCall.toolCallId,
@@ -787,6 +801,20 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             databaseId: effectiveDatabaseId,
             databaseName: effectiveDatabaseName,
           });
+        }
+
+        // Save draft console to database (debounced)
+        // This ensures the created console can be restored when opening the chat from history
+        if (currentWorkspace?.id && content?.trim()) {
+          saveDraftConsole(
+            currentWorkspace.id,
+            newConsoleId,
+            content,
+            title,
+            effectiveConnectionId,
+            effectiveDatabaseId,
+            effectiveDatabaseName,
+          );
         }
 
         addToolOutput({
@@ -1010,8 +1038,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             }) || [];
           setMessages(convertedMessages);
 
-          // Restore associated consoles from the chat
-          // These are draft consoles that were auto-saved when messages were sent
+          // Restore consoles that were modified by the agent in this chat
+          // The backend extracts console IDs from modify_console tool calls in the messages
+          // and fetches those consoles from the database
           if (data.consoles && data.consoles.length > 0) {
             const store = (useConsoleStore as any).getState();
             const existingTabs = store.consoleTabs || [];

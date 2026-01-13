@@ -795,3 +795,96 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     );
   }
 });
+
+// PUT /api/workspaces/:workspaceId/consoles/draft/:id - Save/upsert a draft console
+// This is called when console content is modified (by user or agent) and auto-saved
+consoleRoutes.put("/draft/:id", async (c: Context) => {
+  try {
+    const access = await verifyWorkspaceAccess(c);
+    if (!access) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const consoleId = c.req.param("id");
+    if (!consoleId || !Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console id" }, 400);
+    }
+
+    const body = await c.req.json();
+    const user = c.get("user");
+
+    if (typeof body.content !== "string" || !body.content.trim()) {
+      return c.json(
+        { success: false, error: "Content is required and must be non-empty" },
+        400,
+      );
+    }
+
+    // Check if console already exists and has a folderId (is a saved console)
+    const existingConsole = await SavedConsole.findById(consoleId);
+    if (existingConsole?.folderId) {
+      // This is a saved console - don't overwrite via draft endpoint
+      // The user should use the regular save endpoint
+      return c.json(
+        {
+          success: false,
+          error: "Console is already saved. Use the save endpoint instead.",
+        },
+        400,
+      );
+    }
+
+    const now = new Date();
+
+    // Upsert the draft console
+    const result = await SavedConsole.findOneAndUpdate(
+      { _id: new Types.ObjectId(consoleId) },
+      {
+        $set: {
+          code: body.content,
+          name: body.title || "Untitled",
+          connectionId: body.connectionId
+            ? new Types.ObjectId(body.connectionId)
+            : undefined,
+          databaseName: body.databaseName,
+          databaseId: body.databaseId,
+          updatedAt: now,
+        },
+        $setOnInsert: {
+          workspaceId: new Types.ObjectId(access.workspaceId),
+          createdBy: user?.id || "system",
+          language: "sql" as const,
+          isPrivate: false,
+          executionCount: 0,
+          createdAt: now,
+        },
+      },
+      { upsert: true, new: true },
+    );
+
+    return c.json({
+      success: true,
+      message: "Draft console saved",
+      console: {
+        id: result._id.toString(),
+        name: result.name,
+        code: result.code,
+      },
+    });
+  } catch (error) {
+    console.error("Error saving draft console:", error);
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to save draft console",
+      },
+      500,
+    );
+  }
+});

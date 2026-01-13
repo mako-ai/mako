@@ -26,7 +26,7 @@ import {
   DatabaseConnection,
   Chat,
 } from "../database/workspace-schema";
-import { saveChat, saveDraftConsole } from "../services/agent-thread.service";
+import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
 
 export const agentRoutes = new Hono();
@@ -294,19 +294,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       try {
         // Save all messages in one atomic operation (AI SDK best practice)
         // Title was already generated in parallel at the start for new chats
+        // Note: Draft consoles are saved client-side when modified (debounced)
         await saveChat(chatId, workspaceId, userId.toString(), allMessages);
-
-        // Save ALL draft consoles linked to this chat (if they're not already saved consoles)
-        // This allows reopening all consoles the user interacted with when opening an old chat
-        if (consoles && consoles.length > 0) {
-          await Promise.all(
-            consoles
-              .filter(c => c.content?.trim()) // Only save consoles with content
-              .map(c =>
-                saveDraftConsole(chatId, workspaceId, userId.toString(), c),
-              ),
-          );
-        }
       } catch (error) {
         console.error("[Agent] Error saving chat:", error);
       }
