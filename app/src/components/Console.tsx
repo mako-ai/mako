@@ -661,6 +661,26 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           !dbContentHash || currentContentHash !== dbContentHash;
         setHasContentChanges(hasChanges);
 
+        // Auto-save new consoles created with content (e.g., by agent create_console)
+        // Skip if console is already persisted (has filePath) - user controls saving those
+        if (
+          hasChanges &&
+          !filePath &&
+          currentWorkspace?.id &&
+          consoleId &&
+          currentContent.trim()
+        ) {
+          autoSaveConsole(
+            currentWorkspace.id,
+            consoleId,
+            currentContent,
+            title,
+            connectionId,
+            databaseId,
+            databaseName,
+          );
+        }
+
         // Save initial version for undo history
         if (enableVersionControl && !hasInitialVersionRef.current) {
           saveUserEdit(currentContent, "Initial content");
@@ -683,6 +703,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       dbContentHash,
       saveUserEdit,
       consoleId,
+      filePath,
+      currentWorkspace,
+      title,
+      connectionId,
+      databaseId,
+      databaseName,
+      autoSaveConsole,
     ],
   );
 

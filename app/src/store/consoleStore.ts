@@ -18,6 +18,50 @@ const versionManagers = new Map<string, ConsoleVersionManager>();
 const draftSaveTimers = new Map<string, NodeJS.Timeout>();
 const DRAFT_SAVE_DEBOUNCE_MS = 2000; // 2 seconds debounce
 
+/**
+ * Auto-save console content (debounced).
+ * Shared implementation used by both hook and getState() versions.
+ * Saves draft consoles to the database so they can be restored when
+ * opening a chat from history.
+ */
+const autoSaveConsoleImpl = (
+  workspaceId: string,
+  consoleId: string,
+  content: string,
+  title?: string,
+  connectionId?: string,
+  databaseId?: string,
+  databaseName?: string,
+): void => {
+  // Skip empty content
+  if (!content?.trim()) return;
+
+  // Clear existing timer for this console
+  const existingTimer = draftSaveTimers.get(consoleId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  // Set new debounced timer
+  const timer = setTimeout(async () => {
+    draftSaveTimers.delete(consoleId);
+    try {
+      await apiClient.put(`/workspaces/${workspaceId}/consoles/${consoleId}`, {
+        content,
+        title,
+        connectionId,
+        databaseId,
+        databaseName,
+      });
+    } catch (e) {
+      // Silently fail - auto-saves are best effort
+      console.debug("[AutoSave] Failed to save console:", e);
+    }
+  }, DRAFT_SAVE_DEBOUNCE_MS);
+
+  draftSaveTimers.set(consoleId, timer);
+};
+
 // Selector helpers
 const selectConsoleState = (state: any) => state.consoles;
 
@@ -291,46 +335,7 @@ export const useConsoleStore = () => {
     executeQuery,
     cancelQuery,
     saveConsole,
-    autoSaveConsole: (
-      workspaceId: string,
-      consoleId: string,
-      content: string,
-      title?: string,
-      connectionId?: string,
-      databaseId?: string,
-      databaseName?: string,
-    ): void => {
-      // Skip empty content
-      if (!content?.trim()) return;
-
-      // Clear existing timer for this console
-      const existingTimer = draftSaveTimers.get(consoleId);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-      }
-
-      // Set new debounced timer
-      const timer = setTimeout(async () => {
-        draftSaveTimers.delete(consoleId);
-        try {
-          await apiClient.put(
-            `/workspaces/${workspaceId}/consoles/${consoleId}`,
-            {
-              content,
-              title,
-              connectionId,
-              databaseId,
-              databaseName,
-            },
-          );
-        } catch (e) {
-          // Silently fail - auto-saves are best effort
-          console.debug("[AutoSave] Failed to save console:", e);
-        }
-      }, DRAFT_SAVE_DEBOUNCE_MS);
-
-      draftSaveTimers.set(consoleId, timer);
-    },
+    autoSaveConsole: autoSaveConsoleImpl,
     loadConsole: async (id: string, workspaceId: string) => {
       // Check if console is already loaded
       const existing = consoleTabs.find(t => t.id === id);
@@ -509,53 +514,6 @@ useConsoleStore.getState = () => {
     return versionManagers.get(consoleId) || null;
   };
 
-  /**
-   * Auto-save console content (debounced).
-   * Called when console content is modified by user or agent.
-   * The backend will skip if the console is already persisted (has folderId).
-   * Callers should check filePath before calling to avoid unnecessary API calls.
-   */
-  const autoSaveConsole = (
-    workspaceId: string,
-    consoleId: string,
-    content: string,
-    title?: string,
-    connectionId?: string,
-    databaseId?: string,
-    databaseName?: string,
-  ): void => {
-    // Skip empty content
-    if (!content?.trim()) return;
-
-    // Clear existing timer for this console
-    const existingTimer = draftSaveTimers.get(consoleId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-    }
-
-    // Set new debounced timer
-    const timer = setTimeout(async () => {
-      draftSaveTimers.delete(consoleId);
-      try {
-        await apiClient.put(
-          `/workspaces/${workspaceId}/consoles/${consoleId}`,
-          {
-            content,
-            title,
-            connectionId,
-            databaseId,
-            databaseName,
-          },
-        );
-      } catch (e) {
-        // Silently fail - auto-saves are best effort
-        console.debug("[AutoSave] Failed to save console:", e);
-      }
-    }, DRAFT_SAVE_DEBOUNCE_MS);
-
-    draftSaveTimers.set(consoleId, timer);
-  };
-
   return {
     consoleTabs,
     activeConsoleId: activeTabId,
@@ -573,7 +531,7 @@ useConsoleStore.getState = () => {
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
-    autoSaveConsole,
+    autoSaveConsole: autoSaveConsoleImpl,
     loadConsole: async (id: string, workspaceId: string) => {
       const existing = consoleTabs.find(t => t.id === id);
       if (existing) {
