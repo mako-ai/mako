@@ -54,8 +54,8 @@ const autoSaveConsoleImpl = (
   databaseId?: string,
   databaseName?: string,
 ): void => {
-  // Skip empty content
-  if (!content?.trim()) return;
+  // Skip empty content or placeholder content
+  if (!content?.trim() || content === "loading...") return;
 
   // Skip if content hasn't changed since last save (avoid redundant API calls)
   const contentHash = hashContent(content);
@@ -297,11 +297,15 @@ export const useConsoleStore = () => {
     path?: string;
     id?: string;
     error?: string;
+    conflict?: {
+      existingId: string;
+      existingContent: string;
+      existingName: string;
+      path: string;
+    };
   }> => {
     try {
       let path = currentPath;
-      const method: "POST" | "PUT" = isNew ? "POST" : "PUT";
-      let endpoint: string;
       if (!path) {
         // Caller should prompt for file name before invoking this in UI
         return { success: false, error: "Missing path" };
@@ -311,37 +315,58 @@ export const useConsoleStore = () => {
         path = path.slice(0, -3);
       }
 
-      if (method === "POST") {
-        endpoint = `/workspaces/${workspaceId}/consoles`;
-      } else {
-        endpoint = `/workspaces/${workspaceId}/consoles/${path}`;
-      }
+      if (isNew) {
+        // POST - create new console (may return conflict if path exists)
+        const response = await fetch(
+          `/api/workspaces/${workspaceId}/consoles`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              id: tabId,
+              path,
+              content,
+              connectionId,
+              databaseName,
+              databaseId,
+            }),
+          },
+        );
 
-      if (method === "POST") {
-        const res = await apiClient.post<{
+        const res = await response.json();
+
+        // Handle conflict (409) - return conflict data for UI to handle
+        if (
+          response.status === 409 &&
+          res.error === "conflict" &&
+          res.conflict
+        ) {
+          return { success: false, error: "conflict", conflict: res.conflict };
+        }
+
+        if (!response.ok) {
+          return { success: false, error: res.error || "Save failed" };
+        }
+
+        return res.success
+          ? { success: true, path, id: res.data?.id }
+          : { success: false, error: res.error || "Save failed" };
+      } else {
+        // PUT - update existing console by ID
+        const res = await apiClient.put<{
           success: boolean;
-          data?: { id: string };
+          data?: any;
           error?: string;
-        }>(endpoint, {
-          id: tabId,
-          path,
+        }>(`/workspaces/${workspaceId}/consoles/${tabId}`, {
           content,
           connectionId,
           databaseName,
           databaseId,
         });
         return res.success
-          ? { success: true, path, id: (res as any).data?.id }
-          : { success: false, error: (res as any).error || "Save failed" };
-      } else {
-        const res = await apiClient.put<{
-          success: boolean;
-          data?: any;
-          error?: string;
-        }>(endpoint, { content, connectionId, databaseName, databaseId });
-        return res.success
           ? { success: true, path }
-          : { success: false, error: (res as any).error || "Save failed" };
+          : { success: false, error: res.error || "Save failed" };
       }
     } catch (e: any) {
       return { success: false, error: e?.message || "Save failed" };

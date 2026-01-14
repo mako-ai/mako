@@ -78,16 +78,18 @@ export class ConsoleManager {
 
   /**
    * Get all consoles in a tree structure from database
+   * Only returns explicitly saved consoles (isSaved: true), not drafts
    */
   async listConsoles(workspaceId: string): Promise<ConsoleFile[]> {
     try {
-      // Get all folders and consoles for the workspace
+      // Get all folders and saved consoles (not drafts) for the workspace
       const [folders, consoles] = await Promise.all([
         ConsoleFolder.find({
           workspaceId: new Types.ObjectId(workspaceId),
         }).sort({ name: 1 }),
         SavedConsole.find({
           workspaceId: new Types.ObjectId(workspaceId),
+          isSaved: true, // Only explicitly saved consoles, not drafts
         }).sort({ name: 1 }),
       ]);
 
@@ -331,18 +333,25 @@ export class ConsoleManager {
         );
       }
 
-      // Check if console already exists
-      let savedConsole = await SavedConsole.findOne({
-        name: consoleName,
-        workspaceId: new Types.ObjectId(workspaceId),
-        ...(folderId && {
-          folderId: new Types.ObjectId(folderId),
-        }),
-      });
+      // Upsert by ID - simple and predictable
+      // Conflict detection (different console at same path) is handled by the route before calling this
+      let savedConsole: ISavedConsole | null = null;
+
+      if (options?.id && Types.ObjectId.isValid(options.id)) {
+        savedConsole = await SavedConsole.findOne({
+          _id: new Types.ObjectId(options.id),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+      }
 
       if (savedConsole) {
-        // Update existing console
+        // Update existing console (draft -> saved)
+        savedConsole.name = consoleName; // Update name (may change if draft is being saved with a path)
+        savedConsole.folderId = folderId
+          ? new Types.ObjectId(folderId)
+          : undefined; // Update folder (draft -> saved with path)
         savedConsole.code = content;
+        savedConsole.isSaved = true; // Mark as explicitly saved (no longer a draft)
         savedConsole.updatedAt = new Date();
         if (connectionId !== undefined) {
           savedConsole.connectionId = connectionId
@@ -365,7 +374,7 @@ export class ConsoleManager {
 
         await savedConsole.save();
       } else {
-        // Create new console
+        // Create new console (explicitly saved)
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
@@ -380,6 +389,7 @@ export class ConsoleManager {
           language: options?.language || this.detectLanguage(content),
           createdBy: userId,
           isPrivate: options?.isPrivate || false,
+          isSaved: true, // Explicitly saved console
           executionCount: 0,
         };
 
@@ -606,6 +616,48 @@ export class ConsoleManager {
     } catch (error) {
       console.error("Error checking console existence:", error);
       return false;
+    }
+  }
+
+  /**
+   * Get console by path - returns the full console document
+   * Used for conflict detection when saving
+   */
+  async getConsoleByPath(
+    consolePath: string,
+    workspaceId: string,
+  ): Promise<ISavedConsole | null> {
+    try {
+      const parts = consolePath.split("/");
+      const consoleName = parts[parts.length - 1];
+
+      // Get folder ID if there's a folder path
+      let folderId: string | undefined;
+      if (parts.length > 1) {
+        const folderParts = parts.slice(0, -1);
+        folderId = await this.findFolderByPath(folderParts, workspaceId);
+      }
+
+      // Build query for console with same name in same folder (or root if no folder)
+      // Only match consoles that have been explicitly saved (have a folderId or are at root with no folderId)
+      const query: any = {
+        name: consoleName,
+        workspaceId: new Types.ObjectId(workspaceId),
+      };
+
+      if (folderId) {
+        query.folderId = new Types.ObjectId(folderId);
+      } else {
+        // For root level consoles, check that folderId is null/undefined
+        query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
+      }
+
+      // Sort by updatedAt descending to get the most recently updated console
+      // in case there are duplicate entries
+      return await SavedConsole.findOne(query).sort({ updatedAt: -1 });
+    } catch (error) {
+      console.error("Error getting console by path:", error);
+      return null;
     }
   }
 

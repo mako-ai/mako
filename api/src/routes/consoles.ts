@@ -168,10 +168,35 @@ consoleRoutes.post("/", async (c: Context) => {
       // If no databases exist, that's fine - targetConnectionId will remain undefined
     }
 
-    const exists = await consoleManager.consoleExists(consolePath, workspaceId);
-    if (exists) {
+    // Check if a console already exists at this path (with a different ID)
+    const existingConsole = await consoleManager.getConsoleByPath(
+      consolePath,
+      workspaceId,
+    );
+
+    // If console exists and has a different ID, return conflict with existing content
+    // Skip conflict if existing console only has placeholder content (loading...)
+    const hasRealContent =
+      existingConsole?.code &&
+      existingConsole.code.trim() !== "" &&
+      existingConsole.code !== "loading...";
+
+    if (
+      existingConsole &&
+      existingConsole._id.toString() !== id &&
+      hasRealContent
+    ) {
       return c.json(
-        { success: false, error: "Console already exists at this path" },
+        {
+          success: false,
+          error: "conflict",
+          conflict: {
+            existingId: existingConsole._id.toString(),
+            existingContent: existingConsole.code,
+            existingName: existingConsole.name,
+            path: consolePath,
+          },
+        },
         409,
       );
     }
@@ -251,7 +276,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
 
     // Check if pathOrId is a valid ObjectId - if so, do ID-based upsert
     if (Types.ObjectId.isValid(pathOrId) && pathOrId.length === 24) {
-      // ID-based upsert (auto-save flow)
+      // ID-based upsert (auto-save flow for drafts)
+      // Note: isSaved is NOT set here - drafts remain isSaved: false
       const now = new Date();
       const result = await SavedConsole.findOneAndUpdate(
         { _id: new Types.ObjectId(pathOrId) },
@@ -271,6 +297,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             createdBy: user.id,
             language: "sql" as const,
             isPrivate: false,
+            isSaved: false, // Draft consoles are not saved to explorer
             executionCount: 0,
             createdAt: now,
           },

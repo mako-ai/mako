@@ -31,6 +31,9 @@ import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
+import ConflictResolutionDialog, {
+  ConflictData,
+} from "./ConflictResolutionDialog";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, useAppDispatch } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -87,6 +90,18 @@ function Editor() {
       hostName: string;
     }[]
   >([]);
+
+  // Conflict resolution state
+  const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
+  const [conflictData, setConflictData] = useState<ConflictData | null>(null);
+  const [pendingSaveData, setPendingSaveData] = useState<{
+    tabId: string;
+    content: string;
+    path: string;
+    connectionId?: string;
+    databaseId?: string;
+    databaseName?: string;
+  } | null>(null);
 
   // Refs for query cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -423,6 +438,23 @@ function Editor() {
         databaseId,
         isNew,
       );
+
+      // Handle conflict - show resolution dialog
+      if (result.error === "conflict" && result.conflict) {
+        setPendingSaveData({
+          tabId,
+          content: contentToSave,
+          path: savePath,
+          connectionId,
+          databaseId,
+          databaseName,
+        });
+        setConflictData(result.conflict);
+        setConflictDialogOpen(true);
+        setIsSaving(false);
+        return false;
+      }
+
       if (result.success) {
         // Update file path and title for new files (POST)
         if (isNew && savePath) {
@@ -483,6 +515,110 @@ function Editor() {
       setIsSaving(false);
     }
     return success;
+  };
+
+  // Conflict resolution handlers
+  const handleConflictOverwrite = async () => {
+    if (!pendingSaveData || !currentWorkspace || !conflictData) return;
+
+    setIsSaving(true);
+    setConflictDialogOpen(false);
+
+    try {
+      // 1. Delete the existing console at this path
+      const { apiClient } = await import("../lib/api-client");
+      await apiClient.delete(
+        `/workspaces/${currentWorkspace.id}/consoles/${conflictData.existingId}`,
+      );
+
+      // 2. Save the new console with its ID to this path
+      const result = await saveConsole(
+        currentWorkspace.id,
+        pendingSaveData.tabId,
+        pendingSaveData.content,
+        pendingSaveData.path,
+        pendingSaveData.connectionId,
+        pendingSaveData.databaseName,
+        pendingSaveData.databaseId,
+        true, // is new (POST)
+      );
+
+      if (result.success) {
+        updateConsoleFilePath(pendingSaveData.tabId, pendingSaveData.path);
+        updateConsoleTitle(pendingSaveData.tabId, pendingSaveData.path);
+        updateConsoleDirty(pendingSaveData.tabId, true);
+        updateConsoleSavedDatabase(
+          pendingSaveData.tabId,
+          pendingSaveData.connectionId,
+          pendingSaveData.databaseId,
+          pendingSaveData.databaseName,
+        );
+
+        // Update console tree - remove old, add new
+        const { useConsoleTreeStore } = await import(
+          "../store/consoleTreeStore"
+        );
+        useConsoleTreeStore
+          .getState()
+          .addConsole(
+            currentWorkspace.id,
+            pendingSaveData.path,
+            pendingSaveData.tabId,
+          );
+
+        setSnackbarMessage(
+          `Console overwritten at '${pendingSaveData.path}.js'`,
+        );
+        setSnackbarOpen(true);
+
+        trackEvent("console_saved", {
+          console_id: pendingSaveData.tabId,
+          is_new: false,
+          was_overwrite: true,
+        });
+      } else {
+        setErrorMessage(result.error || "Failed to save after overwrite");
+        setErrorModalOpen(true);
+      }
+    } catch (error: any) {
+      setErrorMessage(error?.message || "Failed to overwrite");
+      setErrorModalOpen(true);
+    }
+
+    setPendingSaveData(null);
+    setConflictData(null);
+    setIsSaving(false);
+  };
+
+  const handleConflictSaveAsNew = () => {
+    setConflictDialogOpen(false);
+    setConflictData(null);
+
+    if (pendingSaveData) {
+      // Prompt for a new filename
+      const newFileName = prompt(
+        "Enter a different file name:",
+        pendingSaveData.path + "_copy",
+      );
+      if (newFileName) {
+        const newPath = newFileName.endsWith(".js")
+          ? newFileName.slice(0, -3)
+          : newFileName;
+        // Retry save with new path
+        handleConsoleSave(
+          pendingSaveData.tabId,
+          pendingSaveData.content,
+          newPath,
+        );
+      }
+    }
+    setPendingSaveData(null);
+  };
+
+  const handleConflictClose = () => {
+    setConflictDialogOpen(false);
+    setConflictData(null);
+    setPendingSaveData(null);
   };
 
   const handleCloseErrorModal = () => {
@@ -773,6 +909,17 @@ function Editor() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Conflict Resolution Dialog */}
+      <ConflictResolutionDialog
+        open={conflictDialogOpen}
+        onClose={handleConflictClose}
+        conflict={conflictData}
+        newContent={pendingSaveData?.content || ""}
+        onOverwrite={handleConflictOverwrite}
+        onSaveAsNew={handleConflictSaveAsNew}
+        isProcessing={isSaving}
+      />
 
       {/* Success Snackbar */}
       <Snackbar
