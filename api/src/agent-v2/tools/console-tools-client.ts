@@ -28,20 +28,16 @@ export const modifyConsoleSchema = z.object({
     .describe("Position for insert action (null for replace/append)"),
   consoleId: z
     .string()
-    .nullable()
-    .optional()
     .describe(
-      "Target console ID. Required when modifying a newly created console - use the consoleId returned by create_console.",
+      "Target console ID (required). Get IDs from list_open_consoles or create_console.",
     ),
 });
 
 export const readConsoleSchema = z.object({
   consoleId: z
     .string()
-    .nullable()
-    .optional()
     .describe(
-      "Console ID to read from (null/undefined to read the active console)",
+      "Console ID to read from (required). Get IDs from list_open_consoles.",
     ),
 });
 
@@ -71,20 +67,43 @@ export const createConsoleSchema = z.object({
     ),
 });
 
+export const listOpenConsolesSchema = z.object({});
+
+export const setConsoleConnectionSchema = z.object({
+  consoleId: z
+    .string()
+    .describe(
+      "Console ID to attach (required). Get IDs from list_open_consoles or create_console.",
+    ),
+  connectionId: z.string().describe("Database connection ID to attach to"),
+  databaseId: z
+    .string()
+    .optional()
+    .describe(
+      "Specific database ID for cluster-mode connections (e.g., D1 UUID)",
+    ),
+  databaseName: z
+    .string()
+    .optional()
+    .describe(
+      "Database name for connections with multiple databases (e.g., PostgreSQL, MongoDB)",
+    ),
+});
+
 /**
  * Client-side console tools (no execute function = client-side execution)
  */
 export const clientConsoleTools = {
   read_console: {
     description:
-      "Read the contents of the current console editor. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName) so you know which database to query.",
+      "Read the contents of a specific console by ID. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName). Use list_open_consoles first to get available console IDs.",
     inputSchema: readConsoleSchema,
     // No execute function - this is a client-side tool
   },
 
   modify_console: {
     description:
-      "Modify the console editor content. Use this to write, replace, or append code to the user's active console. If you just created a console with create_console, you MUST pass the returned consoleId here.",
+      "Modify a specific console's content by ID. Use this to write, replace, or append code. Get the consoleId from list_open_consoles or create_console.",
     inputSchema: modifyConsoleSchema,
     // No execute function - this is a client-side tool
   },
@@ -95,9 +114,27 @@ export const clientConsoleTools = {
     inputSchema: createConsoleSchema,
     // No execute function - this is a client-side tool
   },
+
+  list_open_consoles: {
+    description:
+      "List all open console tabs in the UI. Returns each console's id, title, connectionId, databaseName, content preview, and isActive flag. Call this FIRST to get console IDs before using read_console or modify_console.",
+    inputSchema: listOpenConsolesSchema,
+    // No execute function - this is a client-side tool
+  },
+
+  set_console_connection: {
+    description:
+      "Attach a console to a database connection, or change its current attachment. Use this when you need to run queries against a different database than what the console is currently attached to. After setting the connection, you can use the console to execute queries against that database.",
+    inputSchema: setConsoleConnectionSchema,
+    // No execute function - this is a client-side tool
+  },
 };
 
 // Export schema types for client-side use
 export type ModifyConsoleInput = z.infer<typeof modifyConsoleSchema>;
 export type ReadConsoleInput = z.infer<typeof readConsoleSchema>;
 export type CreateConsoleInput = z.infer<typeof createConsoleSchema>;
+export type ListOpenConsolesInput = z.infer<typeof listOpenConsolesSchema>;
+export type SetConsoleConnectionInput = z.infer<
+  typeof setConsoleConnectionSchema
+>;

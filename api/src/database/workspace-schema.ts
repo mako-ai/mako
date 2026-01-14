@@ -266,6 +266,13 @@ export interface IConsoleFolder extends Document {
 
 /**
  * SavedConsole model interface
+ *
+ * Consoles can be:
+ * 1. Saved consoles: Have a folderId, managed by user through explicit save
+ * 2. Draft consoles: No folderId, auto-saved when content is modified
+ *
+ * Draft consoles are restored when opening a chat by scanning the chat's
+ * modify_console tool calls to find which console IDs were used.
  */
 export interface ISavedConsole extends Document {
   _id: Types.ObjectId;

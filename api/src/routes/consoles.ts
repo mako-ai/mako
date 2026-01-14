@@ -224,11 +224,13 @@ consoleRoutes.post("/", async (c: Context) => {
   }
 });
 
-// PUT /api/workspaces/:workspaceId/consoles/:path - Update existing console
+// PUT /api/workspaces/:workspaceId/consoles/:pathOrId - Update/upsert console
+// If pathOrId is a valid ObjectId, upserts by ID (used for auto-save)
+// Otherwise, saves by path (used for explicit user save to folder)
 consoleRoutes.put("/:path{.+}", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const consolePath = c.req.param("path");
+    const pathOrId = c.req.param("path");
     const body = await c.req.json();
     const user = c.get("user");
 
@@ -246,6 +248,48 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         400,
       );
     }
+
+    // Check if pathOrId is a valid ObjectId - if so, do ID-based upsert
+    if (Types.ObjectId.isValid(pathOrId) && pathOrId.length === 24) {
+      // ID-based upsert (auto-save flow)
+      const now = new Date();
+      const result = await SavedConsole.findOneAndUpdate(
+        { _id: new Types.ObjectId(pathOrId) },
+        {
+          $set: {
+            code: body.content,
+            name: body.title || "Untitled",
+            connectionId: body.connectionId
+              ? new Types.ObjectId(body.connectionId)
+              : undefined,
+            databaseName: body.databaseName,
+            databaseId: body.databaseId,
+            updatedAt: now,
+          },
+          $setOnInsert: {
+            workspaceId: new Types.ObjectId(workspaceId),
+            createdBy: user.id,
+            language: "sql" as const,
+            isPrivate: false,
+            executionCount: 0,
+            createdAt: now,
+          },
+        },
+        { upsert: true, new: true },
+      );
+
+      return c.json({
+        success: true,
+        message: "Console saved",
+        console: {
+          id: result._id.toString(),
+          name: result.name,
+        },
+      });
+    }
+
+    // Path-based save (explicit user save to folder)
+    const consolePath = pathOrId;
 
     // connectionId is optional - consoles can be saved without being associated with a specific database
     let targetConnectionId = body.connectionId;

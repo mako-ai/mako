@@ -1,7 +1,7 @@
 import { ObjectId } from "mongodb";
 import { v4 as uuidv4 } from "uuid";
 import type { UIMessage } from "ai";
-import { Chat } from "../database/workspace-schema";
+import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-v2";
 
 const CONTEXT_WINDOW_SIZE = 10;
@@ -576,4 +576,42 @@ export const saveChat = async (
   );
 
   return result;
+};
+
+/**
+ * Get consoles by their IDs.
+ * Used to restore consoles when loading a chat (IDs are extracted from modify_console tool calls).
+ */
+export const getConsolesByIds = async (
+  consoleIds: string[],
+): Promise<
+  Array<{
+    id: string;
+    title: string;
+    content: string;
+    connectionId?: string;
+    databaseId?: string;
+    databaseName?: string;
+  }>
+> => {
+  if (!consoleIds.length) return [];
+
+  const validIds = consoleIds
+    .filter(id => ObjectId.isValid(id))
+    .map(id => new ObjectId(id));
+
+  if (!validIds.length) return [];
+
+  const consoles = await SavedConsole.find({
+    _id: { $in: validIds },
+  });
+
+  return consoles.map(c => ({
+    id: c._id.toString(),
+    title: c.name,
+    content: c.code,
+    connectionId: c.connectionId?.toString(),
+    databaseId: c.databaseId,
+    databaseName: c.databaseName,
+  }));
 };

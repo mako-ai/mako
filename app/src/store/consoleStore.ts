@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useAppStore, useAppDispatch, ConsoleTab } from "./appStore";
 import { apiClient } from "../lib/api-client";
 import { generateObjectId } from "../utils/objectId";
@@ -14,6 +15,82 @@ export type TabKind =
 // Store version managers for each console tab
 const versionManagers = new Map<string, ConsoleVersionManager>();
 
+// Debounce timers for draft console saves (per console ID)
+const draftSaveTimers = new Map<string, NodeJS.Timeout>();
+// Track last saved content hash to avoid redundant API calls
+const lastSavedContentHash = new Map<string, string>();
+const DRAFT_SAVE_DEBOUNCE_MS = 2000; // 2 seconds debounce
+
+/**
+ * Cancel any pending auto-save for a console.
+ * Called when a console is closed to prevent orphan saves.
+ */
+const cancelAutoSave = (consoleId: string): void => {
+  const timer = draftSaveTimers.get(consoleId);
+  if (timer) {
+    clearTimeout(timer);
+    draftSaveTimers.delete(consoleId);
+  }
+  lastSavedContentHash.delete(consoleId);
+};
+
+/**
+ * Auto-save console content (debounced).
+ * Shared implementation used by both hook and getState() versions.
+ * Saves draft consoles to the database so they can be restored when
+ * opening a chat from history.
+ *
+ * Called from three places in Console.tsx:
+ * 1. handleEditorChange - user typing in editor
+ * 2. acceptChanges - user accepts AI-suggested diff
+ * 3. handleEditorDidMount - console created with content (e.g., by agent)
+ */
+const autoSaveConsoleImpl = (
+  workspaceId: string,
+  consoleId: string,
+  content: string,
+  title?: string,
+  connectionId?: string,
+  databaseId?: string,
+  databaseName?: string,
+): void => {
+  // Skip empty content
+  if (!content?.trim()) return;
+
+  // Skip if content hasn't changed since last save (avoid redundant API calls)
+  const contentHash = hashContent(content);
+  if (lastSavedContentHash.get(consoleId) === contentHash) {
+    return;
+  }
+
+  // Clear existing timer for this console
+  const existingTimer = draftSaveTimers.get(consoleId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  // Set new debounced timer
+  const timer = setTimeout(async () => {
+    draftSaveTimers.delete(consoleId);
+    try {
+      await apiClient.put(`/workspaces/${workspaceId}/consoles/${consoleId}`, {
+        content,
+        title,
+        connectionId,
+        databaseId,
+        databaseName,
+      });
+      // Track successful save to avoid redundant future saves
+      lastSavedContentHash.set(consoleId, contentHash);
+    } catch (e) {
+      // Silently fail - auto-saves are best effort
+      console.debug("[AutoSave] Failed to save console:", e);
+    }
+  }, DRAFT_SAVE_DEBOUNCE_MS);
+
+  draftSaveTimers.set(consoleId, timer);
+};
+
 // Selector helpers
 const selectConsoleState = (state: any) => state.consoles;
 
@@ -21,8 +98,9 @@ export const useConsoleStore = () => {
   const dispatch = useAppDispatch();
   const { tabs, activeTabId } = useAppStore(selectConsoleState);
 
-  // Helper: convert Record to array for backward compatibility
-  const consoleTabs: ConsoleTab[] = Object.values(tabs);
+  // Memoize to prevent new array reference on every render
+  // This is critical to avoid infinite re-render loops in consumers
+  const consoleTabs: ConsoleTab[] = useMemo(() => Object.values(tabs), [tabs]);
 
   const addConsoleTab = (
     tab: Omit<ConsoleTab, "id"> & { id?: string },
@@ -65,6 +143,9 @@ export const useConsoleStore = () => {
       versionManager.cleanup();
       versionManagers.delete(id);
     }
+
+    // Cancel any pending auto-save for this console
+    cancelAutoSave(id);
 
     dispatch({ type: "CLOSE_CONSOLE_TAB", payload: { id } } as any);
   };
@@ -287,6 +368,7 @@ export const useConsoleStore = () => {
     executeQuery,
     cancelQuery,
     saveConsole,
+    autoSaveConsole: autoSaveConsoleImpl,
     loadConsole: async (id: string, workspaceId: string) => {
       // Check if console is already loaded
       const existing = consoleTabs.find(t => t.id === id);
@@ -381,6 +463,9 @@ useConsoleStore.getState = () => {
       versionManager.cleanup();
       versionManagers.delete(id);
     }
+
+    // Cancel any pending auto-save for this console
+    cancelAutoSave(id);
 
     dispatch({ type: "CLOSE_CONSOLE_TAB", payload: { id } });
   };
@@ -482,6 +567,7 @@ useConsoleStore.getState = () => {
     updateConsoleDirty,
     updateConsoleIcon,
     getVersionManager,
+    autoSaveConsole: autoSaveConsoleImpl,
     loadConsole: async (id: string, workspaceId: string) => {
       const existing = consoleTabs.find(t => t.id === id);
       if (existing) {

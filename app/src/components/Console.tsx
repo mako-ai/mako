@@ -41,6 +41,7 @@ import {
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import { hashContent } from "../utils/hash";
 import { useAppStore } from "../store/appStore";
+import { useConsoleStore } from "../store/consoleStore";
 
 interface DatabaseConnection {
   id: string;
@@ -145,6 +146,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
+  const { autoSaveConsole } = useConsoleStore();
 
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
@@ -659,6 +661,26 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           !dbContentHash || currentContentHash !== dbContentHash;
         setHasContentChanges(hasChanges);
 
+        // Auto-save new consoles created with content (e.g., by agent create_console)
+        // Skip if console is already persisted (has filePath) - user controls saving those
+        if (
+          hasChanges &&
+          !filePath &&
+          currentWorkspace?.id &&
+          consoleId &&
+          currentContent.trim()
+        ) {
+          autoSaveConsole(
+            currentWorkspace.id,
+            consoleId,
+            currentContent,
+            title,
+            connectionId,
+            databaseId,
+            databaseName,
+          );
+        }
+
         // Save initial version for undo history
         if (enableVersionControl && !hasInitialVersionRef.current) {
           saveUserEdit(currentContent, "Initial content");
@@ -681,6 +703,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       dbContentHash,
       saveUserEdit,
       consoleId,
+      filePath,
+      currentWorkspace,
+      title,
+      connectionId,
+      databaseId,
+      databaseName,
+      autoSaveConsole,
     ],
   );
 
@@ -748,6 +777,28 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           onContentChange(content);
         }, 500); // 500ms debounce for persistence
       }
+
+      // Auto-save console when content changes (debounced internally)
+      // Skip if console is already persisted (has filePath) - user controls saving those
+      // This saves modified consoles to the database so they can be restored
+      // when opening a chat from history
+      if (
+        hasChanges &&
+        !filePath &&
+        currentWorkspace?.id &&
+        consoleId &&
+        content.trim()
+      ) {
+        autoSaveConsole(
+          currentWorkspace.id,
+          consoleId,
+          content,
+          title,
+          connectionIdRef.current,
+          databaseIdRef.current,
+          databaseName,
+        );
+      }
     },
     [
       onContentChange,
@@ -755,6 +806,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       saveUserEdit,
       isApplyingModification,
       dbContentHash,
+      currentWorkspace?.id,
+      consoleId,
+      title,
+      databaseName,
+      filePath,
+      autoSaveConsole,
     ],
   );
 
@@ -861,6 +918,26 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             const hasChanges =
               !dbContentHash || currentContentHash !== dbContentHash;
             setHasContentChanges(hasChanges);
+
+            // Auto-save agent modifications (debounced internally)
+            // Skip if console is already persisted (has filePath) - user controls saving those
+            if (
+              hasChanges &&
+              !filePathRef.current &&
+              currentWorkspace?.id &&
+              consoleId &&
+              savedModifiedContent.trim()
+            ) {
+              autoSaveConsole(
+                currentWorkspace.id,
+                consoleId,
+                savedModifiedContent,
+                title,
+                connectionIdRef.current,
+                databaseIdRef.current,
+                databaseName,
+              );
+            }
           }
         }
         isProgrammaticUpdateRef.current = false;
@@ -874,6 +951,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     enableVersionControl,
     saveUserEdit,
     dbContentHash,
+    currentWorkspace,
+    consoleId,
+    title,
+    databaseName,
+    autoSaveConsole,
   ]);
 
   // Reject the changes

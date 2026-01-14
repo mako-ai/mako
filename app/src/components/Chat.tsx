@@ -50,6 +50,7 @@ import {
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { ConsoleTab } from "../store/appStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
@@ -366,12 +367,17 @@ const pulseAnimation = keyframes`
   50% { opacity: 1; transform: scale(1.35); }
 `;
 
+// Shimmer animation for "Working on" indicator
+const shimmerAnimation = keyframes`
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+`;
+
 // Stable style objects to prevent re-renders
 const streamingIndicatorContainerSx = {
-  display: "inline-flex",
+  display: "flex",
   alignItems: "center",
-  ml: 0.5,
-  verticalAlign: "middle",
+  mt: 0.5,
 } as const;
 
 const streamingIndicatorDotSx = {
@@ -433,6 +439,10 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const onConsoleModificationRef = useRef(onConsoleModification);
   onConsoleModificationRef.current = onConsoleModification;
 
+  // Ref to capture the active console ID at the time the user submits a message
+  // This prevents the race condition where user switches consoles while agent is thinking
+  const capturedConsoleIdRef = useRef<string | null>(null);
+
   // Function to fetch sessions - defined before useChat so it can be used in onFinish
   // Using a ref-based pattern to always access the current workspace
   const fetchSessionsRef = useRef<() => Promise<void>>();
@@ -455,7 +465,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     null,
   );
 
-  // Filter to only real console tabs
+  // Filter to only real console tabs (used for capturedConsoleTitle)
   const realConsoleTabs = useMemo(
     () =>
       (consoleTabs || []).filter(
@@ -464,62 +474,76 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     [consoleTabs],
   );
 
-  // Build consoles data for the backend
-  const consolesData = useMemo(() => {
-    const data: Array<{
-      id: string;
-      title: string;
-      content: string;
-      connectionId?: string;
-      databaseId?: string;
-      databaseName?: string;
-    }> = [];
-
-    for (const tab of realConsoleTabs) {
-      if (!tab?.id) continue;
-      const connectionId = tab?.connectionId;
-      const databaseId =
-        tab?.databaseId || tab?.metadata?.queryOptions?.databaseId;
-      const databaseName =
-        tab?.databaseName ||
-        tab?.metadata?.queryOptions?.databaseName ||
-        tab?.metadata?.queryOptions?.dbName;
-
-      data.push({
-        id: tab.id,
-        title: tab.title,
-        content: tab.content || "",
-        connectionId,
-        databaseId,
-        databaseName,
-      });
-    }
-    return data;
-  }, [realConsoleTabs]);
-
   // Local input state
   const [input, setInput] = useState("");
 
-  // Create transport with dynamic body based on current state
+  // Get the captured console's title for the visual indicator
+  const capturedConsoleTitle = useMemo(() => {
+    const capturedId = capturedConsoleIdRef.current;
+    if (!capturedId) return null;
+    const tab = realConsoleTabs.find(t => t.id === capturedId);
+    return tab?.title || null;
+  }, [realConsoleTabs]);
+
+  // Ref to get current activeConsoleId at request time (avoids stale closure)
+  const activeConsoleIdRef = useRef(activeConsoleId);
+  activeConsoleIdRef.current = activeConsoleId;
+
+  // Refs for values needed in prepareSendMessagesRequest (avoids stale closures)
+  const workspaceIdRef = useRef(currentWorkspace?.id);
+  const modelIdRef = useRef(selectedModelId);
+  const chatIdRef = useRef(chatId);
+  workspaceIdRef.current = currentWorkspace?.id;
+  modelIdRef.current = selectedModelId;
+  chatIdRef.current = chatId;
+
+  // Create transport with prepareSendMessagesRequest for dynamic body values
+  // prepareSendMessagesRequest REPLACES the body (doesn't merge), so we must include all fields
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/agent/chat",
-        body: {
-          workspaceId: currentWorkspace?.id,
-          consoles: consolesData,
-          consoleId: activeConsoleId,
-          modelId: selectedModelId,
-          chatId, // Frontend-owned ID (AI SDK best practice)
+        prepareSendMessagesRequest: ({ messages }) => {
+          // Get fresh console state at request time
+          const store = (useConsoleStore as any).getState();
+          const tabs = store.consoleTabs as ConsoleTab[];
+
+          const openConsoles = tabs
+            .filter(t => t?.kind === undefined || t?.kind === "console")
+            .map(tab => {
+              const content = tab.content || "";
+              const lines = content.split("\n");
+              const maxLines = 50;
+              const truncated = lines.length > maxLines;
+              const displayContent = truncated
+                ? lines.slice(0, maxLines).join("\n")
+                : content;
+
+              return {
+                id: tab.id,
+                title: tab.title,
+                connectionId: tab.connectionId,
+                databaseId: tab.databaseId,
+                databaseName: tab.databaseName,
+                content: displayContent,
+                contentTruncated: truncated,
+                lineCount: lines.length,
+              };
+            });
+
+          return {
+            body: {
+              messages,
+              workspaceId: workspaceIdRef.current,
+              modelId: modelIdRef.current,
+              chatId: chatIdRef.current,
+              openConsoles,
+              consoleId: activeConsoleIdRef.current,
+            },
+          };
         },
       }),
-    [
-      currentWorkspace?.id,
-      consolesData,
-      activeConsoleId,
-      selectedModelId,
-      chatId,
-    ],
+    [], // Empty deps - all values read from refs at request time
   );
 
   // Note: We use (useConsoleStore as any).getState() inside callbacks to avoid stale closure issues
@@ -553,18 +577,27 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       const toolName = toolCall.toolName;
       const input = toolCall.input as Record<string, unknown>;
 
-      // Handle read_console
+      // Handle read_console - requires explicit consoleId
       if (toolName === "read_console") {
+        const consoleId = input.consoleId as string | undefined;
+
+        if (!consoleId) {
+          addToolOutput({
+            tool: "read_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error:
+                "consoleId is required. Use list_open_consoles first to get available console IDs.",
+            },
+          });
+          return;
+        }
+
         // Get fresh state to avoid stale closure issues
         const currentStore = (useConsoleStore as any).getState();
         const currentTabs = currentStore.consoleTabs;
-        const currentActiveId = currentStore.activeConsoleId;
-
-        const consoleId = (input.consoleId as string | null) ?? currentActiveId;
-        const targetConsole = consoleId
-          ? currentTabs.find((c: any) => c.id === consoleId)
-          : currentTabs.find((c: any) => c.id === currentActiveId) ||
-            currentTabs[0];
+        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
 
         if (!targetConsole) {
           addToolOutput({
@@ -572,9 +605,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: consoleId
-                ? `Console with ID ${consoleId} not found`
-                : "No console is currently active",
+              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
             },
           });
           return;
@@ -599,44 +630,38 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         return;
       }
 
-      // Handle modify_console - dispatch through event system for proper Monaco update
+      // Handle modify_console - requires explicit consoleId
       if (toolName === "modify_console") {
-        // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
-        const currentActiveId = currentStore.activeConsoleId;
-
         const action = input.action as "replace" | "insert" | "append";
         const content = input.content as string;
         const position = input.position as number | null;
-        const inputConsoleId = input.consoleId as string | null | undefined;
+        const consoleId = input.consoleId as string | undefined;
 
-        // Determine target console
-        const resolvedConsoleId =
-          inputConsoleId ?? currentActiveId ?? currentTabs[0]?.id;
-
-        if (!resolvedConsoleId) {
+        if (!consoleId) {
           addToolOutput({
             tool: "modify_console",
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: "No console is currently open. Call create_console first.",
+              error:
+                "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
             },
           });
           return;
         }
 
-        const targetConsole = currentTabs.find(
-          (c: any) => c.id === resolvedConsoleId,
-        );
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+
+        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
         if (!targetConsole) {
           addToolOutput({
             tool: "modify_console",
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: `Console with ID ${resolvedConsoleId} not found`,
+              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
             },
           });
           return;
@@ -672,7 +697,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               position !== null && position !== undefined
                 ? { line: position, column: 1 }
                 : undefined,
-            consoleId: resolvedConsoleId,
+            consoleId,
           });
         }
 
@@ -703,14 +728,14 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           default:
             newContent = content;
         }
-        currentStore.updateConsoleContent(resolvedConsoleId, newContent);
+        currentStore.updateConsoleContent(consoleId, newContent);
 
         addToolOutput({
           tool: "modify_console",
           toolCallId: toolCall.toolCallId,
           output: {
             success: true,
-            consoleId: resolvedConsoleId,
+            consoleId,
             message: `Console ${action}d successfully`,
           },
         });
@@ -730,8 +755,13 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         const databaseId = (input.databaseId as string | null) ?? undefined;
         const databaseName = (input.databaseName as string | null) ?? undefined;
 
-        // If connection info not provided, inherit from active console
+        // Use captured console ID (from message submission time) as the primary fallback
+        // This prevents the race condition where user switches consoles while agent is thinking
+        const capturedId = capturedConsoleIdRef.current;
+
+        // If connection info not provided, inherit from captured/active console
         const baseConsole =
+          currentTabs.find((c: any) => c.id === capturedId) ||
           currentTabs.find((c: any) => c.id === currentActiveId) ||
           currentTabs[0];
 
@@ -770,6 +800,104 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             databaseId: effectiveDatabaseId,
             databaseName: effectiveDatabaseName,
             message: `✓ New console "${title}" created successfully`,
+          },
+        });
+        return;
+      }
+
+      // Handle list_open_consoles - return all open console tabs
+      if (toolName === "list_open_consoles") {
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+        const currentActiveId = currentStore.activeConsoleId;
+
+        const consoles = currentTabs
+          .filter(
+            (tab: any) => tab?.kind === undefined || tab?.kind === "console",
+          )
+          .map((tab: any) => ({
+            id: tab.id,
+            title: tab.title || "Untitled",
+            connectionId: tab.connectionId,
+            connectionName: tab.metadata?.connectionName || tab.connectionId,
+            databaseName:
+              tab.databaseName || tab.metadata?.queryOptions?.databaseName,
+            contentPreview:
+              (tab.content || "").slice(0, 100) +
+              ((tab.content || "").length > 100 ? "..." : ""),
+            isActive: tab.id === currentActiveId,
+          }));
+
+        addToolOutput({
+          tool: "list_open_consoles",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            consoles,
+            message: `Found ${consoles.length} open console(s)`,
+          },
+        });
+        return;
+      }
+
+      // Handle set_console_connection - requires explicit consoleId
+      if (toolName === "set_console_connection") {
+        const consoleId = input.consoleId as string | undefined;
+        const connectionId = input.connectionId as string;
+        const databaseId = input.databaseId as string | undefined;
+        const databaseName = input.databaseName as string | undefined;
+
+        if (!consoleId) {
+          addToolOutput({
+            tool: "set_console_connection",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error:
+                "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
+            },
+          });
+          return;
+        }
+
+        // Get fresh state to avoid stale closure issues
+        const currentStore = (useConsoleStore as any).getState();
+        const currentTabs = currentStore.consoleTabs;
+
+        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
+        if (!targetConsole) {
+          addToolOutput({
+            tool: "set_console_connection",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
+            },
+          });
+          return;
+        }
+
+        // Update the console's connection and database
+        currentStore.updateConsoleConnection(consoleId, connectionId);
+        if (databaseId !== undefined || databaseName !== undefined) {
+          currentStore.updateConsoleDatabase(
+            consoleId,
+            databaseId,
+            databaseName,
+          );
+        }
+
+        addToolOutput({
+          tool: "set_console_connection",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            consoleId,
+            connectionId,
+            databaseId,
+            databaseName,
+            message: `Console "${targetConsole.title}" attached to connection ${connectionId}${databaseName ? ` (database: ${databaseName})` : ""}`,
           },
         });
         return;
@@ -815,18 +943,18 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         if (res.ok) {
           const data = await res.json();
           // Convert stored messages to AI SDK format with parts including tool calls
+          // Tool calls are included for UI display (shows what tools were used).
+          // The backend sanitizes these before sending to the AI to avoid
+          // "tool_use without tool_result" errors.
           const convertedMessages =
             data.messages?.map((msg: any) => {
               const parts: Array<Record<string, unknown>> = [];
 
-              // Add tool call parts first (they execute before text response)
+              // Add tool call parts (for UI display - shows tool history)
               // IMPORTANT: input must always be defined (at least {}) for OpenAI API compatibility
-              // The API requires 'arguments' field which comes from 'input'
               if (msg.toolCalls && msg.toolCalls.length > 0) {
                 for (const tc of msg.toolCalls) {
-                  // Skip tool calls without a valid toolName
                   if (!tc.toolName) continue;
-
                   parts.push({
                     type: `tool-${tc.toolName}`,
                     toolCallId:
@@ -835,7 +963,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                       `saved-${tc.toolName}-${Date.now()}-${Math.random()}`,
                     toolName: tc.toolName,
                     state: "output-available",
-                    // CRITICAL: input must never be undefined - OpenAI API requires 'arguments'
                     input: tc.input ?? {},
                     output: tc.result ?? null,
                   });
@@ -867,6 +994,37 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               };
             }) || [];
           setMessages(convertedMessages);
+
+          // Restore consoles that were modified by the agent in this chat
+          // The backend extracts console IDs from modify_console tool calls in the messages
+          // and fetches those consoles from the database
+          if (data.consoles && data.consoles.length > 0) {
+            const store = (useConsoleStore as any).getState();
+            const existingTabs = store.consoleTabs || [];
+
+            for (const console of data.consoles) {
+              // Check if console already exists in tabs (by ID)
+              const exists = existingTabs.some((t: any) => t.id === console.id);
+              if (!exists) {
+                // Add the console tab
+                store.addConsoleTab({
+                  id: console.id,
+                  title: console.title || "Untitled",
+                  content: console.content || "",
+                  connectionId: console.connectionId,
+                  databaseId: console.databaseId,
+                  databaseName: console.databaseName,
+                });
+              }
+            }
+
+            // Set the first restored console as active and capture it for this chat
+            const firstConsole = data.consoles[0];
+            if (firstConsole) {
+              store.setActiveConsole(firstConsole.id);
+              capturedConsoleIdRef.current = firstConsole.id;
+            }
+          }
         }
       } catch {
         /* ignore */
@@ -933,127 +1091,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const handleCloseToolDialog = () => {
     setToolDialogOpen(false);
     setSelectedTool(null);
-  };
-
-  // Extract tool invocations from message parts
-  // AI SDK has two tool part types:
-  // - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
-  // - Dynamic tools: type is "dynamic-tool" with toolName as separate property
-  const getToolInvocations = (
-    messageParts: Array<Record<string, unknown>> | undefined,
-  ): ToolInvocationInfo[] => {
-    if (!messageParts) return [];
-    return messageParts
-      .filter(part => {
-        const type = part.type;
-        if (typeof type !== "string") return false;
-        // Match static tools (type starts with "tool-") or dynamic tools
-        return type.startsWith("tool-") || type === "dynamic-tool";
-      })
-      .map(part => {
-        const partType = part.type as string;
-        // For dynamic tools, use the toolName property; for static tools, extract from type
-        // Static tool names: "tool-{name}" -> split on "-" and rejoin (handles names with hyphens)
-        const toolName =
-          partType === "dynamic-tool"
-            ? (part.toolName as string)
-            : partType.split("-").slice(1).join("-");
-        return {
-          toolCallId: (part.toolCallId as string) || "",
-          toolName: toolName || "",
-          state: part.state as ToolInvocationInfo["state"],
-          input: part.input,
-          output: part.output,
-        };
-      });
-  };
-
-  // Render message content from parts (no content property, only parts)
-  const renderMessageContent = (
-    messageParts: Array<{ type: string; text?: string }> | undefined,
-  ) => {
-    // Messages only have parts, no content property
-    if (messageParts && messageParts.length > 0) {
-      const textParts = messageParts.filter(p => p.type === "text" && p.text);
-      if (textParts.length > 0) {
-        return textParts.map((part, idx) => (
-          <ReactMarkdown
-            key={idx}
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({ className, children }) {
-                const match = /language-(\w+)/.exec(className || "");
-                const isInline = !match;
-                const codeString = String(children).replace(/\n$/, "");
-                return !isInline ? (
-                  <CodeBlock
-                    language={match ? match[1] : "text"}
-                    key={codeString}
-                    isGenerating={false}
-                  >
-                    {codeString}
-                  </CodeBlock>
-                ) : (
-                  <code className={className} style={{ fontSize: "0.8rem" }}>
-                    {children}
-                  </code>
-                );
-              },
-              table({ children }) {
-                return (
-                  <Box sx={{ overflow: "auto", my: 1 }}>
-                    <table
-                      style={{
-                        borderCollapse: "collapse",
-                        width: "100%",
-                        fontSize: "0.875rem",
-                        border: `1px solid ${muiTheme.palette.divider}`,
-                      }}
-                    >
-                      {children}
-                    </table>
-                  </Box>
-                );
-              },
-              th({ children }) {
-                return (
-                  <th
-                    style={{
-                      padding: "8px 12px",
-                      textAlign: "left",
-                      backgroundColor: muiTheme.palette.background.paper,
-                      borderBottom: `2px solid ${muiTheme.palette.divider}`,
-                      borderRight: `1px solid ${muiTheme.palette.divider}`,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {children}
-                  </th>
-                );
-              },
-              td({ children }) {
-                return (
-                  <td
-                    style={{
-                      padding: "8px 12px",
-                      borderBottom: `1px solid ${muiTheme.palette.divider}`,
-                      borderRight: `1px solid ${muiTheme.palette.divider}`,
-                      backgroundColor: muiTheme.palette.background.paper,
-                    }}
-                  >
-                    {children}
-                  </td>
-                );
-              },
-            }}
-          >
-            {part.text || ""}
-          </ReactMarkdown>
-        ));
-      }
-    }
-
-    return null;
   };
 
   return (
@@ -1226,26 +1263,189 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                     flex: 1,
                     overflow: "hidden",
                     fontSize: "0.875rem",
+                    mt: 1,
                     "& pre": { margin: 0, overflow: "hidden" },
                   }}
                 >
-                  {/* Display tool invocations */}
-                  <ToolCallsDisplay
-                    toolInvocations={getToolInvocations(
-                      message.parts as Array<Record<string, unknown>>,
-                    )}
-                    onToolClick={handleToolClick}
-                  />
-                  {/* Display reasoning */}
+                  {/* Render message parts in chronological order */}
+                  {(message.parts || []).map((part, partIndex) => {
+                    const partType = (part as Record<string, unknown>)
+                      .type as string;
+
+                    // Render tool invocations inline (no box wrapper)
+                    if (
+                      partType?.startsWith("tool-") ||
+                      partType === "dynamic-tool"
+                    ) {
+                      const toolName =
+                        partType === "dynamic-tool"
+                          ? ((part as Record<string, unknown>)
+                              .toolName as string)
+                          : partType.split("-").slice(1).join("-");
+                      const toolPart = part as Record<string, unknown>;
+                      return (
+                        <Chip
+                          key={partIndex}
+                          icon={
+                            toolPart.state === "output-available" ? (
+                              <Check size={16} />
+                            ) : toolPart.state === "error" ? (
+                              <Check
+                                size={16}
+                                style={{
+                                  color:
+                                    "var(--mui-palette-error-main, #f44336)",
+                                }}
+                              />
+                            ) : (
+                              <CircularProgress size={14} thickness={5} />
+                            )
+                          }
+                          label={toolName}
+                          size="small"
+                          variant="outlined"
+                          sx={{
+                            backgroundColor: "background.paper",
+                            borderRadius: 2,
+                            opacity: 0.8,
+                            fontSize: "0.75rem",
+                            cursor: "pointer",
+                            mr: 0.5,
+                            mb: 0.5,
+                            "& .MuiChip-icon": {
+                              color:
+                                toolPart.state === "output-available"
+                                  ? "success.main"
+                                  : toolPart.state === "error"
+                                    ? "error.main"
+                                    : "primary.main",
+                            },
+                          }}
+                          onClick={() =>
+                            handleToolClick({
+                              toolCallId: (toolPart.toolCallId as string) || "",
+                              toolName: toolName || "",
+                              state:
+                                toolPart.state as ToolInvocationInfo["state"],
+                              input: toolPart.input,
+                              output: toolPart.output,
+                            })
+                          }
+                          title={
+                            toolPart.state === "output-available"
+                              ? "Tool executed successfully"
+                              : toolPart.state === "error"
+                                ? "Tool execution failed"
+                                : "Tool executing..."
+                          }
+                        />
+                      );
+                    }
+
+                    // Render reasoning parts
+                    if (partType === "reasoning") {
+                      return null; // Skip inline, will be shown via ReasoningDisplay
+                    }
+
+                    // Render text parts
+                    if (
+                      partType === "text" &&
+                      (part as { text?: string }).text
+                    ) {
+                      return (
+                        <ReactMarkdown
+                          key={partIndex}
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            code({ className, children }) {
+                              const match = /language-(\w+)/.exec(
+                                className || "",
+                              );
+                              const isInline = !match;
+                              const codeString = String(children).replace(
+                                /\n$/,
+                                "",
+                              );
+                              return !isInline ? (
+                                <CodeBlock
+                                  language={match ? match[1] : "text"}
+                                  key={codeString}
+                                  isGenerating={false}
+                                >
+                                  {codeString}
+                                </CodeBlock>
+                              ) : (
+                                <code
+                                  className={className}
+                                  style={{ fontSize: "0.8rem" }}
+                                >
+                                  {children}
+                                </code>
+                              );
+                            },
+                            table({ children }) {
+                              return (
+                                <Box sx={{ overflow: "auto", my: 1 }}>
+                                  <table
+                                    style={{
+                                      borderCollapse: "collapse",
+                                      width: "100%",
+                                      fontSize: "0.875rem",
+                                      border: `1px solid ${muiTheme.palette.divider}`,
+                                    }}
+                                  >
+                                    {children}
+                                  </table>
+                                </Box>
+                              );
+                            },
+                            th({ children }) {
+                              return (
+                                <th
+                                  style={{
+                                    padding: "8px 12px",
+                                    textAlign: "left",
+                                    backgroundColor:
+                                      muiTheme.palette.background.paper,
+                                    borderBottom: `2px solid ${muiTheme.palette.divider}`,
+                                    borderRight: `1px solid ${muiTheme.palette.divider}`,
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {children}
+                                </th>
+                              );
+                            },
+                            td({ children }) {
+                              return (
+                                <td
+                                  style={{
+                                    padding: "8px 12px",
+                                    borderBottom: `1px solid ${muiTheme.palette.divider}`,
+                                    borderRight: `1px solid ${muiTheme.palette.divider}`,
+                                    backgroundColor:
+                                      muiTheme.palette.background.paper,
+                                  }}
+                                >
+                                  {children}
+                                </td>
+                              );
+                            },
+                          }}
+                        >
+                          {(part as { text: string }).text}
+                        </ReactMarkdown>
+                      );
+                    }
+
+                    return null;
+                  })}
+                  {/* Display reasoning (collapsible) */}
                   <ReasoningDisplay
                     messageParts={
                       message.parts as Array<Record<string, unknown>>
                     }
                   />
-                  {/* Display message content */}
-                  {renderMessageContent(
-                    message.parts as Array<{ type: string; text?: string }>,
-                  )}
                   {/* Show streaming indicator on last message while streaming */}
                   {status === "streaming" &&
                     message.id === messages[messages.length - 1]?.id && (
@@ -1258,6 +1458,36 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         </List>
         <div ref={messagesEndRef} />
       </Box>
+
+      {/* Working on console indicator - shows which console the agent is targeting */}
+      {isLoading && capturedConsoleTitle && (
+        <Box
+          sx={{
+            px: 1,
+            py: 0.5,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Typography
+            variant="caption"
+            sx={{
+              background: theme =>
+                theme.palette.mode === "dark"
+                  ? "linear-gradient(90deg, #666 0%, #999 50%, #666 100%)"
+                  : "linear-gradient(90deg, #999 0%, #333 50%, #999 100%)",
+              backgroundSize: "200% 100%",
+              backgroundClip: "text",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              animation: `${shimmerAnimation} 2s linear infinite`,
+            }}
+          >
+            {capturedConsoleTitle}
+          </Typography>
+        </Box>
+      )}
 
       {/* Input */}
       <Paper
@@ -1277,6 +1507,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           onSubmit={e => {
             e.preventDefault();
             if (input.trim() && !isLoading) {
+              // Capture the active console ID at message submission time
+              // This prevents the race condition where user switches consoles while agent is thinking
+              capturedConsoleIdRef.current = activeConsoleId;
               const activeConsole = consoleTabs.find(
                 t => t.id === activeConsoleId,
               );
@@ -1302,6 +1535,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (input.trim() && !isLoading) {
+                  // Capture the active console ID at message submission time
+                  // This prevents the race condition where user switches consoles while agent is thinking
+                  capturedConsoleIdRef.current = activeConsoleId;
                   const activeConsole = consoleTabs.find(
                     t => t.id === activeConsoleId,
                   );
