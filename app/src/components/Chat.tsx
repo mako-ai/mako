@@ -50,6 +50,7 @@ import {
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { ConsoleTab } from "../store/appStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
@@ -488,22 +489,61 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const activeConsoleIdRef = useRef(activeConsoleId);
   activeConsoleIdRef.current = activeConsoleId;
 
-  // Create transport with STABLE dependencies only
-  // IMPORTANT: We removed openConsoles from the body to prevent infinite re-render loops.
-  // The issue was: keystroke → consoleTabs update → openConsolesContext update →
-  // transport recreation → useChat reinit → repeat.
-  // The AI uses list_open_consoles and read_console tools to get current console state.
+  // Refs for values needed in prepareSendMessagesRequest (avoids stale closures)
+  const workspaceIdRef = useRef(currentWorkspace?.id);
+  const modelIdRef = useRef(selectedModelId);
+  const chatIdRef = useRef(chatId);
+  workspaceIdRef.current = currentWorkspace?.id;
+  modelIdRef.current = selectedModelId;
+  chatIdRef.current = chatId;
+
+  // Create transport with prepareSendMessagesRequest for dynamic body values
+  // prepareSendMessagesRequest REPLACES the body (doesn't merge), so we must include all fields
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/agent/chat",
-        body: {
-          workspaceId: currentWorkspace?.id,
-          modelId: selectedModelId,
-          chatId, // Frontend-owned ID (AI SDK best practice)
+        prepareSendMessagesRequest: ({ messages }) => {
+          // Get fresh console state at request time
+          const store = (useConsoleStore as any).getState();
+          const tabs = store.consoleTabs as ConsoleTab[];
+
+          const openConsoles = tabs
+            .filter(t => t?.kind === undefined || t?.kind === "console")
+            .map(tab => {
+              const content = tab.content || "";
+              const lines = content.split("\n");
+              const maxLines = 50;
+              const truncated = lines.length > maxLines;
+              const displayContent = truncated
+                ? lines.slice(0, maxLines).join("\n")
+                : content;
+
+              return {
+                id: tab.id,
+                title: tab.title,
+                connectionId: tab.connectionId,
+                databaseId: tab.databaseId,
+                databaseName: tab.databaseName,
+                content: displayContent,
+                contentTruncated: truncated,
+                lineCount: lines.length,
+              };
+            });
+
+          return {
+            body: {
+              messages,
+              workspaceId: workspaceIdRef.current,
+              modelId: modelIdRef.current,
+              chatId: chatIdRef.current,
+              openConsoles,
+              consoleId: activeConsoleIdRef.current,
+            },
+          };
         },
       }),
-    [currentWorkspace?.id, selectedModelId, chatId],
+    [], // Empty deps - all values read from refs at request time
   );
 
   // Note: We use (useConsoleStore as any).getState() inside callbacks to avoid stale closure issues
