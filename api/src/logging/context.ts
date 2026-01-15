@@ -33,7 +33,10 @@ export const requestContextStorage = new AsyncLocalStorage<RequestContext>();
  * Extracts trace ID from X-Cloud-Trace-Context header
  * Format: TRACE_ID/SPAN_ID;o=TRACE_TRUE
  */
-function parseCloudTraceContext(header: string | undefined): { traceId?: string; spanId?: string } {
+function parseCloudTraceContext(header: string | undefined): {
+  traceId?: string;
+  spanId?: string;
+} {
   if (!header) return {};
 
   const parts = header.split("/");
@@ -103,7 +106,8 @@ export function loggingMiddleware() {
           requestMethod: c.req.method,
           requestUrl: c.req.url,
           userAgent: c.req.header("user-agent"),
-          remoteIp: c.req.header("x-forwarded-for") || c.req.header("cf-connecting-ip"),
+          remoteIp:
+            c.req.header("x-forwarded-for") || c.req.header("cf-connecting-ip"),
         },
       });
 
@@ -114,7 +118,8 @@ export function loggingMiddleware() {
         const status = c.res.status;
 
         // Log request completion
-        const logLevel = status >= 500 ? "error" : status >= 400 ? "warning" : "info";
+        const logLevel =
+          status >= 500 ? "error" : status >= 400 ? "warn" : "info";
         logger[logLevel]("Request completed", {
           traceId,
           spanId,
