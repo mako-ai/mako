@@ -18,25 +18,9 @@ export type { RequestContext } from "./context";
 
 /**
  * Detects if running in production mode
- * Uses NODE_ENV or common cloud platform indicators
  */
 export function isProduction(): boolean {
-  return (
-    process.env.NODE_ENV === "production" ||
-    !!process.env.K_SERVICE || // Google Cloud Run
-    !!process.env.AWS_LAMBDA_FUNCTION_NAME || // AWS Lambda
-    !!process.env.DYNO || // Heroku
-    !!process.env.RAILWAY_ENVIRONMENT || // Railway
-    !!process.env.RENDER || // Render
-    !!process.env.FLY_APP_NAME // Fly.io
-  );
-}
-
-/**
- * Detects if running on Google Cloud Run
- */
-export function isCloudRun(): boolean {
-  return !!process.env.K_SERVICE;
+  return process.env.NODE_ENV === "production";
 }
 
 /**

@@ -35,12 +35,7 @@ import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
-import {
-  initializeLogging,
-  loggers,
-  loggingMiddleware,
-  isCloudRun,
-} from "./logging";
+import { initializeLogging, loggers, loggingMiddleware } from "./logging";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -220,7 +215,6 @@ async function main(): Promise<void> {
   logger.info("Server starting", {
     port,
     environment: process.env.NODE_ENV || "development",
-    cloudRun: isCloudRun(),
     endpoints: {
       api: "/api/*",
       inngest: "/api/inngest",
