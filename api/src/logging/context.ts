@@ -6,7 +6,7 @@ import type { Context, Next } from "hono";
  * Request context that gets attached to all logs within a request
  */
 export interface RequestContext {
-  /** Trace ID from X-Cloud-Trace-Context header */
+  /** Trace ID from distributed tracing headers (X-Cloud-Trace-Context, X-Trace-Id, etc.) */
   traceId?: string;
   /** Span ID for distributed tracing */
   spanId?: string;
@@ -30,25 +30,32 @@ export interface RequestContext {
 export const requestContextStorage = new AsyncLocalStorage<RequestContext>();
 
 /**
- * Extracts trace ID from X-Cloud-Trace-Context header
- * Format: TRACE_ID/SPAN_ID;o=TRACE_TRUE
+ * Extracts trace ID from distributed tracing headers
+ * Supports X-Cloud-Trace-Context format: TRACE_ID/SPAN_ID;o=TRACE_TRUE
+ * Also checks X-Trace-Id and X-Request-Id as fallbacks
  */
-function parseCloudTraceContext(header: string | undefined): {
-  traceId?: string;
-  spanId?: string;
-} {
-  if (!header) return {};
-
-  const parts = header.split("/");
-  const traceId = parts[0];
-
-  let spanId: string | undefined;
-  if (parts[1]) {
-    const spanParts = parts[1].split(";");
-    spanId = spanParts[0];
+function parseTraceContext(
+  cloudTraceHeader: string | undefined,
+  traceIdHeader: string | undefined,
+): { traceId?: string; spanId?: string } {
+  // Try X-Cloud-Trace-Context first (GCP format)
+  if (cloudTraceHeader) {
+    const parts = cloudTraceHeader.split("/");
+    const traceId = parts[0];
+    let spanId: string | undefined;
+    if (parts[1]) {
+      const spanParts = parts[1].split(";");
+      spanId = spanParts[0];
+    }
+    return { traceId, spanId };
   }
 
-  return { traceId, spanId };
+  // Fall back to X-Trace-Id (common header)
+  if (traceIdHeader) {
+    return { traceId: traceIdHeader };
+  }
+
+  return {};
 }
 
 /**
@@ -61,7 +68,7 @@ function generateRequestId(): string {
 /**
  * Hono middleware that sets up request context for logging
  * This enables all logs within a request to automatically include:
- * - Trace ID (for Cloud Run log correlation)
+ * - Trace ID (for distributed tracing / log correlation)
  * - Request ID
  * - User/Workspace context (when available)
  * - Request timing
@@ -72,9 +79,11 @@ export function loggingMiddleware() {
   return async (c: Context, next: Next) => {
     const startTime = Date.now();
 
-    // Parse trace context from Cloud Run
-    const cloudTraceHeader = c.req.header("x-cloud-trace-context");
-    const { traceId, spanId } = parseCloudTraceContext(cloudTraceHeader);
+    // Parse trace context from distributed tracing headers
+    const { traceId, spanId } = parseTraceContext(
+      c.req.header("x-cloud-trace-context"),
+      c.req.header("x-trace-id"),
+    );
 
     // Get or generate request ID
     const requestId = c.req.header("x-request-id") || generateRequestId();

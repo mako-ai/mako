@@ -282,11 +282,12 @@ export class WorkspaceService {
     await invite.save();
 
     // Send invitation email
+    let workspaceName = "Unknown Workspace";
     try {
       const workspace = await Workspace.findById(workspaceId);
       const inviter = await User.findById(invitedBy);
 
-      const workspaceName = workspace?.name || "Unknown Workspace";
+      workspaceName = workspace?.name || "Unknown Workspace";
       const inviterName = inviter?.email || "Someone";
       const inviteUrl = `${process.env.CLIENT_URL}/invite/${invite.token}`;
 
@@ -297,7 +298,11 @@ export class WorkspaceService {
         inviteUrl,
       );
     } catch (error) {
-      logger.error("Failed to send invitation email", { email: normalizedEmail, workspaceName, error });
+      logger.error("Failed to send invitation email", {
+        email: normalizedEmail,
+        workspaceName,
+        error,
+      });
       // Don't fail the invite creation if email fails
     }
 

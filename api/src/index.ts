@@ -32,10 +32,15 @@ import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/dr
 import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver";
 import { flowRoutes } from "./routes/flows";
 import { webhookRoutes } from "./routes/webhooks";
-import { functions, inngest } from "./inngest";
+import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
-import { initializeLogging, loggers, loggingMiddleware, isCloudRun } from "./logging";
+import {
+  initializeLogging,
+  loggers,
+  loggingMiddleware,
+  isCloudRun,
+} from "./logging";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -44,27 +49,8 @@ if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
 }
 
-// Initialize logging before anything else
-// Note: We use an IIFE to handle async initialization at module load
-const logger = loggers.app();
-
-(async () => {
-  await initializeLogging();
-
-  if (fs.existsSync(envPath)) {
-    logger.info("Loaded environment variables", { path: envPath });
-  } else {
-    logger.warn("No .env file found, environment variables must be set another way", { path: envPath });
-  }
-
-  // Connect to MongoDB
-  try {
-    await connectDatabase();
-  } catch (error) {
-    logger.error("Failed to connect to database", { error });
-    throw error;
-  }
-})();
+// Logger - initialized after initializeLogging() is called in main()
+let logger: ReturnType<typeof loggers.app>;
 
 const app = new Hono();
 
@@ -84,7 +70,11 @@ app.use("*", loggingMiddleware());
 
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
-  logger.error("Unhandled API error", { error: err, path: c.req.path, method: c.req.method });
+  logger.error("Unhandled API error", {
+    error: err,
+    path: c.req.path,
+    method: c.req.method,
+  });
   const message = err instanceof Error ? err.message : "Internal Server Error";
   return c.json({ success: false, error: message }, 500);
 });
@@ -195,20 +185,61 @@ function getContentType(ext: string): string {
 
 const port = parseInt(process.env.WEB_API_PORT || process.env.PORT || "8080");
 
-logger.info("Server starting", {
-  port,
-  environment: process.env.NODE_ENV || "development",
-  cloudRun: isCloudRun(),
-  endpoints: {
-    api: "/api/*",
-    inngest: "/api/inngest",
-    health: "/health",
-  },
-});
+/**
+ * Main entry point - initializes logging and starts the server
+ * This ensures all logging happens after LogTape is configured
+ */
+async function main(): Promise<void> {
+  // Initialize logging first - this must complete before any logging
+  await initializeLogging();
 
-serve({
-  fetch: app.fetch,
-  port,
+  // Now create the logger after initialization
+  logger = loggers.app();
+
+  if (fs.existsSync(envPath)) {
+    logger.info("Loaded environment variables", { path: envPath });
+  } else {
+    logger.warn(
+      "No .env file found, environment variables must be set another way",
+      { path: envPath },
+    );
+  }
+
+  // Connect to MongoDB
+  try {
+    await connectDatabase();
+  } catch (error) {
+    logger.error("Failed to connect to database", { error });
+    throw error;
+  }
+
+  // Log Inngest configuration status (after logging is initialized)
+  logInngestStatus();
+
+  // Log server startup info
+  logger.info("Server starting", {
+    port,
+    environment: process.env.NODE_ENV || "development",
+    cloudRun: isCloudRun(),
+    endpoints: {
+      api: "/api/*",
+      inngest: "/api/inngest",
+      health: "/health",
+    },
+  });
+
+  // Start the server
+  serve({
+    fetch: app.fetch,
+    port,
+  });
+}
+
+// Start the application
+main().catch(error => {
+  // Use console.error here since logging might not be initialized
+  console.error("Fatal error during startup:", error);
+  throw error;
 });
 
 // Graceful shutdown handling

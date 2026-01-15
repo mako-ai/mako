@@ -11,7 +11,7 @@ import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
 
-const logger = loggers.sync("orchestrator");
+const orchestratorLogger = loggers.sync("orchestrator");
 
 export interface SyncChunkResult {
   state: FetchState;
@@ -393,9 +393,11 @@ export async function performSyncChunk(
                 ordered: false,
               });
               const syncType = useStaging ? "full sync" : "incremental sync";
-              logger.info("MongoDB bulkWrite upsert mode used", { syncType });
+              orchestratorLogger.info("MongoDB bulkWrite upsert mode used", {
+                syncType,
+              });
               const bulkDuration = Date.now() - bulkStart;
-              logger.info("MongoDB write succeeded", {
+              orchestratorLogger.info("MongoDB write succeeded", {
                 upsertedCount: result.upsertedCount,
                 modifiedCount: result.modifiedCount,
                 duration: bulkDuration,
@@ -403,7 +405,7 @@ export async function performSyncChunk(
               });
             } catch (bulkError: any) {
               const bulkDuration = Date.now() - bulkStart;
-              logger.error("MongoDB write failed", {
+              orchestratorLogger.error("MongoDB write failed", {
                 duration: bulkDuration,
                 error: bulkError.message,
               });

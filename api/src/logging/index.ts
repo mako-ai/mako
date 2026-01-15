@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   configure,
   getLogger as getLogTapeLogger,
@@ -5,25 +6,37 @@ import {
   type LogLevel,
 } from "@logtape/logtape";
 import { getPrettyConsoleSink } from "./sinks/console";
-import { getGCloudSink } from "./sinks/gcloud";
-import { requestContextStorage } from "./context";
+import { getJsonSink } from "./sinks/json";
 
-export { loggingMiddleware, enrichContextWithUser, enrichContextWithWorkspace, getRequestContext } from "./context";
+export {
+  loggingMiddleware,
+  enrichContextWithUser,
+  enrichContextWithWorkspace,
+  getRequestContext,
+} from "./context";
 export type { RequestContext } from "./context";
 
 /**
- * Detects if running on Google Cloud Run
- * K_SERVICE is automatically set by Cloud Run
+ * Detects if running in production mode
+ * Uses NODE_ENV or common cloud platform indicators
  */
-export function isCloudRun(): boolean {
-  return !!process.env.K_SERVICE;
+export function isProduction(): boolean {
+  return (
+    process.env.NODE_ENV === "production" ||
+    !!process.env.K_SERVICE || // Google Cloud Run
+    !!process.env.AWS_LAMBDA_FUNCTION_NAME || // AWS Lambda
+    !!process.env.DYNO || // Heroku
+    !!process.env.RAILWAY_ENVIRONMENT || // Railway
+    !!process.env.RENDER || // Render
+    !!process.env.FLY_APP_NAME // Fly.io
+  );
 }
 
 /**
- * Detects if running in production mode
+ * Detects if running on Google Cloud Run
  */
-export function isProduction(): boolean {
-  return process.env.NODE_ENV === "production" || isCloudRun();
+export function isCloudRun(): boolean {
+  return !!process.env.K_SERVICE;
 }
 
 /**
@@ -47,17 +60,24 @@ export async function initializeLogging(): Promise<void> {
   }
 
   const minLevel = getMinLevel();
-  const sinkName = isCloudRun() ? "gcloud" : "console";
+  // Use pretty console in development, structured JSON in production
+  const sinkName = isProduction() ? "json" : "console";
 
   await configure({
-    contextLocalStorage: requestContextStorage,
+    contextLocalStorage: new AsyncLocalStorage(),
     sinks: {
       console: getPrettyConsoleSink(),
-      gcloud: getGCloudSink(),
+      json: getJsonSink(),
     },
     filters: {
-      minLevel: (record) => {
-        const levels: LogLevel[] = ["debug", "info", "warning", "error", "fatal"];
+      minLevel: record => {
+        const levels: LogLevel[] = [
+          "debug",
+          "info",
+          "warning",
+          "error",
+          "fatal",
+        ];
         return levels.indexOf(record.level) >= levels.indexOf(minLevel);
       },
     },
@@ -65,61 +85,61 @@ export async function initializeLogging(): Promise<void> {
       // Root logger - catches everything
       {
         category: [],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // HTTP request logs
       {
         category: ["http"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Database operations
       {
         category: ["db"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Authentication
       {
         category: ["auth"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Agent/AI operations
       {
         category: ["agent"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Connectors (Stripe, Close, etc.)
       {
         category: ["connector"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Sync operations
       {
         category: ["sync"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Query execution
       {
         category: ["query"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Workspace operations
       {
         category: ["workspace"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
       // Flow/Inngest operations (keep existing inngest logging working)
       {
         category: ["inngest"],
-        level: minLevel,
+        lowestLevel: minLevel,
         sinks: [sinkName],
       },
     ],
@@ -161,13 +181,15 @@ export const loggers = {
   db: (driver?: string) => getLogger(driver ? ["db", driver] : ["db"]),
 
   /** Authentication */
-  auth: (provider?: string) => getLogger(provider ? ["auth", provider] : ["auth"]),
+  auth: (provider?: string) =>
+    getLogger(provider ? ["auth", provider] : ["auth"]),
 
   /** AI agent operations */
   agent: (model?: string) => getLogger(model ? ["agent", model] : ["agent"]),
 
   /** Data connectors */
-  connector: (type?: string) => getLogger(type ? ["connector", type] : ["connector"]),
+  connector: (type?: string) =>
+    getLogger(type ? ["connector", type] : ["connector"]),
 
   /** Sync operations */
   sync: (entity?: string) => getLogger(entity ? ["sync", entity] : ["sync"]),
