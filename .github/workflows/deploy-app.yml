@@ -9,11 +9,11 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to rebuild ephemeral database for (leave empty for production deploy)'
+        description: "PR number to rebuild ephemeral database for (leave empty for production deploy)"
         required: false
         type: string
       rebuild_db:
-        description: 'Rebuild ephemeral database from production'
+        description: "Rebuild ephemeral database from production"
         required: false
         type: boolean
         default: true
@@ -40,58 +40,96 @@ jobs:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.pr_number != '')
     outputs:
       migrations_changed: ${{ steps.check.outputs.migrations_changed }}
+      rebuild_ephemeral_db: ${{ steps.check.outputs.rebuild_ephemeral_db }}
       app_changed: ${{ steps.check.outputs.app_changed }}
       pr_number: ${{ steps.check.outputs.pr_number }}
+      pr_ref: ${{ steps.pr-info.outputs.pr_ref }}
     steps:
+      - name: Get PR ref for workflow_dispatch
+        id: pr-info
+        if: github.event_name == 'workflow_dispatch' && inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_REF=$(gh pr view ${{ inputs.pr_number }} --repo ${{ github.repository }} --json headRefName --jq '.headRefName')
+          echo "pr_ref=${PR_REF}" >> "$GITHUB_OUTPUT"
+          echo "Fetched PR #${{ inputs.pr_number }} head ref: ${PR_REF}"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ steps.pr-info.outputs.pr_ref || github.ref }}
 
       - name: Check for changes
         id: check
         run: |
-          # Determine PR number
+          # Determine PR number and event type
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             PR_NUM="${{ inputs.pr_number }}"
-            echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
-            # For manual rebuild, always treat as migrations changed to force DB rebuild
-            if [ "${{ inputs.rebuild_db }}" == "true" ]; then
-              echo "migrations_changed=true" >> $GITHUB_OUTPUT
-              echo "app_changed=true" >> $GITHUB_OUTPUT
-              echo "Manual rebuild requested - forcing migrations_changed=true"
-              exit 0
-            fi
+            IS_WORKFLOW_DISPATCH="true"
+            REBUILD_DB_REQUESTED="${{ inputs.rebuild_db }}"
           else
             PR_NUM="${{ github.event.pull_request.number }}"
-            echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
+            IS_WORKFLOW_DISPATCH="false"
+            REBUILD_DB_REQUESTED="false"
           fi
+          echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
 
-          # Check for migration changes
+          # Always check git diff for migration changes (determines if PR uses ephemeral DB)
           MIGRATION_CHANGES=$(git diff origin/master...HEAD --name-only -- 'api/src/migrations/*.ts' | wc -l | tr -d ' ')
           echo "Found $MIGRATION_CHANGES migration file(s) changed"
           if [ "$MIGRATION_CHANGES" -gt 0 ]; then
             echo "migrations_changed=true" >> $GITHUB_OUTPUT
+            MIGRATIONS_CHANGED="true"
           else
             echo "migrations_changed=false" >> $GITHUB_OUTPUT
+            MIGRATIONS_CHANGED="false"
+          fi
+
+          # Determine if we should rebuild the ephemeral database
+          # - For workflow_dispatch: only rebuild if rebuild_db=true
+          # - For pull_request events: rebuild if migrations changed (first deploy or sync)
+          if [ "$IS_WORKFLOW_DISPATCH" == "true" ]; then
+            if [ "$REBUILD_DB_REQUESTED" == "true" ]; then
+              echo "rebuild_ephemeral_db=true" >> $GITHUB_OUTPUT
+              echo "Manual rebuild requested - will rebuild ephemeral database"
+            else
+              echo "rebuild_ephemeral_db=false" >> $GITHUB_OUTPUT
+              echo "Manual deploy without rebuild - will use existing database"
+            fi
+          else
+            # For PR events, rebuild ephemeral DB if migrations changed
+            if [ "$MIGRATIONS_CHANGED" == "true" ]; then
+              echo "rebuild_ephemeral_db=true" >> $GITHUB_OUTPUT
+              echo "PR event with migrations - will rebuild ephemeral database"
+            else
+              echo "rebuild_ephemeral_db=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
           # Check for app-related changes (api, app, docker, dependencies, workflow)
-          APP_CHANGES=$(git diff origin/master...HEAD --name-only -- \
-            'api/**' \
-            'app/**' \
-            'Dockerfile' \
-            'package.json' \
-            'pnpm-lock.yaml' \
-            'pnpm-workspace.yaml' \
-            'tsconfig.json' \
-            '.github/workflows/deploy-app.yml' \
-            | wc -l | tr -d ' ')
-          echo "Found $APP_CHANGES app-related file(s) changed"
-          if [ "$APP_CHANGES" -gt 0 ]; then
+          # For workflow_dispatch, always treat as changed to allow redeployment
+          if [ "$IS_WORKFLOW_DISPATCH" == "true" ]; then
             echo "app_changed=true" >> $GITHUB_OUTPUT
+            echo "Workflow dispatch - treating app as changed"
           else
-            echo "app_changed=false" >> $GITHUB_OUTPUT
+            APP_CHANGES=$(git diff origin/master...HEAD --name-only -- \
+              'api/**' \
+              'app/**' \
+              'Dockerfile' \
+              'package.json' \
+              'pnpm-lock.yaml' \
+              'pnpm-workspace.yaml' \
+              'tsconfig.json' \
+              '.github/workflows/deploy-app.yml' \
+              | wc -l | tr -d ' ')
+            echo "Found $APP_CHANGES app-related file(s) changed"
+            if [ "$APP_CHANGES" -gt 0 ]; then
+              echo "app_changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "app_changed=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
   # PR Preview Deployment
@@ -144,6 +182,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect-changes.outputs.pr_ref || github.ref }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
@@ -223,55 +263,79 @@ jobs:
         run: rm -f .env.production
 
       # Handle ephemeral database if migrations changed
-      - name: Install MongoDB Database Tools
+      # Step 1: Calculate ephemeral DB URL (when PR has migrations)
+      - name: Calculate ephemeral database URL
+        id: ephemeral-db
         if: needs.detect-changes.outputs.migrations_changed == 'true'
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          echo "PR has migrations - will use ephemeral database for PR #${PR_NUMBER}"
+
+          # Create the ephemeral database URL
+          # Format: mongodb+srv://user:pass@cluster/dbname?params -> mongodb+srv://user:pass@cluster/staging_pr_123?params
+          # Must preserve query parameters (e.g., ?retryWrites=true&w=majority) which are essential for MongoDB Atlas
+          EPHEMERAL_DB_NAME="staging_pr_${PR_NUMBER}"
+
+          # Extract query string if present, then replace only the database name
+          if [[ "$STAGING_DATABASE_URL" == *"?"* ]]; then
+            QUERY_STRING="?${STAGING_DATABASE_URL#*\?}"
+            BASE_URL="${STAGING_DATABASE_URL%%\?*}"
+          else
+            QUERY_STRING=""
+            BASE_URL="$STAGING_DATABASE_URL"
+          fi
+
+          # Replace the database name in the base URL and re-append query string
+          BASE_URL_NO_DB=$(echo "$BASE_URL" | sed 's|/[^/]*$||')
+          EPHEMERAL_DB_URL="${BASE_URL_NO_DB}/${EPHEMERAL_DB_NAME}${QUERY_STRING}"
+
+          echo "ephemeral_db_url=${EPHEMERAL_DB_URL}" >> "$GITHUB_OUTPUT"
+          echo "using_ephemeral=true" >> "$GITHUB_OUTPUT"
+          echo "Ephemeral database URL configured for: ${EPHEMERAL_DB_NAME}"
+
+      # Step 2: Install MongoDB tools (only when rebuilding)
+      - name: Install MongoDB Database Tools
+        if: needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
         run: |
           wget -qO- https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb.gpg
           echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
           sudo apt-get update
           sudo apt-get install -y mongodb-database-tools mongodb-mongosh
 
-      - name: Setup ephemeral database
-        id: ephemeral-db
-        if: needs.detect-changes.outputs.migrations_changed == 'true'
+      # Step 3: Rebuild ephemeral database from production (only when rebuild requested)
+      - name: Rebuild ephemeral database from production
+        if: needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
         env:
           PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          EPHEMERAL_DB_URL: ${{ steps.ephemeral-db.outputs.ephemeral_db_url }}
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: |
-          echo "Migrations changed - creating ephemeral database for PR #${PR_NUMBER}"
-          
-          # Create the ephemeral database URL
-          # Format: mongodb+srv://user:pass@cluster/dbname -> mongodb+srv://user:pass@cluster/staging_pr_123
-          EPHEMERAL_DB_URL=$(echo "$STAGING_DATABASE_URL" | sed 's|/[^/]*$|/staging_pr_'"${PR_NUMBER}"'|')
           EPHEMERAL_DB_NAME="staging_pr_${PR_NUMBER}"
-          
-          echo "ephemeral_db_url=${EPHEMERAL_DB_URL}" >> "$GITHUB_OUTPUT"
-          echo "using_ephemeral=true" >> "$GITHUB_OUTPUT"
-          
-          echo "Copying production database to ephemeral database: ${EPHEMERAL_DB_NAME}"
-          
+          echo "Rebuilding ephemeral database: ${EPHEMERAL_DB_NAME}"
+
           # Drop existing ephemeral database if it exists (for clean rebuild)
           echo "Dropping existing ephemeral database if it exists..."
           mongosh "$EPHEMERAL_DB_URL" --eval "db.dropDatabase()" || true
-          
+
           # Create a temporary directory for the dump
           DUMP_DIR=$(mktemp -d)
-          
+
           # Dump the production database
           echo "Dumping production database..."
           mongodump --uri="$PROD_DATABASE_URL" --out="$DUMP_DIR" --quiet
-          
+
           # Find the production database name from the dump
           PROD_DB_NAME=$(ls "$DUMP_DIR" | head -1)
           echo "Production database name: $PROD_DB_NAME"
-          
+
           # Restore to the ephemeral database
           echo "Restoring to ephemeral database: ${EPHEMERAL_DB_NAME}"
           mongorestore --uri="$STAGING_DATABASE_URL" --nsFrom="${PROD_DB_NAME}.*" --nsTo="${EPHEMERAL_DB_NAME}.*" "$DUMP_DIR/$PROD_DB_NAME" --quiet
-          
+
           # Cleanup
           rm -rf "$DUMP_DIR"
-          
+
           echo "✅ Production database successfully copied to ephemeral database: ${EPHEMERAL_DB_NAME}"
 
       - name: Set database URL
@@ -328,7 +392,7 @@ jobs:
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Run migrations (ephemeral DB only)
-        if: needs.detect-changes.outputs.migrations_changed == 'true'
+        if: needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
         env:
           DATABASE_URL: ${{ steps.db-url.outputs.db_url }}
         run: pnpm run migrate
@@ -352,13 +416,15 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const previewUrl = `https://pr-${prNumber}.mako.ai`;
             const cloudRunUrl = `${{ steps.deploy.outputs.cloud_run_url }}`;
-            const migrationsChanged = '${{ needs.detect-changes.outputs.migrations_changed }}' === 'true';
+            const usingEphemeral = '${{ needs.detect-changes.outputs.migrations_changed }}' === 'true';
+            const rebuiltDb = '${{ needs.detect-changes.outputs.rebuild_ephemeral_db }}' === 'true';
             const repo = context.repo;
             const rebuildUrl = `https://github.com/${repo.owner}/${repo.repo}/actions/workflows/deploy-app.yml`;
 
             let dbInfo = '📦 Shared staging';
-            if (migrationsChanged) {
-              dbInfo = `🗄️ Ephemeral (copied from prod + migrations applied)
+            if (usingEphemeral) {
+              const rebuildNote = rebuiltDb ? 'rebuilt from prod + migrations applied' : 'existing ephemeral DB';
+              dbInfo = `🗄️ Ephemeral (${rebuildNote})
 
             > **Need to reset the database?** [Click here to rebuild](${rebuildUrl}) and run manually with:
             > - \`pr_number\`: \`${prNumber}\`
