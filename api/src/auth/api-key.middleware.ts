@@ -1,6 +1,9 @@
 import { Context, Next } from "hono";
 import * as crypto from "crypto";
 import { Workspace } from "../database/workspace-schema";
+import { loggers } from "../logging";
+
+const logger = loggers.auth();
 
 /**
  * Generate a new API key
@@ -82,7 +85,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
 
     await next();
   } catch (error) {
-    console.error("API key authentication error:", error);
+    logger.error("API key authentication error", { error });
     return c.json({ error: "Authentication failed" }, 500);
   }
 }

@@ -4,6 +4,9 @@ import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { getConsolesByIds } from "../services/agent-thread.service";
+import { getLogger } from "../logging";
+
+const logger = getLogger(["api", "chats"]);
 
 /**
  * Extract unique console IDs from modify_console and create_console tool calls in chat messages.
@@ -74,7 +77,7 @@ chatsRoutes.get("/", async (c: AuthenticatedContext) => {
 
     return c.json(mapped);
   } catch (error) {
-    console.error("Error listing chats:", error);
+    logger.error("Error listing chats", { error });
     return c.json({ error: "Failed to list chats" }, 500);
   }
 });
@@ -122,7 +125,7 @@ chatsRoutes.post("/", async (c: AuthenticatedContext) => {
 
     return c.json({ chatId: chat._id.toString() });
   } catch (error) {
-    console.error("Error creating chat:", error);
+    logger.error("Error creating chat", { error });
     return c.json({ error: "Failed to create chat" }, 500);
   }
 });
@@ -175,7 +178,7 @@ chatsRoutes.get("/:id", async (c: AuthenticatedContext) => {
       consoles, // Include consoles that were modified by the agent
     });
   } catch (error) {
-    console.error("Error getting chat:", error);
+    logger.error("Error getting chat", { error });
     return c.json({ error: "Failed to get chat" }, 500);
   }
 });
@@ -233,7 +236,7 @@ chatsRoutes.put("/:id", async (c: AuthenticatedContext) => {
 
     return c.json({ success: true });
   } catch (error) {
-    console.error("Error updating chat:", error);
+    logger.error("Error updating chat", { error });
     return c.json({ error: "Failed to update chat" }, 500);
   }
 });
@@ -275,7 +278,7 @@ chatsRoutes.delete("/:id", async (c: AuthenticatedContext) => {
 
     return c.json({ success: true });
   } catch (error) {
-    console.error("Error deleting chat:", error);
+    logger.error("Error deleting chat", { error });
     return c.json({ error: "Failed to delete chat" }, 500);
   }
 });

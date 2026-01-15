@@ -11,6 +11,9 @@ import {
 } from "@google-cloud/cloud-sql-connector";
 import { Client as PgClient, Pool as PgPool } from "pg";
 import { GoogleAuth, JWT, type AuthClient } from "google-auth-library";
+import { loggers } from "../../../logging";
+
+const logger = loggers.db("cloudsql-postgres");
 
 interface QueryResult {
   success: boolean;
@@ -76,7 +79,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         metadata: { databaseId: r.datname, databaseName: r.datname },
       }));
     } catch (error) {
-      console.error("Error listing databases in cluster mode:", error);
+      logger.error("Error listing databases in cluster mode", { error });
       return [];
     }
   }
@@ -334,14 +337,14 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         getOpts.authType = resolvedAuthType;
       }
 
-      console.log("[CloudSQL] Calling connector.getOptions with:", getOpts);
+      logger.info("Calling connector.getOptions", { getOpts });
 
       let clientOpts;
       try {
         clientOpts = await connector.getOptions(getOpts);
-        console.log("[CloudSQL] Successfully got client options");
+        logger.info("Successfully got client options");
       } catch (getOptionsError) {
-        console.error("[CloudSQL] Failed to get options:", getOptionsError);
+        logger.error("Failed to get options", { error: getOptionsError });
         // More detailed error handling
         if (
           getOptionsError instanceof Error &&
@@ -370,19 +373,13 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
                 const projectId =
                   sa.project_id || email.split("@")[1].split(".")[0];
                 user = `${localPart}@${projectId}.iam`;
-                console.log(
-                  "[CloudSQL] Using IAM format for connection test:",
-                  user,
-                );
+                logger.info("Using IAM format for connection test", { user });
               } else {
                 user = email;
               }
             }
           } catch (e) {
-            console.error(
-              "[CloudSQL] Failed to extract email from service account:",
-              e,
-            );
+            logger.error("Failed to extract email from service account", { error: e });
           }
         }
       }
@@ -398,7 +395,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       await client.query("SELECT 1");
       return { success: true };
     } catch (error) {
-      console.error("[CloudSQL] Connection test failed:", error);
+      logger.error("Connection test failed", { error });
       return {
         success: false,
         error:
@@ -411,14 +408,14 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         try {
           await client.end();
         } catch (e) {
-          console.error("[CloudSQL] Error closing test client:", e);
+          logger.error("Error closing test client", { error: e });
         }
       }
       if (connector) {
         try {
           await connector.close();
         } catch (e) {
-          console.error("[CloudSQL] Error closing test connector:", e);
+          logger.error("Error closing test connector", { error: e });
         }
       }
     }
@@ -488,27 +485,18 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
                 const projectId =
                   sa.project_id || email.split("@")[1].split(".")[0];
                 user = `${localPart}@${projectId}.iam`;
-                console.log(
-                  "[CloudSQL] Converted service account email to IAM format:",
-                  user,
-                );
+                logger.info("Converted service account email to IAM format", { user });
               } else {
                 user = email;
               }
             }
           } catch (e) {
-            console.error(
-              "[CloudSQL] Failed to extract email from service account for pool:",
-              e,
-            );
+            logger.error("Failed to extract email from service account for pool", { error: e });
           }
         }
 
         if (!user) {
-          console.warn(
-            "[CloudSQL] IAM auth selected but no username provided for pool. " +
-              "Please provide username in format: service-account@project.iam",
-          );
+          logger.warn("IAM auth selected but no username provided for pool. Please provide username in format: service-account@project.iam");
         }
       }
 
@@ -546,7 +534,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
 
       return pool;
     } catch (error) {
-      console.error("[CloudSQL] Failed to create connection pool:", error);
+      logger.error("Failed to create connection pool", { error });
       throw new Error(
         `Failed to establish Cloud SQL connection: ${
           error instanceof Error ? error.message : "Unknown error"
@@ -580,7 +568,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     const conn = (database.connection as any) || {};
 
     // Debug logging to trace connection config
-    console.log("[CloudSQL] Getting connector with config:", {
+    logger.info("Getting connector with config", {
       instanceConnectionName: conn.instanceConnectionName,
       domainName: conn.domainName,
       authType: conn.authType,
@@ -601,7 +589,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
             ? JSON.parse(conn.service_account_json)
             : conn.service_account_json;
 
-        console.log("[CloudSQL] Using provided service account:", {
+        logger.info("Using provided service account", {
           type: credentials.type,
           client_email: credentials.client_email,
           project_id: credentials.project_id,
@@ -627,17 +615,17 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         });
 
         // Test if auth is working by trying to get an access token
-        console.log("[CloudSQL] Testing auth by getting access token...");
+        logger.info("Testing auth by getting access token...");
         let authClient: AuthClient | null = null;
         try {
           authClient = connectorAuth;
           const accessTokenResponse = await authClient.getAccessToken();
-          console.log("[CloudSQL] Access token obtained, auth is working", {
+          logger.info("Access token obtained, auth is working", {
             hasToken: !!accessTokenResponse?.token,
             expiration: accessTokenResponse?.res?.data?.expiry_date,
           });
         } catch (authTestError) {
-          console.error("[CloudSQL] Auth test failed:", authTestError);
+          logger.error("Auth test failed", { error: authTestError });
           throw new Error(
             `Service account authentication failed: ${
               authTestError instanceof Error
@@ -652,15 +640,12 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
             "Auth client initialization failed even though credentials were parsed successfully.",
           );
         }
-        console.log("[CloudSQL] Using JWT auth client for connector");
+        logger.info("Using JWT auth client for connector");
         const connector = new Connector({ auth: connectorAuth });
-        console.log("[CloudSQL] Connector created successfully");
+        logger.info("Connector created successfully");
         return connector;
       } catch (parseError) {
-        console.error(
-          "[CloudSQL] Failed to parse service account JSON:",
-          parseError,
-        );
+        logger.error("Failed to parse service account JSON", { error: parseError });
         throw new Error(
           `Invalid service account JSON: ${
             parseError instanceof Error ? parseError.message : "Parse error"
@@ -669,22 +654,20 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       }
     } else {
       // Fall back to Application Default Credentials
-      console.log(
-        "[CloudSQL] No service account JSON provided, using Application Default Credentials",
-      );
+      logger.info("No service account JSON provided, using Application Default Credentials");
       try {
         connectorAuth = new GoogleAuth({
           scopes: [...CLOUDSQL_SCOPES],
         });
         const authClient = await connectorAuth.getClient();
-        console.log("[CloudSQL] Auth client obtained successfully");
+        logger.info("Auth client obtained successfully");
         const tokenResponse = await authClient.getAccessToken();
-        console.log("[CloudSQL] Access token obtained, auth is working", {
+        logger.info("Access token obtained, auth is working", {
           hasToken: !!tokenResponse?.token,
         });
         return new Connector({ auth: connectorAuth });
       } catch (authError) {
-        console.error("[CloudSQL] Failed to create auth with ADC:", authError);
+        logger.error("Failed to create auth with ADC", { error: authError });
         throw new Error(
           `Authentication setup failed: ${
             authError instanceof Error ? authError.message : "Unknown error"

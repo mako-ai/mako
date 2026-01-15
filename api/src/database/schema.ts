@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
+import { loggers } from "../logging";
 
 /**
  * User model interface
@@ -195,6 +196,7 @@ export const EmailVerification =
  * Database connection helper
  */
 export async function connectDatabase(): Promise<void> {
+  const logger = loggers.db("mongodb");
   const mongoUri = process.env.DATABASE_URL;
   if (!mongoUri) {
     throw new Error("DATABASE_URL is not set");
@@ -202,9 +204,9 @@ export async function connectDatabase(): Promise<void> {
 
   try {
     await mongoose.connect(mongoUri);
-    console.log("✅ Connected to MongoDB");
+    logger.info("Connected to MongoDB");
   } catch (error) {
-    console.error("❌ MongoDB connection error:", error);
+    logger.error("MongoDB connection error", { error });
     throw error;
   }
 }

@@ -1,13 +1,16 @@
 import { Db } from "mongodb";
 import { mongoConnection } from "./mongodb-connection";
 import mongoose from "mongoose";
+import { loggers } from "../logging";
+
+const logger = loggers.query();
 
 export class QueryExecutor {
   async executeQuery(queryContent: string, databaseId?: string): Promise<any> {
     try {
-      console.log(
-        `🔍 QueryExecutor.executeQuery called with databaseId: ${databaseId || "none (will use default)"}`,
-      );
+      logger.debug("QueryExecutor.executeQuery called", {
+        databaseId: databaseId || "none (will use default)",
+      });
 
       // Get the appropriate database instance
       let dbInstance: Db;
@@ -22,9 +25,10 @@ export class QueryExecutor {
         dbInstance = db;
       }
 
-      console.log(
-        `🔍 Executing query content${databaseId ? ` on database ${databaseId}` : ""}:\n${queryContent.substring(0, 200)}...`,
-      );
+      logger.debug("Executing query content", {
+        databaseId,
+        queryPreview: queryContent.substring(0, 200),
+      });
 
       // Track async index operations to surface errors even if not awaited by the user
       const trackedIndexPromises: Promise<any>[] = [];
@@ -121,7 +125,7 @@ export class QueryExecutor {
 
           // If it's a string and not a database method, treat it as a collection name
           if (typeof prop === "string") {
-            console.log(`📋 Accessing collection: ${prop}`);
+            logger.debug("Accessing collection", { collection: prop });
             return wrapCollection(target.collection(prop));
           }
 
@@ -130,41 +134,38 @@ export class QueryExecutor {
       });
 
       // Execute the query file content directly
-      console.log("⚡ Evaluating query...");
+      logger.debug("Evaluating query");
       const result = eval(queryContent);
-      console.log(`📤 Raw result type: ${typeof result}`);
-      console.log(`📤 Raw result constructor: ${result?.constructor?.name}`);
-      console.log(
-        `📤 Has toArray method: ${typeof result?.toArray === "function"}`,
-      );
-      console.log(`📤 Has then method: ${typeof result?.then === "function"}`);
+      logger.debug("Raw result", {
+        type: typeof result,
+        constructor: result?.constructor?.name,
+        hasToArray: typeof result?.toArray === "function",
+        hasThen: typeof result?.then === "function",
+      });
 
       // Handle MongoDB cursors and promises
       let finalResult;
       if (result && typeof result.then === "function") {
         // It's a promise, await it
-        console.log("⏳ Awaiting promise...");
+        logger.debug("Awaiting promise");
         finalResult = await result;
-        console.log(`✅ Promise resolved, result type: ${typeof finalResult}`);
+        logger.debug("Promise resolved", { resultType: typeof finalResult });
       } else if (result && typeof result.toArray === "function") {
         // It's a MongoDB cursor, convert to array
-        console.log("📋 Converting cursor to array...");
+        logger.debug("Converting cursor to array");
         finalResult = await result.toArray();
-        console.log(
-          `✅ Cursor converted, array length: ${finalResult?.length}`,
-        );
+        logger.debug("Cursor converted", { arrayLength: finalResult?.length });
       } else {
         // It's a direct result
-        console.log("📋 Using direct result");
+        logger.debug("Using direct result");
         finalResult = result;
       }
 
-      console.log(`🎯 Final result type: ${typeof finalResult}`);
-      console.log(`🎯 Final result is array: ${Array.isArray(finalResult)}`);
-      console.log(
-        "🎯 Final result length/value:",
-        Array.isArray(finalResult) ? finalResult.length : finalResult,
-      );
+      logger.debug("Final result", {
+        type: typeof finalResult,
+        isArray: Array.isArray(finalResult),
+        lengthOrValue: Array.isArray(finalResult) ? finalResult.length : finalResult,
+      });
 
       // Ensure any index operations settle; surface the first error
       if (trackedIndexPromises.length > 0) {
@@ -216,15 +217,13 @@ export class QueryExecutor {
           JSON.stringify(finalResult, getCircularReplacer()),
         );
       } catch {
-        console.warn(
-          "⚠️ Failed to fully serialise result, falling back to string representation",
-        );
+        logger.warn("Failed to fully serialise result, falling back to string representation");
         serialisableResult = String(finalResult);
       }
 
       return serialisableResult;
     } catch (error) {
-      console.error("❌ Query execution error:", error);
+      logger.error("Query execution error", { error });
       throw new Error(
         `Query execution failed: ${
           error instanceof Error ? error.message : String(error)

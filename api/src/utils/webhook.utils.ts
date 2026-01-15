@@ -1,4 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
+import { loggers } from "../logging";
+
+const logger = loggers.inngest("webhook");
 
 /**
  * Generate a unique webhook endpoint path
@@ -23,9 +26,7 @@ export function verifyWebhookSignature(
 ): boolean {
   // This function is deprecated - webhook verification should be done
   // through the connector's verifyWebhook() method
-  console.warn(
-    "verifyWebhookSignature is deprecated. Use connector.verifyWebhook() instead.",
-  );
+  logger.warn("verifyWebhookSignature is deprecated. Use connector.verifyWebhook() instead.");
   return true;
 }
 
@@ -72,9 +73,7 @@ export function parseWebhookPayload(
 } {
   // This function is deprecated - webhook data extraction should be done
   // through the connector's extractWebhookData() and getWebhookEventMapping() methods
-  console.warn(
-    "parseWebhookPayload is deprecated. Use connector methods instead.",
-  );
+  logger.warn("parseWebhookPayload is deprecated. Use connector methods instead.");
 
   return {
     entityId: payload.id || payload.data?.id || uuidv4(),

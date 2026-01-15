@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
+import { loggers } from "../logging";
+
+const logger = loggers.workspace();
 
 export const customPromptRoutes = new Hono();
 
@@ -62,7 +65,7 @@ customPromptRoutes.get("/", async c => {
       content: content,
     });
   } catch (error) {
-    console.error("Error reading custom prompt:", error);
+    logger.error("Error reading custom prompt", { error });
     return c.json(
       {
         success: false,
@@ -128,7 +131,7 @@ customPromptRoutes.put("/", async c => {
       message: "Custom prompt updated successfully",
     });
   } catch (error) {
-    console.error("Error updating custom prompt:", error);
+    logger.error("Error updating custom prompt", { error });
     return c.json(
       {
         success: false,
@@ -184,7 +187,7 @@ customPromptRoutes.post("/reset", async c => {
       content: DEFAULT_CUSTOM_PROMPT,
     });
   } catch (error) {
-    console.error("Error resetting custom prompt:", error);
+    logger.error("Error resetting custom prompt", { error });
     return c.json(
       {
         success: false,

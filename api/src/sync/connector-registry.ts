@@ -2,6 +2,9 @@ import { DataSourceConfig } from "./database-data-source-manager";
 import { BaseConnector } from "../connectors/base/BaseConnector";
 import * as fs from "fs";
 import * as path from "path";
+import { loggers } from "../logging";
+
+const logger = loggers.sync("connector-registry");
 
 interface ConnectorRegistryEntry {
   type: string;
@@ -92,7 +95,7 @@ class SyncConnectorRegistry {
           const mod = await import(modulePath);
           const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
           if (!exportKey) {
-            console.warn(`No Connector class export found for ${dirName}`);
+            logger.warn("No Connector class export found", { dirName });
             continue;
           }
           const connectorClass = (mod as any)[exportKey];
@@ -115,13 +118,13 @@ class SyncConnectorRegistry {
 
           this.register({ type: dirName, connectorClass, metadata });
         } catch (err) {
-          console.warn(`Failed to load connector in ${dirName}:`, err);
+          logger.warn("Failed to load connector", { dirName, error: err });
         }
       }
 
       this.initialized = true;
     } catch (error) {
-      console.error("Failed to initialize sync connector registry:", error);
+      logger.error("Failed to initialize sync connector registry", { error });
     }
   }
 
@@ -164,7 +167,7 @@ class SyncConnectorRegistry {
           this.register(entry);
         }
       } catch {
-        console.error(`Unknown connector type: ${dataSource.type}`);
+        logger.error("Unknown connector type", { type: dataSource.type });
         return null;
       }
     }
@@ -195,10 +198,10 @@ class SyncConnectorRegistry {
           throw new Error("No Connector export found");
         }
       } catch (error) {
-        console.error(
-          `Failed to load connector for ${dataSource.type}:`,
+        logger.error("Failed to load connector", {
+          type: dataSource.type,
           error,
-        );
+        });
         return null;
       }
     }

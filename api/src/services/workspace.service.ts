@@ -14,6 +14,9 @@ import {
   validateAndNormalizeEmail,
   normalizeEmail,
 } from "../utils/email.utils";
+import { loggers } from "../logging";
+
+const logger = loggers.workspace();
 
 export class WorkspaceService {
   /**
@@ -294,7 +297,7 @@ export class WorkspaceService {
         inviteUrl,
       );
     } catch (error) {
-      console.error("Failed to send invitation email:", error);
+      logger.error("Failed to send invitation email", { email: normalizedEmail, workspaceName, error });
       // Don't fail the invite creation if email fails
     }
 

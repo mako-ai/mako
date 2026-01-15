@@ -9,6 +9,9 @@ import {
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
+import { loggers } from "../logging";
+
+const logger = loggers.inngest("flow");
 
 export const flowRoutes = new Hono();
 
@@ -81,7 +84,7 @@ flowRoutes.get("/", async c => {
       data: flows,
     });
   } catch (error) {
-    console.error("Error listing flows:", error);
+    logger.error("Error listing flows", { error });
     return c.json(
       {
         success: false,
@@ -201,7 +204,7 @@ flowRoutes.post("/", async c => {
       data: flow,
     });
   } catch (error) {
-    console.error("Error creating flow:", error);
+    logger.error("Error creating flow", { error });
     return c.json(
       {
         success: false,
@@ -234,7 +237,7 @@ flowRoutes.get("/:flowId", async c => {
       data: flow,
     });
   } catch (error) {
-    console.error("Error getting flow:", error);
+    logger.error("Error getting flow", { error });
     return c.json(
       {
         success: false,
@@ -307,7 +310,7 @@ flowRoutes.put("/:flowId", async c => {
       data: flow,
     });
   } catch (error) {
-    console.error("Error updating flow:", error);
+    logger.error("Error updating flow", { error });
     return c.json(
       {
         success: false,
@@ -338,7 +341,7 @@ flowRoutes.delete("/:flowId", async c => {
       message: "Flow deleted successfully",
     });
   } catch (error) {
-    console.error("Error deleting flow:", error);
+    logger.error("Error deleting flow", { error });
     return c.json(
       {
         success: false,
@@ -375,7 +378,7 @@ flowRoutes.post("/:flowId/toggle", async c => {
       },
     });
   } catch (error) {
-    console.error("Error toggling flow:", error);
+    logger.error("Error toggling flow", { error });
     return c.json(
       {
         success: false,
@@ -421,7 +424,7 @@ flowRoutes.post("/:flowId/run", async c => {
       },
     });
   } catch (error) {
-    console.error("Error running flow:", error);
+    logger.error("Error running flow", { error });
     return c.json(
       {
         success: false,
@@ -471,7 +474,7 @@ flowRoutes.get("/:flowId/status", async c => {
       },
     });
   } catch (error) {
-    console.error("Error checking flow status:", error);
+    logger.error("Error checking flow status", { error });
     return c.json(
       {
         success: false,
@@ -541,7 +544,7 @@ flowRoutes.post("/:flowId/cancel", async c => {
       },
     });
   } catch (error) {
-    console.error("Error cancelling flow:", error);
+    logger.error("Error cancelling flow", { error });
     return c.json(
       {
         success: false,
@@ -602,7 +605,7 @@ flowRoutes.get("/:flowId/history", async c => {
       },
     });
   } catch (error) {
-    console.error("Error getting flow history:", error);
+    logger.error("Error getting flow history", { error });
     return c.json(
       {
         success: false,
@@ -632,7 +635,7 @@ flowRoutes.get("/:flowId/executions/:executionId", async c => {
 
     return c.json({ success: true, data: execution });
   } catch (error) {
-    console.error("Error getting execution details:", error);
+    logger.error("Error getting execution details", { error });
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
@@ -656,7 +659,7 @@ flowRoutes.get("/:flowId/executions/:executionId/logs", async c => {
 
     return c.json({ success: true, data: execution.logs || [] });
   } catch (error) {
-    console.error("Error getting execution logs:", error);
+    logger.error("Error getting execution logs", { error });
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
@@ -718,7 +721,7 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
 
     return c.json({ success: true, data: stats });
   } catch (error) {
-    console.error("Error getting webhook stats:", error);
+    logger.error("Error getting webhook stats", { error });
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
@@ -779,7 +782,7 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
       },
     });
   } catch (error) {
-    console.error("Error getting webhook events:", error);
+    logger.error("Error getting webhook events", { error });
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
@@ -803,7 +806,7 @@ flowRoutes.get("/:flowId/webhook/events/:eventId", async c => {
 
     return c.json({ success: true, data: event });
   } catch (error) {
-    console.error("Error getting webhook event details:", error);
+    logger.error("Error getting webhook event details", { error });
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
@@ -853,7 +856,7 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
       },
     });
   } catch (error) {
-    console.error("Error retrying webhook event:", error);
+    logger.error("Error retrying webhook event", { error });
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });

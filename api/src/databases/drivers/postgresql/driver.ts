@@ -5,6 +5,9 @@ import {
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
+import { loggers } from "../../../logging";
+
+const logger = loggers.db("postgresql");
 
 export class PostgreSQLDatabaseDriver implements DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata {
@@ -49,7 +52,7 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
         metadata: { databaseId: r.datname, databaseName: r.datname },
       }));
     } catch (error) {
-      console.error("Error listing databases in cluster mode:", error);
+      logger.error("Error listing databases in cluster mode", { error });
       return [];
     }
   }

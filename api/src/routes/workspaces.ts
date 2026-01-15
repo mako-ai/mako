@@ -10,6 +10,9 @@ import {
 import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
 import { normalizeEmail } from "../utils/email.utils";
+import { loggers } from "../logging";
+
+const logger = loggers.workspace();
 
 export const workspaceRoutes = new Hono();
 
@@ -35,7 +38,7 @@ workspaceRoutes.get(
         })),
       });
     } catch (error) {
-      console.error("Error getting pending invites:", error);
+      logger.error("Error getting pending invites", { error });
       return c.json(
         {
           success: false,
@@ -68,7 +71,7 @@ workspaceRoutes.get("/", authMiddleware, async (c: AuthenticatedContext) => {
       })),
     });
   } catch (error) {
-    console.error("Error getting workspaces:", error);
+    logger.error("Error getting workspaces", { error });
     return c.json(
       {
         success: false,
@@ -114,7 +117,7 @@ workspaceRoutes.post("/", authMiddleware, async (c: AuthenticatedContext) => {
       201,
     );
   } catch (error) {
-    console.error("Error creating workspace:", error);
+    logger.error("Error creating workspace", { error });
     return c.json(
       {
         success: false,
@@ -156,7 +159,7 @@ workspaceRoutes.get(
         },
       });
     } catch (error) {
-      console.error("Error getting current workspace:", error);
+      logger.error("Error getting current workspace", { error });
       return c.json(
         {
           success: false,
@@ -215,7 +218,7 @@ workspaceRoutes.get("/invites/:token", async c => {
       },
     });
   } catch (error) {
-    console.error("Error getting invite:", error);
+    logger.error("Error getting invite", { error });
     return c.json(
       {
         success: false,
@@ -284,7 +287,7 @@ workspaceRoutes.post(
         message: "Invite accepted successfully",
       });
     } catch (error) {
-      console.error("Error accepting invite:", error);
+      logger.error("Error accepting invite", { error });
       return c.json(
         {
           success: false,
@@ -333,7 +336,7 @@ workspaceRoutes.get("/:id", authMiddleware, async (c: AuthenticatedContext) => {
       },
     });
   } catch (error) {
-    console.error("Error getting workspace:", error);
+    logger.error("Error getting workspace", { error });
     return c.json(
       {
         success: false,
@@ -383,7 +386,7 @@ workspaceRoutes.put(
         },
       });
     } catch (error) {
-      console.error("Error updating workspace:", error);
+      logger.error("Error updating workspace", { error });
       return c.json(
         {
           success: false,
@@ -420,7 +423,7 @@ workspaceRoutes.delete(
         message: "Workspace deleted successfully",
       });
     } catch (error) {
-      console.error("Error deleting workspace:", error);
+      logger.error("Error deleting workspace", { error });
       return c.json(
         {
           success: false,
@@ -455,7 +458,7 @@ workspaceRoutes.post(
         message: "Workspace switched successfully",
       });
     } catch (error) {
-      console.error("Error switching workspace:", error);
+      logger.error("Error switching workspace", { error });
       return c.json(
         {
           success: false,
@@ -497,7 +500,7 @@ workspaceRoutes.get(
         })),
       });
     } catch (error) {
-      console.error("Error getting members:", error);
+      logger.error("Error getting members", { error });
       return c.json(
         {
           success: false,
@@ -563,7 +566,7 @@ workspaceRoutes.post(
         201,
       );
     } catch (error) {
-      console.error("Error adding member:", error);
+      logger.error("Error adding member", { error });
       return c.json(
         {
           success: false,
@@ -636,7 +639,7 @@ workspaceRoutes.put(
         },
       });
     } catch (error) {
-      console.error("Error updating member role:", error);
+      logger.error("Error updating member role", { error });
       return c.json(
         {
           success: false,
@@ -687,7 +690,7 @@ workspaceRoutes.delete(
         message: "Member removed successfully",
       });
     } catch (error) {
-      console.error("Error removing member:", error);
+      logger.error("Error removing member", { error });
       return c.json(
         {
           success: false,
@@ -753,7 +756,7 @@ workspaceRoutes.post(
         201,
       );
     } catch (error) {
-      console.error("Error creating invite:", error);
+      logger.error("Error creating invite", { error });
       return c.json(
         {
           success: false,
@@ -794,7 +797,7 @@ workspaceRoutes.get(
         })),
       });
     } catch (error) {
-      console.error("Error getting invites:", error);
+      logger.error("Error getting invites", { error });
       return c.json(
         {
           success: false,
@@ -834,7 +837,7 @@ workspaceRoutes.delete(
         message: "Invite cancelled successfully",
       });
     } catch (error) {
-      console.error("Error cancelling invite:", error);
+      logger.error("Error cancelling invite", { error });
       return c.json(
         {
           success: false,
@@ -880,7 +883,7 @@ workspaceRoutes.get(
         apiKeys,
       });
     } catch (error) {
-      console.error("Error listing API keys:", error);
+      logger.error("Error listing API keys", { error });
       return c.json(
         {
           success: false,
@@ -957,7 +960,7 @@ workspaceRoutes.post(
           "API key created successfully. Store this key securely - it won't be shown again.",
       });
     } catch (error) {
-      console.error("Error creating API key:", error);
+      logger.error("Error creating API key", { error });
       return c.json(
         {
           success: false,
@@ -1004,7 +1007,7 @@ workspaceRoutes.delete(
         message: "API key deleted successfully",
       });
     } catch (error) {
-      console.error("Error deleting API key:", error);
+      logger.error("Error deleting API key", { error });
       return c.json(
         {
           success: false,

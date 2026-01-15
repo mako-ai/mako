@@ -4,6 +4,9 @@ import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import * as crypto from "crypto";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import { loggers } from "../logging";
+
+const logger = loggers.connector();
 
 export const dataSourceRoutes = new Hono();
 
@@ -613,7 +616,7 @@ dataSourceRoutes.post("/decrypt", async c => {
         },
       });
     } catch (error: any) {
-      console.error("Decryption error:", error);
+      logger.error("Decryption error", { error });
       return c.json(
         {
           success: false,
@@ -627,7 +630,7 @@ dataSourceRoutes.post("/decrypt", async c => {
       );
     }
   } catch (error: any) {
-    console.error("Decrypt endpoint error:", error);
+    logger.error("Decrypt endpoint error", { error });
     return c.json(
       {
         success: false,

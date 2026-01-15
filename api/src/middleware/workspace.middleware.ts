@@ -2,6 +2,9 @@ import { Context, Next } from "hono";
 import { ValidatedSession, ValidatedUser } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
 import { Types } from "mongoose";
+import { loggers } from "../logging";
+
+const logger = loggers.workspace();
 
 export interface AuthenticatedContext extends Context {
   get(key: "user"): ValidatedUser | undefined;
@@ -76,7 +79,7 @@ export async function requireWorkspace(c: Context, next: Next) {
 
     await next();
   } catch (error) {
-    console.error("Workspace middleware error:", error);
+    logger.error("Workspace middleware error", { error });
     return c.json(
       {
         error: "Failed to validate workspace access",
@@ -114,7 +117,7 @@ export function requireWorkspaceRole(roles: string[]) {
 
       await next();
     } catch (error) {
-      console.error("Workspace role middleware error:", error);
+      logger.error("Workspace role middleware error", { error });
       return c.json(
         {
           error: "Failed to validate workspace role",
@@ -154,7 +157,7 @@ export async function optionalWorkspace(c: Context, next: Next) {
 
     await next();
   } catch (error) {
-    console.error("Optional workspace middleware error:", error);
+    logger.error("Optional workspace middleware error", { error });
     // Don't fail the request, just continue without workspace
     await next();
   }

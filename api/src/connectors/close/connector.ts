@@ -11,6 +11,9 @@ import {
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
+import { loggers } from "../../logging";
+
+const logger = loggers.connector("close");
 
 // Close.com activity types
 const CLOSE_ACTIVITY_TYPES = [
@@ -337,7 +340,7 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          console.warn(`Rate limited. Waiting ${retryAfter} seconds...`);
+          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
           await this.sleep(retryAfter * 1000);
           // Don't increment iterations for rate limit retries
         } else {
@@ -378,7 +381,7 @@ export class CloseConnector extends BaseConnector {
         totalCount = countResponse.data.total_results;
         onProgress(0, totalCount);
       } catch (error) {
-        console.warn("Could not fetch total count for users:", error);
+        logger.warn("Could not fetch total count for users", { error });
       }
     }
 
@@ -414,7 +417,7 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          console.warn(`Rate limited. Waiting ${retryAfter} seconds...`);
+          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
           await this.sleep(retryAfter * 1000);
         } else {
           throw error;
@@ -595,7 +598,7 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          console.warn(`Rate limited. Waiting ${retryAfter} seconds...`);
+          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
           await this.sleep(retryAfter * 1000);
           // Don't increment iterations for rate limit retries
         } else {
@@ -736,7 +739,7 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          console.warn(`Rate limited. Waiting ${retryAfter} seconds...`);
+          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
           await this.sleep(retryAfter * 1000);
           // Don't increment offset, retry the same page
         } else {
@@ -769,7 +772,7 @@ export class CloseConnector extends BaseConnector {
           totalFields += response.data.total_results || 0;
         } catch (error) {
           // Skip if endpoint doesn't exist or errors
-          console.warn(`Could not fetch count from ${endpoint}:`, error);
+          logger.warn("Could not fetch count from endpoint", { endpoint, error });
         }
       }
       onProgress(0, totalFields);
@@ -797,7 +800,7 @@ export class CloseConnector extends BaseConnector {
         }
       } catch (error) {
         // Log but continue with other endpoints
-        console.warn(`Error fetching from ${endpoint}:`, error);
+        logger.warn("Error fetching from endpoint", { endpoint, error });
       }
     }
   }
@@ -822,7 +825,7 @@ export class CloseConnector extends BaseConnector {
         totalCount = countResponse.data.total_results;
         onProgress(0, totalCount);
       } catch (error) {
-        console.warn("Could not fetch total count for users:", error);
+        logger.warn("Could not fetch total count for users", { error });
       }
     }
 
@@ -862,7 +865,7 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          console.warn(`Rate limited. Waiting ${retryAfter} seconds...`);
+          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
           await this.sleep(retryAfter * 1000);
           // Don't increment offset, retry the same page
         } else {
@@ -994,7 +997,7 @@ export class CloseConnector extends BaseConnector {
             const retryAfter = parseInt(
               error.response.headers["retry-after"] || "60",
             );
-            console.warn(`Rate limited. Waiting ${retryAfter} seconds...`);
+            logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
             await this.sleep(retryAfter * 1000);
           } else {
             throw error;
@@ -1040,7 +1043,7 @@ export class CloseConnector extends BaseConnector {
             totalCount += response.data.total_results || 0;
           } catch (error) {
             // Skip if endpoint doesn't exist
-            console.warn(`Could not fetch count from ${endpoint}:`, error);
+            logger.warn("Could not fetch count from endpoint", { endpoint, error });
           }
         }
         return totalCount > 0 ? totalCount : undefined;
@@ -1097,7 +1100,7 @@ export class CloseConnector extends BaseConnector {
       // Close API returns total_results in the response
       return response.data.total_results || undefined;
     } catch (error) {
-      console.warn(`Could not fetch total count for ${entity}:`, error);
+      logger.warn("Could not fetch total count for entity", { entity, error });
       return undefined;
     }
   }

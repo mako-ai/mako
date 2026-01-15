@@ -5,6 +5,9 @@ import {
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
+import { loggers } from "../../../logging";
+
+const logger = loggers.db("mongodb");
 
 export class MongoDatabaseDriver implements DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata {
@@ -51,7 +54,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
           }),
         );
     } catch (error) {
-      console.error("Error listing databases in cluster mode:", error);
+      logger.error("Error listing databases in cluster mode", { error });
       return [];
     }
   }
@@ -196,14 +199,11 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             }
           } catch (err) {
             // Ignore error for single collection
-            console.warn(
-              `Failed to sample collection ${dbName}.${colName}`,
-              err,
-            );
+            logger.warn("Failed to sample collection", { dbName, colName, error: err });
           }
         }
       } catch (err) {
-        console.warn(`Failed to list collections for ${dbName}`, err);
+        logger.warn("Failed to list collections", { dbName, error: err });
       }
     }
 

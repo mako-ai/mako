@@ -11,6 +11,9 @@ import {
   webhookCleanupFunction,
   webhookRetryFunction,
 } from "./functions/webhook-flow";
+import { loggers } from "../logging";
+
+const logger = loggers.inngest();
 
 // Check if we're running in development mode
 const isDevelopment =
@@ -34,9 +37,9 @@ export const functions = isDevelopment
   : [...baseFunctions, flowSchedulerFunction];
 
 if (isDevelopment) {
-  console.log("⚠️  Scheduled flows are DISABLED in development mode");
+  logger.warn("Scheduled flows are DISABLED in development mode");
 } else {
-  console.log("✅ Scheduled flows are ENABLED in production mode");
+  logger.info("Scheduled flows are ENABLED in production mode");
 }
 
 // Re-export for named imports

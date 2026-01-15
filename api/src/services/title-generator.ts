@@ -5,6 +5,9 @@
 
 import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
+import { loggers } from "../logging";
+
+const logger = loggers.agent();
 
 const TITLE_SYSTEM_PROMPT = `You are a title generator. Generate a concise 3-8 word title for a chat conversation.
 
@@ -60,7 +63,7 @@ export const generateChatTitle = async (
 
     return title;
   } catch (error) {
-    console.error("[Title Generator] Failed:", error);
+    logger.error("Title generation failed", { error });
     return "New Conversation";
   }
 };

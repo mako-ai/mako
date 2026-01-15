@@ -35,25 +35,36 @@ import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
+import { initializeLogging, loggers, loggingMiddleware, isCloudRun } from "./logging";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
 
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
-  console.log(`✅ Loaded environment variables from ${envPath}`);
-} else {
-  console.warn(
-    `⚠️  .env file was not found at ${envPath}. Environment variables must be set another way.`,
-  );
 }
 
-// Connect to MongoDB
-connectDatabase().catch(error => {
-  console.error("Failed to connect to database:", error);
-  // Re-throw to allow the unhandled rejection handler (or the runtime) to exit appropriately
-  throw error;
-});
+// Initialize logging before anything else
+// Note: We use an IIFE to handle async initialization at module load
+const logger = loggers.app();
+
+(async () => {
+  await initializeLogging();
+
+  if (fs.existsSync(envPath)) {
+    logger.info("Loaded environment variables", { path: envPath });
+  } else {
+    logger.warn("No .env file found, environment variables must be set another way", { path: envPath });
+  }
+
+  // Connect to MongoDB
+  try {
+    await connectDatabase();
+  } catch (error) {
+    logger.error("Failed to connect to database", { error });
+    throw error;
+  }
+})();
 
 const app = new Hono();
 
@@ -68,9 +79,12 @@ app.use(
   }),
 );
 
+// Logging middleware - must be before other middleware to capture all requests
+app.use("*", loggingMiddleware());
+
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
-  console.error("Unhandled API error:", err);
+  logger.error("Unhandled API error", { error: err, path: c.req.path, method: c.req.method });
   const message = err instanceof Error ? err.message : "Internal Server Error";
   return c.json({ success: false, error: message }, 500);
 });
@@ -181,10 +195,16 @@ function getContentType(ext: string): string {
 
 const port = parseInt(process.env.WEB_API_PORT || process.env.PORT || "8080");
 
-console.log(`🚀 Query API Server starting on port ${port}`);
-console.log(`📁 Environment: ${process.env.NODE_ENV || "development"}`);
-console.log("🔗 API endpoints available at /api/*");
-console.log("🔄 Inngest endpoint available at /api/inngest");
+logger.info("Server starting", {
+  port,
+  environment: process.env.NODE_ENV || "development",
+  cloudRun: isCloudRun(),
+  endpoints: {
+    api: "/api/*",
+    inngest: "/api/inngest",
+    health: "/health",
+  },
+});
 
 serve({
   fetch: app.fetch,
@@ -197,32 +217,32 @@ process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 // Process-level safety nets: log and keep server responsive
 process.on("unhandledRejection", reason => {
-  console.error("Unhandled Promise Rejection:", reason);
+  logger.error("Unhandled Promise Rejection", { reason });
 });
 
 process.on("uncaughtException", err => {
-  console.error("Uncaught Exception:", err);
+  logger.error("Uncaught Exception", { error: err });
 });
 
 async function gracefulShutdown(signal: string): Promise<never> {
-  console.log(`\n${signal} received. Starting graceful shutdown...`);
+  logger.info("Graceful shutdown initiated", { signal });
 
   try {
     // Close unified MongoDB connection pool
-    console.log("Closing MongoDB connection pool...");
+    logger.info("Closing MongoDB connection pool");
     await databaseConnectionService.closeAllConnections();
-    console.log("MongoDB connection pool closed");
+    logger.info("MongoDB connection pool closed");
 
     // Close mongoose connection if open
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
-      console.log("Mongoose connection closed");
+      logger.info("Mongoose connection closed");
     }
 
-    console.log("Graceful shutdown complete");
+    logger.info("Graceful shutdown complete");
     throw new Error(`Process terminated by ${signal}`);
   } catch (error) {
-    console.error("Error during graceful shutdown:", error);
+    logger.error("Error during graceful shutdown", { error });
     throw error;
   }
 }

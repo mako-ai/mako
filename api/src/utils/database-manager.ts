@@ -1,5 +1,8 @@
 import { CreateCollectionOptions } from "mongodb";
 import { mongoConnection } from "./mongodb-connection";
+import { loggers } from "../logging";
+
+const logger = loggers.db();
 
 export class DatabaseManager {
   async listCollections(databaseId: string): Promise<any[]> {
@@ -17,7 +20,7 @@ export class DatabaseManager {
         info: col.info,
       }));
     } catch (error) {
-      console.error("❌ Error listing collections:", error);
+      logger.error("Error listing collections", { error });
       throw new Error(
         `Failed to list collections: ${
           error instanceof Error ? error.message : String(error)
@@ -39,7 +42,7 @@ export class DatabaseManager {
         info: view.info,
       }));
     } catch (error) {
-      console.error("❌ Error listing views:", error);
+      logger.error("Error listing views", { error });
       throw new Error(
         `Failed to list views: ${
           error instanceof Error ? error.message : String(error)
@@ -70,7 +73,7 @@ export class DatabaseManager {
         created: true,
       };
     } catch (error) {
-      console.error("❌ Error creating collection:", error);
+      logger.error("Error creating collection", { name, error });
       throw new Error(
         `Failed to create collection '${name}': ${
           error instanceof Error ? error.message : String(error)
@@ -116,7 +119,7 @@ export class DatabaseManager {
         created: true,
       };
     } catch (error) {
-      console.error("❌ Error creating view:", error);
+      logger.error("Error creating view", { name, viewOn, error });
       throw new Error(
         `Failed to create view '${name}': ${
           error instanceof Error ? error.message : String(error)
@@ -142,7 +145,7 @@ export class DatabaseManager {
         deleted: result,
       };
     } catch (error) {
-      console.error("❌ Error deleting collection:", error);
+      logger.error("Error deleting collection", { name, error });
       throw new Error(
         `Failed to delete collection '${name}': ${
           error instanceof Error ? error.message : String(error)
@@ -170,7 +173,7 @@ export class DatabaseManager {
         deleted: result,
       };
     } catch (error) {
-      console.error("❌ Error deleting view:", error);
+      logger.error("Error deleting view", { name, error });
       throw new Error(
         `Failed to delete view '${name}': ${
           error instanceof Error ? error.message : String(error)
@@ -216,7 +219,7 @@ export class DatabaseManager {
         sampleDocuments: sampleDocs,
       };
     } catch (error) {
-      console.error("❌ Error getting collection info:", error);
+      logger.error("Error getting collection info", { name, error });
       throw new Error(
         `Failed to get collection info for '${name}': ${
           error instanceof Error ? error.message : String(error)
@@ -258,7 +261,7 @@ export class DatabaseManager {
         sampleDocuments: sampleDocs,
       };
     } catch (error) {
-      console.error("❌ Error getting view info:", error);
+      logger.error("Error getting view info", { name, error });
       throw new Error(
         `Failed to get view info for '${name}': ${
           error instanceof Error ? error.message : String(error)

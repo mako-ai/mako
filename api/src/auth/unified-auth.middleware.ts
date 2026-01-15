@@ -3,6 +3,9 @@ import { sessionManager } from "./session";
 import { getCookie } from "hono/cookie";
 import { hashApiKey } from "./api-key.middleware";
 import { Workspace } from "../database/workspace-schema";
+import { loggers } from "../logging";
+
+const logger = loggers.auth();
 
 /**
  * Unified authentication middleware that supports both session and API key authentication
@@ -51,7 +54,7 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           return;
         }
       } catch (error) {
-        console.error("API key authentication error:", error);
+        logger.error("API key authentication error", { error });
       }
     }
   }

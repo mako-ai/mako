@@ -5,6 +5,9 @@ import {
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
+import { loggers } from "../../../logging";
+
+const logger = loggers.db("cloudflare-kv");
 
 interface KVConnection {
   account_id: string;
@@ -124,7 +127,7 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
         metadata: { databaseId: ns.id, databaseName: ns.title },
       }));
     } catch (error) {
-      console.error("Error listing KV namespaces:", error);
+      logger.error("Error listing KV namespaces", { error });
       return [];
     }
   }
@@ -523,7 +526,7 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
 
       return namespaces;
     } catch (error) {
-      console.error("Error listing KV namespaces:", error);
+      logger.error("Error listing KV namespaces", { error });
       return [];
     }
   }
