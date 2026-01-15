@@ -317,6 +317,8 @@ jobs:
           EPHEMERAL_DB_URL: ${{ steps.ephemeral-db.outputs.ephemeral_db_url }}
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: |
+          set -o pipefail  # Ensure pipeline fails if any command fails
+
           EPHEMERAL_DB_NAME="staging_pr_${PR_NUMBER}"
           echo "Rebuilding ephemeral database: ${EPHEMERAL_DB_NAME}"
 
@@ -324,23 +326,25 @@ jobs:
           echo "Dropping existing ephemeral database if it exists..."
           mongosh "$EPHEMERAL_DB_URL" --eval "db.dropDatabase()" || true
 
-          # Create a temporary directory for the dump
-          DUMP_DIR=$(mktemp -d)
-
-          # Dump the production database
-          echo "Dumping production database..."
-          mongodump --uri="$PROD_DATABASE_URL" --out="$DUMP_DIR" --quiet
-
-          # Find the production database name from the dump
-          PROD_DB_NAME=$(ls "$DUMP_DIR" | head -1)
+          # Extract production database name from URL
+          # Format: mongodb+srv://user:pass@cluster/dbname?params
+          if [[ "$PROD_DATABASE_URL" == *"?"* ]]; then
+            PROD_DB_NAME=$(echo "$PROD_DATABASE_URL" | sed -E 's|.*/([^/?]+)\?.*|\1|')
+          else
+            PROD_DB_NAME=$(echo "$PROD_DATABASE_URL" | sed -E 's|.*/([^/]+)$|\1|')
+          fi
           echo "Production database name: $PROD_DB_NAME"
 
-          # Restore to the ephemeral database
-          echo "Restoring to ephemeral database: ${EPHEMERAL_DB_NAME}"
-          mongorestore --uri="$STAGING_DATABASE_URL" --nsInclude="${PROD_DB_NAME}.*" --nsFrom="${PROD_DB_NAME}.*" --nsTo="${EPHEMERAL_DB_NAME}.*" "$DUMP_DIR/$PROD_DB_NAME" --quiet
-
-          # Cleanup
-          rm -rf "$DUMP_DIR"
+          # Dump from production and restore to ephemeral database using archive pipe
+          # This approach preserves namespace metadata correctly for remapping
+          echo "Copying production database to ephemeral database: ${EPHEMERAL_DB_NAME}"
+          if ! mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
+            --nsInclude="${PROD_DB_NAME}.*" \
+            --nsFrom="${PROD_DB_NAME}.*" \
+            --nsTo="${EPHEMERAL_DB_NAME}.*"; then
+            echo "❌ Failed to copy production database to ephemeral database"
+            exit 1
+          fi
 
           echo "✅ Production database successfully copied to ephemeral database: ${EPHEMERAL_DB_NAME}"
 
