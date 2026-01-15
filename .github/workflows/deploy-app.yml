@@ -44,6 +44,7 @@ jobs:
       app_changed: ${{ steps.check.outputs.app_changed }}
       pr_number: ${{ steps.check.outputs.pr_number }}
       pr_ref: ${{ steps.pr-info.outputs.pr_ref }}
+      pr_sha: ${{ steps.pr-info.outputs.pr_sha }}
     steps:
       - name: Get PR ref for workflow_dispatch
         id: pr-info
@@ -51,9 +52,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_REF=$(gh pr view ${{ inputs.pr_number }} --repo ${{ github.repository }} --json headRefName --jq '.headRefName')
+          PR_INFO=$(gh pr view ${{ inputs.pr_number }} --repo ${{ github.repository }} --json headRefName,headRefOid)
+          PR_REF=$(echo "$PR_INFO" | jq -r '.headRefName')
+          PR_SHA=$(echo "$PR_INFO" | jq -r '.headRefOid')
           echo "pr_ref=${PR_REF}" >> "$GITHUB_OUTPUT"
-          echo "Fetched PR #${{ inputs.pr_number }} head ref: ${PR_REF}"
+          echo "pr_sha=${PR_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Fetched PR #${{ inputs.pr_number }} head ref: ${PR_REF}, SHA: ${PR_SHA}"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -233,10 +237,12 @@ jobs:
         id: image
         env:
           IMAGE_NAME: ${{ steps.pr-vars.outputs.IMAGE_NAME }}
+          # Use PR SHA when available (workflow_dispatch), otherwise use GITHUB_SHA (PR event)
+          CODE_SHA: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
         run: |
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
           echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${IMAGE_URI}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${IMAGE_URI}:${CODE_SHA}" >> "$GITHUB_OUTPUT"
           echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Create .env.production for Docker build
@@ -262,15 +268,15 @@ jobs:
       - name: Clean temporary env.production file
         run: rm -f .env.production
 
-      # Handle ephemeral database if migrations changed
-      # Step 1: Calculate ephemeral DB URL (when PR has migrations)
+      # Handle ephemeral database if migrations changed OR manual rebuild requested
+      # Step 1: Calculate ephemeral DB URL (when PR has migrations or rebuild requested)
       - name: Calculate ephemeral database URL
         id: ephemeral-db
-        if: needs.detect-changes.outputs.migrations_changed == 'true'
+        if: needs.detect-changes.outputs.migrations_changed == 'true' || needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
         env:
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: |
-          echo "PR has migrations - will use ephemeral database for PR #${PR_NUMBER}"
+          echo "Setting up ephemeral database for PR #${PR_NUMBER}"
 
           # Create the ephemeral database URL
           # Format: mongodb+srv://user:pass@cluster/dbname?params -> mongodb+srv://user:pass@cluster/staging_pr_123?params
