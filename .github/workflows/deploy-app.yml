@@ -337,7 +337,7 @@ jobs:
 
           # Restore to the ephemeral database
           echo "Restoring to ephemeral database: ${EPHEMERAL_DB_NAME}"
-          mongorestore --uri="$STAGING_DATABASE_URL" --nsFrom="${PROD_DB_NAME}.*" --nsTo="${EPHEMERAL_DB_NAME}.*" "$DUMP_DIR/$PROD_DB_NAME" --quiet
+          mongorestore --uri="$STAGING_DATABASE_URL" --nsInclude="${PROD_DB_NAME}.*" --nsFrom="${PROD_DB_NAME}.*" --nsTo="${EPHEMERAL_DB_NAME}.*" "$DUMP_DIR/$PROD_DB_NAME" --quiet
 
           # Cleanup
           rm -rf "$DUMP_DIR"
