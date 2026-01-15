@@ -534,7 +534,8 @@ jobs:
   deploy-production:
     name: Deploy Production
     runs-on: ubuntu-latest
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.pr_number == '')
+    # Only deploy to production from master branch - workflow_dispatch must also be on master
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.pr_number == '' && github.ref == 'refs/heads/master')
     environment:
       name: production
       url: https://app.mako.ai
@@ -571,6 +572,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Always checkout master for production deploys to prevent accidental deployments from other branches
+          ref: master
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
