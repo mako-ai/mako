@@ -317,6 +317,8 @@ jobs:
           EPHEMERAL_DB_URL: ${{ steps.ephemeral-db.outputs.ephemeral_db_url }}
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: |
+          set -o pipefail  # Ensure pipeline fails if any command fails
+
           EPHEMERAL_DB_NAME="staging_pr_${PR_NUMBER}"
           echo "Rebuilding ephemeral database: ${EPHEMERAL_DB_NAME}"
 
@@ -336,10 +338,13 @@ jobs:
           # Dump from production and restore to ephemeral database using archive pipe
           # This approach preserves namespace metadata correctly for remapping
           echo "Copying production database to ephemeral database: ${EPHEMERAL_DB_NAME}"
-          mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
+          if ! mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
             --nsInclude="${PROD_DB_NAME}.*" \
             --nsFrom="${PROD_DB_NAME}.*" \
-            --nsTo="${EPHEMERAL_DB_NAME}.*"
+            --nsTo="${EPHEMERAL_DB_NAME}.*"; then
+            echo "❌ Failed to copy production database to ephemeral database"
+            exit 1
+          fi
 
           echo "✅ Production database successfully copied to ephemeral database: ${EPHEMERAL_DB_NAME}"
 
