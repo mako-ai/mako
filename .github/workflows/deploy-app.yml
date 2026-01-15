@@ -398,7 +398,7 @@ jobs:
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Run migrations (ephemeral DB only)
-        if: needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
+        if: needs.detect-changes.outputs.migrations_changed == 'true' || needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
         env:
           DATABASE_URL: ${{ steps.db-url.outputs.db_url }}
         run: pnpm run migrate
