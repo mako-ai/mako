@@ -204,6 +204,8 @@ consoleRoutes.post("/", async (c: Context) => {
       } else {
         // Existing console has placeholder content - overwrite it by using its ID
         // This prevents creating a duplicate at the same path
+        // IMPORTANT: The client uses the returned `id` in the response to update its
+        // local state, so we must return savedConsole._id (not the original client ID)
         consoleIdToUse = existingConsole._id.toString();
       }
     }

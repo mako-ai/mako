@@ -458,23 +458,37 @@ function Editor() {
       }
 
       if (result.success) {
+        // Determine which ID to use - server may return a different ID if it
+        // overwrote a placeholder console at the same path
+        const actualId = result.id || tabId;
+        const idChanged = actualId !== tabId;
+
+        // If the server used a different ID (e.g., overwrote a placeholder),
+        // update our tab to use the server's ID for consistency
+        if (idChanged && isNew) {
+          replaceTabId(tabId, actualId);
+        }
+
+        // Use the actual ID for all state updates
+        const idToUpdate = idChanged && isNew ? actualId : tabId;
+
         // Update file path and title for new files (POST)
         if (isNew && savePath) {
-          updateConsoleFilePath(tabId, savePath);
+          updateConsoleFilePath(idToUpdate, savePath);
         }
 
         // Keep the full path as the title to distinguish between files with same name
         if (savePath) {
-          updateConsoleTitle(tabId, savePath);
+          updateConsoleTitle(idToUpdate, savePath);
         }
 
         // Mark tab as dirty since it's now saved and should be persistent
-        updateConsoleDirty(tabId, true);
+        updateConsoleDirty(idToUpdate, true);
 
         // Update the saved database values to reflect what was just persisted
         // This is used for dirty state tracking in the Console component
         updateConsoleSavedDatabase(
-          tabId,
+          idToUpdate,
           connectionId,
           databaseId,
           databaseName,
@@ -482,8 +496,9 @@ function Editor() {
 
         // Track console save
         trackEvent("console_saved", {
-          console_id: tabId,
+          console_id: actualId,
           is_new: isNew,
+          id_changed: idChanged,
         });
 
         setSnackbarMessage(
@@ -497,11 +512,11 @@ function Editor() {
           const { useConsoleTreeStore } = await import(
             "../store/consoleTreeStore"
           );
-          // The server SHOULD return the same ID we sent
-          // If not, something is wrong with the backend
+          // Use the actual ID returned by the server (may differ from tabId
+          // if a placeholder console was overwritten at the same path)
           useConsoleTreeStore
             .getState()
-            .addConsole(currentWorkspace.id, savePath!, tabId);
+            .addConsole(currentWorkspace.id, savePath!, actualId);
         }
 
         // Refresh the console tree directly via store
