@@ -548,6 +548,8 @@ function Editor() {
       // This is atomic - if it fails, the original content is preserved.
       // We update the existing console rather than delete-then-create to avoid
       // data loss if the save fails after delete.
+      // isSaved: true tells the backend this is an explicit save (not auto-save draft)
+      // which disables upsert to prevent creating ghost drafts if the target was deleted.
       const result = await apiClient.put<{
         success: boolean;
         data?: any;
@@ -559,6 +561,7 @@ function Editor() {
           connectionId: pendingSaveData.connectionId,
           databaseName: pendingSaveData.databaseName,
           databaseId: pendingSaveData.databaseId,
+          isSaved: true, // Explicit save: fail if target doesn't exist (race condition protection)
         },
       );
 

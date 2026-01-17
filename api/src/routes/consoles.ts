@@ -283,10 +283,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       );
     }
 
-    // Check if pathOrId is a valid ObjectId - if so, do ID-based upsert
+    // Check if pathOrId is a valid ObjectId - if so, do ID-based update
     if (Types.ObjectId.isValid(pathOrId) && pathOrId.length === 24) {
-      // ID-based upsert (auto-save flow for drafts)
-      // Note: isSaved is NOT set here - drafts remain isSaved: false
       const now = new Date();
 
       // Build $set object - only include name if title is explicitly provided
@@ -306,6 +304,48 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         setFields.name = body.title || "Untitled";
       }
 
+      // If this is an explicit overwrite (e.g., conflict resolution), mark as saved
+      // and don't use upsert - fail if the target doesn't exist
+      const isExplicitSave = body.isSaved === true;
+      if (isExplicitSave) {
+        setFields.isSaved = true;
+      }
+
+      if (isExplicitSave) {
+        // Explicit save (conflict resolution overwrite): Don't use upsert
+        // If the target console was deleted, fail rather than create a ghost draft
+        const result = await SavedConsole.findOneAndUpdate(
+          {
+            _id: new Types.ObjectId(pathOrId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          },
+          { $set: setFields },
+          { new: true },
+        );
+
+        if (!result) {
+          return c.json(
+            {
+              success: false,
+              error:
+                "Console no longer exists. It may have been deleted by another user.",
+            },
+            404,
+          );
+        }
+
+        return c.json({
+          success: true,
+          message: "Console saved",
+          console: {
+            id: result._id.toString(),
+            name: result.name,
+          },
+        });
+      }
+
+      // Draft auto-save flow: Use upsert to create if doesn't exist
+      // Note: isSaved is NOT set here - drafts remain isSaved: false
       const result = await SavedConsole.findOneAndUpdate(
         {
           _id: new Types.ObjectId(pathOrId),

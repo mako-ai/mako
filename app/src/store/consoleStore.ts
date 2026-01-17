@@ -226,14 +226,28 @@ export const useConsoleStore = () => {
    * This ensures future saves go to the correct console.
    */
   const replaceTabId = (oldId: string, newId: string) => {
-    // Transfer version manager to new ID
+    // IMPORTANT: Cancel any pending auto-save for newId FIRST.
+    // If the user had the existing console open with unsaved edits, its auto-save
+    // timer would still be running. Without canceling it, the timer would fire
+    // ~2 seconds later and save the OLD content, silently undoing the user's
+    // intentional overwrite. This race condition causes data loss.
+    cancelAutoSave(newId);
+
+    // Clean up version manager for newId if it exists (user had both tabs open)
+    const existingVersionManager = versionManagers.get(newId);
+    if (existingVersionManager) {
+      existingVersionManager.cleanup();
+      versionManagers.delete(newId);
+    }
+
+    // Transfer version manager from oldId to newId
     const versionManager = versionManagers.get(oldId);
     if (versionManager) {
       versionManagers.delete(oldId);
       versionManagers.set(newId, versionManager);
     }
 
-    // Transfer auto-save state to new ID
+    // Transfer auto-save state from oldId to newId
     const timer = draftSaveTimers.get(oldId);
     if (timer) {
       clearTimeout(timer);
