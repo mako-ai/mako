@@ -426,6 +426,7 @@ export const useConsoleStore = () => {
     executeQuery,
     cancelQuery,
     saveConsole,
+    replaceTabId,
     autoSaveConsole: autoSaveConsoleImpl,
     loadConsole: async (id: string, workspaceId: string) => {
       // Check if console is already loaded

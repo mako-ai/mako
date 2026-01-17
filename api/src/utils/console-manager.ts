@@ -333,15 +333,36 @@ export class ConsoleManager {
         );
       }
 
-      // Upsert by ID - simple and predictable
-      // Conflict detection (different console at same path) is handled by the route before calling this
+      // Look up existing console - try by ID first, then by name + folder
+      // The POST route handles conflict detection for new consoles
+      // The path-based PUT route needs the name + folder fallback to update existing consoles
       let savedConsole: ISavedConsole | null = null;
 
       if (options?.id && Types.ObjectId.isValid(options.id)) {
+        // ID-based lookup (used by POST route and conflict resolution)
         savedConsole = await SavedConsole.findOne({
           _id: new Types.ObjectId(options.id),
           workspaceId: new Types.ObjectId(workspaceId),
         });
+      }
+
+      // Fallback: look up by name + folder for path-based PUT requests
+      // Only match saved consoles (isSaved: true), not drafts
+      if (!savedConsole) {
+        const query: any = {
+          name: consoleName,
+          workspaceId: new Types.ObjectId(workspaceId),
+          isSaved: true, // Only match saved consoles, not drafts
+        };
+
+        if (folderId) {
+          query.folderId = new Types.ObjectId(folderId);
+        } else {
+          // For root level consoles, check that folderId is null/undefined
+          query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
+        }
+
+        savedConsole = await SavedConsole.findOne(query);
       }
 
       if (savedConsole) {

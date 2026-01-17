@@ -123,6 +123,7 @@ function Editor() {
     executeQuery,
     cancelQuery,
     saveConsole,
+    replaceTabId,
   } = useConsoleStore();
 
   // Refs for each Console instance
@@ -549,13 +550,17 @@ function Editor() {
       if (result.success) {
         // Update local state to use the existing console's ID since we've taken it over
         const existingId = conflictData.existingId;
+        const oldTabId = pendingSaveData.tabId;
 
-        // Update the tab to reference the existing console ID
-        updateConsoleFilePath(pendingSaveData.tabId, pendingSaveData.path);
-        updateConsoleTitle(pendingSaveData.tabId, pendingSaveData.path);
-        updateConsoleDirty(pendingSaveData.tabId, true);
+        // Replace the tab ID so future saves go to the correct console
+        replaceTabId(oldTabId, existingId);
+
+        // Update the tab properties (now using the new ID)
+        updateConsoleFilePath(existingId, pendingSaveData.path);
+        updateConsoleTitle(existingId, pendingSaveData.path);
+        updateConsoleDirty(existingId, false); // Content was just saved successfully
         updateConsoleSavedDatabase(
-          pendingSaveData.tabId,
+          existingId,
           pendingSaveData.connectionId,
           pendingSaveData.databaseId,
           pendingSaveData.databaseName,
