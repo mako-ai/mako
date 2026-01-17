@@ -525,25 +525,31 @@ function Editor() {
     setConflictDialogOpen(false);
 
     try {
-      // 1. Delete the existing console at this path
       const { apiClient } = await import("../lib/api-client");
-      await apiClient.delete(
-        `/workspaces/${currentWorkspace.id}/consoles/${conflictData.existingId}`,
-      );
 
-      // 2. Save the new console with its ID to this path
-      const result = await saveConsole(
-        currentWorkspace.id,
-        pendingSaveData.tabId,
-        pendingSaveData.content,
-        pendingSaveData.path,
-        pendingSaveData.connectionId,
-        pendingSaveData.databaseName,
-        pendingSaveData.databaseId,
-        true, // is new (POST)
+      // Safe overwrite: Update the existing console in place with new content.
+      // This is atomic - if it fails, the original content is preserved.
+      // We update the existing console rather than delete-then-create to avoid
+      // data loss if the save fails after delete.
+      const result = await apiClient.put<{
+        success: boolean;
+        data?: any;
+        error?: string;
+      }>(
+        `/workspaces/${currentWorkspace.id}/consoles/${conflictData.existingId}`,
+        {
+          content: pendingSaveData.content,
+          connectionId: pendingSaveData.connectionId,
+          databaseName: pendingSaveData.databaseName,
+          databaseId: pendingSaveData.databaseId,
+        },
       );
 
       if (result.success) {
+        // Update local state to use the existing console's ID since we've taken it over
+        const existingId = conflictData.existingId;
+
+        // Update the tab to reference the existing console ID
         updateConsoleFilePath(pendingSaveData.tabId, pendingSaveData.path);
         updateConsoleTitle(pendingSaveData.tabId, pendingSaveData.path);
         updateConsoleDirty(pendingSaveData.tabId, true);
@@ -554,17 +560,13 @@ function Editor() {
           pendingSaveData.databaseName,
         );
 
-        // Update console tree - remove old, add new
+        // Update console tree
         const { useConsoleTreeStore } = await import(
           "../store/consoleTreeStore"
         );
         useConsoleTreeStore
           .getState()
-          .addConsole(
-            currentWorkspace.id,
-            pendingSaveData.path,
-            pendingSaveData.tabId,
-          );
+          .addConsole(currentWorkspace.id, pendingSaveData.path, existingId);
 
         setSnackbarMessage(
           `Console overwritten at '${pendingSaveData.path}.js'`,
@@ -572,7 +574,7 @@ function Editor() {
         setSnackbarOpen(true);
 
         trackEvent("console_saved", {
-          console_id: pendingSaveData.tabId,
+          console_id: existingId,
           is_new: false,
           was_overwrite: true,
         });

@@ -633,9 +633,15 @@ export class ConsoleManager {
 
       // Get folder ID if there's a folder path
       let folderId: string | undefined;
-      if (parts.length > 1) {
+      const hasFolder = parts.length > 1;
+      if (hasFolder) {
         const folderParts = parts.slice(0, -1);
         folderId = await this.findFolderByPath(folderParts, workspaceId);
+
+        // If path specifies a folder but it doesn't exist, no console can exist at this path
+        if (!folderId) {
+          return null;
+        }
       }
 
       // Build query for console with same name in same folder (or root if no folder)
@@ -648,7 +654,7 @@ export class ConsoleManager {
       if (folderId) {
         query.folderId = new Types.ObjectId(folderId);
       } else {
-        // For root level consoles, check that folderId is null/undefined
+        // For root level consoles (hasFolder is false), check that folderId is null/undefined
         query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
       }
 
