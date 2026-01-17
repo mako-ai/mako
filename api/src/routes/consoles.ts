@@ -286,27 +286,39 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // ID-based upsert (auto-save flow for drafts)
       // Note: isSaved is NOT set here - drafts remain isSaved: false
       const now = new Date();
+
+      // Build $set object - only include name if title is explicitly provided
+      // This prevents overwriting the name to "Untitled" when only updating content
+      const setFields: Record<string, any> = {
+        code: body.content,
+        connectionId: body.connectionId
+          ? new Types.ObjectId(body.connectionId)
+          : undefined,
+        databaseName: body.databaseName,
+        databaseId: body.databaseId,
+        updatedAt: now,
+      };
+
+      // Only update name if explicitly provided
+      if (body.title !== undefined) {
+        setFields.name = body.title || "Untitled";
+      }
+
       const result = await SavedConsole.findOneAndUpdate(
-        { _id: new Types.ObjectId(pathOrId) },
         {
-          $set: {
-            code: body.content,
-            name: body.title || "Untitled",
-            connectionId: body.connectionId
-              ? new Types.ObjectId(body.connectionId)
-              : undefined,
-            databaseName: body.databaseName,
-            databaseId: body.databaseId,
-            updatedAt: now,
-          },
+          _id: new Types.ObjectId(pathOrId),
+          workspaceId: new Types.ObjectId(workspaceId), // Ensure user can only modify consoles in their workspace
+        },
+        {
+          $set: setFields,
           $setOnInsert: {
-            workspaceId: new Types.ObjectId(workspaceId),
             createdBy: user.id,
             language: "sql" as const,
             isPrivate: false,
             isSaved: false, // Draft consoles are not saved to explorer
             executionCount: 0,
             createdAt: now,
+            name: "Untitled", // Default name only for new documents
           },
         },
         { upsert: true, new: true },

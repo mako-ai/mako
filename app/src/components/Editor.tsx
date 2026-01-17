@@ -398,6 +398,7 @@ function Editor() {
     tabId: string,
     contentToSave: string,
     currentPath?: string,
+    forceNew?: boolean, // Force POST (create) even when path is provided - used by conflict resolution "Save as New"
   ): Promise<boolean> => {
     if (!currentWorkspace) {
       setErrorMessage("No workspace selected");
@@ -409,7 +410,7 @@ function Editor() {
     let success = false;
     try {
       let savePath = currentPath;
-      let isNew = false;
+      let isNew = forceNew || false;
       if (!savePath) {
         const fileName = prompt(
           "Enter a file name to save (e.g., myFolder/myConsole). .js will be appended if absent.",
@@ -606,11 +607,12 @@ function Editor() {
         const newPath = newFileName.endsWith(".js")
           ? newFileName.slice(0, -3)
           : newFileName;
-        // Retry save with new path
+        // Retry save with new path - force POST to create at the new location
         handleConsoleSave(
           pendingSaveData.tabId,
           pendingSaveData.content,
           newPath,
+          true, // forceNew: create new console at the new path
         );
       }
     }
