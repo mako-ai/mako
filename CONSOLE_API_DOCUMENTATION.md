@@ -1,6 +1,6 @@
 # Console API Documentation
 
-This document describes how to use the RevOps Console API to execute saved consoles remotely.
+This document describes how to use the Mako Console API to execute saved consoles remotely.
 
 ## API Endpoints
 
@@ -140,12 +140,12 @@ Common error codes:
 ```bash
 # List all consoles
 curl -H "Authorization: Bearer revops_YOUR_API_KEY" \
-  https://your-revops-instance.com/api/workspaces/WORKSPACE_ID/consoles/list
+  https://your-mako-instance.com/api/workspaces/WORKSPACE_ID/consoles/list
 
 # Execute a console
 curl -X POST \
   -H "Authorization: Bearer revops_YOUR_API_KEY" \
-  https://your-revops-instance.com/api/workspaces/WORKSPACE_ID/consoles/CONSOLE_ID/execute
+  https://your-mako-instance.com/api/workspaces/WORKSPACE_ID/consoles/CONSOLE_ID/execute
 ```
 
 ### JavaScript Example
@@ -158,7 +158,7 @@ const CONSOLE_ID = "your_console_id";
 // Execute a console
 async function executeConsole() {
   const response = await fetch(
-    `https://your-revops-instance.com/api/workspaces/${WORKSPACE_ID}/consoles/${CONSOLE_ID}/execute`,
+    `https://your-mako-instance.com/api/workspaces/${WORKSPACE_ID}/consoles/${CONSOLE_ID}/execute`,
     {
       method: "POST",
       headers: {
@@ -183,7 +183,7 @@ CONSOLE_ID = 'your_console_id'
 
 # Execute a console
 response = requests.post(
-    f'https://your-revops-instance.com/api/workspaces/{WORKSPACE_ID}/consoles/{CONSOLE_ID}/execute',
+    f'https://your-mako-instance.com/api/workspaces/{WORKSPACE_ID}/consoles/{CONSOLE_ID}/execute',
     headers={
         'Authorization': f'Bearer {API_KEY}'
     }

@@ -1,6 +1,6 @@
-# RevOps Website
+# Mako Website
 
-Public-facing marketing website for the RevOps data analytics platform.
+Public-facing marketing website for the Mako AI-native SQL client.
 
 ## Tech Stack
 
@@ -43,7 +43,7 @@ website/
 
 ### Quick Deploy
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/yourusername/revops)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/mako-ai/mono)
 
 ### Manual Deploy
 
@@ -76,7 +76,7 @@ In `app/page.tsx`, update the app links from `http://localhost:5173` to your pro
 // Find and replace
 href = "http://localhost:5173";
 // with
-href = "https://app.yourrevopsdomain.com";
+href = "https://app.mako.ai";
 ```
 
 ### Branding

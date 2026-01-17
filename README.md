@@ -1,23 +1,23 @@
 # Mako 🦈
 
-**The AI Data Analyst for Modern RevOps.**
+**The AI-native SQL Client.**
 
-> **The Cursor for Data.** Build your data warehouse and analyze it with AI.
+> **The Cursor for Data.** Connect to any database and query with AI assistance.
 
-Stop wrestling with SQL and broken spreadsheets. Unify your revenue stack and ask questions in plain English to get instant answers.
+Stop wrestling with complex SQL and slow, bloated database tools. Write queries in plain English and get instant, accurate results.
 
 ![Mako App Interface](./website/public/app-screenshot.png)
 
 ## 🚀 Why Mako?
 
-We replaced the complex web of data tools with a single, intelligent platform.
+A modern SQL client built for the AI era, replacing slow desktop tools with a fast, collaborative, AI-powered experience.
 
-- **🔄 Zero-Config Data Pipelines**: Connect Stripe, PostHog, and CRMs in seconds. We handle the schema, syncing, and maintenance.
-  - _Replaces: Airbyte, Fivetran, Manual Scripts_
-- **💬 Conversational Intelligence**: Your personal data analyst, available 24/7. Ask complex questions and get accurate charts instantly.
-  - _Replaces: DataGrip, Tableau, SQL_
-- **🏢 Turn Insights into Action**: Share live dashboards, build reports together, and align your team on the metrics that matter.
-  - _Replaces: Slack Screenshots, Excel, Emails_
+- **✨ AI Query Generation**: Write queries in natural language. Our schema-aware AI generates optimized SQL instantly.
+  - _Replaces: DataGrip, DBeaver, Postico_
+- **👥 Team Collaboration**: Share connections, version-control queries, and work together in real-time.
+  - _Replaces: Passing credentials around, lost SQL files_
+- **⚡ Blazing Fast**: No Java or Electron bloat. Opens instantly in your browser and runs smooth.
+  - _Replaces: Slow desktop database tools_
 
 ## 🔌 Integrations
 

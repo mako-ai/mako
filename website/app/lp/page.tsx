@@ -5,10 +5,10 @@ export default function LandingPagesIndex() {
   const designs = [
     {
       slug: "revops",
-      name: "RevOps Platform",
+      name: "Legacy RevOps",
       description:
-        "The original RevOps-focused landing page with data pipelines and revenue operations positioning.",
-      tags: ["RevOps", "Original", "Data Pipelines"],
+        "Legacy landing page with RevOps positioning (deprecated). Kept for reference only.",
+      tags: ["Legacy", "Deprecated", "RevOps"],
     },
     {
       slug: "minimal-dark",
@@ -152,7 +152,7 @@ export default function LandingPagesIndex() {
                 <li>
                   • External connector integrations (Stripe, PostHog, etc.)
                 </li>
-                <li>• &quot;RevOps platform&quot; positioning</li>
+                <li>• Legacy &quot;RevOps platform&quot; positioning</li>
                 <li>• Data sync and pipeline features</li>
               </ul>
             </div>

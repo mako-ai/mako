@@ -16,9 +16,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Mako - Agentic RevOps Platform",
+  title: "Mako - AI-native SQL Client",
   description:
-    "Connect all of your data sources, query with natural language, and get insights that drive product and growth.",
+    "The modern SQL client with AI query generation. Connect to any database, write queries in natural language, and collaborate with your team.",
 };
 
 export default function RootLayout({

@@ -1,9 +1,9 @@
 ---
 alwaysApply: true
-description: Ultra-condensed context for RevOps (99% signal)
+description: Ultra-condensed context for Mako (99% signal)
 ---
 
-# RevOps Quick Context
+# Mako Quick Context
 
 - API entry: [api/src/index.ts](mdc:api/src/index.ts); default port `WEB_API_PORT=8080`.
 - App entry: [app/src/main.tsx](mdc:app/src/main.tsx); Vite dev on 5173; proxy `/api` -> `http://localhost:8080` ([app/vite.config.ts](mdc:app/vite.config.ts)).
