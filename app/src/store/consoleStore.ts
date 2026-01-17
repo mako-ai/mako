@@ -221,6 +221,18 @@ export const useConsoleStore = () => {
   };
 
   /**
+   * Update initialContent to match current content after a successful save.
+   * This resets the "unsaved changes" baseline so hasUnsavedChanges() returns
+   * false until the user makes new edits.
+   */
+  const updateConsoleInitialContent = (id: string, initialContent: string) => {
+    dispatch({
+      type: "UPDATE_CONSOLE_INITIAL_CONTENT",
+      payload: { id, initialContent },
+    });
+  };
+
+  /**
    * Replace a tab's ID with a new ID.
    * Used when overwriting an existing console during conflict resolution.
    * This ensures future saves go to the correct console.
@@ -451,6 +463,7 @@ export const useConsoleStore = () => {
     updateConsoleConnection,
     updateConsoleDatabase,
     updateConsoleSavedDatabase,
+    updateConsoleInitialContent,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,

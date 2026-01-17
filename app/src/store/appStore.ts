@@ -183,6 +183,10 @@ export type Action =
       payload: { id: string; filePath: string };
     }
   | {
+      type: "UPDATE_CONSOLE_INITIAL_CONTENT";
+      payload: { id: string; initialContent: string };
+    }
+  | {
       type: "REPLACE_TAB_ID";
       payload: { oldId: string; newId: string };
     }
@@ -335,6 +339,11 @@ export const reducer = (state: GlobalState, action: Action): void => {
     case "UPDATE_CONSOLE_FILE_PATH": {
       const tab = state.consoles.tabs[action.payload.id];
       if (tab) tab.filePath = action.payload.filePath;
+      break;
+    }
+    case "UPDATE_CONSOLE_INITIAL_CONTENT": {
+      const tab = state.consoles.tabs[action.payload.id];
+      if (tab) tab.initialContent = action.payload.initialContent;
       break;
     }
     case "REPLACE_TAB_ID": {

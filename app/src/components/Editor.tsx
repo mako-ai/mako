@@ -116,6 +116,7 @@ function Editor() {
     updateConsoleConnection,
     updateConsoleDatabase,
     updateConsoleSavedDatabase,
+    updateConsoleInitialContent,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
@@ -496,6 +497,10 @@ function Editor() {
           databaseName,
         );
 
+        // Update initialContent to match what was saved, so hasUnsavedChanges()
+        // returns false until the user makes new edits
+        updateConsoleInitialContent(idToUpdate, contentToSave);
+
         // Track console save
         trackEvent("console_saved", {
           console_id: actualId,
@@ -602,6 +607,10 @@ function Editor() {
           pendingSaveData.databaseId,
           pendingSaveData.databaseName,
         );
+
+        // Update initialContent to match what was saved, so hasUnsavedChanges()
+        // returns false until the user makes new edits
+        updateConsoleInitialContent(existingId, pendingSaveData.content);
 
         // Update console tree
         const { useConsoleTreeStore } = await import(
