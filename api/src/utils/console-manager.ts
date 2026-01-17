@@ -645,10 +645,11 @@ export class ConsoleManager {
       }
 
       // Build query for console with same name in same folder (or root if no folder)
-      // Only match consoles that have been explicitly saved (have a folderId or are at root with no folderId)
+      // Only match explicitly saved consoles (isSaved: true) - not drafts
       const query: any = {
         name: consoleName,
         workspaceId: new Types.ObjectId(workspaceId),
+        isSaved: true, // Only match saved consoles, not drafts
       };
 
       if (folderId) {

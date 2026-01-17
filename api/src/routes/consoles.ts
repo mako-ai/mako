@@ -174,31 +174,38 @@ consoleRoutes.post("/", async (c: Context) => {
       workspaceId,
     );
 
-    // If console exists and has a different ID, return conflict with existing content
+    // If console exists and has a different ID, check for conflict
     // Skip conflict if existing console only has placeholder content (loading...)
     const hasRealContent =
       existingConsole?.code &&
       existingConsole.code.trim() !== "" &&
       existingConsole.code !== "loading...";
 
-    if (
-      existingConsole &&
-      existingConsole._id.toString() !== id &&
-      hasRealContent
-    ) {
-      return c.json(
-        {
-          success: false,
-          error: "conflict",
-          conflict: {
-            existingId: existingConsole._id.toString(),
-            existingContent: existingConsole.code,
-            existingName: existingConsole.name,
-            path: consolePath,
+    // Determine which ID to use for saving
+    let consoleIdToUse = id;
+
+    if (existingConsole && existingConsole._id.toString() !== id) {
+      if (hasRealContent) {
+        // Real conflict - return conflict response for user to resolve
+        return c.json(
+          {
+            success: false,
+            error: "conflict",
+            conflict: {
+              existingId: existingConsole._id.toString(),
+              existingContent: existingConsole.code,
+              existingName: existingConsole.name,
+              existingLanguage: existingConsole.language,
+              path: consolePath,
+            },
           },
-        },
-        409,
-      );
+          409,
+        );
+      } else {
+        // Existing console has placeholder content - overwrite it by using its ID
+        // This prevents creating a duplicate at the same path
+        consoleIdToUse = existingConsole._id.toString();
+      }
     }
 
     const savedConsole = await consoleManager.saveConsole(
@@ -210,7 +217,7 @@ consoleRoutes.post("/", async (c: Context) => {
       databaseName,
       databaseId,
       {
-        id, // Pass client-provided ID
+        id: consoleIdToUse, // Use existing console ID if overwriting placeholder, otherwise client ID
         folderId,
         description,
         language,

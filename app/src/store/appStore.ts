@@ -182,6 +182,10 @@ export type Action =
       type: "UPDATE_CONSOLE_FILE_PATH";
       payload: { id: string; filePath: string };
     }
+  | {
+      type: "REPLACE_TAB_ID";
+      payload: { oldId: string; newId: string };
+    }
   | { type: "ADD_MESSAGE"; payload: { chatId: string; message: Message } }
   | {
       type: "UPDATE_MESSAGE_PARTIAL";
@@ -331,6 +335,21 @@ export const reducer = (state: GlobalState, action: Action): void => {
     case "UPDATE_CONSOLE_FILE_PATH": {
       const tab = state.consoles.tabs[action.payload.id];
       if (tab) tab.filePath = action.payload.filePath;
+      break;
+    }
+    case "REPLACE_TAB_ID": {
+      const { oldId, newId } = action.payload;
+      const tab = state.consoles.tabs[oldId];
+      if (tab) {
+        // Create new entry with new ID, preserving all other properties
+        state.consoles.tabs[newId] = { ...tab, id: newId };
+        // Remove old entry
+        delete state.consoles.tabs[oldId];
+        // Update active tab ID if needed
+        if (state.consoles.activeTabId === oldId) {
+          state.consoles.activeTabId = newId;
+        }
+      }
       break;
     }
     case "CREATE_CHAT": {

@@ -220,6 +220,38 @@ export const useConsoleStore = () => {
     } as any);
   };
 
+  /**
+   * Replace a tab's ID with a new ID.
+   * Used when overwriting an existing console during conflict resolution.
+   * This ensures future saves go to the correct console.
+   */
+  const replaceTabId = (oldId: string, newId: string) => {
+    // Transfer version manager to new ID
+    const versionManager = versionManagers.get(oldId);
+    if (versionManager) {
+      versionManagers.delete(oldId);
+      versionManagers.set(newId, versionManager);
+    }
+
+    // Transfer auto-save state to new ID
+    const timer = draftSaveTimers.get(oldId);
+    if (timer) {
+      clearTimeout(timer);
+      draftSaveTimers.delete(oldId);
+    }
+    const contentHash = lastSavedContentHash.get(oldId);
+    if (contentHash) {
+      lastSavedContentHash.delete(oldId);
+      lastSavedContentHash.set(newId, contentHash);
+    }
+
+    // Update the store
+    dispatch({
+      type: "REPLACE_TAB_ID",
+      payload: { oldId, newId },
+    });
+  };
+
   const clearAllConsoles = () => {
     consoleTabs.forEach(tab => removeConsoleTab(tab.id));
   };
@@ -301,6 +333,7 @@ export const useConsoleStore = () => {
       existingId: string;
       existingContent: string;
       existingName: string;
+      existingLanguage?: "sql" | "javascript" | "mongodb";
       path: string;
     };
   }> => {

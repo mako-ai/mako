@@ -22,6 +22,7 @@ export interface ConflictData {
   existingId: string;
   existingContent: string;
   existingName: string;
+  existingLanguage?: "sql" | "javascript" | "mongodb";
   path: string;
 }
 
@@ -134,7 +135,11 @@ const ConflictResolutionDialog: React.FC<ConflictResolutionDialogProps> = ({
           <DiffEditor
             height="100%"
             theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
-            language="sql"
+            language={
+              conflict.existingLanguage === "mongodb"
+                ? "javascript"
+                : conflict.existingLanguage || "sql"
+            }
             original={conflict.existingContent}
             modified={newContent}
             options={{
