@@ -420,8 +420,27 @@ export const useConsoleStore = () => {
     }
   };
 
+  /**
+   * Check if a tab has unsaved local changes.
+   * Returns true if the tab exists and has content different from initialContent.
+   */
+  const hasUnsavedChanges = (tabId: string): boolean => {
+    const tab = tabs[tabId];
+    if (!tab) return false;
+    // Compare current content with initial content (content when tab was opened)
+    return tab.content !== tab.initialContent;
+  };
+
+  /**
+   * Get a tab by ID. Returns undefined if the tab doesn't exist.
+   */
+  const getTabById = (tabId: string): ConsoleTab | undefined => {
+    return tabs[tabId];
+  };
+
   return {
     consoleTabs,
+    tabs, // Expose raw tabs object for direct ID-based access
     activeConsoleId: activeTabId,
     addConsoleTab,
     findTabByKind,
@@ -441,6 +460,8 @@ export const useConsoleStore = () => {
     cancelQuery,
     saveConsole,
     replaceTabId,
+    hasUnsavedChanges,
+    getTabById,
     autoSaveConsole: autoSaveConsoleImpl,
     loadConsole: async (id: string, workspaceId: string) => {
       // Check if console is already loaded

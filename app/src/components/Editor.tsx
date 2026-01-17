@@ -124,6 +124,8 @@ function Editor() {
     cancelQuery,
     saveConsole,
     replaceTabId,
+    hasUnsavedChanges,
+    getTabById,
   } = useConsoleStore();
 
   // Refs for each Console instance
@@ -538,6 +540,27 @@ function Editor() {
   const handleConflictOverwrite = async () => {
     if (!pendingSaveData || !currentWorkspace || !conflictData) return;
 
+    const existingId = conflictData.existingId;
+
+    // Check if the target console has an open tab with unsaved local changes.
+    // If so, warn the user - their local edits in that tab will be lost because
+    // we're replacing the server content with the draft's content.
+    const existingTab = getTabById(existingId);
+    if (existingTab && hasUnsavedChanges(existingId)) {
+      const confirmed = window.confirm(
+        `The file "${existingTab.title || conflictData.existingName}" is open in another tab with unsaved changes.\n\n` +
+          `If you proceed, those unsaved changes will be lost.\n\n` +
+          `Do you want to continue with the overwrite?`,
+      );
+      if (!confirmed) {
+        // User cancelled - keep the conflict dialog open
+        return;
+      }
+      // User confirmed - close the existing tab first to avoid silent data loss
+      // This is explicit rather than letting replaceTabId silently delete it
+      removeConsoleTab(existingId);
+    }
+
     setIsSaving(true);
     setConflictDialogOpen(false);
 
@@ -554,20 +577,16 @@ function Editor() {
         success: boolean;
         data?: any;
         error?: string;
-      }>(
-        `/workspaces/${currentWorkspace.id}/consoles/${conflictData.existingId}`,
-        {
-          content: pendingSaveData.content,
-          connectionId: pendingSaveData.connectionId,
-          databaseName: pendingSaveData.databaseName,
-          databaseId: pendingSaveData.databaseId,
-          isSaved: true, // Explicit save: fail if target doesn't exist (race condition protection)
-        },
-      );
+      }>(`/workspaces/${currentWorkspace.id}/consoles/${existingId}`, {
+        content: pendingSaveData.content,
+        connectionId: pendingSaveData.connectionId,
+        databaseName: pendingSaveData.databaseName,
+        databaseId: pendingSaveData.databaseId,
+        isSaved: true, // Explicit save: fail if target doesn't exist (race condition protection)
+      });
 
       if (result.success) {
         // Update local state to use the existing console's ID since we've taken it over
-        const existingId = conflictData.existingId;
         const oldTabId = pendingSaveData.tabId;
 
         // Replace the tab ID so future saves go to the correct console

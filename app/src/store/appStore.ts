@@ -341,12 +341,16 @@ export const reducer = (state: GlobalState, action: Action): void => {
       const { oldId, newId } = action.payload;
       const tab = state.consoles.tabs[oldId];
       if (tab) {
-        // Check if newId already has an open tab (e.g., user has both draft and saved
-        // console open, then overwrites the saved console with the draft's content).
-        // In this case, close the existing tab first since its content has already
-        // been overwritten on the server by the conflict resolution.
+        // If newId already has an open tab, close it. This happens when:
+        // - User has both a draft (oldId) and saved console (newId) open
+        // - User overwrites the saved console with the draft's content
+        // - The draft tab takes over the saved console's ID
+        //
+        // IMPORTANT: Callers should check for unsaved changes in the existing tab
+        // BEFORE dispatching this action. Use hasUnsavedChanges() from consoleStore
+        // and handle appropriately (e.g., prompt user to confirm).
+        // This reducer does NOT check for unsaved changes - it just closes the tab.
         if (state.consoles.tabs[newId]) {
-          // Remove the existing tab at newId to prevent silent data loss
           delete state.consoles.tabs[newId];
         }
         // Create new entry with new ID, preserving all other properties
