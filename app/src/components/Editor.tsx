@@ -558,7 +558,7 @@ function Editor() {
         // Update the tab properties (now using the new ID)
         updateConsoleFilePath(existingId, pendingSaveData.path);
         updateConsoleTitle(existingId, pendingSaveData.path);
-        updateConsoleDirty(existingId, false); // Content was just saved successfully
+        updateConsoleDirty(existingId, true); // Mark as persistent (not replaceable) after successful save
         updateConsoleSavedDatabase(
           existingId,
           pendingSaveData.connectionId,
