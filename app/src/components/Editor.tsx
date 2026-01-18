@@ -392,10 +392,16 @@ function Editor() {
     setIsSaving(true);
     let success = false;
     try {
+      // Get the current tab info (needed for default filename and connection info)
+      const currentTab = tabs[tabId];
+
       let savePath = currentPath;
       if (!savePath) {
+        // Pre-fill with the tab's title (e.g., agent-generated title)
+        const defaultName = currentTab?.title || "";
         const fileName = prompt(
           "Enter a file name to save (e.g., myFolder/myConsole). .js will be appended if absent.",
+          defaultName,
         );
         if (!fileName) {
           setIsSaving(false);
@@ -405,7 +411,6 @@ function Editor() {
       }
 
       // Get the current connection and database info for the tab
-      const currentTab = tabs[tabId];
       const connectionId = currentTab?.connectionId;
       const databaseId = currentTab?.databaseId;
       const databaseName = currentTab?.databaseName;
