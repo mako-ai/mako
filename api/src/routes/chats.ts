@@ -6,19 +6,26 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { getConsolesByIds } from "../services/agent-thread.service";
 
 /**
- * Extract unique console IDs from modify_console tool calls in chat messages.
+ * Extract unique console IDs from modify_console and create_console tool calls in chat messages.
  * This is used to determine which consoles should be restored when opening a chat.
  */
 function extractModifiedConsoleIds(
-  messages: Array<{ toolCalls?: Array<{ toolName: string; input?: any }> }>,
+  messages: Array<{
+    toolCalls?: Array<{ toolName: string; input?: any; result?: any }>;
+  }>,
 ): string[] {
   const consoleIds = new Set<string>();
 
   for (const msg of messages) {
     if (!msg.toolCalls) continue;
     for (const tc of msg.toolCalls) {
+      // modify_console: consoleId is in the input
       if (tc.toolName === "modify_console" && tc.input?.consoleId) {
         consoleIds.add(tc.input.consoleId);
+      }
+      // create_console: consoleId is in the result (output)
+      if (tc.toolName === "create_console" && tc.result?.consoleId) {
+        consoleIds.add(tc.result.consoleId);
       }
     }
   }

@@ -338,7 +338,6 @@ function DatabaseExplorer({
     const tabId = addConsoleTab({
       title: `Drop ${collectionName}`,
       content: command,
-      initialContent: command,
       databaseId,
     });
     setActiveConsole(tabId);

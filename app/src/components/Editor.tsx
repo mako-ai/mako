@@ -35,11 +35,12 @@ import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
 import { useConsoleStore } from "../store/consoleStore";
-import { useAppStore, useAppDispatch } from "../store";
+import { useAppStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
+import { computeConsoleStateHash } from "../utils/stateHash";
 
 interface QueryResult {
   results: any[];
@@ -60,7 +61,6 @@ const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
 
 function Editor() {
   const { currentWorkspace } = useWorkspace();
-  const dispatch = useAppDispatch();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
   >({});
@@ -110,23 +110,21 @@ function Editor() {
   // Tab store
   const {
     consoleTabs,
+    tabs,
     activeConsoleId,
     removeConsoleTab,
     updateConsoleContent,
     updateConsoleConnection,
     updateConsoleDatabase,
-    updateConsoleSavedDatabase,
-    updateConsoleInitialContent,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
+    updateSavedState,
     setActiveConsole,
     executeQuery,
     cancelQuery,
     saveConsole,
-    replaceTabId,
-    hasUnsavedChanges,
-    getTabById,
+    deleteConsole,
   } = useConsoleStore();
 
   // Refs for each Console instance
@@ -154,10 +152,7 @@ function Editor() {
       setActiveEditorContent(content);
 
       // Focus the Monaco editor in the active console
-      // This ensures CMD+Enter executes the correct console after tab switching
-      // Use requestAnimationFrame to ensure the tab visibility CSS has been applied
       requestAnimationFrame(() => {
-        // Double RAF to ensure layout is complete
         requestAnimationFrame(() => {
           consoleRef.focus();
         });
@@ -204,42 +199,36 @@ function Editor() {
     loader.init().then(monaco => setMonacoInstance(monaco));
   }, []);
 
-  // Dynamic getters for unified SQL autocomplete (reads from active console)
-  // These getters read directly from the store at call time to avoid stale closures.
-  // This is critical for autocomplete to work correctly when switching consoles.
+  // Dynamic getters for unified SQL autocomplete
   const getWorkspaceId = useCallback(
     () => currentWorkspace?.id,
     [currentWorkspace?.id],
   );
 
-  // Use a ref to track availableDatabases so getConnectionType can access fresh values
   const availableDatabasesRef = useRef(availableDatabases);
   useEffect(() => {
     availableDatabasesRef.current = availableDatabases;
   }, [availableDatabases]);
 
   const getConnectionId = useCallback(() => {
-    // Read fresh state from the store at call time (not from closed-over React state)
     const state = useAppStore.getState();
     const tabs = state.consoles.tabs;
     const activeTabId = state.consoles.activeTabId;
     const activeTab = activeTabId ? tabs[activeTabId] : null;
     return activeTab?.connectionId;
-  }, []); // Empty deps - always reads fresh from store
+  }, []);
 
   const getConnectionType = useCallback(() => {
-    // Read fresh state from the store at call time
     const state = useAppStore.getState();
     const tabs = state.consoles.tabs;
     const activeTabId = state.consoles.activeTabId;
     const activeTab = activeTabId ? tabs[activeTabId] : null;
     const connectionId = activeTab?.connectionId;
-    // Use ref to get current availableDatabases without causing effect re-runs
     const connection = availableDatabasesRef.current.find(
       db => db.id === connectionId,
     );
     return connection?.type;
-  }, []); // Empty deps - reads fresh from store and ref
+  }, []);
 
   // Unified SQL autocomplete - single global provider for all consoles
   useSqlAutocomplete({
@@ -258,17 +247,12 @@ function Editor() {
       }>;
 
       const { consoleId: eventConsoleId, modification } = customEvent.detail;
-
-      // Prefer the explicitly provided consoleId from the event (e.g., from create_console),
-      // only fall back to activeConsoleId if no explicit ID was provided
       const targetConsoleId = eventConsoleId || activeConsoleId;
 
-      // Function to show diff with retry
       const showDiffWithRetry = (retries = 10, delay = 100) => {
         if (consoleRefs.current[targetConsoleId]?.current) {
           consoleRefs.current[targetConsoleId].current.showDiff(modification);
         } else if (retries > 0) {
-          // Keep retrying silently
           setTimeout(() => {
             showDiffWithRetry(retries - 1, delay);
           }, delay);
@@ -282,7 +266,6 @@ function Editor() {
         }
       };
 
-      // Start the retry mechanism
       showDiffWithRetry();
     };
 
@@ -309,7 +292,6 @@ function Editor() {
     useConsoleStore.getState().addConsoleTab({
       title: "New Console",
       content: "",
-      initialContent: "",
     });
   };
 
@@ -336,7 +318,6 @@ function Editor() {
       return;
     }
 
-    // Set up abort controller and execution ID
     abortControllerRef.current = new AbortController();
     executionIdRef.current = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -356,7 +337,6 @@ function Editor() {
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
-        // Track successful query execution
         trackEvent("query_executed", {
           connection_id: connectionId,
           success: true,
@@ -402,7 +382,6 @@ function Editor() {
     tabId: string,
     contentToSave: string,
     currentPath?: string,
-    forceNew?: boolean, // Force POST (create) even when path is provided - used by conflict resolution "Save as New"
   ): Promise<boolean> => {
     if (!currentWorkspace) {
       setErrorMessage("No workspace selected");
@@ -414,7 +393,6 @@ function Editor() {
     let success = false;
     try {
       let savePath = currentPath;
-      let isNew = forceNew || false;
       if (!savePath) {
         const fileName = prompt(
           "Enter a file name to save (e.g., myFolder/myConsole). .js will be appended if absent.",
@@ -424,11 +402,10 @@ function Editor() {
           return false;
         }
         savePath = fileName.endsWith(".js") ? fileName.slice(0, -3) : fileName;
-        isNew = true;
       }
 
       // Get the current connection and database info for the tab
-      const currentTab = consoleTabs.find(tab => tab.id === tabId);
+      const currentTab = tabs[tabId];
       const connectionId = currentTab?.connectionId;
       const databaseId = currentTab?.databaseId;
       const databaseName = currentTab?.databaseName;
@@ -441,7 +418,6 @@ function Editor() {
         connectionId,
         databaseName,
         databaseId,
-        isNew,
       );
 
       // Handle conflict - show resolution dialog
@@ -461,73 +437,40 @@ function Editor() {
       }
 
       if (result.success) {
-        // Determine which ID to use - server may return a different ID if it
-        // overwrote a placeholder console at the same path
-        const actualId = result.id || tabId;
-        const idChanged = actualId !== tabId;
+        // Update file path and title
+        updateConsoleFilePath(tabId, savePath);
+        updateConsoleTitle(tabId, savePath);
+        updateConsoleDirty(tabId, true);
 
-        // If the server used a different ID (e.g., overwrote a placeholder),
-        // update our tab to use the server's ID for consistency
-        if (idChanged && isNew) {
-          replaceTabId(tabId, actualId);
-        }
-
-        // Use the actual ID for all state updates
-        const idToUpdate = idChanged && isNew ? actualId : tabId;
-
-        // Update file path and title for new files (POST)
-        if (isNew && savePath) {
-          updateConsoleFilePath(idToUpdate, savePath);
-        }
-
-        // Keep the full path as the title to distinguish between files with same name
-        if (savePath) {
-          updateConsoleTitle(idToUpdate, savePath);
-        }
-
-        // Mark tab as dirty since it's now saved and should be persistent
-        updateConsoleDirty(idToUpdate, true);
-
-        // Update the saved database values to reflect what was just persisted
-        // This is used for dirty state tracking in the Console component
-        updateConsoleSavedDatabase(
-          idToUpdate,
+        // Update saved state (isSaved=true, new savedStateHash)
+        const newHash = computeConsoleStateHash(
+          contentToSave,
           connectionId,
           databaseId,
           databaseName,
         );
+        updateSavedState(tabId, true, newHash);
 
-        // Update initialContent to match what was saved, so hasUnsavedChanges()
-        // returns false until the user makes new edits
-        updateConsoleInitialContent(idToUpdate, contentToSave);
-
-        // Track console save
         trackEvent("console_saved", {
-          console_id: actualId,
-          is_new: isNew,
-          id_changed: idChanged,
+          console_id: tabId,
+          is_new: !currentPath,
         });
 
         setSnackbarMessage(
-          `Console saved ${isNew ? "as" : "to"} '${savePath}.js'`,
+          `Console saved ${!currentPath ? "as" : "to"} '${savePath}.js'`,
         );
         setSnackbarOpen(true);
         success = true;
 
-        // Just add the console to the tree - no refresh needed
-        if (isNew) {
+        // Add the console to the tree
+        if (!currentPath) {
           const { useConsoleTreeStore } = await import(
             "../store/consoleTreeStore"
           );
-          // Use the actual ID returned by the server (may differ from tabId
-          // if a placeholder console was overwritten at the same path)
           useConsoleTreeStore
             .getState()
-            .addConsole(currentWorkspace.id, savePath!, actualId);
+            .addConsole(currentWorkspace.id, savePath!, tabId);
         }
-
-        // Refresh the console tree directly via store
-        // No blocking refresh here; tree already updated optimistically
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
@@ -547,22 +490,30 @@ function Editor() {
 
     const existingId = conflictData.existingId;
 
-    // Check if the target console has an open tab with unsaved local changes.
-    // If so, warn the user - their local edits in that tab will be lost because
-    // we're replacing the server content with the draft's content.
-    const existingTab = getTabById(existingId);
-    if (existingTab && hasUnsavedChanges(existingId)) {
-      const confirmed = window.confirm(
-        `The file "${existingTab.title || conflictData.existingName}" is open in another tab with unsaved changes.\n\n` +
-          `If you proceed, those unsaved changes will be lost.\n\n` +
-          `Do you want to continue with the overwrite?`,
+    // Check if the target console has an open tab
+    const existingTab = tabs[existingId];
+    if (existingTab) {
+      // Check if the existing tab has unsaved changes by comparing current state to saved state
+      const existingHash = existingTab.savedStateHash;
+      const currentHash = computeConsoleStateHash(
+        existingTab.content,
+        existingTab.connectionId,
+        existingTab.databaseId,
+        existingTab.databaseName,
       );
-      if (!confirmed) {
-        // User cancelled - keep the conflict dialog open
-        return;
+      const hasChanges = !existingHash || currentHash !== existingHash;
+
+      if (hasChanges) {
+        const confirmed = window.confirm(
+          `The file "${existingTab.title || conflictData.existingName}" is open in another tab with unsaved changes.\n\n` +
+            `If you proceed, those unsaved changes will be lost.\n\n` +
+            `Do you want to continue with the overwrite?`,
+        );
+        if (!confirmed) {
+          return;
+        }
       }
-      // User confirmed - close the existing tab first to avoid silent data loss
-      // This is explicit rather than letting replaceTabId silently delete it
+      // Close the existing tab since we're deleting that console
       removeConsoleTab(existingId);
     }
 
@@ -570,47 +521,47 @@ function Editor() {
     setConflictDialogOpen(false);
 
     try {
-      const { apiClient } = await import("../lib/api-client");
+      // Step 1: Delete the existing console at the conflicting path
+      const deleteResult = await deleteConsole(currentWorkspace.id, existingId);
 
-      // Safe overwrite: Update the existing console in place with new content.
-      // This is atomic - if it fails, the original content is preserved.
-      // We update the existing console rather than delete-then-create to avoid
-      // data loss if the save fails after delete.
-      // isSaved: true tells the backend this is an explicit save (not auto-save draft)
-      // which disables upsert to prevent creating ghost drafts if the target was deleted.
-      const result = await apiClient.put<{
-        success: boolean;
-        data?: any;
-        error?: string;
-      }>(`/workspaces/${currentWorkspace.id}/consoles/${existingId}`, {
-        content: pendingSaveData.content,
-        connectionId: pendingSaveData.connectionId,
-        databaseName: pendingSaveData.databaseName,
-        databaseId: pendingSaveData.databaseId,
-        isSaved: true, // Explicit save: fail if target doesn't exist (race condition protection)
-      });
+      if (!deleteResult.success) {
+        setErrorMessage(
+          deleteResult.error || "Failed to delete existing console",
+        );
+        setErrorModalOpen(true);
+        setIsSaving(false);
+        setPendingSaveData(null);
+        setConflictData(null);
+        return;
+      }
+
+      // Step 2: Save our console with the path (same ID as before)
+      const result = await saveConsole(
+        currentWorkspace.id,
+        pendingSaveData.tabId,
+        pendingSaveData.content,
+        pendingSaveData.path,
+        pendingSaveData.connectionId,
+        pendingSaveData.databaseName,
+        pendingSaveData.databaseId,
+      );
 
       if (result.success) {
-        // Update local state to use the existing console's ID since we've taken it over
-        const oldTabId = pendingSaveData.tabId;
+        const tabId = pendingSaveData.tabId;
 
-        // Replace the tab ID so future saves go to the correct console
-        replaceTabId(oldTabId, existingId);
+        // Update the tab properties
+        updateConsoleFilePath(tabId, pendingSaveData.path);
+        updateConsoleTitle(tabId, pendingSaveData.path);
+        updateConsoleDirty(tabId, true);
 
-        // Update the tab properties (now using the new ID)
-        updateConsoleFilePath(existingId, pendingSaveData.path);
-        updateConsoleTitle(existingId, pendingSaveData.path);
-        updateConsoleDirty(existingId, true); // Mark as persistent (not replaceable) after successful save
-        updateConsoleSavedDatabase(
-          existingId,
+        // Update saved state (isSaved=true, new savedStateHash)
+        const newHash = computeConsoleStateHash(
+          pendingSaveData.content,
           pendingSaveData.connectionId,
           pendingSaveData.databaseId,
           pendingSaveData.databaseName,
         );
-
-        // Update initialContent to match what was saved, so hasUnsavedChanges()
-        // returns false until the user makes new edits
-        updateConsoleInitialContent(existingId, pendingSaveData.content);
+        updateSavedState(tabId, true, newHash);
 
         // Update console tree
         const { useConsoleTreeStore } = await import(
@@ -618,16 +569,14 @@ function Editor() {
         );
         useConsoleTreeStore
           .getState()
-          .addConsole(currentWorkspace.id, pendingSaveData.path, existingId);
+          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
 
-        setSnackbarMessage(
-          `Console overwritten at '${pendingSaveData.path}.js'`,
-        );
+        setSnackbarMessage(`Console saved at '${pendingSaveData.path}.js'`);
         setSnackbarOpen(true);
 
         trackEvent("console_saved", {
-          console_id: existingId,
-          is_new: false,
+          console_id: tabId,
+          is_new: true,
           was_overwrite: true,
         });
       } else {
@@ -658,12 +607,10 @@ function Editor() {
         const newPath = newFileName.endsWith(".js")
           ? newFileName.slice(0, -3)
           : newFileName;
-        // Retry save with new path - force POST to create at the new location
         handleConsoleSave(
           pendingSaveData.tabId,
           pendingSaveData.content,
           newPath,
-          true, // forceNew: create new console at the new path
         );
       }
     }
@@ -811,7 +758,6 @@ function Editor() {
                     flowType={tab.metadata?.flowType}
                     onSave={() => {
                       // The FlowEditor already handles refreshing the flows list
-                      // We don't need to close the tab anymore
                     }}
                     onCancel={() => {
                       closeConsole(tab.id);
@@ -828,7 +774,6 @@ function Editor() {
                         ref={consoleRefs.current[tab.id]}
                         consoleId={tab.id}
                         initialContent={tab.content}
-                        dbContentHash={tab.dbContentHash}
                         title={tab.title}
                         onExecute={(content, connectionId, databaseId) =>
                           handleConsoleExecute(tab.id, content, connectionId, {
@@ -845,7 +790,7 @@ function Editor() {
                         isSaving={isSaving}
                         onContentChange={content => {
                           updateConsoleContent(tab.id, content);
-                          if (content !== tab.initialContent && !tab.isDirty) {
+                          if (!tab.isDirty) {
                             updateConsoleDirty(tab.id, true);
                           }
                           // Also refresh activeEditorContent for Chat consumers
@@ -854,24 +799,9 @@ function Editor() {
                             setActiveEditorContent(ref.getCurrentContent());
                           }
                         }}
-                        onSaveSuccess={newDbContentHash => {
-                          // Update the dbContentHash in the store
-                          dispatch({
-                            type: "UPDATE_CONSOLE_DB_HASH",
-                            payload: {
-                              id: tab.id,
-                              dbContentHash: newDbContentHash,
-                            },
-                          });
-                        }}
-                        // Current database selection (single source of truth from store)
                         connectionId={tab.connectionId}
                         databaseId={tab.databaseId}
                         databaseName={tab.databaseName}
-                        // Saved database values (for dirty tracking)
-                        savedConnectionId={tab.savedConnectionId}
-                        savedDatabaseId={tab.savedDatabaseId}
-                        savedDatabaseName={tab.savedDatabaseName}
                         databases={availableDatabases}
                         onDatabaseChange={connId =>
                           updateConsoleConnection(tab.id, connId)
@@ -914,11 +844,9 @@ function Editor() {
             variant="contained"
             disableElevation
             onClick={() => {
-              // Add a blank tab on demand
               useConsoleStore.getState().addConsoleTab({
                 title: "New Console",
                 content: "",
-                initialContent: "",
               });
             }}
           >

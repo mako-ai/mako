@@ -266,6 +266,9 @@ export class ConsoleManager {
     databaseId?: string;
     language?: string;
     id?: string;
+    name?: string;
+    path?: string;
+    isSaved?: boolean;
   } | null> {
     try {
       // Only accept valid ObjectIds
@@ -280,6 +283,18 @@ export class ConsoleManager {
       });
 
       if (savedConsole) {
+        // Build path from name and folder
+        let consolePath = savedConsole.name;
+        if (savedConsole.folderId) {
+          const folderPath = await this.getFolderPathById(
+            savedConsole.folderId.toString(),
+            workspaceId,
+          );
+          if (folderPath) {
+            consolePath = `${folderPath}/${savedConsole.name}`;
+          }
+        }
+
         return {
           content: savedConsole.code,
           connectionId: savedConsole.connectionId?.toString(),
@@ -287,6 +302,9 @@ export class ConsoleManager {
           databaseId: savedConsole.databaseId,
           language: savedConsole.language,
           id: savedConsole._id.toString(),
+          name: savedConsole.name,
+          path: consolePath,
+          isSaved: savedConsole.isSaved,
         };
       }
 
@@ -295,6 +313,48 @@ export class ConsoleManager {
       console.error("Error getting console with metadata:", error);
       return null;
     }
+  }
+
+  /**
+   * Get folder path by folder ID (for building console paths)
+   */
+  private async getFolderPathById(
+    folderId: string,
+    workspaceId: string,
+  ): Promise<string | null> {
+    try {
+      const folder = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!folder) return null;
+
+      if (folder.parentId) {
+        const parentPath = await this.getFolderPathById(
+          folder.parentId.toString(),
+          workspaceId,
+        );
+        return parentPath ? `${parentPath}/${folder.name}` : folder.name;
+      }
+
+      return folder.name;
+    } catch (error) {
+      console.error("Error getting folder path:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Find or create folder path (public version of ensureFolderPath)
+   * Used by consoles.ts for explicit saves with path
+   */
+  async findOrCreateFolderPath(
+    folderParts: string[],
+    workspaceId: string,
+    userId: string,
+  ): Promise<string | undefined> {
+    return this.ensureFolderPath(folderParts, workspaceId, userId);
   }
 
   /**

@@ -98,7 +98,6 @@ function ConnectorExplorer() {
       const id = addConsoleTab({
         title: source.name,
         content: contentKey,
-        initialContent: contentKey,
         kind: "connectors",
         icon: `/api/connectors/${source.type}/icon.svg`,
       });
@@ -108,7 +107,6 @@ function ConnectorExplorer() {
       const id = addConsoleTab({
         title: "New Connector",
         content: "", // will be populated after save
-        initialContent: "",
         kind: "connectors",
       });
       setActiveConsole(id);

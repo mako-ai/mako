@@ -86,7 +86,6 @@ export function UrlSync() {
         const id = addConsoleTab({
           title: "Connector", // Will be updated when entity loads
           content: connectorId,
-          initialContent: connectorId,
           kind: "connectors",
         });
         setActiveConsole(id);
@@ -107,7 +106,6 @@ export function UrlSync() {
         const id = addConsoleTab({
           title: "Flow",
           content: "",
-          initialContent: "",
           kind: "flow-editor",
           metadata: { flowId },
         });
@@ -125,7 +123,6 @@ export function UrlSync() {
         const id = addConsoleTab({
           title: "Settings",
           content: "",
-          initialContent: "",
           kind: "settings",
         });
         setActiveConsole(id);

@@ -39,9 +39,9 @@ import {
   ConsoleModification,
 } from "../hooks/useMonacoConsole";
 import ConsoleInfoModal from "./ConsoleInfoModal";
-import { hashContent } from "../utils/hash";
 import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { computeConsoleStateHash } from "../utils/stateHash";
 
 interface DatabaseConnection {
   id: string;
@@ -62,7 +62,6 @@ interface DatabaseConnection {
 interface ConsoleProps {
   consoleId: string;
   initialContent: string;
-  dbContentHash?: string;
   title?: string;
   onExecute: (
     content: string,
@@ -80,10 +79,6 @@ interface ConsoleProps {
   connectionId?: string;
   databaseId?: string; // D1 database UUID for cluster mode
   databaseName?: string; // D1 database human-readable name for cluster mode
-  // Saved database values (for dirty tracking - only updated on save)
-  savedConnectionId?: string;
-  savedDatabaseId?: string;
-  savedDatabaseName?: string;
   // Callbacks for database changes
   onDatabaseChange?: (connectionId: string) => void;
   onDatabaseNameChange?: (
@@ -93,7 +88,6 @@ interface ConsoleProps {
   filePath?: string;
   onHistoryClick?: () => void;
   enableVersionControl?: boolean;
-  onSaveSuccess?: (newDbContentHash: string) => void;
 }
 
 export interface ConsoleRef {
@@ -115,7 +109,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const {
     consoleId,
     initialContent,
-    dbContentHash,
     title,
     onExecute,
     onCancel,
@@ -129,16 +122,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     connectionId,
     databaseId,
     databaseName,
-    // Saved database values (for dirty tracking)
-    savedConnectionId,
-    savedDatabaseId,
-    savedDatabaseName,
     onDatabaseChange,
     onDatabaseNameChange,
     filePath,
     onHistoryClick,
     enableVersionControl = false,
-    onSaveSuccess,
   } = props;
 
   const editorRef = useRef<any>(null);
@@ -146,32 +134,29 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
-  const { autoSaveConsole } = useConsoleStore();
+  const { autoSaveConsole, tabs } = useConsoleStore();
+
+  // Get tab state for savedStateHash (used for dirty tracking)
+  const tab = tabs[consoleId];
+  const savedStateHash = tab?.savedStateHash;
+  const isSaved = tab?.isSaved ?? false;
 
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
-
-  // State to track if there are unsaved changes (content only)
-  const [hasContentChanges, setHasContentChanges] = useState(false);
   const [monacoInstance, setMonacoInstance] = useState<any>(null);
 
-  // Compute database dirty state from props (comparing current vs saved values)
-  const hasDatabaseChanges = useMemo(() => {
-    const connectionChanged = connectionId !== savedConnectionId;
-    const dbIdChanged = databaseId !== savedDatabaseId;
-    const dbNameChanged = databaseName !== savedDatabaseName;
-    return connectionChanged || dbIdChanged || dbNameChanged;
-  }, [
-    connectionId,
-    savedConnectionId,
-    databaseId,
-    savedDatabaseId,
-    databaseName,
-    savedDatabaseName,
-  ]);
-
-  // Combined dirty state - true if either content or database selection changed
-  const hasUnsavedChanges = hasContentChanges || hasDatabaseChanges;
+  // Compute dirty state by comparing current state hash vs saved state hash
+  const hasUnsavedChanges = useMemo(() => {
+    if (!savedStateHash) return true; // Never saved
+    const currentContent = tab?.content || "";
+    const currentHash = computeConsoleStateHash(
+      currentContent,
+      connectionId,
+      databaseId,
+      databaseName,
+    );
+    return currentHash !== savedStateHash;
+  }, [savedStateHash, tab?.content, connectionId, databaseId, databaseName]);
 
   // State to track Monaco's undo/redo availability
   const [monacoCanUndo, setMonacoCanUndo] = useState(false);
@@ -235,7 +220,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Keep refs of the latest callbacks and props to avoid stale closures in Monaco commands
   const onExecuteRef = useRef(onExecute);
   const onSaveRef = useRef(onSave);
-  const onSaveSuccessRef = useRef(onSaveSuccess);
   const connectionIdRef = useRef(connectionId);
   const databaseIdRef = useRef(databaseId);
 
@@ -247,10 +231,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   useEffect(() => {
     onSaveRef.current = onSave;
   }, [onSave]);
-
-  useEffect(() => {
-    onSaveSuccessRef.current = onSaveSuccess;
-  }, [onSaveSuccess]);
 
   useEffect(() => {
     connectionIdRef.current = connectionId;
@@ -347,8 +327,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       const markers: any[] = [];
 
       // Simple regex to find table references in FROM/JOIN clauses
-      // Matches: FROM `dataset.table` or FROM dataset.table or FROM table
-      // Capture the full identifier sequence, stopping at whitespace, comma, semicolon, or parenthesis
       const tableRegex = /(?:FROM|JOIN)\s+([^\s,;()]+)(?:\s+AS\s+\w+)?/gi;
       let match;
 
@@ -356,18 +334,15 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         const fullMatch = match[0];
         const tableNameRaw = match[1];
 
-        // Skip if it contains template variables or special chars that might indicate partial query
+        // Skip if it contains template variables or special chars
         if (tableNameRaw.includes("{") || tableNameRaw.includes("$")) continue;
 
-        // Clean up backticks from the whole string or parts
-        // Handle potentially complex backticking like `project`.`dataset`.table
         const cleanRaw = tableNameRaw.replace(/`/g, "");
         const parts = cleanRaw.split(".");
 
         let isValid = false;
 
         if (parts.length === 1) {
-          // Just table name - check if it exists in any dataset
           const table = parts[0];
           for (const ds of Object.keys(schema)) {
             if (schema[ds][table]) {
@@ -376,26 +351,19 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             }
           }
         } else if (parts.length === 2) {
-          // dataset.table
           const [ds, table] = parts;
           if (schema[ds] && schema[ds][table]) {
             isValid = true;
           }
         } else if (parts.length === 3) {
-          // project.dataset.table - verify dataset and table
-          // Note: schema keys are dataset names, we assume the second part is dataset
           const [_, ds, table] = parts;
-
           if (schema[ds] && schema[ds][table]) {
             isValid = true;
           }
         }
 
         if (!isValid && parts.length <= 3) {
-          // Calculate position
-          // We need to find the position of tableNameRaw within the full match to get accurate offset
           const tableIndex = fullMatch.indexOf(tableNameRaw);
-          // Ensure indices are valid
           if (tableIndex !== -1) {
             const startPos = model.getPositionAt(match.index + tableIndex);
             const endPos = model.getPositionAt(
@@ -433,7 +401,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       if (validationTimeoutRef.current) {
         clearTimeout(validationTimeoutRef.current);
       }
-      // Clear markers on unmount
       const model = editorRef.current?.getModel();
       if (model) {
         monacoInstance.editor.setModelMarkers(model, "sql-validation", []);
@@ -451,26 +418,21 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // Helper function to get content for execution (selected text if there's a selection, otherwise full content)
   const getExecutionContent = useCallback(() => {
-    // In diff mode, get content from the modified editor
     if (isDiffMode) {
       const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
       if (modifiedEditor) {
         const selection = modifiedEditor.getSelection();
         const model = modifiedEditor.getModel();
-        // If there's a non-empty selection, return only the selected text
         if (selection && !selection.isEmpty() && model) {
           return model.getValueInRange(selection);
         }
       }
-      // Fall back to full modified content
       return modifiedContent || "";
     }
 
-    // Normal mode: check for selection first
     if (editorRef.current) {
       const selection = editorRef.current.getSelection();
       const model = editorRef.current.getModel();
-      // If there's a non-empty selection, return only the selected text
       if (selection && !selection.isEmpty() && model) {
         return model.getValueInRange(selection);
       }
@@ -492,7 +454,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Execute handler
   const handleExecute = useCallback(() => {
     const content = getExecutionContent();
-    // Use the latest ref values for execution (to avoid stale closures in Monaco commands)
     if (onExecuteRef.current) {
       onExecuteRef.current(
         content,
@@ -506,18 +467,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const handleSave = useCallback(async () => {
     if (onSaveRef.current) {
       const content = getFullEditorContent();
-      const success = await onSaveRef.current(content, filePathRef.current);
-
-      // Only mark content as saved if the save actually succeeded
-      if (success) {
-        // Update dbContentHash via callback to mark content as saved
-        const newContentHash = hashContent(content);
-        if (onSaveSuccessRef.current) {
-          onSaveSuccessRef.current(newContentHash);
-        }
-        // Also clear local dirty state since save succeeded
-        setHasContentChanges(false);
-      }
+      await onSaveRef.current(content, filePathRef.current);
+      // Editor.tsx handles updating savedStateHash on success
     }
   }, [getFullEditorContent]);
 
@@ -529,10 +480,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       return "javascript";
     }
 
-    // Fallback to connection type
     const selectedDb = databases.find(db => db.id === connectionId);
     const dbType = selectedDb?.type;
-    // Use most stable highlighter: javascript for MongoDB shell, sql otherwise
     return dbType === "mongodb" ? "javascript" : "sql";
   }, [filePath, databases, connectionId]);
 
@@ -540,24 +489,20 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const lastConsoleIdRef = useRef(consoleId);
 
   useEffect(() => {
-    // Only update content when switching to a different console
     if (consoleId !== lastConsoleIdRef.current) {
       lastConsoleIdRef.current = consoleId;
 
       if (!editorRef.current) {
-        // Editor not mounted yet, force remount with new content
         setEditorKey(prev => prev + 1);
         return;
       }
 
       const model = editorRef.current.getModel();
       if (model) {
-        // Only set value when switching consoles to preserve undo stack
         isProgrammaticUpdateRef.current = true;
         model.setValue(initialContent);
         isProgrammaticUpdateRef.current = false;
 
-        // Move the cursor to the end of the newly inserted content
         const lineCount = model.getLineCount();
         const lastLineLength = model.getLineLength(lineCount);
         editorRef.current.setPosition({
@@ -565,7 +510,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           column: lastLineLength + 1,
         });
 
-        // Reset Monaco undo/redo state after setting new content
         setMonacoCanUndo(false);
         setMonacoCanRedo(false);
       }
@@ -573,7 +517,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   }, [consoleId, initialContent]);
 
   // Apply new initialContent from props when background fetch finishes
-  // Only overwrite if the editor is currently showing a placeholder or empty
   useEffect(() => {
     if (!editorRef.current) return;
     const model = editorRef.current.getModel();
@@ -581,24 +524,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     const current = model.getValue();
     const isPlaceholder = current === "loading..." || current.trim() === "";
 
-    // If we have new content and current is placeholder/empty, update it
     if (isPlaceholder && initialContent && current !== initialContent) {
       isProgrammaticUpdateRef.current = true;
       model.setValue(initialContent);
-      // Update undo/redo state
       setMonacoCanUndo(model.canUndo());
       setMonacoCanRedo(model.canRedo());
-      // Update unsaved changes flag against DB hash
-      if (dbContentHash) {
-        const currentContentHash = hashContent(initialContent);
-        const hasChanges = currentContentHash !== dbContentHash;
-        setHasContentChanges(hasChanges);
-      } else {
-        setHasContentChanges(false);
-      }
       isProgrammaticUpdateRef.current = false;
     }
-  }, [initialContent, dbContentHash]);
+  }, [initialContent]);
 
   // Cleanup debounce timeout on unmount
   useEffect(() => {
@@ -619,14 +552,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       setEditor(editor);
 
       // CMD/CTRL + Enter execution support
-      // Guard: Only execute if this console is the currently active one
-      // This prevents executing a hidden console when focus wasn't properly transferred
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-        // Get fresh state from store to check if this console is active
         const activeId = useAppStore.getState().consoles.activeTabId;
         if (activeId !== consoleId) {
-          // Not the active console - don't execute
-          // Focus should be transferred by Editor.tsx, but this is a safety check
           return;
         }
         handleExecute();
@@ -638,8 +566,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           handleSave();
         });
       }
-
-      // Don't override Monaco's built-in undo/redo - it works perfectly!
 
       // Auto-focus the editor when it mounts
       editor.focus();
@@ -654,18 +580,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           column: lastLineLength + 1,
         });
 
-        // Check initial content state
         const currentContent = model.getValue();
-        const currentContentHash = hashContent(currentContent);
-        const hasChanges =
-          !dbContentHash || currentContentHash !== dbContentHash;
-        setHasContentChanges(hasChanges);
 
         // Auto-save new consoles created with content (e.g., by agent create_console)
-        // Skip if console is already persisted (has filePath) - user controls saving those
+        // Skip if console is already explicitly saved (isSaved=true)
         if (
-          hasChanges &&
-          !filePath &&
+          !isSaved &&
           currentWorkspace?.id &&
           consoleId &&
           currentContent.trim()
@@ -687,23 +607,19 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           hasInitialVersionRef.current = true;
         }
 
-        // Initialize Monaco undo/redo state
         setMonacoCanUndo(model.canUndo());
         setMonacoCanRedo(model.canRedo());
       }
     },
-    // Note: consoleId is intentionally not in deps - it's stable for the lifetime of this component
-    // and we want to capture it once when the editor mounts
     [
       enableVersionControl,
       setEditor,
       handleExecute,
       handleSave,
       onSave,
-      dbContentHash,
       saveUserEdit,
       consoleId,
-      filePath,
+      isSaved,
       currentWorkspace,
       title,
       connectionId,
@@ -717,11 +633,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const handleEditorChange = useCallback(
     (value: string | undefined) => {
       const content = value || "";
-
-      // Always check if content has changed from DB version (even for undo/redo)
-      const currentContentHash = hashContent(content);
-      const hasChanges = !dbContentHash || currentContentHash !== dbContentHash;
-      setHasContentChanges(hasChanges);
 
       // Update Monaco undo/redo state
       if (editorRef.current) {
@@ -743,52 +654,38 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         content !== lastInitialContentRef.current &&
         !isApplyingModification.current
       ) {
-        // Save version immediately on first change after a pause
         const shouldSaveImmediately = !debounceTimeoutRef.current;
 
-        // Clear existing timeout
         if (debounceTimeoutRef.current) {
           clearTimeout(debounceTimeoutRef.current);
         }
 
         if (shouldSaveImmediately) {
-          // Save immediately for the first keystroke after a pause
           saveUserEdit(content, "User edit");
           lastInitialContentRef.current = content;
         }
 
-        // Debounce subsequent saves
         debounceTimeoutRef.current = setTimeout(() => {
           saveUserEdit(content, "User edit");
           lastInitialContentRef.current = content;
           debounceTimeoutRef.current = null;
-        }, 500); // Reduced to 500ms for better undo experience
+        }, 500);
       }
 
       // Normal content change callback
       if (onContentChange) {
-        // Clear existing timeout
         if (debounceTimeoutRef.current) {
           clearTimeout(debounceTimeoutRef.current);
         }
 
-        // Set new debounced timeout for persistence
         debounceTimeoutRef.current = setTimeout(() => {
           onContentChange(content);
-        }, 500); // 500ms debounce for persistence
+        }, 500);
       }
 
-      // Auto-save console when content changes (debounced internally)
-      // Skip if console is already persisted (has filePath) - user controls saving those
-      // This saves modified consoles to the database so they can be restored
-      // when opening a chat from history
-      if (
-        hasChanges &&
-        !filePath &&
-        currentWorkspace?.id &&
-        consoleId &&
-        content.trim()
-      ) {
+      // Auto-save console when content changes (debounced internally by autoSaveConsole)
+      // Skip if console is already explicitly saved (isSaved=true)
+      if (!isSaved && currentWorkspace?.id && consoleId && content.trim()) {
         autoSaveConsole(
           currentWorkspace.id,
           consoleId,
@@ -805,12 +702,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       enableVersionControl,
       saveUserEdit,
       isApplyingModification,
-      dbContentHash,
       currentWorkspace?.id,
       consoleId,
       title,
       databaseName,
-      filePath,
+      isSaved,
       autoSaveConsole,
     ],
   );
@@ -872,17 +768,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Accept the changes
   const acceptChanges = useCallback(() => {
     if (pendingModification && modifiedContent) {
-      // Exit diff mode first to restore the normal editor
       setIsDiffMode(false);
-
-      // Force editor remount with new content by incrementing key
       setEditorKey(prev => prev + 1);
 
-      // Store the modified content that will be used when editor mounts
       isProgrammaticUpdateRef.current = true;
       lastInitialContentRef.current = modifiedContent;
 
-      // Clear the diff state
       const savedModifiedContent = modifiedContent;
       const savedOriginalContent = originalContent;
       const savedModification = pendingModification;
@@ -891,16 +782,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       setOriginalContent("");
       setModifiedContent("");
 
-      // Wait for editor to mount, then apply the content and save to history
       setTimeout(() => {
         if (editorRef.current) {
           const model = editorRef.current.getModel();
           if (model) {
             model.setValue(savedModifiedContent);
 
-            // Save to version history using the hook functions
             if (enableVersionControl) {
-              // The saveUserEdit function will handle version tracking
               saveUserEdit(savedOriginalContent, "Before AI modification");
               saveUserEdit(
                 savedModifiedContent,
@@ -908,22 +796,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               );
             }
 
-            // Notify content change
             if (onContentChange) {
               onContentChange(savedModifiedContent);
             }
 
-            // Mark as having unsaved changes since AI modified the content
-            const currentContentHash = hashContent(savedModifiedContent);
-            const hasChanges =
-              !dbContentHash || currentContentHash !== dbContentHash;
-            setHasContentChanges(hasChanges);
-
             // Auto-save agent modifications (debounced internally)
-            // Skip if console is already persisted (has filePath) - user controls saving those
+            // Skip if console is already explicitly saved (isSaved=true)
             if (
-              hasChanges &&
-              !filePathRef.current &&
+              !isSaved &&
               currentWorkspace?.id &&
               consoleId &&
               savedModifiedContent.trim()
@@ -950,17 +830,16 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onContentChange,
     enableVersionControl,
     saveUserEdit,
-    dbContentHash,
     currentWorkspace,
     consoleId,
     title,
     databaseName,
+    isSaved,
     autoSaveConsole,
   ]);
 
   // Reject the changes
   const rejectChanges = useCallback(() => {
-    // Simply exit diff mode without applying changes
     setIsDiffMode(false);
     setPendingModification(null);
     setOriginalContent("");
@@ -972,14 +851,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     (diffEditor: any, monaco: any) => {
       diffEditorRef.current = diffEditor;
 
-      // Get the modified editor to add keyboard shortcuts
       const modifiedEditor = diffEditor.getModifiedEditor();
       if (modifiedEditor) {
-        // CMD/CTRL + Enter execution support
         modifiedEditor.addCommand(
           monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
           () => {
-            // Use refs to get latest values
             const content = getExecutionContent();
             if (onExecuteRef.current) {
               onExecuteRef.current(
@@ -1119,7 +995,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                     onClick={() => {
                       if (editorRef.current) {
                         editorRef.current.trigger("keyboard", "undo", null);
-                        // Update undo/redo state after action
                         setTimeout(() => {
                           const model = editorRef.current?.getModel();
                           if (model) {
@@ -1143,7 +1018,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                     onClick={() => {
                       if (editorRef.current) {
                         editorRef.current.trigger("keyboard", "redo", null);
-                        // Update undo/redo state after action
                         setTimeout(() => {
                           const model = editorRef.current?.getModel();
                           if (model) {
@@ -1231,7 +1105,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                   onChange={e => {
                     const dbId = e.target.value || undefined;
                     const db = availableDatabases.find(d => d.id === dbId);
-                    // Call parent callback directly (unidirectional flow)
                     if (onDatabaseNameChange) {
                       onDatabaseNameChange(dbId, db?.label);
                     }

@@ -272,7 +272,7 @@ export interface IConsoleFolder extends Document {
  * 2. Draft consoles: isSaved=false/undefined, auto-saved when content is modified
  *
  * Draft consoles are restored when opening a chat by scanning the chat's
- * modify_console tool calls to find which console IDs were used.
+ * modify_console and create_console tool calls to find which console IDs were used.
  * Only saved consoles (isSaved=true) appear in the console explorer.
  */
 export interface ISavedConsole extends Document {

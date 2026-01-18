@@ -134,7 +134,6 @@ function Sidebar() {
         const id = addConsoleTab({
           title: view === "settings" ? "Settings" : "Connectors",
           content: "", // Will be replaced with actual forms later
-          initialContent: "",
           kind: view === "settings" ? "settings" : "connectors",
         });
         setActiveConsole(id);
