@@ -1,8 +1,7 @@
-<p align="center">
-  <img src="./app/public/mako-icon.svg" alt="Mako Logo" width="80" height="70">
-</p>
-
-<h1 align="center">Mako</h1>
+<h1 align="center">
+  <img src="./app/public/mako-icon.svg" alt="Mako Logo" width="40" height="35" style="vertical-align: middle; margin-right: 10px;">
+  Mako
+</h1>
 
 <p align="center"><strong>The AI-native SQL Client.</strong></p>
 
