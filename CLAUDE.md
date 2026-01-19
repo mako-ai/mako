@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Mako - The AI Data Analyst for Modern RevOps**
+**Mako - The AI-native SQL Client**
 
-Mako is a production-ready, multi-tenant data analytics SaaS platform built with a PNPM workspace monorepo structure. It combines external data source integration (Stripe, Close CRM, GraphQL APIs, PostHog, REST APIs), multi-database query execution (MongoDB, PostgreSQL, BigQuery, ClickHouse, etc.), AI-powered chat assistance with multi-provider LLM support (OpenAI, Anthropic, Google), and event-driven data synchronization via Inngest.
+Mako is a production-ready, multi-tenant AI-powered SQL client built with a PNPM workspace monorepo structure. It combines multi-database query execution (MongoDB, PostgreSQL, BigQuery, ClickHouse, etc.), AI-powered query generation with multi-provider LLM support (OpenAI, Anthropic, Google), team collaboration features, and optional data source connectors (Stripe, Close CRM, GraphQL APIs, PostHog, REST APIs) with event-driven synchronization via Inngest.
 
 **Architecture:** Five main packages:
 

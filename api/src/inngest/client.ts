@@ -5,7 +5,7 @@ import { configureLogging, LogTapeInngestLogger } from "./logging";
 void configureLogging();
 
 export const inngest = new Inngest({
-  id: "revops-sync",
-  name: "RevOps Sync",
+  id: "mako-sync",
+  name: "Mako Sync",
   logger: new LogTapeInngestLogger(["inngest"]),
 });

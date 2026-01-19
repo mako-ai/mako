@@ -2,7 +2,7 @@
 alwaysApply: true
 ---
 
-# RevOps Monorepo Guide
+# Mako Monorepo Guide
 
 - API service (Node + TypeScript): entry at [api/src/index.ts](mdc:api/src/index.ts). Built output lives in [api/dist/index.js](mdc:api/dist/index.js). Default port: 8080 (env `WEB_API_PORT`).
 - Web app (Vite + React): entry at [app/src/main.tsx](mdc:app/src/main.tsx). Built output lives under [app/dist/](mdc:app/dist/index.html). Dev server: 5173 with `/api` proxied to `http://localhost:8080`.

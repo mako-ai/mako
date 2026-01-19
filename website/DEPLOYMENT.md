@@ -1,6 +1,6 @@
 # Website Deployment Guide
 
-This guide covers deploying the RevOps marketing website to Vercel.
+This guide covers deploying the Mako marketing website to Vercel.
 
 ## Prerequisites
 
@@ -66,7 +66,7 @@ This guide covers deploying the RevOps marketing website to Vercel.
    - Set up and deploy? Yes
    - Which scope? Select your account
    - Link to existing project? No
-   - What's your project's name? revops-website
+   - What's your project's name? mako-website
    - In which directory is your code located? ./
    - Want to override settings? No
 
@@ -86,13 +86,13 @@ Update the app links in `app/page.tsx` to point to your production app:
 ```typescript
 // Replace localhost URLs with your production app URL
 const APP_URL =
-  process.env.NEXT_PUBLIC_APP_URL || "https://app.yourrevopsdomain.com";
+  process.env.NEXT_PUBLIC_APP_URL || "https://app.mako.ai";
 ```
 
 Then set in Vercel:
 
 - **Key**: `NEXT_PUBLIC_APP_URL`
-- **Value**: `https://app.yourrevopsdomain.com`
+- **Value**: `https://app.mako.ai`
 
 ## Custom Domain
 
@@ -100,14 +100,14 @@ Then set in Vercel:
 
 1. Go to your project settings in Vercel
 2. Navigate to "Domains"
-3. Add your domain (e.g., `revops.com`)
+3. Add your domain (e.g., `mako.ai`)
 4. Follow DNS configuration instructions
 
 ### DNS Configuration
 
 Add these records to your DNS provider:
 
-**For apex domain (revops.com):**
+**For apex domain (mako.ai):**
 
 ```
 Type: A

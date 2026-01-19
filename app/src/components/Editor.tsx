@@ -164,7 +164,7 @@ function Editor() {
 
   // Update the page title based on the active tab
   useEffect(() => {
-    const baseTitle = "Mako RevOps";
+    const baseTitle = "Mako";
     if (!activeConsoleId) {
       document.title = baseTitle;
       return;
