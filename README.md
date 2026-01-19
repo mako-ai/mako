@@ -1,6 +1,9 @@
-# Mako 🦈
+<h1 align="center">
+  <img src="./app/public/mako-icon.svg" alt="Mako Logo" width="40" height="35" style="vertical-align: middle; margin-right: 10px;">
+  Mako
+</h1>
 
-**The AI-native SQL Client.**
+<p align="center"><strong>The AI-native SQL Client.</strong></p>
 
 > **The Cursor for Data.** Connect to any database and query with AI assistance.
 
