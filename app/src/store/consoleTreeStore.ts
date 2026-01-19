@@ -82,13 +82,25 @@ export const useConsoleTreeStore = create<TreeState>()(
     },
     addConsole: (workspaceId, path, id) => {
       set(state => {
-        const tree = state.trees[workspaceId] || [];
+        let tree = state.trees[workspaceId] || [];
         const segments = path.split("/").filter(Boolean);
         const fileName = segments[segments.length - 1];
 
-        // Check if already exists
-        const exists = tree.some(item => item.id === id);
-        if (!exists) {
+        // Remove any existing entry at the same path (handles overwrite conflicts)
+        // This ensures we don't have duplicates when saving to a path that previously existed
+        tree = tree.filter(item => item.path !== path);
+
+        // Check if the same ID already exists (update case)
+        const existingIndex = tree.findIndex(item => item.id === id);
+        if (existingIndex !== -1) {
+          // Update existing entry with new path/name
+          tree[existingIndex] = {
+            ...tree[existingIndex],
+            name: fileName,
+            path: path,
+          };
+        } else {
+          // Add new entry
           const newConsole = {
             name: fileName,
             path: path,
