@@ -268,11 +268,12 @@ export interface IConsoleFolder extends Document {
  * SavedConsole model interface
  *
  * Consoles can be:
- * 1. Saved consoles: Have a folderId, managed by user through explicit save
- * 2. Draft consoles: No folderId, auto-saved when content is modified
+ * 1. Saved consoles: isSaved=true, explicitly saved by user to a path
+ * 2. Draft consoles: isSaved=false/undefined, auto-saved when content is modified
  *
  * Draft consoles are restored when opening a chat by scanning the chat's
- * modify_console tool calls to find which console IDs were used.
+ * modify_console and create_console tool calls to find which console IDs were used.
+ * Only saved consoles (isSaved=true) appear in the console explorer.
  */
 export interface ISavedConsole extends Document {
   _id: Types.ObjectId;
@@ -299,6 +300,7 @@ export interface ISavedConsole extends Document {
   };
   createdBy: string;
   isPrivate: boolean;
+  isSaved: boolean; // true = explicitly saved, false/undefined = draft
   createdAt: Date;
   updatedAt: Date;
   lastExecutedAt?: Date;
@@ -867,6 +869,10 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: Boolean,
       default: false,
     },
+    isSaved: {
+      type: Boolean,
+      default: false, // Drafts default to false, explicitly saved consoles set to true
+    },
     lastExecutedAt: {
       type: Date,
     },
@@ -883,6 +889,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
 // Indexes
 SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
+SavedConsoleSchema.index({ workspaceId: 1, isSaved: 1 }); // For filtering saved vs draft consoles
 SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
 
 /**

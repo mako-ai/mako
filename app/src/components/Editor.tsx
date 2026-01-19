@@ -31,12 +31,16 @@ import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
+import ConflictResolutionDialog, {
+  ConflictData,
+} from "./ConflictResolutionDialog";
 import { useConsoleStore } from "../store/consoleStore";
-import { useAppStore, useAppDispatch } from "../store";
+import { useAppStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
+import { computeConsoleStateHash } from "../utils/stateHash";
 
 interface QueryResult {
   results: any[];
@@ -57,7 +61,6 @@ const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
 
 function Editor() {
   const { currentWorkspace } = useWorkspace();
-  const dispatch = useAppDispatch();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
   >({});
@@ -88,6 +91,18 @@ function Editor() {
     }[]
   >([]);
 
+  // Conflict resolution state
+  const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
+  const [conflictData, setConflictData] = useState<ConflictData | null>(null);
+  const [pendingSaveData, setPendingSaveData] = useState<{
+    tabId: string;
+    content: string;
+    path: string;
+    connectionId?: string;
+    databaseId?: string;
+    databaseName?: string;
+  } | null>(null);
+
   // Refs for query cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
   const executionIdRef = useRef<string | null>(null);
@@ -95,19 +110,21 @@ function Editor() {
   // Tab store
   const {
     consoleTabs,
+    tabs,
     activeConsoleId,
     removeConsoleTab,
     updateConsoleContent,
     updateConsoleConnection,
     updateConsoleDatabase,
-    updateConsoleSavedDatabase,
     updateConsoleFilePath,
     updateConsoleTitle,
     updateConsoleDirty,
+    updateSavedState,
     setActiveConsole,
     executeQuery,
     cancelQuery,
     saveConsole,
+    deleteConsole,
   } = useConsoleStore();
 
   // Refs for each Console instance
@@ -135,10 +152,7 @@ function Editor() {
       setActiveEditorContent(content);
 
       // Focus the Monaco editor in the active console
-      // This ensures CMD+Enter executes the correct console after tab switching
-      // Use requestAnimationFrame to ensure the tab visibility CSS has been applied
       requestAnimationFrame(() => {
-        // Double RAF to ensure layout is complete
         requestAnimationFrame(() => {
           consoleRef.focus();
         });
@@ -185,42 +199,36 @@ function Editor() {
     loader.init().then(monaco => setMonacoInstance(monaco));
   }, []);
 
-  // Dynamic getters for unified SQL autocomplete (reads from active console)
-  // These getters read directly from the store at call time to avoid stale closures.
-  // This is critical for autocomplete to work correctly when switching consoles.
+  // Dynamic getters for unified SQL autocomplete
   const getWorkspaceId = useCallback(
     () => currentWorkspace?.id,
     [currentWorkspace?.id],
   );
 
-  // Use a ref to track availableDatabases so getConnectionType can access fresh values
   const availableDatabasesRef = useRef(availableDatabases);
   useEffect(() => {
     availableDatabasesRef.current = availableDatabases;
   }, [availableDatabases]);
 
   const getConnectionId = useCallback(() => {
-    // Read fresh state from the store at call time (not from closed-over React state)
     const state = useAppStore.getState();
     const tabs = state.consoles.tabs;
     const activeTabId = state.consoles.activeTabId;
     const activeTab = activeTabId ? tabs[activeTabId] : null;
     return activeTab?.connectionId;
-  }, []); // Empty deps - always reads fresh from store
+  }, []);
 
   const getConnectionType = useCallback(() => {
-    // Read fresh state from the store at call time
     const state = useAppStore.getState();
     const tabs = state.consoles.tabs;
     const activeTabId = state.consoles.activeTabId;
     const activeTab = activeTabId ? tabs[activeTabId] : null;
     const connectionId = activeTab?.connectionId;
-    // Use ref to get current availableDatabases without causing effect re-runs
     const connection = availableDatabasesRef.current.find(
       db => db.id === connectionId,
     );
     return connection?.type;
-  }, []); // Empty deps - reads fresh from store and ref
+  }, []);
 
   // Unified SQL autocomplete - single global provider for all consoles
   useSqlAutocomplete({
@@ -239,17 +247,12 @@ function Editor() {
       }>;
 
       const { consoleId: eventConsoleId, modification } = customEvent.detail;
-
-      // Prefer the explicitly provided consoleId from the event (e.g., from create_console),
-      // only fall back to activeConsoleId if no explicit ID was provided
       const targetConsoleId = eventConsoleId || activeConsoleId;
 
-      // Function to show diff with retry
       const showDiffWithRetry = (retries = 10, delay = 100) => {
         if (consoleRefs.current[targetConsoleId]?.current) {
           consoleRefs.current[targetConsoleId].current.showDiff(modification);
         } else if (retries > 0) {
-          // Keep retrying silently
           setTimeout(() => {
             showDiffWithRetry(retries - 1, delay);
           }, delay);
@@ -263,7 +266,6 @@ function Editor() {
         }
       };
 
-      // Start the retry mechanism
       showDiffWithRetry();
     };
 
@@ -290,7 +292,6 @@ function Editor() {
     useConsoleStore.getState().addConsoleTab({
       title: "New Console",
       content: "",
-      initialContent: "",
     });
   };
 
@@ -317,7 +318,6 @@ function Editor() {
       return;
     }
 
-    // Set up abort controller and execution ID
     abortControllerRef.current = new AbortController();
     executionIdRef.current = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -337,7 +337,6 @@ function Editor() {
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
-        // Track successful query execution
         trackEvent("query_executed", {
           connection_id: connectionId,
           success: true,
@@ -393,22 +392,25 @@ function Editor() {
     setIsSaving(true);
     let success = false;
     try {
+      // Get the current tab info (needed for default filename and connection info)
+      const currentTab = tabs[tabId];
+
       let savePath = currentPath;
-      let isNew = false;
       if (!savePath) {
+        // Pre-fill with the tab's title (e.g., agent-generated title)
+        const defaultName = currentTab?.title || "";
         const fileName = prompt(
           "Enter a file name to save (e.g., myFolder/myConsole). .js will be appended if absent.",
+          defaultName,
         );
         if (!fileName) {
           setIsSaving(false);
           return false;
         }
         savePath = fileName.endsWith(".js") ? fileName.slice(0, -3) : fileName;
-        isNew = true;
       }
 
       // Get the current connection and database info for the tab
-      const currentTab = consoleTabs.find(tab => tab.id === tabId);
       const connectionId = currentTab?.connectionId;
       const databaseId = currentTab?.databaseId;
       const databaseName = currentTab?.databaseName;
@@ -421,57 +423,59 @@ function Editor() {
         connectionId,
         databaseName,
         databaseId,
-        isNew,
       );
+
+      // Handle conflict - show resolution dialog
+      if (result.error === "conflict" && result.conflict) {
+        setPendingSaveData({
+          tabId,
+          content: contentToSave,
+          path: savePath,
+          connectionId,
+          databaseId,
+          databaseName,
+        });
+        setConflictData(result.conflict);
+        setConflictDialogOpen(true);
+        setIsSaving(false);
+        return false;
+      }
+
       if (result.success) {
-        // Update file path and title for new files (POST)
-        if (isNew && savePath) {
-          updateConsoleFilePath(tabId, savePath);
-        }
-
-        // Keep the full path as the title to distinguish between files with same name
-        if (savePath) {
-          updateConsoleTitle(tabId, savePath);
-        }
-
-        // Mark tab as dirty since it's now saved and should be persistent
+        // Update file path and title
+        updateConsoleFilePath(tabId, savePath);
+        updateConsoleTitle(tabId, savePath);
         updateConsoleDirty(tabId, true);
 
-        // Update the saved database values to reflect what was just persisted
-        // This is used for dirty state tracking in the Console component
-        updateConsoleSavedDatabase(
-          tabId,
+        // Update saved state (isSaved=true, new savedStateHash)
+        const newHash = computeConsoleStateHash(
+          contentToSave,
           connectionId,
           databaseId,
           databaseName,
         );
+        updateSavedState(tabId, true, newHash);
 
-        // Track console save
         trackEvent("console_saved", {
           console_id: tabId,
-          is_new: isNew,
+          is_new: !currentPath,
         });
 
         setSnackbarMessage(
-          `Console saved ${isNew ? "as" : "to"} '${savePath}.js'`,
+          `Console saved ${!currentPath ? "as" : "to"} '${savePath}.js'`,
         );
         setSnackbarOpen(true);
         success = true;
 
-        // Just add the console to the tree - no refresh needed
-        if (isNew) {
+        // Add the console to the tree
+        if (!currentPath) {
           const { useConsoleTreeStore } = await import(
             "../store/consoleTreeStore"
           );
-          // The server SHOULD return the same ID we sent
-          // If not, something is wrong with the backend
           useConsoleTreeStore
             .getState()
             .addConsole(currentWorkspace.id, savePath!, tabId);
         }
-
-        // Refresh the console tree directly via store
-        // No blocking refresh here; tree already updated optimistically
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
@@ -483,6 +487,145 @@ function Editor() {
       setIsSaving(false);
     }
     return success;
+  };
+
+  // Conflict resolution handlers
+  const handleConflictOverwrite = async () => {
+    if (!pendingSaveData || !currentWorkspace || !conflictData) return;
+
+    const existingId = conflictData.existingId;
+
+    // Check if the target console has an open tab
+    const existingTab = tabs[existingId];
+    if (existingTab) {
+      // Check if the existing tab has unsaved changes by comparing current state to saved state
+      const existingHash = existingTab.savedStateHash;
+      const currentHash = computeConsoleStateHash(
+        existingTab.content,
+        existingTab.connectionId,
+        existingTab.databaseId,
+        existingTab.databaseName,
+      );
+      const hasChanges = !existingHash || currentHash !== existingHash;
+
+      if (hasChanges) {
+        const confirmed = window.confirm(
+          `The file "${existingTab.title || conflictData.existingName}" is open in another tab with unsaved changes.\n\n` +
+            `If you proceed, those unsaved changes will be lost.\n\n` +
+            `Do you want to continue with the overwrite?`,
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
+      // Close the existing tab since we're deleting that console
+      removeConsoleTab(existingId);
+    }
+
+    setIsSaving(true);
+    setConflictDialogOpen(false);
+
+    try {
+      // Step 1: Delete the existing console at the conflicting path
+      const deleteResult = await deleteConsole(currentWorkspace.id, existingId);
+
+      if (!deleteResult.success) {
+        setErrorMessage(
+          deleteResult.error || "Failed to delete existing console",
+        );
+        setErrorModalOpen(true);
+        setIsSaving(false);
+        setPendingSaveData(null);
+        setConflictData(null);
+        return;
+      }
+
+      // Step 2: Save our console with the path (same ID as before)
+      const result = await saveConsole(
+        currentWorkspace.id,
+        pendingSaveData.tabId,
+        pendingSaveData.content,
+        pendingSaveData.path,
+        pendingSaveData.connectionId,
+        pendingSaveData.databaseName,
+        pendingSaveData.databaseId,
+      );
+
+      if (result.success) {
+        const tabId = pendingSaveData.tabId;
+
+        // Update the tab properties
+        updateConsoleFilePath(tabId, pendingSaveData.path);
+        updateConsoleTitle(tabId, pendingSaveData.path);
+        updateConsoleDirty(tabId, true);
+
+        // Update saved state (isSaved=true, new savedStateHash)
+        const newHash = computeConsoleStateHash(
+          pendingSaveData.content,
+          pendingSaveData.connectionId,
+          pendingSaveData.databaseId,
+          pendingSaveData.databaseName,
+        );
+        updateSavedState(tabId, true, newHash);
+
+        // Update console tree
+        const { useConsoleTreeStore } = await import(
+          "../store/consoleTreeStore"
+        );
+        useConsoleTreeStore
+          .getState()
+          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
+
+        setSnackbarMessage(`Console saved at '${pendingSaveData.path}.js'`);
+        setSnackbarOpen(true);
+
+        trackEvent("console_saved", {
+          console_id: tabId,
+          is_new: true,
+          was_overwrite: true,
+        });
+      } else {
+        setErrorMessage(result.error || "Failed to save after overwrite");
+        setErrorModalOpen(true);
+      }
+    } catch (error: any) {
+      setErrorMessage(error?.message || "Failed to overwrite");
+      setErrorModalOpen(true);
+    }
+
+    setPendingSaveData(null);
+    setConflictData(null);
+    setIsSaving(false);
+  };
+
+  const handleConflictSaveAsNew = () => {
+    setConflictDialogOpen(false);
+    setConflictData(null);
+
+    if (pendingSaveData) {
+      // Prompt for a new filename
+      const newFileName = prompt(
+        "Enter a different file name:",
+        pendingSaveData.path + "_copy",
+      );
+      if (newFileName) {
+        const newPath = newFileName.endsWith(".js")
+          ? newFileName.slice(0, -3)
+          : newFileName;
+        handleConsoleSave(
+          pendingSaveData.tabId,
+          pendingSaveData.content,
+          newPath,
+        );
+      }
+    }
+    setPendingSaveData(null);
+  };
+
+  const handleConflictClose = () => {
+    setConflictDialogOpen(false);
+    setConflictData(null);
+    setPendingSaveData(null);
   };
 
   const handleCloseErrorModal = () => {
@@ -620,7 +763,6 @@ function Editor() {
                     flowType={tab.metadata?.flowType}
                     onSave={() => {
                       // The FlowEditor already handles refreshing the flows list
-                      // We don't need to close the tab anymore
                     }}
                     onCancel={() => {
                       closeConsole(tab.id);
@@ -637,7 +779,6 @@ function Editor() {
                         ref={consoleRefs.current[tab.id]}
                         consoleId={tab.id}
                         initialContent={tab.content}
-                        dbContentHash={tab.dbContentHash}
                         title={tab.title}
                         onExecute={(content, connectionId, databaseId) =>
                           handleConsoleExecute(tab.id, content, connectionId, {
@@ -654,7 +795,7 @@ function Editor() {
                         isSaving={isSaving}
                         onContentChange={content => {
                           updateConsoleContent(tab.id, content);
-                          if (content !== tab.initialContent && !tab.isDirty) {
+                          if (!tab.isDirty) {
                             updateConsoleDirty(tab.id, true);
                           }
                           // Also refresh activeEditorContent for Chat consumers
@@ -663,24 +804,9 @@ function Editor() {
                             setActiveEditorContent(ref.getCurrentContent());
                           }
                         }}
-                        onSaveSuccess={newDbContentHash => {
-                          // Update the dbContentHash in the store
-                          dispatch({
-                            type: "UPDATE_CONSOLE_DB_HASH",
-                            payload: {
-                              id: tab.id,
-                              dbContentHash: newDbContentHash,
-                            },
-                          });
-                        }}
-                        // Current database selection (single source of truth from store)
                         connectionId={tab.connectionId}
                         databaseId={tab.databaseId}
                         databaseName={tab.databaseName}
-                        // Saved database values (for dirty tracking)
-                        savedConnectionId={tab.savedConnectionId}
-                        savedDatabaseId={tab.savedDatabaseId}
-                        savedDatabaseName={tab.savedDatabaseName}
                         databases={availableDatabases}
                         onDatabaseChange={connId =>
                           updateConsoleConnection(tab.id, connId)
@@ -723,11 +849,9 @@ function Editor() {
             variant="contained"
             disableElevation
             onClick={() => {
-              // Add a blank tab on demand
               useConsoleStore.getState().addConsoleTab({
                 title: "New Console",
                 content: "",
-                initialContent: "",
               });
             }}
           >
@@ -773,6 +897,17 @@ function Editor() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Conflict Resolution Dialog */}
+      <ConflictResolutionDialog
+        open={conflictDialogOpen}
+        onClose={handleConflictClose}
+        conflict={conflictData}
+        newContent={pendingSaveData?.content || ""}
+        onOverwrite={handleConflictOverwrite}
+        onSaveAsNew={handleConflictSaveAsNew}
+        isProcessing={isSaving}
+      />
 
       {/* Success Snackbar */}
       <Snackbar

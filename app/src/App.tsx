@@ -94,7 +94,6 @@ function MainApp() {
         id: modification.consoleId,
         title: modification.title,
         content: modification.content || "",
-        initialContent: modification.content || "",
         connectionId: modification.connectionId,
         databaseId: modification.databaseId,
         databaseName: modification.databaseName,
@@ -131,7 +130,6 @@ function MainApp() {
         const id = addConsoleTab({
           title: "AI Query",
           content: "",
-          initialContent: "",
         });
         targetConsoleId = id;
         setActiveConsole(id);
@@ -200,11 +198,10 @@ function MainApp() {
       id: tabId, // Pass the ID explicitly
       title,
       content,
-      initialContent: content,
       connectionId,
       databaseId, // D1 database UUID or other DB-specific ID
       databaseName, // Human-readable database name
-      // If placeholder, defer setting filePath so dbContentHash isn't computed
+      // If placeholder, defer setting filePath so savedStateHash isn't computed
       filePath: isPlaceholder ? undefined : filePath,
       // Store query execution options for backward compatibility
       metadata: queryOptions ? { queryOptions } : undefined,

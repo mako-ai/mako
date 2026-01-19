@@ -104,6 +104,9 @@ consoleRoutes.get("/content", async (c: Context) => {
       databaseId: consoleData.databaseId,
       language: consoleData.language,
       id: consoleData.id,
+      name: consoleData.name,
+      path: consoleData.path,
+      isSaved: consoleData.isSaved,
     });
   } catch (error) {
     console.error(
@@ -168,12 +171,46 @@ consoleRoutes.post("/", async (c: Context) => {
       // If no databases exist, that's fine - targetConnectionId will remain undefined
     }
 
-    const exists = await consoleManager.consoleExists(consolePath, workspaceId);
-    if (exists) {
-      return c.json(
-        { success: false, error: "Console already exists at this path" },
-        409,
-      );
+    // Check if a console already exists at this path (with a different ID)
+    const existingConsole = await consoleManager.getConsoleByPath(
+      consolePath,
+      workspaceId,
+    );
+
+    // If console exists and has a different ID, check for conflict
+    // Skip conflict if existing console only has placeholder content (loading...)
+    const hasRealContent =
+      existingConsole?.code &&
+      existingConsole.code.trim() !== "" &&
+      existingConsole.code !== "loading...";
+
+    // Determine which ID to use for saving
+    let consoleIdToUse = id;
+
+    if (existingConsole && existingConsole._id.toString() !== id) {
+      if (hasRealContent) {
+        // Real conflict - return conflict response for user to resolve
+        return c.json(
+          {
+            success: false,
+            error: "conflict",
+            conflict: {
+              existingId: existingConsole._id.toString(),
+              existingContent: existingConsole.code,
+              existingName: existingConsole.name,
+              existingLanguage: existingConsole.language,
+              path: consolePath,
+            },
+          },
+          409,
+        );
+      } else {
+        // Existing console has placeholder content - overwrite it by using its ID
+        // This prevents creating a duplicate at the same path
+        // IMPORTANT: The client uses the returned `id` in the response to update its
+        // local state, so we must return savedConsole._id (not the original client ID)
+        consoleIdToUse = existingConsole._id.toString();
+      }
     }
 
     const savedConsole = await consoleManager.saveConsole(
@@ -185,7 +222,7 @@ consoleRoutes.post("/", async (c: Context) => {
       databaseName,
       databaseId,
       {
-        id, // Pass client-provided ID
+        id: consoleIdToUse, // Use existing console ID if overwriting placeholder, otherwise client ID
         folderId,
         description,
         language,
@@ -249,31 +286,174 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       );
     }
 
-    // Check if pathOrId is a valid ObjectId - if so, do ID-based upsert
+    // Check if pathOrId is a valid ObjectId - if so, do ID-based update
     if (Types.ObjectId.isValid(pathOrId) && pathOrId.length === 24) {
-      // ID-based upsert (auto-save flow)
       const now = new Date();
-      const result = await SavedConsole.findOneAndUpdate(
-        { _id: new Types.ObjectId(pathOrId) },
-        {
-          $set: {
-            code: body.content,
-            name: body.title || "Untitled",
-            connectionId: body.connectionId
-              ? new Types.ObjectId(body.connectionId)
-              : undefined,
-            databaseName: body.databaseName,
-            databaseId: body.databaseId,
-            updatedAt: now,
-          },
-          $setOnInsert: {
+      const isExplicitSave = body.isSaved === true;
+
+      // If this is an explicit save with a path, check for path conflicts
+      if (isExplicitSave && body.path) {
+        const consolePath = body.path;
+        const existingConsole = await consoleManager.getConsoleByPath(
+          consolePath,
+          workspaceId,
+        );
+
+        // If a different console exists at this path, return conflict
+        if (existingConsole && existingConsole._id.toString() !== pathOrId) {
+          return c.json(
+            {
+              success: false,
+              error: "conflict",
+              conflict: {
+                existingId: existingConsole._id.toString(),
+                existingContent: existingConsole.code,
+                existingName: existingConsole.name,
+                existingLanguage: existingConsole.language,
+                path: consolePath,
+              },
+            },
+            409,
+          );
+        }
+
+        // Parse path to get folder and name
+        const parts = consolePath.split("/");
+        const consoleName = parts[parts.length - 1];
+        let folderId: string | undefined;
+        if (parts.length > 1) {
+          const folderPath = parts.slice(0, -1);
+          folderId = await consoleManager.findOrCreateFolderPath(
+            folderPath,
+            workspaceId,
+            user.id,
+          );
+        }
+
+        // Update with path information (use upsert in case console hasn't been auto-saved yet)
+        const setFields: Record<string, any> = {
+          code: body.content,
+          name: consoleName,
+          folderId: folderId ? new Types.ObjectId(folderId) : undefined,
+          connectionId: body.connectionId
+            ? new Types.ObjectId(body.connectionId)
+            : undefined,
+          databaseName: body.databaseName,
+          databaseId: body.databaseId,
+          isSaved: true,
+          updatedAt: now,
+        };
+
+        const result = await SavedConsole.findOneAndUpdate(
+          {
+            _id: new Types.ObjectId(pathOrId),
             workspaceId: new Types.ObjectId(workspaceId),
-            createdBy: user.id,
-            language: "sql" as const,
-            isPrivate: false,
-            executionCount: 0,
-            createdAt: now,
           },
+          {
+            $set: setFields,
+            $setOnInsert: {
+              createdBy: user.id,
+              language: "sql" as const,
+              isPrivate: false,
+              executionCount: 0,
+              createdAt: now,
+            },
+          },
+          { upsert: true, new: true },
+        );
+
+        return c.json({
+          success: true,
+          message: "Console saved",
+          console: {
+            id: result._id.toString(),
+            name: result.name,
+          },
+        });
+      }
+
+      // Build $set object - only include name if title is explicitly provided
+      // This prevents overwriting the name to "Untitled" when only updating content
+      const setFields: Record<string, any> = {
+        code: body.content,
+        connectionId: body.connectionId
+          ? new Types.ObjectId(body.connectionId)
+          : undefined,
+        databaseName: body.databaseName,
+        databaseId: body.databaseId,
+        updatedAt: now,
+      };
+
+      // Only update name if explicitly provided
+      if (body.title !== undefined) {
+        setFields.name = body.title || "Untitled";
+      }
+
+      // If this is an explicit save without path (e.g., Cmd+S on already saved), mark as saved
+      if (isExplicitSave) {
+        setFields.isSaved = true;
+      }
+
+      if (isExplicitSave) {
+        // Explicit save without path (e.g., Cmd+S on already saved console)
+        // Use upsert in case console hasn't been auto-saved yet
+        const setOnInsertFields: Record<string, any> = {
+          createdBy: user.id,
+          language: "sql" as const,
+          isPrivate: false,
+          executionCount: 0,
+          createdAt: now,
+        };
+        // Only add name to $setOnInsert if not already in $set (avoid MongoDB conflict)
+        if (!setFields.name) {
+          setOnInsertFields.name = body.title || "Untitled";
+        }
+
+        const result = await SavedConsole.findOneAndUpdate(
+          {
+            _id: new Types.ObjectId(pathOrId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          },
+          {
+            $set: setFields,
+            $setOnInsert: setOnInsertFields,
+          },
+          { upsert: true, new: true },
+        );
+
+        return c.json({
+          success: true,
+          message: "Console saved",
+          console: {
+            id: result._id.toString(),
+            name: result.name,
+          },
+        });
+      }
+
+      // Draft auto-save flow: Use upsert to create if doesn't exist
+      // Note: isSaved is NOT set here - drafts remain isSaved: false
+      const setOnInsertFields: Record<string, any> = {
+        createdBy: user.id,
+        language: "sql" as const,
+        isPrivate: false,
+        isSaved: false, // Draft consoles are not saved to explorer
+        executionCount: 0,
+        createdAt: now,
+      };
+      // Only add name to $setOnInsert if not already in $set (avoid MongoDB conflict)
+      if (!setFields.name) {
+        setOnInsertFields.name = "Untitled";
+      }
+
+      const result = await SavedConsole.findOneAndUpdate(
+        {
+          _id: new Types.ObjectId(pathOrId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        },
+        {
+          $set: setFields,
+          $setOnInsert: setOnInsertFields,
         },
         { upsert: true, new: true },
       );

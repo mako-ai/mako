@@ -78,16 +78,18 @@ export class ConsoleManager {
 
   /**
    * Get all consoles in a tree structure from database
+   * Only returns explicitly saved consoles (isSaved: true), not drafts
    */
   async listConsoles(workspaceId: string): Promise<ConsoleFile[]> {
     try {
-      // Get all folders and consoles for the workspace
+      // Get all folders and saved consoles (not drafts) for the workspace
       const [folders, consoles] = await Promise.all([
         ConsoleFolder.find({
           workspaceId: new Types.ObjectId(workspaceId),
         }).sort({ name: 1 }),
         SavedConsole.find({
           workspaceId: new Types.ObjectId(workspaceId),
+          isSaved: true, // Only explicitly saved consoles, not drafts
         }).sort({ name: 1 }),
       ]);
 
@@ -264,6 +266,9 @@ export class ConsoleManager {
     databaseId?: string;
     language?: string;
     id?: string;
+    name?: string;
+    path?: string;
+    isSaved?: boolean;
   } | null> {
     try {
       // Only accept valid ObjectIds
@@ -278,6 +283,18 @@ export class ConsoleManager {
       });
 
       if (savedConsole) {
+        // Build path from name and folder
+        let consolePath = savedConsole.name;
+        if (savedConsole.folderId) {
+          const folderPath = await this.getFolderPathById(
+            savedConsole.folderId.toString(),
+            workspaceId,
+          );
+          if (folderPath) {
+            consolePath = `${folderPath}/${savedConsole.name}`;
+          }
+        }
+
         return {
           content: savedConsole.code,
           connectionId: savedConsole.connectionId?.toString(),
@@ -285,6 +302,9 @@ export class ConsoleManager {
           databaseId: savedConsole.databaseId,
           language: savedConsole.language,
           id: savedConsole._id.toString(),
+          name: savedConsole.name,
+          path: consolePath,
+          isSaved: savedConsole.isSaved,
         };
       }
 
@@ -293,6 +313,48 @@ export class ConsoleManager {
       console.error("Error getting console with metadata:", error);
       return null;
     }
+  }
+
+  /**
+   * Get folder path by folder ID (for building console paths)
+   */
+  private async getFolderPathById(
+    folderId: string,
+    workspaceId: string,
+  ): Promise<string | null> {
+    try {
+      const folder = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!folder) return null;
+
+      if (folder.parentId) {
+        const parentPath = await this.getFolderPathById(
+          folder.parentId.toString(),
+          workspaceId,
+        );
+        return parentPath ? `${parentPath}/${folder.name}` : folder.name;
+      }
+
+      return folder.name;
+    } catch (error) {
+      console.error("Error getting folder path:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Find or create folder path (public version of ensureFolderPath)
+   * Used by consoles.ts for explicit saves with path
+   */
+  async findOrCreateFolderPath(
+    folderParts: string[],
+    workspaceId: string,
+    userId: string,
+  ): Promise<string | undefined> {
+    return this.ensureFolderPath(folderParts, workspaceId, userId);
   }
 
   /**
@@ -331,18 +393,46 @@ export class ConsoleManager {
         );
       }
 
-      // Check if console already exists
-      let savedConsole = await SavedConsole.findOne({
-        name: consoleName,
-        workspaceId: new Types.ObjectId(workspaceId),
-        ...(folderId && {
-          folderId: new Types.ObjectId(folderId),
-        }),
-      });
+      // Look up existing console - try by ID first, then by name + folder
+      // The POST route handles conflict detection for new consoles
+      // The path-based PUT route needs the name + folder fallback to update existing consoles
+      let savedConsole: ISavedConsole | null = null;
+
+      if (options?.id && Types.ObjectId.isValid(options.id)) {
+        // ID-based lookup (used by POST route and conflict resolution)
+        savedConsole = await SavedConsole.findOne({
+          _id: new Types.ObjectId(options.id),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+      }
+
+      // Fallback: look up by name + folder for path-based PUT requests
+      // Only match saved consoles (isSaved: true), not drafts
+      if (!savedConsole) {
+        const query: any = {
+          name: consoleName,
+          workspaceId: new Types.ObjectId(workspaceId),
+          isSaved: true, // Only match saved consoles, not drafts
+        };
+
+        if (folderId) {
+          query.folderId = new Types.ObjectId(folderId);
+        } else {
+          // For root level consoles, check that folderId is null/undefined
+          query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
+        }
+
+        savedConsole = await SavedConsole.findOne(query);
+      }
 
       if (savedConsole) {
-        // Update existing console
+        // Update existing console (draft -> saved)
+        savedConsole.name = consoleName; // Update name (may change if draft is being saved with a path)
+        savedConsole.folderId = folderId
+          ? new Types.ObjectId(folderId)
+          : undefined; // Update folder (draft -> saved with path)
         savedConsole.code = content;
+        savedConsole.isSaved = true; // Mark as explicitly saved (no longer a draft)
         savedConsole.updatedAt = new Date();
         if (connectionId !== undefined) {
           savedConsole.connectionId = connectionId
@@ -365,7 +455,7 @@ export class ConsoleManager {
 
         await savedConsole.save();
       } else {
-        // Create new console
+        // Create new console (explicitly saved)
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
@@ -380,6 +470,7 @@ export class ConsoleManager {
           language: options?.language || this.detectLanguage(content),
           createdBy: userId,
           isPrivate: options?.isPrivate || false,
+          isSaved: true, // Explicitly saved console
           executionCount: 0,
         };
 
@@ -606,6 +697,55 @@ export class ConsoleManager {
     } catch (error) {
       console.error("Error checking console existence:", error);
       return false;
+    }
+  }
+
+  /**
+   * Get console by path - returns the full console document
+   * Used for conflict detection when saving
+   */
+  async getConsoleByPath(
+    consolePath: string,
+    workspaceId: string,
+  ): Promise<ISavedConsole | null> {
+    try {
+      const parts = consolePath.split("/");
+      const consoleName = parts[parts.length - 1];
+
+      // Get folder ID if there's a folder path
+      let folderId: string | undefined;
+      const hasFolder = parts.length > 1;
+      if (hasFolder) {
+        const folderParts = parts.slice(0, -1);
+        folderId = await this.findFolderByPath(folderParts, workspaceId);
+
+        // If path specifies a folder but it doesn't exist, no console can exist at this path
+        if (!folderId) {
+          return null;
+        }
+      }
+
+      // Build query for console with same name in same folder (or root if no folder)
+      // Only match explicitly saved consoles (isSaved: true) - not drafts
+      const query: any = {
+        name: consoleName,
+        workspaceId: new Types.ObjectId(workspaceId),
+        isSaved: true, // Only match saved consoles, not drafts
+      };
+
+      if (folderId) {
+        query.folderId = new Types.ObjectId(folderId);
+      } else {
+        // For root level consoles (hasFolder is false), check that folderId is null/undefined
+        query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
+      }
+
+      // Sort by updatedAt descending to get the most recently updated console
+      // in case there are duplicate entries
+      return await SavedConsole.findOne(query).sort({ updatedAt: -1 });
+    } catch (error) {
+      console.error("Error getting console by path:", error);
+      return null;
     }
   }
 

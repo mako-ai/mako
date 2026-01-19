@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
 import { Message } from "../types/chat";
+import { computeConsoleStateHash } from "../utils/stateHash";
 
 /*********************
  * State definitions *
@@ -16,18 +17,15 @@ export interface ChatSession {
 }
 
 export interface ConsoleTab {
-  id: string;
+  id: string; // Client-generated, NEVER changes
   title: string;
   content: string;
-  initialContent: string;
-  dbContentHash?: string; // Hash of the content last saved to database
+  isSaved: boolean; // false = draft (auto-save enabled), true = saved (no auto-save)
+  savedStateHash?: string; // Hash of (content + connectionId + databaseId + databaseName) at last save
   connectionId?: string; // DatabaseConnection ID (MongoDB ObjectId)
   databaseId?: string; // Specific database ID (e.g., D1 UUID for cluster mode)
   databaseName?: string; // Human-readable database name (e.g., D1 database name)
-  savedConnectionId?: string; // Connection ID last saved to DB (for dirty tracking)
-  savedDatabaseId?: string; // Database ID last saved to DB (for dirty tracking)
-  savedDatabaseName?: string; // Database name last saved to DB (for dirty tracking)
-  filePath?: string;
+  filePath?: string; // Set after explicit save (display name in explorer)
   kind?: "console" | "settings" | "connectors" | "members" | "flow-editor";
   isDirty?: boolean; // false/undefined = pristine (replaceable), true = dirty (persistent)
   icon?: string; // URL or path to icon, e.g., "/api/connectors/stripe/icon.svg"
@@ -145,7 +143,7 @@ export const initialState: GlobalState = getInitialState();
 export type Action =
   | {
       type: "OPEN_CONSOLE_TAB";
-      payload: Omit<ConsoleTab, "initialContent"> & { initialContent: string };
+      payload: Omit<ConsoleTab, "isSaved"> & { isSaved?: boolean };
     }
   | { type: "CLOSE_CONSOLE_TAB"; payload: { id: string } }
   | { type: "FOCUS_CONSOLE_TAB"; payload: { id: string | null } }
@@ -166,21 +164,12 @@ export type Action =
       };
     }
   | {
-      type: "UPDATE_CONSOLE_DB_HASH";
-      payload: { id: string; dbContentHash: string };
-    }
-  | {
-      type: "UPDATE_CONSOLE_SAVED_DATABASE";
-      payload: {
-        id: string;
-        connectionId?: string;
-        databaseId?: string;
-        databaseName?: string;
-      };
-    }
-  | {
       type: "UPDATE_CONSOLE_FILE_PATH";
       payload: { id: string; filePath: string };
+    }
+  | {
+      type: "UPDATE_CONSOLE_SAVED_STATE";
+      payload: { id: string; isSaved: boolean; savedStateHash: string };
     }
   | { type: "ADD_MESSAGE"; payload: { chatId: string; message: Message } }
   | {
@@ -225,8 +214,8 @@ export const reducer = (state: GlobalState, action: Action): void => {
         id,
         title,
         content,
-        initialContent,
-        dbContentHash,
+        isSaved,
+        savedStateHash,
         connectionId,
         databaseId,
         databaseName,
@@ -251,15 +240,11 @@ export const reducer = (state: GlobalState, action: Action): void => {
         id,
         title,
         content,
-        initialContent,
-        dbContentHash,
+        isSaved: isSaved ?? false, // Default to draft (not saved)
+        savedStateHash,
         connectionId,
         databaseId,
         databaseName,
-        // Initialize saved* fields to track the original database selection for dirty state
-        savedConnectionId: connectionId,
-        savedDatabaseId: databaseId,
-        savedDatabaseName: databaseName,
         filePath,
         kind: kind || "console",
         isDirty: false, // New tabs start as pristine
@@ -314,23 +299,17 @@ export const reducer = (state: GlobalState, action: Action): void => {
       }
       break;
     }
-    case "UPDATE_CONSOLE_DB_HASH": {
-      const tab = state.consoles.tabs[action.payload.id];
-      if (tab) tab.dbContentHash = action.payload.dbContentHash;
-      break;
-    }
-    case "UPDATE_CONSOLE_SAVED_DATABASE": {
-      const tab = state.consoles.tabs[action.payload.id];
-      if (tab) {
-        tab.savedConnectionId = action.payload.connectionId;
-        tab.savedDatabaseId = action.payload.databaseId;
-        tab.savedDatabaseName = action.payload.databaseName;
-      }
-      break;
-    }
     case "UPDATE_CONSOLE_FILE_PATH": {
       const tab = state.consoles.tabs[action.payload.id];
       if (tab) tab.filePath = action.payload.filePath;
+      break;
+    }
+    case "UPDATE_CONSOLE_SAVED_STATE": {
+      const tab = state.consoles.tabs[action.payload.id];
+      if (tab) {
+        tab.isSaved = action.payload.isSaved;
+        tab.savedStateHash = action.payload.savedStateHash;
+      }
       break;
     }
     case "CREATE_CHAT": {
@@ -612,7 +591,7 @@ export const useAppStore = create<
             }
           }
 
-          // Migration: Populate saved* fields and normalize legacy data for existing console tabs
+          // Migration: Convert legacy console tab fields to new format
           if (data.state?.consoles?.tabs) {
             Object.values(data.state.consoles.tabs).forEach((tab: any) => {
               // Normalize databaseId/databaseName from legacy metadata.queryOptions
@@ -628,16 +607,32 @@ export const useAppStore = create<
                 tab.databaseName = tab.metadata.queryOptions.databaseLabel;
               }
 
-              // Initialize saved* fields from current values for dirty state tracking
-              if (tab.savedConnectionId === undefined) {
-                tab.savedConnectionId = tab.connectionId;
+              // Migration: Set isSaved based on whether tab has filePath
+              if (tab.isSaved === undefined) {
+                tab.isSaved = !!tab.filePath;
               }
-              if (tab.savedDatabaseId === undefined) {
-                tab.savedDatabaseId = tab.databaseId;
+
+              // Migration: Compute savedStateHash from existing fields if not present
+              if (tab.savedStateHash === undefined && tab.filePath) {
+                // Use legacy fields if available, otherwise current values
+                const savedContent = tab.initialContent ?? tab.content ?? "";
+                const savedConnId = tab.savedConnectionId ?? tab.connectionId;
+                const savedDbId = tab.savedDatabaseId ?? tab.databaseId;
+                const savedDbName = tab.savedDatabaseName ?? tab.databaseName;
+                tab.savedStateHash = computeConsoleStateHash(
+                  savedContent,
+                  savedConnId,
+                  savedDbId,
+                  savedDbName,
+                );
               }
-              if (tab.savedDatabaseName === undefined) {
-                tab.savedDatabaseName = tab.databaseName;
-              }
+
+              // Clean up deprecated fields
+              delete tab.initialContent;
+              delete tab.dbContentHash;
+              delete tab.savedConnectionId;
+              delete tab.savedDatabaseId;
+              delete tab.savedDatabaseName;
             });
           }
 

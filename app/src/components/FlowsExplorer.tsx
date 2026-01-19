@@ -72,7 +72,6 @@ export function FlowsExplorer() {
     const id = addConsoleTab({
       title: `New ${flowType === "scheduled" ? "Scheduled" : "Webhook"} Flow`,
       content: "",
-      initialContent: "",
       kind: "flow-editor" as any,
       metadata: { isNew: true, flowType },
     });
@@ -94,7 +93,6 @@ export function FlowsExplorer() {
         const id = addConsoleTab({
           title: `${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`,
           content: "",
-          initialContent: "",
           kind: "flow-editor" as any,
           metadata: {
             flowId,
