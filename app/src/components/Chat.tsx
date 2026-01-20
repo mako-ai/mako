@@ -55,6 +55,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
+import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
 
 interface ChatSessionMeta {
@@ -611,6 +612,19 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           return;
         }
 
+        // Add line numbers to help AI accurately specify patch ranges
+        const rawContent = targetConsole.content || "";
+        const lines = rawContent.split("\n");
+        const totalLines = lines.length;
+        const lineNumberWidth = String(totalLines).length;
+        // Format: "  1| code here" - line numbers are for reference only
+        const content = lines
+          .map(
+            (line: string, i: number) =>
+              `${String(i + 1).padStart(lineNumberWidth)}| ${line}`,
+          )
+          .join("\n");
+
         addToolOutput({
           tool: "read_console",
           toolCallId: toolCall.toolCallId,
@@ -618,7 +632,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             success: true,
             consoleId: targetConsole.id,
             title: targetConsole.title,
-            content: targetConsole.content || "",
+            content,
+            totalLines,
             connectionId: targetConsole.connectionId,
             connectionType: (
               targetConsole.metadata as { connectionType?: string }
@@ -632,10 +647,16 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
 
       // Handle modify_console - requires explicit consoleId
       if (toolName === "modify_console") {
-        const action = input.action as "replace" | "insert" | "append";
+        const action = input.action as
+          | "replace"
+          | "insert"
+          | "append"
+          | "patch";
         const content = input.content as string;
         const position = input.position as number | null;
         const consoleId = input.consoleId as string | undefined;
+        const startLine = input.startLine as number | undefined;
+        const endLine = input.endLine as number | undefined;
 
         if (!consoleId) {
           addToolOutput({
@@ -683,6 +704,20 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           return;
         }
 
+        // Validate patch action has startLine and endLine
+        if (action === "patch" && (!startLine || !endLine)) {
+          addToolOutput({
+            tool: "modify_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error:
+                "startLine and endLine are required for patch action. Use read_console first to see line numbers.",
+            },
+          });
+          return;
+        }
+
         // Dispatch through the event system - this ensures Monaco editor gets updated
         // The App.tsx handleConsoleModification callback will:
         // 1. Dispatch a CustomEvent that Editor.tsx listens to
@@ -698,36 +733,24 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                 ? { line: position, column: 1 }
                 : undefined,
             consoleId,
+            startLine,
+            endLine,
           });
         }
 
-        // Also update store for consistency
+        // Also update store for consistency using shared utility
         const currentContent = targetConsole.content || "";
-        let newContent: string;
-
-        switch (action) {
-          case "replace":
-            newContent = content;
-            break;
-          case "append":
-            newContent =
-              currentContent +
-              (currentContent.endsWith("\n") ? "" : "\n") +
-              content;
-            break;
-          case "insert":
-            if (position !== null && position !== undefined) {
-              const lines = currentContent.split("\n");
-              const insertIndex = Math.max(0, position - 1);
-              lines.splice(insertIndex, 0, content);
-              newContent = lines.join("\n");
-            } else {
-              newContent = content + currentContent;
-            }
-            break;
-          default:
-            newContent = content;
-        }
+        const modification: ConsoleModification = {
+          action,
+          content,
+          position:
+            position !== null && position !== undefined
+              ? { line: position, column: 1 }
+              : undefined,
+          startLine,
+          endLine,
+        };
+        const newContent = applyModification(currentContent, modification);
         currentStore.updateConsoleContent(consoleId, newContent);
 
         addToolOutput({
@@ -736,7 +759,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           output: {
             success: true,
             consoleId,
-            message: `Console ${action}d successfully`,
+            message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
           },
         });
         return;
