@@ -15,9 +15,9 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Frontend/React | 6 | 8 |
 | Tools & Agents | 7 | 5 |
 | Providers & Models | 5 | 4 |
-| Error Handling | 4 | 4 |
+| Error Handling | 3 | 5 |
 | Advanced Patterns | 2 | 9 |
-| **Total** | **39** | **38** |
+| **Total** | **38** | **39** |
 
 ---
 
@@ -113,7 +113,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Errors | `onError` callback | Handle streaming errors | ✅ Implemented | useChat onError logs and displays |
 | Errors | Error persistence | Save errors to chat for debugging | ✅ Implemented | `persistChatError()` service |
 | Errors | Graceful degradation | Continue with partial response | ✅ Implemented | Partial tool calls saved |
-| Errors | Orphan tool call sanitization | Remove tool_use without tool_result | ✅ Implemented | Sanitizes before sending to Anthropic |
+| Errors | Orphan tool call sanitization | Remove tool_use without tool_result | ✅ Implemented | `sanitizeMessagesForModel()` in `api/src/utils/message-sanitizer.ts` |
 | Errors | AI SDK error types | Use `AISDKError`, `APIError`, etc. | ❌ Missing | Not using typed errors |
 | Errors | Retry logic with backoff | Automatic retry on transient failures | ❌ Missing | No retry layer for AI calls |
 | Errors | Rate limit handling | Handle 429 errors gracefully | ❌ Missing | No specific rate limit handling |
@@ -188,7 +188,6 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 5. **Title generation** - Fire-and-forget pattern doesn't block main stream
 6. **Step limiting** - Proper runaway prevention with stepCountIs
 7. **Native parts storage** - UIMessage parts stored directly for lossless round-trips
-8. **Orphan tool call sanitization** - Prevents Anthropic API errors from incomplete tool cycles
 
 ### Migration Considerations
 
@@ -216,7 +215,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 
 | File | Purpose |
 |------|---------|
-| `api/src/routes/agent.routes.ts` | Main chat endpoint with streamText and orphan tool call sanitization |
+| `api/src/routes/agent.routes.ts` | Main chat endpoint with streamText |
 | `api/src/agent-v2/` | AI module with types, tools, prompts |
 | `api/src/services/agent-thread.service.ts` | Chat persistence with saveChat (native parts storage) |
 | `api/src/services/title-generator.ts` | AI title generation |

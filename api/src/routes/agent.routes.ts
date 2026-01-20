@@ -28,6 +28,7 @@ import {
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
+import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 
 export const agentRoutes = new Hono();
 
@@ -72,99 +73,6 @@ function getModelInstance(modelId?: string): LanguageModel {
       );
       return openai("gpt-5.2") as unknown as LanguageModel;
   }
-}
-
-/**
- * Sanitize model messages to remove orphan tool-call parts that don't have
- * corresponding tool-result parts. Prevents Anthropic API errors:
- * "tool_use ids were found without tool_result blocks immediately after"
- *
- * The Anthropic API requires strict message sequencing: every tool_use block
- * must have a corresponding tool_result in the immediately following message.
- * This can fail when tool calls are interrupted mid-stream or when loading
- * legacy chats with incomplete tool cycles.
- */
-function sanitizeOrphanToolCalls(
-  messages: Awaited<ReturnType<typeof convertToModelMessages>>,
-): typeof messages {
-  const result: typeof messages = [];
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-
-    if (msg.role === "assistant" && Array.isArray(msg.content)) {
-      // Collect tool-call IDs from this assistant message
-      const toolCallIds = new Set<string>();
-      for (const part of msg.content) {
-        if (
-          typeof part === "object" &&
-          part !== null &&
-          "type" in part &&
-          part.type === "tool-call" &&
-          "toolCallId" in part &&
-          typeof part.toolCallId === "string"
-        ) {
-          toolCallIds.add(part.toolCallId);
-        }
-      }
-
-      if (toolCallIds.size > 0) {
-        // Check next message for matching tool-result parts
-        const nextMsg = messages[i + 1];
-        const toolResultIds = new Set<string>();
-
-        if (nextMsg?.role === "user" && Array.isArray(nextMsg.content)) {
-          for (const part of nextMsg.content) {
-            if (
-              typeof part === "object" &&
-              part !== null &&
-              "type" in part &&
-              part.type === "tool-result" &&
-              "toolCallId" in part &&
-              typeof part.toolCallId === "string"
-            ) {
-              toolResultIds.add(part.toolCallId);
-            }
-          }
-        }
-
-        // Find orphan tool calls (no matching result)
-        const orphanIds = [...toolCallIds].filter(id => !toolResultIds.has(id));
-
-        if (orphanIds.length > 0) {
-          console.warn(
-            `[Agent] Removing ${orphanIds.length} orphan tool-call(s):`,
-            orphanIds,
-          );
-
-          // Filter out orphan tool calls
-          const filteredContent = msg.content.filter(part => {
-            if (
-              typeof part === "object" &&
-              part !== null &&
-              "type" in part &&
-              part.type === "tool-call" &&
-              "toolCallId" in part &&
-              typeof part.toolCallId === "string"
-            ) {
-              return !orphanIds.includes(part.toolCallId);
-            }
-            return true;
-          });
-
-          // Only include message if it still has content
-          if (filteredContent.length > 0) {
-            result.push({ ...msg, content: filteredContent });
-          }
-          continue;
-        }
-      }
-    }
-
-    result.push(msg);
-  }
-
-  return result;
 }
 
 /**
@@ -394,10 +302,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const model = getModelInstance(modelId);
   console.log(`[Agent] Using model: ${modelId || "gpt-5.2 (default)"}`);
 
+  // Sanitize messages to remove incomplete tool calls from interrupted streams
+  // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
+  const sanitizedMessages = sanitizeMessagesForModel(messages);
+
   // Convert UI messages (from useChat) to model messages (for streamText)
-  // Then sanitize to remove orphan tool calls that would cause Anthropic API errors
-  const rawModelMessages = await convertToModelMessages(messages);
-  const modelMessages = sanitizeOrphanToolCalls(rawModelMessages);
+  const modelMessages = await convertToModelMessages(sanitizedMessages);
 
   // Guardrail: prevent runaway multi-step tool loops in production.
   // The AI SDK defaults to stopWhen: stepCountIs(1). We intentionally allow multi-step,
