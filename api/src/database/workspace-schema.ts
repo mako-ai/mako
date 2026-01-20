@@ -308,6 +308,21 @@ export interface ISavedConsole extends Document {
 }
 
 /**
+ * Message part types for AI SDK v6 compatibility
+ * Stores parts in chronological order to preserve the original message structure
+ */
+export interface IMessagePart {
+  type: string; // "text", "reasoning", "tool-{toolName}", "dynamic-tool"
+  text?: string; // For text and reasoning parts
+  reasoning?: string; // Alternative field for reasoning content
+  toolCallId?: string; // For tool parts
+  toolName?: string; // For tool parts
+  input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
+  output?: unknown; // Tool result (named 'output' for AI SDK v6 compat, was 'result')
+  state?: string; // Tool state: "input-streaming", "input-available", "output-streaming", "output-available", "error"
+}
+
+/**
  * Chat model interface
  */
 export interface IChat extends Document {
@@ -316,8 +331,11 @@ export interface IChat extends Document {
   title: string;
   threadId?: string; // Custom thread ID for conversation continuity
   messages: Array<{
+    id?: string; // Message ID from AI SDK (for message identification)
     role: "user" | "assistant";
-    content: string;
+    parts?: IMessagePart[]; // NEW: Raw parts array (source of truth for chronological order)
+    // Legacy fields - kept for backward compatibility with existing chats
+    content?: string;
     reasoning?: string[]; // Array of reasoning/thinking blocks
     toolCalls?: Array<{
       toolCallId?: string;
@@ -914,11 +932,32 @@ const ChatSchema = new Schema<IChat>(
     },
     messages: [
       {
+        id: {
+          type: String,
+          required: false,
+        },
         role: {
           type: String,
           enum: ["user", "assistant"],
           required: true,
         },
+        // NEW: parts array - source of truth for message structure and chronological order
+        parts: [
+          {
+            type: {
+              type: String,
+              required: true,
+            },
+            text: String,
+            reasoning: String,
+            toolCallId: String,
+            toolName: String,
+            input: Schema.Types.Mixed,
+            output: Schema.Types.Mixed,
+            state: String,
+          },
+        ],
+        // Legacy fields - kept for backward compatibility with existing chats
         content: {
           type: String,
           required: false,
