@@ -77,6 +77,15 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   const effectiveMode: "light" | "dark" =
     mode === "system" ? systemTheme : mode;
 
+  // Sync the 'dark' class on <html> for Tailwind/Streamdown CSS variables
+  useEffect(() => {
+    if (effectiveMode === "dark") {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+  }, [effectiveMode]);
+
   // Create theme based on effective mode
   const theme = createTheme({
     palette: {
