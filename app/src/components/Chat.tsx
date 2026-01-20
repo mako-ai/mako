@@ -971,6 +971,50 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           // "tool_use without tool_result" errors.
           const convertedMessages =
             data.messages?.map((msg: any) => {
+              // NEW: If parts are stored, use them directly (preserves chronological order)
+              if (
+                msg.parts &&
+                Array.isArray(msg.parts) &&
+                msg.parts.length > 0
+              ) {
+                return {
+                  id:
+                    msg.id ||
+                    msg._id?.toString() ||
+                    `${Date.now()}-${Math.random()}`,
+                  role: msg.role,
+                  parts: msg.parts.map((p: any) => {
+                    // Convert stored part to UI format
+                    if (p.type === "text") {
+                      return { type: "text", text: p.text || "" };
+                    }
+                    if (p.type === "reasoning") {
+                      // Handle both 'reasoning' and 'text' fields for reasoning parts
+                      return {
+                        type: "reasoning",
+                        text: p.reasoning || p.text || "",
+                      };
+                    }
+                    // Tool parts: ensure state is set for UI rendering
+                    if (
+                      p.type?.startsWith("tool-") ||
+                      p.type === "dynamic-tool"
+                    ) {
+                      return {
+                        ...p,
+                        state: p.state || "output-available",
+                        input: p.input ?? {},
+                        output: p.output ?? null,
+                      };
+                    }
+                    // Unknown part type - pass through as-is
+                    return p;
+                  }),
+                };
+              }
+
+              // LEGACY FALLBACK: Reconstruct parts from legacy fields (for existing chats without parts)
+              // Note: Order cannot be perfectly restored, use best-effort: tools -> reasoning -> text
               const parts: Array<Record<string, unknown>> = [];
 
               // Add tool call parts (for UI display - shows tool history)
