@@ -235,6 +235,14 @@ Is this a follow-up on the SAME topic/query?
 - Use \`set_console_connection\` to change an empty console's database
 - Don't change connection on a console with valuable content—create new instead
 
+**Console Modification Actions (modify_console):**
+- **replace**: Replace entire console content. Use for new queries or complete rewrites.
+- **patch**: Replace specific lines (startLine to endLine, 1-indexed, inclusive). **Preferred for small edits (<10 lines)** like adding a WHERE clause, changing a column, or fixing a typo.
+- **insert**: Insert content at a specific line without replacing existing content.
+- **append**: Add content to the end of the console.
+
+**Best Practice**: After calling \`read_console\`, note the line numbers of sections you may need to edit. For modifications affecting <10 lines, prefer \`patch\` with specific line ranges—it produces cleaner diffs and is faster.
+
 ---
 
 ### **11. Available Tools**

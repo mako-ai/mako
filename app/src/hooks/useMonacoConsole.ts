@@ -2,12 +2,14 @@ import { useRef, useCallback, useState, useEffect } from "react";
 import { useConsoleStore } from "../store/consoleStore";
 
 export interface ConsoleModification {
-  action: "replace" | "insert" | "append" | "create";
+  action: "replace" | "insert" | "append" | "create" | "patch";
   content: string;
   position?: {
     line: number;
     column: number;
   };
+  startLine?: number;
+  endLine?: number;
 }
 
 interface UseMonacoConsoleOptions {
@@ -129,6 +131,47 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
             );
 
             editor.executeEdits("ai-modification", [
+              {
+                range: range,
+                text: modification.content,
+                forceMoveMarkers: true,
+              },
+            ]);
+            break;
+          }
+
+          case "patch": {
+            // Patch replaces specific line range with new content
+            if (!modification.startLine || !modification.endLine) {
+              console.warn(
+                "[useMonacoConsole] patch action requires startLine and endLine",
+              );
+              break;
+            }
+
+            const startLine = modification.startLine;
+            const endLine = modification.endLine;
+
+            // Clamp to valid line numbers
+            const totalLines = model.getLineCount();
+            const safeStartLine = Math.max(1, Math.min(startLine, totalLines));
+            const safeEndLine = Math.max(
+              safeStartLine,
+              Math.min(endLine, totalLines),
+            );
+
+            // Get the length of the end line to create a proper range
+            const endLineLength = model.getLineLength(safeEndLine);
+
+            // Create range from start of startLine to end of endLine
+            const range = new (editor as any).monaco.Range(
+              safeStartLine,
+              1,
+              safeEndLine,
+              endLineLength + 1,
+            );
+
+            editor.executeEdits("ai-patch", [
               {
                 range: range,
                 text: modification.content,

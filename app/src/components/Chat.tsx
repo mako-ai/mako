@@ -632,10 +632,16 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
 
       // Handle modify_console - requires explicit consoleId
       if (toolName === "modify_console") {
-        const action = input.action as "replace" | "insert" | "append";
+        const action = input.action as
+          | "replace"
+          | "insert"
+          | "append"
+          | "patch";
         const content = input.content as string;
         const position = input.position as number | null;
         const consoleId = input.consoleId as string | undefined;
+        const startLine = input.startLine as number | undefined;
+        const endLine = input.endLine as number | undefined;
 
         if (!consoleId) {
           addToolOutput({
@@ -683,6 +689,20 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           return;
         }
 
+        // Validate patch action has startLine and endLine
+        if (action === "patch" && (!startLine || !endLine)) {
+          addToolOutput({
+            tool: "modify_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error:
+                "startLine and endLine are required for patch action. Use read_console first to see line numbers.",
+            },
+          });
+          return;
+        }
+
         // Dispatch through the event system - this ensures Monaco editor gets updated
         // The App.tsx handleConsoleModification callback will:
         // 1. Dispatch a CustomEvent that Editor.tsx listens to
@@ -698,6 +718,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                 ? { line: position, column: 1 }
                 : undefined,
             consoleId,
+            startLine,
+            endLine,
           });
         }
 
@@ -725,6 +747,25 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               newContent = content + currentContent;
             }
             break;
+          case "patch":
+            if (startLine && endLine) {
+              const lines = currentContent.split("\n");
+              const safeStartLine = Math.max(
+                1,
+                Math.min(startLine, lines.length),
+              );
+              const safeEndLine = Math.max(
+                safeStartLine,
+                Math.min(endLine, lines.length),
+              );
+              // Replace lines from startLine to endLine (1-indexed, inclusive)
+              const before = lines.slice(0, safeStartLine - 1);
+              const after = lines.slice(safeEndLine);
+              newContent = [...before, content, ...after].join("\n");
+            } else {
+              newContent = content;
+            }
+            break;
           default:
             newContent = content;
         }
@@ -736,7 +777,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           output: {
             success: true,
             consoleId,
-            message: `Console ${action}d successfully`,
+            message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
           },
         });
         return;
