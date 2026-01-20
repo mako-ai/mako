@@ -536,6 +536,8 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     return { type: partType, ...p };
   });
 
+  // TODO: Remove legacy field extraction once we're OK with losing backward compatibility
+  // for old consumers that read content/reasoning/toolCalls instead of parts.
   // LEGACY: Extract text content from parts (excluding reasoning)
   const textContent = (msg.parts || [])
     .filter(
