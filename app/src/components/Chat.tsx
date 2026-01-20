@@ -55,6 +55,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
+import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
 
 interface ChatSessionMeta {
@@ -611,6 +612,19 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           return;
         }
 
+        // Add line numbers to help AI accurately specify patch ranges
+        const rawContent = targetConsole.content || "";
+        const lines = rawContent.split("\n");
+        const totalLines = lines.length;
+        const lineNumberWidth = String(totalLines).length;
+        // Format: "  1| code here" - line numbers are for reference only
+        const content = lines
+          .map(
+            (line: string, i: number) =>
+              `${String(i + 1).padStart(lineNumberWidth)}| ${line}`,
+          )
+          .join("\n");
+
         addToolOutput({
           tool: "read_console",
           toolCallId: toolCall.toolCallId,
@@ -618,7 +632,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             success: true,
             consoleId: targetConsole.id,
             title: targetConsole.title,
-            content: targetConsole.content || "",
+            content,
+            totalLines,
             connectionId: targetConsole.connectionId,
             connectionType: (
               targetConsole.metadata as { connectionType?: string }
@@ -723,52 +738,19 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           });
         }
 
-        // Also update store for consistency
+        // Also update store for consistency using shared utility
         const currentContent = targetConsole.content || "";
-        let newContent: string;
-
-        switch (action) {
-          case "replace":
-            newContent = content;
-            break;
-          case "append":
-            newContent =
-              currentContent +
-              (currentContent.endsWith("\n") ? "" : "\n") +
-              content;
-            break;
-          case "insert":
-            if (position !== null && position !== undefined) {
-              const lines = currentContent.split("\n");
-              const insertIndex = Math.max(0, position - 1);
-              lines.splice(insertIndex, 0, content);
-              newContent = lines.join("\n");
-            } else {
-              newContent = content + currentContent;
-            }
-            break;
-          case "patch":
-            if (startLine && endLine) {
-              const lines = currentContent.split("\n");
-              const safeStartLine = Math.max(
-                1,
-                Math.min(startLine, lines.length),
-              );
-              const safeEndLine = Math.max(
-                safeStartLine,
-                Math.min(endLine, lines.length),
-              );
-              // Replace lines from startLine to endLine (1-indexed, inclusive)
-              const before = lines.slice(0, safeStartLine - 1);
-              const after = lines.slice(safeEndLine);
-              newContent = [...before, content, ...after].join("\n");
-            } else {
-              newContent = content;
-            }
-            break;
-          default:
-            newContent = content;
-        }
+        const modification: ConsoleModification = {
+          action,
+          content,
+          position:
+            position !== null && position !== undefined
+              ? { line: position, column: 1 }
+              : undefined,
+          startLine,
+          endLine,
+        };
+        const newContent = applyModification(currentContent, modification);
         currentStore.updateConsoleContent(consoleId, newContent);
 
         addToolOutput({

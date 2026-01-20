@@ -108,14 +108,14 @@ export const setConsoleConnectionSchema = z.object({
 export const clientConsoleTools = {
   read_console: {
     description:
-      "Read the contents of a specific console by ID. Returns console content and the attached database connection information (connectionId, connectionType, databaseId, databaseName). Use list_open_consoles first to get available console IDs.",
+      "Read the contents of a specific console by ID. Returns content with line numbers prefixed (e.g., '  1| code here'), totalLines, and database connection info. Line numbers are for REFERENCE ONLY to help identify patch ranges. Use list_open_consoles first to get available console IDs.",
     inputSchema: readConsoleSchema,
     // No execute function - this is a client-side tool
   },
 
   modify_console: {
     description:
-      "Modify a specific console's content by ID. Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). Get consoleId from list_open_consoles or create_console.",
+      "Modify a specific console's content by ID. Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. Get consoleId from list_open_consoles or create_console.",
     inputSchema: modifyConsoleSchema,
     // No execute function - this is a client-side tool
   },

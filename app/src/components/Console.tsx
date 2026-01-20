@@ -42,6 +42,7 @@ import ConsoleInfoModal from "./ConsoleInfoModal";
 import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
+import { applyModification as applyConsoleModification } from "../utils/consoleModification";
 
 interface DatabaseConnection {
   id: string;
@@ -711,58 +712,25 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     ],
   );
 
-  // Calculate modified content based on the modification
-  const calculateModifiedContent = useCallback(
-    (current: string, modification: ConsoleModification): string => {
-      switch (modification.action) {
-        case "replace":
-          return modification.content;
-
-        case "append":
-          return (
-            current +
-            (current.endsWith("\n") ? "" : "\n") +
-            modification.content
-          );
-
-        case "insert": {
-          if (!modification.position) {
-            return modification.content + current;
-          }
-
-          const lines = current.split("\n");
-          const { line, column } = modification.position;
-          const lineIndex = line - 1;
-
-          if (lineIndex >= 0 && lineIndex < lines.length) {
-            const targetLine = lines[lineIndex];
-            const before = targetLine.slice(0, column - 1);
-            const after = targetLine.slice(column - 1);
-            lines[lineIndex] = before + modification.content + after;
-          }
-
-          return lines.join("\n");
-        }
-
-        default:
-          return current;
-      }
-    },
-    [],
-  );
-
   // Show diff instead of applying modification immediately
+  // When already in diff mode (follow-up request), preserve the original baseline
+  // and apply the new modification to the current modified content
   const showDiff = useCallback(
     (modification: ConsoleModification) => {
       const currentContent = getFullEditorContent();
-      const newContent = calculateModifiedContent(currentContent, modification);
+      const newContent = applyConsoleModification(currentContent, modification);
 
-      setOriginalContent(currentContent);
+      // Only set originalContent if NOT already in diff mode
+      // This preserves the true baseline for cumulative agent changes
+      if (!isDiffMode) {
+        setOriginalContent(currentContent);
+      }
+
       setModifiedContent(newContent);
       setPendingModification(modification);
       setIsDiffMode(true);
     },
-    [getFullEditorContent, calculateModifiedContent],
+    [getFullEditorContent, isDiffMode],
   );
 
   // Accept the changes
@@ -838,13 +806,18 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     autoSaveConsole,
   ]);
 
-  // Reject the changes
+  // Reject the changes and restore the original baseline
   const rejectChanges = useCallback(() => {
+    // Restore editor content to original baseline and sync store
+    if (originalContent && onContentChange) {
+      onContentChange(originalContent);
+    }
+
     setIsDiffMode(false);
     setPendingModification(null);
     setOriginalContent("");
     setModifiedContent("");
-  }, []);
+  }, [originalContent, onContentChange]);
 
   // DiffEditor mount handler - set up CMD+Enter and store ref
   const handleDiffEditorDidMount = useCallback(
