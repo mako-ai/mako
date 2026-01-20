@@ -20,7 +20,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     set => ({
       // Default model
-      selectedModelId: "gpt-5.2",
+      selectedModelId: "claude-opus-4-5",
       setSelectedModelId: modelId => set({ selectedModelId: modelId }),
 
       // Theme defaults to system

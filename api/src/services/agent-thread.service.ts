@@ -11,7 +11,7 @@ export interface ThreadContext {
   threadId: string;
   recentMessages: Array<{
     role: "user" | "assistant";
-    content: string;
+    content: string; // Always present (defaults to empty string for backward compat)
     toolCalls?: Array<{
       toolName: string;
       timestamp?: Date;
@@ -42,7 +42,12 @@ export const getOrCreateThreadContext = async (
     const existingChat = await Chat.findOne(query);
     if (existingChat) {
       const messages = existingChat.messages || [];
-      const recentMessages = messages.slice(-CONTEXT_WINDOW_SIZE);
+      // Map messages to ensure content is always a string (backward compat)
+      const recentMessages = messages.slice(-CONTEXT_WINDOW_SIZE).map(msg => ({
+        role: msg.role,
+        content: msg.content || "", // Default to empty string if not present
+        toolCalls: msg.toolCalls,
+      }));
       let threadId = existingChat.threadId;
       if (!threadId) {
         threadId = uuidv4();
@@ -466,13 +471,25 @@ export const persistChatError = async (
 
 /**
  * Convert UIMessage to stored format.
- * UIMessage (AI SDK v6) uses parts array, we convert to our stored format.
+ * UIMessage (AI SDK v6) uses parts array - we now store parts directly to preserve order.
  *
- * AI SDK Recommendation: Reasoning/thinking parts should be stored separately
- * from regular text content. We extract them as a `reasoning` array.
+ * NEW: The `parts` array is the source of truth for message structure.
+ * Legacy fields (content, reasoning, toolCalls) are still populated for backward compatibility.
  */
 function convertUIMessageToStoredFormat(msg: UIMessage): {
+  id: string;
   role: "user" | "assistant";
+  parts: Array<{
+    type: string;
+    text?: string;
+    reasoning?: string;
+    toolCallId?: string;
+    toolName?: string;
+    input?: unknown;
+    output?: unknown;
+    state?: string;
+  }>;
+  // Legacy fields for backward compatibility
   content: string;
   reasoning?: string[];
   toolCalls?: Array<{
@@ -482,7 +499,46 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     result?: unknown;
   }>;
 } {
-  // Extract text content from parts (excluding reasoning)
+  // NEW: Store raw parts array - this preserves chronological order
+  const storedParts = (msg.parts || []).map(part => {
+    const p = part as Record<string, unknown>;
+    const partType = p.type as string;
+
+    if (partType === "text") {
+      return { type: "text", text: p.text as string };
+    }
+
+    if (partType === "reasoning") {
+      // Reasoning parts may have text in 'text' or 'reasoning' field
+      return {
+        type: "reasoning",
+        reasoning: (p.reasoning as string) || (p.text as string),
+      };
+    }
+
+    // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
+    if (partType.startsWith("tool-") || partType === "dynamic-tool") {
+      const toolName =
+        partType === "dynamic-tool"
+          ? (p.toolName as string)
+          : partType.split("-").slice(1).join("-");
+      return {
+        type: partType,
+        toolCallId: p.toolCallId as string,
+        toolName: toolName || (p.toolName as string),
+        input: p.input ?? {},
+        output: p.output ?? null,
+        state: (p.state as string) || "output-available",
+      };
+    }
+
+    // Unknown part type - store as-is
+    return { type: partType, ...p };
+  });
+
+  // TODO: Remove legacy field extraction once we're OK with losing backward compatibility
+  // for old consumers that read content/reasoning/toolCalls instead of parts.
+  // LEGACY: Extract text content from parts (excluding reasoning)
   const textContent = (msg.parts || [])
     .filter(
       (p): p is { type: "text"; text: string } =>
@@ -491,7 +547,7 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     .map(p => p.text)
     .join("");
 
-  // Extract reasoning/thinking parts separately (AI SDK v6 best practice)
+  // LEGACY: Extract reasoning/thinking parts separately (AI SDK v6 best practice)
   // These are emitted by models like Claude with extended thinking or DeepSeek
   const reasoningParts = (msg.parts || [])
     .filter(
@@ -500,7 +556,7 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     )
     .map(p => p.text);
 
-  // Extract tool calls from parts
+  // LEGACY: Extract tool calls from parts
   // AI SDK v6 has two tool part types:
   // - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
   // - Dynamic tools: type is "dynamic-tool" with toolName as separate property
@@ -532,8 +588,11 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     .filter(tc => tc.toolName.length > 0);
 
   return {
+    id: msg.id,
     role: msg.role as "user" | "assistant",
-    // AI SDK v6 uses parts array; content property no longer exists on UIMessage
+    // NEW: Source of truth - preserves chronological order
+    parts: storedParts,
+    // LEGACY: Keep for backward compatibility
     content: textContent || "",
     reasoning: reasoningParts.length > 0 ? reasoningParts : undefined,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,

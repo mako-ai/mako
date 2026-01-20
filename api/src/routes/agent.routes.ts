@@ -28,6 +28,7 @@ import {
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
+import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 
 export const agentRoutes = new Hono();
 
@@ -301,9 +302,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const model = getModelInstance(modelId);
   console.log(`[Agent] Using model: ${modelId || "gpt-5.2 (default)"}`);
 
+  // Sanitize messages to remove incomplete tool calls from interrupted streams
+  // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
+  const sanitizedMessages = sanitizeMessagesForModel(messages);
+
   // Convert UI messages (from useChat) to model messages (for streamText)
-  // Note: convertToModelMessages is async in AI SDK
-  const modelMessages = await convertToModelMessages(messages);
+  const modelMessages = await convertToModelMessages(sanitizedMessages);
 
   // Guardrail: prevent runaway multi-step tool loops in production.
   // The AI SDK defaults to stopWhen: stepCountIs(1). We intentionally allow multi-step,

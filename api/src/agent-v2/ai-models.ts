@@ -106,9 +106,10 @@ export function getModelById(modelId: string): AIModel | undefined {
 }
 
 /**
- * Get the default model (first available, or gpt-5.2 as fallback)
+ * Get the default model (Claude Opus 4.5 if available, otherwise first available)
  */
 export function getDefaultModel(): AIModel {
   const available = getAvailableModels();
-  return available[0] || ALL_MODELS[0];
+  const opus = available.find(m => m.id === "claude-opus-4-5");
+  return opus || available[0] || ALL_MODELS[0];
 }
