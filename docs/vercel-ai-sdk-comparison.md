@@ -1,6 +1,6 @@
 # Mako vs Vercel AI SDK Best Practices Comparison
 
-This document provides an exhaustive comparison between Mako's current AI implementation and Vercel's AI SDK recommended patterns and best practices. Use this as a starting point for refactoring efforts.
+This document provides a comparison between Mako's AI implementation and Vercel's AI SDK recommended patterns and best practices.
 
 **Current SDK Version**: `ai@6.0.0-beta.166`, `@ai-sdk/react@3.0.0-beta.169`
 
@@ -11,13 +11,13 @@ This document provides an exhaustive comparison between Mako's current AI implem
 | Category | Following Best Practice | Gap/Missing |
 |----------|------------------------|-------------|
 | Core Streaming | 8 | 4 |
-| Data Model | 5 | 6 |
+| Data Model | 7 | 4 |
 | Frontend/React | 6 | 8 |
 | Tools & Agents | 7 | 5 |
 | Providers & Models | 5 | 4 |
-| Error Handling | 3 | 5 |
+| Error Handling | 4 | 4 |
 | Advanced Patterns | 2 | 9 |
-| **Total** | **36** | **41** |
+| **Total** | **39** | **38** |
 
 ---
 
@@ -44,15 +44,15 @@ This document provides an exhaustive comparison between Mako's current AI implem
 
 | Scope | Pattern/Library | Description | Status | Gap Details |
 |-------|----------------|-------------|--------|-------------|
-| Data Model | Message parts array | Store messages as parts (text, tool, reasoning) | ⚠️ Partial | Converting parts to flattened format with separate `reasoning[]` and `toolCalls[]` arrays |
+| Data Model | Message parts array | Store messages as parts (text, tool, reasoning) | ✅ Implemented | Parts stored natively with legacy fallback for backward compatibility |
 | Data Model | Frontend-owned chat IDs | Frontend generates chatId (MongoDB ObjectId) | ✅ Implemented | Using `generateObjectId()` on frontend, validated on backend |
 | Data Model | Atomic save pattern | Save all messages once at stream end | ✅ Implemented | Using `saveChat()` in `onFinish` callback |
 | Data Model | Tool call persistence | Store toolCallId, toolName, input, output | ✅ Implemented | Full tool call data stored in messages |
 | Data Model | Reasoning token storage | Store reasoning/thinking blocks separately | ✅ Implemented | Extracted to `reasoning[]` array in schema |
+| Data Model | UIMessage type preservation | Store native UIMessage format | ✅ Implemented | Native UIMessage parts array stored; legacy fields kept for backward compat |
 | Data Model | SQL-based storage (Drizzle/Prisma) | Vercel recommends SQL with proper schemas | ❌ Different | Using MongoDB with Mongoose - works but different pattern |
 | Data Model | Message versioning | Track message edits/regenerations | ❌ Missing | No version tracking for edited messages |
 | Data Model | Conversation branching | Support for conversation branches/forks | ❌ Missing | Linear conversation only |
-| Data Model | UIMessage type preservation | Store native UIMessage format | ❌ Missing | Converting to custom format loses some metadata |
 | Data Model | Attachment storage | Store file attachments with messages | ❌ Missing | No attachment support in schema |
 | Data Model | Usage/token tracking | Store token counts per message | ❌ Missing | Not tracking usage metrics |
 
@@ -113,11 +113,11 @@ This document provides an exhaustive comparison between Mako's current AI implem
 | Errors | `onError` callback | Handle streaming errors | ✅ Implemented | useChat onError logs and displays |
 | Errors | Error persistence | Save errors to chat for debugging | ✅ Implemented | `persistChatError()` service |
 | Errors | Graceful degradation | Continue with partial response | ✅ Implemented | Partial tool calls saved |
+| Errors | Orphan tool call sanitization | Remove tool_use without tool_result | ✅ Implemented | Sanitizes before sending to Anthropic |
 | Errors | AI SDK error types | Use `AISDKError`, `APIError`, etc. | ❌ Missing | Not using typed errors |
 | Errors | Retry logic with backoff | Automatic retry on transient failures | ❌ Missing | No retry layer for AI calls |
 | Errors | Rate limit handling | Handle 429 errors gracefully | ❌ Missing | No specific rate limit handling |
 | Errors | Timeout configuration | Set request timeouts | ❌ Missing | Using SDK defaults |
-| Errors | Circuit breaker pattern | Prevent cascading failures | ❌ Missing | No circuit breaker |
 
 ### Advanced Patterns & Features
 
@@ -187,12 +187,14 @@ This document provides an exhaustive comparison between Mako's current AI implem
 4. **Workspace context injection** - Smart truncation and dynamic context
 5. **Title generation** - Fire-and-forget pattern doesn't block main stream
 6. **Step limiting** - Proper runaway prevention with stepCountIs
+7. **Native parts storage** - UIMessage parts stored directly for lossless round-trips
+8. **Orphan tool call sanitization** - Prevents Anthropic API errors from incomplete tool cycles
 
 ### Migration Considerations
 
 1. **MongoDB to SQL** - Vercel examples use SQL. Migration would be significant but not required.
 
-2. **Message format** - Current format works but converting from/to UIMessage adds complexity. Consider storing native format.
+2. **Message format** - Now storing native UIMessage parts format with legacy fallback for old chats.
 
 3. **Streaming library** - Switching to streamdown would require updating Chat.tsx markdown rendering.
 
@@ -214,12 +216,12 @@ This document provides an exhaustive comparison between Mako's current AI implem
 
 | File | Purpose |
 |------|---------|
-| `api/src/routes/agent.routes.ts` | Main chat endpoint with streamText |
+| `api/src/routes/agent.routes.ts` | Main chat endpoint with streamText and orphan tool call sanitization |
 | `api/src/agent-v2/` | AI module with types, tools, prompts |
-| `api/src/services/agent-thread.service.ts` | Chat persistence with saveChat |
+| `api/src/services/agent-thread.service.ts` | Chat persistence with saveChat (native parts storage) |
 | `api/src/services/title-generator.ts` | AI title generation |
 | `app/src/components/Chat.tsx` | Frontend chat UI with useChat |
-| `api/src/database/workspace-schema.ts` | MongoDB schema including Chat model |
+| `api/src/database/workspace-schema.ts` | MongoDB schema including Chat model with IMessagePart |
 
 ---
 
