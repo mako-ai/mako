@@ -343,6 +343,14 @@ export const useConsoleStore = () => {
       path: string;
     };
   }> => {
+    // Guard against saving placeholder content
+    if (!content?.trim() || content === "loading...") {
+      return {
+        success: false,
+        error: "Cannot save empty or placeholder content",
+      };
+    }
+
     try {
       // Remove .js extension if present as backend doesn't expect it
       const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
