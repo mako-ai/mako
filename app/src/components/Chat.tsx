@@ -990,6 +990,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                 };
               }
 
+              // TODO: Remove this fallback once we're OK with losing the ability to show old chats
+              // that were created before the parts array migration.
               // LEGACY FALLBACK: Reconstruct parts from legacy fields (for existing chats without parts)
               // Note: Order cannot be perfectly restored, use best-effort: tools -> reasoning -> text
               const parts: Array<Record<string, unknown>> = [];
