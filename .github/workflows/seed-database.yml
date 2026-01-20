@@ -1,0 +1,159 @@
+name: Seed Database from Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_database:
+        description: "Target database to seed from production"
+        required: true
+        type: choice
+        options:
+          - staging
+          - dev
+      confirm:
+        description: "Type the target database name to confirm (e.g., 'staging' or 'dev')"
+        required: true
+        type: string
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+
+permissions:
+  contents: read
+
+jobs:
+  seed-database:
+    name: Seed ${{ inputs.target_database }} from Production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "${{ inputs.target_database }}" ]; then
+            echo "❌ Confirmation mismatch!"
+            echo "   You selected: ${{ inputs.target_database }}"
+            echo "   You typed: ${{ inputs.confirm }}"
+            echo ""
+            echo "Please type the exact database name to confirm the operation."
+            exit 1
+          fi
+          echo "✅ Confirmation validated: ${{ inputs.target_database }}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install MongoDB Database Tools
+        run: |
+          wget -qO- https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb.gpg
+          echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-database-tools mongodb-mongosh
+
+      - name: Determine target database URL
+        id: target-db
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DEV_DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+        run: |
+          case "${{ inputs.target_database }}" in
+            staging)
+              if [ -z "$STAGING_DATABASE_URL" ]; then
+                echo "❌ STAGING_DATABASE_URL secret is not configured"
+                exit 1
+              fi
+              echo "target_url=${STAGING_DATABASE_URL}" >> "$GITHUB_OUTPUT"
+              echo "Target: staging database"
+              ;;
+            dev)
+              if [ -z "$DEV_DATABASE_URL" ]; then
+                echo "❌ DEV_DATABASE_URL secret is not configured"
+                exit 1
+              fi
+              echo "target_url=${DEV_DATABASE_URL}" >> "$GITHUB_OUTPUT"
+              echo "Target: dev database"
+              ;;
+            *)
+              echo "❌ Unknown target database: ${{ inputs.target_database }}"
+              exit 1
+              ;;
+          esac
+
+      - name: Seed database from production
+        env:
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          TARGET_DATABASE_URL: ${{ steps.target-db.outputs.target_url }}
+        run: |
+          set -o pipefail
+
+          echo "🗄️ Seeding ${{ inputs.target_database }} database from production..."
+
+          # Extract database names from URLs
+          extract_db_name() {
+            local url="$1"
+            if [[ "$url" == *"?"* ]]; then
+              echo "$url" | sed -E 's|.*/([^/?]+)\?.*|\1|'
+            else
+              echo "$url" | sed -E 's|.*/([^/]+)$|\1|'
+            fi
+          }
+
+          PROD_DB_NAME=$(extract_db_name "$PROD_DATABASE_URL")
+          TARGET_DB_NAME=$(extract_db_name "$TARGET_DATABASE_URL")
+
+          echo "Production database: $PROD_DB_NAME"
+          echo "Target database: $TARGET_DB_NAME"
+
+          # Safety check: prevent seeding production
+          if [ "$TARGET_DB_NAME" == "$PROD_DB_NAME" ]; then
+            echo "❌ SAFETY ERROR: Cannot seed production database!"
+            exit 1
+          fi
+
+          # Drop existing target database
+          echo "Dropping existing ${{ inputs.target_database }} database..."
+          mongosh "$TARGET_DATABASE_URL" --eval "db.dropDatabase()" || true
+
+          # Copy production to target using archive pipe
+          echo "Copying production data to ${{ inputs.target_database }}..."
+          if ! mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$TARGET_DATABASE_URL" --gzip --archive \
+            --nsInclude="${PROD_DB_NAME}.*" \
+            --nsFrom="${PROD_DB_NAME}.*" \
+            --nsTo="${TARGET_DB_NAME}.*"; then
+            echo "❌ Failed to copy production database"
+            exit 1
+          fi
+
+          echo "✅ Production data successfully copied to ${{ inputs.target_database }}"
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: ${{ steps.target-db.outputs.target_url }}
+        run: |
+          echo "🔄 Running migrations on ${{ inputs.target_database }}..."
+          pnpm run migrate
+          echo "✅ Migrations completed"
+
+      - name: Summary
+        run: |
+          echo "## 🎉 Database Seeding Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Target** | ${{ inputs.target_database }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Source** | production |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Migrations** | ✅ Applied |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The ${{ inputs.target_database }} database has been reset with fresh production data." >> $GITHUB_STEP_SUMMARY
