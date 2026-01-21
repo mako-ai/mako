@@ -73,16 +73,23 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   );
 
   // Check if we're resuming onboarding after a page refresh
-  useEffect(() => {
+  // This must run before the invite loading effect
+  const [isResumingOnboarding, setIsResumingOnboarding] = useState(() => {
     const onboardingInProgress = localStorage.getItem("onboarding_in_progress");
     const savedWorkspaceId = localStorage.getItem("onboarding_workspace_id");
+    return onboardingInProgress === "true" && !!savedWorkspaceId;
+  });
 
-    if (onboardingInProgress === "true" && savedWorkspaceId) {
-      // Resume onboarding from qualification step
-      setCreatedWorkspaceId(savedWorkspaceId);
-      setState("qualification");
+  useEffect(() => {
+    if (isResumingOnboarding) {
+      const savedWorkspaceId = localStorage.getItem("onboarding_workspace_id");
+      if (savedWorkspaceId) {
+        // Resume onboarding from qualification step
+        setCreatedWorkspaceId(savedWorkspaceId);
+        setState("qualification");
+      }
     }
-  }, []);
+  }, [isResumingOnboarding]);
 
   // Map state to step for progress indicator
   const getStep = (): OnboardingStep => {
@@ -97,11 +104,17 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     // Clear onboarding state from localStorage
     localStorage.removeItem("onboarding_in_progress");
     localStorage.removeItem("onboarding_workspace_id");
+    setIsResumingOnboarding(false);
     onComplete();
   }, [onComplete]);
 
-  // Load pending invites on mount
+  // Load pending invites on mount (only if not resuming onboarding)
   useEffect(() => {
+    // Skip loading invites if we're resuming from a previous onboarding session
+    if (isResumingOnboarding) {
+      return;
+    }
+
     const loadInvites = async () => {
       try {
         const invites = await workspaceClient.getPendingInvitesForUser();
@@ -115,7 +128,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     };
 
     loadInvites();
-  }, []);
+  }, [isResumingOnboarding]);
 
   const handleAcceptInvite = useCallback(
     async (token: string) => {
@@ -215,7 +228,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
             throw new Error("No workspace found");
           }
 
-          await apiClient.post(`/workspaces/${workspaceId}/demo-database`);
+          await apiClient.post(`/workspaces/${workspaceId}/databases/demo`);
 
           // Track demo database creation
           trackEvent("database_connection_created", {
