@@ -6,6 +6,7 @@
  */
 import React from "react";
 import { Streamdown } from "streamdown";
+import { code } from "@streamdown/code";
 
 interface StreamingMarkdownProps {
   children: string;
@@ -15,7 +16,11 @@ export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = ({
   children,
 }) => {
   return (
-    <Streamdown shikiTheme={["github-dark", "github-light"]} controls={false}>
+    <Streamdown
+      plugins={{ code }}
+      shikiTheme={["github-light", "github-dark"]}
+      controls={false}
+    >
       {children}
     </Streamdown>
   );

@@ -18,6 +18,7 @@
     "@mui/material": "^7.1.0",
     "@mui/x-data-grid-premium": "^8.4.0",
     "@mui/x-license": "^8.4.0",
+    "@streamdown/code": "^1.0.1",
     "@types/react-syntax-highlighter": "^15.5.13",
     "ai": "6.0.0-beta.166",
     "axios": "^1.6.2",
