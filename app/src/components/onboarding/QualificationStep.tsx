@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
   Box,
   Typography,
@@ -89,12 +89,9 @@ export function QualificationStep({
         {/* Question 1: Role */}
         <FormControl component="fieldset">
           <FormLabel component="legend" sx={{ mb: 1, fontWeight: 500 }}>
-            What's your role?
+            What&apos;s your role?
           </FormLabel>
-          <RadioGroup
-            value={role}
-            onChange={e => setRole(e.target.value)}
-          >
+          <RadioGroup value={role} onChange={e => setRole(e.target.value)}>
             {ROLE_OPTIONS.map(option => (
               <FormControlLabel
                 key={option.value}

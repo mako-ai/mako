@@ -1,11 +1,4 @@
-import {
-  Box,
-  Typography,
-  Paper,
-  Button,
-  Stack,
-  Chip,
-} from "@mui/material";
+import { Box, Typography, Paper, Button, Stack, Chip } from "@mui/material";
 import {
   PlayArrow as PlayIcon,
   Storage as DatabaseIcon,
@@ -67,7 +60,9 @@ export function PathSelectionStep({
               <PlayIcon />
             </Box>
             <Box sx={{ flex: 1 }}>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}
+              >
                 <Typography variant="h6">Try with Demo Database</Typography>
                 {recommendDemo && (
                   <Chip
@@ -132,7 +127,9 @@ export function PathSelectionStep({
               <DatabaseIcon />
             </Box>
             <Box sx={{ flex: 1 }}>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}
+              >
                 <Typography variant="h6">Connect Your Database</Typography>
                 {!recommendDemo && (
                   <Chip
@@ -150,14 +147,16 @@ export function PathSelectionStep({
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                 {qualificationData.databaseTypes &&
                 qualificationData.databaseTypes.length > 0 ? (
-                  qualificationData.databaseTypes.slice(0, 3).map(db => (
-                    <Chip
-                      key={db}
-                      label={db.charAt(0).toUpperCase() + db.slice(1)}
-                      size="small"
-                      variant="outlined"
-                    />
-                  ))
+                  qualificationData.databaseTypes
+                    .slice(0, 3)
+                    .map(db => (
+                      <Chip
+                        key={db}
+                        label={db.charAt(0).toUpperCase() + db.slice(1)}
+                        size="small"
+                        variant="outlined"
+                      />
+                    ))
                 ) : (
                   <>
                     <Chip label="MongoDB" size="small" variant="outlined" />
