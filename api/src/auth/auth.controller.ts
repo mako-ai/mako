@@ -206,6 +206,31 @@ authRoutes.get("/me", authMiddleware, async c => {
 });
 
 /**
+ * Update onboarding qualification data
+ */
+authRoutes.put("/onboarding", authMiddleware, async c => {
+  try {
+    const user = c.get("user");
+    const { role, companySize, databaseTypes, hasNoDatabase } =
+      await c.req.json();
+
+    await authService.updateOnboardingData(user.id, {
+      role,
+      companySize,
+      databaseTypes,
+      hasNoDatabase,
+    });
+
+    return c.json({
+      success: true,
+      message: "Onboarding data saved successfully",
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
  * Refresh session
  */
 authRoutes.post("/refresh", async c => {

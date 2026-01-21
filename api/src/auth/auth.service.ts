@@ -616,4 +616,32 @@ export class AuthService {
 
     return { success: true };
   }
+
+  /**
+   * Update user's onboarding qualification data
+   */
+  async updateOnboardingData(
+    userId: string,
+    data: {
+      role?: string;
+      companySize?: "hobby" | "startup" | "growth" | "enterprise";
+      databaseTypes?: string[];
+      hasNoDatabase?: boolean;
+    },
+  ) {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    // Update onboarding data
+    user.onboarding = {
+      ...user.onboarding,
+      ...data,
+      completedAt: new Date(),
+    };
+
+    await user.save();
+    return { user };
+  }
 }

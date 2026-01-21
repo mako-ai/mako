@@ -100,6 +100,7 @@ export interface IWorkspace extends Document {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
+    hasDemoDatabase?: boolean;
   };
   apiKeys?: IWorkspaceApiKey[];
 }
@@ -189,6 +190,7 @@ export interface IDatabaseConnection extends Document {
       privateKey?: string;
     };
   };
+  isDemo?: boolean; // True if this is a demo database connection
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -544,6 +546,10 @@ Add any specific instructions for how the AI should interpret your data or respo
 
 *This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
       },
+      hasDemoDatabase: {
+        type: Boolean,
+        default: false,
+      },
     },
     apiKeys: [
       {
@@ -703,6 +709,10 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       required: true,
       set: encryptObject,
       get: decryptObject,
+    },
+    isDemo: {
+      type: Boolean,
+      default: false,
     },
     createdBy: {
       type: String,

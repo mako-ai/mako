@@ -20,25 +20,61 @@ import {
   Business as BusinessIcon,
   Add as AddIcon,
   ArrowForward as ArrowForwardIcon,
+  ArrowBack as ArrowBackIcon,
 } from "@mui/icons-material";
 import { workspaceClient, type PendingInvite } from "../lib/workspace-client";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent } from "../lib/analytics";
+import { apiClient } from "../lib/api-client";
+import {
+  OnboardingProgress,
+  QualificationStep,
+  PathSelectionStep,
+  type OnboardingStep,
+  type QualificationData,
+  type OnboardingPath,
+} from "./onboarding";
+import CreateDatabaseDialog from "./CreateDatabaseDialog";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
 }
 
-type OnboardingState = "loading" | "choose" | "creating" | "error";
+type OnboardingState =
+  | "loading"
+  | "choose-workspace"
+  | "qualification"
+  | "path"
+  | "database"
+  | "creating";
 
 export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
-  const { createWorkspace, acceptInvite } = useWorkspace();
+  const { createWorkspace, acceptInvite, currentWorkspace, refreshWorkspaces } =
+    useWorkspace();
 
   const [state, setState] = useState<OnboardingState>("loading");
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [workspaceName, setWorkspaceName] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [acceptingToken, setAcceptingToken] = useState<string | null>(null);
+  const [qualificationData, setQualificationData] =
+    useState<QualificationData | null>(null);
+  const [_selectedPath, setSelectedPath] = useState<OnboardingPath | null>(
+    null,
+  );
+  const [showDatabaseDialog, setShowDatabaseDialog] = useState(false);
+  const [provisioningDemo, setProvisioningDemo] = useState(false);
+  const [createdWorkspaceId, setCreatedWorkspaceId] = useState<string | null>(
+    null,
+  );
+
+  // Map state to step for progress indicator
+  const getStep = (): OnboardingStep => {
+    if (state === "qualification") return "qualification";
+    if (state === "path") return "path";
+    if (state === "database") return "database";
+    return "qualification";
+  };
 
   // Load pending invites on mount
   useEffect(() => {
@@ -46,11 +82,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       try {
         const invites = await workspaceClient.getPendingInvitesForUser();
         setPendingInvites(invites);
-        setState("choose");
-      } catch (error: any) {
+        setState("choose-workspace");
+      } catch (error: unknown) {
         console.error("Failed to load pending invites:", error);
         // Even if we fail to load invites, show the create workspace option
-        setState("choose");
+        setState("choose-workspace");
       }
     };
 
@@ -73,8 +109,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         });
 
         onComplete();
-      } catch (error: any) {
-        setErrorMessage(error.message || "Failed to accept invitation");
+      } catch (error: unknown) {
+        const err = error as Error;
+        setErrorMessage(err.message || "Failed to accept invitation");
         setAcceptingToken(null);
       }
     },
@@ -92,6 +129,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
     try {
       const workspace = await createWorkspace({ name: workspaceName.trim() });
+      setCreatedWorkspaceId(workspace.id);
 
       // Track workspace creation during onboarding
       trackEvent("workspace_created", {
@@ -99,18 +137,117 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         is_onboarding: true,
       });
 
-      // Track onboarding completion
-      trackEvent("onboarding_completed", {
-        has_pending_invites: pendingInvites.length > 0,
-        action: "created",
-      });
-
-      onComplete();
-    } catch (error: any) {
-      setErrorMessage(error.message || "Failed to create workspace");
-      setState("choose");
+      // Move to qualification step
+      setState("qualification");
+    } catch (error: unknown) {
+      const err = error as Error;
+      setErrorMessage(err.message || "Failed to create workspace");
+      setState("choose-workspace");
     }
-  }, [workspaceName, createWorkspace, onComplete, pendingInvites.length]);
+  }, [workspaceName, createWorkspace]);
+
+  const handleQualificationComplete = useCallback(
+    async (data: QualificationData) => {
+      setQualificationData(data);
+
+      // Save qualification data to user profile
+      try {
+        await apiClient.put("/auth/onboarding", {
+          role: data.role,
+          companySize: data.companySize,
+          databaseTypes: data.databaseTypes,
+          hasNoDatabase: data.hasNoDatabase,
+        });
+      } catch (error) {
+        console.error("Failed to save qualification data:", error);
+        // Don't block progression if this fails
+      }
+
+      setState("path");
+    },
+    [],
+  );
+
+  const handlePathSelected = useCallback(
+    async (path: OnboardingPath) => {
+      setSelectedPath(path);
+
+      if (path === "demo") {
+        // Provision demo database
+        setProvisioningDemo(true);
+        setErrorMessage("");
+
+        try {
+          const workspaceId = createdWorkspaceId || currentWorkspace?.id;
+          if (!workspaceId) {
+            throw new Error("No workspace found");
+          }
+
+          await apiClient.post(`/workspaces/${workspaceId}/demo-database`);
+
+          // Track demo database creation
+          trackEvent("database_connection_created", {
+            connection_type: "mongodb",
+            isDemo: true,
+          });
+
+          // Refresh workspaces to get updated state
+          await refreshWorkspaces();
+
+          // Track onboarding completion
+          trackEvent("onboarding_completed", {
+            has_pending_invites: pendingInvites.length > 0,
+            action: "created",
+            path: "demo",
+            qualification_role: qualificationData?.role,
+            qualification_company_size: qualificationData?.companySize,
+            qualification_has_no_database: qualificationData?.hasNoDatabase,
+          });
+
+          onComplete();
+        } catch (error: unknown) {
+          const err = error as Error;
+          setErrorMessage(err.message || "Failed to set up demo database");
+          setProvisioningDemo(false);
+        }
+      } else {
+        // Show database connection dialog
+        setState("database");
+      }
+    },
+    [
+      createdWorkspaceId,
+      currentWorkspace?.id,
+      onComplete,
+      pendingInvites.length,
+      qualificationData,
+      refreshWorkspaces,
+    ],
+  );
+
+  const handleDatabaseSuccess = useCallback(() => {
+    setShowDatabaseDialog(false);
+
+    // Track onboarding completion
+    trackEvent("onboarding_completed", {
+      has_pending_invites: pendingInvites.length > 0,
+      action: "created",
+      path: "connect",
+      qualification_role: qualificationData?.role,
+      qualification_company_size: qualificationData?.companySize,
+      qualification_has_no_database: qualificationData?.hasNoDatabase,
+    });
+
+    onComplete();
+  }, [onComplete, pendingInvites.length, qualificationData]);
+
+  const handleBackToPath = useCallback(() => {
+    setState("path");
+  }, []);
+
+  const handleBackToQualification = useCallback(() => {
+    setState("qualification");
+  }, []);
 
   // Loading state
   if (state === "loading") {
@@ -138,6 +275,178 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     );
   }
 
+  // Provisioning demo state
+  if (provisioningDemo) {
+    return (
+      <Container maxWidth="sm">
+        <Box
+          sx={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Paper sx={{ p: 4, width: "100%", textAlign: "center" }}>
+            <CircularProgress size={60} sx={{ mb: 3 }} />
+            <Typography variant="h5" gutterBottom>
+              Setting Up Demo Database
+            </Typography>
+            <Typography color="text.secondary">
+              Provisioning your demo environment with sample e-commerce data...
+            </Typography>
+          </Paper>
+        </Box>
+      </Container>
+    );
+  }
+
+  // Qualification step
+  if (state === "qualification") {
+    return (
+      <Container maxWidth="sm">
+        <Box
+          sx={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            py: 4,
+          }}
+        >
+          <Paper sx={{ p: 4, width: "100%" }}>
+            <OnboardingProgress currentStep={getStep()} />
+
+            {errorMessage && (
+              <Alert severity="error" sx={{ mb: 3 }}>
+                {errorMessage}
+              </Alert>
+            )}
+
+            <QualificationStep
+              initialData={qualificationData || undefined}
+              onComplete={handleQualificationComplete}
+            />
+          </Paper>
+        </Box>
+      </Container>
+    );
+  }
+
+  // Path selection step
+  if (state === "path" && qualificationData) {
+    return (
+      <Container maxWidth="sm">
+        <Box
+          sx={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            py: 4,
+          }}
+        >
+          <Paper sx={{ p: 4, width: "100%" }}>
+            <OnboardingProgress currentStep={getStep()} />
+
+            {errorMessage && (
+              <Alert severity="error" sx={{ mb: 3 }}>
+                {errorMessage}
+              </Alert>
+            )}
+
+            <PathSelectionStep
+              qualificationData={qualificationData}
+              onSelectPath={handlePathSelected}
+              onBack={handleBackToQualification}
+            />
+          </Paper>
+        </Box>
+      </Container>
+    );
+  }
+
+  // Database setup step (connect real database)
+  if (state === "database") {
+    return (
+      <Container maxWidth="sm">
+        <Box
+          sx={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            py: 4,
+          }}
+        >
+          <Paper sx={{ p: 4, width: "100%" }}>
+            <OnboardingProgress currentStep={getStep()} />
+
+            {errorMessage && (
+              <Alert severity="error" sx={{ mb: 3 }}>
+                {errorMessage}
+              </Alert>
+            )}
+
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+              <Button
+                onClick={handleBackToPath}
+                startIcon={<ArrowBackIcon />}
+                size="small"
+                sx={{ minWidth: "auto" }}
+              >
+                Back
+              </Button>
+            </Box>
+
+            <Typography variant="h5" fontWeight={600} gutterBottom>
+              Connect Your Database
+            </Typography>
+            <Typography color="text.secondary" sx={{ mb: 4 }}>
+              {qualificationData?.databaseTypes &&
+              qualificationData.databaseTypes.length > 0
+                ? `Let's connect your ${qualificationData.databaseTypes[0].charAt(0).toUpperCase() + qualificationData.databaseTypes[0].slice(1)} database`
+                : "Choose your database type and enter connection details"}
+            </Typography>
+
+            <Button
+              variant="contained"
+              size="large"
+              fullWidth
+              onClick={() => setShowDatabaseDialog(true)}
+              sx={{ py: 1.5 }}
+            >
+              Add Database Connection
+            </Button>
+
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ mt: 3, textAlign: "center" }}
+            >
+              You can also{" "}
+              <Button
+                variant="text"
+                size="small"
+                onClick={() => handlePathSelected("demo")}
+                sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
+              >
+                try with demo data first
+              </Button>
+            </Typography>
+
+            <CreateDatabaseDialog
+              open={showDatabaseDialog}
+              onClose={() => setShowDatabaseDialog(false)}
+              onSuccess={handleDatabaseSuccess}
+            />
+          </Paper>
+        </Box>
+      </Container>
+    );
+  }
+
+  // Choose workspace step (existing flow for pending invites or creating new)
   return (
     <Container maxWidth="sm">
       <Box
