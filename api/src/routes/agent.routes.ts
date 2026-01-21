@@ -347,16 +347,50 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
     sendReasoning: true,
     onFinish: async ({ messages: allMessages }) => {
-      console.log("[Agent] Stream finished, saving chat:", {
-        chatId,
-        messageCount: allMessages.length,
-      });
+      // Get usage from the streamText result (not from toUIMessageStreamResponse callback)
+      // result.usage is a promise that resolves when the stream completes
+      let modelUsage: Record<string, unknown> | undefined;
+      try {
+        const usage = await result.usage;
+        modelUsage = usage as unknown as Record<string, unknown>;
+      } catch (err) {
+        console.warn("[Agent] Failed to get usage from model:", err);
+      }
+
+      // Safely extract usage values
+      // Handle different provider naming conventions:
+      // - OpenAI/standard: promptTokens, completionTokens
+      // - Anthropic: may use input_tokens, output_tokens or similar
+      const getNumber = (val: unknown): number => {
+        if (typeof val === "number" && !isNaN(val)) return val;
+        return 0;
+      };
+
+      const promptTokens =
+        getNumber(modelUsage?.promptTokens) ||
+        getNumber(modelUsage?.input_tokens) ||
+        getNumber(modelUsage?.inputTokens) ||
+        0;
+      const completionTokens =
+        getNumber(modelUsage?.completionTokens) ||
+        getNumber(modelUsage?.output_tokens) ||
+        getNumber(modelUsage?.outputTokens) ||
+        0;
+      const totalTokens =
+        getNumber(modelUsage?.totalTokens) ||
+        getNumber(modelUsage?.total_tokens) ||
+        promptTokens + completionTokens;
 
       try {
         // Save all messages in one atomic operation (AI SDK best practice)
         // Title was already generated in parallel at the start for new chats
         // Note: Draft consoles are saved client-side when modified (debounced)
-        await saveChat(chatId, workspaceId, userId.toString(), allMessages);
+        await saveChat(chatId, workspaceId, userId.toString(), allMessages, {
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          model: modelId,
+        });
       } catch (error) {
         console.error("[Agent] Error saving chat:", error);
       }

@@ -11,13 +11,13 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Category | Following Best Practice | Gap/Missing |
 |----------|------------------------|-------------|
 | Core Streaming | 8 | 4 |
-| Data Model | 7 | 4 |
-| Frontend/React | 6 | 8 |
+| Data Model | 8 | 3 |
+| Frontend/React | 7 | 7 |
 | Tools & Agents | 7 | 5 |
 | Providers & Models | 5 | 4 |
 | Error Handling | 3 | 5 |
 | Advanced Patterns | 2 | 9 |
-| **Total** | **38** | **39** |
+| **Total** | **40** | **37** |
 
 ---
 
@@ -54,7 +54,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Data Model | Message versioning | Track message edits/regenerations | ❌ Missing | No version tracking for edited messages |
 | Data Model | Conversation branching | Support for conversation branches/forks | ❌ Missing | Linear conversation only |
 | Data Model | Attachment storage | Store file attachments with messages | ❌ Missing | No attachment support in schema |
-| Data Model | Usage/token tracking | Store token counts per message | ❌ Missing | Not tracking usage metrics |
+| Data Model | Usage/token tracking | Store token counts per message | ✅ Implemented | Tracking promptTokens, completionTokens, totalTokens with per-turn history |
 
 ### Frontend/React Patterns
 
@@ -66,7 +66,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Frontend | `onToolCall` callback | Handle client-side tools | ✅ Implemented | 5 client tools: read/modify/create console, list, set_connection |
 | Frontend | `stop()` function | Cancel streaming | ✅ Implemented | Stop button with proper cleanup |
 | Frontend | Message parts rendering | Render different part types | ✅ Implemented | Handling text, tool, reasoning parts |
-| Frontend | `streamdown` package | Optimized markdown streaming | ❌ Missing | Using react-markdown without streaming optimization |
+| Frontend | `streamdown` package | Optimized markdown streaming | ✅ Implemented | Using `streamdown` with `@streamdown/code` in `StreamingMarkdown.tsx` |
 | Frontend | `useCompletion` hook | Simple completion without chat history | ❌ Not needed | N/A - chat-focused use case |
 | Frontend | `useObject` hook | Stream structured objects to UI | ❌ Missing | Not using for schema-validated UI updates |
 | Frontend | `experimental_useAssistant` | OpenAI Assistants API integration | ❌ Missing | Not using OpenAI Assistants |
@@ -141,15 +141,11 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 
 ### High Priority (Significant UX/DX Impact)
 
-1. **`streamdown` package** - Significantly improves markdown rendering during streaming. Current react-markdown flickers/jumps during updates.
+1. **Stream resumption** - Critical for reliability. Users lose context when connection drops.
 
-2. **Reasoning parts display** - You have basic collapsible display, but could use Vercel's recommended progressive disclosure pattern with streaming support.
+2. **Multimodal input** - Image input support is increasingly expected. AI SDK has native support.
 
-3. **Stream resumption** - Critical for reliability. Users lose context when connection drops.
-
-4. **Multimodal input** - Image input support is increasingly expected. AI SDK has native support.
-
-5. **Usage tracking** - Important for cost management and debugging. AI SDK provides usage data in callbacks.
+3. **Reasoning parts display** - You have basic collapsible display, but could use Vercel's recommended progressive disclosure pattern with streaming support.
 
 ### Medium Priority (Better DX/Maintainability)
 
@@ -195,9 +191,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 
 2. **Message format** - Now storing native UIMessage parts format with legacy fallback for old chats.
 
-3. **Streaming library** - Switching to streamdown would require updating Chat.tsx markdown rendering.
-
-4. **Provider setup** - Current switch-based approach works but registry would be more extensible.
+3. **Provider setup** - Current switch-based approach works but registry would be more extensible.
 
 ---
 
@@ -220,6 +214,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | `api/src/services/agent-thread.service.ts` | Chat persistence with saveChat (native parts storage) |
 | `api/src/services/title-generator.ts` | AI title generation |
 | `app/src/components/Chat.tsx` | Frontend chat UI with useChat |
+| `app/src/components/StreamingMarkdown.tsx` | Optimized markdown streaming with streamdown |
 | `api/src/database/workspace-schema.ts` | MongoDB schema including Chat model with IMessagePart |
 
 ---

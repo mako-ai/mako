@@ -323,6 +323,29 @@ export interface IMessagePart {
 }
 
 /**
+ * Usage history entry for tracking token consumption per turn
+ * Useful for metered billing and cost analysis
+ */
+export interface IUsageHistoryEntry {
+  messageIndex: number; // Index of the assistant message this usage corresponds to
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  model?: string; // Model used for this turn (for cost calculation)
+  timestamp: Date;
+}
+
+/**
+ * Chat usage tracking for token consumption
+ */
+export interface IChatUsage {
+  promptTokens: number; // Total prompt tokens across all turns
+  completionTokens: number; // Total completion tokens across all turns
+  totalTokens: number; // Total tokens (prompt + completion)
+  history?: IUsageHistoryEntry[]; // Per-turn usage for detailed analytics
+}
+
+/**
  * Chat model interface
  */
 export interface IChat extends Document {
@@ -352,6 +375,7 @@ export interface IChat extends Document {
   titleGenerated: boolean;
   systemPrompt?: string; // System prompt used for this conversation
   workspacePrompt?: string; // Workspace custom prompt appended to system prompt
+  usage?: IChatUsage; // Token usage tracking for billing
   createdAt: Date;
   updatedAt: Date;
 }
@@ -1021,6 +1045,48 @@ const ChatSchema = new Schema<IChat>(
     workspacePrompt: {
       type: String,
       required: false,
+    },
+    usage: {
+      promptTokens: {
+        type: Number,
+        default: 0,
+      },
+      completionTokens: {
+        type: Number,
+        default: 0,
+      },
+      totalTokens: {
+        type: Number,
+        default: 0,
+      },
+      history: [
+        {
+          messageIndex: {
+            type: Number,
+            required: true,
+          },
+          promptTokens: {
+            type: Number,
+            required: true,
+          },
+          completionTokens: {
+            type: Number,
+            required: true,
+          },
+          totalTokens: {
+            type: Number,
+            required: true,
+          },
+          model: {
+            type: String,
+            required: false,
+          },
+          timestamp: {
+            type: Date,
+            default: Date.now,
+          },
+        },
+      ],
     },
   },
   {
