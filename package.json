@@ -44,6 +44,7 @@
     "preview-db:list": "./scripts/manage-preview-db.sh list",
     "preview-db:create": "./scripts/manage-preview-db.sh create",
     "preview-db:delete": "./scripts/manage-preview-db.sh delete",
+    "demo:seed": "ts-node -r dotenv/config scripts/seed-demo-database.ts",
     "prepare": "husky"
   },
   "keywords": [

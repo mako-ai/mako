@@ -3,6 +3,17 @@ import { v4 as uuidv4 } from "uuid";
 import { loggers } from "../logging";
 
 /**
+ * User onboarding data captured during signup
+ */
+export interface IUserOnboarding {
+  completedAt?: Date;
+  companySize?: "hobby" | "startup" | "growth" | "enterprise";
+  role?: string;
+  databaseTypes?: string[]; // What DBs they work with (mongodb, postgresql, etc.)
+  hasNoDatabase?: boolean; // Selected "I don't have a database yet"
+}
+
+/**
  * User model interface
  */
 export interface IUser extends Document {
@@ -10,6 +21,7 @@ export interface IUser extends Document {
   email: string;
   hashedPassword?: string;
   emailVerified: boolean;
+  onboarding?: IUserOnboarding;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -70,6 +82,29 @@ const UserSchema = new Schema<IUser>(
     emailVerified: {
       type: Boolean,
       default: false,
+    },
+    onboarding: {
+      completedAt: {
+        type: Date,
+        required: false,
+      },
+      companySize: {
+        type: String,
+        enum: ["hobby", "startup", "growth", "enterprise"],
+        required: false,
+      },
+      role: {
+        type: String,
+        required: false,
+      },
+      databaseTypes: {
+        type: [String],
+        required: false,
+      },
+      hasNoDatabase: {
+        type: Boolean,
+        required: false,
+      },
     },
   },
   {

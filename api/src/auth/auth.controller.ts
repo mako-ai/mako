@@ -6,6 +6,7 @@ import { getGoogle, getGitHub, isOAuthDisabled } from "./arctic";
 import { AuthService } from "./auth.service";
 import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
 import { loggers } from "../logging";
+import { User } from "../database/schema";
 
 const logger = loggers.auth();
 
@@ -199,6 +200,47 @@ authRoutes.get("/me", authMiddleware, async c => {
         email: user.email,
         linkedAccounts,
       },
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
+ * Update user onboarding data
+ * Captures qualification answers during multi-step onboarding
+ */
+authRoutes.patch("/me/onboarding", authMiddleware, async c => {
+  try {
+    const user = c.get("user");
+    const body = await c.req.json();
+
+    // Validate company size if provided
+    const validCompanySizes = ["hobby", "startup", "growth", "enterprise"];
+    if (body.companySize && !validCompanySizes.includes(body.companySize)) {
+      return c.json({ error: "Invalid company size" }, 400);
+    }
+
+    // Build onboarding update object
+    const onboardingUpdate: Record<string, unknown> = {};
+    if (body.role !== undefined) onboardingUpdate["onboarding.role"] = body.role;
+    if (body.companySize !== undefined)
+      onboardingUpdate["onboarding.companySize"] = body.companySize;
+    if (body.databaseTypes !== undefined)
+      onboardingUpdate["onboarding.databaseTypes"] = body.databaseTypes;
+    if (body.hasNoDatabase !== undefined)
+      onboardingUpdate["onboarding.hasNoDatabase"] = body.hasNoDatabase;
+    if (body.completedAt !== undefined)
+      onboardingUpdate["onboarding.completedAt"] = new Date(body.completedAt);
+
+    if (Object.keys(onboardingUpdate).length === 0) {
+      return c.json({ error: "No onboarding fields provided" }, 400);
+    }
+
+    await User.updateOne({ _id: user.id }, { $set: onboardingUpdate });
+
+    return c.json({
+      message: "Onboarding data updated successfully",
     });
   } catch (error: any) {
     return c.json({ error: error.message }, 400);

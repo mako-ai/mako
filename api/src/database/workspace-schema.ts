@@ -100,6 +100,7 @@ export interface IWorkspace extends Document {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
+    hasDemoDatabase?: boolean; // True if workspace has provisioned demo database
   };
   apiKeys?: IWorkspaceApiKey[];
 }
@@ -189,6 +190,7 @@ export interface IDatabaseConnection extends Document {
       privateKey?: string;
     };
   };
+  isDemo?: boolean; // True if this is a demo database connection
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -522,6 +524,10 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         enum: ["free", "pro", "enterprise"],
         default: "free",
       },
+      hasDemoDatabase: {
+        type: Boolean,
+        default: false,
+      },
       customPrompt: {
         type: String,
         default: `# Custom Prompt Configuration
@@ -703,6 +709,10 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       required: true,
       set: encryptObject,
       get: decryptObject,
+    },
+    isDemo: {
+      type: Boolean,
+      default: false,
     },
     createdBy: {
       type: String,

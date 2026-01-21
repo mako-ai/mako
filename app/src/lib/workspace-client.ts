@@ -73,6 +73,15 @@ export interface WorkspaceDatabase {
   createdAt: string;
   updatedAt: string;
   lastConnectedAt?: string;
+  isDemo?: boolean;
+}
+
+export interface DemoDatabaseResult {
+  id: string;
+  name: string;
+  type: string;
+  isDemo: boolean;
+  alreadyExists?: boolean;
 }
 
 class WorkspaceClient {
@@ -270,6 +279,21 @@ class WorkspaceClient {
       success: boolean;
       data: PendingInvite[];
     }>("/workspaces/pending-invites");
+    return response.data;
+  }
+
+  /**
+   * Provision demo database for workspace
+   * Creates a connection to the shared demo MongoDB database
+   */
+  async provisionDemoDatabase(
+    workspaceId: string,
+  ): Promise<DemoDatabaseResult> {
+    const response = await apiClient.post<{
+      success: boolean;
+      data: DemoDatabaseResult;
+      message: string;
+    }>(`/workspaces/${workspaceId}/databases/demo`);
     return response.data;
   }
 }

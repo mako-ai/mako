@@ -9,12 +9,25 @@ import {
   DatabaseConnection,
   IDatabaseConnection,
   Flow,
+  Workspace,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
 import { loggers } from "../logging";
 
 const logger = loggers.db();
+
+// Demo database configuration - shared read-only MongoDB instance
+const DEMO_DATABASE_CONFIG = {
+  name: "Demo E-Commerce Database",
+  type: "mongodb" as const,
+  connection: {
+    connectionString:
+      process.env.DEMO_DATABASE_CONNECTION_STRING ||
+      "mongodb://localhost:27017",
+    database: process.env.DEMO_DATABASE_NAME || "mako_demo",
+  },
+};
 
 export const workspaceDatabaseRoutes = new Hono();
 
@@ -80,6 +93,7 @@ workspaceDatabaseRoutes.get(
           active: true,
           lastConnectedAt: db.lastConnectedAt,
           isClusterMode, // true when connection can access multiple databases
+          isDemo: db.isDemo || false, // true if this is a demo database
           // Helper fields for easier access (connection object removed for security)
           displayName: db.name || conn.database || "Unknown Database",
           hostKey,
@@ -774,6 +788,94 @@ workspaceDatabaseRoutes.get(
         {
           success: false,
           error: error instanceof Error ? error.message : "Failed to get views",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// ============================================================================
+// Demo Database Provisioning
+// Provisions a shared read-only demo database for new users to explore
+// ============================================================================
+
+// Provision demo database for workspace
+workspaceDatabaseRoutes.post(
+  "/demo",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const user = c.get("user");
+      const workspace = c.get("workspace");
+
+      // Check if workspace already has a demo database
+      if (workspace.settings?.hasDemoDatabase) {
+        // Find and return existing demo database
+        const existingDemo = await DatabaseConnection.findOne({
+          workspaceId: workspace._id,
+          isDemo: true,
+        });
+
+        if (existingDemo) {
+          return c.json({
+            success: true,
+            data: {
+              id: existingDemo._id.toString(),
+              name: existingDemo.name,
+              type: existingDemo.type,
+              isDemo: true,
+              alreadyExists: true,
+            },
+            message: "Demo database already provisioned",
+          });
+        }
+      }
+
+      // Create demo database connection
+      const demoConnection = new DatabaseConnection({
+        workspaceId: workspace._id,
+        name: DEMO_DATABASE_CONFIG.name,
+        type: DEMO_DATABASE_CONFIG.type,
+        connection: DEMO_DATABASE_CONFIG.connection,
+        isDemo: true,
+        createdBy: user!.id,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await demoConnection.save();
+
+      // Update workspace settings to mark demo database as provisioned
+      await Workspace.updateOne(
+        { _id: workspace._id },
+        { $set: { "settings.hasDemoDatabase": true } },
+      );
+
+      return c.json(
+        {
+          success: true,
+          data: {
+            id: demoConnection._id.toString(),
+            name: demoConnection.name,
+            type: demoConnection.type,
+            isDemo: true,
+          },
+          message: "Demo database provisioned successfully",
+        },
+        201,
+      );
+    } catch (error) {
+      console.error("Error provisioning demo database:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to provision demo database",
         },
         500,
       );

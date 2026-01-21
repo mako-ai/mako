@@ -314,10 +314,13 @@ function Editor() {
       );
       const executionTime = Date.now() - startTime;
       if (result.success) {
+        // Find the database to check if it's a demo database
+        const database = availableDatabases.find(db => db.id === connectionId);
         trackEvent("query_executed", {
           connection_id: connectionId,
           success: true,
           duration_ms: executionTime,
+          isDemo: database?.isDemo || false,
         });
 
         setTabResults(prev => ({
