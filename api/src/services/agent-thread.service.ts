@@ -600,37 +600,80 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
 }
 
 /**
+ * Usage data for token tracking (for metered billing)
+ */
+export interface ChatUsageData {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  model?: string;
+}
+
+/**
  * Save chat using AI SDK best practice: single atomic save at the end.
  * Uses upsert to create or update the chat document.
  *
  * chatId must be a valid 24-character MongoDB ObjectId hex string.
  * The frontend generates this using generateObjectId() utility.
+ *
+ * @param usage - Optional usage data from AI SDK for token tracking
  */
 export const saveChat = async (
   chatId: string,
   workspaceId: string,
   userId: string,
   messages: UIMessage[],
+  usage?: ChatUsageData,
 ): Promise<typeof Chat.prototype | null> => {
   const now = new Date();
   const storedMessages = messages.map(convertUIMessageToStoredFormat);
 
+  // Count assistant messages to determine the message index for usage history
+  const assistantMessageCount = messages.filter(
+    m => m.role === "assistant",
+  ).length;
+
+  // Build the update operation
+  const updateOp: Record<string, unknown> = {
+    $set: {
+      messages: storedMessages,
+      updatedAt: now,
+    },
+    $setOnInsert: {
+      workspaceId: new ObjectId(workspaceId),
+      createdBy: userId,
+      title: "New Chat",
+      titleGenerated: false,
+      threadId: uuidv4(),
+      createdAt: now,
+    },
+  };
+
+  // If usage data is provided, update cumulative totals and append to history
+  if (usage && usage.totalTokens > 0) {
+    // Use $inc for cumulative totals to handle concurrent updates correctly
+    (updateOp as Record<string, Record<string, unknown>>).$inc = {
+      "usage.promptTokens": usage.promptTokens,
+      "usage.completionTokens": usage.completionTokens,
+      "usage.totalTokens": usage.totalTokens,
+    };
+
+    // Append to usage history for per-turn tracking
+    (updateOp as Record<string, Record<string, unknown>>).$push = {
+      "usage.history": {
+        messageIndex: assistantMessageCount - 1, // 0-indexed
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        model: usage.model,
+        timestamp: now,
+      },
+    };
+  }
+
   const result = await Chat.findOneAndUpdate(
     { _id: new ObjectId(chatId) },
-    {
-      $set: {
-        messages: storedMessages,
-        updatedAt: now,
-      },
-      $setOnInsert: {
-        workspaceId: new ObjectId(workspaceId),
-        createdBy: userId,
-        title: "New Chat",
-        titleGenerated: false,
-        threadId: uuidv4(),
-        createdAt: now,
-      },
-    },
+    updateOp,
     { upsert: true, new: true },
   );
 
