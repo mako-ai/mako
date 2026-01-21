@@ -12,12 +12,12 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 |----------|------------------------|-------------|
 | Core Streaming | 8 | 4 |
 | Data Model | 8 | 3 |
-| Frontend/React | 7 | 7 |
-| Tools & Agents | 7 | 5 |
-| Providers & Models | 5 | 4 |
+| Frontend/React | 7 | 8 |
+| Tools & Agents | 7 | 9 |
+| Providers & Models | 5 | 5 |
 | Error Handling | 3 | 5 |
-| Advanced Patterns | 2 | 9 |
-| **Total** | **40** | **37** |
+| Advanced Patterns | 2 | 12 |
+| **Total** | **40** | **46** |
 
 ---
 
@@ -72,6 +72,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Frontend | `experimental_useAssistant` | OpenAI Assistants API integration | ❌ Missing | Not using OpenAI Assistants |
 | Frontend | Image input handling | Send images in chat | ❌ Missing | No multimodal input support |
 | Frontend | File attachment UI | Upload and display files | ❌ Missing | No file upload in chat |
+| Frontend | **Tool approval UI** | Handle `approval-requested` state + `addToolApprovalResponse()` | ❌ Missing | No UI for human-in-the-loop tool approval |
 | Frontend | Streaming text UI components | Animated text streaming | ⚠️ Basic | Using pulsing dot, not character-by-character |
 | Frontend | Error boundary for AI errors | Catch and display AI-specific errors | ⚠️ Basic | Generic error display, not AI SDK error types |
 
@@ -87,10 +88,15 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Tools | Tool namespacing | Prefix tools by category | ✅ Implemented | `mongo_*`, `sql_*` prefixes |
 | Tools | Multi-step tool loops | Allow multiple tool calls | ✅ Implemented | stepCountIs(256) with logging |
 | Tools | `maxToolRoundtrips` | Limit tool call rounds | ⚠️ Different | Using stepCountIs instead (similar purpose) |
+| Tools | **`needsApproval`** | Human-in-the-loop approval for dangerous tools | ❌ Missing | **CRITICAL** - No approval for destructive DB operations (DELETE, DROP, etc.) |
 | Tools | `toolChoice` parameter | Force/suggest specific tools | ❌ Missing | Not controlling tool selection |
 | Tools | Tool middleware | Wrap tool execution with logging/metrics | ❌ Missing | No tool middleware layer |
 | Tools | MCP (Model Context Protocol) | Connect to MCP servers | ❌ Missing | No MCP integration |
 | Tools | `experimental_toToolResultContent` | Format complex tool results | ❌ Missing | Manual result formatting |
+| Agents | `Agent` / `ToolLoopAgent` class | OOP agent abstraction with `.generate()` method | ❌ Missing | Using raw streamText with manual step control |
+| Agents | `prepareStep` callback | Modify system prompt, model, or tools per-step | ❌ Missing | Only using `onStepFinish` (observational only) |
+| Agents | `DurableAgent` | Durable, resumable workflows with state persistence | ❌ Missing | No durable workflow support |
+| Agents | `callOptionsSchema` + `prepareCall` | Type-safe per-call customization for agents | ❌ Missing | Manual context injection in system prompt |
 
 ### Provider & Model Management
 
@@ -105,6 +111,7 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Providers | `wrapLanguageModel` middleware | Add logging, caching, guardrails | ❌ Missing | No model middleware |
 | Providers | Custom provider creation | Create custom AI providers | ❌ Missing | Only using official providers |
 | Providers | Embedding models | Text embedding support | ❌ Missing | No embedding functionality |
+| Providers | AI Gateway integration | Vercel AI Gateway for unified routing & observability | ❌ Missing | Direct provider calls only |
 
 ### Error Handling & Resilience
 
@@ -134,42 +141,75 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 | Advanced | Conversation summarization | Compress long conversations | ❌ Missing | Truncation only (last 10 messages) |
 | Advanced | Semantic chunking | Smart context windowing | ❌ Missing | Simple message count limit |
 | Advanced | A/B testing models | Compare model performance | ❌ Missing | No model comparison |
+| Advanced | `sendSources` option | Source attribution in streaming responses | ❌ Missing | No source/citation support |
+| Advanced | Reranking | Rerank retrieval results for better relevance | ❌ Missing | No reranking support |
+| Advanced | Structured output with `Output.object()` | Agent-level schema enforcement (v6 pattern) | ❌ Missing | Not using v6 Agent output schemas |
 
 ---
 
 ## Priority Recommendations
 
-### High Priority (Significant UX/DX Impact)
+### 🔴 Critical Priority (Safety & Reliability)
 
-1. **Stream resumption** - Critical for reliability. Users lose context when connection drops.
+1. **Tool execution approval (`needsApproval`)** - **CRITICAL** for a database assistant. Prevents accidental destructive operations (DELETE, DROP, TRUNCATE). Can be static (`needsApproval: true`) or dynamic based on query analysis. Requires frontend UI to handle `approval-requested` state and `addToolApprovalResponse()`.
 
-2. **Multimodal input** - Image input support is increasingly expected. AI SDK has native support.
+   ```typescript
+   // Example: Dynamic approval based on query type
+   needsApproval: ({ query }) => {
+     const dangerous = /\b(DELETE|DROP|TRUNCATE|UPDATE)\b/i;
+     return dangerous.test(query);
+   }
+   ```
 
-3. **Reasoning parts display** - You have basic collapsible display, but could use Vercel's recommended progressive disclosure pattern with streaming support.
+2. **Retry logic with exponential backoff** - AI provider APIs have transient failures and rate limits. Very low effort (add `p-retry` or similar), high impact on reliability. Users hate seeing random failures that work on retry.
 
-### Medium Priority (Better DX/Maintainability)
+   ```typescript
+   import pRetry from 'p-retry';
+   const result = await pRetry(
+     () => streamText({ model, system, messages, tools }),
+     { retries: 3, onFailedAttempt: err => console.log(`Retry ${err.attemptNumber}`) }
+   );
+   ```
 
-6. **Model middleware (`wrapLanguageModel`)** - Would enable logging, caching, and guardrails without modifying core logic.
+### 🟠 High Priority (Significant UX/DX Impact)
 
-7. **Provider registry** - Replace switch statement with registry pattern for cleaner provider management.
+3. **`generateObject()` / `streamObject()`** - Enables structured outputs with type safety for:
+   - Query suggestions with proper schema validation
+   - Schema analysis returning typed objects
+   - Error responses with structured error types
+   - Tool results with guaranteed format
 
-8. **`generateObject()` / `streamObject()`** - Useful for structured outputs like suggested queries, schema analysis.
+4. **Multimodal input** - Image input support is increasingly expected. AI SDK has native support via `FileUIPart`.
 
-9. **AI SDK error types** - Better error handling with typed errors (`APICallError`, `JSONParseError`, etc.).
+5. **AI SDK error types** - Use `APICallError`, `JSONParseError`, `RetryError` etc. for better error handling and user feedback.
 
-10. **Retry logic** - Add exponential backoff for transient failures.
+6. **Stream resumption** - Critical for reliability. Users lose context when connection drops.
 
-### Lower Priority (Nice to Have)
+### 🟡 Medium Priority (Better DX/Maintainability)
+
+7. **Model middleware (`wrapLanguageModel`)** - Would enable logging, caching, and guardrails without modifying core logic.
+
+8. **Provider registry** - Replace switch statement with registry pattern for cleaner provider management.
+
+9. **`Agent` / `ToolLoopAgent` class refactor** - Clean up `agent.routes.ts` by using the OOP agent abstraction. Provides cleaner code organization and reusability.
+
+10. **`prepareStep` callback** - More powerful than `onStepFinish`. Allows modifying system prompt, model, or available tools per-step (e.g., context compression, dynamic tool filtering).
+
+### 🟢 Lower Priority (Nice to Have)
 
 11. **Embeddings support** - For future RAG features.
 
 12. **MCP integration** - For tool ecosystem expansion.
 
-13. **Edge runtime** - For lower latency (requires significant refactoring).
+13. **`DurableAgent`** - For durable, resumable workflows with state persistence.
 
-14. **Prompt caching** - Cost optimization for Anthropic models.
+14. **Edge runtime** - For lower latency (requires significant refactoring).
 
-15. **A/B testing** - For model comparison and optimization.
+15. **Prompt caching** - Cost optimization for Anthropic models.
+
+16. **`sendSources`** - Source attribution in responses.
+
+17. **A/B testing** - For model comparison and optimization.
 
 ---
 
@@ -197,10 +237,13 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 
 ## Reference Links
 
-- [AI SDK Documentation](https://sdk.vercel.ai/docs)
+- [AI SDK v6 Documentation](https://v6.ai-sdk.dev/docs)
+- [AI SDK v6 Announcement](https://vercel.com/blog/ai-sdk-6)
 - [AI SDK GitHub](https://github.com/vercel/ai)
 - [AI SDK Examples](https://github.com/vercel/ai/tree/main/examples)
 - [Vercel AI Chatbot Template](https://github.com/vercel/ai-chatbot)
+- [Vercel Labs Coding Agent Template](https://github.com/vercel-labs/coding-agent-template)
+- [Vercel Labs Lead Agent](https://github.com/vercel/lead-agent)
 - [Streamdown Package](https://github.com/vercel/ai/tree/main/packages/streamdown)
 
 ---
@@ -220,4 +263,23 @@ This document provides a comparison between Mako's AI implementation and Vercel'
 ---
 
 *Generated: January 2026*
+*Last Updated: January 21, 2026*
 *AI SDK Version: 6.0.0-beta.166*
+
+---
+
+## Changelog
+
+- **2026-01-21**: Added missing AI SDK v6 features from review:
+  - Added `needsApproval` for tool execution approval (Critical)
+  - Added `Agent` / `ToolLoopAgent` class abstraction
+  - Added `prepareStep` callback for per-step control
+  - Added `DurableAgent` for durable workflows
+  - Added `callOptionsSchema` + `prepareCall` patterns
+  - Added `sendSources` for source attribution
+  - Added AI Gateway integration
+  - Added Tool approval UI state for frontend
+  - Added Reranking support
+  - Added `Output.object()` structured output pattern
+  - Reorganized priorities: Safety (needsApproval, retry) now Critical
+  - Updated reference links with v6 docs and Vercel Labs examples
