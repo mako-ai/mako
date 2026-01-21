@@ -35,7 +35,11 @@ interface WorkspaceContextState {
 
   // Actions
   loadWorkspaces: () => Promise<void>;
+  refreshWorkspaces: () => Promise<void>; // Reload workspace list without page reload
   createWorkspace: (data: CreateWorkspaceData) => Promise<Workspace>;
+  createWorkspaceForOnboarding: (
+    data: CreateWorkspaceData,
+  ) => Promise<Workspace>; // Create without reload
   updateWorkspace: (
     id: string,
     data: Partial<CreateWorkspaceData>,
@@ -179,6 +183,26 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     }
   }, [currentWorkspaceId, setCurrentWorkspaceId]);
 
+  // Refresh workspace list without triggering page reload
+  const refreshWorkspaces = useCallback(async () => {
+    try {
+      const workspaceList = await workspaceClient.listWorkspaces();
+      setWorkspaces(workspaceList);
+
+      // If we have a current workspace, ensure it's still in the list
+      if (currentWorkspace) {
+        const stillExists = workspaceList.find(
+          ws => ws.id === currentWorkspace.id,
+        );
+        if (!stillExists) {
+          setCurrentWorkspace(null);
+        }
+      }
+    } catch (err: any) {
+      console.error("Refresh workspaces error:", err);
+    }
+  }, [currentWorkspace]);
+
   const createWorkspace = useCallback(
     async (data: CreateWorkspaceData): Promise<Workspace> => {
       try {
@@ -194,6 +218,34 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
     },
     [],
+  );
+
+  // Create workspace during onboarding without triggering page reload
+  // This allows the multi-step onboarding flow to continue
+  const createWorkspaceForOnboarding = useCallback(
+    async (data: CreateWorkspaceData): Promise<Workspace> => {
+      try {
+        setError(null);
+        const workspace = await workspaceClient.createWorkspace(data);
+        setWorkspaces(prev => [...prev, workspace]);
+
+        // Set as current workspace WITHOUT reloading
+        setCurrentWorkspace(workspace);
+        setCurrentWorkspaceId(workspace.id);
+        localStorage.setItem("activeWorkspaceId", workspace.id);
+
+        // Sync with backend (don't await to avoid blocking)
+        workspaceClient.switchWorkspace(workspace.id).catch(() => {
+          // Ignore errors during background sync
+        });
+
+        return workspace;
+      } catch (err: any) {
+        setError(err.message || "Failed to create workspace");
+        throw err;
+      }
+    },
+    [setCurrentWorkspaceId],
   );
 
   const updateWorkspace = useCallback(
@@ -422,7 +474,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
     // Actions
     loadWorkspaces,
+    refreshWorkspaces,
     createWorkspace,
+    createWorkspaceForOnboarding,
     updateWorkspace,
     deleteWorkspace,
     switchWorkspace,

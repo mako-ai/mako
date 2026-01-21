@@ -49,8 +49,12 @@ type OnboardingState =
   | "creating";
 
 export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
-  const { createWorkspace, acceptInvite, currentWorkspace, refreshWorkspaces } =
-    useWorkspace();
+  const {
+    createWorkspaceForOnboarding,
+    acceptInvite,
+    currentWorkspace,
+    refreshWorkspaces,
+  } = useWorkspace();
 
   const [state, setState] = useState<OnboardingState>("loading");
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
@@ -68,6 +72,18 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     null,
   );
 
+  // Check if we're resuming onboarding after a page refresh
+  useEffect(() => {
+    const onboardingInProgress = localStorage.getItem("onboarding_in_progress");
+    const savedWorkspaceId = localStorage.getItem("onboarding_workspace_id");
+
+    if (onboardingInProgress === "true" && savedWorkspaceId) {
+      // Resume onboarding from qualification step
+      setCreatedWorkspaceId(savedWorkspaceId);
+      setState("qualification");
+    }
+  }, []);
+
   // Map state to step for progress indicator
   const getStep = (): OnboardingStep => {
     if (state === "qualification") return "qualification";
@@ -75,6 +91,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     if (state === "database") return "database";
     return "qualification";
   };
+
+  // Helper to clear onboarding state and complete
+  const finishOnboarding = useCallback(() => {
+    // Clear onboarding state from localStorage
+    localStorage.removeItem("onboarding_in_progress");
+    localStorage.removeItem("onboarding_workspace_id");
+    onComplete();
+  }, [onComplete]);
 
   // Load pending invites on mount
   useEffect(() => {
@@ -108,14 +132,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           action: "joined",
         });
 
-        onComplete();
+        finishOnboarding();
       } catch (error: unknown) {
         const err = error as Error;
         setErrorMessage(err.message || "Failed to accept invitation");
         setAcceptingToken(null);
       }
     },
-    [acceptInvite, onComplete, pendingInvites.length],
+    [acceptInvite, finishOnboarding, pendingInvites.length],
   );
 
   const handleCreateWorkspace = useCallback(async () => {
@@ -128,8 +152,16 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setErrorMessage("");
 
     try {
-      const workspace = await createWorkspace({ name: workspaceName.trim() });
+      // Use createWorkspaceForOnboarding to avoid page reload
+      // This allows the multi-step onboarding flow to continue
+      const workspace = await createWorkspaceForOnboarding({
+        name: workspaceName.trim(),
+      });
       setCreatedWorkspaceId(workspace.id);
+
+      // Save onboarding state to localStorage in case of page refresh
+      localStorage.setItem("onboarding_in_progress", "true");
+      localStorage.setItem("onboarding_workspace_id", workspace.id);
 
       // Track workspace creation during onboarding
       trackEvent("workspace_created", {
@@ -144,7 +176,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       setErrorMessage(err.message || "Failed to create workspace");
       setState("choose-workspace");
     }
-  }, [workspaceName, createWorkspace]);
+  }, [workspaceName, createWorkspaceForOnboarding]);
 
   const handleQualificationComplete = useCallback(
     async (data: QualificationData) => {
@@ -204,7 +236,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
             qualification_has_no_database: qualificationData?.hasNoDatabase,
           });
 
-          onComplete();
+          finishOnboarding();
         } catch (error: unknown) {
           const err = error as Error;
           setErrorMessage(err.message || "Failed to set up demo database");
@@ -218,7 +250,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     [
       createdWorkspaceId,
       currentWorkspace?.id,
-      onComplete,
+      finishOnboarding,
       pendingInvites.length,
       qualificationData,
       refreshWorkspaces,
@@ -238,8 +270,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       qualification_has_no_database: qualificationData?.hasNoDatabase,
     });
 
-    onComplete();
-  }, [onComplete, pendingInvites.length, qualificationData]);
+    finishOnboarding();
+  }, [finishOnboarding, pendingInvites.length, qualificationData]);
 
   const handleBackToPath = useCallback(() => {
     setState("path");

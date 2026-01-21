@@ -104,8 +104,13 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     );
   }
 
+  // Check if onboarding is in progress (user created workspace but hasn't completed flow)
+  const onboardingInProgress =
+    localStorage.getItem("onboarding_in_progress") === "true";
+
   // Show onboarding if user has no workspaces OR if they clicked "Create New" from selector
-  if (workspaces.length === 0 || showCreateWorkspace) {
+  // OR if onboarding is in progress (user refreshed during multi-step onboarding)
+  if (workspaces.length === 0 || showCreateWorkspace || onboardingInProgress) {
     return <OnboardingFlow onComplete={handleOnboardingComplete} />;
   }
 
