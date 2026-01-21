@@ -1,0 +1,234 @@
+@import "tailwindcss";
+/* Include streamdown styles */
+@source "../node_modules/streamdown/dist/*.js";
+
+/* Custom streamdown overrides */
+
+/* 1. Text size - match user message size (0.875rem = 14px = MUI body2) */
+[data-streamdown] {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Headings - scale down for chat context */
+[data-streamdown="heading-1"] {
+  font-size: 1rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+[data-streamdown="heading-2"] {
+  font-size: 0.9375rem;
+  margin-top: 0.625rem;
+  margin-bottom: 0.25rem;
+}
+
+[data-streamdown="heading-3"] {
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.125rem;
+}
+
+[data-streamdown="heading-4"],
+[data-streamdown="heading-5"],
+[data-streamdown="heading-6"] {
+  font-size: 0.875rem;
+  margin-top: 0.375rem;
+  margin-bottom: 0.125rem;
+}
+
+/* 2. Reduce spacing between list items and before/after lists */
+[data-streamdown="ordered-list"],
+[data-streamdown="unordered-list"] {
+  margin-top: 0.125rem;
+  margin-bottom: 0.625rem;
+  padding-left: 1.25rem;
+}
+
+[data-streamdown="list-item"] {
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1.4;
+}
+
+/* Nested lists - indent further */
+[data-streamdown="list-item"] [data-streamdown="ordered-list"],
+[data-streamdown="list-item"] [data-streamdown="unordered-list"] {
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-left: 1.25rem;
+}
+
+/* Paragraph spacing - subtle, reduce bottom margin before lists */
+[data-streamdown] p {
+  margin-top: 0.125rem;
+  margin-bottom: 0.125rem;
+}
+
+/* Horizontal rule / separator - match border colors */
+[data-streamdown="horizontal-rule"] {
+  border-color: hsl(var(--border)) !important;
+  border-top-width: 1px !important;
+  border-style: solid !important;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Blockquote border - consistent with other borders */
+[data-streamdown="blockquote"] {
+  border-left-color: hsl(var(--border));
+}
+
+/* 3. Inline code - add visible background color, match text size */
+[data-streamdown="inline-code"] {
+  background-color: hsl(var(--muted) / 0.6);
+  border: 1px solid hsl(var(--border));
+  font-size: 0.8125rem;
+  padding: 0.1rem 0.35rem;
+}
+
+.dark [data-streamdown="inline-code"] {
+  background-color: hsl(var(--muted) / 0.8);
+}
+
+/* 4. Table styling - consistent borders, compact, subtle backgrounds */
+[data-streamdown="table-wrapper"] {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+[data-streamdown="table"] {
+  border: 1px solid hsl(var(--border));
+  border-collapse: collapse;
+}
+
+[data-streamdown="table-header"] {
+  background-color: hsl(var(--muted) / 0.5);
+}
+
+.dark [data-streamdown="table-header"] {
+  background-color: hsl(var(--muted) / 0.4);
+}
+
+[data-streamdown="table-body"] {
+  background-color: hsl(0 0% 100% / 0.5);
+}
+
+.dark [data-streamdown="table-body"] {
+  background-color: hsl(0 0% 100% / 0.02);
+}
+
+[data-streamdown="table-row"] {
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+[data-streamdown="table-header-cell"] {
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border-right: 1px solid hsl(var(--border) / 0.5);
+}
+
+[data-streamdown="table-header-cell"]:last-child {
+  border-right: none;
+}
+
+[data-streamdown="table-cell"] {
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+  border-right: 1px solid hsl(var(--border) / 0.4);
+}
+
+[data-streamdown="table-cell"]:last-child {
+  border-right: none;
+}
+
+/* 5. Code block styling - consistent with tables */
+[data-streamdown="code-block"] {
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 0.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+[data-streamdown="code-block-header"] {
+  background-color: hsl(var(--muted) / 0.5) !important;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.75rem;
+  border: none !important;
+  border-bottom: 1px solid hsl(var(--border) / 0.4) !important;
+}
+
+[data-streamdown="code-block-body"] {
+  padding: 0.5rem 0.625rem !important;
+  font-size: 0.8125rem !important;
+  background-color: hsl(0 0% 100% / 0.5) !important;
+  border-top-color: hsl(var(--border) / 0.4) !important;
+}
+
+/* Override Tailwind border-t class on code block body */
+[data-streamdown="code-block-body"].border-t {
+  border-top-color: hsl(var(--border) / 0.4) !important;
+}
+
+.dark [data-streamdown="code-block-body"] {
+  background-color: hsl(0 0% 100% / 0.02) !important;
+}
+
+/* Line numbers in code block */
+[data-streamdown="code-block-body"] code span::before {
+  font-size: 0.6875rem;
+  width: 1.25rem;
+  margin-right: 0.625rem;
+}
+
+/* Hide empty last line in code blocks */
+[data-streamdown="code-block-body"] code > span:last-child:empty {
+  display: none;
+}
+
+/* Streamdown requires shadcn/ui CSS variables for theming */
+:root {
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --input: 240 3.7% 15.9%;
+  --ring: 240 4.9% 83.9%;
+}

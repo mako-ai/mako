@@ -24,13 +24,12 @@ import {
   DialogContent,
   DialogActions,
 } from "@mui/material";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
   prism,
   tomorrow,
 } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { StreamingMarkdown } from "./StreamingMarkdown";
 import {
   ArrowUp,
   ChevronDown,
@@ -414,7 +413,6 @@ interface ChatProps {
 }
 
 const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
-  const muiTheme = useMuiTheme();
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
   const { consoleTabs, activeConsoleId } = useConsoleStore();
@@ -1416,94 +1414,15 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                       return null; // Skip inline, will be shown via ReasoningDisplay
                     }
 
-                    // Render text parts
+                    // Render text parts using StreamingMarkdown for optimized streaming
                     if (
                       partType === "text" &&
                       (part as { text?: string }).text
                     ) {
                       return (
-                        <ReactMarkdown
-                          key={partIndex}
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            code({ className, children }) {
-                              const match = /language-(\w+)/.exec(
-                                className || "",
-                              );
-                              const isInline = !match;
-                              const codeString = String(children).replace(
-                                /\n$/,
-                                "",
-                              );
-                              return !isInline ? (
-                                <CodeBlock
-                                  language={match ? match[1] : "text"}
-                                  key={codeString}
-                                  isGenerating={false}
-                                >
-                                  {codeString}
-                                </CodeBlock>
-                              ) : (
-                                <code
-                                  className={className}
-                                  style={{ fontSize: "0.8rem" }}
-                                >
-                                  {children}
-                                </code>
-                              );
-                            },
-                            table({ children }) {
-                              return (
-                                <Box sx={{ overflow: "auto", my: 1 }}>
-                                  <table
-                                    style={{
-                                      borderCollapse: "collapse",
-                                      width: "100%",
-                                      fontSize: "0.875rem",
-                                      border: `1px solid ${muiTheme.palette.divider}`,
-                                    }}
-                                  >
-                                    {children}
-                                  </table>
-                                </Box>
-                              );
-                            },
-                            th({ children }) {
-                              return (
-                                <th
-                                  style={{
-                                    padding: "8px 12px",
-                                    textAlign: "left",
-                                    backgroundColor:
-                                      muiTheme.palette.background.paper,
-                                    borderBottom: `2px solid ${muiTheme.palette.divider}`,
-                                    borderRight: `1px solid ${muiTheme.palette.divider}`,
-                                    fontWeight: 600,
-                                  }}
-                                >
-                                  {children}
-                                </th>
-                              );
-                            },
-                            td({ children }) {
-                              return (
-                                <td
-                                  style={{
-                                    padding: "8px 12px",
-                                    borderBottom: `1px solid ${muiTheme.palette.divider}`,
-                                    borderRight: `1px solid ${muiTheme.palette.divider}`,
-                                    backgroundColor:
-                                      muiTheme.palette.background.paper,
-                                  }}
-                                >
-                                  {children}
-                                </td>
-                              );
-                            },
-                          }}
-                        >
+                        <StreamingMarkdown key={partIndex}>
                           {(part as { text: string }).text}
-                        </ReactMarkdown>
+                        </StreamingMarkdown>
                       );
                     }
 
