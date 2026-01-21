@@ -162,7 +162,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         });
 
         // Mark onboarding as complete
-        await saveOnboardingData({ completedAt: new Date().toISOString() } as any);
+        await saveOnboardingData({
+          completedAt: new Date().toISOString(),
+        } as any);
 
         trackEvent("onboarding_completed", {
           has_pending_invites: pendingInvites.length > 0,
@@ -217,7 +219,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setShowDatabaseDialog(false);
 
     // Mark onboarding as complete
-    await saveOnboardingData({ completedAt: new Date().toISOString() } as any);
+    await saveOnboardingData({
+      completedAt: new Date().toISOString(),
+    } as any);
 
     trackEvent("onboarding_completed", {
       has_pending_invites: pendingInvites.length > 0,
