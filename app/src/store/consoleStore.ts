@@ -576,65 +576,6 @@ export const useConsoleStore = create<ConsoleStore>()(
             return data;
           }
 
-          // Migration: fallback to app-store data if present
-          const legacy = localStorage.getItem("app-store");
-          if (legacy) {
-            try {
-              const parsed = JSON.parse(legacy);
-              const tabs = parsed.state?.consoles?.tabs || {};
-              const activeTabId = parsed.state?.consoles?.activeTabId || null;
-
-              Object.values(tabs).forEach((tab: any) => {
-                if (
-                  tab.databaseId === undefined &&
-                  tab.metadata?.queryOptions
-                ) {
-                  tab.databaseId =
-                    tab.metadata.queryOptions.databaseId ||
-                    tab.metadata.queryOptions.databaseName;
-                }
-                if (
-                  tab.databaseName === undefined &&
-                  tab.metadata?.queryOptions
-                ) {
-                  tab.databaseName = tab.metadata.queryOptions.databaseLabel;
-                }
-                if (tab.isSaved === undefined) {
-                  tab.isSaved = !!tab.filePath;
-                }
-                if (tab.savedStateHash === undefined && tab.filePath) {
-                  const savedContent = tab.initialContent ?? tab.content ?? "";
-                  const savedConnId = tab.savedConnectionId ?? tab.connectionId;
-                  const savedDbId = tab.savedDatabaseId ?? tab.databaseId;
-                  const savedDbName = tab.savedDatabaseName ?? tab.databaseName;
-                  tab.savedStateHash = computeConsoleStateHash(
-                    savedContent,
-                    savedConnId,
-                    savedDbId,
-                    savedDbName,
-                  );
-                }
-                delete tab.initialContent;
-                delete tab.dbContentHash;
-                delete tab.savedConnectionId;
-                delete tab.savedDatabaseId;
-                delete tab.savedDatabaseName;
-              });
-
-              return {
-                state: {
-                  tabs,
-                  activeTabId,
-                  loading: {},
-                  error: {},
-                },
-                version: 0,
-              };
-            } catch (error) {
-              console.error("Failed to parse legacy console store:", error);
-            }
-          }
-
           return null;
         },
         setItem: (name, value) => {

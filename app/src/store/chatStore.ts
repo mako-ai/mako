@@ -191,42 +191,6 @@ export const useChatStore = create<ChatStore>()(
             return data;
           }
 
-          // Migration: fallback to app-store data if present
-          const legacy = localStorage.getItem("app-store");
-          if (legacy) {
-            try {
-              const parsed = JSON.parse(legacy);
-              const sessions = parsed.state?.chat?.sessions || {};
-              const currentChatId = parsed.state?.chat?.currentChatId || null;
-
-              Object.values(sessions).forEach((session: any) => {
-                session.createdAt = new Date(session.createdAt);
-                if (session.lastMessageAt) {
-                  session.lastMessageAt = new Date(session.lastMessageAt);
-                }
-                session.messages?.forEach((msg: any) => {
-                  msg.timestamp = new Date(msg.timestamp);
-                });
-              });
-
-              const fallbackId =
-                currentChatId && sessions[currentChatId]
-                  ? currentChatId
-                  : Object.keys(sessions)[0];
-
-              return {
-                state: {
-                  sessions,
-                  currentChatId: fallbackId || null,
-                  error: {},
-                },
-                version: 0,
-              };
-            } catch (error) {
-              console.error("Failed to parse legacy chat store:", error);
-            }
-          }
-
           return null;
         },
         setItem: (name, value) => {
