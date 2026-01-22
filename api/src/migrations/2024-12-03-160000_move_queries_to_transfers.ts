@@ -1,4 +1,7 @@
 import { Db } from "mongodb";
+import { loggers } from "../logging";
+
+const log = loggers.migration();
 
 export const description =
   "Move queries from GraphQL/PostHog connectors to their first matching SyncJob transfer";
@@ -29,7 +32,7 @@ export async function up(db: Db): Promise<void> {
     })
     .toArray();
 
-  console.log(
+  log.info(
     `Found ${connectorsWithQueries.length} connectors with queries to migrate`,
   );
 
@@ -68,21 +71,22 @@ export async function up(db: Db): Promise<void> {
         },
       );
 
-      console.log(
+      log.info(
         `Migrated ${queries.length} queries from connector "${connector.name}" (${connector._id}) to SyncJob ${syncJob._id}`,
       );
       migratedCount++;
     } else {
       // No SyncJob found - keep queries in connector for now
       // They'll be moved when a transfer is created
-      console.log(
+      log.info(
         `No SyncJob found for connector "${connector.name}" (${connector._id}) - keeping queries in connector`,
       );
       noTransferCount++;
     }
   }
 
-  console.log(`Migration complete:`);
-  console.log(`  - Migrated: ${migratedCount} connectors`);
-  console.log(`  - Skipped (no transfer): ${noTransferCount} connectors`);
+  log.info("Migration complete:", {
+    migrated: migratedCount,
+    skipped: noTransferCount,
+  });
 }

@@ -1,4 +1,7 @@
 import { Db } from "mongodb";
+import { loggers } from "../logging";
+
+const log = loggers.migration();
 
 export const description =
   "Mark all existing consoles as saved (isSaved: true) to distinguish from auto-saved drafts";
@@ -19,9 +22,7 @@ export async function up(db: Db): Promise<void> {
   const collectionNames = collections.map(c => c.name);
 
   if (!collectionNames.includes("savedconsoles")) {
-    console.log(
-      "ℹ️  Collection 'savedconsoles' not found, skipping migration.",
-    );
+    log.info("ℹ️  Collection 'savedconsoles' not found, skipping migration.");
     return;
   }
 
@@ -30,7 +31,7 @@ export async function up(db: Db): Promise<void> {
     .collection("savedconsoles")
     .updateMany({ isSaved: { $exists: false } }, { $set: { isSaved: true } });
 
-  console.log(
+  log.info(
     `✅ Marked ${result.modifiedCount} existing consoles as saved (isSaved: true)`,
   );
 }

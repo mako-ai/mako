@@ -1,4 +1,5 @@
 #!/usr/bin/env ts-node
+/* eslint-disable no-console */
 
 /**
  * Example: Programmatic usage of the sync functionality

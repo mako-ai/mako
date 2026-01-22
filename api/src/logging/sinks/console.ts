@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import type { Sink, LogRecord } from "@logtape/logtape";
 
 /**
@@ -61,12 +62,14 @@ function formatValue(value: unknown, indent: number = 0): string {
   }
 
   if (value instanceof Error) {
-    const lines = [
-      `${colors.red}Error: ${value.message}${colors.reset}`,
-    ];
+    const lines = [`${colors.red}Error: ${value.message}${colors.reset}`];
     if (value.stack) {
       const stackLines = value.stack.split("\n").slice(1, 6);
-      lines.push(...stackLines.map(l => `${pad}  ${colors.dim}${l.trim()}${colors.reset}`));
+      lines.push(
+        ...stackLines.map(
+          l => `${pad}  ${colors.dim}${l.trim()}${colors.reset}`,
+        ),
+      );
     }
     return lines.join("\n");
   }
@@ -90,10 +93,15 @@ function formatValue(value: unknown, indent: number = 0): string {
 
     const formatted = entries
       .slice(0, 20)
-      .map(([k, v]) => `${pad}  ${colors.blue}${k}${colors.reset}: ${formatValue(v, indent + 1)}`);
+      .map(
+        ([k, v]) =>
+          `${pad}  ${colors.blue}${k}${colors.reset}: ${formatValue(v, indent + 1)}`,
+      );
 
     if (entries.length > 20) {
-      formatted.push(`${pad}  ${colors.dim}... ${entries.length - 20} more fields${colors.reset}`);
+      formatted.push(
+        `${pad}  ${colors.dim}... ${entries.length - 20} more fields${colors.reset}`,
+      );
     }
 
     return `{\n${formatted.join(",\n")}\n${pad}}`;

@@ -23,6 +23,9 @@ import {
   generateMigrationContent,
   getPendingMigrations,
 } from "./runner";
+import { loggers } from "../logging";
+
+const log = loggers.migration();
 
 const MIGRATIONS_DIR = path.join(__dirname);
 
@@ -46,7 +49,7 @@ function pad(str: string, length: number): string {
  */
 function printRow(cols: string[], widths: number[]): void {
   const cells = cols.map((col, i) => pad(col, widths[i]));
-  console.log(`│ ${cells.join(" │ ")} │`);
+  log.info(`│ ${cells.join(" │ ")} │`);
 }
 
 /**
@@ -56,7 +59,7 @@ function printSeparator(widths: number[], char: "┬" | "┼" | "┴"): void {
   const topChar = char === "┬" ? "┌" : char === "┴" ? "└" : "├";
   const bottomChar = char === "┬" ? "┐" : char === "┴" ? "┘" : "┤";
   const lines = widths.map(w => "─".repeat(w + 2));
-  console.log(`${topChar}${lines.join(char)}${bottomChar}`);
+  log.info(`${topChar}${lines.join(char)}${bottomChar}`);
 }
 
 /**
@@ -67,11 +70,11 @@ async function statusCommand(): Promise<void> {
     const { db } = await databaseConnectionService.getMainConnection();
     const statuses = await getMigrationFullStatus(db);
 
-    console.log("\nMigration Status:\n");
+    log.info("Migration Status:");
 
     if (statuses.length === 0) {
-      console.log("No migrations found (no local files, no database records).");
-      console.log('Create one with: pnpm run migrate create "migration name"');
+      log.info("No migrations found (no local files, no database records).");
+      log.info('Create one with: pnpm run migrate create "migration name"');
       await databaseConnectionService.closeAllConnections();
       process.exit(0);
     }
@@ -99,7 +102,10 @@ async function statusCommand(): Promise<void> {
             : status.dbStatus === "pending"
               ? "pending"
               : "-";
-      printRow([status.id, localStr, serverStr, formatDate(status.ran_at)], widths);
+      printRow(
+        [status.id, localStr, serverStr, formatDate(status.ran_at)],
+        widths,
+      );
     }
 
     printSeparator(widths, "┴");
@@ -118,12 +124,12 @@ async function statusCommand(): Promise<void> {
     if (failed > 0) parts.push(`${failed} failed`);
     if (orphaned > 0) parts.push(`${orphaned} orphaned (no local file)`);
 
-    console.log(`\n${parts.join(", ")}`);
+    log.info(parts.join(", "));
 
     await databaseConnectionService.closeAllConnections();
     process.exit(0);
   } catch (error) {
-    console.error("❌ Error:", error);
+    log.error("❌ Error:", { error });
     await databaseConnectionService.closeAllConnections();
     process.exit(1);
   }
@@ -138,39 +144,34 @@ async function runCommand(): Promise<void> {
     const pending = await getPendingMigrations(db);
 
     if (pending.length === 0) {
-      console.log("\n✓ No pending migrations.");
+      log.info("✓ No pending migrations.");
       await databaseConnectionService.closeAllConnections();
       process.exit(0);
     }
 
-    console.log(`\nRunning ${pending.length} migration(s)...\n`);
+    log.info(`Running ${pending.length} migration(s)...`);
 
     const result = await runPendingMigrations(db);
 
     for (const r of result.results) {
       if (r.success) {
-        console.log(`  ✓ ${r.id} (${r.duration_ms}ms)`);
+        log.info(`✓ ${r.id}`, { duration_ms: r.duration_ms });
       } else {
-        console.log(`  ✗ ${r.id} (${r.duration_ms}ms)`);
-        console.log(`    Error: ${r.error}`);
+        log.error(`✗ ${r.id}`, { duration_ms: r.duration_ms, error: r.error });
       }
     }
 
-    console.log();
-
     if (result.failed > 0) {
-      console.log(
-        `❌ ${result.completed} completed, ${result.failed} failed.`,
-      );
+      log.error(`❌ ${result.completed} completed, ${result.failed} failed.`);
       await databaseConnectionService.closeAllConnections();
       process.exit(1);
     }
 
-    console.log(`✓ ${result.completed} migration(s) completed.`);
+    log.info(`✓ ${result.completed} migration(s) completed.`);
     await databaseConnectionService.closeAllConnections();
     process.exit(0);
   } catch (error) {
-    console.error("❌ Error:", error);
+    log.error("❌ Error:", { error });
     await databaseConnectionService.closeAllConnections();
     process.exit(1);
   }
@@ -182,7 +183,7 @@ async function runCommand(): Promise<void> {
 async function createCommand(name: string): Promise<void> {
   try {
     if (!name || name.trim().length === 0) {
-      console.error("❌ Migration name is required");
+      log.error("❌ Migration name is required");
       process.exit(1);
     }
 
@@ -192,7 +193,7 @@ async function createCommand(name: string): Promise<void> {
 
     // Check if file already exists
     if (fs.existsSync(filepath)) {
-      console.error(`❌ Migration file already exists: ${filename}`);
+      log.error(`❌ Migration file already exists: ${filename}`);
       process.exit(1);
     }
 
@@ -200,11 +201,10 @@ async function createCommand(name: string): Promise<void> {
     const content = generateMigrationContent(name);
     fs.writeFileSync(filepath, content, "utf-8");
 
-    console.log(`\n✓ Created migration: ${filename}`);
-    console.log(`  Path: ${filepath}`);
+    log.info(`✓ Created migration: ${filename}`, { path: filepath });
     process.exit(0);
   } catch (error) {
-    console.error("❌ Error:", error);
+    log.error("❌ Error:", { error });
     process.exit(1);
   }
 }
@@ -212,10 +212,7 @@ async function createCommand(name: string): Promise<void> {
 // Create commander program
 const program = new Command();
 
-program
-  .name("migrate")
-  .description("MongoDB migration tool")
-  .version("1.0.0");
+program.name("migrate").description("MongoDB migration tool").version("1.0.0");
 
 program
   .command("status")
@@ -234,4 +231,3 @@ program
 
 // Parse arguments
 program.parse(process.argv);
-
