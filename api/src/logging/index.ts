@@ -14,7 +14,7 @@ export {
   enrichContextWithWorkspace,
   getRequestContext,
 } from "./context";
-export type { RequestContext } from "./context";
+export type { RequestContext, HttpLoggingOptions } from "./context";
 
 /**
  * Detects if running in production mode
@@ -66,12 +66,7 @@ export async function initializeLogging(): Promise<void> {
       },
     },
     loggers: [
-      // Root logger - catches everything
-      {
-        category: [],
-        lowestLevel: minLevel,
-        sinks: [sinkName],
-      },
+      // Note: No root logger - specific categories only to avoid duplicate logs
       // HTTP request logs
       {
         category: ["http"],
@@ -120,9 +115,21 @@ export async function initializeLogging(): Promise<void> {
         lowestLevel: minLevel,
         sinks: [sinkName],
       },
-      // Flow/Inngest operations (keep existing inngest logging working)
+      // Flow/Inngest operations
       {
         category: ["inngest"],
+        lowestLevel: minLevel,
+        sinks: [sinkName],
+      },
+      // Application lifecycle
+      {
+        category: ["app"],
+        lowestLevel: minLevel,
+        sinks: [sinkName],
+      },
+      // Migrations
+      {
+        category: ["migration"],
         lowestLevel: minLevel,
         sinks: [sinkName],
       },

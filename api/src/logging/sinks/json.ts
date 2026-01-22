@@ -124,12 +124,13 @@ export function getJsonSink(options: JsonSinkOptions = {}): Sink {
     options.serviceName ||
     process.env.K_SERVICE ||
     process.env.SERVICE_NAME ||
-    "unknown";
+    "mako-api";
   const serviceRevision =
     options.serviceRevision ||
     process.env.K_REVISION ||
     process.env.SERVICE_VERSION ||
-    "unknown";
+    "dev";
+  const environment = process.env.NODE_ENV || "development";
 
   // Detect if we're running on GCP (add Google-specific fields)
   const isGCP = !!(process.env.K_SERVICE || process.env.GOOGLE_CLOUD_PROJECT);
@@ -146,6 +147,7 @@ export function getJsonSink(options: JsonSinkOptions = {}): Sink {
       timestamp,
       service: serviceName,
       version: serviceRevision,
+      env: environment,
       category: record.category.join("."),
     };
 

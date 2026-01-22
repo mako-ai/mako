@@ -111,6 +111,44 @@ function formatValue(value: unknown, indent: number = 0): string {
 }
 
 /**
+ * HTTP-only context fields that should be filtered from non-HTTP logs
+ * Note: requestId is kept for cross-log correlation
+ */
+const httpOnlyFields = new Set([
+  "method", // HTTP method (GET, POST, etc.)
+  "path", // Request path
+  "startTime", // Request start timestamp
+  "spanId", // Distributed tracing span ID
+  "traceId", // Distributed tracing trace ID
+  "httpRequest", // Full HTTP request object
+]);
+
+/**
+ * Filters properties based on log category
+ * - HTTP logs: show all properties
+ * - Non-HTTP logs: filter out HTTP context fields that bleed from request context
+ */
+function filterProperties(
+  props: Record<string, unknown>,
+  category: readonly string[],
+): Record<string, unknown> {
+  const isHttpCategory = category[0] === "http";
+
+  if (isHttpCategory) {
+    return props;
+  }
+
+  // For non-HTTP categories, filter out HTTP-only fields (keep requestId for correlation)
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(props)) {
+    if (!httpOnlyFields.has(key) && value !== undefined && value !== null) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
+/**
  * Pretty console sink for local development
  * Outputs colorized, human-readable logs with structured data
  */
@@ -150,15 +188,8 @@ export function getPrettyConsoleSink(): Sink {
       console.log(logLine);
     }
 
-    // Output properties if present (excluding internal fields)
-    const props = { ...record.properties };
-
-    // Remove empty or internal properties
-    for (const key of Object.keys(props)) {
-      if (props[key] === undefined || props[key] === null) {
-        delete props[key];
-      }
-    }
+    // Output properties if present (excluding internal fields and HTTP context for non-HTTP logs)
+    const props = filterProperties({ ...record.properties }, record.category);
 
     if (Object.keys(props).length > 0) {
       const formatted = formatValue(props, 1);

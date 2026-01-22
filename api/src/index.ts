@@ -61,7 +61,13 @@ app.use(
 );
 
 // Logging middleware - must be before other middleware to capture all requests
-app.use("*", loggingMiddleware());
+// Skip logging for noisy routes (Inngest polling, health checks) in development
+app.use(
+  "*",
+  loggingMiddleware({
+    skipSuccessInDev: ["/api/inngest", "/health"],
+  }),
+);
 
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {

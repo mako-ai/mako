@@ -1,8 +1,8 @@
 import { Inngest } from "inngest";
-import { configureLogging, LogTapeInngestLogger } from "./logging";
+import { LogTapeInngestLogger } from "./logging";
 
-// Configure LogTape on module initialization
-void configureLogging();
+// Note: LogTape is configured once in api/src/logging/index.ts
+// The LogTapeInngestLogger uses the global LogTape configuration
 
 export const inngest = new Inngest({
   id: "mako-sync",

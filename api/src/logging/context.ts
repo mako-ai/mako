@@ -25,6 +25,32 @@ export interface RequestContext {
 }
 
 /**
+ * Options for HTTP logging middleware
+ */
+export interface HttpLoggingOptions {
+  /**
+   * Routes to skip logging for successful (2xx/3xx) requests in development.
+   * Errors (4xx/5xx) and slow requests are always logged.
+   * @example ["/api/inngest", "/health"]
+   */
+  skipSuccessInDev?: string[];
+
+  /**
+   * Threshold in milliseconds for slow request logging.
+   * Requests exceeding this duration are always logged, even for skipped routes.
+   * @default 1000 (1 second)
+   */
+  slowRequestThresholdMs?: number;
+}
+
+/**
+ * Detects if running in production mode
+ */
+function isProduction(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+/**
  * Storage for request context (used by LogTape's contextLocalStorage)
  */
 export const requestContextStorage = new AsyncLocalStorage<RequestContext>();
@@ -66,14 +92,52 @@ function generateRequestId(): string {
 }
 
 /**
- * Hono middleware that sets up request context for logging
- * This enables all logs within a request to automatically include:
- * - Trace ID (for distributed tracing / log correlation)
- * - Request ID
- * - User/Workspace context (when available)
- * - Request timing
+ * Checks if a path should skip logging for successful requests
  */
-export function loggingMiddleware() {
+function shouldSkipLogging(
+  path: string,
+  status: number,
+  duration: number,
+  options: HttpLoggingOptions,
+): boolean {
+  const slowThreshold = options.slowRequestThresholdMs ?? 1000;
+
+  // Always log errors (4xx/5xx)
+  if (status >= 400) {
+    return false;
+  }
+
+  // Always log slow requests
+  if (duration >= slowThreshold) {
+    return false;
+  }
+
+  // In production, log everything
+  if (isProduction()) {
+    return false;
+  }
+
+  // In development, skip specified routes for successful fast requests
+  const skipRoutes = options.skipSuccessInDev || [];
+  return skipRoutes.some(route => path.startsWith(route));
+}
+
+/**
+ * Hono middleware that sets up request context for logging.
+ *
+ * Uses the "canonical log line" approach: emits a single, comprehensive log
+ * at request completion instead of separate start/end logs.
+ *
+ * Features:
+ * - Single log per request with format: "METHOD /path STATUS DURATIONms"
+ * - Automatic trace correlation (X-Cloud-Trace-Context, X-Trace-Id)
+ * - Request ID generation/tracking
+ * - User/Workspace context enrichment
+ * - Environment-aware filtering for noisy routes in development
+ *
+ * @param options - Configuration options for logging behavior
+ */
+export function loggingMiddleware(options: HttpLoggingOptions = {}) {
   const logger = getLogger(["http"]);
 
   return async (c: Context, next: Next) => {
@@ -106,56 +170,72 @@ export function loggingMiddleware() {
       // Store context for other middleware to enrich
       requestContextStorage.enterWith(context);
 
-      // Log request start
-      logger.info("Request started", {
-        traceId,
-        spanId,
-        requestId,
-        httpRequest: {
-          requestMethod: c.req.method,
-          requestUrl: c.req.url,
-          userAgent: c.req.header("user-agent"),
-          remoteIp:
-            c.req.header("x-forwarded-for") || c.req.header("cf-connecting-ip"),
-        },
-      });
-
       try {
         await next();
 
         const duration = Date.now() - startTime;
         const status = c.res.status;
+        const { method, path } = context;
+        const slowThreshold = options.slowRequestThresholdMs ?? 1000;
 
-        // Log request completion
+        // Skip logging for noisy routes in dev (successful fast requests only)
+        if (shouldSkipLogging(path, status, duration, options)) {
+          return;
+        }
+
+        // Canonical log line: "METHOD /path STATUS DURATIONms"
+        // Add [SLOW] tag for requests exceeding threshold
+        const isSlow = duration >= slowThreshold;
+        const slowTag = isSlow ? " [SLOW]" : "";
         const logLevel =
-          status >= 500 ? "error" : status >= 400 ? "warn" : "info";
-        logger[logLevel]("Request completed", {
-          traceId,
-          spanId,
-          requestId,
-          userId: context.userId,
-          workspaceId: context.workspaceId,
-          httpRequest: {
-            requestMethod: c.req.method,
-            requestUrl: c.req.url,
-            status,
-            latency: `${duration / 1000}s`,
+          status >= 500
+            ? "error"
+            : status >= 400
+              ? "warn"
+              : isSlow
+                ? "warn"
+                : "info";
+
+        logger[logLevel](
+          `${method} ${path} ${status} ${duration}ms${slowTag}`,
+          {
+            requestId,
+            traceId,
+            spanId,
+            userId: context.userId,
+            workspaceId: context.workspaceId,
+            httpRequest: {
+              requestMethod: method,
+              requestUrl: c.req.url,
+              status,
+              userAgent: c.req.header("user-agent"),
+              remoteIp:
+                c.req.header("x-forwarded-for") ||
+                c.req.header("cf-connecting-ip"),
+            },
+            duration,
+            slow: isSlow || undefined,
           },
-          duration,
-        });
+        );
       } catch (error) {
         const duration = Date.now() - startTime;
+        const { method, path } = context;
 
-        logger.error("Request failed", {
+        // Always log errors with full context
+        logger.error(`${method} ${path} ERROR ${duration}ms`, {
+          requestId,
           traceId,
           spanId,
-          requestId,
           userId: context.userId,
           workspaceId: context.workspaceId,
           error,
           httpRequest: {
-            requestMethod: c.req.method,
+            requestMethod: method,
             requestUrl: c.req.url,
+            userAgent: c.req.header("user-agent"),
+            remoteIp:
+              c.req.header("x-forwarded-for") ||
+              c.req.header("cf-connecting-ip"),
           },
           duration,
         });
