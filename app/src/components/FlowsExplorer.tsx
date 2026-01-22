@@ -45,8 +45,9 @@ export function FlowsExplorer() {
     : false;
   const error = currentWorkspace ? errorMap[currentWorkspace.id] || null : null;
 
-  const { consoleTabs, activeConsoleId, addConsoleTab, setActiveConsole } =
-    useConsoleStore();
+  const { tabs, activeTabId, openTab, setActiveTab } = useConsoleStore();
+  const consoleTabs = Object.values(tabs);
+  const activeConsoleId = activeTabId;
 
   useEffect(() => {
     if (currentWorkspace) {
@@ -69,13 +70,13 @@ export function FlowsExplorer() {
   };
 
   const handleCreateNew = (flowType: "scheduled" | "webhook") => {
-    const id = addConsoleTab({
+    const id = openTab({
       title: `New ${flowType === "scheduled" ? "Scheduled" : "Webhook"} Flow`,
       content: "",
-      kind: "flow-editor" as any,
+      kind: "flow-editor",
       metadata: { isNew: true, flowType },
     });
-    setActiveConsole(id);
+    setActiveTab(id);
     handleMenuClose();
   };
 
@@ -83,17 +84,17 @@ export function FlowsExplorer() {
     selectFlow(flowId);
     const flow = flows.find(f => f._id === flowId);
     if (flow) {
-      const existingTab = useConsoleStore
-        .getState()
-        .consoleTabs.find((tab: any) => tab.metadata?.flowId === flowId);
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
+        (tab: any) => tab.metadata?.flowId === flowId,
+      );
 
       if (existingTab) {
-        setActiveConsole(existingTab.id);
+        setActiveTab(existingTab.id);
       } else {
-        const id = addConsoleTab({
+        const id = openTab({
           title: `${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`,
           content: "",
-          kind: "flow-editor" as any,
+          kind: "flow-editor",
           metadata: {
             flowId,
             isNew: false,
@@ -101,7 +102,7 @@ export function FlowsExplorer() {
             enabled: flow.enabled,
           },
         });
-        setActiveConsole(id);
+        setActiveTab(id);
       }
     }
   };
@@ -242,8 +243,8 @@ export function FlowsExplorer() {
                 consoleTabs.find(
                   (t: any) =>
                     t.id === activeConsoleId &&
-                    (t as any).kind === "flow-editor" &&
-                    (t as any).metadata?.flowId === flow._id,
+                    t.kind === "flow-editor" &&
+                    t.metadata?.flowId === flow._id,
                 )
               );
               return (

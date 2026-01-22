@@ -172,8 +172,8 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       align: "right",
       headerAlign: "right",
       renderCell: (params: GridRenderCellParams<any, any>) => {
-        const api: any = (params as any).api;
-        const i = api.getRowIndexRelativeToVisibleRows(params.id as any);
+        const api = (params as GridRenderCellParams).api;
+        const i = api.getRowIndexRelativeToVisibleRows(params.id);
         return typeof i === "number" ? i + 1 : "";
       },
     });

@@ -20,53 +20,17 @@ import {
   Refresh as RefreshIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
-import { apiClient } from "../lib/api-client";
-
-interface ExecutionHistoryItem {
-  executionId: string;
-  executedAt: string;
-  startedAt?: string;
-  lastHeartbeat?: string;
-  completedAt?: string;
-  status: "running" | "completed" | "failed" | "cancelled" | "abandoned";
-  success: boolean;
-  error?: {
-    message: string;
-    stack?: string;
-    code?: string;
-  };
-  duration?: number;
-  system?: {
-    workerId: string;
-    workerVersion?: string;
-    nodeVersion: string;
-    hostname: string;
-  };
-  context?: {
-    dataSourceId: string;
-    destinationDatabaseId?: string;
-    destinationDatabaseName?: string;
-    syncMode: string;
-    entityFilter?: string[];
-  };
-  stats?: any;
-  logs?: Array<{
-    timestamp: string;
-    level: string;
-    message: string;
-    metadata?: any;
-  }>;
-}
+import { useFlowStore, type FlowExecutionHistory } from "../store/flowStore";
 
 interface FlowDetails {
-  id: string;
-  description?: any;
-  dataSourceId: string;
-  dataSourceName?: any;
-  destinationDatabaseId?: string;
-  destinationDatabaseName?: any;
-  syncMode: any;
-  entityFilter?: any[];
+  _id: string;
+  description?: string;
+  dataSourceId: string | { _id: string; name: string; type: string };
+  dataSourceName?: string;
+  destinationDatabaseId?: string | { _id: string; name: string; type: string };
+  destinationDatabaseName?: string;
+  syncMode: string;
+  entityFilter?: string[];
   schedule?: {
     cron: string;
     timezone?: string;
@@ -95,13 +59,20 @@ const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
 
 export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
   const { currentWorkspace } = useWorkspace();
-  const [history, setHistory] = useState<ExecutionHistoryItem[]>([]);
+  const {
+    fetchFlowHistory,
+    fetchFlowStatus,
+    cancelFlowExecution,
+    fetchFlowDetails,
+    fetchExecutionDetails,
+  } = useFlowStore();
+  const [history, setHistory] = useState<FlowExecutionHistory[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<any[]>([]);
   const [fullExecutionDetails, setFullExecutionDetails] =
-    useState<ExecutionHistoryItem | null>(null);
+    useState<FlowExecutionHistory | null>(null);
   const [flowDetails, setFlowDetails] = useState<FlowDetails | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [runningExecutionId, setRunningExecutionId] = useState<string | null>(
@@ -113,67 +84,40 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
     if (!currentWorkspace?.id || !flowId) return;
     setIsLoading(true);
     try {
-      const response = await apiClient.get<{
-        success: boolean;
-        data: {
-          history: ExecutionHistoryItem[];
-        };
-      }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}/history`, {
-        limit: "100",
-      });
-
-      if (response.success) {
-        setHistory(response.data.history || []);
-      } else {
-        setError("Failed to load history");
-      }
+      const history = await fetchFlowHistory(currentWorkspace.id, flowId, 100);
+      setHistory(history || []);
     } catch (err) {
       console.error("Failed to fetch execution history", err);
       setError("Failed to load execution history");
     } finally {
       setIsLoading(false);
     }
-  }, [currentWorkspace?.id, flowId]);
+  }, [currentWorkspace?.id, flowId, fetchFlowHistory]);
 
   // Function to check flow running status
   const checkFlowStatus = useCallback(async () => {
     if (!currentWorkspace?.id || !flowId) return;
     try {
-      const response = await apiClient.get<{
-        success: boolean;
-        data: {
-          isRunning: boolean;
-          runningExecution: {
-            executionId: string;
-            startedAt: string;
-            lastHeartbeat: string;
-          } | null;
-        };
-      }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}/status`);
-
-      if (response.success) {
-        setIsRunning(response.data.isRunning);
-        setRunningExecutionId(
-          response.data.runningExecution?.executionId || null,
-        );
+      const data = await fetchFlowStatus(currentWorkspace.id, flowId);
+      if (data) {
+        setIsRunning(data.isRunning);
+        setRunningExecutionId(data.runningExecution?.executionId || null);
       }
     } catch (err) {
       console.error("Failed to check flow status", err);
     }
-  }, [currentWorkspace?.id, flowId]);
+  }, [currentWorkspace?.id, flowId, fetchFlowStatus]);
 
   // Function to cancel running flow
   const handleCancel = useCallback(async () => {
     if (!currentWorkspace?.id || !flowId) return;
     try {
-      const response = await apiClient.post<{
-        success: boolean;
-        message: string;
-      }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}/cancel`, {
-        executionId: runningExecutionId, // Pass the executionId if available
-      });
-
-      if (response.success) {
+      const success = await cancelFlowExecution(
+        currentWorkspace.id,
+        flowId,
+        runningExecutionId,
+      );
+      if (success) {
         // Wait a moment then refresh status
         setTimeout(() => {
           checkFlowStatus();
@@ -193,6 +137,7 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
     runningExecutionId,
     checkFlowStatus,
     fetchHistory,
+    cancelFlowExecution,
   ]);
 
   // Function to handle run/cancel button click
@@ -211,24 +156,14 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
 
   // Fetch flow details
   useEffect(() => {
-    const fetchFlowDetails = async () => {
+    const loadFlowDetails = async () => {
       if (!currentWorkspace?.id || !flowId) return;
-      try {
-        const response = await apiClient.get<{
-          success: boolean;
-          data: FlowDetails;
-        }>(`/workspaces/${currentWorkspace.id}/flows/${flowId}`);
-
-        if (response.success) {
-          setFlowDetails(response.data);
-        }
-      } catch (err) {
-        console.error("Failed to fetch flow details", err);
-      }
+      const data = await fetchFlowDetails(currentWorkspace.id, flowId);
+      if (data) setFlowDetails(data as FlowDetails);
     };
 
-    fetchFlowDetails();
-  }, [currentWorkspace?.id, flowId]);
+    loadFlowDetails();
+  }, [currentWorkspace?.id, flowId, fetchFlowDetails]);
 
   // Fetch execution history and check status
   useEffect(() => {
@@ -243,19 +178,17 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
 
   // Fetch logs and full execution details when a history item is selected
   useEffect(() => {
-    const fetchExecutionDetails = async () => {
+    const loadExecutionDetails = async () => {
       if (!selectedHistory || !currentWorkspace?.id) return;
       try {
-        const response = await apiClient.get<{
-          success: boolean;
-          data: ExecutionHistoryItem;
-        }>(
-          `/workspaces/${currentWorkspace.id}/flows/${flowId}/executions/${selectedHistory.executionId}`,
+        const data = await fetchExecutionDetails(
+          currentWorkspace.id,
+          flowId,
+          selectedHistory.executionId,
         );
-
-        if (response.success && response.data) {
-          setFullExecutionDetails(response.data);
-          setLogs(response.data.logs || []);
+        if (data) {
+          setFullExecutionDetails(data as FlowExecutionHistory);
+          setLogs(data.logs || []);
         } else {
           setFullExecutionDetails(null);
           setLogs([]);
@@ -267,8 +200,8 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
       }
     };
 
-    fetchExecutionDetails();
-  }, [selectedHistory, currentWorkspace?.id, flowId]);
+    loadExecutionDetails();
+  }, [selectedHistory, currentWorkspace?.id, flowId, fetchExecutionDetails]);
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -567,7 +500,7 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
                       </Typography>
                     </Box>
 
-                    {details.duration !== undefined && (
+                    {details.duration != null && (
                       <Typography variant="body2">
                         <strong>Duration:</strong>{" "}
                         {formatDuration(details.duration)}

@@ -334,13 +334,13 @@ function DatabaseExplorer({
     if (!contextMenu) return;
     const { databaseId, collectionName } = contextMenu.item;
     const command = `db.getCollection("${collectionName}").drop()`;
-    const { addConsoleTab, setActiveConsole } = useConsoleStore.getState();
-    const tabId = addConsoleTab({
+    const { openTab, setActiveTab } = useConsoleStore.getState();
+    const tabId = openTab({
       title: `Drop ${collectionName}`,
       content: command,
       databaseId,
     });
-    setActiveConsole(tabId);
+    setActiveTab(tabId);
     setContextMenu(null);
   }, [contextMenu]);
 

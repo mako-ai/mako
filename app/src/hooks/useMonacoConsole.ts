@@ -91,11 +91,11 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
           case "append": {
             const lineCount = model.getLineCount();
             const lastLineLength = model.getLineLength(lineCount);
-            const position = new (editor as any).monaco.Position(
+            const position = new editor.monaco.Position(
               lineCount,
               lastLineLength + 1,
             );
-            const range = new (editor as any).monaco.Range(
+            const range = new editor.monaco.Range(
               position.lineNumber,
               position.column,
               position.lineNumber,
@@ -116,14 +116,13 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
 
           case "insert": {
             const position = modification.position
-              ? new (editor as any).monaco.Position(
+              ? new editor.monaco.Position(
                   modification.position.line,
                   modification.position.column,
                 )
-              : editor.getPosition() ||
-                new (editor as any).monaco.Position(1, 1);
+              : editor.getPosition() || new editor.monaco.Position(1, 1);
 
-            const range = new (editor as any).monaco.Range(
+            const range = new editor.monaco.Range(
               position.lineNumber,
               position.column,
               position.lineNumber,
@@ -164,7 +163,7 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
             const endLineLength = model.getLineLength(safeEndLine);
 
             // Create range from start of startLine to end of endLine
-            const range = new (editor as any).monaco.Range(
+            const range = new editor.monaco.Range(
               safeStartLine,
               1,
               safeEndLine,

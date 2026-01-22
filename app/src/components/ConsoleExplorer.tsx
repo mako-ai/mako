@@ -33,7 +33,7 @@ import {
   ChevronRight as ChevronRightIcon,
   ChevronDown as ChevronDownIcon,
 } from "lucide-react";
-import { useAppStore } from "../store/appStore";
+import { useExplorerStore } from "../store/explorerStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
@@ -79,22 +79,19 @@ function ConsoleExplorer(
 ) {
   const { onConsoleSelect } = props;
   const { currentWorkspace } = useWorkspace();
-  const {
-    trees,
-    loading: loadingMap,
-    refresh: refreshTree,
-  } = useConsoleTreeStore();
+  const trees = useConsoleTreeStore(state => state.trees);
+  const loadingMap = useConsoleTreeStore(state => state.loading);
+  const refreshTree = useConsoleTreeStore(state => state.refresh);
 
   const consoleEntries = currentWorkspace
     ? trees[currentWorkspace.id] || []
     : [];
   const loading = currentWorkspace ? !!loadingMap[currentWorkspace.id] : false;
-  const dispatch = useAppStore(s => s.dispatch);
-  const { activeConsoleId } = useConsoleStore();
-  const expandedFoldersArray = useAppStore(
-    s => s.explorers.console.expandedFolders,
+  const activeTabId = useConsoleStore(state => state.activeTabId);
+  const expandedFolders = useExplorerStore(
+    state => state.console.expandedFolders,
   );
-  const expandedFolders = new Set(expandedFoldersArray);
+  const toggleFolder = useExplorerStore(state => state.toggleFolder);
   const error = currentWorkspace ? _errorFor(currentWorkspace.id) : null;
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -136,10 +133,7 @@ function ConsoleExplorer(
   }));
 
   const handleFolderToggle = (folderPath: string) => {
-    dispatch({
-      type: "TOGGLE_CONSOLE_FOLDER",
-      payload: { folderPath },
-    } as any);
+    toggleFolder(folderPath);
   };
 
   const handleFileClick = async (node: ConsoleEntry) => {
@@ -170,71 +164,50 @@ function ConsoleExplorer(
       databaseName,
     );
 
-    // 2) Fetch in background via apiClient and update store
+    // 2) Fetch in background via store and update cache
     try {
-      const { apiClient } = await import("../lib/api-client");
-      const data = await apiClient.get<{
-        success: boolean;
-        content: string;
-        connectionId?: string;
-        databaseId?: string;
-        databaseName?: string;
-        id: string;
-      }>(`/workspaces/${currentWorkspace.id}/consoles/content`, {
-        id: consoleId,
-      });
-      if (data && (data as any).success) {
+      const consoleStore = await import("../store/consoleStore");
+      const { fetchConsoleContent } = consoleStore.useConsoleStore.getState();
+      const data = await fetchConsoleContent(currentWorkspace.id, consoleId);
+      if (data) {
         useConsoleContentStore.getState().set(consoleId, {
-          content: (data as any).content,
-          connectionId: (data as any).connectionId || node.connectionId,
-          databaseId: (data as any).databaseId || node.databaseId,
-          databaseName: (data as any).databaseName || node.databaseName,
+          content: data.content,
+          connectionId: data.connectionId || node.connectionId,
+          databaseId: data.databaseId || node.databaseId,
+          databaseName: data.databaseName || node.databaseName,
         });
         // Optionally update tab content if it is still open and was showing stale/placeholder
         const {
-          updateConsoleContent,
-          updateConsoleFilePath,
-          updateConsoleDatabase,
-          updateConsoleConnection,
+          updateContent,
+          updateFilePath,
+          updateDatabase,
+          updateConnection,
           updateSavedState,
-        } = (await import("../store/consoleStore")).useConsoleStore.getState();
-        updateConsoleContent(consoleId, (data as any).content);
+        } = consoleStore.useConsoleStore.getState();
+        updateContent(consoleId, data.content);
 
         // Update the connection and database info
-        if ((data as any).connectionId) {
-          updateConsoleConnection(consoleId, (data as any).connectionId);
+        if (data.connectionId) {
+          updateConnection(consoleId, data.connectionId);
         }
-        if ((data as any).databaseId || (data as any).databaseName) {
-          updateConsoleDatabase(
-            consoleId,
-            (data as any).databaseId,
-            (data as any).databaseName,
-          );
+        if (data.databaseId || data.databaseName) {
+          updateDatabase(consoleId, data.databaseId, data.databaseName);
         }
 
         // Update the file path so the editor knows this is an existing file
         // This fixes the "Save As" prompt appearing for existing consoles
-        updateConsoleFilePath(consoleId, node.path);
+        updateFilePath(consoleId, node.path);
 
         // Mark as saved (isSaved=true) since this is an existing console from the database
         // This fixes auto-save incorrectly triggering for saved consoles opened with placeholder content
         const { computeConsoleStateHash } = await import("../utils/stateHash");
         const savedStateHash = computeConsoleStateHash(
-          (data as any).content,
-          (data as any).connectionId,
-          (data as any).databaseId,
-          (data as any).databaseName,
+          data.content,
+          data.connectionId,
+          data.databaseId,
+          data.databaseName,
         );
         updateSavedState(consoleId, true, savedStateHash);
-
-        // Update dbContentHash so pristine/dirty state is correct
-        const { hashContent } = await import("../utils/hash");
-        const dbHash = hashContent((data as any).content);
-        const { useAppStore } = await import("../store/appStore");
-        useAppStore.getState().dispatch({
-          type: "UPDATE_CONSOLE_DB_HASH",
-          payload: { id: consoleId, dbContentHash: dbHash },
-        } as any);
       }
     } catch (e) {
       // Background error shouldn't block UI
@@ -448,7 +421,7 @@ function ConsoleExplorer(
       }
       // Use ID if available, otherwise fall back to path for key
       const nodeKey = node.id || node.path;
-      const isActive = !!(node.id && activeConsoleId === node.id);
+      const isActive = !!(node.id && activeTabId === node.id);
       return (
         <ListItemButton
           key={`file-${nodeKey}`}

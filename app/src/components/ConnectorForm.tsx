@@ -45,16 +45,16 @@ export interface ConnectorFieldSchema {
     | "object_array"
     | "select";
   required?: boolean;
-  default?: any;
+  default?: unknown;
   helperText?: string;
   placeholder?: string;
-  options?: Array<{ label: string; value: any }>;
+  options?: Array<{ label: string; value: string | number | boolean }>;
   rows?: number;
   encrypted?: boolean;
   showIf?: {
     field: string;
-    equals?: any | any[];
-    notEquals?: any | any[];
+    equals?: string | number | boolean | Array<string | number | boolean>;
+    notEquals?: string | number | boolean | Array<string | number | boolean>;
   };
   itemFields?: ConnectorFieldSchema[];
 }
@@ -219,7 +219,7 @@ function ConnectorForm({
     if (schemas[selectedType]) {
       setSchema(schemas[selectedType]);
       const currentValues = form.getValues();
-      schemas[selectedType].fields.forEach((field: any) => {
+      schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
           form.setValue(field.name, []);
         }
@@ -230,12 +230,12 @@ function ConnectorForm({
     setSchemaError(null);
     fetchSchema(selectedType).then(res => {
       if (res) {
-        setSchema(res as any);
-        const defaults = generateDefaultValues(res as any);
+        setSchema(res);
+        const defaults = generateDefaultValues(res);
         Object.entries(defaults).forEach(([key, value]) => {
-          if (form.getValues(key as any) === undefined) {
+          if (form.getValues(key) === undefined) {
             const mutableValue = Array.isArray(value) ? [...value] : value;
-            form.setValue(key as any, mutableValue);
+            form.setValue(key, mutableValue);
           }
         });
       } else {
@@ -300,7 +300,7 @@ function ConnectorForm({
     }));
   };
 
-  const onSubmitInternal = (values: Record<string, any>) => {
+  const onSubmitInternal = (values: Record<string, unknown>) => {
     // form submitted
     const { dirtyFields } = form.formState;
     // Validate object_array required items before proceeding
@@ -308,11 +308,11 @@ function ConnectorForm({
       let hasItemErrors = false;
       schema.fields.forEach(f => {
         if (f.type === "object_array" && Array.isArray(f.itemFields)) {
-          const items: any[] = Array.isArray(values[f.name])
-            ? values[f.name]
+          const items: Record<string, unknown>[] = Array.isArray(values[f.name])
+            ? (values[f.name] as Record<string, unknown>[])
             : [];
           if (f.required && items.length === 0) {
-            form.setError(f.name as any, {
+            form.setError(f.name, {
               type: "required",
               message: "At least one item is required",
             });
@@ -321,14 +321,14 @@ function ConnectorForm({
           items.forEach((item, idx) => {
             f.itemFields!.forEach(sub => {
               if (sub.required) {
-                const v = item?.[sub.name];
+                const v = item?.[sub.name as keyof typeof item];
                 const isEmpty =
                   v === undefined ||
                   v === null ||
                   (typeof v === "string" && v.trim() === "");
                 if (isEmpty) {
                   const path = `${f.name}.${idx}.${sub.name}`;
-                  form.setError(path as any, {
+                  form.setError(path, {
                     type: "required",
                     message: "This field is required",
                   });
@@ -350,12 +350,12 @@ function ConnectorForm({
     const isNewConnector = !connector;
 
     const isFieldDirty = (fieldName: string): boolean => {
-      if ((dirtyFields as any)[fieldName]) return true;
+      if (dirtyFields[fieldName]) return true;
       const fieldPrefix = fieldName + ".";
       return Object.keys(dirtyFields).some(key => key.startsWith(fieldPrefix));
     };
 
-    const payload: any = {};
+    const payload: Record<string, unknown> = {};
 
     if (isNewConnector || dirtyFields.type) {
       payload.type = values.type;
@@ -371,7 +371,7 @@ function ConnectorForm({
       payload.isActive = values.isActive;
     }
 
-    const config: Record<string, any> = {};
+    const config: Record<string, unknown> = {};
     let hasConfigChanges = false;
 
     if (schema) {
@@ -387,7 +387,7 @@ function ConnectorForm({
       payload.config = config;
     }
 
-    const settings: any = {};
+    const settings: Record<string, number> = {};
     let hasSettingsChanges = false;
 
     const settingsFields = [
@@ -398,7 +398,7 @@ function ConnectorForm({
     ];
 
     settingsFields.forEach(field => {
-      if (isNewConnector || (dirtyFields as any)[field]) {
+      if (isNewConnector || dirtyFields[field]) {
         const key = field.replace("settings_", "");
         settings[key] =
           Number(values[field]) ||
@@ -484,11 +484,17 @@ function ConnectorForm({
             <FormControl fullWidth margin="normal" variant="outlined">
               <InputLabel>{label}</InputLabel>
               <Select {...field} label={label}>
-                {options.map(opt => (
-                  <MenuItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </MenuItem>
-                ))}
+                {options.map(opt => {
+                  const val =
+                    typeof opt.value === "boolean"
+                      ? String(opt.value)
+                      : opt.value;
+                  return (
+                    <MenuItem key={String(opt.value)} value={val}>
+                      {opt.label}
+                    </MenuItem>
+                  );
+                })}
               </Select>
             </FormControl>
           )}
@@ -667,7 +673,7 @@ function ConnectorForm({
       fields: arrayFields,
       append,
       remove,
-    } = useFieldArray({ control, name: field.name as any });
+    } = useFieldArray({ control, name: field.name });
 
     const createNewItem = () => {
       const newItem: Record<string, any> = {};
@@ -730,7 +736,8 @@ function ConnectorForm({
                 helperText: hasError
                   ? "This field is required"
                   : subField.helperText,
-                defaultValue: (item as any)[subField.name] || "",
+                defaultValue:
+                  (item as Record<string, unknown>)[subField.name] ?? "",
               };
 
               // Generic conditional visibility via showIf
@@ -763,17 +770,25 @@ function ConnectorForm({
                     control={control}
                     rules={{ required: subField.required }}
                     defaultValue={
-                      (item as any)[subField.name] ?? subField.default ?? ""
+                      (item as Record<string, unknown>)[subField.name] ??
+                      subField.default ??
+                      ""
                     }
                     render={({ field }) => (
                       <FormControl fullWidth margin="normal" variant="outlined">
                         <InputLabel>{subField.label}</InputLabel>
                         <Select {...field} label={subField.label}>
-                          {(subField.options || []).map(opt => (
-                            <MenuItem key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </MenuItem>
-                          ))}
+                          {(subField.options || []).map(opt => {
+                            const val =
+                              typeof opt.value === "boolean"
+                                ? String(opt.value)
+                                : opt.value;
+                            return (
+                              <MenuItem key={String(opt.value)} value={val}>
+                                {opt.label}
+                              </MenuItem>
+                            );
+                          })}
                         </Select>
                       </FormControl>
                     )}
@@ -803,7 +818,9 @@ function ConnectorForm({
                     key={fieldPath}
                     control={
                       <Switch
-                        checked={(item as any)[subField.name] || false}
+                        checked={Boolean(
+                          (item as Record<string, unknown>)[subField.name],
+                        )}
                         onChange={e =>
                           form.setValue(fieldPath, e.target.checked, {
                             shouldDirty: true,

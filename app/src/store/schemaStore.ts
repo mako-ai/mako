@@ -152,6 +152,19 @@ interface SchemaState {
     workspaceId: string,
     connectionId: string,
   ) => Promise<void>;
+  testConnection: (
+    workspaceId: string,
+    payload: { type: string; connection: Record<string, unknown> },
+  ) => Promise<{ success: boolean; error?: string }>;
+  fetchDatabase: (
+    workspaceId: string,
+    databaseId: string,
+  ) => Promise<unknown | null>;
+  saveDatabase: (
+    workspaceId: string,
+    payload: Record<string, unknown>,
+    databaseId?: string,
+  ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
 
   // === Console Template ===
   fetchConsoleTemplate: (
@@ -579,6 +592,66 @@ export const useSchemaStore = create<SchemaState>()(
 
           // Refresh connections list
           await get().refreshConnections(workspaceId);
+        }
+      },
+
+      testConnection: async (workspaceId, payload) => {
+        try {
+          const res = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/databases/test-connection`, payload);
+          return res;
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error ? error.message : "Connection test failed",
+          };
+        }
+      },
+
+      fetchDatabase: async (workspaceId, databaseId) => {
+        try {
+          const res = await apiClient.get<{
+            success: boolean;
+            data: unknown;
+          }>(`/workspaces/${workspaceId}/databases/${databaseId}`);
+
+          return res.success ? res.data : null;
+        } catch (error) {
+          console.error("Failed to fetch database details:", error);
+          return null;
+        }
+      },
+
+      saveDatabase: async (workspaceId, payload, databaseId) => {
+        try {
+          const res = databaseId
+            ? await apiClient.put<{
+                success: boolean;
+                data: unknown;
+                error?: string;
+              }>(`/workspaces/${workspaceId}/databases/${databaseId}`, payload)
+            : await apiClient.post<{
+                success: boolean;
+                data: unknown;
+                error?: string;
+              }>(`/workspaces/${workspaceId}/databases`, payload);
+
+          if (res.success) {
+            await get().refreshConnections(workspaceId);
+          }
+
+          return res;
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to save database",
+          };
         }
       },
 

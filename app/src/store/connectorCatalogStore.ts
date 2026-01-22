@@ -21,6 +21,12 @@ export interface ConnectorSchemaResponse {
   };
 }
 
+interface CatalogResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+}
+
 interface CatalogState {
   types: ConnectorType[] | null;
   loading: boolean;
@@ -53,19 +59,18 @@ export const useConnectorCatalogStore = create<CatalogState>()(
           state.error = null;
         });
         try {
-          const data = await apiClient.get<{
-            success: boolean;
-            data: ConnectorType[];
-          }>("/connectors/types");
+          const data =
+            await apiClient.get<CatalogResponse<ConnectorType[]>>(
+              "/connectors/types",
+            );
           if (data.success) {
             set(state => {
-              state.types = (data as any).data;
+              state.types = data.data;
               state.loading = false;
             });
           } else {
             set(state => {
-              state.error =
-                (data as any).error || "Failed to load connector types";
+              state.error = data.error || "Failed to load connector types";
               state.loading = false;
             });
           }
@@ -88,16 +93,15 @@ export const useConnectorCatalogStore = create<CatalogState>()(
         });
 
         try {
-          const json = await apiClient.get<{
-            success: boolean;
-            data: ConnectorSchemaResponse;
-          }>(`/connectors/${type}/schema`);
+          const json = await apiClient.get<
+            CatalogResponse<ConnectorSchemaResponse>
+          >(`/connectors/${type}/schema`);
           if (json.success) {
             set(state => {
-              state.schemas[type] = (json as any).data;
+              state.schemas[type] = json.data;
               delete state.schemaLoading[type];
             });
-            return (json as any).data;
+            return json.data;
           }
         } catch (err) {
           console.error("Failed to fetch schema", err);

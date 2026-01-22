@@ -49,7 +49,7 @@ import {
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
-import { ConsoleTab } from "../store/appStore";
+import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
@@ -415,7 +415,10 @@ interface ChatProps {
 const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
-  const { consoleTabs, activeConsoleId } = useConsoleStore();
+  const tabs = useConsoleStore(state => state.tabs);
+  const activeTabId = useConsoleStore(state => state.activeTabId);
+  const consoleTabs = useMemo(() => Object.values(tabs), [tabs]);
+  const activeConsoleId = activeTabId;
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
@@ -504,8 +507,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         api: "/api/agent/chat",
         prepareSendMessagesRequest: ({ messages }) => {
           // Get fresh console state at request time
-          const store = (useConsoleStore as any).getState();
-          const tabs = store.consoleTabs as ConsoleTab[];
+          const store = useConsoleStore.getState();
+          const tabs = Object.values(store.tabs) as ConsoleTab[];
 
           const openConsoles = tabs
             .filter(t => t?.kind === undefined || t?.kind === "console")
@@ -545,7 +548,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     [], // Empty deps - all values read from refs at request time
   );
 
-  // Note: We use (useConsoleStore as any).getState() inside callbacks to avoid stale closure issues
+  // Note: We use useConsoleStore.getState() inside callbacks to avoid stale closure issues
 
   // useChat hook from Vercel AI SDK
   // IMPORTANT: The 'id' prop is critical - it resets the hook's internal message state
@@ -561,7 +564,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     addToolOutput,
   } = useChat({
     id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
-    transport: transport as any, // Type assertion to handle pnpm version resolution
+    transport,
 
     // Automatically submit when all tool results are available
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
@@ -594,8 +597,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         }
 
         // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
+        const currentStore = useConsoleStore.getState();
+        const currentTabs = Object.values(currentStore.tabs);
         const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
 
         if (!targetConsole) {
@@ -670,8 +673,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         }
 
         // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
+        const currentStore = useConsoleStore.getState();
+        const currentTabs = Object.values(currentStore.tabs);
 
         const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
         if (!targetConsole) {
@@ -749,7 +752,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           endLine,
         };
         const newContent = applyModification(currentContent, modification);
-        currentStore.updateConsoleContent(consoleId, newContent);
+        currentStore.updateContent(consoleId, newContent);
 
         addToolOutput({
           tool: "modify_console",
@@ -766,9 +769,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       // Handle create_console - dispatch through event system
       if (toolName === "create_console") {
         // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
-        const currentActiveId = currentStore.activeConsoleId;
+        const currentStore = useConsoleStore.getState();
+        const currentTabs = Object.values(currentStore.tabs);
+        const currentActiveId = currentStore.activeTabId;
 
         const title = input.title as string;
         const content = input.content as string;
@@ -794,8 +797,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         const newConsoleId = generateObjectId();
 
         // Dispatch through the event system - App.tsx handleConsoleModification will:
-        // 1. Call addConsoleTab with the provided consoleId
-        // 2. Call setActiveConsole
+        // 1. Call openTab with the provided consoleId
+        // 2. Call setActiveTab
         if (onConsoleModificationRef.current) {
           onConsoleModificationRef.current({
             action: "create",
@@ -829,9 +832,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
       // Handle list_open_consoles - return all open console tabs
       if (toolName === "list_open_consoles") {
         // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
-        const currentActiveId = currentStore.activeConsoleId;
+        const currentStore = useConsoleStore.getState();
+        const currentTabs = Object.values(currentStore.tabs);
+        const currentActiveId = currentStore.activeTabId;
 
         const consoles = currentTabs
           .filter(
@@ -883,8 +886,8 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         }
 
         // Get fresh state to avoid stale closure issues
-        const currentStore = (useConsoleStore as any).getState();
-        const currentTabs = currentStore.consoleTabs;
+        const currentStore = useConsoleStore.getState();
+        const currentTabs = Object.values(currentStore.tabs);
 
         const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
         if (!targetConsole) {
@@ -900,13 +903,9 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         }
 
         // Update the console's connection and database
-        currentStore.updateConsoleConnection(consoleId, connectionId);
+        currentStore.updateConnection(consoleId, connectionId);
         if (databaseId !== undefined || databaseName !== undefined) {
-          currentStore.updateConsoleDatabase(
-            consoleId,
-            databaseId,
-            databaseName,
-          );
+          currentStore.updateDatabase(consoleId, databaseId, databaseName);
         }
 
         addToolOutput({
@@ -1066,15 +1065,15 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           // The backend extracts console IDs from modify_console tool calls in the messages
           // and fetches those consoles from the database
           if (data.consoles && data.consoles.length > 0) {
-            const store = (useConsoleStore as any).getState();
-            const existingTabs = store.consoleTabs || [];
+            const store = useConsoleStore.getState();
+            const existingTabs = Object.values(store.tabs);
 
             for (const console of data.consoles) {
               // Check if console already exists in tabs (by ID)
               const exists = existingTabs.some((t: any) => t.id === console.id);
               if (!exists) {
                 // Add the console tab
-                store.addConsoleTab({
+                store.openTab({
                   id: console.id,
                   title: console.title || "Untitled",
                   content: console.content || "",
@@ -1088,7 +1087,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             // Set the first restored console as active and capture it for this chat
             const firstConsole = data.consoles[0];
             if (firstConsole) {
-              store.setActiveConsole(firstConsole.id);
+              store.setActiveTab(firstConsole.id);
               capturedConsoleIdRef.current = firstConsole.id;
             }
           }

@@ -20,7 +20,7 @@ import {
   ExpandLess,
   ExpandMore,
 } from "@mui/icons-material";
-import { useAppStore } from "../store/appStore";
+import { useExplorerStore } from "../store/explorerStore";
 
 interface ViewInfo {
   name: string;
@@ -46,11 +46,11 @@ const ViewExplorer: React.FC<ViewExplorerProps> = ({
   const [views, setViews] = useState<ViewInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const dispatch = useAppStore(s => s.dispatch);
-  const expandedCollectionsArray = useAppStore(
-    s => s.explorers.view.expandedCollections,
+  const expandedCollections = useExplorerStore(
+    state => state.view.expandedCollections,
   );
-  const expandedCollections = new Set(expandedCollectionsArray);
+  const toggleCollection = useExplorerStore(state => state.toggleCollection);
+  const expandCollection = useExplorerStore(state => state.expandCollection);
 
   const fetchViews = useCallback(async () => {
     try {
@@ -86,10 +86,7 @@ const ViewExplorer: React.FC<ViewExplorerProps> = ({
 
     // Ensure the parent collection is expanded
     const collection = view.options.viewOn || "Unknown Collection";
-    dispatch({
-      type: "EXPAND_VIEW_COLLECTION",
-      payload: { collectionName: collection },
-    } as any);
+    expandCollection(collection);
 
     const viewDefinition = {
       name: view.name,
@@ -106,10 +103,7 @@ const ViewExplorer: React.FC<ViewExplorerProps> = ({
   };
 
   const handleCollectionToggle = (collectionName: string) => {
-    dispatch({
-      type: "TOGGLE_VIEW_COLLECTION",
-      payload: { collectionName },
-    } as any);
+    toggleCollection(collectionName);
   };
 
   const groupViewsByCollection = () => {

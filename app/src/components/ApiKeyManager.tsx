@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import {
   Box,
   Typography,
@@ -30,36 +30,27 @@ import {
   VisibilityOff as VisibilityOffIcon,
 } from "@mui/icons-material";
 import { formatDistanceToNow } from "date-fns";
-import { apiClient } from "../lib/api-client";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent } from "../lib/analytics";
-
-interface ApiKey {
-  id: string;
-  name: string;
-  prefix: string;
-  createdAt: string;
-  lastUsedAt?: string;
-  createdBy: string;
-}
-
-interface NewApiKeyResponse {
-  id: string;
-  name: string;
-  prefix: string;
-  key: string;
-  createdAt: string;
-}
+import { useApiKeyStore } from "../store/apiKeyStore";
+import type { ApiKeyCreateResponse } from "../lib/api-types";
 
 export function ApiKeyManager() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { keys, loading, fetchKeys, createKey, deleteKey } = useApiKeyStore();
+  const apiKeys = currentWorkspace ? keys[currentWorkspace.id] || [] : [];
+  const isLoading = currentWorkspace
+    ? !!loading[`fetch:${currentWorkspace.id}`]
+    : false;
+  const isCreating = currentWorkspace
+    ? !!loading[`create:${currentWorkspace.id}`]
+    : false;
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
-  const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [newApiKey, setNewApiKey] = useState<NewApiKeyResponse | null>(null);
+  const [newApiKey, setNewApiKey] = useState<
+    (ApiKeyCreateResponse["apiKey"] & { key?: string }) | null
+  >(null);
   const [showKey, setShowKey] = useState(false);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
@@ -67,31 +58,16 @@ export function ApiKeyManager() {
     severity: "success" | "error";
   }>({ open: false, message: "", severity: "success" });
 
-  // Fetch API keys
-  const fetchApiKeys = async () => {
-    if (workspaceLoading || !currentWorkspace) return;
-
-    try {
-      setLoading(true);
-      const response = await apiClient.get<{
-        success: boolean;
-        apiKeys: ApiKey[];
-      }>(`/workspaces/${currentWorkspace.id}/api-keys`);
-      setApiKeys(response.apiKeys || []);
-    } catch (error) {
-      console.error("Failed to fetch API keys:", error);
-      setSnackbar({
-        open: true,
-        message: "Failed to fetch API keys",
-        severity: "error",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchApiKeys();
+    if (!workspaceLoading && currentWorkspace) {
+      fetchKeys(currentWorkspace.id).catch(() => {
+        setSnackbar({
+          open: true,
+          message: "Failed to fetch API keys",
+          severity: "error",
+        });
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id, workspaceLoading]);
 
@@ -99,33 +75,30 @@ export function ApiKeyManager() {
   const handleCreateApiKey = async () => {
     if (!currentWorkspace || !newKeyName.trim()) return;
 
-    setCreating(true);
     setCreateError(null);
 
     try {
-      const response = await apiClient.post<{
-        success: boolean;
-        apiKey: NewApiKeyResponse;
-      }>(`/workspaces/${currentWorkspace.id}/api-keys`, {
-        name: newKeyName.trim(),
-      });
+      const response = await createKey(currentWorkspace.id, newKeyName.trim());
 
-      // Track API key creation
+      if (!response.success || !response.apiKey) {
+        setCreateError(response.error || "Failed to create API key");
+        return;
+      }
+
+      // Track API key creation only after confirming success
       trackEvent("api_key_created", {
         key_name: newKeyName.trim(),
       });
 
-      setNewApiKey(response.apiKey);
+      setNewApiKey({
+        ...response.apiKey,
+        key: response.key,
+      });
       setShowKey(true);
       setCreateDialogOpen(false);
       setNewKeyName("");
-
-      // Refresh the list
-      fetchApiKeys();
     } catch (error: any) {
       setCreateError(error.message || "Failed to create API key");
-    } finally {
-      setCreating(false);
     }
   };
 
@@ -142,18 +115,16 @@ export function ApiKeyManager() {
     }
 
     try {
-      await apiClient.delete(
-        `/workspaces/${currentWorkspace.id}/api-keys/${keyId}`,
-      );
+      const response = await deleteKey(currentWorkspace.id, keyId);
+      if (!response.success) {
+        throw new Error(response.error || "Failed to delete API key");
+      }
 
       setSnackbar({
         open: true,
         message: "API key deleted successfully",
         severity: "success",
       });
-
-      // Refresh the list
-      fetchApiKeys();
     } catch (error) {
       console.error("Failed to delete API key:", error);
       setSnackbar({
@@ -190,7 +161,7 @@ export function ApiKeyManager() {
         </Button>
       </Box>
 
-      {loading ? (
+      {isLoading ? (
         <Box>
           <Skeleton variant="rectangular" height={60} sx={{ mb: 1 }} />
           <Skeleton variant="rectangular" height={60} sx={{ mb: 1 }} />
@@ -258,7 +229,7 @@ export function ApiKeyManager() {
       {/* Create API Key Dialog */}
       <Dialog
         open={createDialogOpen}
-        onClose={() => !creating && setCreateDialogOpen(false)}
+        onClose={() => !isCreating && setCreateDialogOpen(false)}
         maxWidth="sm"
         fullWidth
       >
@@ -274,23 +245,23 @@ export function ApiKeyManager() {
               placeholder="e.g., Production App"
               error={!!createError}
               helperText={createError || "Give your API key a descriptive name"}
-              disabled={creating}
+              disabled={isCreating}
             />
           </Box>
         </DialogContent>
         <DialogActions>
           <Button
             onClick={() => setCreateDialogOpen(false)}
-            disabled={creating}
+            disabled={isCreating}
           >
             Cancel
           </Button>
           <Button
             onClick={handleCreateApiKey}
             variant="contained"
-            disabled={!newKeyName.trim() || creating}
+            disabled={!newKeyName.trim() || isCreating}
           >
-            {creating ? "Creating..." : "Create"}
+            {isCreating ? "Creating..." : "Create"}
           </Button>
         </DialogActions>
       </Dialog>

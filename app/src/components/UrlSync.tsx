@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { useAppStore, useAppDispatch } from "../store";
-import { useConsoleStore } from "../store/consoleStore";
+import { useUIStore } from "../store/uiStore";
+import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 
@@ -20,22 +20,16 @@ import { useAuth } from "../contexts/auth-context";
 export function UrlSync() {
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
-  const dispatch = useAppDispatch();
-
   // We need access to store methods but we don't want to trigger re-renders of this component
   // when the store changes, so we'll use the hooks but rely on the useEffect dependencies
   // to control when updates happen.
-  const {
-    activeConsoleId,
-    consoleTabs,
-    loadConsole,
-    addConsoleTab,
-    setActiveConsole,
-    findTabByKind,
-  } = useConsoleStore();
+  const { activeTabId, tabs, loadConsole, openTab, setActiveTab } =
+    useConsoleStore();
+  const consoleTabs = Object.values(tabs);
+  const activeConsoleId = activeTabId;
 
-  const activeView = useAppStore(state => state.activeView);
-  const { setActiveView } = useAppStore();
+  const activeView = useUIStore(state => state.leftPane);
+  const { setLeftPane } = useUIStore();
 
   // Ref to track if hydration has occurred to prevent double-hydration
   const isHydrated = useRef(false);
@@ -63,15 +57,15 @@ export function UrlSync() {
     if (consoleMatch) {
       // /c/:consoleId
       const consoleId = consoleMatch[1];
-      setActiveView("consoles");
+      setLeftPane("consoles");
 
       // If the console isn't already open, try to load it
       // loadConsole handles checking existence internally
-      loadConsole(consoleId, currentWorkspace.id);
+      loadConsole(currentWorkspace.id, consoleId);
     } else if (connectorMatch) {
       // /cx/:connectorId
       const connectorId = connectorMatch[1];
-      setActiveView("connectors");
+      setLeftPane("connectors");
 
       // Check if we already have a tab for this connector
       const existingTab = consoleTabs.find(
@@ -79,21 +73,21 @@ export function UrlSync() {
       );
 
       if (existingTab) {
-        setActiveConsole(existingTab.id);
+        setActiveTab(existingTab.id);
       } else {
         // Create a new tab for this connector
         // We don't have the name yet, it will be fetched by ConnectorTab
-        const id = addConsoleTab({
+        const id = openTab({
           title: "Connector", // Will be updated when entity loads
           content: connectorId,
           kind: "connectors",
         });
-        setActiveConsole(id);
+        setActiveTab(id);
       }
     } else if (flowMatch) {
       // /f/:flowId
       const flowId = flowMatch[1];
-      setActiveView("flows");
+      setLeftPane("flows");
 
       // Check for existing tab
       const existingTab = consoleTabs.find(
@@ -101,31 +95,33 @@ export function UrlSync() {
       );
 
       if (existingTab) {
-        setActiveConsole(existingTab.id);
+        setActiveTab(existingTab.id);
       } else {
-        const id = addConsoleTab({
+        const id = openTab({
           title: "Flow",
           content: "",
           kind: "flow-editor",
           metadata: { flowId },
         });
-        setActiveConsole(id);
+        setActiveTab(id);
       }
     } else if (settingsMatch) {
       // /settings
-      setActiveView("settings");
+      setLeftPane("settings");
 
       // Open settings tab if not open
-      const existingTab = findTabByKind("settings");
+      const existingTab = selectTabByKind("settings")(
+        useConsoleStore.getState(),
+      );
       if (existingTab) {
-        setActiveConsole(existingTab.id);
+        setActiveTab(existingTab.id);
       } else {
-        const id = addConsoleTab({
+        const id = openTab({
           title: "Settings",
           content: "",
           kind: "settings",
         });
-        setActiveConsole(id);
+        setActiveTab(id);
       }
     }
 

@@ -26,7 +26,6 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
-import { apiClient } from "../lib/api-client";
 import { trackEvent } from "../lib/analytics";
 
 interface WebhookFlowFormProps {
@@ -59,13 +58,12 @@ export function WebhookFlowForm({
     updateFlow,
     clearError,
     deleteFlow,
+    fetchConnectors,
   } = useFlowStore();
 
   // Get workspace-specific data
   const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
-  const flowsLoading = currentWorkspace
-    ? !!loadingMap[currentWorkspace.id]
-    : false;
+  void loadingMap; // Acknowledge loadingMap is available but not currently used
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
     : null;
@@ -80,7 +78,7 @@ export function WebhookFlowForm({
   const [webhookUrl, setWebhookUrl] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [_copySuccess, setCopySuccess] = useState(false);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );
@@ -89,10 +87,9 @@ export function WebhookFlowForm({
   const {
     control,
     handleSubmit,
-    formState: { errors, isDirty },
+    formState: { errors },
     reset,
     watch,
-    setValue,
   } = useForm<FormData>({
     defaultValues: {
       dataSourceId: "",
@@ -106,17 +103,11 @@ export function WebhookFlowForm({
   const fetchDataSources = async (workspaceId: string) => {
     setIsLoadingConnectors(true);
     try {
-      const response = await apiClient.get<{
-        success: boolean;
-        data: any[];
-      }>(`/workspaces/${workspaceId}/connectors`);
-
-      if (response.success) {
-        const webhookCapable = (response.data || []).filter(
-          source => source.type === "stripe" || source.type === "close",
-        );
-        setConnectors(webhookCapable);
-      }
+      const sources = await fetchConnectors(workspaceId);
+      const webhookCapable = (sources || []).filter(
+        source => source.type === "stripe" || source.type === "close",
+      );
+      setConnectors(webhookCapable);
     } catch (error) {
       console.error("Failed to fetch connectors:", error);
       setError("Failed to load connectors");
@@ -138,9 +129,18 @@ export function WebhookFlowForm({
     if (!isNewMode && currentFlowId && flows.length > 0) {
       const flow = flows.find(j => j._id === currentFlowId);
       if (flow && flow.type === "webhook") {
+        const dataSourceId =
+          typeof flow.dataSourceId === "string"
+            ? flow.dataSourceId
+            : flow.dataSourceId?._id;
+        const destinationDatabaseId =
+          typeof flow.destinationDatabaseId === "string"
+            ? flow.destinationDatabaseId
+            : flow.destinationDatabaseId?._id;
+
         const formData: FormData = {
-          dataSourceId: (flow.dataSourceId as any)._id,
-          destinationDatabaseId: (flow.destinationDatabaseId as any)._id,
+          dataSourceId: dataSourceId || "",
+          destinationDatabaseId: destinationDatabaseId || "",
         };
 
         // Set webhook-specific data if available
@@ -203,10 +203,9 @@ export function WebhookFlowForm({
         // Track flow creation
         trackEvent("flow_created", {
           flow_type: "webhook",
-          connector_type: selectedConnector?.type,
+          connector_type: selectedSource?.type,
         });
 
-        setSuccess(true);
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
@@ -224,7 +223,6 @@ export function WebhookFlowForm({
         onSave?.();
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
-        setSuccess(true);
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
@@ -463,8 +461,8 @@ export function WebhookFlowForm({
                                 size="small"
                                 onClick={() => {
                                   navigator.clipboard.writeText(webhookUrl);
-                                  setSuccess(true);
-                                  setTimeout(() => setSuccess(false), 2000);
+                                  setCopySuccess(true);
+                                  setTimeout(() => setCopySuccess(false), 2000);
                                 }}
                               >
                                 <CopyIcon fontSize="small" />
@@ -504,8 +502,11 @@ export function WebhookFlowForm({
                                     navigator.clipboard.writeText(
                                       field.value ?? "",
                                     );
-                                    setSuccess(true);
-                                    setTimeout(() => setSuccess(false), 2000);
+                                    setCopySuccess(true);
+                                    setTimeout(
+                                      () => setCopySuccess(false),
+                                      2000,
+                                    );
                                   }}
                                 >
                                   <CopyIcon fontSize="small" />
