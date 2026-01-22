@@ -399,12 +399,44 @@ Data sources are now managed through the web interface (stored in MongoDB with e
 6. Support both full and incremental sync modes
 7. Implement webhook handlers if applicable
 
+### Logging (API Package)
+
+**IMPORTANT**: Do not use `console.log`, `console.error`, etc. directly. Use the structured logging system in `/api/src/logging/`.
+
+```typescript
+import { loggers } from "../logging";
+
+// Use pre-configured loggers for common categories
+const log = loggers.sync();      // For sync operations
+const log = loggers.migration(); // For migrations
+const log = loggers.db();        // For database operations
+const log = loggers.auth();      // For authentication
+const log = loggers.agent();     // For AI agent operations
+const log = loggers.http();      // For HTTP request/response
+const log = loggers.query();     // For query execution
+const log = loggers.workspace(); // For workspace operations
+const log = loggers.connector(); // For data connectors
+const log = loggers.inngest();   // For Inngest/flow operations
+const log = loggers.app();       // For application lifecycle
+
+// Logging with structured data
+log.info("User logged in", { userId: user.id, provider: "google" });
+log.error("Failed to connect", { error, connectionId });
+log.debug("Processing request", { requestId, params });
+log.warn("Rate limit approaching", { remaining: 10 });
+```
+
+**When `console` is acceptable:**
+- Logging sinks (`/api/src/logging/sinks/`) - they ARE the output mechanism
+- Interactive CLI demo scripts (`demo-interactive.ts`, `example-programmatic.ts`)
+- Add `/* eslint-disable no-console */` at the top of these files
+
 ### Error Handling
 
 - **Backend**: Structured error responses with proper HTTP codes (400, 401, 403, 404, 500)
 - **Frontend**: User-friendly error boundaries and toast notifications (MUI Snackbar)
 - **Validation**: Validate input at API boundaries
-- **Logging**: Use console.error with context for debugging
+- **Logging**: Use the structured logger (see above), never raw `console.log`
 
 ### Security Considerations
 
