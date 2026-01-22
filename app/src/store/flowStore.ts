@@ -89,10 +89,50 @@ const flowSchema = z.object({
 export type Flow = z.infer<typeof flowSchema>;
 
 const flowExecutionHistorySchema = z.object({
+  executionId: z.string(),
   executedAt: z.string(),
+  startedAt: z.string().optional(),
+  lastHeartbeat: z.string().optional(),
+  completedAt: z.string().optional(),
+  status: z.enum(["running", "completed", "failed", "cancelled", "abandoned"]),
   success: z.boolean(),
-  error: z.string().nullable().optional(),
+  error: z
+    .object({
+      message: z.string(),
+      stack: z.string().optional(),
+      code: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
   duration: z.number().nullable().optional(),
+  system: z
+    .object({
+      workerId: z.string(),
+      workerVersion: z.string().optional(),
+      nodeVersion: z.string(),
+      hostname: z.string(),
+    })
+    .optional(),
+  context: z
+    .object({
+      dataSourceId: z.string(),
+      destinationDatabaseId: z.string().optional(),
+      destinationDatabaseName: z.string().optional(),
+      syncMode: z.string(),
+      entityFilter: z.array(z.string()).optional(),
+    })
+    .optional(),
+  stats: z.unknown().optional(),
+  logs: z
+    .array(
+      z.object({
+        timestamp: z.string(),
+        level: z.string(),
+        message: z.string(),
+        metadata: z.unknown().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export type FlowExecutionHistory = z.infer<typeof flowExecutionHistorySchema>;
