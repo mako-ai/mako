@@ -289,9 +289,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
 
       // Track database connection creation (not updates)
       if (!databaseId) {
+        const savedData = res.data as { _id?: string } | undefined;
         trackEvent("database_connection_created", {
           connection_type: values.type,
-          connection_id: res.data?._id,
+          connection_id: savedData?._id,
         });
       }
 
@@ -498,9 +499,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                                 </Typography>
                                 <Controller
                                   control={control}
-                                  name={
-                                    fieldName as keyof FormValues["connection"]
-                                  }
+                                  name={fieldName as `connection.${string}`}
                                   rules={requiredRule}
                                   render={({
                                     field: ctrlField,
@@ -546,7 +545,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               multiline
                               rows={field.rows || 3}
                               {...register(
-                                fieldName as keyof FormValues["connection"],
+                                fieldName as `connection.${string}`,
                                 requiredRule,
                               )}
                               error={Boolean(fieldError)}
@@ -566,7 +565,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               margin="normal"
                               placeholder={field.placeholder}
                               {...register(
-                                fieldName as keyof FormValues["connection"],
+                                fieldName as `connection.${string}`,
                                 requiredRule,
                               )}
                               error={Boolean(fieldError)}
@@ -615,7 +614,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               margin="normal"
                               placeholder={field.placeholder}
                               {...register(
-                                fieldName as keyof FormValues["connection"],
+                                fieldName as `connection.${string}`,
                                 {
                                   ...requiredRule,
                                   valueAsNumber: true,
@@ -638,9 +637,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               <InputLabel>{field.label}</InputLabel>
                               <Controller
                                 control={control}
-                                name={
-                                  fieldName as keyof FormValues["connection"]
-                                }
+                                name={fieldName as `connection.${string}`}
                                 rules={requiredRule}
                                 render={({ field: ctrlField }) => (
                                   <Select
@@ -687,7 +684,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               margin="normal"
                               placeholder={field.placeholder}
                               {...register(
-                                fieldName as keyof FormValues["connection"],
+                                fieldName as `connection.${string}`,
                                 requiredRule,
                               )}
                               error={Boolean(fieldError)}

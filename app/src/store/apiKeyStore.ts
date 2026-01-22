@@ -36,7 +36,7 @@ const initialState: ApiKeyState = {
 };
 
 export const useApiKeyStore = create<ApiKeyStore>()(
-  immer((set, get) => ({
+  immer(set => ({
     ...initialState,
 
     fetchKeys: async workspaceId => {
@@ -83,9 +83,10 @@ export const useApiKeyStore = create<ApiKeyStore>()(
         );
 
         if (response.success && response.apiKey) {
+          const newKey = response.apiKey;
           set(state => {
             const existing = state.keys[workspaceId] || [];
-            state.keys[workspaceId] = [response.apiKey, ...existing];
+            state.keys[workspaceId] = [newKey, ...existing];
           });
         }
 

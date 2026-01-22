@@ -47,6 +47,7 @@ interface QueryResult {
   results: any[];
   executedAt: string;
   resultCount: number;
+  executionTime?: number;
 }
 
 // Styled PanelResizeHandle components
@@ -223,9 +224,11 @@ function Editor() {
       const { consoleId: eventConsoleId, modification } = customEvent.detail;
       const targetConsoleId = eventConsoleId || activeConsoleId;
 
+      if (!targetConsoleId) return;
+
       const showDiffWithRetry = (retries = 10, delay = 100) => {
         if (consoleRefs.current[targetConsoleId]?.current) {
-          consoleRefs.current[targetConsoleId].current.showDiff(modification);
+          consoleRefs.current[targetConsoleId].current!.showDiff(modification);
         } else if (retries > 0) {
           setTimeout(() => {
             showDiffWithRetry(retries - 1, delay);
@@ -320,7 +323,7 @@ function Editor() {
         setTabResults(prev => ({
           ...prev,
           [tabId]: {
-            results: result.data,
+            results: (result.data as any[]) || [],
             executedAt: new Date().toISOString(),
             resultCount: Array.isArray(result.data) ? result.data.length : 1,
             executionTime,
@@ -732,9 +735,14 @@ function Editor() {
                   />
                 ) : tab.kind === "flow-editor" ? (
                   <FlowEditor
-                    flowId={tab.metadata?.flowId}
-                    isNew={tab.metadata?.isNew}
-                    flowType={tab.metadata?.flowType}
+                    flowId={tab.metadata?.flowId as string | undefined}
+                    isNew={tab.metadata?.isNew as boolean | undefined}
+                    flowType={
+                      tab.metadata?.flowType as
+                        | "webhook"
+                        | "scheduled"
+                        | undefined
+                    }
                     onSave={() => {
                       // The FlowEditor already handles refreshing the flows list
                     }}

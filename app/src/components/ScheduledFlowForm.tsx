@@ -1203,7 +1203,7 @@ export function ScheduledFlowForm({
                         startIcon={<AddIcon />}
                         onClick={() => {
                           // Create default values from schema
-                          const defaultQuery: Partial<TransferQuery> = {
+                          const defaultQuery: Record<string, unknown> = {
                             name: "",
                             query: "",
                           };
@@ -1218,7 +1218,7 @@ export function ScheduledFlowForm({
                               }
                             },
                           );
-                          appendQuery(defaultQuery as TransferQuery);
+                          appendQuery(defaultQuery as unknown as TransferQuery);
                         }}
                       >
                         Add Query
@@ -1271,7 +1271,7 @@ export function ScheduledFlowForm({
                                 <Controller
                                   key={schemaField.name}
                                   name={
-                                    `queries.${index}.${schemaField.name}` as keyof TransferQuery
+                                    `queries.${index}.${schemaField.name}` as any
                                   }
                                   control={control}
                                   rules={{

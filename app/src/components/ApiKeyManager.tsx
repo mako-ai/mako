@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import {
   Box,
   Typography,
@@ -80,15 +80,15 @@ export function ApiKeyManager() {
     try {
       const response = await createKey(currentWorkspace.id, newKeyName.trim());
 
-      // Track API key creation
-      trackEvent("api_key_created", {
-        key_name: newKeyName.trim(),
-      });
-
       if (!response.success || !response.apiKey) {
         setCreateError(response.error || "Failed to create API key");
         return;
       }
+
+      // Track API key creation only after confirming success
+      trackEvent("api_key_created", {
+        key_name: newKeyName.trim(),
+      });
 
       setNewApiKey({
         ...response.apiKey,

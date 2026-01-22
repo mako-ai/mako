@@ -484,11 +484,17 @@ function ConnectorForm({
             <FormControl fullWidth margin="normal" variant="outlined">
               <InputLabel>{label}</InputLabel>
               <Select {...field} label={label}>
-                {options.map(opt => (
-                  <MenuItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </MenuItem>
-                ))}
+                {options.map(opt => {
+                  const val =
+                    typeof opt.value === "boolean"
+                      ? String(opt.value)
+                      : opt.value;
+                  return (
+                    <MenuItem key={String(opt.value)} value={val}>
+                      {opt.label}
+                    </MenuItem>
+                  );
+                })}
               </Select>
             </FormControl>
           )}
@@ -772,11 +778,17 @@ function ConnectorForm({
                       <FormControl fullWidth margin="normal" variant="outlined">
                         <InputLabel>{subField.label}</InputLabel>
                         <Select {...field} label={subField.label}>
-                          {(subField.options || []).map(opt => (
-                            <MenuItem key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </MenuItem>
-                          ))}
+                          {(subField.options || []).map(opt => {
+                            const val =
+                              typeof opt.value === "boolean"
+                                ? String(opt.value)
+                                : opt.value;
+                            return (
+                              <MenuItem key={String(opt.value)} value={val}>
+                                {opt.label}
+                              </MenuItem>
+                            );
+                          })}
                         </Select>
                       </FormControl>
                     )}

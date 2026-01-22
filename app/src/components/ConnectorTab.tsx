@@ -8,14 +8,6 @@ import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { trackEvent } from "../lib/analytics";
 
-interface ConnectorType {
-  type: string;
-  name: string;
-  version: string;
-  description: string;
-  supportedEntities: string[];
-}
-
 interface ConnectorTabProps {
   /**
    * The id of the connector being edited. If undefined/empty -> create new.

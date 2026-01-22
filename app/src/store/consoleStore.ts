@@ -23,7 +23,12 @@ interface ConsoleState {
 
 interface ConsoleActions {
   // Tab management
-  openTab: (tab: Omit<ConsoleTab, "id"> & { id?: string }) => string;
+  openTab: (
+    tab: Omit<ConsoleTab, "id" | "isSaved"> & {
+      id?: string;
+      isSaved?: boolean;
+    },
+  ) => string;
   closeTab: (id: string) => void;
   setActiveTab: (id: string | null) => void;
   clearAllConsoles: () => void;

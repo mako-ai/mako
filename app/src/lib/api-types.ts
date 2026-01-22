@@ -262,8 +262,9 @@ export interface AIModel {
   id: string;
   name: string;
   provider: string;
-  contextLength: number;
-  supportsTools: boolean;
+  description?: string;
+  contextLength?: number;
+  supportsTools?: boolean;
 }
 
 export interface ModelListResponse {
