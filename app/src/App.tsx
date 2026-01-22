@@ -194,6 +194,9 @@ function MainApp() {
       explicitDatabaseName || queryOptions?.databaseName || databaseId;
 
     // Create a new tab with the determined ID
+    // If consoleId is provided, this is an existing saved console from the database
+    // Set isSaved=true to prevent auto-save (especially important for placeholder content)
+    const isExistingSavedConsole = !!consoleId;
     const id = addConsoleTab({
       id: tabId, // Pass the ID explicitly
       title,
@@ -203,6 +206,8 @@ function MainApp() {
       databaseName, // Human-readable database name
       // If placeholder, defer setting filePath so savedStateHash isn't computed
       filePath: isPlaceholder ? undefined : filePath,
+      // Mark as saved if this is an existing console to prevent auto-save of placeholder content
+      isSaved: isExistingSavedConsole,
       // Store query execution options for backward compatibility
       metadata: queryOptions ? { queryOptions } : undefined,
     });
