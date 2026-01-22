@@ -327,7 +327,7 @@ export function WorkspaceMembers() {
                             onChange={e =>
                               handleRoleChange(
                                 row.userId!,
-                                e.target.value as any,
+                                e.target.value as "admin" | "member" | "viewer",
                               )
                             }
                             size="small"
@@ -382,7 +382,9 @@ export function WorkspaceMembers() {
             <InputLabel>Role</InputLabel>
             <Select
               value={inviteRole}
-              onChange={e => setInviteRole(e.target.value as any)}
+              onChange={e =>
+                setInviteRole(e.target.value as "admin" | "member" | "viewer")
+              }
               label="Role"
               disabled={inviting}
             >

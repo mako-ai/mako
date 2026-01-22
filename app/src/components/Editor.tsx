@@ -35,7 +35,8 @@ import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
 import { useConsoleStore } from "../store/consoleStore";
-import { useAppStore } from "../store";
+import { useUIStore } from "../store/uiStore";
+import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
@@ -71,25 +72,11 @@ function Editor() {
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
-  const [availableDatabases, setAvailableDatabases] = useState<
-    {
-      id: string;
-      name: string;
-      description: string;
-      database: string;
-      type: string;
-      active: boolean;
-      lastConnectedAt?: string;
-      connection: {
-        host?: string;
-        port?: number;
-        connectionString?: string;
-      };
-      displayName: string;
-      hostKey: string;
-      hostName: string;
-    }[]
-  >([]);
+  const connectionsMap = useSchemaStore(state => state.connections);
+  const ensureConnections = useSchemaStore(state => state.ensureConnections);
+  const availableDatabases = currentWorkspace
+    ? connectionsMap[currentWorkspace.id] || []
+    : [];
 
   // Conflict resolution state
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
@@ -109,23 +96,25 @@ function Editor() {
 
   // Tab store
   const {
-    consoleTabs,
     tabs,
-    activeConsoleId,
-    removeConsoleTab,
-    updateConsoleContent,
-    updateConsoleConnection,
-    updateConsoleDatabase,
-    updateConsoleFilePath,
-    updateConsoleTitle,
-    updateConsoleDirty,
+    activeTabId,
+    closeTab,
+    updateContent,
+    updateConnection,
+    updateDatabase,
+    updateFilePath,
+    updateTitle,
+    updateDirty,
     updateSavedState,
-    setActiveConsole,
+    setActiveTab,
     executeQuery,
     cancelQuery,
     saveConsole,
     deleteConsole,
+    openTab,
   } = useConsoleStore();
+  const consoleTabs = Object.values(tabs);
+  const activeConsoleId = activeTabId;
 
   // Refs for each Console instance
   const consoleRefs = useRef<Record<string, React.RefObject<ConsoleRef>>>({});
@@ -140,7 +129,7 @@ function Editor() {
   }, [consoleTabs]);
 
   // Keep activeEditorContent in app store updated so Chat can use it
-  const setActiveEditorContent = useAppStore(
+  const setActiveEditorContent = useUIStore(
     state => state.setActiveEditorContent,
   );
 
@@ -175,23 +164,12 @@ function Editor() {
       : baseTitle;
   }, [activeConsoleId, consoleTabs]);
 
-  // Fetch databases when workspace changes
+  // Fetch connections when workspace changes
   useEffect(() => {
-    const fetchDatabases = async () => {
-      if (!currentWorkspace) return;
-      try {
-        const { apiClient } = await import("../lib/api-client");
-        const res = await apiClient.get<{
-          success: boolean;
-          data: any[];
-        }>(`/workspaces/${currentWorkspace.id}/databases`);
-        if (res.success) setAvailableDatabases((res as any).data);
-      } catch (e) {
-        console.error("Failed to fetch databases list", e);
-      }
-    };
-    fetchDatabases();
-  }, [currentWorkspace]);
+    if (currentWorkspace?.id) {
+      ensureConnections(currentWorkspace.id);
+    }
+  }, [currentWorkspace?.id, ensureConnections]);
 
   // Load Monaco instance for unified SQL autocomplete
   const [monacoInstance, setMonacoInstance] = useState<unknown>(null);
@@ -211,18 +189,14 @@ function Editor() {
   }, [availableDatabases]);
 
   const getConnectionId = useCallback(() => {
-    const state = useAppStore.getState();
-    const tabs = state.consoles.tabs;
-    const activeTabId = state.consoles.activeTabId;
-    const activeTab = activeTabId ? tabs[activeTabId] : null;
+    const state = useConsoleStore.getState();
+    const activeTab = state.activeTabId ? state.tabs[state.activeTabId] : null;
     return activeTab?.connectionId;
   }, []);
 
   const getConnectionType = useCallback(() => {
-    const state = useAppStore.getState();
-    const tabs = state.consoles.tabs;
-    const activeTabId = state.consoles.activeTabId;
-    const activeTab = activeTabId ? tabs[activeTabId] : null;
+    const state = useConsoleStore.getState();
+    const activeTab = state.activeTabId ? state.tabs[state.activeTabId] : null;
     const connectionId = activeTab?.connectionId;
     const connection = availableDatabasesRef.current.find(
       db => db.id === connectionId,
@@ -280,16 +254,16 @@ function Editor() {
 
   /* ------------------------ Console Actions ------------------------ */
   const handleTabChange = (_: React.SyntheticEvent, newValue: string) => {
-    setActiveConsole(newValue);
+    setActiveTab(newValue);
   };
 
   const closeConsole = (id: string) => {
-    removeConsoleTab(id);
+    closeTab(id);
     delete consoleRefs.current[id];
   };
 
   const handleAddTab = () => {
-    useConsoleStore.getState().addConsoleTab({
+    openTab({
       title: "New Console",
       content: "",
     });
@@ -443,9 +417,9 @@ function Editor() {
 
       if (result.success) {
         // Update file path and title
-        updateConsoleFilePath(tabId, savePath);
-        updateConsoleTitle(tabId, savePath);
-        updateConsoleDirty(tabId, true);
+        updateFilePath(tabId, savePath);
+        updateTitle(tabId, savePath);
+        updateDirty(tabId, true);
 
         // Update saved state (isSaved=true, new savedStateHash)
         const newHash = computeConsoleStateHash(
@@ -519,7 +493,7 @@ function Editor() {
         }
       }
       // Close the existing tab since we're deleting that console
-      removeConsoleTab(existingId);
+      closeTab(existingId);
     }
 
     setIsSaving(true);
@@ -555,9 +529,9 @@ function Editor() {
         const tabId = pendingSaveData.tabId;
 
         // Update the tab properties
-        updateConsoleFilePath(tabId, pendingSaveData.path);
-        updateConsoleTitle(tabId, pendingSaveData.path);
-        updateConsoleDirty(tabId, true);
+        updateFilePath(tabId, pendingSaveData.path);
+        updateTitle(tabId, pendingSaveData.path);
+        updateDirty(tabId, true);
 
         // Update saved state (isSaved=true, new savedStateHash)
         const newHash = computeConsoleStateHash(
@@ -704,7 +678,7 @@ function Editor() {
                         }}
                         onDoubleClick={e => {
                           e.stopPropagation();
-                          updateConsoleDirty(tab.id, true);
+                          updateDirty(tab.id, true);
                         }}
                       >
                         {tab.title}
@@ -794,9 +768,9 @@ function Editor() {
                         isCancelling={isCancelling}
                         isSaving={isSaving}
                         onContentChange={content => {
-                          updateConsoleContent(tab.id, content);
+                          updateContent(tab.id, content);
                           if (!tab.isDirty) {
-                            updateConsoleDirty(tab.id, true);
+                            updateDirty(tab.id, true);
                           }
                           // Also refresh activeEditorContent for Chat consumers
                           const ref = consoleRefs.current[tab.id]?.current;
@@ -809,10 +783,10 @@ function Editor() {
                         databaseName={tab.databaseName}
                         databases={availableDatabases}
                         onDatabaseChange={connId =>
-                          updateConsoleConnection(tab.id, connId)
+                          updateConnection(tab.id, connId)
                         }
                         onDatabaseNameChange={(dbId, dbName) =>
-                          updateConsoleDatabase(tab.id, dbId, dbName)
+                          updateDatabase(tab.id, dbId, dbName)
                         }
                         filePath={tab.filePath}
                         enableVersionControl={true}
@@ -849,7 +823,7 @@ function Editor() {
             variant="contained"
             disableElevation
             onClick={() => {
-              useConsoleStore.getState().addConsoleTab({
+              openTab({
                 title: "New Console",
                 content: "",
               });

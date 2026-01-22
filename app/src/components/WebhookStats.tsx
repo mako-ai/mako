@@ -33,7 +33,7 @@ import {
   EditOutlined as EditIcon,
 } from "@mui/icons-material";
 import { formatDistanceToNow } from "date-fns";
-import { apiClient } from "../lib/api-client";
+import { useFlowStore } from "../store/flowStore";
 
 interface WebhookStatsProps {
   workspaceId: string;
@@ -68,6 +68,12 @@ export function WebhookStats({
   onEdit,
 }: WebhookStatsProps) {
   const [stats, setStats] = useState<WebhookStats | null>(null);
+  const {
+    fetchWebhookStats,
+    fetchWebhookEvents,
+    fetchWebhookEventDetails,
+    retryWebhookEvent,
+  } = useFlowStore();
   const [events, setEvents] = useState<WebhookEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -83,14 +89,8 @@ export function WebhookStats({
   const fetchStats = async () => {
     try {
       setError(null);
-      const response = await apiClient.get<{
-        success: boolean;
-        data: WebhookStats;
-      }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/stats`);
-
-      if (response.success && response.data) {
-        setStats(response.data);
-      }
+      const data = await fetchWebhookStats(workspaceId, flowId);
+      if (data) setStats(data);
     } catch (err) {
       console.error("Failed to fetch webhook stats:", err);
       setError("Failed to load webhook statistics");
@@ -99,19 +99,15 @@ export function WebhookStats({
 
   const fetchEvents = async () => {
     try {
-      const response = await apiClient.get<{
-        success: boolean;
-        data: {
-          total: number;
-          events: WebhookEvent[];
-        };
-      }>(
-        `/workspaces/${workspaceId}/flows/${flowId}/webhook/events?limit=${rowsPerPage}&offset=${page * rowsPerPage}`,
+      const data = await fetchWebhookEvents(
+        workspaceId,
+        flowId,
+        rowsPerPage,
+        page * rowsPerPage,
       );
-
-      if (response.success && response.data) {
-        setEvents(response.data.events);
-        setTotalEvents(response.data.total);
+      if (data) {
+        setEvents(data.events);
+        setTotalEvents(data.total);
       }
     } catch (err) {
       console.error("Failed to fetch webhook events:", err);
@@ -122,16 +118,8 @@ export function WebhookStats({
 
   const fetchEventDetails = async (eventId: string) => {
     try {
-      const response = await apiClient.get<{
-        success: boolean;
-        data: any;
-      }>(
-        `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}`,
-      );
-
-      if (response.success && response.data) {
-        setEventDetails(response.data);
-      }
+      const data = await fetchWebhookEventDetails(workspaceId, flowId, eventId);
+      if (data) setEventDetails(data);
     } catch (err) {
       console.error("Failed to fetch event details:", err);
     }
@@ -139,11 +127,8 @@ export function WebhookStats({
 
   const retryEvent = async (eventId: string) => {
     try {
-      const response = await apiClient.post<{ success: boolean }>(
-        `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}/retry`,
-      );
-
-      if (response.success) {
+      const success = await retryWebhookEvent(workspaceId, flowId, eventId);
+      if (success) {
         // Refresh the events list
         await fetchEvents();
       }

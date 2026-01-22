@@ -40,8 +40,9 @@ interface Connector {
 
 function ConnectorExplorer() {
   const { currentWorkspace } = useWorkspace();
-  const { consoleTabs, activeConsoleId, addConsoleTab, setActiveConsole } =
-    useConsoleStore();
+  const { tabs, activeTabId, openTab, setActiveTab } = useConsoleStore();
+  const consoleTabs = Object.values(tabs);
+  const activeConsoleId = activeTabId;
   const {
     entities,
     loading,
@@ -91,25 +92,25 @@ function ConnectorExplorer() {
         t => t.kind === "connectors" && t.content === contentKey,
       );
       if (existing) {
-        setActiveConsole(existing.id);
+        setActiveTab(existing.id);
         return;
       }
 
-      const id = addConsoleTab({
+      const id = openTab({
         title: source.name,
         content: contentKey,
         kind: "connectors",
         icon: `/api/connectors/${source.type}/icon.svg`,
       });
-      setActiveConsole(id);
+      setActiveTab(id);
     } else {
       // Always create a new tab for a brand-new data source form
-      const id = addConsoleTab({
+      const id = openTab({
         title: "New Connector",
         content: "", // will be populated after save
         kind: "connectors",
       });
-      setActiveConsole(id);
+      setActiveTab(id);
     }
   };
 

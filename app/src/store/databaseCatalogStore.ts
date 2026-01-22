@@ -27,6 +27,12 @@ export interface DatabaseSchemaResponse {
   fields: FieldSchema[];
 }
 
+interface CatalogResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+}
+
 interface CatalogState {
   types: DatabaseTypeItem[] | null;
   schemas: Record<string, DatabaseSchemaResponse>;
@@ -54,18 +60,18 @@ export const useDatabaseCatalogStore = create<CatalogState>()(
           s.error = null;
         });
         try {
-          const data = await apiClient.get<{
-            success: boolean;
-            data: DatabaseTypeItem[];
-          }>("/databases/types");
+          const data =
+            await apiClient.get<CatalogResponse<DatabaseTypeItem[]>>(
+              "/databases/types",
+            );
           if (data.success) {
             set(s => {
-              s.types = (data as any).data;
+              s.types = data.data;
               s.loading = false;
             });
           } else {
             set(s => {
-              s.error = (data as any).error || "Failed to load database types";
+              s.error = data.error || "Failed to load database types";
               s.loading = false;
             });
           }
@@ -80,15 +86,14 @@ export const useDatabaseCatalogStore = create<CatalogState>()(
         const state = get();
         if (state.schemas[type] && !force) return state.schemas[type];
         try {
-          const res = await apiClient.get<{
-            success: boolean;
-            data: DatabaseSchemaResponse;
-          }>(`/databases/${type}/schema`);
+          const res = await apiClient.get<
+            CatalogResponse<DatabaseSchemaResponse>
+          >(`/databases/${type}/schema`);
           if (res.success) {
             set(s => {
-              s.schemas[type] = (res as any).data;
+              s.schemas[type] = res.data;
             });
-            return (res as any).data;
+            return res.data;
           }
         } catch (err) {
           console.error("Failed to fetch database schema", err);

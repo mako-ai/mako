@@ -15,7 +15,10 @@ import {
   type InviteMemberData,
 } from "../lib/workspace-client";
 import { useAuth } from "./auth-context";
-import { useAppStore } from "../store";
+import { useUIStore } from "../store/uiStore";
+import { useConsoleStore } from "../store/consoleStore";
+import { useExplorerStore } from "../store/explorerStore";
+import { useChatStore } from "../store/chatStore";
 
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -65,7 +68,7 @@ interface WorkspaceProviderProps {
 
 export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const { user, loading: authLoading } = useAuth();
-  const { currentWorkspaceId, setCurrentWorkspaceId } = useAppStore();
+  const { currentWorkspaceId, setCurrentWorkspaceId } = useUIStore();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(
     null,
@@ -251,7 +254,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           setCurrentWorkspaceId(id);
 
           // Also reset in-memory store state to prevent leaks if reload is delayed
-          useAppStore.getState().reset();
+          useUIStore.getState().reset();
+          useExplorerStore.getState().reset();
+          useChatStore.getState().reset();
+          useConsoleStore.getState().clearAllConsoles();
           useFlowStore.getState().reset();
 
           // Reload the page to refresh all data with new workspace context

@@ -1,8 +1,9 @@
 export { useChatStore } from "./chatStore";
 export { useConsoleStore } from "./consoleStore";
-export { useDatabaseExplorerStore } from "./databaseExplorerStore";
-export { useAppStore, useAppDispatch } from "./appStore";
-export type { AppView } from "./appStore";
+export { useUIStore } from "./uiStore";
+export { useExplorerStore, useDatabaseExplorerStore } from "./explorerStore";
+export { useSettingsStore } from "./settingsStore";
+export { useApiKeyStore } from "./apiKeyStore";
 export { useConnectorStore } from "./connectorStore";
 export { useConnectorCatalogStore } from "./connectorCatalogStore";
 export { useDataSourceEntitiesStore } from "./dataSourceEntitiesStore";

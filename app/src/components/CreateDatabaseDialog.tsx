@@ -26,8 +26,8 @@ import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
 import { useWorkspace } from "../contexts/workspace-context";
-import { apiClient } from "../lib/api-client";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
+import { useSchemaStore } from "../store/schemaStore";
 import { useForm, Controller } from "react-hook-form";
 import { trackEvent } from "../lib/analytics";
 import {
@@ -93,6 +93,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     types: dbTypes,
     schemas,
   } = useDatabaseCatalogStore();
+  const { testConnection, fetchDatabase, saveDatabase } = useSchemaStore();
 
   // Toggle password visibility for a field
   const togglePasswordVisibility = useCallback((fieldName: string) => {
@@ -113,13 +114,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setTestResult(null);
 
     try {
-      const res = await apiClient.post<{ success: boolean; error?: string }>(
-        `/workspaces/${currentWorkspace.id}/databases/test-connection`,
-        {
-          type: values.type,
-          connection: values.connection,
-        },
-      );
+      const res = await testConnection(currentWorkspace.id, {
+        type: values.type,
+        connection: values.connection,
+      });
       setTestResult(res);
     } catch (err) {
       setTestResult({
@@ -231,22 +229,23 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
       setLoading(true);
       setStep("configure"); // Skip type selection
 
-      apiClient
-        .get<{ success: boolean; data: any }>(
-          `/workspaces/${currentWorkspace.id}/databases/${databaseId}`,
-        )
-        .then(async res => {
-          if (res.success && res.data) {
-            const db = res.data;
+      fetchDatabase(currentWorkspace.id, databaseId)
+        .then(async db => {
+          if (db) {
+            const typedDb = db as {
+              name: string;
+              type: string;
+              connection?: Record<string, unknown>;
+            };
             // Ensure schema is loaded
-            if (!schemas[db.type]) {
-              await fetchSchema(db.type);
+            if (!schemas[typedDb.type]) {
+              await fetchSchema(typedDb.type);
             }
 
             reset({
-              name: db.name,
-              type: db.type,
-              connection: db.connection || {},
+              name: typedDb.name,
+              type: typedDb.type,
+              connection: typedDb.connection || {},
             });
           }
         })
@@ -282,28 +281,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setLoading(true);
     setError(null);
     try {
-      let res;
-      if (databaseId) {
-        // Update existing database
-        res = await apiClient.put<{
-          success: boolean;
-          data: any;
-          message?: string;
-        }>(
-          `/workspaces/${currentWorkspace.id}/databases/${databaseId}`,
-          values,
-        );
-      } else {
-        // Create new database
-        res = await apiClient.post<{
-          success: boolean;
-          data: any;
-          message?: string;
-        }>(`/workspaces/${currentWorkspace.id}/databases`, values);
-      }
+      const res = await saveDatabase(currentWorkspace.id, values, databaseId);
 
       if (!res.success) {
-        throw new Error((res as any).error || "Failed to save database");
+        throw new Error(res.error || "Failed to save database");
       }
 
       // Track database connection creation (not updates)
@@ -498,8 +479,9 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                         : {};
 
                       const fieldError =
-                        ((errors.connection as any)?.[field.name]
-                          ?.message as string) || undefined;
+                        (errors.connection?.[
+                          field.name as keyof FormValues["connection"]
+                        ]?.message as string) || undefined;
                       switch (field.type) {
                         case "boolean":
                           return (
@@ -516,7 +498,9 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                                 </Typography>
                                 <Controller
                                   control={control}
-                                  name={fieldName as any}
+                                  name={
+                                    fieldName as keyof FormValues["connection"]
+                                  }
                                   rules={requiredRule}
                                   render={({
                                     field: ctrlField,
@@ -561,7 +545,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               placeholder={field.placeholder}
                               multiline
                               rows={field.rows || 3}
-                              {...register(fieldName as any, requiredRule)}
+                              {...register(
+                                fieldName as keyof FormValues["connection"],
+                                requiredRule,
+                              )}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
                               autoComplete="off"
@@ -578,7 +565,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               label={field.label}
                               margin="normal"
                               placeholder={field.placeholder}
-                              {...register(fieldName as any, requiredRule)}
+                              {...register(
+                                fieldName as keyof FormValues["connection"],
+                                requiredRule,
+                              )}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
                               autoComplete="off"
@@ -624,10 +614,13 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               label={field.label}
                               margin="normal"
                               placeholder={field.placeholder}
-                              {...register(fieldName as any, {
-                                ...requiredRule,
-                                valueAsNumber: true,
-                              })}
+                              {...register(
+                                fieldName as keyof FormValues["connection"],
+                                {
+                                  ...requiredRule,
+                                  valueAsNumber: true,
+                                },
+                              )}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
                               autoComplete="off"
@@ -645,7 +638,9 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               <InputLabel>{field.label}</InputLabel>
                               <Controller
                                 control={control}
-                                name={fieldName as any}
+                                name={
+                                  fieldName as keyof FormValues["connection"]
+                                }
                                 rules={requiredRule}
                                 render={({ field: ctrlField }) => (
                                   <Select
@@ -691,7 +686,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                               label={field.label}
                               margin="normal"
                               placeholder={field.placeholder}
-                              {...register(fieldName as any, requiredRule)}
+                              {...register(
+                                fieldName as keyof FormValues["connection"],
+                                requiredRule,
+                              )}
                               error={Boolean(fieldError)}
                               helperText={fieldError ?? field.helperText}
                               autoComplete="off"

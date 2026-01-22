@@ -31,13 +31,14 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
 }) => {
   const { currentWorkspace } = useWorkspace();
   const {
-    removeConsoleTab,
-    updateConsoleTitle,
-    updateConsoleIcon,
-    updateConsoleContent,
-    consoleTabs,
-    updateConsoleDirty,
+    closeTab,
+    updateTitle,
+    updateIcon,
+    updateContent,
+    tabs,
+    updateDirty,
   } = useConsoleStore();
+  const consoleTabs = Object.values(tabs);
 
   // Draft store
   const deleteDraft = useConnectorStore(state => state.deleteDraft);
@@ -63,14 +64,14 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
     currentWorkspace && effectiveSourceId
       ? `${currentWorkspace.id}:${effectiveSourceId}`
       : null;
-  const connector = connectorKey ? (entities as any)[connectorKey] : null;
+  const connector = connectorKey ? entities[connectorKey] : null;
 
-  const updateConsoleTitleRef = useRef(updateConsoleTitle);
+  const updateConsoleTitleRef = useRef(updateTitle);
   const consoleTabsRef = useRef(consoleTabs);
 
   // keep refs in sync
   useEffect(() => {
-    updateConsoleTitleRef.current = updateConsoleTitle;
+    updateConsoleTitleRef.current = updateTitle;
   });
   useEffect(() => {
     consoleTabsRef.current = consoleTabs;
@@ -79,9 +80,9 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
   // Helper to update the tab icon based on connector type
   const updateTabIcon = useCallback(
     (type: string) => {
-      updateConsoleIcon(tabId, `/api/connectors/${type}/icon.svg`);
+      updateIcon(tabId, `/api/connectors/${type}/icon.svg`);
     },
-    [updateConsoleIcon, tabId],
+    [updateIcon, tabId],
   );
 
   /* ------------------ effects ------------------ */
@@ -124,7 +125,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
   /* ------------------ handlers ------------------ */
   const handleClose = () => {
     deleteDraft(tabId);
-    removeConsoleTab(tabId);
+    closeTab(tabId);
   };
 
   const handleSubmit = async (formData: any) => {
@@ -150,7 +151,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
         setError(null);
         updateTabIcon(data.data.type);
         // Update the tab title once after a successful save
-        updateConsoleTitle(tabId, data.data.name || "Connector");
+        updateTitle(tabId, data.data.name || "Connector");
 
         // Clear draft on successful save
         deleteDraft(tabId);
@@ -164,7 +165,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
           });
 
           // Persist the newly created connector id as the tab's content
-          updateConsoleContent(tabId, newId);
+          updateContent(tabId, newId);
           setLocalSourceId(newId);
         }
       } else {
@@ -203,7 +204,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
         connector={connector}
         connectorTypes={connectorTypes || []}
         errorMessage={error}
-        onDirtyChange={dirty => updateConsoleDirty(tabId, dirty)}
+        onDirtyChange={dirty => updateDirty(tabId, dirty)}
       />
     </Box>
   );

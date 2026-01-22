@@ -17,14 +17,16 @@ import {
   ArrowLeftRight as FlowsIcon,
   CircleUserRound as UserIcon,
 } from "lucide-react";
-import { useAppStore, AppView } from "../store";
-import { useConsoleStore } from "../store/consoleStore";
+import { useUIStore } from "../store/uiStore";
+import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
 import { useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
+import { useChatStore } from "../store/chatStore";
+import { useExplorerStore } from "../store/explorerStore";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 
 const NavButton = styled(Button, {
@@ -48,7 +50,13 @@ const NavButton = styled(Button, {
 // Views that can appear in the sidebar navigation. Extends the core AppView
 // union with additional sidebar-specific entries that don't directly map to
 // a left-pane view managed by the app store.
-type NavigationView = AppView | "views" | "settings" | "flows";
+type NavigationView =
+  | "databases"
+  | "consoles"
+  | "connectors"
+  | "flows"
+  | "settings"
+  | "views";
 
 const topNavigationItems: { view: NavigationView; icon: any; label: string }[] =
   [
@@ -65,7 +73,7 @@ const bottomNavigationItems: {
 }[] = [{ view: "settings", icon: SettingsIcon, label: "Settings" }];
 
 function Sidebar() {
-  const { activeView, setActiveView } = useAppStore();
+  const { leftPane: activeView, setLeftPane } = useUIStore();
   const { user, logout } = useAuth();
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(
     null,
@@ -93,10 +101,12 @@ function Sidebar() {
       // Clear all store data from memory before logout
       useConnectorCatalogStore.getState().clearTypes();
       useConnectorStore.getState().clearDrafts();
-      useConsoleStore.getState().clearAllConsoles(); // This triggers actions in appStore, but reset() below is more comprehensive
+      useConsoleStore.getState().clearAllConsoles();
 
       // Full store resets
-      useAppStore.getState().reset();
+      useUIStore.getState().reset();
+      useExplorerStore.getState().reset();
+      useChatStore.getState().reset();
       useFlowStore.getState().reset();
 
       await logout();
@@ -116,27 +126,26 @@ function Sidebar() {
       view === "connectors" ||
       view === "flows"
     ) {
-      setActiveView(view as AppView);
+      setLeftPane(view as "databases" | "consoles" | "connectors" | "flows");
     }
 
     // Only certain views should automatically open (or focus) a tab in the editor.
     // Currently we want settings to open a tab, but data sources should just switch the left pane.
     if (view === "settings") {
-      const { findTabByKind, addConsoleTab, setActiveConsole } =
-        useConsoleStore.getState();
+      const { openTab, setActiveTab } = useConsoleStore.getState();
 
-      const existing = findTabByKind(
+      const existing = selectTabByKind(
         view === "settings" ? "settings" : "connectors",
-      );
+      )(useConsoleStore.getState());
       if (existing) {
-        setActiveConsole(existing.id);
+        setActiveTab(existing.id);
       } else {
-        const id = addConsoleTab({
+        const id = openTab({
           title: view === "settings" ? "Settings" : "Connectors",
           content: "", // Will be replaced with actual forms later
           kind: view === "settings" ? "settings" : "connectors",
         });
-        setActiveConsole(id);
+        setActiveTab(id);
       }
     }
   };

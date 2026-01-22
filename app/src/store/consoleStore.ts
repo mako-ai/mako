@@ -1,269 +1,74 @@
-import { useMemo } from "react";
-import { useAppStore, useAppDispatch, ConsoleTab } from "./appStore";
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleVersionManager } from "../utils/ConsoleVersionManager";
 import { computeConsoleStateHash } from "../utils/stateHash";
+import type { ConsoleTab, TabKind } from "./lib/types";
+import type {
+  ConsoleContentResponse,
+  ConsoleDeleteResponse,
+  ConsoleSaveResponse,
+  QueryCancelResponse,
+  QueryExecuteResponse,
+} from "../lib/api-types";
 
-export type TabKind =
-  | "console"
-  | "settings"
-  | "connectors"
-  | "members"
-  | "flow-editor";
+interface ConsoleState {
+  tabs: Record<string, ConsoleTab>;
+  activeTabId: string | null;
+  loading: Record<string, boolean>;
+  error: Record<string, string | null>;
+}
 
-// Store version managers for each console tab
-const versionManagers = new Map<string, ConsoleVersionManager>();
+interface ConsoleActions {
+  // Tab management
+  openTab: (tab: Omit<ConsoleTab, "id"> & { id?: string }) => string;
+  closeTab: (id: string) => void;
+  setActiveTab: (id: string | null) => void;
+  clearAllConsoles: () => void;
 
-// Debounce timers for draft console saves (per console ID)
-const draftSaveTimers = new Map<string, NodeJS.Timeout>();
-// Track last saved content hash to avoid redundant API calls
-const lastSavedContentHash = new Map<string, string>();
-const DRAFT_SAVE_DEBOUNCE_MS = 2000; // 2 seconds debounce
-
-/**
- * Cancel any pending auto-save for a console.
- * Called when a console is closed to prevent orphan saves.
- */
-const cancelAutoSave = (consoleId: string): void => {
-  const timer = draftSaveTimers.get(consoleId);
-  if (timer) {
-    clearTimeout(timer);
-    draftSaveTimers.delete(consoleId);
-  }
-  lastSavedContentHash.delete(consoleId);
-};
-
-/**
- * Check if a console should auto-save.
- * Returns false if the console is already explicitly saved (isSaved=true).
- */
-const shouldAutoSave = (consoleId: string): boolean => {
-  const state = useAppStore.getState();
-  const tab = state.consoles.tabs[consoleId];
-  // Only auto-save draft consoles (isSaved=false)
-  // Once explicitly saved, user controls saving via Cmd+S
-  return tab ? !tab.isSaved : true;
-};
-
-/**
- * Auto-save console content (debounced).
- * Only saves draft consoles (isSaved=false) to the database.
- * Once a console is explicitly saved (isSaved=true), auto-save is disabled.
- *
- * Called from Console.tsx when content changes.
- */
-const autoSaveConsoleImpl = (
-  workspaceId: string,
-  consoleId: string,
-  content: string,
-  title?: string,
-  connectionId?: string,
-  databaseId?: string,
-  databaseName?: string,
-): void => {
-  // Skip empty content or placeholder content
-  if (!content?.trim() || content === "loading...") return;
-
-  // Skip if console is already explicitly saved (user controls saving)
-  if (!shouldAutoSave(consoleId)) return;
-
-  // Skip if content hasn't changed since last save (avoid redundant API calls)
-  const stateHash = computeConsoleStateHash(
-    content,
-    connectionId,
-    databaseId,
-    databaseName,
-  );
-  if (lastSavedContentHash.get(consoleId) === stateHash) {
-    return;
-  }
-
-  // Clear existing timer for this console
-  const existingTimer = draftSaveTimers.get(consoleId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-
-  // Set new debounced timer
-  const timer = setTimeout(async () => {
-    draftSaveTimers.delete(consoleId);
-    // Re-check shouldAutoSave in case isSaved changed during debounce
-    if (!shouldAutoSave(consoleId)) return;
-
-    try {
-      await apiClient.put(`/workspaces/${workspaceId}/consoles/${consoleId}`, {
-        content,
-        title,
-        connectionId,
-        databaseId,
-        databaseName,
-        // isSaved is NOT passed - this is an auto-save (draft)
-      });
-      // Track successful save to avoid redundant future saves
-      lastSavedContentHash.set(consoleId, stateHash);
-    } catch (e) {
-      // Silently fail - auto-saves are best effort
-      console.debug("[AutoSave] Failed to save console:", e);
-    }
-  }, DRAFT_SAVE_DEBOUNCE_MS);
-
-  draftSaveTimers.set(consoleId, timer);
-};
-
-// Selector helpers
-const selectConsoleState = (state: any) => state.consoles;
-
-export const useConsoleStore = () => {
-  const dispatch = useAppDispatch();
-  const { tabs, activeTabId } = useAppStore(selectConsoleState);
-
-  // Memoize to prevent new array reference on every render
-  // This is critical to avoid infinite re-render loops in consumers
-  const consoleTabs: ConsoleTab[] = useMemo(() => Object.values(tabs), [tabs]);
-
-  const addConsoleTab = (
-    tab: Omit<ConsoleTab, "id" | "isSaved"> & {
-      id?: string;
-      isSaved?: boolean;
-    },
-  ): string => {
-    const id = tab.id || generateObjectId(); // Use provided ID or generate new MongoDB ObjectId
-
-    // Create version manager for console tabs
-    if (tab.kind === undefined || tab.kind === "console") {
-      versionManagers.set(id, new ConsoleVersionManager(id));
-    }
-
-    // Compute savedStateHash if this is a saved console (has filePath)
-    const content = tab.content || "";
-    const savedStateHash = tab.filePath
-      ? computeConsoleStateHash(
-          content,
-          tab.connectionId,
-          tab.databaseId,
-          tab.databaseName,
-        )
-      : undefined;
-
-    dispatch({
-      type: "OPEN_CONSOLE_TAB",
-      payload: {
-        id,
-        title: tab.title,
-        content,
-        isSaved: tab.isSaved ?? !!tab.filePath, // Saved if has filePath
-        savedStateHash,
-        connectionId: tab.connectionId,
-        databaseId: tab.databaseId,
-        databaseName: tab.databaseName,
-        filePath: tab.filePath,
-        kind: (tab as any).kind || "console",
-        icon: tab.icon,
-        metadata: tab.metadata,
-      },
-    });
-    return id;
-  };
-
-  const removeConsoleTab = (id: string) => {
-    // Clean up version manager
-    const versionManager = versionManagers.get(id);
-    if (versionManager) {
-      versionManager.cleanup();
-      versionManagers.delete(id);
-    }
-
-    // Cancel any pending auto-save for this console
-    cancelAutoSave(id);
-
-    dispatch({ type: "CLOSE_CONSOLE_TAB", payload: { id } });
-  };
-
-  const setActiveConsole = (id: string | null) =>
-    dispatch({ type: "FOCUS_CONSOLE_TAB", payload: { id } });
-
-  const updateConsoleContent = (id: string, content: string) =>
-    dispatch({
-      type: "UPDATE_CONSOLE_CONTENT",
-      payload: { id, content },
-    });
-
-  const findTabByKind = (kind: TabKind) =>
-    consoleTabs.find((t: any) => (t as any).kind === kind);
-
-  const updateConsoleConnection = (id: string, connectionId?: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_CONNECTION",
-      payload: { id, connectionId },
-    });
-  };
-
-  const updateConsoleDatabase = (
+  // Tab updates
+  updateContent: (id: string, content: string) => void;
+  updateTitle: (id: string, title: string) => void;
+  updateDirty: (id: string, isDirty: boolean) => void;
+  updateIcon: (id: string, icon: string) => void;
+  updateConnection: (id: string, connectionId?: string) => void;
+  updateDatabase: (
     id: string,
     databaseId?: string,
     databaseName?: string,
-  ) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_DATABASE",
-      payload: { id, databaseId, databaseName },
-    });
-  };
-
-  const updateConsoleFilePath = (id: string, filePath: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_FILE_PATH",
-      payload: { id, filePath },
-    });
-  };
-
-  const updateConsoleTitle = (id: string, title: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_TITLE",
-      payload: { id, title },
-    });
-  };
-
-  const updateConsoleDirty = (id: string, isDirty: boolean) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_DIRTY",
-      payload: { id, isDirty },
-    });
-  };
-
-  const updateConsoleIcon = (id: string, icon: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_ICON",
-      payload: { id, icon },
-    });
-  };
-
-  /**
-   * Update the saved state after a successful explicit save.
-   * Sets isSaved=true and updates savedStateHash for dirty tracking.
-   */
-  const updateSavedState = (
+  ) => void;
+  updateFilePath: (id: string, filePath: string) => void;
+  updateSavedState: (
     id: string,
     isSaved: boolean,
     savedStateHash: string,
-  ) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_SAVED_STATE",
-      payload: { id, isSaved, savedStateHash },
-    });
-  };
+  ) => void;
 
-  const clearAllConsoles = () => {
-    consoleTabs.forEach(tab => removeConsoleTab(tab.id));
-  };
+  // Versioning
+  getVersionManager: (consoleId: string) => ConsoleVersionManager | null;
 
-  const getVersionManager = (
+  // API operations
+  loadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
+  fetchConsoleContent: (
+    workspaceId: string,
     consoleId: string,
-  ): ConsoleVersionManager | null => {
-    return versionManagers.get(consoleId) || null;
-  };
-
-  const executeQuery = async (
+  ) => Promise<ConsoleContentResponse | null>;
+  saveConsole: (
+    workspaceId: string,
+    tabId: string,
+    content: string,
+    path: string,
+    connectionId?: string,
+    databaseName?: string,
+    databaseId?: string,
+  ) => Promise<ConsoleSaveResponse>;
+  deleteConsole: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<ConsoleDeleteResponse>;
+  executeQuery: (
     workspaceId: string,
     connectionId: string,
     query: string,
@@ -273,411 +78,580 @@ export const useConsoleStore = () => {
       executionId?: string;
       signal?: AbortSignal;
     },
-  ): Promise<{ success: boolean; data?: any; error?: string }> => {
-    try {
-      const res = await apiClient.post<{
-        success: boolean;
-        data: any;
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/execute`,
-        {
-          connectionId,
-          query,
-          databaseId: options?.databaseId,
-          databaseName: options?.databaseName,
-          executionId: options?.executionId,
-        },
-        { signal: options?.signal },
-      );
-      return res.success
-        ? { success: true, data: (res as any).data }
-        : { success: false, error: (res as any).error || "Execution failed" };
-    } catch (e: any) {
-      if (e?.name === "AbortError") {
-        return { success: false, error: "Query cancelled" };
-      }
-      return { success: false, error: e?.message || "Execution failed" };
-    }
-  };
-
-  const cancelQuery = async (
+  ) => Promise<QueryExecuteResponse>;
+  cancelQuery: (
     workspaceId: string,
     executionId: string,
-  ): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const res = await apiClient.post<{ success: boolean; error?: string }>(
-        `/workspaces/${workspaceId}/execute/cancel`,
-        { executionId },
-      );
-      return res;
-    } catch (e: any) {
-      return { success: false, error: e?.message || "Cancel failed" };
-    }
-  };
-
-  /**
-   * Save console to the backend.
-   * Always uses the same ID (ID never changes).
-   *
-   * For explicit save (first save or Cmd+S): Pass isSaved=true and path
-   * The backend will check for path conflicts and return 409 if exists.
-   */
-  const saveConsole = async (
+  ) => Promise<QueryCancelResponse>;
+  autoSaveConsole: (
     workspaceId: string,
-    tabId: string,
+    consoleId: string,
     content: string,
-    path: string,
+    title?: string,
     connectionId?: string,
-    databaseName?: string,
     databaseId?: string,
-  ): Promise<{
-    success: boolean;
-    path?: string;
-    error?: string;
-    conflict?: {
-      existingId: string;
-      existingContent: string;
-      existingName: string;
-      existingLanguage?: "sql" | "javascript" | "mongodb";
-      path: string;
-    };
-  }> => {
-    try {
-      // Remove .js extension if present as backend doesn't expect it
-      const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
+    databaseName?: string,
+  ) => void;
+}
 
-      // Always PUT to the same ID with isSaved=true for explicit save
-      const response = await fetch(
-        `/api/workspaces/${workspaceId}/consoles/${tabId}`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            content,
-            path: cleanPath,
-            connectionId,
-            databaseName,
-            databaseId,
-            isSaved: true, // Explicit save
-          }),
-        },
-      );
+type ConsoleStore = ConsoleState & ConsoleActions;
 
-      const res = await response.json();
-
-      // Handle conflict (409) - return conflict data for UI to handle
-      if (response.status === 409 && res.error === "conflict" && res.conflict) {
-        return { success: false, error: "conflict", conflict: res.conflict };
-      }
-
-      if (!response.ok) {
-        return { success: false, error: res.error || "Save failed" };
-      }
-
-      return res.success
-        ? { success: true, path: cleanPath }
-        : { success: false, error: res.error || "Save failed" };
-    } catch (e: any) {
-      return { success: false, error: e?.message || "Save failed" };
-    }
-  };
-
-  /**
-   * Delete a console by ID.
-   * Used when overwriting a console at a conflicting path.
-   */
-  const deleteConsole = async (
-    workspaceId: string,
-    consoleId: string,
-  ): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const res = await apiClient.delete<{ success: boolean; error?: string }>(
-        `/workspaces/${workspaceId}/consoles/${consoleId}`,
-      );
-      return res;
-    } catch (e: any) {
-      return { success: false, error: e?.message || "Delete failed" };
-    }
-  };
-
-  return {
-    consoleTabs,
-    tabs, // Expose raw tabs object for direct ID-based access
-    activeConsoleId: activeTabId,
-    addConsoleTab,
-    findTabByKind,
-    removeConsoleTab,
-    updateConsoleContent,
-    setActiveConsole,
-    clearAllConsoles,
-    updateConsoleConnection,
-    updateConsoleDatabase,
-    updateConsoleFilePath,
-    updateConsoleTitle,
-    updateConsoleDirty,
-    updateConsoleIcon,
-    updateSavedState,
-    getVersionManager,
-    executeQuery,
-    cancelQuery,
-    saveConsole,
-    deleteConsole,
-    autoSaveConsole: autoSaveConsoleImpl,
-    loadConsole: async (id: string, workspaceId: string) => {
-      // Check if console is already loaded
-      const existing = consoleTabs.find(t => t.id === id);
-      if (existing) {
-        setActiveConsole(id);
-        return;
-      }
-
-      try {
-        // Fetch from API
-        const res = await apiClient.get<{
-          success: boolean;
-          content: string;
-          connectionId?: string;
-          databaseId?: string;
-          databaseName?: string;
-          language?: string;
-          id: string;
-          path?: string;
-          name?: string;
-          isSaved?: boolean;
-        }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
-
-        if (res.success) {
-          const content = res.content || "";
-          const filePath = res.path || res.name;
-          addConsoleTab({
-            id: res.id, // Should match requested ID
-            title: res.name || res.path || "Console",
-            content,
-            isSaved: res.isSaved ?? !!filePath, // Saved if has path
-            connectionId: res.connectionId,
-            databaseId: res.databaseId,
-            databaseName: res.databaseName,
-            filePath,
-            kind: "console",
-          });
-          setActiveConsole(res.id);
-        }
-      } catch (e) {
-        console.error("Failed to load console", e);
-      }
-    },
-  };
+const initialState: ConsoleState = {
+  tabs: {},
+  activeTabId: null,
+  loading: {},
+  error: {},
 };
 
-// Provide getState for legacy direct access
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore – attach property dynamically
-useConsoleStore.getState = () => {
-  const global = useAppStore.getState();
-  const dispatch = global.dispatch;
-  const tabs = global.consoles.tabs;
-  const activeTabId = global.consoles.activeTabId;
+// Store version managers for each console tab
+const versionManagers = new Map<string, ConsoleVersionManager>();
 
-  const consoleTabs: ConsoleTab[] = Object.values(tabs);
+// Debounce timers for draft console saves (per console ID)
+const draftSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// Track last saved content hash to avoid redundant API calls
+const lastSavedContentHash = new Map<string, string>();
+const DRAFT_SAVE_DEBOUNCE_MS = 2000; // 2 seconds debounce
 
-  const addConsoleTab = (
-    tab: Omit<ConsoleTab, "id" | "isSaved"> & {
-      id?: string;
-      isSaved?: boolean;
-    },
-  ): string => {
-    const id = tab.id || generateObjectId(); // Use provided ID or generate new MongoDB ObjectId
+const cancelAutoSave = (consoleId: string): void => {
+  const timer = draftSaveTimers.get(consoleId);
+  if (timer) {
+    clearTimeout(timer);
+    draftSaveTimers.delete(consoleId);
+  }
+  lastSavedContentHash.delete(consoleId);
+};
 
-    // Create version manager for console tabs
-    if (tab.kind === undefined || tab.kind === "console") {
-      versionManagers.set(id, new ConsoleVersionManager(id));
-    }
+const shouldAutoSave = (getState: () => ConsoleState, consoleId: string) => {
+  const tab = getState().tabs[consoleId];
+  return tab ? !tab.isSaved : true;
+};
 
-    // Compute savedStateHash if this is a saved console (has filePath)
-    const content = tab.content || "";
-    const savedStateHash = tab.filePath
-      ? computeConsoleStateHash(
-          content,
-          tab.connectionId,
-          tab.databaseId,
-          tab.databaseName,
-        )
-      : undefined;
+export const useConsoleStore = create<ConsoleStore>()(
+  persist(
+    immer((set, get) => ({
+      ...initialState,
 
-    dispatch({
-      type: "OPEN_CONSOLE_TAB",
-      payload: {
-        id,
-        title: tab.title,
-        content,
-        isSaved: tab.isSaved ?? !!tab.filePath, // Saved if has filePath
-        savedStateHash,
-        connectionId: tab.connectionId,
-        databaseId: tab.databaseId,
-        databaseName: tab.databaseName,
-        filePath: tab.filePath,
-        kind: (tab as any).kind || "console",
-        icon: tab.icon,
-        metadata: tab.metadata,
+      // Tab management
+      openTab: tab => {
+        const id = tab.id || generateObjectId();
+        const content = tab.content || "";
+
+        // Replace first pristine tab if present
+        const pristineTabId = Object.keys(get().tabs).find(
+          tabId => !get().tabs[tabId].isDirty,
+        );
+
+        if (tab.kind === undefined || tab.kind === "console") {
+          versionManagers.set(id, new ConsoleVersionManager(id));
+        }
+
+        const savedStateHash = tab.filePath
+          ? computeConsoleStateHash(
+              content,
+              tab.connectionId,
+              tab.databaseId,
+              tab.databaseName,
+            )
+          : tab.savedStateHash;
+
+        set(state => {
+          if (pristineTabId && pristineTabId !== id) {
+            delete state.tabs[pristineTabId];
+          }
+          state.tabs[id] = {
+            ...tab,
+            id,
+            content,
+            isSaved: tab.isSaved ?? !!tab.filePath,
+            savedStateHash,
+            kind: tab.kind || "console",
+            isDirty: tab.isDirty ?? false,
+          };
+          state.activeTabId = id;
+        });
+
+        return id;
       },
-    });
-    return id;
-  };
 
-  const removeConsoleTab = (id: string) => {
-    // Clean up version manager
-    const versionManager = versionManagers.get(id);
-    if (versionManager) {
-      versionManager.cleanup();
-      versionManagers.delete(id);
-    }
-
-    // Cancel any pending auto-save for this console
-    cancelAutoSave(id);
-
-    dispatch({ type: "CLOSE_CONSOLE_TAB", payload: { id } });
-  };
-
-  const setActiveConsole = (id: string | null) =>
-    dispatch({ type: "FOCUS_CONSOLE_TAB", payload: { id } });
-
-  const updateConsoleContent = (id: string, content: string) =>
-    dispatch({
-      type: "UPDATE_CONSOLE_CONTENT",
-      payload: { id, content },
-    });
-
-  const findTabByKind = (kind: TabKind) =>
-    consoleTabs.find((t: any) => (t as any).kind === kind);
-
-  const updateConsoleConnection = (id: string, connectionId?: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_CONNECTION",
-      payload: { id, connectionId },
-    });
-  };
-
-  const updateConsoleDatabase = (
-    id: string,
-    databaseId?: string,
-    databaseName?: string,
-  ) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_DATABASE",
-      payload: { id, databaseId, databaseName },
-    });
-  };
-
-  const updateConsoleFilePath = (id: string, filePath: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_FILE_PATH",
-      payload: { id, filePath },
-    });
-  };
-
-  const updateConsoleTitle = (id: string, title: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_TITLE",
-      payload: { id, title },
-    });
-  };
-
-  const updateConsoleDirty = (id: string, isDirty: boolean) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_DIRTY",
-      payload: { id, isDirty },
-    });
-  };
-
-  const updateConsoleIcon = (id: string, icon: string) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_ICON",
-      payload: { id, icon },
-    });
-  };
-
-  const updateSavedState = (
-    id: string,
-    isSaved: boolean,
-    savedStateHash: string,
-  ) => {
-    dispatch({
-      type: "UPDATE_CONSOLE_SAVED_STATE",
-      payload: { id, isSaved, savedStateHash },
-    });
-  };
-
-  const clearAllConsoles = () => {
-    consoleTabs.forEach(tab => removeConsoleTab(tab.id));
-  };
-
-  const getVersionManager = (
-    consoleId: string,
-  ): ConsoleVersionManager | null => {
-    return versionManagers.get(consoleId) || null;
-  };
-
-  return {
-    consoleTabs,
-    tabs,
-    activeConsoleId: activeTabId,
-    addConsoleTab,
-    findTabByKind,
-    removeConsoleTab,
-    updateConsoleContent,
-    setActiveConsole,
-    clearAllConsoles,
-    updateConsoleConnection,
-    updateConsoleDatabase,
-    updateConsoleFilePath,
-    updateConsoleTitle,
-    updateConsoleDirty,
-    updateConsoleIcon,
-    updateSavedState,
-    getVersionManager,
-    autoSaveConsole: autoSaveConsoleImpl,
-    loadConsole: async (id: string, workspaceId: string) => {
-      const existing = consoleTabs.find(t => t.id === id);
-      if (existing) {
-        setActiveConsole(id);
-        return;
-      }
-
-      try {
-        const res = await apiClient.get<{
-          success: boolean;
-          content: string;
-          connectionId?: string;
-          databaseId?: string;
-          databaseName?: string;
-          language?: string;
-          id: string;
-          path?: string;
-          name?: string;
-          isSaved?: boolean;
-        }>(`/workspaces/${workspaceId}/consoles/content?id=${id}`);
-
-        if (res.success) {
-          const content = res.content || "";
-          const filePath = res.path || res.name;
-          addConsoleTab({
-            id: res.id,
-            title: res.name || res.path || "Console",
-            content,
-            isSaved: res.isSaved ?? !!filePath,
-            connectionId: res.connectionId,
-            databaseId: res.databaseId,
-            databaseName: res.databaseName,
-            filePath,
-            kind: "console",
-          });
-          setActiveConsole(res.id);
+      closeTab: id => {
+        const versionManager = versionManagers.get(id);
+        if (versionManager) {
+          versionManager.cleanup();
+          versionManagers.delete(id);
         }
-      } catch (e) {
-        console.error("Failed to load console", e);
-      }
+
+        cancelAutoSave(id);
+
+        set(state => {
+          delete state.tabs[id];
+          if (state.activeTabId === id) {
+            state.activeTabId = Object.keys(state.tabs)[0] || null;
+          }
+        });
+      },
+
+      setActiveTab: id =>
+        set(state => {
+          state.activeTabId = id;
+        }),
+
+      clearAllConsoles: () => {
+        Object.keys(get().tabs).forEach(tabId => get().closeTab(tabId));
+      },
+
+      // Tab updates
+      updateContent: (id, content) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.content = content;
+          }
+        }),
+
+      updateTitle: (id, title) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.title = title;
+          }
+        }),
+
+      updateDirty: (id, isDirty) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.isDirty = isDirty;
+          }
+        }),
+
+      updateIcon: (id, icon) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.icon = icon;
+          }
+        }),
+
+      updateConnection: (id, connectionId) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.connectionId = connectionId;
+          }
+        }),
+
+      updateDatabase: (id, databaseId, databaseName) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.databaseId = databaseId;
+            tab.databaseName = databaseName;
+          }
+        }),
+
+      updateFilePath: (id, filePath) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.filePath = filePath;
+          }
+        }),
+
+      updateSavedState: (id, isSaved, savedStateHash) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.isSaved = isSaved;
+            tab.savedStateHash = savedStateHash;
+          }
+        }),
+
+      // Versioning
+      getVersionManager: consoleId => versionManagers.get(consoleId) || null,
+
+      // API operations
+      loadConsole: async (workspaceId, consoleId) => {
+        // Check if console is already loaded
+        if (get().tabs[consoleId]) {
+          get().setActiveTab(consoleId);
+          return;
+        }
+
+        set(state => {
+          state.loading[consoleId] = true;
+          state.error[consoleId] = null;
+        });
+
+        try {
+          const res = await apiClient.get<ConsoleContentResponse>(
+            `/workspaces/${workspaceId}/consoles/content`,
+            { id: consoleId },
+          );
+
+          if (res.success) {
+            const content = res.content || "";
+            const filePath = res.path || res.name;
+
+            get().openTab({
+              id: res.id,
+              title: res.name || res.path || "Console",
+              content,
+              isSaved: res.isSaved ?? !!filePath,
+              connectionId: res.connectionId,
+              databaseId: res.databaseId,
+              databaseName: res.databaseName,
+              filePath,
+              kind: "console",
+            });
+            get().setActiveTab(res.id);
+          } else {
+            set(state => {
+              state.error[consoleId] = "Failed to load console";
+            });
+          }
+        } catch (e) {
+          console.error("Failed to load console", e);
+          set(state => {
+            state.error[consoleId] =
+              e instanceof Error ? e.message : "Failed to load console";
+          });
+        } finally {
+          set(state => {
+            delete state.loading[consoleId];
+          });
+        }
+      },
+
+      fetchConsoleContent: async (workspaceId, consoleId) => {
+        try {
+          const res = await apiClient.get<ConsoleContentResponse>(
+            `/workspaces/${workspaceId}/consoles/content`,
+            { id: consoleId },
+          );
+
+          if (res.success) {
+            const filePath = res.path || res.name;
+            set(state => {
+              const tab = state.tabs[consoleId];
+              if (tab) {
+                tab.content = res.content || "";
+                tab.connectionId = res.connectionId;
+                tab.databaseId = res.databaseId;
+                tab.databaseName = res.databaseName;
+                tab.filePath = filePath;
+              }
+            });
+
+            if (filePath) {
+              const savedStateHash = computeConsoleStateHash(
+                res.content || "",
+                res.connectionId,
+                res.databaseId,
+                res.databaseName,
+              );
+              get().updateSavedState(consoleId, true, savedStateHash);
+            }
+          }
+
+          return res.success ? res : null;
+        } catch (e) {
+          console.error("Failed to fetch console content", e);
+          return null;
+        }
+      },
+
+      saveConsole: async (
+        workspaceId,
+        tabId,
+        content,
+        path,
+        connectionId,
+        databaseName,
+        databaseId,
+      ) => {
+        try {
+          const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
+          const response = await fetch(
+            `/api/workspaces/${workspaceId}/consoles/${tabId}`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                content,
+                path: cleanPath,
+                connectionId,
+                databaseName,
+                databaseId,
+                isSaved: true,
+              }),
+            },
+          );
+
+          const res = (await response.json()) as ConsoleSaveResponse;
+
+          if (response.status === 409 && res.error === "conflict") {
+            return {
+              success: false,
+              error: "conflict",
+              conflict: res.conflict,
+            };
+          }
+
+          if (!response.ok) {
+            return { success: false, error: res.error || "Save failed" };
+          }
+
+          return res.success
+            ? { success: true, path: cleanPath }
+            : { success: false, error: res.error || "Save failed" };
+        } catch (e) {
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Save failed",
+          };
+        }
+      },
+
+      deleteConsole: async (workspaceId, consoleId) => {
+        try {
+          return await apiClient.delete<ConsoleDeleteResponse>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}`,
+          );
+        } catch (e) {
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Delete failed",
+          };
+        }
+      },
+
+      executeQuery: async (workspaceId, connectionId, query, options) => {
+        try {
+          const res = await apiClient.post<QueryExecuteResponse>(
+            `/workspaces/${workspaceId}/execute`,
+            {
+              connectionId,
+              query,
+              databaseId: options?.databaseId,
+              databaseName: options?.databaseName,
+              executionId: options?.executionId,
+            },
+            { signal: options?.signal },
+          );
+
+          return res.success
+            ? res
+            : { success: false, error: res.error || "Execution failed" };
+        } catch (e) {
+          if (e instanceof Error && e.name === "AbortError") {
+            return { success: false, error: "Query cancelled" };
+          }
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Execution failed",
+          };
+        }
+      },
+
+      cancelQuery: async (workspaceId, executionId) => {
+        try {
+          return await apiClient.post<QueryCancelResponse>(
+            `/workspaces/${workspaceId}/execute/cancel`,
+            { executionId },
+          );
+        } catch (e) {
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Cancel failed",
+          };
+        }
+      },
+
+      autoSaveConsole: (
+        workspaceId,
+        consoleId,
+        content,
+        title,
+        connectionId,
+        databaseId,
+        databaseName,
+      ) => {
+        if (!content?.trim() || content === "loading...") return;
+        if (!shouldAutoSave(get, consoleId)) return;
+
+        const stateHash = computeConsoleStateHash(
+          content,
+          connectionId,
+          databaseId,
+          databaseName,
+        );
+        if (lastSavedContentHash.get(consoleId) === stateHash) {
+          return;
+        }
+
+        const existingTimer = draftSaveTimers.get(consoleId);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+        }
+
+        const timer = setTimeout(async () => {
+          draftSaveTimers.delete(consoleId);
+          if (!shouldAutoSave(get, consoleId)) return;
+
+          try {
+            await apiClient.put(
+              `/workspaces/${workspaceId}/consoles/${consoleId}`,
+              {
+                content,
+                title,
+                connectionId,
+                databaseId,
+                databaseName,
+              },
+            );
+            lastSavedContentHash.set(consoleId, stateHash);
+          } catch (e) {
+            console.debug("[AutoSave] Failed to save console:", e);
+          }
+        }, DRAFT_SAVE_DEBOUNCE_MS);
+
+        draftSaveTimers.set(consoleId, timer);
+      },
+    })),
+    {
+      name: "console-store",
+      partialize: state => ({
+        tabs: state.tabs,
+        activeTabId: state.activeTabId,
+      }),
+      storage: {
+        getItem: name => {
+          const str = localStorage.getItem(name);
+          if (str) {
+            const data = JSON.parse(str);
+            if (data.state?.tabs) {
+              Object.values(data.state.tabs).forEach((tab: any) => {
+                if (
+                  tab.databaseId === undefined &&
+                  tab.metadata?.queryOptions
+                ) {
+                  tab.databaseId =
+                    tab.metadata.queryOptions.databaseId ||
+                    tab.metadata.queryOptions.databaseName;
+                }
+                if (
+                  tab.databaseName === undefined &&
+                  tab.metadata?.queryOptions
+                ) {
+                  tab.databaseName = tab.metadata.queryOptions.databaseLabel;
+                }
+                if (tab.isSaved === undefined) {
+                  tab.isSaved = !!tab.filePath;
+                }
+                if (tab.savedStateHash === undefined && tab.filePath) {
+                  const savedContent = tab.initialContent ?? tab.content ?? "";
+                  const savedConnId = tab.savedConnectionId ?? tab.connectionId;
+                  const savedDbId = tab.savedDatabaseId ?? tab.databaseId;
+                  const savedDbName = tab.savedDatabaseName ?? tab.databaseName;
+                  tab.savedStateHash = computeConsoleStateHash(
+                    savedContent,
+                    savedConnId,
+                    savedDbId,
+                    savedDbName,
+                  );
+                }
+                delete tab.initialContent;
+                delete tab.dbContentHash;
+                delete tab.savedConnectionId;
+                delete tab.savedDatabaseId;
+                delete tab.savedDatabaseName;
+              });
+            }
+            return data;
+          }
+
+          // Migration: fallback to app-store data if present
+          const legacy = localStorage.getItem("app-store");
+          if (legacy) {
+            try {
+              const parsed = JSON.parse(legacy);
+              const tabs = parsed.state?.consoles?.tabs || {};
+              const activeTabId = parsed.state?.consoles?.activeTabId || null;
+
+              Object.values(tabs).forEach((tab: any) => {
+                if (
+                  tab.databaseId === undefined &&
+                  tab.metadata?.queryOptions
+                ) {
+                  tab.databaseId =
+                    tab.metadata.queryOptions.databaseId ||
+                    tab.metadata.queryOptions.databaseName;
+                }
+                if (
+                  tab.databaseName === undefined &&
+                  tab.metadata?.queryOptions
+                ) {
+                  tab.databaseName = tab.metadata.queryOptions.databaseLabel;
+                }
+                if (tab.isSaved === undefined) {
+                  tab.isSaved = !!tab.filePath;
+                }
+                if (tab.savedStateHash === undefined && tab.filePath) {
+                  const savedContent = tab.initialContent ?? tab.content ?? "";
+                  const savedConnId = tab.savedConnectionId ?? tab.connectionId;
+                  const savedDbId = tab.savedDatabaseId ?? tab.databaseId;
+                  const savedDbName = tab.savedDatabaseName ?? tab.databaseName;
+                  tab.savedStateHash = computeConsoleStateHash(
+                    savedContent,
+                    savedConnId,
+                    savedDbId,
+                    savedDbName,
+                  );
+                }
+                delete tab.initialContent;
+                delete tab.dbContentHash;
+                delete tab.savedConnectionId;
+                delete tab.savedDatabaseId;
+                delete tab.savedDatabaseName;
+              });
+
+              return {
+                state: {
+                  tabs,
+                  activeTabId,
+                  loading: {},
+                  error: {},
+                },
+                version: 0,
+              };
+            } catch (error) {
+              console.error("Failed to parse legacy console store:", error);
+            }
+          }
+
+          return null;
+        },
+        setItem: (name, value) => {
+          localStorage.setItem(name, JSON.stringify(value));
+        },
+        removeItem: name => {
+          localStorage.removeItem(name);
+        },
+      },
     },
-  };
-};
+  ),
+);
+
+// Selectors
+export const selectConsoleTabs = (state: ConsoleStore): ConsoleTab[] =>
+  Object.values(state.tabs);
+export const selectActiveConsoleId = (state: ConsoleStore) => state.activeTabId;
+export const selectConsoleById =
+  (id: string) =>
+  (state: ConsoleStore): ConsoleTab | undefined =>
+    state.tabs[id];
+export const selectTabByKind =
+  (kind: TabKind) =>
+  (state: ConsoleStore): ConsoleTab | undefined =>
+    Object.values(state.tabs).find(tab => tab.kind === kind);

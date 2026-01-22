@@ -39,7 +39,6 @@ import {
   ConsoleModification,
 } from "../hooks/useMonacoConsole";
 import ConsoleInfoModal from "./ConsoleInfoModal";
-import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
@@ -135,7 +134,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
-  const { autoSaveConsole, tabs } = useConsoleStore();
+  const autoSaveConsole = useConsoleStore(state => state.autoSaveConsole);
+  const tabs = useConsoleStore(state => state.tabs);
 
   // Get tab state for savedStateHash (used for dirty tracking)
   const tab = tabs[consoleId];
@@ -554,7 +554,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
       // CMD/CTRL + Enter execution support
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-        const activeId = useAppStore.getState().consoles.activeTabId;
+        const activeId = useConsoleStore.getState().activeTabId;
         if (activeId !== consoleId) {
           return;
         }

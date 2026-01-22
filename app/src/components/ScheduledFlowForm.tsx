@@ -38,7 +38,6 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
-import { apiClient } from "../lib/api-client";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { trackEvent } from "../lib/analytics";
@@ -60,6 +59,17 @@ interface TransferQuery {
   has_next_page_path?: string;
   cursor_path?: string;
   batch_size?: number;
+}
+
+interface TransferQueryField {
+  name: keyof TransferQuery;
+  label: string;
+  type: "string" | "number" | "textarea";
+  required?: boolean;
+  default?: string | number;
+  placeholder?: string;
+  helperText?: string;
+  rows?: number;
 }
 
 interface FormData {
@@ -111,6 +121,7 @@ export function ScheduledFlowForm({
     updateFlow,
     clearError,
     deleteFlow,
+    fetchConnectors,
   } = useFlowStore();
 
   // Get workspace-specific data
@@ -284,14 +295,8 @@ export function ScheduledFlowForm({
   const fetchDataSources = async (workspaceId: string) => {
     setIsLoadingConnectors(true);
     try {
-      const response = await apiClient.get<{
-        success: boolean;
-        data: any[];
-      }>(`/workspaces/${workspaceId}/connectors`);
-
-      if (response.success) {
-        setConnectors(response.data || []);
-      }
+      const sources = await fetchConnectors(workspaceId);
+      setConnectors(sources || []);
     } catch (error) {
       console.error("Failed to fetch connectors:", error);
       setError("Failed to load connectors");
@@ -479,16 +484,25 @@ export function ScheduledFlowForm({
     if (!isNewMode && currentFlowId && flows.length > 0) {
       const flow = flows.find(j => j._id === currentFlowId);
       if (flow && flow.type === "scheduled") {
+        const dataSourceId =
+          typeof flow.dataSourceId === "string"
+            ? flow.dataSourceId
+            : flow.dataSourceId?._id;
+        const destinationDatabaseId =
+          typeof flow.destinationDatabaseId === "string"
+            ? flow.destinationDatabaseId
+            : flow.destinationDatabaseId?._id;
+
         const formData: FormData = {
-          dataSourceId: (flow.dataSourceId as any)._id,
-          destinationDatabaseId: (flow.destinationDatabaseId as any)._id,
+          dataSourceId: dataSourceId || "",
+          destinationDatabaseId: destinationDatabaseId || "",
           destinationDatabaseName: flow.destinationDatabaseName || "",
           schedule: flow.schedule?.cron || "0 * * * *",
           timezone: flow.schedule?.timezone || "UTC",
           syncMode: flow.syncMode as "full" | "incremental",
           enabled: flow.enabled,
           entityFilter: flow.entityFilter || [],
-          queries: (flow as any).queries || [],
+          queries: flow.queries || [],
         };
 
         reset(formData);
@@ -631,7 +645,7 @@ export function ScheduledFlowForm({
         // Track flow creation
         trackEvent("flow_created", {
           flow_type: "scheduled",
-          connector_type: selectedConnector?.type,
+          connector_type: selectedSource?.type,
         });
 
         // Refresh the flows list
@@ -1193,15 +1207,17 @@ export function ScheduledFlowForm({
                             name: "",
                             query: "",
                           };
-                          transferQueriesSchema.fields?.forEach((f: any) => {
-                            if (f.default !== undefined) {
-                              (defaultQuery as any)[f.name] = f.default;
-                            } else if (f.type === "number") {
-                              (defaultQuery as any)[f.name] = undefined;
-                            } else {
-                              (defaultQuery as any)[f.name] = "";
-                            }
-                          });
+                          transferQueriesSchema.fields?.forEach(
+                            (f: TransferQueryField) => {
+                              if (f.default !== undefined) {
+                                defaultQuery[f.name] = f.default;
+                              } else if (f.type === "number") {
+                                defaultQuery[f.name] = undefined;
+                              } else {
+                                defaultQuery[f.name] = "";
+                              }
+                            },
+                          );
                           appendQuery(defaultQuery as TransferQuery);
                         }}
                       >
@@ -1251,11 +1267,11 @@ export function ScheduledFlowForm({
                           <Stack spacing={2}>
                             {/* Render fields from schema */}
                             {transferQueriesSchema.fields?.map(
-                              (schemaField: any) => (
+                              (schemaField: TransferQueryField) => (
                                 <Controller
                                   key={schemaField.name}
                                   name={
-                                    `queries.${index}.${schemaField.name}` as any
+                                    `queries.${index}.${schemaField.name}` as keyof TransferQuery
                                   }
                                   control={control}
                                   rules={{

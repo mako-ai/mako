@@ -10,7 +10,7 @@ import {
 } from "react-router-dom";
 import { trackPageView } from "./lib/analytics";
 import Sidebar from "./components/Sidebar";
-import { useAppStore } from "./store";
+import { useUIStore } from "./store/uiStore";
 import { useConsoleStore } from "./store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import Chat from "./components/Chat";
@@ -61,7 +61,7 @@ import { UrlSync } from "./components/UrlSync";
 
 // Main application component (extracted from original App)
 function MainApp() {
-  const activeView = useAppStore(s => s.activeView);
+  const activeView = useUIStore(s => s.leftPane);
   // Avoid re-rendering MainApp on console state changes; use getState on demand
 
   // Handle console modification from AI
@@ -76,8 +76,10 @@ function MainApp() {
   ) => {
     // handleConsoleModification called
 
-    const { activeConsoleId, consoleTabs, addConsoleTab, setActiveConsole } =
+    const { tabs, activeTabId, openTab, setActiveTab } =
       useConsoleStore.getState();
+    const consoleTabs = Object.values(tabs);
+    const activeConsoleId = activeTabId;
 
     const realConsoleTabs = (consoleTabs || []).filter(
       (t: any) => t?.kind === undefined || t?.kind === "console",
@@ -90,7 +92,7 @@ function MainApp() {
 
     // Handle console creation
     if (modification.action === "create" && modification.title) {
-      const newConsoleId = addConsoleTab({
+      const newConsoleId = openTab({
         id: modification.consoleId,
         title: modification.title,
         content: modification.content || "",
@@ -99,7 +101,7 @@ function MainApp() {
         databaseName: modification.databaseName,
         kind: "console",
       });
-      setActiveConsole(newConsoleId);
+      setActiveTab(newConsoleId);
       return;
     }
 
@@ -123,16 +125,16 @@ function MainApp() {
       if (realConsoleTabs.length > 0) {
         // Focus the first available real console
         targetConsoleId = realConsoleTabs[0].id;
-        setActiveConsole(targetConsoleId);
+        setActiveTab(targetConsoleId);
       } else {
         // Create a new console if none exist
         isNewConsole = true;
-        const id = addConsoleTab({
+        const id = openTab({
           title: "AI Query",
           content: "",
         });
         targetConsoleId = id;
-        setActiveConsole(id);
+        setActiveTab(id);
       }
     }
 
@@ -165,21 +167,18 @@ function MainApp() {
     // For existing consoles, use the server ID as the tab ID
     const tabId = consoleId || generateObjectId();
 
-    const {
-      consoleTabs,
-      setActiveConsole,
-      addConsoleTab,
-      updateConsoleContent,
-    } = useConsoleStore.getState();
+    const { tabs, setActiveTab, openTab, updateContent } =
+      useConsoleStore.getState();
+    const consoleTabs = Object.values(tabs);
 
     // Check if a tab with this ID already exists
     const existing = consoleTabs.find(t => t.id === tabId);
 
     if (existing) {
       // Tab already exists, just focus it
-      setActiveConsole(existing.id);
+      setActiveTab(existing.id);
       // Update the content in case it changed on the server
-      updateConsoleContent(existing.id, content);
+      updateContent(existing.id, content);
       return;
     }
 
@@ -197,7 +196,7 @@ function MainApp() {
     // If consoleId is provided, this is an existing saved console from the database
     // Set isSaved=true to prevent auto-save (especially important for placeholder content)
     const isExistingSavedConsole = !!consoleId;
-    const id = addConsoleTab({
+    const id = openTab({
       id: tabId, // Pass the ID explicitly
       title,
       content,
@@ -211,7 +210,7 @@ function MainApp() {
       // Store query execution options for backward compatibility
       metadata: queryOptions ? { queryOptions } : undefined,
     });
-    setActiveConsole(id);
+    setActiveTab(id);
   };
 
   // Left pane content renderer

@@ -14,6 +14,12 @@ interface AvailableEntitiesState {
   clear: (workspaceId: string, connectorId: string) => void;
 }
 
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+}
+
 function makeKey(workspaceId: string, connectorId: string) {
   return `${workspaceId}:${connectorId}`;
 }
@@ -36,12 +42,11 @@ export const useAvailableEntitiesStore = create<AvailableEntitiesState>()(
       });
 
       try {
-        const json = await apiClient.get<{
-          success: boolean;
-          data: string[];
-        }>(`/workspaces/${workspaceId}/connectors/${connectorId}/entities`);
+        const json = await apiClient.get<ApiResponse<string[]>>(
+          `/workspaces/${workspaceId}/connectors/${connectorId}/entities`,
+        );
         if (json.success) {
-          const list: string[] = (json as any).data || [];
+          const list: string[] = json.data || [];
           set(state => {
             state.byConnector[key] = list;
             delete state.loading[key];
@@ -49,7 +54,7 @@ export const useAvailableEntitiesStore = create<AvailableEntitiesState>()(
           });
           return list;
         }
-        throw new Error((json as any).error || "Failed to fetch entities");
+        throw new Error(json.error || "Failed to fetch entities");
       } catch (err: any) {
         set(state => {
           state.error[key] = err?.message || "Failed to fetch entities";

@@ -97,6 +97,78 @@ const flowExecutionHistorySchema = z.object({
 
 export type FlowExecutionHistory = z.infer<typeof flowExecutionHistorySchema>;
 
+interface ConnectorInfo {
+  _id: string;
+  name: string;
+  type: string;
+  workspaceId?: string;
+}
+
+interface WebhookEvent {
+  id: string;
+  eventId: string;
+  eventType: string;
+  receivedAt: string;
+  processedAt?: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  attempts: number;
+  error?: unknown;
+  processingDurationMs?: number;
+}
+
+interface WebhookStats {
+  webhookUrl: string;
+  lastReceived: string | null;
+  totalReceived: number;
+  eventsToday: number;
+  successRate: number;
+  recentEvents: WebhookEvent[];
+}
+
+interface FlowStatusResponse {
+  isRunning: boolean;
+  runningExecution: {
+    executionId: string;
+    startedAt: string;
+    lastHeartbeat: string;
+  } | null;
+}
+
+interface ExecutionDetails {
+  executionId: string;
+  executedAt: string;
+  startedAt?: string;
+  lastHeartbeat?: string;
+  completedAt?: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "abandoned";
+  success: boolean;
+  error?: {
+    message: string;
+    stack?: string;
+    code?: string;
+  };
+  duration?: number;
+  system?: {
+    workerId: string;
+    workerVersion?: string;
+    nodeVersion: string;
+    hostname: string;
+  };
+  context?: {
+    dataSourceId: string;
+    destinationDatabaseId?: string;
+    destinationDatabaseName?: string;
+    syncMode: string;
+    entityFilter?: string[];
+  };
+  logs?: Array<{
+    timestamp: string;
+    level: string;
+    message: string;
+    metadata?: unknown;
+  }>;
+}
+
 // Store state schema for validation
 const flowStoreStateSchema = z.object({
   flows: z.record(z.array(flowSchema)),
@@ -122,9 +194,58 @@ interface FlowStore extends FlowStoreState {
   deleteFlow: (workspaceId: string, flowId: string) => Promise<void>;
   toggleFlow: (workspaceId: string, flowId: string) => Promise<void>;
   runFlow: (workspaceId: string, flowId: string) => Promise<void>;
-  fetchFlowHistory: (workspaceId: string, flowId: string) => Promise<void>;
+  fetchFlowHistory: (
+    workspaceId: string,
+    flowId: string,
+    limit?: number,
+  ) => Promise<FlowExecutionHistory[]>;
   selectFlow: (flowId: string | null) => void;
   clearError: (workspaceId: string) => void;
+
+  // Connector listing for flows
+  fetchConnectors: (workspaceId: string) => Promise<ConnectorInfo[]>;
+
+  // Webhook flow monitoring
+  fetchWebhookStats: (
+    workspaceId: string,
+    flowId: string,
+  ) => Promise<WebhookStats | null>;
+  fetchWebhookEvents: (
+    workspaceId: string,
+    flowId: string,
+    limit: number,
+    offset: number,
+  ) => Promise<{ total: number; events: WebhookEvent[] } | null>;
+  fetchWebhookEventDetails: (
+    workspaceId: string,
+    flowId: string,
+    eventId: string,
+  ) => Promise<unknown | null>;
+  retryWebhookEvent: (
+    workspaceId: string,
+    flowId: string,
+    eventId: string,
+  ) => Promise<boolean>;
+
+  // Flow logs and status
+  fetchFlowDetails: (
+    workspaceId: string,
+    flowId: string,
+  ) => Promise<Flow | null>;
+  fetchFlowStatus: (
+    workspaceId: string,
+    flowId: string,
+  ) => Promise<FlowStatusResponse | null>;
+  fetchExecutionDetails: (
+    workspaceId: string,
+    flowId: string,
+    executionId: string,
+  ) => Promise<ExecutionDetails | null>;
+  cancelFlowExecution: (
+    workspaceId: string,
+    flowId: string,
+    executionId?: string | null,
+  ) => Promise<boolean>;
   reset: () => void;
 }
 
@@ -399,22 +520,25 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      fetchFlowHistory: async (workspaceId: string, flowId: string) => {
+      fetchFlowHistory: async (workspaceId: string, flowId: string, limit) => {
         try {
+          const params = limit ? { limit: String(limit) } : undefined;
           const response = await apiClient.get<{
             success: boolean;
             data: { history: FlowExecutionHistory[] };
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/history`);
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/history`, params);
 
           if (response.success) {
             set(state => {
               state.executionHistory[flowId] = response.data.history;
             });
+            return response.data.history;
           }
         } catch (error: any) {
           console.error("Failed to fetch flow history:", error);
         }
+        return [];
       },
 
       selectFlow: (flowId: string | null) => {
@@ -427,6 +551,156 @@ export const useFlowStore = create<FlowStore>()(
         set(state => {
           state.error[workspaceId] = null;
         });
+      },
+
+      fetchConnectors: async (workspaceId: string) => {
+        const key = `connectors:${workspaceId}`;
+        set(state => {
+          state.loading[key] = true;
+          state.error[key] = null;
+        });
+
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: ConnectorInfo[];
+            error?: string;
+          }>(`/workspaces/${workspaceId}/connectors`);
+
+          if (response.success) {
+            return response.data || [];
+          }
+          throw new Error(response.error || "Failed to fetch connectors");
+        } catch (error: any) {
+          set(state => {
+            state.error[key] = normalizeError(error);
+          });
+          return [];
+        } finally {
+          set(state => {
+            delete state.loading[key];
+          });
+        }
+      },
+
+      fetchWebhookStats: async (workspaceId: string, flowId: string) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: WebhookStats;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/stats`);
+
+          return response.success ? response.data : null;
+        } catch (error) {
+          console.error("Failed to fetch webhook stats:", error);
+          return null;
+        }
+      },
+
+      fetchWebhookEvents: async (workspaceId, flowId, limit, offset) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: {
+              total: number;
+              events: WebhookEvent[];
+            };
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events?limit=${limit}&offset=${offset}`,
+          );
+
+          return response.success ? response.data : null;
+        } catch (error) {
+          console.error("Failed to fetch webhook events:", error);
+          return null;
+        }
+      },
+
+      fetchWebhookEventDetails: async (workspaceId, flowId, eventId) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: unknown;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}`,
+          );
+
+          return response.success ? response.data : null;
+        } catch (error) {
+          console.error("Failed to fetch event details:", error);
+          return null;
+        }
+      },
+
+      retryWebhookEvent: async (workspaceId, flowId, eventId) => {
+        try {
+          const response = await apiClient.post<{ success: boolean }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}/retry`,
+          );
+          return response.success;
+        } catch (error) {
+          console.error("Failed to retry webhook event:", error);
+          return false;
+        }
+      },
+
+      fetchFlowDetails: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: Flow;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}`);
+
+          return response.success ? response.data : null;
+        } catch (error) {
+          console.error("Failed to fetch flow details:", error);
+          return null;
+        }
+      },
+
+      fetchFlowStatus: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: FlowStatusResponse;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/status`);
+
+          return response.success ? response.data : null;
+        } catch (error) {
+          console.error("Failed to check flow status", error);
+          return null;
+        }
+      },
+
+      fetchExecutionDetails: async (workspaceId, flowId, executionId) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: ExecutionDetails;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/executions/${executionId}`,
+          );
+
+          return response.success ? response.data : null;
+        } catch (error) {
+          console.error("Failed to fetch execution details", error);
+          return null;
+        }
+      },
+
+      cancelFlowExecution: async (workspaceId, flowId, executionId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            message?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/cancel`, {
+            executionId,
+          });
+          return response.success;
+        } catch (error) {
+          console.error("Failed to cancel flow execution", error);
+          return false;
+        }
       },
 
       reset: () => {

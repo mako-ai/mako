@@ -3,7 +3,7 @@
  * A dropdown component for selecting AI models, similar to Cursor's model picker
  */
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Box,
   Button,
@@ -16,18 +16,8 @@ import {
 } from "@mui/material";
 import { KeyboardArrowDown } from "@mui/icons-material";
 import { useSettingsStore } from "../store/settingsStore";
-import { apiClient } from "../lib/api-client";
 
-interface AIModel {
-  id: string;
-  provider: "openai" | "anthropic" | "google";
-  name: string;
-  description?: string;
-}
-
-interface ModelsResponse {
-  models: AIModel[];
-}
+import type { AIModel } from "../lib/api-types";
 
 // Provider display names for grouping
 const PROVIDER_NAMES: Record<string, string> = {
@@ -45,38 +35,14 @@ const PROVIDER_ORDER: Array<AIModel["provider"]> = [
 
 export const ModelSelector: React.FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-  const [models, setModels] = useState<AIModel[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
   const setSelectedModelId = useSettingsStore(s => s.setSelectedModelId);
+  const models = useSettingsStore(s => s.models);
+  const loading = useSettingsStore(s => s.modelsLoading);
+  const error = useSettingsStore(s => s.modelsError);
+  const fetchModels = useSettingsStore(s => s.fetchModels);
 
   const open = Boolean(anchorEl);
-
-  const fetchModels = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const response = await apiClient.get<ModelsResponse>("/agent/models");
-      setModels(response.models || []);
-
-      // If the currently selected model isn't available, select the first available one
-      if (response.models?.length > 0) {
-        const isCurrentModelAvailable = response.models.some(
-          m => m.id === selectedModelId,
-        );
-        if (!isCurrentModelAvailable) {
-          setSelectedModelId(response.models[0].id);
-        }
-      }
-    } catch (err) {
-      console.error("[ModelSelector] Failed to fetch models:", err);
-      setError("Failed to load models");
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedModelId, setSelectedModelId]);
 
   useEffect(() => {
     fetchModels();
