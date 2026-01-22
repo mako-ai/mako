@@ -196,6 +196,7 @@ function ConsoleExplorer(
           updateConsoleFilePath,
           updateConsoleDatabase,
           updateConsoleConnection,
+          updateSavedState,
         } = (await import("../store/consoleStore")).useConsoleStore.getState();
         updateConsoleContent(consoleId, (data as any).content);
 
@@ -214,6 +215,17 @@ function ConsoleExplorer(
         // Update the file path so the editor knows this is an existing file
         // This fixes the "Save As" prompt appearing for existing consoles
         updateConsoleFilePath(consoleId, node.path);
+
+        // Mark as saved (isSaved=true) since this is an existing console from the database
+        // This fixes auto-save incorrectly triggering for saved consoles opened with placeholder content
+        const { computeConsoleStateHash } = await import("../utils/stateHash");
+        const savedStateHash = computeConsoleStateHash(
+          (data as any).content,
+          (data as any).connectionId,
+          (data as any).databaseId,
+          (data as any).databaseName,
+        );
+        updateSavedState(consoleId, true, savedStateHash);
 
         // Update dbContentHash so pristine/dirty state is correct
         const { hashContent } = await import("../utils/hash");
