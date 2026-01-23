@@ -23,6 +23,14 @@ consoleRoutes.use("*", unifiedAuthMiddleware);
 consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
+    // Validate ObjectId format early to return 400 instead of 500
+    if (!Types.ObjectId.isValid(workspaceId)) {
+      return c.json(
+        { success: false, error: "Invalid workspace ID format" },
+        400,
+      );
+    }
+
     const user = c.get("user");
     const workspace = c.get("workspace");
 

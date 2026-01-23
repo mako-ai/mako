@@ -30,7 +30,7 @@ import {
 import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
-import { loggers } from "../logging";
+import { loggers, enrichContextWithWorkspace } from "../logging";
 
 const logger = loggers.agent();
 
@@ -149,7 +149,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     if (!hasAccess) {
       return c.json({ error: "Access denied to workspace" }, 403);
     }
+  } else {
+    // Neither API key nor session auth succeeded - reject request
+    return c.json({ error: "Unauthorized" }, 401);
   }
+
+  // Only enrich logging context after authorization succeeds
+  enrichContextWithWorkspace(workspaceId);
 
   if (!chatId || !ObjectId.isValid(chatId)) {
     return c.json(
