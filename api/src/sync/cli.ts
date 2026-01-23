@@ -414,7 +414,6 @@ main().catch(error => {
   if (log) {
     log.error("CLI failed", { error });
   } else {
-    // eslint-disable-next-line no-console
     console.error("CLI failed:", error);
   }
   process.exit(1);
