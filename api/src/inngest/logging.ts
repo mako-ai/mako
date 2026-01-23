@@ -47,9 +47,10 @@ export function getDatabaseSink(options: DatabaseSinkOptions = {}): Sink {
           },
         };
 
-        // Append log to execution document
+        // Append log to execution document (limit to last 1000 entries to prevent
+        // hitting MongoDB's 16MB document size limit for long-running executions)
         await collection.updateOne({ _id: new Types.ObjectId(executionId) }, {
-          $push: { logs: logEntry },
+          $push: { logs: { $each: [logEntry], $slice: -1000 } },
           $set: { lastHeartbeat: new Date() },
         } as any);
       } catch (error) {
