@@ -4,6 +4,7 @@ import { Workspace } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
 
 const logger = loggers.workspace();
 
@@ -13,7 +14,7 @@ export const customPromptRoutes = new Hono();
 customPromptRoutes.use("*", unifiedAuthMiddleware);
 
 // Middleware to enrich logging context with workspace ID from URL and verify access
-customPromptRoutes.use("*", async (c, next) => {
+customPromptRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
     // Enrich logging context with workspace ID

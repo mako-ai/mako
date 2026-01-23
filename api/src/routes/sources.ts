@@ -7,6 +7,7 @@ import { databaseDataSourceManager } from "../sync/database-data-source-manager"
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
 
 const logger = loggers.connector();
 
@@ -16,7 +17,7 @@ export const dataSourceRoutes = new Hono();
 dataSourceRoutes.use("*", unifiedAuthMiddleware);
 
 // Middleware to enrich logging context with workspace ID from URL and verify access
-dataSourceRoutes.use("*", async (c, next) => {
+dataSourceRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
     // Enrich logging context with workspace ID

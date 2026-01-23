@@ -12,6 +12,7 @@ import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
 
 const logger = loggers.inngest("flow");
 
@@ -21,7 +22,7 @@ export const flowRoutes = new Hono();
 flowRoutes.use("*", unifiedAuthMiddleware);
 
 // Middleware to enrich logging context with workspace ID from URL and verify access
-flowRoutes.use("*", async (c, next) => {
+flowRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
     // Enrich logging context with workspace ID
