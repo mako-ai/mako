@@ -112,14 +112,13 @@ function formatValue(value: unknown, indent: number = 0): string {
 
 /**
  * HTTP-only context fields that should be filtered from non-HTTP logs
- * Note: requestId is kept for cross-log correlation
+ * Note: Correlation fields (requestId, traceId, spanId) are kept on all logs
+ * to enable trace correlation across services and log aggregation
  */
 const httpOnlyFields = new Set([
   "method", // HTTP method (GET, POST, etc.)
   "path", // Request path
   "startTime", // Request start timestamp
-  "spanId", // Distributed tracing span ID
-  "traceId", // Distributed tracing trace ID
   "httpRequest", // Full HTTP request object
 ]);
 
@@ -138,7 +137,7 @@ function filterProperties(
     return props;
   }
 
-  // For non-HTTP categories, filter out HTTP-only fields (keep requestId for correlation)
+  // For non-HTTP categories, filter out HTTP-only fields (keep requestId, traceId, spanId for correlation)
   const filtered: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(props)) {
     if (!httpOnlyFields.has(key) && value !== undefined && value !== null) {

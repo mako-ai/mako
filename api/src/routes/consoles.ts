@@ -9,6 +9,7 @@ import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
 
 const logger = loggers.api("consoles");
 
@@ -18,10 +19,36 @@ const consoleManager = new ConsoleManager();
 // Apply unified auth middleware to all console routes
 consoleRoutes.use("*", unifiedAuthMiddleware);
 
-// Middleware to enrich logging context with workspace ID from URL
-consoleRoutes.use("*", async (c, next) => {
+// Middleware to verify workspace access and enrich logging context
+consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
+    const user = c.get("user");
+    const workspace = c.get("workspace");
+
+    if (workspace) {
+      // For API key auth, verify the URL workspace matches the API key's workspace
+      if (workspace._id.toString() !== workspaceId) {
+        return c.json(
+          {
+            success: false,
+            error: "API key not authorized for this workspace",
+          },
+          403,
+        );
+      }
+    } else if (user) {
+      // For session auth, verify user has access to this workspace
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    }
+
+    // Only enrich logging context after authorization succeeds
     enrichContextWithWorkspace(workspaceId);
   }
   await next();

@@ -17,6 +17,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { workspaceService } from "../services/workspace.service";
 import type { ConsoleDataV2 } from "../agent-v2/types";
 import { createUniversalTools } from "../agent-v2/tools/universal-tools";
 import { UNIVERSAL_PROMPT_V2 } from "../agent-v2/prompts/universal";
@@ -69,7 +70,9 @@ function getModelInstance(modelId?: string): LanguageModel {
     case "google":
       return google(modelId) as unknown as LanguageModel;
     default:
-      logger.warn("Unknown provider for model, falling back to gpt-5.2", { modelId });
+      logger.warn("Unknown provider for model, falling back to gpt-5.2", {
+        modelId,
+      });
       return openai("gpt-5.2") as unknown as LanguageModel;
   }
 }
@@ -128,6 +131,24 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       { error: "'workspaceId' is required and must be valid" },
       400,
     );
+  }
+
+  // Verify workspace access
+  const workspace = c.get("workspace");
+  if (workspace) {
+    // For API key auth, verify the body workspace matches the API key's workspace
+    if (workspace._id.toString() !== workspaceId) {
+      return c.json(
+        { error: "API key not authorized for this workspace" },
+        403,
+      );
+    }
+  } else if (userId) {
+    // For session auth, verify user has access to this workspace
+    const hasAccess = await workspaceService.hasAccess(workspaceId, userId);
+    if (!hasAccess) {
+      return c.json({ error: "Access denied to workspace" }, 403);
+    }
   }
 
   if (!chatId || !ObjectId.isValid(chatId)) {
@@ -330,7 +351,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       });
 
       if (stepsCompleted >= MAX_STEPS) {
-        logger.warn("Step limit reached, terminating tool loop", { maxSteps: MAX_STEPS });
+        logger.warn("Step limit reached, terminating tool loop", {
+          maxSteps: MAX_STEPS,
+        });
       }
     },
   });

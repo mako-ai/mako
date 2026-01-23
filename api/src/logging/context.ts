@@ -176,83 +176,89 @@ export function loggingMiddleware(options: HttpLoggingOptions = {}) {
     c.header("x-request-id", requestId);
 
     // Run the request within the logging context
-    return withContext({ ...context }, async () => {
-      // Store context for other middleware to enrich
-      requestContextStorage.enterWith(context);
+    // IMPORTANT: Pass the same context object reference to both withContext and
+    // requestContextStorage so that enrichContextWithUser/enrichContextWithWorkspace
+    // mutations are visible to LogTape's implicit context
+    return withContext(
+      context as unknown as Record<string, unknown>,
+      async () => {
+        // Store context for other middleware to enrich (same object reference)
+        requestContextStorage.enterWith(context);
 
-      try {
-        await next();
+        try {
+          await next();
 
-        const duration = Date.now() - startTime;
-        const status = c.res.status;
-        const { method, path } = context;
-        const slowThreshold = options.slowRequestThresholdMs ?? 1000;
+          const duration = Date.now() - startTime;
+          const status = c.res.status;
+          const { method, path } = context;
+          const slowThreshold = options.slowRequestThresholdMs ?? 1000;
 
-        // Skip logging for noisy routes in dev (successful fast requests only)
-        if (shouldSkipLogging(path, status, duration, options)) {
-          return;
-        }
+          // Skip logging for noisy routes in dev (successful fast requests only)
+          if (shouldSkipLogging(path, status, duration, options)) {
+            return;
+          }
 
-        // Canonical log line: "METHOD /path STATUS DURATIONms"
-        // Add [SLOW] tag for requests exceeding threshold
-        const isSlow = duration >= slowThreshold;
-        const slowTag = isSlow ? " [SLOW]" : "";
-        const logLevel =
-          status >= 500
-            ? "error"
-            : status >= 400
-              ? "warn"
-              : isSlow
+          // Canonical log line: "METHOD /path STATUS DURATIONms"
+          // Add [SLOW] tag for requests exceeding threshold
+          const isSlow = duration >= slowThreshold;
+          const slowTag = isSlow ? " [SLOW]" : "";
+          const logLevel =
+            status >= 500
+              ? "error"
+              : status >= 400
                 ? "warn"
-                : "info";
+                : isSlow
+                  ? "warn"
+                  : "info";
 
-        getHttpLogger()[logLevel](
-          `${method} ${path} ${status} ${duration}ms${slowTag}`,
-          {
+          getHttpLogger()[logLevel](
+            `${method} ${path} ${status} ${duration}ms${slowTag}`,
+            {
+              requestId,
+              traceId,
+              spanId,
+              userId: context.userId,
+              workspaceId: context.workspaceId,
+              httpRequest: {
+                requestMethod: method,
+                requestUrl: c.req.url,
+                status,
+                userAgent: c.req.header("user-agent"),
+                remoteIp:
+                  c.req.header("x-forwarded-for") ||
+                  c.req.header("cf-connecting-ip"),
+              },
+              duration,
+              slow: isSlow || undefined,
+            },
+          );
+        } catch (error) {
+          const duration = Date.now() - startTime;
+          const { method, path } = context;
+
+          // Always log errors with full context
+          getHttpLogger().error(`${method} ${path} ERROR ${duration}ms`, {
             requestId,
             traceId,
             spanId,
             userId: context.userId,
             workspaceId: context.workspaceId,
+            error,
             httpRequest: {
               requestMethod: method,
               requestUrl: c.req.url,
-              status,
               userAgent: c.req.header("user-agent"),
               remoteIp:
                 c.req.header("x-forwarded-for") ||
                 c.req.header("cf-connecting-ip"),
             },
             duration,
-            slow: isSlow || undefined,
-          },
-        );
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        const { method, path } = context;
+          });
 
-        // Always log errors with full context
-        getHttpLogger().error(`${method} ${path} ERROR ${duration}ms`, {
-          requestId,
-          traceId,
-          spanId,
-          userId: context.userId,
-          workspaceId: context.workspaceId,
-          error,
-          httpRequest: {
-            requestMethod: method,
-            requestUrl: c.req.url,
-            userAgent: c.req.header("user-agent"),
-            remoteIp:
-              c.req.header("x-forwarded-for") ||
-              c.req.header("cf-connecting-ip"),
-          },
-          duration,
-        });
-
-        throw error;
-      }
-    });
+          throw error;
+        }
+      },
+    );
   };
 }
 

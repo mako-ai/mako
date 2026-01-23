@@ -17,9 +17,22 @@ customPromptRoutes.use("*", unifiedAuthMiddleware);
 customPromptRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
-    // Verify user has access to this workspace (for session auth)
     const user = c.get("user");
-    if (user) {
+    const workspace = c.get("workspace");
+
+    if (workspace) {
+      // For API key auth, verify the URL workspace matches the API key's workspace
+      if (workspace._id.toString() !== workspaceId) {
+        return c.json(
+          {
+            success: false,
+            error: "API key not authorized for this workspace",
+          },
+          403,
+        );
+      }
+    } else if (user) {
+      // For session auth, verify user has access to this workspace
       const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
       if (!hasAccess) {
         return c.json(
