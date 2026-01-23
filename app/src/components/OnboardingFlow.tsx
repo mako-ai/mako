@@ -33,7 +33,7 @@ import {
   type QualificationData,
   type OnboardingData,
 } from "./onboarding";
-import { CreateDatabaseDialog } from "./CreateDatabaseDialog";
+import CreateDatabaseDialog from "./CreateDatabaseDialog";
 
 interface OnboardingFlowProps {
   onComplete: () => void;

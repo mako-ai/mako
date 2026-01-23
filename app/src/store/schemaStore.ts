@@ -23,6 +23,7 @@ export interface Connection {
   displayName: string;
   hostKey: string;
   hostName: string;
+  isDemo?: boolean;
 }
 
 /** Tree node for databases, datasets, schemas, tables, etc. */
