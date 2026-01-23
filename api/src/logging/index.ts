@@ -7,6 +7,7 @@ import {
 } from "@logtape/logtape";
 import { getPrettyConsoleSink } from "./sinks/console";
 import { getJsonSink } from "./sinks/json";
+import { getDatabaseSink } from "../inngest/logging";
 
 export {
   loggingMiddleware,
@@ -52,6 +53,11 @@ export async function initializeLogging(): Promise<void> {
     sinks: {
       console: getPrettyConsoleSink(),
       json: getJsonSink(),
+      // Database sink for flow execution logs - stores logs to MongoDB
+      database: getDatabaseSink({
+        collectionName: "flow_executions",
+        filter: record => record.category.includes("execution"),
+      }),
     },
     filters: {
       minLevel: record => {
@@ -120,6 +126,12 @@ export async function initializeLogging(): Promise<void> {
         category: ["inngest"],
         lowestLevel: minLevel,
         sinks: [sinkName],
+      },
+      // Flow execution logs - also stored in database for execution history
+      {
+        category: ["inngest", "execution"],
+        lowestLevel: minLevel,
+        sinks: [sinkName, "database"],
       },
       // Application lifecycle
       {

@@ -6,11 +6,13 @@ import { performSync } from "./sync-orchestrator";
 import { databaseDataSourceManager } from "./database-data-source-manager";
 import { syncConnectorRegistry } from "./connector-registry";
 import { SyncLogger } from "../connectors/base/BaseConnector";
-import { loggers } from "../logging";
+import { initializeLogging, loggers } from "../logging";
 
-const log = loggers.sync();
+// Logger - initialized after initializeLogging() is called in main()
+let log: ReturnType<typeof loggers.sync>;
 
 // Create a logger adapter that implements the SyncLogger interface
+// Note: This is lazily evaluated, so the log variable will be initialized by the time it's used
 const syncLoggerAdapter: SyncLogger = {
   log: (level: string, message: string, ...args: unknown[]) => {
     const data = args.length > 0 ? { args } : undefined;
@@ -383,13 +385,37 @@ Notes:
   `,
   );
 
-// Parse command line arguments
-try {
-  program.parse(process.argv);
-} catch (error) {
-  // Commander throws on help, which is expected
-  if (error && (error as any).code === "commander.help") {
-    process.exit(0);
+/**
+ * Main entry point - initializes logging and parses CLI arguments
+ * This ensures all logging happens after LogTape is configured
+ */
+async function main(): Promise<void> {
+  // Initialize logging first - this must complete before any logging
+  await initializeLogging();
+
+  // Now create the logger after initialization
+  log = loggers.sync();
+
+  // Parse command line arguments
+  try {
+    await program.parseAsync(process.argv);
+  } catch (error) {
+    // Commander throws on help, which is expected
+    if (error && (error as any).code === "commander.help") {
+      process.exit(0);
+    }
+    throw error;
   }
-  throw error;
 }
+
+// Run the CLI
+main().catch(error => {
+  // If logging isn't initialized yet, fall back to console
+  if (log) {
+    log.error("CLI failed", { error });
+  } else {
+    // eslint-disable-next-line no-console
+    console.error("CLI failed:", error);
+  }
+  process.exit(1);
+});
