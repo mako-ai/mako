@@ -279,9 +279,9 @@ async function gracefulShutdown(signal: string): Promise<never> {
     if (logger) {
       logger[level](msg, data);
     } else if (level === "error") {
-      console.error(msg, data); // eslint-disable-line no-console
+      console.error(msg, data);
     } else {
-      console.log(msg, data); // eslint-disable-line no-console
+      console.log(msg, data);
     }
   };
 
