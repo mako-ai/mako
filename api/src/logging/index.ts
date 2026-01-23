@@ -34,12 +34,12 @@ function getMinLevel(): LogLevel {
 }
 
 let configured = false;
+let initializationPromise: Promise<void> | null = null;
 
 /**
- * Initialize the logging system
- * Call this once at application startup, before any logging occurs
+ * Internal function to perform LogTape configuration
  */
-export async function initializeLogging(): Promise<void> {
+async function doInitialize(): Promise<void> {
   if (configured) {
     return;
   }
@@ -156,6 +156,48 @@ export async function initializeLogging(): Promise<void> {
 
   configured = true;
 }
+
+/**
+ * Initialize the logging system
+ *
+ * This function is idempotent - it can be called multiple times safely.
+ * The first call will configure LogTape, subsequent calls are no-ops.
+ *
+ * Note: Logging is auto-initialized when this module is imported,
+ * so explicit calls to this function are typically not needed but
+ * can be used to await completion of initialization.
+ */
+export async function initializeLogging(): Promise<void> {
+  if (configured) {
+    return;
+  }
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+  initializationPromise = doInitialize();
+  return initializationPromise;
+}
+
+/**
+ * Check if logging has been initialized
+ */
+export function isLoggingInitialized(): boolean {
+  return configured;
+}
+
+// Auto-initialize logging when this module is imported.
+// This starts the async configuration immediately, ensuring LogTape
+// is configured before the main() function runs and before most
+// code that uses loggers executes.
+//
+// Note: Loggers created at module load time (const logger = loggers.xxx())
+// will work correctly because:
+// 1. LogTape loggers are valid even before configure() completes
+// 2. By the time any actual logging happens (in request handlers, etc.),
+//    the initialization will have completed
+// 3. The initialization promise is started here at import time, not
+//    lazily when main() is called
+void initializeLogging();
 
 /**
  * Get a logger for a specific category

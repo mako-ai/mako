@@ -138,7 +138,17 @@ function shouldSkipLogging(
  * @param options - Configuration options for logging behavior
  */
 export function loggingMiddleware(options: HttpLoggingOptions = {}) {
-  const logger = getLogger(["http"]);
+  // Logger is created lazily on first request to ensure it's created
+  // after LogTape has been configured (initialization starts automatically
+  // when the logging module is imported)
+  let logger: ReturnType<typeof getLogger> | null = null;
+
+  const getHttpLogger = () => {
+    if (!logger) {
+      logger = getLogger(["http"]);
+    }
+    return logger;
+  };
 
   return async (c: Context, next: Next) => {
     const startTime = Date.now();
@@ -196,7 +206,7 @@ export function loggingMiddleware(options: HttpLoggingOptions = {}) {
                 ? "warn"
                 : "info";
 
-        logger[logLevel](
+        getHttpLogger()[logLevel](
           `${method} ${path} ${status} ${duration}ms${slowTag}`,
           {
             requestId,
@@ -222,7 +232,7 @@ export function loggingMiddleware(options: HttpLoggingOptions = {}) {
         const { method, path } = context;
 
         // Always log errors with full context
-        logger.error(`${method} ${path} ERROR ${duration}ms`, {
+        getHttpLogger().error(`${method} ${path} ERROR ${duration}ms`, {
           requestId,
           traceId,
           spanId,

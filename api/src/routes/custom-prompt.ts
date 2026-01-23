@@ -13,13 +13,10 @@ export const customPromptRoutes = new Hono();
 // Apply unified auth middleware to all custom prompt routes
 customPromptRoutes.use("*", unifiedAuthMiddleware);
 
-// Middleware to enrich logging context with workspace ID from URL and verify access
+// Middleware to verify workspace access and enrich logging context
 customPromptRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
-    // Enrich logging context with workspace ID
-    enrichContextWithWorkspace(workspaceId);
-
     // Verify user has access to this workspace (for session auth)
     const user = c.get("user");
     if (user) {
@@ -31,6 +28,9 @@ customPromptRoutes.use("*", async (c: AuthenticatedContext, next) => {
         );
       }
     }
+
+    // Only enrich logging context after authorization succeeds
+    enrichContextWithWorkspace(workspaceId);
   }
   await next();
 });

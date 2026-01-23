@@ -42,13 +42,10 @@ export const chatsRoutes = new Hono();
 // Apply unified auth middleware to all chat routes
 chatsRoutes.use("*", unifiedAuthMiddleware);
 
-// Middleware to enrich logging context with workspace ID from URL and verify access
+// Middleware to verify workspace access and enrich logging context
 chatsRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
-    // Enrich logging context with workspace ID
-    enrichContextWithWorkspace(workspaceId);
-
     // Verify user has access to this workspace (for session auth)
     const user = c.get("user");
     if (user) {
@@ -57,6 +54,9 @@ chatsRoutes.use("*", async (c: AuthenticatedContext, next) => {
         return c.json({ error: "Access denied to workspace" }, 403);
       }
     }
+
+    // Only enrich logging context after authorization succeeds
+    enrichContextWithWorkspace(workspaceId);
   }
   await next();
 });

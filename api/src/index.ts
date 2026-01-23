@@ -35,7 +35,7 @@ import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
-import { initializeLogging, loggers, loggingMiddleware } from "./logging";
+import { loggers, loggingMiddleware } from "./logging";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -44,8 +44,9 @@ if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
 }
 
-// Logger - initialized after initializeLogging() is called in main()
-let logger: ReturnType<typeof loggers.app>;
+// Logger - LogTape initialization starts automatically when the logging module
+// is imported. By the time request handlers execute, initialization will be complete.
+const logger = loggers.app();
 
 const app = new Hono();
 
@@ -71,16 +72,11 @@ app.use(
 
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
-  // Use logger if initialized, otherwise fall back to console
-  if (logger) {
-    logger.error("Unhandled API error", {
-      error: err,
-      path: c.req.path,
-      method: c.req.method,
-    });
-  } else {
-    console.error("Unhandled API error:", err, c.req.method, c.req.path);
-  }
+  logger.error("Unhandled API error", {
+    error: err,
+    path: c.req.path,
+    method: c.req.method,
+  });
   const message = err instanceof Error ? err.message : "Internal Server Error";
   return c.json({ success: false, error: message }, 500);
 });
@@ -192,16 +188,11 @@ function getContentType(ext: string): string {
 const port = parseInt(process.env.WEB_API_PORT || process.env.PORT || "8080");
 
 /**
- * Main entry point - initializes logging and starts the server
- * This ensures all logging happens after LogTape is configured
+ * Main entry point - starts the server
+ * Note: Logging is auto-initialized via top-level await in the logging module,
+ * so all loggers created at module level are already configured
  */
 async function main(): Promise<void> {
-  // Initialize logging first - this must complete before any logging
-  await initializeLogging();
-
-  // Now create the logger after initialization
-  logger = loggers.app();
-
   if (fs.existsSync(envPath)) {
     logger.info("Loaded environment variables", { path: envPath });
   } else {
@@ -252,57 +243,33 @@ process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 // Process-level safety nets: log and keep server responsive
-// Note: logger may not be initialized during startup, so we check before using it
 process.on("unhandledRejection", reason => {
-  if (logger) {
-    logger.error("Unhandled Promise Rejection", { reason });
-  } else {
-    console.error("Unhandled Promise Rejection:", reason);
-  }
+  logger.error("Unhandled Promise Rejection", { reason });
 });
 
 process.on("uncaughtException", err => {
-  if (logger) {
-    logger.error("Uncaught Exception", { error: err });
-  } else {
-    console.error("Uncaught Exception:", err);
-  }
+  logger.error("Uncaught Exception", { error: err });
 });
 
 async function gracefulShutdown(signal: string): Promise<never> {
-  // Helper to log with fallback to console if logger not initialized
-  const log = (
-    level: "info" | "error",
-    msg: string,
-    data?: Record<string, unknown>,
-  ) => {
-    if (logger) {
-      logger[level](msg, data);
-    } else if (level === "error") {
-      console.error(msg, data);
-    } else {
-      console.log(msg, data);
-    }
-  };
-
-  log("info", "Graceful shutdown initiated", { signal });
+  logger.info("Graceful shutdown initiated", { signal });
 
   try {
     // Close unified MongoDB connection pool
-    log("info", "Closing MongoDB connection pool");
+    logger.info("Closing MongoDB connection pool");
     await databaseConnectionService.closeAllConnections();
-    log("info", "MongoDB connection pool closed");
+    logger.info("MongoDB connection pool closed");
 
     // Close mongoose connection if open
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
-      log("info", "Mongoose connection closed");
+      logger.info("Mongoose connection closed");
     }
 
-    log("info", "Graceful shutdown complete");
+    logger.info("Graceful shutdown complete");
     throw new Error(`Process terminated by ${signal}`);
   } catch (error) {
-    log("error", "Error during graceful shutdown", { error });
+    logger.error("Error during graceful shutdown", { error });
     throw error;
   }
 }

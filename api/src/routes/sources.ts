@@ -16,13 +16,10 @@ export const dataSourceRoutes = new Hono();
 // Apply unified auth middleware to all data source routes
 dataSourceRoutes.use("*", unifiedAuthMiddleware);
 
-// Middleware to enrich logging context with workspace ID from URL and verify access
+// Middleware to verify workspace access and enrich logging context
 dataSourceRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (workspaceId) {
-    // Enrich logging context with workspace ID
-    enrichContextWithWorkspace(workspaceId);
-
     // Verify user has access to this workspace (for session auth)
     const user = c.get("user");
     if (user) {
@@ -34,6 +31,9 @@ dataSourceRoutes.use("*", async (c: AuthenticatedContext, next) => {
         );
       }
     }
+
+    // Only enrich logging context after authorization succeeds
+    enrichContextWithWorkspace(workspaceId);
   }
   await next();
 });
