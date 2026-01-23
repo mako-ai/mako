@@ -133,6 +133,12 @@ export async function initializeLogging(): Promise<void> {
         lowestLevel: minLevel,
         sinks: [sinkName],
       },
+      // API routes
+      {
+        category: ["api"],
+        lowestLevel: minLevel,
+        sinks: [sinkName],
+      },
     ],
   });
 
@@ -199,4 +205,7 @@ export const loggers = {
 
   /** Migrations */
   migration: () => getLogger(["migration"]),
+
+  /** API routes */
+  api: (route?: string) => getLogger(route ? ["api", route] : ["api"]),
 } as const;

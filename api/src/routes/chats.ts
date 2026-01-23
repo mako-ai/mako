@@ -4,9 +4,9 @@ import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { getConsolesByIds } from "../services/agent-thread.service";
-import { getLogger } from "../logging";
+import { loggers } from "../logging";
 
-const logger = getLogger(["api", "chats"]);
+const logger = loggers.api("chats");
 
 /**
  * Extract unique console IDs from modify_console and create_console tool calls in chat messages.

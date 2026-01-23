@@ -71,11 +71,16 @@ app.use(
 
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
-  logger.error("Unhandled API error", {
-    error: err,
-    path: c.req.path,
-    method: c.req.method,
-  });
+  // Use logger if initialized, otherwise fall back to console
+  if (logger) {
+    logger.error("Unhandled API error", {
+      error: err,
+      path: c.req.path,
+      method: c.req.method,
+    });
+  } else {
+    console.error("Unhandled API error:", err, c.req.method, c.req.path);
+  }
   const message = err instanceof Error ? err.message : "Internal Server Error";
   return c.json({ success: false, error: message }, 500);
 });
@@ -247,33 +252,57 @@ process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 // Process-level safety nets: log and keep server responsive
+// Note: logger may not be initialized during startup, so we check before using it
 process.on("unhandledRejection", reason => {
-  logger.error("Unhandled Promise Rejection", { reason });
+  if (logger) {
+    logger.error("Unhandled Promise Rejection", { reason });
+  } else {
+    console.error("Unhandled Promise Rejection:", reason);
+  }
 });
 
 process.on("uncaughtException", err => {
-  logger.error("Uncaught Exception", { error: err });
+  if (logger) {
+    logger.error("Uncaught Exception", { error: err });
+  } else {
+    console.error("Uncaught Exception:", err);
+  }
 });
 
 async function gracefulShutdown(signal: string): Promise<never> {
-  logger.info("Graceful shutdown initiated", { signal });
+  // Helper to log with fallback to console if logger not initialized
+  const log = (
+    level: "info" | "error",
+    msg: string,
+    data?: Record<string, unknown>,
+  ) => {
+    if (logger) {
+      logger[level](msg, data);
+    } else if (level === "error") {
+      console.error(msg, data); // eslint-disable-line no-console
+    } else {
+      console.log(msg, data); // eslint-disable-line no-console
+    }
+  };
+
+  log("info", "Graceful shutdown initiated", { signal });
 
   try {
     // Close unified MongoDB connection pool
-    logger.info("Closing MongoDB connection pool");
+    log("info", "Closing MongoDB connection pool");
     await databaseConnectionService.closeAllConnections();
-    logger.info("MongoDB connection pool closed");
+    log("info", "MongoDB connection pool closed");
 
     // Close mongoose connection if open
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
-      logger.info("Mongoose connection closed");
+      log("info", "Mongoose connection closed");
     }
 
-    logger.info("Graceful shutdown complete");
+    log("info", "Graceful shutdown complete");
     throw new Error(`Process terminated by ${signal}`);
   } catch (error) {
-    logger.error("Error during graceful shutdown", { error });
+    log("error", "Error during graceful shutdown", { error });
     throw error;
   }
 }
