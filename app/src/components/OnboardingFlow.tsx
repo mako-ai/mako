@@ -256,7 +256,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         path: "skip",
       });
 
-      await saveOnboardingData({ completedAt: new Date().toISOString() } as any);
+      await saveOnboardingData({
+        completedAt: new Date().toISOString(),
+      } as any);
 
       onComplete();
     } catch (error: any) {
