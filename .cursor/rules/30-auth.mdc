@@ -14,8 +14,50 @@ Environment (local defaults):
 - `BASE_URL=http://localhost:8080` (used for OAuth callbacks)
 - `CLIENT_URL=http://localhost:5173` (used for redirects from OAuth)
 
-Rules:
+## Workspace Verification Middleware Pattern
+
+When adding workspace-scoped routes, use this **defense-in-depth** pattern:
+
+```typescript
+// Apply unified auth middleware first
+routes.use("*", unifiedAuthMiddleware);
+
+// Then verify workspace access with COMPLETE if/else chain
+routes.use("*", async (c: AuthenticatedContext, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    const user = c.get("user");
+    const workspace = c.get("workspace");
+
+    if (workspace) {
+      // API key auth - verify workspace matches URL
+      if (workspace._id.toString() !== workspaceId) {
+        return c.json({ error: "API key not authorized for this workspace" }, 403);
+      }
+    } else if (user) {
+      // Session auth - verify user has access
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json({ error: "Access denied to workspace" }, 403);
+      }
+    } else {
+      // CRITICAL: Always include else clause for defense in depth
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+
+    // Only enrich logging AFTER authorization succeeds
+    enrichContextWithWorkspace(workspaceId);
+  }
+  await next();
+});
+```
+
+**CRITICAL**: The `else` clause is required for defense in depth. Without it, if `unifiedAuthMiddleware` has a bug or is bypassed, requests could proceed unauthenticated.
+
+## Rules
 
 - Prefer `unified-auth.middleware` at route boundaries; only fall back to API key middleware for machine-to-machine endpoints.
 - Store sessions via the MongoDB adapter; do not bypass the adapter or write sessions directly.
 - When adding new protected endpoints, cover with entries in [AUTH_TESTING_CHECKLIST.md](mdc:AUTH_TESTING_CHECKLIST.md).
+- **Always include an `else` clause** in workspace verification middleware to reject unauthenticated requests.
+- Call `enrichContextWithWorkspace()` or `enrichContextWithUser()` only AFTER authorization succeeds.

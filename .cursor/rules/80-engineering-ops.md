@@ -19,8 +19,28 @@ const log = loggers.workspace();  // Workspace operations
 const log = loggers.connector();  // Data connectors
 const log = loggers.inngest();    // Inngest/flow operations
 const log = loggers.app();        // Application lifecycle
+const log = loggers.api("chats"); // Route-specific (pass route name)
+```
 
-// Usage examples
+### Context Enrichment
+
+Use context enrichment functions to automatically include user/workspace IDs in all subsequent logs:
+
+```typescript
+import { enrichContextWithUser, enrichContextWithWorkspace } from "../logging";
+
+// In auth middleware - enriches all logs with userId
+enrichContextWithUser(user.id);
+
+// In workspace middleware - enriches all logs with workspaceId
+enrichContextWithWorkspace(workspaceId);
+```
+
+**Important**: Only call enrichment functions AFTER authorization succeeds, never before.
+
+### Usage Examples
+
+```typescript
 log.info("Operation completed", { userId, duration_ms: 150 });
 log.error("Failed to process", { error, context });
 log.debug("Debug info", { details });
@@ -45,3 +65,4 @@ For full details: [LOGTAPE_IMPLEMENTATION.md](mdc:LOGTAPE_IMPLEMENTATION.md)
 - Fail fast on configuration errors; validate required env at startup.
 - Prefer background processing (Inngest) for slow operations.
 - Always include relevant context (workspace ID, user ID, request ID) in log messages.
+- Call `enrichContextWithUser()` / `enrichContextWithWorkspace()` only AFTER authorization succeeds.

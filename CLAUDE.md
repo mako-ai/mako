@@ -431,6 +431,19 @@ log.warn("Rate limit approaching", { remaining: 10 });
 - Interactive CLI demo scripts (`demo-interactive.ts`, `example-programmatic.ts`)
 - Add `/* eslint-disable no-console */` at the top of these files
 
+**Context Enrichment:**
+```typescript
+import { enrichContextWithUser, enrichContextWithWorkspace } from "../logging";
+
+// In auth middleware - enriches all logs with userId
+enrichContextWithUser(user.id);
+
+// In workspace middleware - enriches all logs with workspaceId  
+enrichContextWithWorkspace(workspaceId);
+```
+
+**Important**: Only call enrichment functions AFTER authorization succeeds, never before.
+
 ### Error Handling
 
 - **Backend**: Structured error responses with proper HTTP codes (400, 401, 403, 404, 500)
@@ -448,6 +461,34 @@ log.warn("Rate limit approaching", { remaining: 10 });
 - Validate user permissions before allowing operations
 - Encrypt database connection strings in MongoDB
 - Use environment variables for all secrets (never hardcode)
+
+### Workspace Verification Middleware (Defense in Depth)
+
+When creating workspace-scoped routes, **always include an `else` clause** to reject unauthenticated requests:
+
+```typescript
+// In workspace verification middleware
+if (workspace) {
+  // API key auth - verify workspace matches URL
+  if (workspace._id.toString() !== workspaceId) {
+    return c.json({ error: "API key not authorized" }, 403);
+  }
+} else if (user) {
+  // Session auth - verify user has access
+  const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+  if (!hasAccess) {
+    return c.json({ error: "Access denied" }, 403);
+  }
+} else {
+  // CRITICAL: Defense in depth - reject if neither auth type succeeded
+  return c.json({ error: "Unauthorized" }, 401);
+}
+
+// Only enrich logging context AFTER authorization succeeds
+enrichContextWithWorkspace(workspaceId);
+```
+
+**Why this matters**: Without the `else` clause, if `unifiedAuthMiddleware` has a bug or is bypassed, requests could proceed with an unverified `workspaceId` and reach route handlers unauthenticated.
 
 ### Code Quality
 

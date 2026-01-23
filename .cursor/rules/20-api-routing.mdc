@@ -11,8 +11,24 @@ description: API routing, middleware, and services conventions
 - Inngest handlers and jobs live under [api/src/inngest/](mdc:api/src/inngest/).
 - Connectors are registered via [api/src/connectors](mdc:api/src/connectors) and [api/dist/connectors/registry.js](mdc:api/dist/connectors/registry.js) is generated output.
 
-Rules:
+## Logging in Routes
+
+Use the `loggers.api()` category for route-specific logging:
+
+```typescript
+import { loggers, enrichContextWithWorkspace } from "../logging";
+
+const logger = loggers.api("chats"); // Creates logger for "mako.api.chats"
+
+// Log with structured context
+logger.error("Error creating chat", { error, workspaceId });
+```
+
+## Rules
 
 - Validate inputs at the route boundary; prefer zod or schema validation if present.
 - Return consistent error shapes; do not leak stack traces in responses.
 - Keep route files minimal: parameter parsing, auth, and delegating to services.
+- Use `loggers.api("<route-name>")` for route-specific logging.
+- Apply `unifiedAuthMiddleware` before workspace verification middleware.
+- Always include defense-in-depth `else` clause in workspace verification (see [30-auth.mdc](mdc:.cursor/rules/30-auth.mdc)).
