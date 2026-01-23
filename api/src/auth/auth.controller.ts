@@ -223,15 +223,21 @@ authRoutes.patch("/me/onboarding", authMiddleware, async c => {
 
     // Build onboarding update object
     const onboardingUpdate: Record<string, unknown> = {};
-    if (body.role !== undefined) onboardingUpdate["onboarding.role"] = body.role;
-    if (body.companySize !== undefined)
+    if (body.role !== undefined) {
+      onboardingUpdate["onboarding.role"] = body.role;
+    }
+    if (body.companySize !== undefined) {
       onboardingUpdate["onboarding.companySize"] = body.companySize;
-    if (body.databaseTypes !== undefined)
+    }
+    if (body.databaseTypes !== undefined) {
       onboardingUpdate["onboarding.databaseTypes"] = body.databaseTypes;
-    if (body.hasNoDatabase !== undefined)
+    }
+    if (body.hasNoDatabase !== undefined) {
       onboardingUpdate["onboarding.hasNoDatabase"] = body.hasNoDatabase;
-    if (body.completedAt !== undefined)
+    }
+    if (body.completedAt !== undefined) {
       onboardingUpdate["onboarding.completedAt"] = new Date(body.completedAt);
+    }
 
     if (Object.keys(onboardingUpdate).length === 0) {
       return c.json({ error: "No onboarding fields provided" }, 400);
