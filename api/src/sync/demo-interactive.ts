@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import inquirer from "inquirer";
 
 async function demoInteractiveSync() {

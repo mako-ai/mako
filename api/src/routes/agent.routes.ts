@@ -17,6 +17,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { workspaceService } from "../services/workspace.service";
 import type { ConsoleDataV2 } from "../agent-v2/types";
 import { createUniversalTools } from "../agent-v2/tools/universal-tools";
 import { UNIVERSAL_PROMPT_V2 } from "../agent-v2/prompts/universal";
@@ -29,6 +30,9 @@ import {
 import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+
+const logger = loggers.agent();
 
 export const agentRoutes = new Hono();
 
@@ -54,9 +58,7 @@ function getModelInstance(modelId?: string): LanguageModel {
 
   const model = getModelById(modelId);
   if (!model) {
-    console.warn(
-      `[Agent] Model "${modelId}" not found, falling back to gpt-5.2`,
-    );
+    logger.warn("Model not found, falling back to gpt-5.2", { modelId });
     return openai("gpt-5.2") as unknown as LanguageModel;
   }
 
@@ -68,9 +70,9 @@ function getModelInstance(modelId?: string): LanguageModel {
     case "google":
       return google(modelId) as unknown as LanguageModel;
     default:
-      console.warn(
-        `[Agent] Unknown provider for model "${modelId}", falling back to gpt-5.2`,
-      );
+      logger.warn("Unknown provider for model, falling back to gpt-5.2", {
+        modelId,
+      });
       return openai("gpt-5.2") as unknown as LanguageModel;
   }
 }
@@ -91,7 +93,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   try {
     body = await c.req.json();
   } catch (e) {
-    console.error("[Agent] Error parsing request body", e);
+    logger.error("Error parsing request body", { error: e });
     return c.json({ error: "Invalid request body" }, 400);
   }
 
@@ -130,6 +132,30 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       400,
     );
   }
+
+  // Verify workspace access
+  const workspace = c.get("workspace");
+  if (workspace) {
+    // For API key auth, verify the body workspace matches the API key's workspace
+    if (workspace._id.toString() !== workspaceId) {
+      return c.json(
+        { error: "API key not authorized for this workspace" },
+        403,
+      );
+    }
+  } else if (userId) {
+    // For session auth, verify user has access to this workspace
+    const hasAccess = await workspaceService.hasAccess(workspaceId, userId);
+    if (!hasAccess) {
+      return c.json({ error: "Access denied to workspace" }, 403);
+    }
+  } else {
+    // Neither API key nor session auth succeeded - reject request
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  // Only enrich logging context after authorization succeeds
+  enrichContextWithWorkspace(workspaceId);
 
   if (!chatId || !ObjectId.isValid(chatId)) {
     return c.json(
@@ -177,7 +203,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
             { title, titleGenerated: true },
           );
         } catch (err) {
-          console.error("[Agent] Background title generation failed:", err);
+          logger.error("Background title generation failed", { error: err });
         }
       })();
     }
@@ -191,7 +217,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     });
     workspaceCustomPrompt = workspace?.settings?.customPrompt || "";
   } catch (err) {
-    console.warn("[Agent] Failed to load workspace custom prompt:", err);
+    logger.warn("Failed to load workspace custom prompt", { error: err });
   }
 
   // Build system prompt
@@ -300,7 +326,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Get model instance
   const model = getModelInstance(modelId);
-  console.log(`[Agent] Using model: ${modelId || "gpt-5.2 (default)"}`);
+  logger.info("Using model", { model: modelId || "gpt-5.2 (default)" });
 
   // Sanitize messages to remove incomplete tool calls from interrupted streams
   // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
@@ -324,16 +350,16 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     onStepFinish: ({ toolCalls }) => {
       stepsCompleted += 1;
 
-      console.log("[Agent] Step finished:", {
+      logger.debug("Step finished", {
         step: stepsCompleted,
         maxSteps: MAX_STEPS,
         toolCallCount: toolCalls?.length,
       });
 
       if (stepsCompleted >= MAX_STEPS) {
-        console.warn(
-          `[Agent] Step limit reached (${MAX_STEPS}). Terminating tool loop to prevent runaway execution.`,
-        );
+        logger.warn("Step limit reached, terminating tool loop", {
+          maxSteps: MAX_STEPS,
+        });
       }
     },
   });
@@ -354,7 +380,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         const usage = await result.usage;
         modelUsage = usage as unknown as Record<string, unknown>;
       } catch (err) {
-        console.warn("[Agent] Failed to get usage from model:", err);
+        logger.warn("Failed to get usage from model", { error: err });
       }
 
       // Safely extract usage values
@@ -381,6 +407,11 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         getNumber(modelUsage?.total_tokens) ||
         promptTokens + completionTokens;
 
+      logger.info("Stream finished, saving chat", {
+        chatId,
+        messageCount: allMessages.length,
+      });
+
       try {
         // Save all messages in one atomic operation (AI SDK best practice)
         // Title was already generated in parallel at the start for new chats
@@ -392,7 +423,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           model: modelId,
         });
       } catch (error) {
-        console.error("[Agent] Error saving chat:", error);
+        logger.error("Error saving chat", { error });
       }
     },
   });

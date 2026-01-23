@@ -6,6 +6,10 @@
  * We never interpolate user data into HTML strings directly.
  */
 
+import { getLogger } from "../logging";
+
+const logger = getLogger(["email"]);
+
 interface SendGridMailData {
   to: string;
   from: string;
@@ -39,9 +43,7 @@ function getConfig(): EmailServiceConfig {
   const fromEmail = process.env.SENDGRID_FROM_EMAIL;
 
   if (!apiKey) {
-    console.warn(
-      "SENDGRID_API_KEY not set - email sending will be disabled (logged only)",
-    );
+    logger.warn("SENDGRID_API_KEY not set - email sending will be disabled (logged only)");
   }
 
   return {
@@ -64,10 +66,12 @@ function logEmailForDev(
   subject: string,
   templateData: Record<string, any>,
 ): void {
-  console.log(`📧 [Email Service - Dev Mode] ${type}`);
-  console.log("To:", to);
-  console.log("Subject:", subject);
-  console.log("Template Data:", JSON.stringify(templateData, null, 2));
+  logger.info("Email Service - Dev Mode", {
+    type,
+    to,
+    subject,
+    templateData,
+  });
 }
 
 /**
@@ -105,7 +109,7 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error("SendGrid error:", errorText);
+    logger.error("SendGrid error", { status: response.status, error: errorText });
     throw new Error(`Failed to send email: ${response.status}`);
   }
 
@@ -143,16 +147,12 @@ export class EmailService {
         `You've been invited to join ${workspaceName}`,
         templateData,
       );
-      console.log(
-        `✉️ [Dev] Invitation email logged for ${to} (workspace: ${workspaceName})`,
-      );
+      logger.info("Invitation email logged (dev mode)", { to, workspaceName });
       return;
     }
 
     if (!config.invitationTemplateId) {
-      console.error(
-        "SENDGRID_INVITATION_TEMPLATE_ID not configured - skipping invitation email",
-      );
+      logger.error("SENDGRID_INVITATION_TEMPLATE_ID not configured - skipping invitation email");
       return;
     }
 
@@ -164,9 +164,7 @@ export class EmailService {
       dynamicTemplateData: templateData,
     });
 
-    console.log(
-      `✉️ Invitation email sent to ${to} for workspace ${workspaceName}`,
-    );
+    logger.info("Invitation email sent", { to, workspaceName });
   }
 
   /**
@@ -191,7 +189,7 @@ export class EmailService {
         "Verify your email address",
         templateData,
       );
-      console.log(`✉️ [Dev] Verification email logged for ${to}`);
+      logger.info("Verification email logged (dev mode)", { to });
       return;
     }
 
@@ -211,7 +209,7 @@ export class EmailService {
       dynamicTemplateData: templateData,
     });
 
-    console.log(`✉️ Verification email sent to ${to}`);
+    logger.info("Verification email sent", { to });
   }
 
   /**
@@ -226,7 +224,7 @@ export class EmailService {
 
     if (!config.apiKey) {
       logEmailForDev("Password Reset", to, "Reset your password", templateData);
-      console.log(`✉️ [Dev] Password reset email logged for ${to}`);
+      logger.info("Password reset email logged (dev mode)", { to });
       return;
     }
 
@@ -246,7 +244,7 @@ export class EmailService {
       dynamicTemplateData: templateData,
     });
 
-    console.log(`✉️ Password reset email sent to ${to}`);
+    logger.info("Password reset email sent", { to });
   }
 }
 

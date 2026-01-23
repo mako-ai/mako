@@ -3,8 +3,11 @@ import * as crypto from "crypto";
 import * as dotenv from "dotenv";
 import { syncConnectorRegistry } from "./connector-registry";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { loggers } from "../logging";
 
 dotenv.config();
+
+const logger = loggers.sync("data-source-manager");
 
 // Import connector schemas to determine which fields should be encrypted
 type ConnectorFieldSchema = {
@@ -94,7 +97,7 @@ class DatabaseDataSourceManager {
       this.schemaCache.set(connectorType, schema as ConnectorSchema);
       return schema as ConnectorSchema;
     }
-    console.warn(`No schema found for connector type: ${connectorType}`);
+    logger.warn("No schema found for connector type", { connectorType });
     return null;
   }
 
@@ -267,7 +270,7 @@ class DatabaseDataSourceManager {
 
       return decrypted.toString();
     } catch (error) {
-      console.error("Decryption failed:", error);
+      logger.error("Decryption failed", { error });
       // Don't return the original string if decryption fails - throw error
       throw error;
     }
@@ -284,9 +287,9 @@ class DatabaseDataSourceManager {
 
     const schema = await this.getConnectorSchema(connectorType);
     if (!schema) {
-      console.warn(
-        `No schema found for connector type: ${connectorType}, skipping decryption`,
-      );
+      logger.warn("No schema found for connector type, skipping decryption", {
+        connectorType,
+      });
       // Return config as-is without decryption
       return config;
     }
@@ -347,7 +350,7 @@ class DatabaseDataSourceManager {
               const dec = this.decryptString(raw);
               setValue(dec);
             } catch (error) {
-              console.error(`Failed to decrypt field ${key}:`, error);
+              logger.error("Failed to decrypt field", { field: key, error });
               setValue(raw);
             }
           }

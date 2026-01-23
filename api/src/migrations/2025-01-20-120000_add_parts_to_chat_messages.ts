@@ -1,4 +1,7 @@
 import { Db } from "mongodb";
+import { loggers } from "../logging";
+
+const log = loggers.migration();
 
 export const description =
   "Add parts array to chat messages for preserving chronological order (AI SDK v6 alignment)";
@@ -25,7 +28,7 @@ export async function up(db: Db): Promise<void> {
   const collectionNames = collections.map(c => c.name);
 
   if (!collectionNames.includes("chats")) {
-    console.log("ℹ️  Collection 'chats' not found, skipping migration.");
+    log.info("ℹ️  Collection 'chats' not found, skipping migration.");
     return;
   }
 
@@ -142,7 +145,7 @@ export async function up(db: Db): Promise<void> {
     }
   }
 
-  console.log(
+  log.info(
     `✅ Migration complete: Updated ${processedChats} chats with ${updatedMessages} messages now having parts array`,
   );
 }

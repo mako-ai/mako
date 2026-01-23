@@ -7,6 +7,9 @@ import {
 import { inngest } from "../inngest/client";
 import { v4 as uuidv4 } from "uuid";
 import { connectorRegistry } from "../connectors/registry";
+import { loggers } from "../logging";
+
+const logger = loggers.inngest("webhook");
 
 const router = new Hono();
 
@@ -17,9 +20,7 @@ const router = new Hono();
 router.post("/webhooks/:workspaceId/:flowId", async c => {
   const { workspaceId, flowId } = c.req.param();
 
-  console.log("=== WEBHOOK DEBUG START ===");
-  console.log("Workspace ID:", workspaceId);
-  console.log("Flow ID:", flowId);
+  logger.debug("Webhook received", { workspaceId, flowId });
 
   // For Stripe webhooks, we need the raw body as Buffer
   // Using arrayBuffer and converting to Buffer preserves the exact bytes
@@ -27,9 +28,11 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
   const rawBodyText = rawBodyBuffer.toString("utf8");
   const headers = c.req.header();
 
-  console.log("Headers:", JSON.stringify(headers, null, 2));
-  console.log("Raw body length:", rawBodyBuffer.length);
-  console.log("Raw body (first 200 chars):", rawBodyText.substring(0, 200));
+  logger.debug("Webhook payload details", {
+    headers,
+    bodyLength: rawBodyBuffer.length,
+    bodyPreview: rawBodyText.substring(0, 200),
+  });
 
   try {
     // 1. Quick validation - find the flow
@@ -41,12 +44,12 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     });
 
     if (!flow) {
-      console.warn(`Webhook received for invalid flow: ${flowId}`);
+      logger.warn("Webhook received for invalid flow", { flowId });
       return c.json({ error: "Invalid webhook endpoint" }, 404);
     }
 
     if (!flow.webhookConfig?.enabled) {
-      console.warn(`Webhook received for disabled flow: ${flowId}`);
+      logger.warn("Webhook received for disabled flow", { flowId });
       return c.json({ error: "Webhook endpoint disabled" }, 403);
     }
 
@@ -69,20 +72,10 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     let event: any;
 
     if (connector.supportsWebhooks()) {
-      console.log("Connector supports webhooks, verifying signature...");
-      console.log("Webhook secret from DB:", flow.webhookConfig.secret);
-      console.log(
-        "Webhook secret length:",
-        flow.webhookConfig.secret?.length,
-      );
-      console.log(
-        "Secret starts with 'whsec_':",
-        flow.webhookConfig.secret?.startsWith("whsec_"),
-      );
-      console.log(
-        "First 10 chars of secret:",
-        flow.webhookConfig.secret?.substring(0, 10),
-      );
+      logger.debug("Verifying webhook signature", {
+        secretLength: flow.webhookConfig.secret?.length,
+        secretPrefix: flow.webhookConfig.secret?.substring(0, 10),
+      });
 
       const verificationResult = await connector.verifyWebhook({
         payload: rawBodyText,
@@ -91,18 +84,16 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       });
 
       if (!verificationResult.valid) {
-        console.error(
-          "Webhook signature verification failed:",
-          verificationResult.error,
-        );
-        console.log("=== WEBHOOK DEBUG END (FAILED) ===");
+        logger.error("Webhook signature verification failed", {
+          error: verificationResult.error,
+        });
         return c.json(
           { error: verificationResult.error || "Invalid signature" },
           400,
         );
       }
 
-      console.log("Webhook signature verified successfully!");
+      logger.info("Webhook signature verified successfully");
       event = verificationResult.event;
     } else {
       // Connector doesn't support webhooks but we received one anyway
@@ -110,7 +101,7 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       try {
         event = JSON.parse(rawBodyText);
       } catch (e) {
-        console.error("Invalid JSON payload", e);
+        logger.error("Invalid JSON payload", { error: e });
         return c.json({ error: "Invalid JSON payload" }, 400);
       }
     }
@@ -150,11 +141,10 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     });
 
     // 8. Return success immediately
-    console.log("Webhook processed successfully:", webhookEvent.eventId);
-    console.log("=== WEBHOOK DEBUG END (SUCCESS) ===");
+    logger.info("Webhook processed successfully", { eventId: webhookEvent.eventId });
     return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
   } catch (error) {
-    console.error("Webhook handler error:", error);
+    logger.error("Webhook handler error", { error });
 
     // Still return 200 to prevent retries for our errors
     return c.json(
@@ -227,7 +217,7 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
       eventId: testEvent.id,
     });
   } catch (error) {
-    console.error("Test webhook error:", error);
+    logger.error("Test webhook error", { error });
     return c.json({ error: "Failed to send test webhook" }, 500);
   }
 });

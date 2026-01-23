@@ -5,6 +5,9 @@ import {
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
+import { loggers } from "../../../logging";
+
+const logger = loggers.db("cloudflare-d1");
 
 interface D1Connection {
   account_id: string;
@@ -101,7 +104,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
 
       const result = response.data;
       if (!result.success) {
-        console.error("D1 list databases failed:", result.errors);
+        logger.error("D1 list databases failed", { errors: result.errors });
         return [];
       }
 
@@ -115,7 +118,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         metadata: { databaseId: db.uuid, databaseName: db.name },
       }));
     } catch (error) {
-      console.error("Error listing D1 databases:", error);
+      logger.error("Error listing D1 databases", { error });
       return [];
     }
   }
@@ -156,7 +159,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         metadata: { databaseId, databaseName, table: row.name },
       }));
     } catch (error) {
-      console.error("Error listing D1 tables:", error);
+      logger.error("Error listing D1 tables", { error });
       return [];
     }
   }
@@ -302,7 +305,7 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
 
       return databases;
     } catch (error) {
-      console.error("Error listing D1 databases:", error);
+      logger.error("Error listing D1 databases", { error });
       return [];
     }
   }

@@ -2,16 +2,26 @@ import { Context, Next } from "hono";
 import { ValidatedSession, ValidatedUser } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
 import { Types } from "mongoose";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+
+const logger = loggers.workspace();
 
 export interface AuthenticatedContext extends Context {
   get(key: "user"): ValidatedUser | undefined;
   get(key: "session"): ValidatedSession | undefined;
   get(key: "workspace"): any;
   get(key: "memberRole"): string | undefined;
+  // Keys set by unifiedAuthMiddleware
+  get(key: "authType"): "session" | "apiKey" | undefined;
+  get(key: "workspaceId"): string | undefined;
+  get(key: "apiKey"): any;
   set(key: "user", value: ValidatedUser): void;
   set(key: "session", value: ValidatedSession): void;
   set(key: "workspace", value: any): void;
   set(key: "memberRole", value: string): void;
+  set(key: "authType", value: "session" | "apiKey"): void;
+  set(key: "workspaceId", value: string): void;
+  set(key: "apiKey", value: any): void;
 }
 
 /**
@@ -47,6 +57,9 @@ export async function requireWorkspace(c: Context, next: Next) {
       c.set("workspace", workspaces[0].workspace);
       c.set("memberRole", workspaces[0].role);
 
+      // Enrich logging context with workspace ID
+      enrichContextWithWorkspace(workspaces[0].workspace._id.toString());
+
       // Update session with this workspace
       await workspaceService.switchWorkspace(
         user.id,
@@ -72,11 +85,14 @@ export async function requireWorkspace(c: Context, next: Next) {
 
       c.set("workspace", workspace);
       c.set("memberRole", member.role);
+
+      // Enrich logging context with workspace ID
+      enrichContextWithWorkspace(workspace._id.toString());
     }
 
     await next();
   } catch (error) {
-    console.error("Workspace middleware error:", error);
+    logger.error("Workspace middleware error", { error });
     return c.json(
       {
         error: "Failed to validate workspace access",
@@ -114,7 +130,7 @@ export function requireWorkspaceRole(roles: string[]) {
 
       await next();
     } catch (error) {
-      console.error("Workspace role middleware error:", error);
+      logger.error("Workspace role middleware error", { error });
       return c.json(
         {
           error: "Failed to validate workspace role",
@@ -148,13 +164,16 @@ export async function optionalWorkspace(c: Context, next: Next) {
         if (workspace) {
           c.set("workspace", workspace);
           c.set("memberRole", member.role);
+
+          // Enrich logging context with workspace ID
+          enrichContextWithWorkspace(workspace._id.toString());
         }
       }
     }
 
     await next();
   } catch (error) {
-    console.error("Optional workspace middleware error:", error);
+    logger.error("Optional workspace middleware error", { error });
     // Don't fail the request, just continue without workspace
     await next();
   }

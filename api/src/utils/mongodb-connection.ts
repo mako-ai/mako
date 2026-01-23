@@ -2,6 +2,9 @@ import { Db } from "mongodb";
 import dotenv from "dotenv";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { loggers } from "../logging";
+
+const logger = loggers.db("mongodb");
 
 dotenv.config({ path: "../../.env" });
 
@@ -37,9 +40,11 @@ class MongoDBConnection {
       throw new Error(`Database '${databaseId}' is missing connection string`);
     }
 
-    console.log(
-      `🔌 Getting MongoDB connection for '${databaseId}': ${dbRecord.connection.database || "default"} on ${dbRecord.name}`,
-    );
+    logger.info("Getting MongoDB connection", {
+      databaseId,
+      database: dbRecord.connection.database || "default",
+      name: dbRecord.name,
+    });
 
     // Use unified pool to get connection
     const connection = await databaseConnectionService.getConnectionById(
@@ -55,7 +60,7 @@ class MongoDBConnection {
       },
     );
 
-    console.log(`✅ Got connection for MongoDB '${databaseId}'`);
+    logger.info("Got MongoDB connection", { databaseId });
 
     return connection.db;
   }
@@ -65,7 +70,7 @@ class MongoDBConnection {
    * Note: With unified pool, this is a no-op as connections are managed by the pool
    */
   public async disconnect(databaseId: string): Promise<void> {
-    console.log(`Disconnect requested for '${databaseId}' - handled by pool`);
+    logger.info("Disconnect requested - handled by pool", { databaseId });
   }
 
   /**
@@ -73,7 +78,7 @@ class MongoDBConnection {
    * Note: With unified pool, this is a no-op as connections are managed by the pool
    */
   public async disconnectAll(): Promise<void> {
-    console.log("Disconnect all requested - handled by pool");
+    logger.info("Disconnect all requested - handled by pool");
   }
 }
 

@@ -1,11 +1,4 @@
-import {
-  configure,
-  getLogger,
-  getConsoleSink,
-  type Sink,
-  type LogRecord,
-} from "@logtape/logtape";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { getLogger, type Sink, type LogRecord } from "@logtape/logtape";
 import { Types } from "mongoose";
 import { Flow } from "../database/workspace-schema";
 
@@ -54,9 +47,10 @@ export function getDatabaseSink(options: DatabaseSinkOptions = {}): Sink {
           },
         };
 
-        // Append log to execution document
+        // Append log to execution document (limit to last 1000 entries to prevent
+        // hitting MongoDB's 16MB document size limit for long-running executions)
         await collection.updateOne({ _id: new Types.ObjectId(executionId) }, {
-          $push: { logs: logEntry },
+          $push: { logs: { $each: [logEntry], $slice: -1000 } },
           $set: { lastHeartbeat: new Date() },
         } as any);
       } catch (error) {
@@ -67,65 +61,8 @@ export function getDatabaseSink(options: DatabaseSinkOptions = {}): Sink {
   };
 }
 
-// Configure LogTape for Inngest functions
-export async function configureLogging() {
-  await configure({
-    contextLocalStorage: new AsyncLocalStorage(),
-    sinks: {
-      console: getConsoleSink({
-        formatter: record => {
-          const emojiMap: Record<string, string> = {
-            debug: "🔍",
-            info: "ℹ️",
-            warning: "⚠️",
-            error: "❌",
-            fatal: "🚨",
-          };
-          const emoji = emojiMap[record.level] || "📝";
-
-          const timestamp = new Date(record.timestamp).toISOString();
-          const level = record.level.toUpperCase().padEnd(7);
-          const category = record.category.join(".");
-
-          // Build the base message
-          let message = `${emoji} [${timestamp}] ${level} ${category}: ${record.message.join(" ")}`;
-
-          // Add properties if present
-          if (record.properties && Object.keys(record.properties).length > 0) {
-            const props = JSON.stringify(record.properties, null, 2);
-            message += `\n   Properties: ${props}`;
-          }
-
-          return message;
-        },
-      }),
-      database: getDatabaseSink({
-        // Only store execution logs to database
-        filter: record => {
-          // Store logs that have executionId in properties or are from execution category
-          return (
-            record.properties?.executionId !== undefined ||
-            record.category.some(cat => cat === "execution")
-          );
-        },
-      }),
-    },
-    loggers: [
-      {
-        category: ["inngest"],
-        sinks: ["console", "database"], // Add database sink to all Inngest logs
-      },
-      {
-        category: ["inngest", "sync"],
-        sinks: ["console", "database"], // Add database sink to sync logs too
-      },
-      {
-        category: ["inngest", "execution"],
-        sinks: ["console", "database"], // Execution logs go to both console and database
-      },
-    ],
-  });
-}
+// Note: LogTape is configured once in api/src/logging/index.ts
+// This file provides Inngest-specific logging utilities that work with the global config
 
 // Create a LogTape logger wrapper that implements Inngest's logger interface
 export class LogTapeInngestLogger {

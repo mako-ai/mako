@@ -6,26 +6,31 @@ import { performSync } from "./sync-orchestrator";
 import { databaseDataSourceManager } from "./database-data-source-manager";
 import { syncConnectorRegistry } from "./connector-registry";
 import { SyncLogger } from "../connectors/base/BaseConnector";
+import { initializeLogging, loggers } from "../logging";
 
-// Create a console logger adapter that implements the SyncLogger interface
-const consoleLogger: SyncLogger = {
-  log: (level: string, message: string, ...args: any[]) => {
-    const prefix = `[${level.toUpperCase()}]`;
+// Logger - initialized after initializeLogging() is called in main()
+let log: ReturnType<typeof loggers.sync>;
+
+// Create a logger adapter that implements the SyncLogger interface
+// Note: This is lazily evaluated, so the log variable will be initialized by the time it's used
+const syncLoggerAdapter: SyncLogger = {
+  log: (level: string, message: string, ...args: unknown[]) => {
+    const data = args.length > 0 ? { args } : undefined;
     switch (level) {
       case "debug":
-        console.debug(prefix, message, ...args);
+        log.debug(message, data);
         break;
       case "info":
-        console.info(message, ...args);
+        log.info(message, data);
         break;
       case "warn":
-        console.warn(prefix, message, ...args);
+        log.warn(message, data);
         break;
       case "error":
-        console.error(prefix, message, ...args);
+        log.error(message, data);
         break;
       default:
-        console.log(prefix, message, ...args);
+        log.info(message, data);
     }
   },
 };
@@ -38,10 +43,10 @@ async function runSync(
   isIncremental: boolean = false,
 ) {
   try {
-    console.log(`[DEBUG] runSync called with isIncremental: ${isIncremental}`);
-    console.log(
-      `[DEBUG] runSync called with entities: ${entities?.join(", ") || "all"}`,
-    );
+    log.debug("runSync called", {
+      isIncremental,
+      entities: entities?.join(", ") || "all",
+    });
 
     // Using proper logger adapter for CLI tool
     await performSync(
@@ -50,32 +55,31 @@ async function runSync(
       destinationDatabaseName,
       entities,
       isIncremental,
-      consoleLogger,
+      syncLoggerAdapter,
     );
 
     // Give a moment for cleanup and explicitly exit
-    console.log("🎉 Sync completed successfully!");
+    log.info("🎉 Sync completed successfully!");
     setTimeout(() => {
       process.exit(0);
     }, 1000);
   } catch (error) {
-    console.error("\n❌ Sync failed:", error);
+    log.error("❌ Sync failed:", { error });
     process.exit(1);
   }
 }
 
 // Interactive mode functions
 async function interactiveMode() {
-  console.log("🚀 Welcome to the Interactive Data Sync Tool\n");
+  log.info("🚀 Welcome to the Interactive Data Sync Tool");
 
   try {
     // Get available workspaces
-    process.stdout.write("⏳ Fetching workspaces...");
+    log.info("⏳ Fetching workspaces...");
     const workspaces = await getDestinationManager().listWorkspaces();
-    process.stdout.write("\r" + " ".repeat(50) + "\r");
     if (workspaces.length === 0) {
-      console.error("❌ No workspaces found!");
-      console.log("Please create a workspace in your application first.");
+      log.error("❌ No workspaces found!");
+      log.info("Please create a workspace in your application first.");
       process.exit(1);
     }
 
@@ -96,24 +100,22 @@ async function interactiveMode() {
     ]);
 
     // Get available data sources for the selected workspace
-    process.stdout.write("⏳ Fetching data sources...");
+    log.info("⏳ Fetching data sources...");
     const dataSources =
       await databaseDataSourceManager.getActiveDataSources(workspaceId);
-    process.stdout.write("\r" + " ".repeat(50) + "\r");
     if (dataSources.length === 0) {
-      console.error("❌ No active data sources found for this workspace!");
-      console.log("Please create data sources in your application first.");
+      log.error("❌ No active data sources found for this workspace!");
+      log.info("Please create data sources in your application first.");
       process.exit(1);
     }
 
     // Get available destinations for the selected workspace
-    process.stdout.write("⏳ Fetching destinations...");
+    log.info("⏳ Fetching destinations...");
     const destinations =
       await getDestinationManager().listDestinations(workspaceId);
-    process.stdout.write("\r" + " ".repeat(50) + "\r");
     if (destinations.length === 0) {
-      console.error("❌ No destination databases found for this workspace!");
-      console.log(
+      log.error("❌ No destination databases found for this workspace!");
+      log.info(
         "Please create destination databases in your application first.",
       );
       process.exit(1);
@@ -231,25 +233,16 @@ async function interactiveMode() {
     ]);
 
     // Confirm before proceeding
-    console.log("\n📋 Sync Configuration:");
-    console.log(
-      `   Workspace: ${workspaces.find(w => w.id === workspaceId)?.name}`,
-    );
-    console.log(`   Source: ${selectedSource.name} (${selectedSource.type})`);
-    console.log(
-      `   Destination: ${destinations.find((d: { id: string }) => d.id === destinationId)?.name}`,
-    );
-    if (destinationDatabaseName?.trim()) {
-      console.log(
-        `   Destination Database Name: ${destinationDatabaseName.trim()}`,
-      );
-    }
-    console.log(
-      `   Entities: ${selectedEntities ? selectedEntities.join(", ") : "All entities"}`,
-    );
-    console.log(
-      `   Mode: ${syncMode === "incremental" ? "Incremental" : "Full"}`,
-    );
+    log.info("📋 Sync Configuration:", {
+      workspace: workspaces.find(w => w.id === workspaceId)?.name,
+      source: `${selectedSource.name} (${selectedSource.type})`,
+      destination: destinations.find(
+        (d: { id: string }) => d.id === destinationId,
+      )?.name,
+      destinationDatabaseName: destinationDatabaseName?.trim() || undefined,
+      entities: selectedEntities ? selectedEntities.join(", ") : "All entities",
+      mode: syncMode === "incremental" ? "Incremental" : "Full",
+    });
 
     // Show equivalent command
     let command = `pnpm run sync -s ${dataSourceId} -d ${destinationId}`;
@@ -264,7 +257,7 @@ async function interactiveMode() {
     if (syncMode === "incremental") {
       command += " --incremental";
     }
-    console.log(`\nEquivalent command:\n  $ ${command}\n`);
+    log.info(`Equivalent command: $ ${command}`);
 
     const { confirm } = await inquirer.prompt([
       {
@@ -276,7 +269,7 @@ async function interactiveMode() {
     ]);
 
     if (!confirm) {
-      console.log("❌ Sync cancelled by user");
+      log.info("❌ Sync cancelled by user");
       process.exit(0);
     }
 
@@ -291,7 +284,7 @@ async function interactiveMode() {
       syncMode === "incremental",
     );
   } catch (error) {
-    console.error("❌ Interactive mode error:", error);
+    log.error("❌ Interactive mode error:", { error });
     process.exit(1);
   }
 }
@@ -331,10 +324,10 @@ program
     if (options.interactive || (!options.source && !options.destination)) {
       await interactiveMode();
     } else if (!options.source || !options.destination) {
-      console.error(
+      log.error(
         "❌ Both source (-s) and destination (-d) IDs are required in non-interactive mode",
       );
-      console.log("Use --interactive or -i flag to run in interactive mode.\n");
+      log.info("Use --interactive or -i flag to run in interactive mode.");
       program.help();
       process.exit(1);
     } else {
@@ -355,11 +348,11 @@ program
       const uniqueEntities =
         allEntities.length > 0 ? [...new Set(allEntities)] : undefined;
 
-      console.log("[DEBUG] CLI options:", options);
-      console.log(
-        `[DEBUG] Selected entities: ${uniqueEntities?.join(", ") || "all"}`,
-      );
-      console.log(`[DEBUG] Using incremental: ${options.incremental}`);
+      log.debug("CLI options:", {
+        options,
+        selectedEntities: uniqueEntities?.join(", ") || "all",
+        incremental: options.incremental,
+      });
 
       await runSync(
         options.source,
@@ -392,13 +385,36 @@ Notes:
   `,
   );
 
-// Parse command line arguments
-try {
-  program.parse(process.argv);
-} catch (error) {
-  // Commander throws on help, which is expected
-  if (error && (error as any).code === "commander.help") {
-    process.exit(0);
+/**
+ * Main entry point - initializes logging and parses CLI arguments
+ * This ensures all logging happens after LogTape is configured
+ */
+async function main(): Promise<void> {
+  // Initialize logging first - this must complete before any logging
+  await initializeLogging();
+
+  // Now create the logger after initialization
+  log = loggers.sync();
+
+  // Parse command line arguments
+  try {
+    await program.parseAsync(process.argv);
+  } catch (error) {
+    // Commander throws on help, which is expected
+    if (error && (error as any).code === "commander.help") {
+      process.exit(0);
+    }
+    throw error;
   }
-  throw error;
 }
+
+// Run the CLI
+main().catch(error => {
+  // If logging isn't initialized yet, fall back to console
+  if (log) {
+    log.error("CLI failed", { error });
+  } else {
+    console.error("CLI failed:", error);
+  }
+  process.exit(1);
+});

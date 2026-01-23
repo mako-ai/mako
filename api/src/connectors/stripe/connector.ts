@@ -9,6 +9,9 @@ import {
   WebhookEventMapping,
 } from "../base/BaseConnector";
 import Stripe from "stripe";
+import { loggers } from "../../logging";
+
+const logger = loggers.connector("stripe");
 
 export class StripeConnector extends BaseConnector {
   private stripe: Stripe | null = null;
@@ -367,14 +370,17 @@ export class StripeConnector extends BaseConnector {
   ): Promise<WebhookVerificationResult> {
     const { payload, headers, secret } = options;
 
-    console.log("=== STRIPE WEBHOOK VERIFICATION DEBUG ===");
-    console.log("Headers received:", JSON.stringify(headers, null, 2));
+    logger.info("Webhook verification started", {
+      headers: JSON.stringify(headers, null, 2),
+    });
 
     const signature = headers["stripe-signature"];
-    console.log("Stripe signature header:", signature);
+    logger.info("Stripe signature header received", {
+      signature: signature ? "present" : "missing",
+    });
 
     if (!signature || typeof signature !== "string") {
-      console.error("Missing or invalid stripe-signature header");
+      logger.error("Missing or invalid stripe-signature header");
       return {
         valid: false,
         error: "Missing stripe-signature header",
@@ -382,20 +388,18 @@ export class StripeConnector extends BaseConnector {
     }
 
     if (!secret) {
-      console.error("Missing webhook secret");
+      logger.error("Missing webhook secret");
       return {
         valid: false,
         error: "Missing webhook secret",
       };
     }
 
-    console.log("Webhook secret:", secret);
-    console.log(
-      "Secret format check - starts with 'whsec_':",
-      secret.startsWith("whsec_"),
-    );
-    console.log("Payload type:", typeof payload);
-    console.log("Payload length:", payload.length);
+    logger.info("Webhook verification details", {
+      secretFormat: secret.startsWith("whsec_") ? "valid" : "invalid",
+      payloadType: typeof payload,
+      payloadLength: payload.length,
+    });
 
     try {
       const stripe = this.getStripeClient();
@@ -405,32 +409,29 @@ export class StripeConnector extends BaseConnector {
       const rawBody =
         typeof payload === "string" ? payload : JSON.stringify(payload);
 
-      console.log("Calling stripe.webhooks.constructEvent...");
+      logger.info("Calling stripe.webhooks.constructEvent");
       const event = stripe.webhooks.constructEvent(
         rawBody,
         signature,
         secret, // Use the secret as-is, it should be the webhook endpoint secret (whsec_...)
       );
 
-      console.log("Event constructed successfully:", event.type, event.id);
-      console.log("=== STRIPE WEBHOOK VERIFICATION SUCCESS ===");
+      logger.info("Webhook verification succeeded", {
+        eventType: event.type,
+        eventId: event.id,
+      });
 
       return {
         valid: true,
         event,
       };
     } catch (err) {
-      console.error("Stripe webhook verification error:", err);
-      console.error("Error name:", err instanceof Error ? err.name : "unknown");
-      console.error(
-        "Error message:",
-        err instanceof Error ? err.message : "unknown",
-      );
-      console.error(
-        "Error stack:",
-        err instanceof Error ? err.stack : "unknown",
-      );
-      console.log("=== STRIPE WEBHOOK VERIFICATION FAILED ===");
+      logger.error("Stripe webhook verification error", {
+        error: err,
+        errorName: err instanceof Error ? err.name : "unknown",
+        errorMessage: err instanceof Error ? err.message : "unknown",
+        errorStack: err instanceof Error ? err.stack : "unknown",
+      });
 
       return {
         valid: false,

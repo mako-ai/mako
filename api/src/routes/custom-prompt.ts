@@ -1,8 +1,55 @@
 import { Hono } from "hono";
 import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { workspaceService } from "../services/workspace.service";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
+
+const logger = loggers.workspace();
 
 export const customPromptRoutes = new Hono();
+
+// Apply unified auth middleware to all custom prompt routes
+customPromptRoutes.use("*", unifiedAuthMiddleware);
+
+// Middleware to verify workspace access and enrich logging context
+customPromptRoutes.use("*", async (c: AuthenticatedContext, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    const user = c.get("user");
+    const workspace = c.get("workspace");
+
+    if (workspace) {
+      // For API key auth, verify the URL workspace matches the API key's workspace
+      if (workspace._id.toString() !== workspaceId) {
+        return c.json(
+          {
+            success: false,
+            error: "API key not authorized for this workspace",
+          },
+          403,
+        );
+      }
+    } else if (user) {
+      // For session auth, verify user has access to this workspace
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    } else {
+      // Neither API key nor session auth succeeded - reject request
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    // Only enrich logging context after authorization succeeds
+    enrichContextWithWorkspace(workspaceId);
+  }
+  await next();
+});
 
 // Default content for the custom prompt
 const DEFAULT_CUSTOM_PROMPT = `# Custom Prompt Configuration
@@ -62,7 +109,7 @@ customPromptRoutes.get("/", async c => {
       content: content,
     });
   } catch (error) {
-    console.error("Error reading custom prompt:", error);
+    logger.error("Error reading custom prompt", { error });
     return c.json(
       {
         success: false,
@@ -128,7 +175,7 @@ customPromptRoutes.put("/", async c => {
       message: "Custom prompt updated successfully",
     });
   } catch (error) {
-    console.error("Error updating custom prompt:", error);
+    logger.error("Error updating custom prompt", { error });
     return c.json(
       {
         success: false,
@@ -184,7 +231,7 @@ customPromptRoutes.post("/reset", async c => {
       content: DEFAULT_CUSTOM_PROMPT,
     });
   } catch (error) {
-    console.error("Error resetting custom prompt:", error);
+    logger.error("Error resetting custom prompt", { error });
     return c.json(
       {
         success: false,

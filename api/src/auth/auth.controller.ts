@@ -5,6 +5,9 @@ import { sessionManager } from "./session";
 import { getGoogle, getGitHub, isOAuthDisabled } from "./arctic";
 import { AuthService } from "./auth.service";
 import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
+import { loggers } from "../logging";
+
+const logger = loggers.auth();
 
 // Type definitions for extended Hono context
 type Variables = {
@@ -306,7 +309,7 @@ authRoutes.post("/forgot-password", authRateLimiter, async c => {
     });
   } catch (error: any) {
     // Log but don't expose internal errors
-    console.error("Password reset request error:", error);
+    logger.error("Password reset request error", { error });
     return c.json({
       message:
         "If an account exists with this email, you will receive a password reset link.",
@@ -415,7 +418,7 @@ authRoutes.get("/google/callback", async c => {
           email: payload.email,
         };
       } catch (err) {
-        console.error("Failed to parse Google ID token", err);
+        logger.warn("Failed to parse Google ID token", { error: err });
       }
     }
 
@@ -431,10 +434,7 @@ authRoutes.get("/google/callback", async c => {
       );
 
       if (!response.ok) {
-        console.error(
-          "Failed to fetch Google user info",
-          await response.text(),
-        );
+        logger.error("Failed to fetch Google user info", { response: await response.text() });
         return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
       }
 
@@ -442,10 +442,7 @@ authRoutes.get("/google/callback", async c => {
     }
 
     if (!googleUser.sub) {
-      console.error(
-        "Google user info did not contain 'sub' identifier after all attempts",
-        googleUser,
-      );
+      logger.error("Google user info did not contain 'sub' identifier", { googleUser });
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
@@ -474,7 +471,7 @@ authRoutes.get("/google/callback", async c => {
       : `${process.env.CLIENT_URL}/`;
     return c.redirect(redirectUrl);
   } catch (error: any) {
-    console.error("Google OAuth error:", error);
+    logger.error("Google OAuth error", { error });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
   }
 });
@@ -527,7 +524,7 @@ authRoutes.get("/github/callback", async c => {
     const githubUser: any = await userResponse.json();
 
     if (!githubUser.id) {
-      console.error("GitHub user info did not contain 'id'", githubUser);
+      logger.error("GitHub user info did not contain 'id'", { githubUser });
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
@@ -565,7 +562,7 @@ authRoutes.get("/github/callback", async c => {
       : `${process.env.CLIENT_URL}/`;
     return c.redirect(redirectUrl);
   } catch (error: any) {
-    console.error("GitHub OAuth error:", error);
+    logger.error("GitHub OAuth error", { error });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
   }
 });

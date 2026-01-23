@@ -399,12 +399,57 @@ Data sources are now managed through the web interface (stored in MongoDB with e
 6. Support both full and incremental sync modes
 7. Implement webhook handlers if applicable
 
+### Logging (API Package)
+
+**IMPORTANT**: Do not use `console.log`, `console.error`, etc. directly. Use the structured logging system in `/api/src/logging/`.
+
+```typescript
+import { loggers } from "../logging";
+
+// Use pre-configured loggers for common categories
+const log = loggers.sync();      // For sync operations
+const log = loggers.migration(); // For migrations
+const log = loggers.db();        // For database operations
+const log = loggers.auth();      // For authentication
+const log = loggers.agent();     // For AI agent operations
+const log = loggers.http();      // For HTTP request/response
+const log = loggers.query();     // For query execution
+const log = loggers.workspace(); // For workspace operations
+const log = loggers.connector(); // For data connectors
+const log = loggers.inngest();   // For Inngest/flow operations
+const log = loggers.app();       // For application lifecycle
+
+// Logging with structured data
+log.info("User logged in", { userId: user.id, provider: "google" });
+log.error("Failed to connect", { error, connectionId });
+log.debug("Processing request", { requestId, params });
+log.warn("Rate limit approaching", { remaining: 10 });
+```
+
+**When `console` is acceptable:**
+- Logging sinks (`/api/src/logging/sinks/`) - they ARE the output mechanism
+- Interactive CLI demo scripts (`demo-interactive.ts`, `example-programmatic.ts`)
+- Add `/* eslint-disable no-console */` at the top of these files
+
+**Context Enrichment:**
+```typescript
+import { enrichContextWithUser, enrichContextWithWorkspace } from "../logging";
+
+// In auth middleware - enriches all logs with userId
+enrichContextWithUser(user.id);
+
+// In workspace middleware - enriches all logs with workspaceId  
+enrichContextWithWorkspace(workspaceId);
+```
+
+**Important**: Only call enrichment functions AFTER authorization succeeds, never before.
+
 ### Error Handling
 
 - **Backend**: Structured error responses with proper HTTP codes (400, 401, 403, 404, 500)
 - **Frontend**: User-friendly error boundaries and toast notifications (MUI Snackbar)
 - **Validation**: Validate input at API boundaries
-- **Logging**: Use console.error with context for debugging
+- **Logging**: Use the structured logger (see above), never raw `console.log`
 
 ### Security Considerations
 
@@ -416,6 +461,34 @@ Data sources are now managed through the web interface (stored in MongoDB with e
 - Validate user permissions before allowing operations
 - Encrypt database connection strings in MongoDB
 - Use environment variables for all secrets (never hardcode)
+
+### Workspace Verification Middleware (Defense in Depth)
+
+When creating workspace-scoped routes, **always include an `else` clause** to reject unauthenticated requests:
+
+```typescript
+// In workspace verification middleware
+if (workspace) {
+  // API key auth - verify workspace matches URL
+  if (workspace._id.toString() !== workspaceId) {
+    return c.json({ error: "API key not authorized" }, 403);
+  }
+} else if (user) {
+  // Session auth - verify user has access
+  const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+  if (!hasAccess) {
+    return c.json({ error: "Access denied" }, 403);
+  }
+} else {
+  // CRITICAL: Defense in depth - reject if neither auth type succeeded
+  return c.json({ error: "Unauthorized" }, 401);
+}
+
+// Only enrich logging context AFTER authorization succeeds
+enrichContextWithWorkspace(workspaceId);
+```
+
+**Why this matters**: Without the `else` clause, if `unifiedAuthMiddleware` has a bug or is bypassed, requests could proceed with an unverified `workspaceId` and reach route handlers unauthenticated.
 
 ### Code Quality
 

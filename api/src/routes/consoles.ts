@@ -8,12 +8,62 @@ import { DatabaseConnection, SavedConsole } from "../database/workspace-schema";
 import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
+
+const logger = loggers.api("consoles");
 
 export const consoleRoutes = new Hono();
 const consoleManager = new ConsoleManager();
 
 // Apply unified auth middleware to all console routes
 consoleRoutes.use("*", unifiedAuthMiddleware);
+
+// Middleware to verify workspace access and enrich logging context
+consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    // Validate ObjectId format early to return 400 instead of 500
+    if (!Types.ObjectId.isValid(workspaceId)) {
+      return c.json(
+        { success: false, error: "Invalid workspace ID format" },
+        400,
+      );
+    }
+
+    const user = c.get("user");
+    const workspace = c.get("workspace");
+
+    if (workspace) {
+      // For API key auth, verify the URL workspace matches the API key's workspace
+      if (workspace._id.toString() !== workspaceId) {
+        return c.json(
+          {
+            success: false,
+            error: "API key not authorized for this workspace",
+          },
+          403,
+        );
+      }
+    } else if (user) {
+      // For session auth, verify user has access to this workspace
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    } else {
+      // Neither API key nor session auth succeeded - reject request
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    // Only enrich logging context after authorization succeeds
+    enrichContextWithWorkspace(workspaceId);
+  }
+  await next();
+});
 
 // Helper function to verify workspace access
 async function verifyWorkspaceAccess(
@@ -54,7 +104,7 @@ consoleRoutes.get("/", async (c: Context) => {
 
     return c.json({ success: true, tree });
   } catch (error) {
-    console.error("Error listing consoles:", error);
+    logger.error("Error listing consoles", { error });
     return c.json(
       {
         success: false,
@@ -109,10 +159,10 @@ consoleRoutes.get("/content", async (c: Context) => {
       isSaved: consoleData.isSaved,
     });
   } catch (error) {
-    console.error(
-      `Error fetching console content for ${c.req.query("id")}:`,
+    logger.error("Error fetching console content", {
+      consoleId: c.req.query("id"),
       error,
-    );
+    });
     return c.json(
       {
         success: false,
@@ -247,7 +297,7 @@ consoleRoutes.post("/", async (c: Context) => {
       201,
     );
   } catch (error) {
-    console.error("Error creating console:", error);
+    logger.error("Error creating console", { error });
     return c.json(
       {
         success: false,
@@ -512,7 +562,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       },
     });
   } catch (error) {
-    console.error(`Error updating console ${c.req.param("path")}:`, error);
+    logger.error("Error updating console", {
+      path: c.req.param("path"),
+      error,
+    });
     return c.json(
       {
         success: false,
@@ -571,7 +624,7 @@ consoleRoutes.post("/folders", async (c: Context) => {
       201,
     );
   } catch (error) {
-    console.error("Error creating folder:", error);
+    logger.error("Error creating folder", { error });
     return c.json(
       {
         success: false,
@@ -622,7 +675,10 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
   } catch (error) {
-    console.error(`Error renaming console ${c.req.param("id")}:`, error);
+    logger.error("Error renaming console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
     return c.json(
       {
         success: false,
@@ -659,7 +715,10 @@ consoleRoutes.delete("/:id", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
   } catch (error) {
-    console.error(`Error deleting console ${c.req.param("id")}:`, error);
+    logger.error("Error deleting console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
     return c.json(
       {
         success: false,
@@ -709,7 +768,10 @@ consoleRoutes.patch("/folders/:id/rename", async (c: Context) => {
       return c.json({ success: false, error: "Folder not found" }, 404);
     }
   } catch (error) {
-    console.error(`Error renaming folder ${c.req.param("id")}:`, error);
+    logger.error("Error renaming folder", {
+      folderId: c.req.param("id"),
+      error,
+    });
     return c.json(
       {
         success: false,
@@ -746,7 +808,10 @@ consoleRoutes.delete("/folders/:id", async (c: Context) => {
       return c.json({ success: false, error: "Folder not found" }, 404);
     }
   } catch (error) {
-    console.error(`Error deleting folder ${c.req.param("id")}:`, error);
+    logger.error("Error deleting folder", {
+      folderId: c.req.param("id"),
+      error,
+    });
     return c.json(
       {
         success: false,
@@ -886,7 +951,7 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       },
     });
   } catch (error) {
-    console.error("Error executing console:", error);
+    logger.error("Error executing console", { error });
     return c.json(
       {
         success: false,
@@ -942,7 +1007,7 @@ consoleRoutes.get("/list", async (c: Context) => {
       total: consoles.length,
     });
   } catch (error) {
-    console.error("Error listing consoles:", error);
+    logger.error("Error listing consoles", { error });
     return c.json(
       {
         success: false,
@@ -1006,7 +1071,7 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
       },
     });
   } catch (error) {
-    console.error("Error getting console details:", error);
+    logger.error("Error getting console details", { error });
     return c.json(
       {
         success: false,

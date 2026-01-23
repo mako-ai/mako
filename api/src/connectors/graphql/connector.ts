@@ -6,6 +6,9 @@ import {
   FetchState,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
+import { loggers } from "../../logging";
+
+const logger = loggers.connector("graphql");
 
 export class GraphQLConnector extends BaseConnector {
   private graphqlClient: AxiosInstance | null = null;
@@ -188,7 +191,7 @@ export class GraphQLConnector extends BaseConnector {
             Object.assign(headers, parsedHeaders);
           }
         } catch (error) {
-          console.warn("Failed to parse headers JSON:", error);
+          logger.warn("Failed to parse headers JSON", { error });
           throw new Error("Invalid JSON format in headers field");
         }
       }
@@ -320,9 +323,10 @@ export class GraphQLConnector extends BaseConnector {
     while (hasMore && iterations < maxIterations) {
       // Log iteration start
       const iterStart = Date.now();
-      console.log(
-        `Iteration ${iterations} started - Cursor: ${cursor || "none"}`,
-      );
+      logger.info("Iteration started", {
+        iteration: iterations,
+        cursor: cursor || "none",
+      });
 
       // Build query variables
       let queryVariables: any = {
@@ -365,20 +369,22 @@ export class GraphQLConnector extends BaseConnector {
         settings,
       );
       const queryDuration = Date.now() - queryStart;
-      console.log(
-        `Full query execution (with retries) took ${queryDuration}ms`,
-      );
+      logger.info("Full query execution completed", {
+        durationMs: queryDuration,
+      });
 
       // Extract data
       const extractStart = Date.now();
       const data = this.getValueByPath(response, queryConfig.data_path);
       if (!Array.isArray(data)) {
-        console.warn(`Data at path '${queryConfig.data_path}' is not an array`);
+        logger.warn("Data at path is not an array", {
+          dataPath: queryConfig.data_path,
+        });
         hasMore = false;
         break;
       }
       const extractDuration = Date.now() - extractStart;
-      console.log(`Data extraction took ${extractDuration}ms`);
+      logger.info("Data extraction completed", { durationMs: extractDuration });
 
       // Filter by date if incremental
       let filteredData = data;
@@ -395,9 +401,10 @@ export class GraphQLConnector extends BaseConnector {
         const batchStart = Date.now();
         await onBatch(filteredData);
         const batchDuration = Date.now() - batchStart;
-        console.log(
-          `Batch processing (inserts) took ${batchDuration}ms for ${filteredData.length} records`,
-        );
+        logger.info("Batch processing completed", {
+          durationMs: batchDuration,
+          recordCount: filteredData.length,
+        });
       }
 
       // Update counts and progress
@@ -407,7 +414,7 @@ export class GraphQLConnector extends BaseConnector {
         onProgress(currentCount, totalCount);
       }
       const progressDuration = Date.now() - progressStart;
-      console.log(`Progress update took ${progressDuration}ms`);
+      logger.info("Progress update completed", { durationMs: progressDuration });
 
       // Check for more pages
       const paginationStart = Date.now();
@@ -428,24 +435,31 @@ export class GraphQLConnector extends BaseConnector {
         iterations++;
 
         // Rate limiting
-        console.log(
-          `Slept for ${settings.rateLimitDelay}ms because of rate limiting`,
-        );
+        logger.info("Rate limit delay", {
+          delayMs: settings.rateLimitDelay,
+        });
         await this.sleep(settings.rateLimitDelay);
       }
       const paginationDuration = Date.now() - paginationStart;
-      console.log(`Pagination check and update took ${paginationDuration}ms`);
+      logger.info("Pagination check completed", {
+        durationMs: paginationDuration,
+      });
 
       // Log iteration end
       const iterDuration = Date.now() - iterStart;
-      console.log(`Iteration ${iterations - 1} completed in ${iterDuration}ms`);
+      logger.info("Iteration completed", {
+        iteration: iterations - 1,
+        durationMs: iterDuration,
+      });
     }
 
     // Log overall chunk time
     const chunkDuration = Date.now() - chunkStart;
-    console.log(
-      `Chunk completed in ${chunkDuration}ms - Total processed: ${currentCount}, Iterations: ${iterations}`,
-    );
+    logger.info("Chunk completed", {
+      durationMs: chunkDuration,
+      totalProcessed: currentCount,
+      iterations,
+    });
 
     return {
       offset,
@@ -548,7 +562,9 @@ export class GraphQLConnector extends BaseConnector {
       // Extract data
       const data = this.getValueByPath(response, queryConfig.data_path);
       if (!Array.isArray(data)) {
-        console.warn(`Data at path '${queryConfig.data_path}' is not an array`);
+        logger.warn("Data at path is not an array", {
+          dataPath: queryConfig.data_path,
+        });
         break;
       }
 
@@ -588,9 +604,9 @@ export class GraphQLConnector extends BaseConnector {
         }
 
         // Rate limiting
-        console.log(
-          `Slept for ${settings.rateLimitDelay}ms because of rate limiting`,
-        );
+        logger.info("Rate limit delay", {
+          delayMs: settings.rateLimitDelay,
+        });
         await this.sleep(settings.rateLimitDelay);
       }
     }
@@ -601,7 +617,7 @@ export class GraphQLConnector extends BaseConnector {
     variables?: any,
     settings?: any,
   ): Promise<any> {
-    console.log(`Starting GraphQL query execution`);
+    logger.info("Starting GraphQL query execution");
     const startTime = Date.now();
 
     const client = this.getGraphQLClient();
@@ -615,7 +631,7 @@ export class GraphQLConnector extends BaseConnector {
 
     const endTime = Date.now();
     const duration = endTime - startTime;
-    console.log(`GraphQL server took ${duration}ms to respond`);
+    logger.info("GraphQL server responded", { durationMs: duration });
 
     if (response.data.errors && response.data.errors.length > 0) {
       const errorMessage = response.data.errors
@@ -654,20 +670,24 @@ export class GraphQLConnector extends BaseConnector {
           delayMs = retryAfter
             ? parseInt(retryAfter, 10) * 1000
             : 1000 * Math.pow(2, attempts);
-          console.warn(
-            `Rate limited. Waiting ${delayMs}ms before retry ${attempts}/${settings.maxRetries}`,
-          );
+          logger.warn("Rate limited, waiting before retry", {
+            delayMs,
+            attempt: attempts,
+            maxRetries: settings.maxRetries,
+          });
         } else if (this.isRetryableError(error)) {
           const backoff = 500 * Math.pow(2, attempts);
           delayMs = backoff;
-          console.warn(
-            `Retryable error. Waiting ${delayMs}ms before retry ${attempts}/${settings.maxRetries}`,
-          );
+          logger.warn("Retryable error, waiting before retry", {
+            delayMs,
+            attempt: attempts,
+            maxRetries: settings.maxRetries,
+          });
         } else {
           throw error;
         }
 
-        console.log(`Slept for ${delayMs}ms for retry delay`);
+        logger.info("Retry delay", { delayMs });
         await this.sleep(delayMs);
       }
     }
@@ -725,7 +745,7 @@ export class GraphQLConnector extends BaseConnector {
 
       return this.getValueByPath(response, queryConfig.total_count_path);
     } catch (error) {
-      console.warn("Could not fetch total count:", error);
+      logger.warn("Could not fetch total count", { error });
       return undefined;
     }
   }

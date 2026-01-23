@@ -15,6 +15,9 @@ import {
   validateAndNormalizeEmail,
   normalizeEmail,
 } from "../utils/email.utils";
+import { loggers } from "../logging";
+
+const logger = loggers.auth();
 
 /**
  * Generate a random ID (replacement for Lucia's generateId)
@@ -535,18 +538,14 @@ export class AuthService {
 
     if (!user) {
       // Return silently for security - don't reveal if email exists
-      console.log(
-        `Password reset requested for non-existent email: ${normalizedEmail}`,
-      );
+      logger.debug("Password reset requested for non-existent email", { email: normalizedEmail });
       return;
     }
 
     // Check if user has a password (not OAuth-only)
     if (!user.hashedPassword) {
       // User is OAuth-only - silently ignore for security
-      console.log(
-        `Password reset requested for OAuth-only account: ${normalizedEmail}`,
-      );
+      logger.debug("Password reset requested for OAuth-only account", { email: normalizedEmail });
       return;
     }
 

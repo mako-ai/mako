@@ -1,6 +1,7 @@
 import { Context, Next } from "hono";
 import { sessionManager } from "./session";
 import { getCookie } from "hono/cookie";
+import { enrichContextWithUser } from "../logging";
 
 /**
  * Authentication middleware to validate session
@@ -22,6 +23,9 @@ export async function authMiddleware(c: Context, next: Next) {
   c.set("user", user);
   c.set("session", session);
 
+  // Enrich logging context with user ID
+  enrichContextWithUser(user.id);
+
   await next();
 }
 
@@ -37,6 +41,9 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
     if (session && user) {
       c.set("user", user);
       c.set("session", session);
+
+      // Enrich logging context with user ID
+      enrichContextWithUser(user.id);
     }
   }
 

@@ -11,6 +11,9 @@ import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-po
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
 import { Connector } from "@google-cloud/cloud-sql-connector";
+import { loggers } from "../logging";
+
+const logger = loggers.db();
 
 export interface QueryResult {
   success: boolean;
@@ -191,9 +194,12 @@ async function withRetry<T>(
 
       // Calculate delay with exponential backoff
       const delayMs = baseDelayMs * Math.pow(2, attempt);
-      console.log(
-        `[Retry] Attempt ${attempt + 1}/${maxRetries + 1} failed: ${lastError.message}. Retrying in ${delayMs}ms...`,
-      );
+      logger.debug("Retry attempt failed, retrying", {
+        attempt: attempt + 1,
+        maxRetries: maxRetries + 1,
+        error: lastError.message,
+        delayMs,
+      });
 
       // Wait before retrying
       await new Promise<void>((resolve, reject) => {
@@ -491,7 +497,7 @@ export class DatabaseConnectionService {
           await connection.close();
         }
       } catch (error) {
-        console.error("Error closing cached connection:", error);
+        logger.error("Error closing cached connection", { databaseId, error });
       } finally {
         this.connections.delete(databaseId);
       }
@@ -502,7 +508,7 @@ export class DatabaseConnectionService {
       try {
         await csConnector.close();
       } catch (error) {
-        console.error("Error closing Cloud SQL connector:", error);
+        logger.error("Error closing Cloud SQL connector", { databaseId, error });
       } finally {
         this.cloudSqlPgConnectors.delete(databaseId);
       }
@@ -524,9 +530,9 @@ export class DatabaseConnectionService {
       mongoPromises.push(
         connection.client
           .close()
-          .then(() => console.log(`Closed MongoDB connection: ${key}`))
+          .then(() => logger.info("Closed MongoDB connection", { key }))
           .catch(error =>
-            console.error(`Error closing MongoDB ${key}:`, error),
+            logger.error("Error closing MongoDB connection", { key, error }),
           ),
       );
     }
@@ -549,7 +555,7 @@ export class DatabaseConnectionService {
     const poolPromises = Array.from(this.cloudSqlPgPools.values()).map(pool =>
       pool
         .end()
-        .catch(err => console.error("Error closing Cloud SQL pool:", err)),
+        .catch(err => logger.error("Error closing Cloud SQL pool", { error: err })),
     );
     await Promise.all(poolPromises);
     this.cloudSqlPgPools.clear();
@@ -557,7 +563,7 @@ export class DatabaseConnectionService {
     // Then close Cloud SQL connectors
     const csPromises = Array.from(this.cloudSqlPgConnectors.values()).map(c =>
       Promise.resolve(c.close()).catch((err: any) =>
-        console.error("Error closing Cloud SQL connector:", err),
+        logger.error("Error closing Cloud SQL connector", { error: err }),
       ),
     );
     await Promise.all(csPromises);
@@ -619,10 +625,7 @@ export class DatabaseConnectionService {
         existing.lastUsed = new Date();
         return { client: existing.client, db: existing.db };
       } catch (error) {
-        console.warn(
-          `MongoDB connection unhealthy for ${key}, reconnecting...`,
-          error,
-        );
+        logger.warn("MongoDB connection unhealthy, reconnecting", { key, error });
         this.mongoConnections.delete(key);
         try {
           await existing.client.close();
@@ -854,7 +857,7 @@ export class DatabaseConnectionService {
           }
         }
       } catch (e) {
-        console.warn(`Failed to fetch schema for dataset ${datasetId}`, e);
+        logger.warn("Failed to fetch schema for dataset", { datasetId, error: e });
       }
     };
 
@@ -1188,7 +1191,7 @@ export class DatabaseConnectionService {
     try {
       // First, abort the AbortController to stop the JavaScript promise
       running.abortController.abort();
-      console.log(`[MongoDB] Aborted controller for execution ${executionId}`);
+      logger.debug("Aborted controller for MongoDB execution", { executionId });
 
       // Kill all operations associated with this session using killSessions.
       // This precisely targets only operations from our session, avoiding
@@ -1201,15 +1204,15 @@ export class DatabaseConnectionService {
           await adminDb.command({
             killSessions: [sessionId],
           });
-          console.log(`[MongoDB] Killed session for execution ${executionId}`);
+          logger.debug("Killed MongoDB session for execution", { executionId });
         }
       } catch (killErr) {
         // killSessions might fail if user doesn't have sufficient privileges
         // This is okay - the AbortController should still work for the JS side
-        console.warn(
-          `[MongoDB] Could not kill session (may lack privileges):`,
-          killErr,
-        );
+        logger.warn("Could not kill MongoDB session (may lack privileges)", {
+          executionId,
+          error: killErr,
+        });
       }
 
       // End the session
@@ -1223,7 +1226,7 @@ export class DatabaseConnectionService {
       this.runningMongoQueries.delete(executionId);
       return { success: true };
     } catch (error) {
-      console.error(`[MongoDB] Error cancelling query ${executionId}:`, error);
+      logger.error("Error cancelling MongoDB query", { executionId, error });
       return {
         success: false,
         error:
@@ -1260,10 +1263,10 @@ export class DatabaseConnectionService {
         await client.close();
       } catch (killError) {
         // Killing the query might fail if it already completed, which is okay
-        console.warn(
-          `[ClickHouse] Could not kill query ${query.queryId}:`,
-          killError,
-        );
+        logger.warn("Could not kill ClickHouse query", {
+          queryId: query.queryId,
+          error: killError,
+        });
       }
 
       this.runningClickHouseQueries.delete(executionId);
@@ -1400,7 +1403,7 @@ export class DatabaseConnectionService {
     try {
       obj = typeof sa === "string" ? JSON.parse(sa) : sa;
     } catch (e) {
-      console.error("Failed to parse service_account_json:", e);
+      logger.error("Failed to parse service_account_json", { error: e });
       throw new Error("Invalid service_account_json: Not a valid JSON string");
     }
 
@@ -1509,7 +1512,7 @@ export class DatabaseConnectionService {
     customOptions?: MongoClientOptions,
   ): Promise<{ client: MongoClient; db: Db }> {
     const key = this.getMongoConnectionKey(context, identifier);
-    console.log(`🔌 Creating pooled MongoDB connection: ${key}`);
+    logger.info("Creating pooled MongoDB connection", { key });
 
     // Merge options
     const options = { ...this.defaultMongoOptions, ...customOptions };
@@ -1535,21 +1538,21 @@ export class DatabaseConnectionService {
 
     // Set up monitoring
     client.on("close", () => {
-      console.log(`MongoDB connection closed: ${key}`);
+      logger.info("MongoDB connection closed", { key });
       this.mongoConnections.delete(key);
     });
 
     client.on("error", error => {
-      console.error(`MongoDB connection error for ${key}:`, error);
+      logger.error("MongoDB connection error", { key, error });
       this.mongoConnections.delete(key);
     });
 
     client.on("topologyClosed", () => {
-      console.log(`MongoDB topology closed: ${key}`);
+      logger.info("MongoDB topology closed", { key });
       this.mongoConnections.delete(key);
     });
 
-    console.log(`✅ MongoDB connected: ${key}`);
+    logger.info("MongoDB connected", { key });
     return { client, db };
   }
 
@@ -1576,9 +1579,9 @@ export class DatabaseConnectionService {
       if (connection) {
         try {
           await connection.client.close();
-          console.log(`Closed idle MongoDB connection: ${key}`);
+          logger.info("Closed idle MongoDB connection", { key });
         } catch (error) {
-          console.error(`Error closing idle MongoDB connection ${key}:`, error);
+          logger.error("Error closing idle MongoDB connection", { key, error });
         }
         this.mongoConnections.delete(key);
       }
@@ -1595,9 +1598,9 @@ export class DatabaseConnectionService {
     if (connection) {
       try {
         await connection.client.close();
-        console.log(`Closed MongoDB connection: ${key}`);
+        logger.info("Closed MongoDB connection", { key });
       } catch (error) {
-        console.error(`Error closing MongoDB connection ${key}:`, error);
+        logger.error("Error closing MongoDB connection", { key, error });
       }
       this.mongoConnections.delete(key);
     }
@@ -1953,7 +1956,7 @@ export class DatabaseConnectionService {
     query: string,
     signal?: AbortSignal,
   ): Promise<any> {
-    console.log("🔍 Executing query:", query.substring(0, 200) + "...");
+    logger.debug("Executing MongoDB query", { query: query.substring(0, 200) });
 
     // Check if already aborted
     if (signal?.aborted) {
@@ -2059,7 +2062,7 @@ export class DatabaseConnectionService {
 
         // If it's a string and not a database method, treat it as a collection name
         if (typeof prop === "string") {
-          console.log(`📋 Accessing collection: ${prop}`);
+          logger.debug("Accessing collection", { collection: prop });
           return wrapCollection(target.collection(prop));
         }
 
@@ -2069,17 +2072,17 @@ export class DatabaseConnectionService {
 
     try {
       // Execute the query content directly - much simpler and more reliable
-      console.log("⚡ Evaluating query...");
+      logger.debug("Evaluating MongoDB query");
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const db = dbProxy; // Make db available in eval context for evaluated queries
       const result = eval(query);
 
-      console.log(`📤 Raw result type: ${typeof result}`);
-      console.log(`📤 Raw result constructor: ${result?.constructor?.name}`);
-      console.log(
-        `📤 Has toArray method: ${typeof result?.toArray === "function"}`,
-      );
-      console.log(`📤 Has then method: ${typeof result?.then === "function"}`);
+      logger.debug("Raw result info", {
+        type: typeof result,
+        constructor: result?.constructor?.name,
+        hasToArray: typeof result?.toArray === "function",
+        hasThen: typeof result?.then === "function",
+      });
 
       // Helper to race a promise against abort signal
       const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
@@ -2105,31 +2108,28 @@ export class DatabaseConnectionService {
       let finalResult: any;
       if (result && typeof result.then === "function") {
         // It's a promise, await it
-        console.log("⏳ Awaiting promise...");
+        logger.debug("Awaiting promise result");
         finalResult = await raceWithAbort(result);
-        console.log(`✅ Promise resolved, result type: ${typeof finalResult}`);
-        console.log(
-          `✅ Promise resolved constructor: ${finalResult?.constructor?.name}`,
-        );
+        logger.debug("Promise resolved", {
+          type: typeof finalResult,
+          constructor: finalResult?.constructor?.name,
+        });
       } else if (result && typeof result.toArray === "function") {
         // It's a MongoDB cursor, convert to array
-        console.log("📋 Converting cursor to array...");
+        logger.debug("Converting cursor to array");
         finalResult = await raceWithAbort(result.toArray());
-        console.log(
-          `✅ Cursor converted, array length: ${finalResult?.length}`,
-        );
+        logger.debug("Cursor converted", { arrayLength: finalResult?.length });
       } else {
         // It's a direct result
-        console.log("📋 Using direct result");
+        logger.debug("Using direct result");
         finalResult = result;
       }
 
-      console.log(`🎯 Final result type: ${typeof finalResult}`);
-      console.log(`🎯 Final result is array: ${Array.isArray(finalResult)}`);
-      console.log(
-        "🎯 Final result length/value:",
-        Array.isArray(finalResult) ? finalResult.length : finalResult,
-      );
+      logger.debug("Final result info", {
+        type: typeof finalResult,
+        isArray: Array.isArray(finalResult),
+        length: Array.isArray(finalResult) ? finalResult.length : undefined,
+      });
 
       // Wait for any tracked index operations to settle, then surface errors
       if (trackedIndexPromises.length > 0) {
@@ -2184,10 +2184,7 @@ export class DatabaseConnectionService {
           JSON.stringify(finalResult, getCircularReplacer()),
         );
       } catch (e) {
-        console.error(
-          "⚠️ Failed to fully serialize result, falling back to string representation",
-          e,
-        );
+        logger.warn("Failed to serialize result, falling back to string representation", { error: e });
         serializedResult = String(finalResult);
       }
 
@@ -2200,7 +2197,7 @@ export class DatabaseConnectionService {
           error.message.includes("aborted") ||
           error.name === "AbortError");
       if (!isCancellation) {
-        console.error("❌ Error in executeMongoDBJavaScriptQuery:", error);
+        logger.error("Error in executeMongoDBJavaScriptQuery", { error });
       }
       throw error;
     }

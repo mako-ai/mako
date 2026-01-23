@@ -1,4 +1,7 @@
 import { SyncLogger } from "../connectors/base/BaseConnector";
+import { loggers } from "../logging";
+
+const logger = loggers.sync("progress");
 
 // Progress reporter for sync operations
 export class ProgressReporter {
@@ -35,7 +38,7 @@ export class ProgressReporter {
   reportComplete() {
     this.currentRecords = this.totalRecords;
     this.displayProgress();
-    console.log(); // New line after progress
+    logger.info(""); // New line after progress
   }
 
   private displayProgress() {

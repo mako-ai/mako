@@ -4,8 +4,11 @@ import * as path from "path";
 import * as dotenv from "dotenv";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { loggers } from "../logging";
 
 dotenv.config();
+
+const logger = loggers.sync("query-runner");
 
 class QueryRunner {
   private currentDataSource: string | null = null;
@@ -24,7 +27,7 @@ class QueryRunner {
         this.currentDataSource = databases[0]._id.toString();
       }
     } catch (error) {
-      console.error("Failed to initialize primary database:", error);
+      logger.error("Failed to initialize primary database", { error });
     }
   }
 
@@ -57,7 +60,7 @@ class QueryRunner {
       },
     );
 
-    console.log(`Connected to MongoDB: ${dataSource.name}`);
+    logger.info("Connected to MongoDB", { dataSourceName: dataSource.name });
     return { db: connection.db };
   }
 
@@ -105,19 +108,19 @@ class QueryRunner {
         pipeline.shift(); // Remove the $from stage
       }
 
-      console.log(`Executing query on collection: ${collectionName}`);
-      console.log(
-        `Using data source: ${dataSourceId || this.currentDataSource || "none"}`,
-      );
+      logger.info("Executing query on collection", { collectionName });
+      logger.info("Using data source", {
+        dataSource: dataSourceId || this.currentDataSource || "none",
+      });
 
       // Execute the aggregation pipeline
       const collection = db.collection(collectionName);
       const results = await collection.aggregate(pipeline).toArray();
 
-      console.log(`Query returned ${results.length} results`);
+      logger.info("Query returned results", { count: results.length });
       return results;
     } catch (error) {
-      console.error("Query execution failed:", error);
+      logger.error("Query execution failed", { error });
       throw error;
     }
   }
@@ -128,7 +131,7 @@ class QueryRunner {
       const collections = await db.listCollections().toArray();
       return collections.map(col => col.name);
     } catch (error) {
-      console.error("Failed to list collections:", error);
+      logger.error("Failed to list collections", { error });
       throw error;
     }
   }
@@ -142,14 +145,14 @@ class QueryRunner {
       const stats = await db.command({ collStats: collectionName });
       return stats;
     } catch (error) {
-      console.error("Failed to get collection stats:", error);
+      logger.error("Failed to get collection stats", { error });
       throw error;
     }
   }
 
   async disconnect(): Promise<void> {
     // No need to explicitly disconnect - connections are managed by the pool
-    console.log("Query runner cleanup complete (connections managed by pool)");
+    logger.info("Query runner cleanup complete (connections managed by pool)");
   }
 
   /**
@@ -172,7 +175,7 @@ class QueryRunner {
         description: "",
       }));
     } catch (error) {
-      console.error("Failed to list data sources:", error);
+      logger.error("Failed to list data sources", { error });
       return [];
     }
   }
@@ -186,7 +189,7 @@ class QueryRunner {
       throw new Error(`MongoDB data source '${dataSourceId}' not found`);
     }
     this.currentDataSource = dataSourceId;
-    console.log(`Default data source set to: ${source.name}`);
+    logger.info("Default data source set", { dataSourceName: source.name });
   }
 }
 

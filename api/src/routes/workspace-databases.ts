@@ -12,6 +12,9 @@ import {
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
+import { loggers } from "../logging";
+
+const logger = loggers.db();
 
 export const workspaceDatabaseRoutes = new Hono();
 
@@ -89,7 +92,7 @@ workspaceDatabaseRoutes.get(
         data: transformedDatabases,
       });
     } catch (error) {
-      console.error("Error getting databases:", error);
+      logger.error("Error getting databases", { error });
       return c.json(
         {
           success: false,
@@ -144,7 +147,7 @@ workspaceDatabaseRoutes.get(
         },
       });
     } catch (error) {
-      console.error("Error getting database:", error);
+      logger.error("Error getting database", { error });
       return c.json(
         {
           success: false,
@@ -195,7 +198,7 @@ workspaceDatabaseRoutes.post(
 
       return c.json(result);
     } catch (error) {
-      console.error("Error testing database connection:", error);
+      logger.error("Error testing database connection", { error });
       return c.json(
         {
           success: false,
@@ -288,7 +291,7 @@ workspaceDatabaseRoutes.post(
         201,
       );
     } catch (error) {
-      console.error("Error creating database:", error);
+      logger.error("Error creating database", { error });
       return c.json(
         {
           success: false,
@@ -371,7 +374,7 @@ workspaceDatabaseRoutes.put(
         message: "Database updated successfully",
       });
     } catch (error) {
-      console.error("Error updating database:", error);
+      logger.error("Error updating database", { error });
       return c.json(
         {
           success: false,
@@ -435,7 +438,7 @@ workspaceDatabaseRoutes.delete(
         message: "Database deleted successfully",
       });
     } catch (error) {
-      console.error("Error deleting database:", error);
+      logger.error("Error deleting database", { error });
       return c.json(
         {
           success: false,
@@ -483,7 +486,7 @@ workspaceDatabaseRoutes.post(
 
       return c.json(result);
     } catch (error) {
-      console.error("Error testing database connection:", error);
+      logger.error("Error testing database connection", { error });
       return c.json(
         {
           success: false,
@@ -534,7 +537,7 @@ workspaceDatabaseRoutes.post(
 
       return c.json(result);
     } catch (error) {
-      console.error("Error executing query:", error);
+      logger.error("Error executing query", { error });
       return c.json(
         {
           success: false,
@@ -613,7 +616,7 @@ workspaceDatabaseRoutes.get(
         400,
       );
     } catch (error) {
-      console.error("Error getting collections:", error);
+      logger.error("Error getting collections", { error });
       return c.json(
         {
           success: false,
@@ -702,7 +705,7 @@ workspaceDatabaseRoutes.get(
         },
       });
     } catch (error) {
-      console.error("Error getting collection info:", error);
+      logger.error("Error getting collection info", { error });
       return c.json(
         {
           success: false,
@@ -766,7 +769,7 @@ workspaceDatabaseRoutes.get(
         400,
       );
     } catch (error) {
-      console.error("Error getting views:", error);
+      logger.error("Error getting views", { error });
       return c.json(
         {
           success: false,
@@ -844,7 +847,7 @@ workspaceExecuteRoutes.post(
 
       return c.json(result);
     } catch (error) {
-      console.error("Error executing query:", error);
+      logger.error("Error executing query", { error });
       return c.json(
         {
           success: false,
@@ -877,7 +880,7 @@ workspaceExecuteRoutes.post(
       const result = await databaseConnectionService.cancelQuery(executionId);
       return c.json(result);
     } catch (error) {
-      console.error("Error cancelling query:", error);
+      logger.error("Error cancelling query", { error });
       return c.json(
         {
           success: false,

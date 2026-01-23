@@ -17,6 +17,9 @@ import { Types } from "mongoose";
 import * as os from "os";
 import { CronExpressionParser } from "cron-parser";
 import { getExecutionLogger, getSyncLogger } from "../logging";
+import { loggers } from "../../logging";
+
+const flowLogger = loggers.inngest("flow");
 
 // Helper function to get flow display name
 async function getFlowDisplayName(flow: IFlow): Promise<string> {
@@ -150,7 +153,7 @@ class FlowExecutionLogger implements SyncLogger {
       const existing = await collection.findOne({ _id: this.executionId });
       return !!existing;
     } catch (error) {
-      console.error("Failed to check flow execution existence:", error);
+      flowLogger.error("Failed to check flow execution existence", { error });
       return false;
     }
   }
@@ -263,7 +266,7 @@ class FlowExecutionLogger implements SyncLogger {
         const filter = { _id: this.executionId };
         const update = { $set: data };
 
-        console.log(`Updating flow execution:`, {
+        flowLogger.info("Updating flow execution", {
           executionId: this.executionId.toString(),
           filter,
           updateFields: Object.keys(data),
@@ -278,14 +281,14 @@ class FlowExecutionLogger implements SyncLogger {
             _id: this.executionId.toString(),
           } as any);
           if (existsWithStringId) {
-            console.error(
-              `Flow execution found with string ID instead of ObjectId: ${this.executionId}`,
-            );
+            flowLogger.error("Flow execution found with string ID instead of ObjectId", {
+              executionId: this.executionId.toString(),
+            });
           }
 
-          console.error(
-            `Failed to update flow execution - document not found with _id: ${this.executionId}`,
-          );
+          flowLogger.error("Failed to update flow execution - document not found", {
+            executionId: this.executionId.toString(),
+          });
           throw new Error(
             `Flow execution document not found: ${this.executionId}`,
           );
@@ -293,7 +296,8 @@ class FlowExecutionLogger implements SyncLogger {
 
         // Log successful updates for debugging
         if (data.status || data.completedAt) {
-          console.log(`Flow execution ${this.executionId} updated:`, {
+          flowLogger.info("Flow execution updated", {
+            executionId: this.executionId.toString(),
             status: data.status,
             completedAt: data.completedAt,
             success: data.success,
@@ -302,7 +306,8 @@ class FlowExecutionLogger implements SyncLogger {
         }
       }
     } catch (error) {
-      console.error("Failed to save flow execution:", error, {
+      flowLogger.error("Failed to save flow execution", {
+        error,
         executionId: this.executionId.toString(),
         updateData: data,
       });

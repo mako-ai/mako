@@ -2,6 +2,9 @@ import { BaseConnector } from "./base/BaseConnector";
 import { IConnector } from "../database/workspace-schema";
 import * as fs from "fs";
 import * as path from "path";
+import { loggers } from "../logging";
+
+const logger = loggers.connector();
 
 // Type for connector constructor
 type ConnectorConstructor = new (dataSource: IConnector) => BaseConnector;
@@ -46,25 +49,25 @@ class ConnectorRegistry {
         .filter(entry => entry.isDirectory() && entry.name !== "base")
         .map(entry => entry.name);
 
-      console.log(`🔍 Discovering connectors in: ${connectorsDir}`);
-      console.log(
-        `📁 Found potential connector directories: ${connectorDirs.join(", ")}`,
-      );
+      logger.info("Discovering connectors", { directory: connectorsDir });
+      logger.info("Found potential connector directories", {
+        directories: connectorDirs,
+      });
 
       for (const dirName of connectorDirs) {
         try {
           await this.loadConnector(dirName);
         } catch (error) {
-          console.warn(`⚠️  Failed to load connector from ${dirName}:`, error);
+          logger.warn("Failed to load connector", { dirName, error });
         }
       }
 
       this.initialized = true;
-      console.log(
-        `✅ Connector registry initialized with ${this.connectors.size} connectors`,
-      );
+      logger.info("Connector registry initialized", {
+        connectorCount: this.connectors.size,
+      });
     } catch (error) {
-      console.error("❌ Failed to initialize connector registry:", error);
+      logger.error("Failed to initialize connector registry", { error });
     }
   }
 
@@ -100,9 +103,7 @@ class ConnectorRegistry {
 
     // Skip directories without a connector or index entry
     if (!connectorFile) {
-      console.warn(
-        `⚠️  Skipping ${dirName}: no connector.ts/js or index.ts/js found`,
-      );
+      logger.warn("Skipping directory, no connector file found", { dirName });
       return;
     }
 
@@ -115,14 +116,15 @@ class ConnectorRegistry {
       const connectorExport = exports.find(key => key.endsWith("Connector"));
 
       if (!connectorExport) {
-        console.warn(`⚠️  No connector class found in ${dirName}`);
+        logger.warn("No connector class found in directory", { dirName });
         return;
       }
 
       const ConnectorClass = connectorModule[connectorExport];
-      console.log(
-        `📦 Found connector class: ${connectorExport} for ${dirName}`,
-      );
+      logger.info("Found connector class", {
+        connectorClass: connectorExport,
+        dirName,
+      });
 
       // Create a dummy data source to get metadata
       const dummyDataSource = {
@@ -154,9 +156,9 @@ class ConnectorRegistry {
         metadata,
       });
 
-      console.log(`✅ Loaded connector: ${dirName} (${metadata.name})`);
+      logger.info("Loaded connector", { dirName, name: metadata.name });
     } catch (error) {
-      console.error(`❌ Failed to import connector ${dirName}:`, error);
+      logger.error("Failed to import connector", { dirName, error });
     }
   }
 

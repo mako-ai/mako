@@ -32,28 +32,21 @@ import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/dr
 import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver";
 import { flowRoutes } from "./routes/flows";
 import { webhookRoutes } from "./routes/webhooks";
-import { functions, inngest } from "./inngest";
+import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
+import { loggers, loggingMiddleware } from "./logging";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
 
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
-  console.log(`✅ Loaded environment variables from ${envPath}`);
-} else {
-  console.warn(
-    `⚠️  .env file was not found at ${envPath}. Environment variables must be set another way.`,
-  );
 }
 
-// Connect to MongoDB
-connectDatabase().catch(error => {
-  console.error("Failed to connect to database:", error);
-  // Re-throw to allow the unhandled rejection handler (or the runtime) to exit appropriately
-  throw error;
-});
+// Logger - LogTape initialization starts automatically when the logging module
+// is imported. By the time request handlers execute, initialization will be complete.
+const logger = loggers.app();
 
 const app = new Hono();
 
@@ -68,9 +61,22 @@ app.use(
   }),
 );
 
+// Logging middleware - must be before other middleware to capture all requests
+// Skip logging for noisy routes (Inngest polling, health checks) in development
+app.use(
+  "*",
+  loggingMiddleware({
+    skipSuccessInDev: ["/api/inngest", "/health"],
+  }),
+);
+
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
-  console.error("Unhandled API error:", err);
+  logger.error("Unhandled API error", {
+    error: err,
+    path: c.req.path,
+    method: c.req.method,
+  });
   const message = err instanceof Error ? err.message : "Internal Server Error";
   return c.json({ success: false, error: message }, 500);
 });
@@ -181,14 +187,55 @@ function getContentType(ext: string): string {
 
 const port = parseInt(process.env.WEB_API_PORT || process.env.PORT || "8080");
 
-console.log(`🚀 Query API Server starting on port ${port}`);
-console.log(`📁 Environment: ${process.env.NODE_ENV || "development"}`);
-console.log("🔗 API endpoints available at /api/*");
-console.log("🔄 Inngest endpoint available at /api/inngest");
+/**
+ * Main entry point - starts the server
+ * Note: Logging is auto-initialized via top-level await in the logging module,
+ * so all loggers created at module level are already configured
+ */
+async function main(): Promise<void> {
+  if (fs.existsSync(envPath)) {
+    logger.info("Loaded environment variables", { path: envPath });
+  } else {
+    logger.warn(
+      "No .env file found, environment variables must be set another way",
+      { path: envPath },
+    );
+  }
 
-serve({
-  fetch: app.fetch,
-  port,
+  // Connect to MongoDB
+  try {
+    await connectDatabase();
+  } catch (error) {
+    logger.error("Failed to connect to database", { error });
+    throw error;
+  }
+
+  // Log Inngest configuration status (after logging is initialized)
+  logInngestStatus();
+
+  // Log server startup info
+  logger.info("Server starting", {
+    port,
+    environment: process.env.NODE_ENV || "development",
+    endpoints: {
+      api: "/api/*",
+      inngest: "/api/inngest",
+      health: "/health",
+    },
+  });
+
+  // Start the server
+  serve({
+    fetch: app.fetch,
+    port,
+  });
+}
+
+// Start the application
+main().catch(error => {
+  // Use console.error here since logging might not be initialized
+  console.error("Fatal error during startup:", error);
+  throw error;
 });
 
 // Graceful shutdown handling
@@ -197,32 +244,32 @@ process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 // Process-level safety nets: log and keep server responsive
 process.on("unhandledRejection", reason => {
-  console.error("Unhandled Promise Rejection:", reason);
+  logger.error("Unhandled Promise Rejection", { reason });
 });
 
 process.on("uncaughtException", err => {
-  console.error("Uncaught Exception:", err);
+  logger.error("Uncaught Exception", { error: err });
 });
 
 async function gracefulShutdown(signal: string): Promise<never> {
-  console.log(`\n${signal} received. Starting graceful shutdown...`);
+  logger.info("Graceful shutdown initiated", { signal });
 
   try {
     // Close unified MongoDB connection pool
-    console.log("Closing MongoDB connection pool...");
+    logger.info("Closing MongoDB connection pool");
     await databaseConnectionService.closeAllConnections();
-    console.log("MongoDB connection pool closed");
+    logger.info("MongoDB connection pool closed");
 
     // Close mongoose connection if open
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
-      console.log("Mongoose connection closed");
+      logger.info("Mongoose connection closed");
     }
 
-    console.log("Graceful shutdown complete");
+    logger.info("Graceful shutdown complete");
     throw new Error(`Process terminated by ${signal}`);
   } catch (error) {
-    console.error("Error during graceful shutdown:", error);
+    logger.error("Error during graceful shutdown", { error });
     throw error;
   }
 }

@@ -7,6 +7,9 @@ import {
   ISavedConsole,
   IConsoleFolder,
 } from "../database/workspace-schema";
+import { getLogger } from "../logging";
+
+const logger = getLogger(["api", "consoles"]);
 
 export interface ConsoleFile {
   path: string;
@@ -72,7 +75,7 @@ export class ConsoleManager {
 
     // Log only in development environment
     if (process.env.NODE_ENV !== "production") {
-      console.log(`📁 Consoles directory resolved to: ${this.consolesDir}`);
+      logger.info("Consoles directory resolved", { path: this.consolesDir });
     }
   }
 
@@ -188,7 +191,7 @@ export class ConsoleManager {
 
       return rootItems;
     } catch (error) {
-      console.error("Error listing consoles from database:", error);
+      logger.error("Error listing consoles from database", { error });
       // Fallback to filesystem if database fails
       return this.listConsolesFromFilesystem();
     }
@@ -247,7 +250,7 @@ export class ConsoleManager {
       // Fallback to filesystem
       return this.getConsoleFromFilesystem(consolePath);
     } catch (error) {
-      console.error("Error getting console from database:", error);
+      logger.error("Error getting console from database", { error });
       // Fallback to filesystem
       return this.getConsoleFromFilesystem(consolePath);
     }
@@ -273,7 +276,7 @@ export class ConsoleManager {
     try {
       // Only accept valid ObjectIds
       if (!Types.ObjectId.isValid(consoleId)) {
-        console.error(`Invalid console ID: ${consoleId}`);
+        logger.error("Invalid console ID", { consoleId });
         return null;
       }
 
@@ -310,7 +313,7 @@ export class ConsoleManager {
 
       return null;
     } catch (error) {
-      console.error("Error getting console with metadata:", error);
+      logger.error("Error getting console with metadata", { error });
       return null;
     }
   }
@@ -485,7 +488,7 @@ export class ConsoleManager {
 
       return savedConsole;
     } catch (error) {
-      console.error("Error saving console to database:", error);
+      logger.error("Error saving console to database", { error });
       throw error;
     }
   }
@@ -559,7 +562,7 @@ export class ConsoleManager {
 
       return result.modifiedCount > 0;
     } catch (error) {
-      console.error("Error renaming console:", error);
+      logger.error("Error renaming console", { error });
       return false;
     }
   }
@@ -579,7 +582,7 @@ export class ConsoleManager {
 
       return result.deletedCount > 0;
     } catch (error) {
-      console.error("Error deleting console:", error);
+      logger.error("Error deleting console", { error });
       return false;
     }
   }
@@ -608,7 +611,7 @@ export class ConsoleManager {
 
       return result.modifiedCount > 0;
     } catch (error) {
-      console.error("Error renaming folder:", error);
+      logger.error("Error renaming folder", { error });
       return false;
     }
   }
@@ -642,7 +645,7 @@ export class ConsoleManager {
 
       return result.deletedCount > 0;
     } catch (error) {
-      console.error("Error deleting folder:", error);
+      logger.error("Error deleting folder", { error });
       return false;
     }
   }
@@ -695,7 +698,7 @@ export class ConsoleManager {
       const fullPath = path.join(this.consolesDir, `${consolePath}.js`);
       return fs.existsSync(fullPath);
     } catch (error) {
-      console.error("Error checking console existence:", error);
+      logger.error("Error checking console existence", { error });
       return false;
     }
   }
@@ -768,7 +771,7 @@ export class ConsoleManager {
         },
       );
     } catch (error) {
-      console.error("Error updating execution stats:", error);
+      logger.error("Error updating execution stats", { error });
     }
   }
 
@@ -859,7 +862,7 @@ export class ConsoleManager {
     const fullPath = path.join(this.consolesDir, relativePath);
 
     if (!fs.existsSync(fullPath)) {
-      console.warn(`Directory not found: ${fullPath}`);
+      logger.warn("Directory not found", { path: fullPath });
       return [];
     }
 
