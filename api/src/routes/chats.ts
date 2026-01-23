@@ -63,6 +63,9 @@ chatsRoutes.use("*", async (c: AuthenticatedContext, next) => {
       if (!hasAccess) {
         return c.json({ error: "Access denied to workspace" }, 403);
       }
+    } else {
+      // Neither API key nor session auth succeeded - reject request
+      return c.json({ error: "Unauthorized" }, 401);
     }
 
     // Only enrich logging context after authorization succeeds

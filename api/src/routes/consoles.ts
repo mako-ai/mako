@@ -46,6 +46,9 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
           403,
         );
       }
+    } else {
+      // Neither API key nor session auth succeeded - reject request
+      return c.json({ success: false, error: "Unauthorized" }, 401);
     }
 
     // Only enrich logging context after authorization succeeds
