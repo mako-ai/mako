@@ -4,7 +4,8 @@ import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { getConsolesByIds } from "../services/agent-thread.service";
-import { loggers } from "../logging";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+import { workspaceService } from "../services/workspace.service";
 
 const logger = loggers.api("chats");
 
@@ -40,6 +41,25 @@ export const chatsRoutes = new Hono();
 
 // Apply unified auth middleware to all chat routes
 chatsRoutes.use("*", unifiedAuthMiddleware);
+
+// Middleware to enrich logging context with workspace ID from URL and verify access
+chatsRoutes.use("*", async (c: AuthenticatedContext, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    // Enrich logging context with workspace ID
+    enrichContextWithWorkspace(workspaceId);
+
+    // Verify user has access to this workspace (for session auth)
+    const user = c.get("user");
+    if (user) {
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json({ error: "Access denied to workspace" }, 403);
+      }
+    }
+  }
+  await next();
+});
 
 // List chat sessions (most recent first)
 chatsRoutes.get("/", async (c: AuthenticatedContext) => {

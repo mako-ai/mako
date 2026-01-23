@@ -2,7 +2,7 @@ import { Context, Next } from "hono";
 import { ValidatedSession, ValidatedUser } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
 import { Types } from "mongoose";
-import { loggers } from "../logging";
+import { loggers, enrichContextWithWorkspace } from "../logging";
 
 const logger = loggers.workspace();
 
@@ -50,6 +50,9 @@ export async function requireWorkspace(c: Context, next: Next) {
       c.set("workspace", workspaces[0].workspace);
       c.set("memberRole", workspaces[0].role);
 
+      // Enrich logging context with workspace ID
+      enrichContextWithWorkspace(workspaces[0].workspace._id.toString());
+
       // Update session with this workspace
       await workspaceService.switchWorkspace(
         user.id,
@@ -75,6 +78,9 @@ export async function requireWorkspace(c: Context, next: Next) {
 
       c.set("workspace", workspace);
       c.set("memberRole", member.role);
+
+      // Enrich logging context with workspace ID
+      enrichContextWithWorkspace(workspace._id.toString());
     }
 
     await next();
@@ -151,6 +157,9 @@ export async function optionalWorkspace(c: Context, next: Next) {
         if (workspace) {
           c.set("workspace", workspace);
           c.set("memberRole", member.role);
+
+          // Enrich logging context with workspace ID
+          enrichContextWithWorkspace(workspace._id.toString());
         }
       }
     }

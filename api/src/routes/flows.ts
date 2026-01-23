@@ -9,11 +9,38 @@ import {
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
-import { loggers } from "../logging";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { workspaceService } from "../services/workspace.service";
 
 const logger = loggers.inngest("flow");
 
 export const flowRoutes = new Hono();
+
+// Apply unified auth middleware to all flow routes
+flowRoutes.use("*", unifiedAuthMiddleware);
+
+// Middleware to enrich logging context with workspace ID from URL and verify access
+flowRoutes.use("*", async (c, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    // Enrich logging context with workspace ID
+    enrichContextWithWorkspace(workspaceId);
+
+    // Verify user has access to this workspace (for session auth)
+    const user = c.get("user");
+    if (user) {
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    }
+  }
+  await next();
+});
 
 // GET /api/workspaces/:workspaceId/flows - List all flows
 flowRoutes.get("/", async c => {

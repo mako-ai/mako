@@ -4,11 +4,38 @@ import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import * as crypto from "crypto";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
-import { loggers } from "../logging";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { workspaceService } from "../services/workspace.service";
 
 const logger = loggers.connector();
 
 export const dataSourceRoutes = new Hono();
+
+// Apply unified auth middleware to all data source routes
+dataSourceRoutes.use("*", unifiedAuthMiddleware);
+
+// Middleware to enrich logging context with workspace ID from URL and verify access
+dataSourceRoutes.use("*", async (c, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    // Enrich logging context with workspace ID
+    enrichContextWithWorkspace(workspaceId);
+
+    // Verify user has access to this workspace (for session auth)
+    const user = c.get("user");
+    if (user) {
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    }
+  }
+  await next();
+});
 
 // --- Helper: encrypt config values based on connector schema ---
 type ConnectorFieldSchema = {

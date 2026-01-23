@@ -8,7 +8,7 @@ import { DatabaseConnection, SavedConsole } from "../database/workspace-schema";
 import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
-import { loggers } from "../logging";
+import { loggers, enrichContextWithWorkspace } from "../logging";
 
 const logger = loggers.api("consoles");
 
@@ -17,6 +17,15 @@ const consoleManager = new ConsoleManager();
 
 // Apply unified auth middleware to all console routes
 consoleRoutes.use("*", unifiedAuthMiddleware);
+
+// Middleware to enrich logging context with workspace ID from URL
+consoleRoutes.use("*", async (c, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    enrichContextWithWorkspace(workspaceId);
+  }
+  await next();
+});
 
 // Helper function to verify workspace access
 async function verifyWorkspaceAccess(

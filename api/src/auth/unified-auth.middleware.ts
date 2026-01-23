@@ -3,7 +3,11 @@ import { sessionManager } from "./session";
 import { getCookie } from "hono/cookie";
 import { hashApiKey } from "./api-key.middleware";
 import { Workspace } from "../database/workspace-schema";
-import { loggers } from "../logging";
+import {
+  loggers,
+  enrichContextWithUser,
+  enrichContextWithWorkspace,
+} from "../logging";
 
 const logger = loggers.auth();
 
@@ -50,6 +54,9 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           c.set("authType", "apiKey");
           c.set("workspaceId", workspace._id.toString());
 
+          // Enrich logging context with workspace ID (API key auth)
+          enrichContextWithWorkspace(workspace._id.toString());
+
           await next();
           return;
         }
@@ -76,6 +83,9 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
   c.set("user", user);
   c.set("session", session);
   c.set("authType", "session");
+
+  // Enrich logging context with user ID (session auth)
+  enrichContextWithUser(user.id);
 
   await next();
 }

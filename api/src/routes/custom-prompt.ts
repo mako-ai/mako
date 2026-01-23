@@ -1,11 +1,38 @@
 import { Hono } from "hono";
 import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
-import { loggers } from "../logging";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { workspaceService } from "../services/workspace.service";
 
 const logger = loggers.workspace();
 
 export const customPromptRoutes = new Hono();
+
+// Apply unified auth middleware to all custom prompt routes
+customPromptRoutes.use("*", unifiedAuthMiddleware);
+
+// Middleware to enrich logging context with workspace ID from URL and verify access
+customPromptRoutes.use("*", async (c, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    // Enrich logging context with workspace ID
+    enrichContextWithWorkspace(workspaceId);
+
+    // Verify user has access to this workspace (for session auth)
+    const user = c.get("user");
+    if (user) {
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    }
+  }
+  await next();
+});
 
 // Default content for the custom prompt
 const DEFAULT_CUSTOM_PROMPT = `# Custom Prompt Configuration
