@@ -189,36 +189,6 @@ export function QualificationStep({
     }
   };
 
-  // Select handler - auto-advance except for "other"
-  const handleSelect = useCallback(
-    (
-      value: string,
-      setter: (v: string) => void,
-      nextIndex: number | "complete",
-    ) => {
-      setter(value);
-      if (value !== "other") {
-        setTimeout(() => {
-          if (nextIndex === "complete") {
-            // Will be handled by handleNext
-          } else if (value === "none" && nextIndex === 3) {
-            // Skip warehouse question if no database
-            onComplete({
-              role: getFinalValue(role, roleOther),
-              companySize: companySize as QualificationData["companySize"],
-              primaryDatabase: "none",
-              dataWarehouse: "",
-              hasNoDatabase: true,
-            });
-          } else {
-            setQuestionIndex(nextIndex);
-          }
-        }, 150);
-      }
-    },
-    [role, roleOther, companySize, onComplete],
-  );
-
   const getQuestionTitle = () => {
     switch (questionIndex) {
       case 0:
@@ -420,7 +390,7 @@ export function QualificationStep({
                 key={r.value}
                 selected={role === r.value}
                 label={r.label}
-                onClick={() => handleSelect(r.value, setRole, 1)}
+                onClick={() => setRole(r.value)}
               />
             ))}
             <OtherOptionInput
@@ -441,7 +411,7 @@ export function QualificationStep({
                 key={s.value}
                 selected={companySize === s.value}
                 label={s.label}
-                onClick={() => handleSelect(s.value, setCompanySize, 2)}
+                onClick={() => setCompanySize(s.value)}
               />
             ))}
           </Box>
@@ -455,7 +425,7 @@ export function QualificationStep({
                 key={db.value}
                 selected={primaryDatabase === db.value}
                 label={db.label}
-                onClick={() => handleSelect(db.value, setPrimaryDatabase, 3)}
+                onClick={() => setPrimaryDatabase(db.value)}
               />
             ))}
             <OtherOptionInput
@@ -476,12 +446,7 @@ export function QualificationStep({
                 key={wh.value}
                 selected={dataWarehouse === wh.value}
                 label={wh.label}
-                onClick={() => {
-                  setDataWarehouse(wh.value);
-                  setTimeout(() => {
-                    handleComplete();
-                  }, 150);
-                }}
+                onClick={() => setDataWarehouse(wh.value)}
               />
             ))}
             <OtherOptionInput
