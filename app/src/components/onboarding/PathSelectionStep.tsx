@@ -10,10 +10,9 @@ import {
   alpha,
   useTheme,
 } from "@mui/material";
-import StorageIcon from "@mui/icons-material/Storage";
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
-import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import { Database } from "lucide-react";
 import { QualificationData } from "./QualificationStep";
 
 export type OnboardingPath = "demo" | "connect";
@@ -33,6 +32,92 @@ export function PathSelectionStep({
 
   // Determine recommendation based on qualification data
   const recommendDemo = qualificationData.hasNoDatabase;
+
+  // Option card component
+  const OptionCard = ({
+    isRecommended,
+    icon,
+    iconBgColor,
+    iconColor,
+    title,
+    description,
+    buttonText,
+    onClick,
+  }: {
+    isRecommended: boolean;
+    icon: React.ReactNode;
+    iconBgColor: string;
+    iconColor: string;
+    title: string;
+    description: string;
+    buttonText: string;
+    onClick: () => void;
+  }) => (
+    <Card
+      variant="outlined"
+      sx={{
+        position: "relative",
+        overflow: "visible",
+        borderWidth: isRecommended ? 2 : 1,
+        borderColor: isRecommended ? "primary.main" : "divider",
+        transition: "all 0.2s",
+        "&:hover": {
+          borderColor: "primary.main",
+          transform: "translateY(-2px)",
+          boxShadow: theme.shadows[4],
+        },
+      }}
+    >
+      {isRecommended && (
+        <Chip
+          label="Recommended"
+          color="primary"
+          size="small"
+          sx={{
+            position: "absolute",
+            top: -12,
+            right: 16,
+            fontWeight: 600,
+          }}
+        />
+      )}
+      <CardActionArea onClick={onClick}>
+        <CardContent sx={{ p: 3 }}>
+          <Box sx={{ display: "flex", alignItems: "flex-start", gap: 2 }}>
+            <Box
+              sx={{
+                p: 1.5,
+                borderRadius: 2,
+                bgcolor: iconBgColor,
+                color: iconColor,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              {icon}
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="h6" fontWeight={600} gutterBottom>
+                {title}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {description}
+              </Typography>
+            </Box>
+          </Box>
+          <Button
+            variant={isRecommended ? "contained" : "outlined"}
+            fullWidth
+            size="large"
+            sx={{ mt: 2 }}
+          >
+            {buttonText}
+          </Button>
+        </CardContent>
+      </CardActionArea>
+    </Card>
+  );
 
   return (
     <Box>
@@ -57,173 +142,54 @@ export function PathSelectionStep({
       </Typography>
 
       <Stack spacing={3}>
-        {/* Demo Option */}
-        <Card
-          variant="outlined"
-          sx={{
-            position: "relative",
-            borderWidth: recommendDemo ? 2 : 1,
-            borderColor: recommendDemo ? "primary.main" : "divider",
-            transition: "all 0.2s",
-            "&:hover": {
-              borderColor: "primary.main",
-              transform: "translateY(-2px)",
-              boxShadow: theme.shadows[4],
-            },
-          }}
-        >
-          {recommendDemo && (
-            <Chip
-              label="Recommended"
-              color="primary"
-              size="small"
-              sx={{
-                position: "absolute",
-                top: -10,
-                right: 16,
-                fontWeight: 600,
-              }}
+        {/* Recommended option always first */}
+        {!recommendDemo ? (
+          <>
+            <OptionCard
+              isRecommended={true}
+              icon={<Database size={28} />}
+              iconBgColor={alpha(theme.palette.success.main, 0.1)}
+              iconColor={theme.palette.success.main}
+              title="Connect Your Database"
+              description="Connect your real database and start querying your data with AI immediately."
+              buttonText="Connect Now"
+              onClick={() => onSelectPath("connect")}
             />
-          )}
-          <CardActionArea onClick={() => onSelectPath("demo")}>
-            <CardContent sx={{ p: 3 }}>
-              <Box sx={{ display: "flex", alignItems: "flex-start", gap: 2 }}>
-                <Box
-                  sx={{
-                    p: 1.5,
-                    borderRadius: 2,
-                    bgcolor: alpha(theme.palette.primary.main, 0.1),
-                    color: "primary.main",
-                  }}
-                >
-                  <PlayCircleOutlineIcon fontSize="large" />
-                </Box>
-                <Box sx={{ flex: 1 }}>
-                  <Typography variant="h6" fontWeight={600} gutterBottom>
-                    Try with Demo Database
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" paragraph>
-                    Explore Mako instantly with a pre-populated e-commerce
-                    dataset. Perfect for learning how everything works.
-                  </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    <Chip
-                      icon={<CheckCircleIcon fontSize="small" />}
-                      label="Instant access"
-                      size="small"
-                      variant="outlined"
-                    />
-                    <Chip
-                      icon={<CheckCircleIcon fontSize="small" />}
-                      label="Zero setup"
-                      size="small"
-                      variant="outlined"
-                    />
-                    <Chip
-                      icon={<CheckCircleIcon fontSize="small" />}
-                      label="Sample data"
-                      size="small"
-                      variant="outlined"
-                    />
-                  </Stack>
-                </Box>
-              </Box>
-              <Button
-                variant={recommendDemo ? "contained" : "outlined"}
-                fullWidth
-                size="large"
-                sx={{ mt: 3 }}
-              >
-                Start Exploring
-              </Button>
-            </CardContent>
-          </CardActionArea>
-        </Card>
-
-        {/* Connect Option */}
-        <Card
-          variant="outlined"
-          sx={{
-            position: "relative",
-            borderWidth: !recommendDemo ? 2 : 1,
-            borderColor: !recommendDemo ? "primary.main" : "divider",
-            transition: "all 0.2s",
-            "&:hover": {
-              borderColor: "primary.main",
-              transform: "translateY(-2px)",
-              boxShadow: theme.shadows[4],
-            },
-          }}
-        >
-          {!recommendDemo && (
-            <Chip
-              label="Recommended"
-              color="primary"
-              size="small"
-              sx={{
-                position: "absolute",
-                top: -10,
-                right: 16,
-                fontWeight: 600,
-              }}
+            <OptionCard
+              isRecommended={false}
+              icon={<PlayCircleOutlineIcon fontSize="large" />}
+              iconBgColor={alpha(theme.palette.primary.main, 0.1)}
+              iconColor={theme.palette.primary.main}
+              title="Try with Demo Database"
+              description="Explore Mako instantly with a pre-populated e-commerce dataset."
+              buttonText="Start Exploring"
+              onClick={() => onSelectPath("demo")}
             />
-          )}
-          <CardActionArea onClick={() => onSelectPath("connect")}>
-            <CardContent sx={{ p: 3 }}>
-              <Box sx={{ display: "flex", alignItems: "flex-start", gap: 2 }}>
-                <Box
-                  sx={{
-                    p: 1.5,
-                    borderRadius: 2,
-                    bgcolor: alpha(theme.palette.success.main, 0.1),
-                    color: "success.main",
-                  }}
-                >
-                  <StorageIcon fontSize="large" />
-                </Box>
-                <Box sx={{ flex: 1 }}>
-                  <Typography variant="h6" fontWeight={600} gutterBottom>
-                    Connect Your Database
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" paragraph>
-                    Connect your real database and start querying your data with
-                    AI immediately.
-                  </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    <Chip
-                      icon={<CheckCircleIcon fontSize="small" />}
-                      label="Your real data"
-                      size="small"
-                      variant="outlined"
-                    />
-                    <Chip
-                      icon={<CheckCircleIcon fontSize="small" />}
-                      label="Full capabilities"
-                      size="small"
-                      variant="outlined"
-                    />
-                    {qualificationData.databaseTypes.length > 0 && (
-                      <Chip
-                        label={`${qualificationData.databaseTypes[0].charAt(0).toUpperCase() + qualificationData.databaseTypes[0].slice(1)} ready`}
-                        size="small"
-                        color="primary"
-                        variant="outlined"
-                      />
-                    )}
-                  </Stack>
-                </Box>
-              </Box>
-              <Button
-                variant={!recommendDemo ? "contained" : "outlined"}
-                fullWidth
-                size="large"
-                sx={{ mt: 3 }}
-              >
-                Connect Now
-              </Button>
-            </CardContent>
-          </CardActionArea>
-        </Card>
+          </>
+        ) : (
+          <>
+            <OptionCard
+              isRecommended={true}
+              icon={<PlayCircleOutlineIcon fontSize="large" />}
+              iconBgColor={alpha(theme.palette.primary.main, 0.1)}
+              iconColor={theme.palette.primary.main}
+              title="Try with Demo Database"
+              description="Explore Mako instantly with a pre-populated e-commerce dataset."
+              buttonText="Start Exploring"
+              onClick={() => onSelectPath("demo")}
+            />
+            <OptionCard
+              isRecommended={false}
+              icon={<Database size={28} />}
+              iconBgColor={alpha(theme.palette.success.main, 0.1)}
+              iconColor={theme.palette.success.main}
+              title="Connect Your Database"
+              description="Connect your real database and start querying your data with AI immediately."
+              buttonText="Connect Now"
+              onClick={() => onSelectPath("connect")}
+            />
+          </>
+        )}
       </Stack>
     </Box>
   );

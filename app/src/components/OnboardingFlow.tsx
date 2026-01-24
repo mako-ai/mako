@@ -1,18 +1,15 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   Box,
-  Paper,
   Typography,
   Button,
   CircularProgress,
   Alert,
-  Container,
   TextField,
   List,
   ListItem,
   ListItemIcon,
   ListItemText,
-  ListItemSecondaryAction,
   Divider,
   Stack,
 } from "@mui/material";
@@ -26,15 +23,15 @@ import { workspaceClient, type PendingInvite } from "../lib/workspace-client";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent } from "../lib/analytics";
 import { apiClient } from "../lib/api-client";
+import { useOnboardingState } from "../hooks/useOnboardingState";
 import {
-  OnboardingProgress,
   QualificationStep,
   PathSelectionStep,
-  type OnboardingStep,
   type QualificationData,
   type OnboardingPath,
 } from "./onboarding";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
+import { AuthLayout } from "./AuthLayout";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -72,41 +69,34 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     null,
   );
 
+  // Use the onboarding state hook for localStorage management
+  const {
+    isInProgress: onboardingInProgress,
+    savedWorkspaceId,
+    startOnboarding,
+    completeOnboarding,
+  } = useOnboardingState();
+
   // Check if we're resuming onboarding after a page refresh
-  // This must run before the invite loading effect
-  const [isResumingOnboarding, setIsResumingOnboarding] = useState(() => {
-    const onboardingInProgress = localStorage.getItem("onboarding_in_progress");
-    const savedWorkspaceId = localStorage.getItem("onboarding_workspace_id");
-    return onboardingInProgress === "true" && !!savedWorkspaceId;
-  });
+  const [isResumingOnboarding, setIsResumingOnboarding] = useState(
+    () => onboardingInProgress && !!savedWorkspaceId,
+  );
 
   useEffect(() => {
-    if (isResumingOnboarding) {
-      const savedWorkspaceId = localStorage.getItem("onboarding_workspace_id");
-      if (savedWorkspaceId) {
-        // Resume onboarding from qualification step
-        setCreatedWorkspaceId(savedWorkspaceId);
-        setState("qualification");
-      }
+    if (isResumingOnboarding && savedWorkspaceId) {
+      // Resume onboarding from qualification step
+      setCreatedWorkspaceId(savedWorkspaceId);
+      setState("qualification");
     }
-  }, [isResumingOnboarding]);
-
-  // Map state to step for progress indicator
-  const getStep = (): OnboardingStep => {
-    if (state === "qualification") return "qualification";
-    if (state === "path") return "path";
-    if (state === "database") return "database";
-    return "qualification";
-  };
+  }, [isResumingOnboarding, savedWorkspaceId]);
 
   // Helper to clear onboarding state and complete
   const finishOnboarding = useCallback(() => {
-    // Clear onboarding state from localStorage
-    localStorage.removeItem("onboarding_in_progress");
-    localStorage.removeItem("onboarding_workspace_id");
+    // Clear onboarding state using the hook
+    completeOnboarding();
     setIsResumingOnboarding(false);
     onComplete();
-  }, [onComplete]);
+  }, [completeOnboarding, onComplete]);
 
   // Load pending invites on mount (only if not resuming onboarding)
   useEffect(() => {
@@ -172,9 +162,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       });
       setCreatedWorkspaceId(workspace.id);
 
-      // Save onboarding state to localStorage in case of page refresh
-      localStorage.setItem("onboarding_in_progress", "true");
-      localStorage.setItem("onboarding_workspace_id", workspace.id);
+      // Save onboarding state using the hook (persists to localStorage)
+      startOnboarding(workspace.id);
 
       // Track workspace creation during onboarding
       trackEvent("workspace_created", {
@@ -189,7 +178,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       setErrorMessage(err.message || "Failed to create workspace");
       setState("choose-workspace");
     }
-  }, [workspaceName, createWorkspaceForOnboarding]);
+  }, [workspaceName, createWorkspaceForOnboarding, startOnboarding]);
 
   const handleQualificationComplete = useCallback(
     async (data: QualificationData) => {
@@ -200,7 +189,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         await apiClient.put("/auth/onboarding", {
           role: data.role,
           companySize: data.companySize,
-          databaseTypes: data.databaseTypes,
+          primaryDatabase: data.primaryDatabase,
+          dataWarehouse: data.dataWarehouse,
           hasNoDatabase: data.hasNoDatabase,
         });
       } catch (error) {
@@ -297,335 +287,241 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   // Loading state
   if (state === "loading") {
     return (
-      <Container maxWidth="sm">
-        <Box
-          sx={{
-            minHeight: "100vh",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Paper sx={{ p: 4, width: "100%", textAlign: "center" }}>
-            <CircularProgress size={60} sx={{ mb: 3 }} />
-            <Typography variant="h5" gutterBottom>
-              Setting Up Your Account
-            </Typography>
-            <Typography color="text.secondary">
-              Please wait while we prepare your workspace options...
-            </Typography>
-          </Paper>
+      <AuthLayout title="Setting Up Your Account" subtitle="Please wait...">
+        <Box sx={{ textAlign: "center", py: 4 }}>
+          <CircularProgress size={60} />
         </Box>
-      </Container>
+      </AuthLayout>
     );
   }
 
   // Provisioning demo state
   if (provisioningDemo) {
     return (
-      <Container maxWidth="sm">
-        <Box
-          sx={{
-            minHeight: "100vh",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Paper sx={{ p: 4, width: "100%", textAlign: "center" }}>
-            <CircularProgress size={60} sx={{ mb: 3 }} />
-            <Typography variant="h5" gutterBottom>
-              Setting Up Demo Database
-            </Typography>
-            <Typography color="text.secondary">
-              Provisioning your demo environment with sample e-commerce data...
-            </Typography>
-          </Paper>
+      <AuthLayout
+        title="Setting Up Demo Database"
+        subtitle="Provisioning your demo environment with sample e-commerce data..."
+      >
+        <Box sx={{ textAlign: "center", py: 4 }}>
+          <CircularProgress size={60} />
         </Box>
-      </Container>
+      </AuthLayout>
     );
   }
 
   // Qualification step
   if (state === "qualification") {
     return (
-      <Container maxWidth="sm">
-        <Box
-          sx={{
-            minHeight: "100vh",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            py: 4,
-          }}
-        >
-          <Paper sx={{ p: 4, width: "100%" }}>
-            <OnboardingProgress currentStep={getStep()} />
+      <AuthLayout title="" subtitle="">
+        {errorMessage && (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {errorMessage}
+          </Alert>
+        )}
 
-            {errorMessage && (
-              <Alert severity="error" sx={{ mb: 3 }}>
-                {errorMessage}
-              </Alert>
-            )}
-
-            <QualificationStep
-              initialData={qualificationData || undefined}
-              onComplete={handleQualificationComplete}
-            />
-          </Paper>
-        </Box>
-      </Container>
+        <QualificationStep
+          initialData={qualificationData || undefined}
+          onComplete={handleQualificationComplete}
+        />
+      </AuthLayout>
     );
   }
 
   // Path selection step
   if (state === "path" && qualificationData) {
     return (
-      <Container maxWidth="sm">
-        <Box
-          sx={{
-            minHeight: "100vh",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            py: 4,
-          }}
-        >
-          <Paper sx={{ p: 4, width: "100%" }}>
-            <OnboardingProgress currentStep={getStep()} />
+      <AuthLayout title="" subtitle="">
+        {errorMessage && (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {errorMessage}
+          </Alert>
+        )}
 
-            {errorMessage && (
-              <Alert severity="error" sx={{ mb: 3 }}>
-                {errorMessage}
-              </Alert>
-            )}
-
-            <PathSelectionStep
-              qualificationData={qualificationData}
-              onSelectPath={handlePathSelected}
-              onBack={handleBackToQualification}
-            />
-          </Paper>
-        </Box>
-      </Container>
+        <PathSelectionStep
+          qualificationData={qualificationData}
+          onSelectPath={handlePathSelected}
+          onBack={handleBackToQualification}
+        />
+      </AuthLayout>
     );
   }
 
   // Database setup step (connect real database)
   if (state === "database") {
+    const dbSubtitle =
+      qualificationData?.primaryDatabase &&
+      qualificationData.primaryDatabase !== "none"
+        ? `Let's connect your ${qualificationData.primaryDatabase.charAt(0).toUpperCase() + qualificationData.primaryDatabase.slice(1)} database`
+        : "Choose your database type and enter connection details";
+
     return (
-      <Container maxWidth="sm">
-        <Box
-          sx={{
-            minHeight: "100vh",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            py: 4,
-          }}
-        >
-          <Paper sx={{ p: 4, width: "100%" }}>
-            <OnboardingProgress currentStep={getStep()} />
+      <AuthLayout title="Connect Your Database" subtitle={dbSubtitle}>
+        {errorMessage && (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {errorMessage}
+          </Alert>
+        )}
 
-            {errorMessage && (
-              <Alert severity="error" sx={{ mb: 3 }}>
-                {errorMessage}
-              </Alert>
-            )}
-
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-              <Button
-                onClick={handleBackToPath}
-                startIcon={<ArrowBackIcon />}
-                size="small"
-                sx={{ minWidth: "auto" }}
-              >
-                Back
-              </Button>
-            </Box>
-
-            <Typography variant="h5" fontWeight={600} gutterBottom>
-              Connect Your Database
-            </Typography>
-            <Typography color="text.secondary" sx={{ mb: 4 }}>
-              {qualificationData?.databaseTypes &&
-              qualificationData.databaseTypes.length > 0
-                ? `Let's connect your ${qualificationData.databaseTypes[0].charAt(0).toUpperCase() + qualificationData.databaseTypes[0].slice(1)} database`
-                : "Choose your database type and enter connection details"}
-            </Typography>
-
-            <Button
-              variant="contained"
-              size="large"
-              fullWidth
-              onClick={() => setShowDatabaseDialog(true)}
-              sx={{ py: 1.5 }}
-            >
-              Add Database Connection
-            </Button>
-
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{ mt: 3, textAlign: "center" }}
-            >
-              You can also{" "}
-              <Button
-                variant="text"
-                size="small"
-                onClick={() => handlePathSelected("demo")}
-                sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
-              >
-                try with demo data first
-              </Button>
-            </Typography>
-
-            <CreateDatabaseDialog
-              open={showDatabaseDialog}
-              onClose={() => setShowDatabaseDialog(false)}
-              onSuccess={handleDatabaseSuccess}
-            />
-          </Paper>
+        <Box sx={{ mb: 3 }}>
+          <Button
+            onClick={handleBackToPath}
+            startIcon={<ArrowBackIcon />}
+            size="small"
+            sx={{ minWidth: "auto" }}
+          >
+            Back
+          </Button>
         </Box>
-      </Container>
+
+        <Button
+          variant="contained"
+          size="large"
+          fullWidth
+          onClick={() => setShowDatabaseDialog(true)}
+          sx={{ py: 1.5 }}
+        >
+          Add Database Connection
+        </Button>
+
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{ mt: 3, textAlign: "center" }}
+        >
+          You can also{" "}
+          <Button
+            variant="text"
+            size="small"
+            onClick={() => handlePathSelected("demo")}
+            sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
+          >
+            try with demo data first
+          </Button>
+        </Typography>
+
+        <CreateDatabaseDialog
+          open={showDatabaseDialog}
+          onClose={() => setShowDatabaseDialog(false)}
+          onSuccess={handleDatabaseSuccess}
+        />
+      </AuthLayout>
     );
   }
 
   // Choose workspace step (existing flow for pending invites or creating new)
+  const hasInvites = pendingInvites.length > 0;
+
   return (
-    <Container maxWidth="sm">
-      <Box
-        sx={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          py: 4,
-        }}
-      >
-        <Paper sx={{ p: 4, width: "100%" }}>
-          <Box sx={{ textAlign: "center", mb: 4 }}>
-            <BusinessIcon color="primary" sx={{ fontSize: 60, mb: 2 }} />
-            <Typography variant="h4" gutterBottom>
-              Welcome!
+    <AuthLayout
+      title={hasInvites ? "Welcome!" : "Create your workspace"}
+      subtitle={
+        hasInvites
+          ? "Get started by joining an existing workspace or creating a new one."
+          : "Choose a name that represents your team, company, or project."
+      }
+    >
+      {errorMessage && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          {errorMessage}
+        </Alert>
+      )}
+
+      {/* Pending Invitations - only show if there are invites */}
+      {hasInvites && (
+        <>
+          <Box sx={{ mb: 3 }}>
+            <Typography
+              variant="subtitle2"
+              fontWeight={600}
+              color="text.secondary"
+              sx={{ mb: 2, textTransform: "uppercase", letterSpacing: 0.5 }}
+            >
+              Pending Invitations
             </Typography>
-            <Typography color="text.secondary">
-              Get started by joining an existing workspace or creating a new
-              one.
-            </Typography>
+            <List disablePadding>
+              {pendingInvites.map((invite, index) => (
+                <Box key={invite.token}>
+                  {index > 0 && <Divider />}
+                  <ListItem sx={{ py: 2, px: 0 }}>
+                    <ListItemIcon sx={{ minWidth: 40 }}>
+                      <BusinessIcon />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={invite.workspaceName}
+                      secondary={`Invited by ${invite.inviterEmail} • ${invite.role}`}
+                    />
+                    <Button
+                      variant="contained"
+                      size="small"
+                      endIcon={
+                        acceptingToken === invite.token ? (
+                          <CircularProgress size={16} color="inherit" />
+                        ) : (
+                          <ArrowForwardIcon />
+                        )
+                      }
+                      onClick={() => handleAcceptInvite(invite.token)}
+                      disabled={acceptingToken !== null}
+                    >
+                      Join
+                    </Button>
+                  </ListItem>
+                </Box>
+              ))}
+            </List>
           </Box>
 
-          {errorMessage && (
-            <Alert severity="error" sx={{ mb: 3 }}>
-              {errorMessage}
-            </Alert>
-          )}
+          <Divider sx={{ my: 3 }} />
 
-          {/* Pending Invitations */}
-          {pendingInvites.length > 0 && (
-            <Box sx={{ mb: 4 }}>
-              <Typography variant="h6" gutterBottom>
-                Pending Invitations
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                You have been invited to join the following workspaces:
-              </Typography>
-              <List>
-                {pendingInvites.map((invite, index) => (
-                  <Box key={invite.token}>
-                    {index > 0 && <Divider />}
-                    <ListItem sx={{ py: 2 }}>
-                      <ListItemIcon>
-                        <BusinessIcon />
-                      </ListItemIcon>
-                      <ListItemText
-                        primary={invite.workspaceName}
-                        secondary={
-                          <>
-                            Invited by {invite.inviterEmail} • Role:{" "}
-                            {invite.role}
-                          </>
-                        }
-                      />
-                      <ListItemSecondaryAction>
-                        <Button
-                          variant="contained"
-                          size="small"
-                          endIcon={
-                            acceptingToken === invite.token ? (
-                              <CircularProgress size={16} color="inherit" />
-                            ) : (
-                              <ArrowForwardIcon />
-                            )
-                          }
-                          onClick={() => handleAcceptInvite(invite.token)}
-                          disabled={acceptingToken !== null}
-                        >
-                          Join
-                        </Button>
-                      </ListItemSecondaryAction>
-                    </ListItem>
-                  </Box>
-                ))}
-              </List>
-            </Box>
-          )}
+          <Typography
+            variant="subtitle2"
+            fontWeight={600}
+            color="text.secondary"
+            sx={{ mb: 2, textTransform: "uppercase", letterSpacing: 0.5 }}
+          >
+            Or create new
+          </Typography>
+        </>
+      )}
 
-          {pendingInvites.length > 0 && <Divider sx={{ my: 3 }} />}
-
-          {/* Create New Workspace */}
-          <Box>
-            <Typography variant="h6" gutterBottom>
-              {pendingInvites.length > 0
-                ? "Or Create a New Workspace"
-                : "Create Your Workspace"}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              {pendingInvites.length > 0
-                ? "Prefer to start fresh? Create your own workspace."
-                : "Choose a name that represents your team, company, or project."}
-            </Typography>
-
-            <Stack spacing={2}>
-              <TextField
-                fullWidth
-                label="Workspace Name"
-                placeholder="e.g., Acme Corp, Engineering Team, Personal"
-                value={workspaceName}
-                onChange={e => setWorkspaceName(e.target.value)}
-                disabled={state === "creating" || acceptingToken !== null}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && workspaceName.trim()) {
-                    handleCreateWorkspace();
-                  }
-                }}
-                autoFocus={pendingInvites.length === 0}
-                helperText="You can always change this later in settings"
-              />
-              <Button
-                variant={pendingInvites.length > 0 ? "outlined" : "contained"}
-                fullWidth
-                size="large"
-                startIcon={
-                  state === "creating" ? (
-                    <CircularProgress size={20} color="inherit" />
-                  ) : (
-                    <AddIcon />
-                  )
-                }
-                onClick={handleCreateWorkspace}
-                disabled={
-                  state === "creating" ||
-                  acceptingToken !== null ||
-                  !workspaceName.trim()
-                }
-              >
-                {state === "creating" ? "Creating..." : "Create Workspace"}
-              </Button>
-            </Stack>
-          </Box>
-        </Paper>
-      </Box>
-    </Container>
+      {/* Create New Workspace Form */}
+      <Stack spacing={2}>
+        <TextField
+          fullWidth
+          label="Workspace Name"
+          placeholder="e.g., Acme Corp, Engineering Team, Personal"
+          value={workspaceName}
+          onChange={e => setWorkspaceName(e.target.value)}
+          disabled={state === "creating" || acceptingToken !== null}
+          onKeyDown={e => {
+            if (e.key === "Enter" && workspaceName.trim()) {
+              handleCreateWorkspace();
+            }
+          }}
+          autoFocus={!hasInvites}
+          helperText="You can always change this later in settings"
+        />
+        <Button
+          variant={hasInvites ? "outlined" : "contained"}
+          fullWidth
+          size="large"
+          startIcon={
+            state === "creating" ? (
+              <CircularProgress size={20} color="inherit" />
+            ) : (
+              <AddIcon />
+            )
+          }
+          onClick={handleCreateWorkspace}
+          disabled={
+            state === "creating" ||
+            acceptingToken !== null ||
+            !workspaceName.trim()
+          }
+        >
+          {state === "creating" ? "Creating..." : "Create Workspace"}
+        </Button>
+      </Stack>
+    </AuthLayout>
   );
 }
