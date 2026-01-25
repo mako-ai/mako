@@ -23,7 +23,7 @@ import { workspaceClient, type PendingInvite } from "../lib/workspace-client";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent } from "../lib/analytics";
 import { apiClient } from "../lib/api-client";
-import { useOnboardingState } from "../hooks/useOnboardingState";
+import { useOnboarding } from "../contexts/onboarding-context";
 import {
   QualificationStep,
   PathSelectionStep,
@@ -69,13 +69,13 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     null,
   );
 
-  // Use the onboarding state hook for localStorage management
+  // Use shared onboarding context (shared with OnboardingGuard)
   const {
     isInProgress: onboardingInProgress,
     savedWorkspaceId,
     startOnboarding,
     completeOnboarding,
-  } = useOnboardingState();
+  } = useOnboarding();
 
   // Check if we're resuming onboarding after a page refresh
   const [isResumingOnboarding, setIsResumingOnboarding] = useState(
@@ -173,31 +173,38 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setState("creating");
     setErrorMessage("");
 
+    // Mark onboarding in progress BEFORE creating workspace.
+    // This ensures OnboardingGuard keeps showing OnboardingFlow when
+    // the workspace list updates (both share the same context state).
+    startOnboarding("pending");
+
     try {
-      // Use createWorkspaceForOnboarding to avoid page reload
-      // This allows the multi-step onboarding flow to continue
       const workspace = await createWorkspaceForOnboarding({
         name: workspaceName.trim(),
       });
       setCreatedWorkspaceId(workspace.id);
 
-      // Save onboarding state using the hook (persists to localStorage)
+      // Update with actual workspace ID (for page refresh resume)
       startOnboarding(workspace.id);
 
-      // Track workspace creation during onboarding
       trackEvent("workspace_created", {
         workspace_id: workspace.id,
         is_onboarding: true,
       });
 
-      // Move to qualification step
       setState("qualification");
     } catch (error: unknown) {
       const err = error as Error;
       setErrorMessage(err.message || "Failed to create workspace");
+      completeOnboarding();
       setState("choose-workspace");
     }
-  }, [workspaceName, createWorkspaceForOnboarding, startOnboarding]);
+  }, [
+    workspaceName,
+    createWorkspaceForOnboarding,
+    startOnboarding,
+    completeOnboarding,
+  ]);
 
   const handleQualificationComplete = useCallback(
     async (data: QualificationData) => {

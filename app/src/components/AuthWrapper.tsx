@@ -1,5 +1,6 @@
 import { AuthProvider } from "../contexts/auth-context";
 import { WorkspaceProvider } from "../contexts/workspace-context";
+import { OnboardingProvider } from "../contexts/onboarding-context";
 import { ThemeProvider } from "../contexts/ThemeContext";
 import { ProtectedRoute } from "./ProtectedRoute";
 
@@ -15,9 +16,11 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <WorkspaceProvider>
-          <ProtectedRoute>{children}</ProtectedRoute>
-        </WorkspaceProvider>
+        <OnboardingProvider>
+          <WorkspaceProvider>
+            <ProtectedRoute>{children}</ProtectedRoute>
+          </WorkspaceProvider>
+        </OnboardingProvider>
       </AuthProvider>
     </ThemeProvider>
   );
