@@ -51,6 +51,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
+import { useSchemaStore } from "../store/schemaStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
@@ -412,6 +413,21 @@ interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
 }
 
+// Suggestion prompts for the demo Chinook database
+const CHINOOK_SUGGESTIONS = [
+  "Who are the top 10 best-selling artists?",
+  "What are the most popular genres by revenue?",
+  "Show me monthly revenue trends",
+  "Who are our top 5 customers by spending?",
+];
+
+// Generic suggestions for any database
+const GENERIC_SUGGESTIONS = [
+  "What tables are in this database?",
+  "Show me the schema structure",
+  "Help me write a query to...",
+];
+
 const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
@@ -419,6 +435,17 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
   const activeTabId = useConsoleStore(state => state.activeTabId);
   const consoleTabs = useMemo(() => Object.values(tabs), [tabs]);
   const activeConsoleId = activeTabId;
+
+  // Get connections to check if only database is the demo
+  const connections = useSchemaStore(s => s.connections);
+  const workspaceConnections = currentWorkspace
+    ? connections[currentWorkspace.id] || []
+    : [];
+
+  // Show Chinook suggestions if the only database in workspace is the demo database
+  const hasOnlyDemoDatabase =
+    workspaceConnections.length === 1 &&
+    workspaceConnections[0]?.isDemo === true;
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
@@ -1274,6 +1301,69 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           <Alert severity="error" sx={{ fontSize: "0.875rem" }}>
             {error.message}
           </Alert>
+        </Box>
+      )}
+
+      {/* Suggestions when chat is empty */}
+      {messages.length === 0 && (
+        <Box
+          sx={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            alignItems: "center",
+            p: 2,
+            gap: 2,
+          }}
+        >
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ textAlign: "center", mb: 1 }}
+          >
+            {hasOnlyDemoDatabase
+              ? "Try asking about the Chinook music store data"
+              : "Ask a question about your data"}
+          </Typography>
+          <Box
+            sx={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 1,
+              justifyContent: "center",
+              maxWidth: 400,
+            }}
+          >
+            {(hasOnlyDemoDatabase
+              ? CHINOOK_SUGGESTIONS
+              : GENERIC_SUGGESTIONS
+            ).map(suggestion => (
+              <Chip
+                key={suggestion}
+                label={suggestion}
+                variant="outlined"
+                size="small"
+                onClick={() => {
+                  // Submit the suggestion immediately
+                  capturedConsoleIdRef.current = activeConsoleId;
+                  trackEvent("ai_chat_message_sent", {
+                    model: selectedModelId,
+                    has_context: false,
+                    from_suggestion: true,
+                  });
+                  sendMessage({ text: suggestion });
+                }}
+                sx={{
+                  cursor: "pointer",
+                  "&:hover": {
+                    backgroundColor: "action.hover",
+                    borderColor: "primary.main",
+                  },
+                }}
+              />
+            ))}
+          </Box>
         </Box>
       )}
 
