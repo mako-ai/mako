@@ -206,6 +206,31 @@ authRoutes.get("/me", authMiddleware, async c => {
 });
 
 /**
+ * Update onboarding qualification data
+ */
+authRoutes.put("/onboarding", authMiddleware, async c => {
+  try {
+    const user = c.get("user");
+    const { role, companySize, primaryDatabase, dataWarehouse } =
+      await c.req.json();
+
+    await authService.updateOnboardingData(user.id, {
+      role,
+      companySize,
+      primaryDatabase,
+      dataWarehouse,
+    });
+
+    return c.json({
+      success: true,
+      message: "Onboarding data saved successfully",
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+/**
  * Refresh session
  */
 authRoutes.post("/refresh", async c => {
@@ -434,7 +459,9 @@ authRoutes.get("/google/callback", async c => {
       );
 
       if (!response.ok) {
-        logger.error("Failed to fetch Google user info", { response: await response.text() });
+        logger.error("Failed to fetch Google user info", {
+          response: await response.text(),
+        });
         return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
       }
 
@@ -442,7 +469,9 @@ authRoutes.get("/google/callback", async c => {
     }
 
     if (!googleUser.sub) {
-      logger.error("Google user info did not contain 'sub' identifier", { googleUser });
+      logger.error("Google user info did not contain 'sub' identifier", {
+        googleUser,
+      });
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 

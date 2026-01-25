@@ -189,6 +189,7 @@ export interface IDatabaseConnection extends Document {
       privateKey?: string;
     };
   };
+  isDemo?: boolean; // True if this is a demo database connection
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -703,6 +704,10 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       required: true,
       set: encryptObject,
       get: decryptObject,
+    },
+    isDemo: {
+      type: Boolean,
+      default: false,
     },
     createdBy: {
       type: String,

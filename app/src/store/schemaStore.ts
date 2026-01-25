@@ -20,6 +20,7 @@ export interface Connection {
   active: boolean;
   lastConnectedAt?: string;
   isClusterMode?: boolean;
+  isDemo?: boolean;
   displayName: string;
   hostKey: string;
   hostName: string;

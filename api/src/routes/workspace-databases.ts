@@ -16,6 +16,18 @@ import { loggers } from "../logging";
 
 const logger = loggers.db();
 
+// Demo database configuration - returns config with connection string read at runtime
+function getDemoDatabaseConfig() {
+  return {
+    name: "Chinook Music Store",
+    type: "postgresql" as const,
+    connection: {
+      // Use environment variable for demo database URL (Neon PostgreSQL)
+      connectionString: process.env.DEMO_DATABASE_URL || "",
+    },
+  };
+}
+
 export const workspaceDatabaseRoutes = new Hono();
 
 // Helper function to mask passwords in connection strings
@@ -30,6 +42,81 @@ function maskPasswordInConnectionString(connectionString: string): string {
     "$1*****$3",
   );
 }
+
+// Create demo database for workspace (onboarding)
+workspaceDatabaseRoutes.post(
+  "/demo",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const user = c.get("user");
+      const workspace = c.get("workspace");
+
+      // Check if workspace already has a demo database
+      const existingDemo = await DatabaseConnection.findOne({
+        workspaceId: workspace._id,
+        isDemo: true,
+      });
+
+      if (existingDemo) {
+        return c.json({
+          success: true,
+          data: {
+            id: existingDemo._id,
+            name: existingDemo.name,
+            type: existingDemo.type,
+            isDemo: true,
+          },
+          message: "Demo database already exists",
+        });
+      }
+
+      // Create demo database connection
+      const demoConfig = getDemoDatabaseConfig();
+      const database = new DatabaseConnection({
+        workspaceId: workspace._id,
+        name: demoConfig.name,
+        type: demoConfig.type,
+        connection: demoConfig.connection,
+        isDemo: true,
+        createdBy: user!.id,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await database.save();
+
+      return c.json(
+        {
+          success: true,
+          data: {
+            id: database._id,
+            name: database.name,
+            type: database.type,
+            isDemo: true,
+            createdAt: database.createdAt,
+          },
+          message: "Demo database created successfully",
+        },
+        201,
+      );
+    } catch (error) {
+      console.error("Error creating demo database:", error);
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to create demo database",
+        },
+        500,
+      );
+    }
+  },
+);
 
 // Get all databases for workspace
 workspaceDatabaseRoutes.get(
@@ -80,6 +167,7 @@ workspaceDatabaseRoutes.get(
           active: true,
           lastConnectedAt: db.lastConnectedAt,
           isClusterMode, // true when connection can access multiple databases
+          isDemo: db.isDemo || false, // true if this is a demo database
           // Helper fields for easier access (connection object removed for security)
           displayName: db.name || conn.database || "Unknown Database",
           hostKey,

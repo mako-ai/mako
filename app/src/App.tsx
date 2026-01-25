@@ -30,6 +30,7 @@ import { VerifyEmailPage } from "./components/VerifyEmailPage";
 import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
+import { OnboardingFlow } from "./components/OnboardingFlow";
 
 // Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
 const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
@@ -415,6 +416,39 @@ function VerifyEmailRoute() {
   return <VerifyEmailPage />;
 }
 
+// Onboarding test route - allows testing onboarding flow independently
+// Accessible at /onboarding for manual testing without needing to clear user state
+function OnboardingTestRoute() {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  // Require authentication to test onboarding
+  if (!user) {
+    return (
+      <Navigate
+        to="/login"
+        state={{ from: { pathname: "/onboarding" } }}
+        replace
+      />
+    );
+  }
+
+  const handleComplete = () => {
+    // After completing test onboarding, navigate to main app
+    navigate("/", { replace: true });
+  };
+
+  return (
+    <WorkspaceProvider>
+      <OnboardingFlow onComplete={handleComplete} />
+    </WorkspaceProvider>
+  );
+}
+
 // Track page views on route changes for SPA
 function PageViewTracker() {
   const location = useLocation();
@@ -456,6 +490,9 @@ function App() {
         <Route path="/verify-email" element={<VerifyEmailRoute />} />
         <Route path="/forgot-password" element={<ForgotPasswordRoute />} />
         <Route path="/reset-password" element={<ResetPasswordRoute />} />
+
+        {/* Onboarding test route - for manual testing */}
+        <Route path="/onboarding" element={<OnboardingTestRoute />} />
 
         {/* Main app route - authentication required */}
         <Route path="/*" element={<MainApp />} />

@@ -15,7 +15,8 @@ type MarketingEvent =
   | "invite_accepted"
   | "workspace_created"
   | "onboarding_completed"
-  | "email_verified";
+  | "email_verified"
+  | "demo_database_created";
 
 // Product events - sent to PostHog via GTM for product analytics
 type ProductEvent =
@@ -26,6 +27,23 @@ type ProductEvent =
   | "api_key_created"
   | "password_reset_requested"
   | "logout";
+
+/**
+ * Common event properties that may include demo flag
+ */
+export interface DatabaseEventProperties {
+  connection_type?: string;
+  connection_id?: string;
+  isDemo?: boolean;
+}
+
+export interface QueryEventProperties {
+  query_type?: string;
+  database_type?: string;
+  duration_ms?: number;
+  row_count?: number;
+  isDemo?: boolean;
+}
 
 export type AnalyticsEvent = MarketingEvent | ProductEvent;
 

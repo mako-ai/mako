@@ -3,6 +3,17 @@ import { v4 as uuidv4 } from "uuid";
 import { loggers } from "../logging";
 
 /**
+ * Onboarding data interface
+ */
+export interface IUserOnboarding {
+  completedAt?: Date;
+  companySize?: "hobby" | "startup" | "growth" | "enterprise";
+  role?: string;
+  primaryDatabase?: string; // User's primary database (postgresql, mysql, etc.) - "none" if no database
+  dataWarehouse?: string; // User's data warehouse (snowflake, bigquery, etc.)
+}
+
+/**
  * User model interface
  */
 export interface IUser extends Document {
@@ -10,6 +21,7 @@ export interface IUser extends Document {
   email: string;
   hashedPassword?: string;
   emailVerified: boolean;
+  onboarding?: IUserOnboarding;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -70,6 +82,29 @@ const UserSchema = new Schema<IUser>(
     emailVerified: {
       type: Boolean,
       default: false,
+    },
+    onboarding: {
+      completedAt: {
+        type: Date,
+        required: false,
+      },
+      companySize: {
+        type: String,
+        enum: ["hobby", "startup", "growth", "enterprise"],
+        required: false,
+      },
+      role: {
+        type: String,
+        required: false,
+      },
+      primaryDatabase: {
+        type: String,
+        required: false,
+      },
+      dataWarehouse: {
+        type: String,
+        required: false,
+      },
     },
   },
   {
@@ -190,7 +225,10 @@ export const OAuthAccount =
 
 export const EmailVerification =
   (mongoose.models.EmailVerification as mongoose.Model<IEmailVerification>) ||
-  mongoose.model<IEmailVerification>("EmailVerification", EmailVerificationSchema);
+  mongoose.model<IEmailVerification>(
+    "EmailVerification",
+    EmailVerificationSchema,
+  );
 
 /**
  * Database connection helper

@@ -177,6 +177,7 @@ jobs:
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
+      DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
     steps:
       - name: Set PR-specific variables
         id: pr-vars
@@ -395,6 +396,7 @@ jobs:
             --set-env-vars SESSION_DURATION=${SESSION_DURATION} \
             --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
+            --set-env-vars DEMO_DATABASE_URL=${DEMO_DATABASE_URL} \
             --quiet
 
           # Get the Cloud Run URL
@@ -573,6 +575,7 @@ jobs:
       VITE_API_URL: https://app.mako.ai/api
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
+      DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -685,6 +688,7 @@ jobs:
             --set-env-vars SESSION_DURATION=${SESSION_DURATION} \
             --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
+            --set-env-vars DEMO_DATABASE_URL=${DEMO_DATABASE_URL} \
             --quiet
 
       - name: Run database migrations
