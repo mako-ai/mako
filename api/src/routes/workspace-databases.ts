@@ -20,7 +20,7 @@ const logger = loggers.db();
 // Demo database configuration - returns config with connection string read at runtime
 function getDemoDatabaseConfig() {
   return {
-    name: "Demo Chinook Database",
+    name: "Chinook Music Store",
     type: "postgresql" as const,
     connection: {
       // Use environment variable for demo database URL (Neon PostgreSQL)
