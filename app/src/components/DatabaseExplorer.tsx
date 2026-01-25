@@ -168,6 +168,49 @@ function DatabaseExplorer({
     });
   }, [databases, currentWorkspace?.id, treeNodes, fetchDatabaseDataLocal]);
 
+  // Re-fetch children for expanded nodes that lost their data (e.g., after refresh)
+  useEffect(() => {
+    if (!currentWorkspace) return;
+
+    databases.forEach(db => {
+      if (!isDatabaseExpanded(db.id)) return;
+
+      const dbTree = treeNodes[db.id];
+      if (!dbTree) return;
+
+      const rootNodes = dbTree["root"] || [];
+
+      const checkAndFetchMissingChildren = (node: TreeNode) => {
+        const nodeKey = `${db.id}:${node.kind}:${node.id}`;
+        if (!node.hasChildren || !expandedNodes.has(nodeKey)) return;
+
+        const childKey = `${node.kind}:${node.id}`;
+        const children = dbTree[childKey];
+
+        if (!children) {
+          // Expanded node with missing children - fetch them
+          ensureTreeChildren(currentWorkspace.id, db.id, {
+            id: node.id,
+            kind: node.kind,
+            metadata: node.metadata,
+          });
+        } else {
+          // Recurse into existing children
+          children.forEach(checkAndFetchMissingChildren);
+        }
+      };
+
+      rootNodes.forEach(checkAndFetchMissingChildren);
+    });
+  }, [
+    currentWorkspace?.id,
+    databases,
+    treeNodes,
+    expandedNodes,
+    isDatabaseExpanded,
+    ensureTreeChildren,
+  ]);
+
   const handleDatabaseToggle = useCallback(
     (connectionId: string) => {
       toggleDatabase(connectionId);
