@@ -173,10 +173,10 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setState("creating");
     setErrorMessage("");
 
-    // Mark onboarding in progress BEFORE creating workspace.
+    // Mark onboarding in progress BEFORE creating workspace (no ID yet).
     // This ensures OnboardingGuard keeps showing OnboardingFlow when
     // the workspace list updates (both share the same context state).
-    startOnboarding("pending");
+    startOnboarding();
 
     try {
       const workspace = await createWorkspaceForOnboarding({
@@ -184,7 +184,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       });
       setCreatedWorkspaceId(workspace.id);
 
-      // Update with actual workspace ID (for page refresh resume)
+      // Now save the real workspace ID (for page refresh resume)
       startOnboarding(workspace.id);
 
       trackEvent("workspace_created", {

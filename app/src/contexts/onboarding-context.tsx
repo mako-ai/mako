@@ -6,7 +6,8 @@ const ONBOARDING_WORKSPACE_ID_KEY = "onboarding_workspace_id";
 interface OnboardingContextValue {
   isInProgress: boolean;
   savedWorkspaceId: string | null;
-  startOnboarding: (workspaceId: string) => void;
+  /** Mark onboarding in progress. Pass workspaceId after workspace is created. */
+  startOnboarding: (workspaceId?: string) => void;
   completeOnboarding: () => void;
 }
 
@@ -32,11 +33,13 @@ export function OnboardingProvider({
     },
   );
 
-  const startOnboarding = useCallback((workspaceId: string) => {
+  const startOnboarding = useCallback((workspaceId?: string) => {
     localStorage.setItem(ONBOARDING_IN_PROGRESS_KEY, "true");
-    localStorage.setItem(ONBOARDING_WORKSPACE_ID_KEY, workspaceId);
     setIsInProgress(true);
-    setSavedWorkspaceId(workspaceId);
+    if (workspaceId) {
+      localStorage.setItem(ONBOARDING_WORKSPACE_ID_KEY, workspaceId);
+      setSavedWorkspaceId(workspaceId);
+    }
   }, []);
 
   const completeOnboarding = useCallback(() => {
