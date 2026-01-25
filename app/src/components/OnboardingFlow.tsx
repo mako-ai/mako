@@ -32,6 +32,7 @@ import {
 } from "./onboarding";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
 import { AuthLayout } from "./AuthLayout";
+import { useSchemaStore } from "../store/schemaStore";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -52,6 +53,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     currentWorkspace,
     refreshWorkspaces,
   } = useWorkspace();
+
+  const refreshConnections = useSchemaStore(s => s.refreshConnections);
 
   const [state, setState] = useState<OnboardingState>("loading");
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
@@ -220,14 +223,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
           await apiClient.post(`/workspaces/${workspaceId}/databases/demo`);
 
-          // Track demo database creation
-          trackEvent("database_connection_created", {
-            connection_type: "mongodb",
-            isDemo: true,
-          });
-
           // Refresh workspaces to get updated state
           await refreshWorkspaces();
+
+          // Refresh database connections so the explorer shows the new demo database
+          await refreshConnections(workspaceId);
 
           // Track onboarding completion
           trackEvent("onboarding_completed", {
@@ -257,6 +257,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       pendingInvites.length,
       qualificationData,
       refreshWorkspaces,
+      refreshConnections,
     ],
   );
 

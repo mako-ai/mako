@@ -17,18 +17,17 @@ import { loggers } from "../logging";
 
 const logger = loggers.db();
 
-// Demo database configuration
-const DEMO_DATABASE_CONFIG = {
-  name: "Demo E-commerce Database",
-  type: "mongodb" as const,
-  connection: {
-    // Use environment variable for demo database URL, fallback to local
-    connectionString:
-      process.env.DEMO_DATABASE_URL ||
-      "mongodb://localhost:27017/mako_demo_ecommerce",
-    database: "mako_demo_ecommerce",
-  },
-};
+// Demo database configuration - returns config with connection string read at runtime
+function getDemoDatabaseConfig() {
+  return {
+    name: "Demo Chinook Database",
+    type: "postgresql" as const,
+    connection: {
+      // Use environment variable for demo database URL (Neon PostgreSQL)
+      connectionString: process.env.DEMO_DATABASE_URL || "",
+    },
+  };
+}
 
 export const workspaceDatabaseRoutes = new Hono();
 
@@ -76,11 +75,12 @@ workspaceDatabaseRoutes.post(
       }
 
       // Create demo database connection
+      const demoConfig = getDemoDatabaseConfig();
       const database = new DatabaseConnection({
         workspaceId: workspace._id,
-        name: DEMO_DATABASE_CONFIG.name,
-        type: DEMO_DATABASE_CONFIG.type,
-        connection: DEMO_DATABASE_CONFIG.connection,
+        name: demoConfig.name,
+        type: demoConfig.type,
+        connection: demoConfig.connection,
         isDemo: true,
         createdBy: user!.id,
         createdAt: new Date(),
