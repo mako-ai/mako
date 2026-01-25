@@ -22,6 +22,7 @@ import { FlowsExplorer } from "./components/FlowsExplorer";
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
+import { OnboardingProvider } from "./contexts/onboarding-context";
 import { ConsoleModification } from "./hooks/useMonacoConsole";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
@@ -443,9 +444,11 @@ function OnboardingTestRoute() {
   };
 
   return (
-    <WorkspaceProvider>
-      <OnboardingFlow onComplete={handleComplete} />
-    </WorkspaceProvider>
+    <OnboardingProvider>
+      <WorkspaceProvider>
+        <OnboardingFlow onComplete={handleComplete} />
+      </WorkspaceProvider>
+    </OnboardingProvider>
   );
 }
 

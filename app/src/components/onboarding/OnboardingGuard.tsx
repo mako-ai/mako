@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from "react";
 import { CircularProgress, Box } from "@mui/material";
 import { useWorkspace } from "../../contexts/workspace-context";
-import { useOnboardingState } from "../../hooks/useOnboardingState";
+import { useOnboarding } from "../../contexts/onboarding-context";
 import { OnboardingFlow } from "../OnboardingFlow";
 import { WorkspaceSelector } from "../WorkspaceSelector";
 
@@ -33,7 +33,7 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
   } = useWorkspace();
 
   const { isInProgress: onboardingInProgress, completeOnboarding } =
-    useOnboardingState();
+    useOnboarding();
 
   // Track if user wants to create a new workspace from the selector
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
