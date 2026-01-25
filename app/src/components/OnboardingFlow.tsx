@@ -63,9 +63,6 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [acceptingToken, setAcceptingToken] = useState<string | null>(null);
   const [qualificationData, setQualificationData] =
     useState<QualificationData | null>(null);
-  const [_selectedPath, setSelectedPath] = useState<OnboardingPath | null>(
-    null,
-  );
   const [showDatabaseDialog, setShowDatabaseDialog] = useState(false);
   const [provisioningDemo, setProvisioningDemo] = useState(false);
   const [createdWorkspaceId, setCreatedWorkspaceId] = useState<string | null>(
@@ -101,6 +98,31 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     onComplete();
   }, [completeOnboarding, onComplete]);
 
+  // Helper to track onboarding completion with consistent properties
+  const trackOnboardingCompleted = useCallback(
+    (action: "joined" | "created", path?: "demo" | "connect") => {
+      // For "joined", check > 1 because the accepted invite doesn't count
+      // For "created", check > 0 since no invite is being consumed
+      const hasPendingInvites =
+        action === "joined"
+          ? pendingInvites.length > 1
+          : pendingInvites.length > 0;
+
+      trackEvent("onboarding_completed", {
+        has_pending_invites: hasPendingInvites,
+        action,
+        ...(path && { path }),
+        ...(action === "created" &&
+          qualificationData && {
+            qualification_role: qualificationData.role,
+            qualification_company_size: qualificationData.companySize,
+            qualification_primary_database: qualificationData.primaryDatabase,
+          }),
+      });
+    },
+    [pendingInvites.length, qualificationData],
+  );
+
   // Load pending invites on mount (only if not resuming onboarding)
   useEffect(() => {
     // Skip loading invites if we're resuming from a previous onboarding session
@@ -131,13 +153,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       try {
         await acceptInvite(token);
 
-        // Track onboarding completion via invite
-        // Use > 1 to check for OTHER pending invites beyond the one being accepted
-        trackEvent("onboarding_completed", {
-          has_pending_invites: pendingInvites.length > 1,
-          action: "joined",
-        });
-
+        trackOnboardingCompleted("joined");
         finishOnboarding();
       } catch (error: unknown) {
         const err = error as Error;
@@ -145,7 +161,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         setAcceptingToken(null);
       }
     },
-    [acceptInvite, finishOnboarding, pendingInvites.length],
+    [acceptInvite, finishOnboarding, trackOnboardingCompleted],
   );
 
   const handleCreateWorkspace = useCallback(async () => {
@@ -194,7 +210,6 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           companySize: data.companySize,
           primaryDatabase: data.primaryDatabase,
           dataWarehouse: data.dataWarehouse,
-          hasNoDatabase: data.hasNoDatabase,
         });
       } catch (error) {
         console.error("Failed to save qualification data:", error);
@@ -208,8 +223,6 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
   const handlePathSelected = useCallback(
     async (path: OnboardingPath) => {
-      setSelectedPath(path);
-
       if (path === "demo") {
         // Provision demo database
         setProvisioningDemo(true);
@@ -229,16 +242,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           // Refresh database connections so the explorer shows the new demo database
           await refreshConnections(workspaceId);
 
-          // Track onboarding completion
-          trackEvent("onboarding_completed", {
-            has_pending_invites: pendingInvites.length > 0,
-            action: "created",
-            path: "demo",
-            qualification_role: qualificationData?.role,
-            qualification_company_size: qualificationData?.companySize,
-            qualification_has_no_database: qualificationData?.hasNoDatabase,
-          });
-
+          trackOnboardingCompleted("created", "demo");
           finishOnboarding();
         } catch (error: unknown) {
           const err = error as Error;
@@ -254,8 +258,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       createdWorkspaceId,
       currentWorkspace?.id,
       finishOnboarding,
-      pendingInvites.length,
-      qualificationData,
+      trackOnboardingCompleted,
       refreshWorkspaces,
       refreshConnections,
     ],
@@ -264,18 +267,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const handleDatabaseSuccess = useCallback(() => {
     setShowDatabaseDialog(false);
 
-    // Track onboarding completion
-    trackEvent("onboarding_completed", {
-      has_pending_invites: pendingInvites.length > 0,
-      action: "created",
-      path: "connect",
-      qualification_role: qualificationData?.role,
-      qualification_company_size: qualificationData?.companySize,
-      qualification_has_no_database: qualificationData?.hasNoDatabase,
-    });
-
+    trackOnboardingCompleted("created", "connect");
     finishOnboarding();
-  }, [finishOnboarding, pendingInvites.length, qualificationData]);
+  }, [finishOnboarding, trackOnboardingCompleted]);
 
   const handleBackToPath = useCallback(() => {
     setState("path");

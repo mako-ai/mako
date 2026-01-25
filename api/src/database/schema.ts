@@ -9,8 +9,8 @@ export interface IUserOnboarding {
   completedAt?: Date;
   companySize?: "hobby" | "startup" | "growth" | "enterprise";
   role?: string;
-  databaseTypes?: string[]; // What DBs they work with
-  hasNoDatabase?: boolean; // Selected "I don't have a database yet"
+  primaryDatabase?: string; // User's primary database (postgresql, mysql, etc.) - "none" if no database
+  dataWarehouse?: string; // User's data warehouse (snowflake, bigquery, etc.)
 }
 
 /**
@@ -97,12 +97,12 @@ const UserSchema = new Schema<IUser>(
         type: String,
         required: false,
       },
-      databaseTypes: {
-        type: [String],
+      primaryDatabase: {
+        type: String,
         required: false,
       },
-      hasNoDatabase: {
-        type: Boolean,
+      dataWarehouse: {
+        type: String,
         required: false,
       },
     },

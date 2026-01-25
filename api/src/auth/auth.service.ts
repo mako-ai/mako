@@ -538,14 +538,18 @@ export class AuthService {
 
     if (!user) {
       // Return silently for security - don't reveal if email exists
-      logger.debug("Password reset requested for non-existent email", { email: normalizedEmail });
+      logger.debug("Password reset requested for non-existent email", {
+        email: normalizedEmail,
+      });
       return;
     }
 
     // Check if user has a password (not OAuth-only)
     if (!user.hashedPassword) {
       // User is OAuth-only - silently ignore for security
-      logger.debug("Password reset requested for OAuth-only account", { email: normalizedEmail });
+      logger.debug("Password reset requested for OAuth-only account", {
+        email: normalizedEmail,
+      });
       return;
     }
 
@@ -625,8 +629,8 @@ export class AuthService {
     data: {
       role?: string;
       companySize?: "hobby" | "startup" | "growth" | "enterprise";
-      databaseTypes?: string[];
-      hasNoDatabase?: boolean;
+      primaryDatabase?: string;
+      dataWarehouse?: string;
     },
   ) {
     const user = await User.findById(userId);

@@ -100,7 +100,6 @@ export interface IWorkspace extends Document {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
-    hasDemoDatabase?: boolean;
   };
   apiKeys?: IWorkspaceApiKey[];
 }
@@ -545,10 +544,6 @@ Add any specific instructions for how the AI should interpret your data or respo
 ---
 
 *This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
-      },
-      hasDemoDatabase: {
-        type: Boolean,
-        default: false,
       },
     },
     apiKeys: [

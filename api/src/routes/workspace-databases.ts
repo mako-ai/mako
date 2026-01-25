@@ -9,7 +9,6 @@ import {
   DatabaseConnection,
   IDatabaseConnection,
   Flow,
-  Workspace,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { Types } from "mongoose";
@@ -88,11 +87,6 @@ workspaceDatabaseRoutes.post(
       });
 
       await database.save();
-
-      // Update workspace settings to mark it has demo database
-      await Workspace.findByIdAndUpdate(workspace._id, {
-        $set: { "settings.hasDemoDatabase": true },
-      });
 
       return c.json(
         {

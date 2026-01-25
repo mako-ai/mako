@@ -293,7 +293,6 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
         trackEvent("database_connection_created", {
           connection_type: values.type,
           connection_id: savedData?._id,
-          isDemo: false,
         });
       }
 

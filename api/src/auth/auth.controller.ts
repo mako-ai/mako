@@ -211,14 +211,14 @@ authRoutes.get("/me", authMiddleware, async c => {
 authRoutes.put("/onboarding", authMiddleware, async c => {
   try {
     const user = c.get("user");
-    const { role, companySize, databaseTypes, hasNoDatabase } =
+    const { role, companySize, primaryDatabase, dataWarehouse } =
       await c.req.json();
 
     await authService.updateOnboardingData(user.id, {
       role,
       companySize,
-      databaseTypes,
-      hasNoDatabase,
+      primaryDatabase,
+      dataWarehouse,
     });
 
     return c.json({
@@ -459,7 +459,9 @@ authRoutes.get("/google/callback", async c => {
       );
 
       if (!response.ok) {
-        logger.error("Failed to fetch Google user info", { response: await response.text() });
+        logger.error("Failed to fetch Google user info", {
+          response: await response.text(),
+        });
         return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
       }
 
@@ -467,7 +469,9 @@ authRoutes.get("/google/callback", async c => {
     }
 
     if (!googleUser.sub) {
-      logger.error("Google user info did not contain 'sub' identifier", { googleUser });
+      logger.error("Google user info did not contain 'sub' identifier", {
+        googleUser,
+      });
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 

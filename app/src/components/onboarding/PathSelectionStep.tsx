@@ -31,7 +31,7 @@ export function PathSelectionStep({
   const theme = useTheme();
 
   // Determine recommendation based on qualification data
-  const recommendDemo = qualificationData.hasNoDatabase;
+  const recommendDemo = qualificationData.primaryDatabase === "none";
 
   // Option card component
   const OptionCard = ({

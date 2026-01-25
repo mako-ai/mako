@@ -17,9 +17,8 @@ import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 export interface QualificationData {
   role: string;
   companySize: "hobby" | "startup" | "growth" | "enterprise";
-  primaryDatabase: string;
+  primaryDatabase: string; // "none" if user has no database
   dataWarehouse: string;
-  hasNoDatabase: boolean;
 }
 
 interface QualificationStepProps {
@@ -140,7 +139,6 @@ export function QualificationStep({
       companySize: companySize as QualificationData["companySize"],
       primaryDatabase: getFinalValue(primaryDatabase, databaseOther),
       dataWarehouse: getFinalValue(dataWarehouse, warehouseOther),
-      hasNoDatabase: primaryDatabase === "none",
     });
   }, [
     role,
@@ -163,8 +161,7 @@ export function QualificationStep({
           role: getFinalValue(role, roleOther),
           companySize: companySize as QualificationData["companySize"],
           primaryDatabase: "none",
-          dataWarehouse: "",
-          hasNoDatabase: true,
+          dataWarehouse: "none",
         });
       } else {
         setQuestionIndex(prev => prev + 1);
