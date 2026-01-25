@@ -82,50 +82,137 @@ export const useConsoleTreeStore = create<TreeState>()(
     },
     addConsole: (workspaceId, path, id) => {
       set(state => {
-        let tree = state.trees[workspaceId] || [];
+        const tree = state.trees[workspaceId] || [];
         const segments = path.split("/").filter(Boolean);
         const fileName = segments[segments.length - 1];
+        const folderSegments = segments.slice(0, -1); // All segments except the file name
+
+        // Helper to find the correct array to insert into (navigates into nested folders)
+        const findTargetArray = (
+          nodes: ConsoleEntry[],
+          remainingSegments: string[],
+        ): ConsoleEntry[] | null => {
+          if (remainingSegments.length === 0) {
+            return nodes; // We're at the target level
+          }
+
+          const folderName = remainingSegments[0];
+          const folder = nodes.find(
+            node => node.isDirectory && node.name === folderName,
+          );
+
+          if (!folder) {
+            return null; // Folder not found in tree
+          }
+
+          // Ensure children array exists
+          if (!folder.children) {
+            folder.children = [];
+          }
+
+          return findTargetArray(folder.children, remainingSegments.slice(1));
+        };
+
+        // Helper to remove an entry by path from nested structure
+        const removeByPath = (
+          nodes: ConsoleEntry[],
+          targetPath: string,
+        ): boolean => {
+          const index = nodes.findIndex(item => item.path === targetPath);
+          if (index !== -1) {
+            nodes.splice(index, 1);
+            return true;
+          }
+          // Check in children
+          for (const node of nodes) {
+            if (node.isDirectory && node.children) {
+              if (removeByPath(node.children, targetPath)) {
+                return true;
+              }
+            }
+          }
+          return false;
+        };
+
+        // Helper to find and update an entry by ID in nested structure
+        const findAndUpdateById = (
+          nodes: ConsoleEntry[],
+          targetId: string,
+          newName: string,
+          newPath: string,
+        ): boolean => {
+          const index = nodes.findIndex(item => item.id === targetId);
+          if (index !== -1) {
+            nodes[index] = {
+              ...nodes[index],
+              name: newName,
+              path: newPath,
+            };
+            return true;
+          }
+          // Check in children
+          for (const node of nodes) {
+            if (node.isDirectory && node.children) {
+              if (
+                findAndUpdateById(node.children, targetId, newName, newPath)
+              ) {
+                return true;
+              }
+            }
+          }
+          return false;
+        };
 
         // Remove any existing entry at the same path (handles overwrite conflicts)
-        // This ensures we don't have duplicates when saving to a path that previously existed
-        tree = tree.filter(item => item.path !== path);
+        removeByPath(tree, path);
 
-        // Check if the same ID already exists (update case)
-        const existingIndex = tree.findIndex(item => item.id === id);
-        if (existingIndex !== -1) {
-          // Update existing entry with new path/name
-          tree[existingIndex] = {
-            ...tree[existingIndex],
-            name: fileName,
-            path: path,
-          };
-        } else {
-          // Add new entry
-          const newConsole = {
+        // Check if the same ID already exists (update case) - search entire tree
+        if (findAndUpdateById(tree, id, fileName, path)) {
+          // Entry was updated in place
+          state.trees[workspaceId] = tree;
+          return;
+        }
+
+        // Add new entry - find the correct target array based on folder path
+        const targetArray = findTargetArray(tree, folderSegments);
+
+        if (!targetArray) {
+          // Folder doesn't exist in tree yet - add to root as fallback
+          // This can happen if tree hasn't been fetched yet
+          const newConsole: ConsoleEntry = {
             name: fileName,
             path: path,
             isDirectory: false,
             id: id,
           };
-
-          // Find the correct position to insert (alphabetically)
-          // Directories come first, then files, both sorted alphabetically
-          let insertIndex = tree.length;
-          for (let i = 0; i < tree.length; i++) {
-            const item = tree[i];
-            // If current item is a file and we're inserting a file
-            if (!item.isDirectory) {
-              // Compare names alphabetically
-              if (fileName.toLowerCase() < item.name.toLowerCase()) {
-                insertIndex = i;
-                break;
-              }
-            }
-          }
-
-          // Insert at the correct position
-          tree.splice(insertIndex, 0, newConsole);
+          tree.push(newConsole);
+          state.trees[workspaceId] = tree;
+          return;
         }
+
+        const newConsole: ConsoleEntry = {
+          name: fileName,
+          path: path,
+          isDirectory: false,
+          id: id,
+        };
+
+        // Find the correct position to insert (alphabetically)
+        // Directories come first, then files, both sorted alphabetically
+        let insertIndex = targetArray.length;
+        for (let i = 0; i < targetArray.length; i++) {
+          const item = targetArray[i];
+          // Skip directories - they come first
+          if (item.isDirectory) continue;
+          // Compare names alphabetically among files
+          if (fileName.toLowerCase() < item.name.toLowerCase()) {
+            insertIndex = i;
+            break;
+          }
+        }
+
+        // Insert at the correct position
+        targetArray.splice(insertIndex, 0, newConsole);
         state.trees[workspaceId] = tree;
       });
     },

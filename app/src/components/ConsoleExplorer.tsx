@@ -119,12 +119,8 @@ function ConsoleExplorer(
     await refreshTree(currentWorkspace.id);
   };
 
-  useEffect(() => {
-    if (currentWorkspace) {
-      useConsoleTreeStore.getState().init(currentWorkspace.id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id]);
+  // Console tree is preloaded in workspace-context.tsx when workspace changes
+  // No need to call init here - the tree is already loaded
 
   useImperativeHandle(ref, () => ({
     refresh: () => {
