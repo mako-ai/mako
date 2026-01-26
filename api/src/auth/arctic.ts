@@ -60,17 +60,17 @@ export function getGitHub(): GitHub {
 
   if (!_github) {
     if (
-      !process.env.GITHUB_CLIENT_ID ||
-      !process.env.GITHUB_CLIENT_SECRET ||
+      !process.env.GH_CLIENT_ID ||
+      !process.env.GH_CLIENT_SECRET ||
       !process.env.BASE_URL
     ) {
       throw new Error(
-        "Missing GitHub OAuth environment variables: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, BASE_URL",
+        "Missing GitHub OAuth environment variables: GH_CLIENT_ID, GH_CLIENT_SECRET, BASE_URL",
       );
     }
     _github = new GitHub(
-      process.env.GITHUB_CLIENT_ID,
-      process.env.GITHUB_CLIENT_SECRET,
+      process.env.GH_CLIENT_ID,
+      process.env.GH_CLIENT_SECRET,
       `${process.env.BASE_URL}/api/auth/github/callback`,
     );
   }

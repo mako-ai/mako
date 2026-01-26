@@ -157,8 +157,8 @@ jobs:
       DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
-      GITHUB_CLIENT_ID: ${{ vars.GITHUB_CLIENT_ID }}
-      GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+      GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
+      GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
@@ -376,8 +376,8 @@ jobs:
             --set-env-vars DATABASE_URL=${{ steps.db-url.outputs.db_url }} \
             --set-env-vars DISABLE_OAUTH=true \
             --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
-            --set-env-vars GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID} \
-            --set-env-vars GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET} \
+            --set-env-vars GH_CLIENT_ID=${GH_CLIENT_ID} \
+            --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
@@ -552,8 +552,8 @@ jobs:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
-      GITHUB_CLIENT_ID: ${{ vars.GITHUB_CLIENT_ID }}
-      GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+      GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
+      GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       IMAGE_NAME: mako
@@ -668,8 +668,8 @@ jobs:
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
             --set-env-vars DATABASE_URL=${DATABASE_URL} \
             --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
-            --set-env-vars GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID} \
-            --set-env-vars GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET} \
+            --set-env-vars GH_CLIENT_ID=${GH_CLIENT_ID} \
+            --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \

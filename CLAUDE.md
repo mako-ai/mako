@@ -293,8 +293,8 @@ MONGODB_MIN_POOL_SIZE=2                                   # Connection pool min 
 # Authentication (OAuth)
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
-GITHUB_CLIENT_ID=your_github_client_id
-GITHUB_CLIENT_SECRET=your_github_client_secret
+GH_CLIENT_ID=your_github_client_id
+GH_CLIENT_SECRET=your_github_client_secret
 
 # Session & Security
 SESSION_SECRET=generate_32_char_random_string             # 32+ character random string
