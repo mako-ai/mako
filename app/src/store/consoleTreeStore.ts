@@ -20,6 +20,69 @@ export interface ConsoleEntry {
   executionCount?: number;
 }
 
+// Helper to find the correct array to insert into (navigates into nested folders)
+const findTargetArray = (
+  nodes: ConsoleEntry[],
+  remainingSegments: string[],
+): ConsoleEntry[] | null => {
+  if (remainingSegments.length === 0) {
+    return nodes; // We're at the target level
+  }
+
+  const folderName = remainingSegments[0];
+  const folder = nodes.find(
+    node => node.isDirectory && node.name === folderName,
+  );
+
+  if (!folder) {
+    return null; // Folder not found in tree
+  }
+
+  // Ensure children array exists
+  if (!folder.children) {
+    folder.children = [];
+  }
+
+  return findTargetArray(folder.children, remainingSegments.slice(1));
+};
+
+// Remove entry by ID from anywhere in tree, return removed entry if found
+const removeById = (
+  nodes: ConsoleEntry[],
+  targetId: string,
+): ConsoleEntry | null => {
+  const index = nodes.findIndex(item => item.id === targetId);
+  if (index !== -1) {
+    return nodes.splice(index, 1)[0];
+  }
+  for (const node of nodes) {
+    if (node.isDirectory && node.children) {
+      const removed = removeById(node.children, targetId);
+      if (removed) return removed;
+    }
+  }
+  return null;
+};
+
+// Insert entry alphabetically (directories first, then files sorted by name)
+const insertAlphabetically = (
+  nodes: ConsoleEntry[],
+  entry: ConsoleEntry,
+): void => {
+  let insertIndex = nodes.length;
+  for (let i = 0; i < nodes.length; i++) {
+    const item = nodes[i];
+    // Skip directories - they come first
+    if (item.isDirectory) continue;
+    // Compare names alphabetically among files
+    if (entry.name.toLowerCase() < item.name.toLowerCase()) {
+      insertIndex = i;
+      break;
+    }
+  }
+  nodes.splice(insertIndex, 0, entry);
+};
+
 interface TreeState {
   trees: Record<string, ConsoleEntry[]>; // workspaceId => tree
   loading: Record<string, boolean>; // workspaceId => bool
@@ -82,50 +145,30 @@ export const useConsoleTreeStore = create<TreeState>()(
     },
     addConsole: (workspaceId, path, id) => {
       set(state => {
-        let tree = state.trees[workspaceId] || [];
+        const tree = state.trees[workspaceId] || [];
         const segments = path.split("/").filter(Boolean);
         const fileName = segments[segments.length - 1];
+        const folderSegments = segments.slice(0, -1);
 
-        // Remove any existing entry at the same path (handles overwrite conflicts)
-        // This ensures we don't have duplicates when saving to a path that previously existed
-        tree = tree.filter(item => item.path !== path);
+        // 1. Remove existing entry with this ID (if any) - handles moves correctly
+        const existing = removeById(tree, id);
 
-        // Check if the same ID already exists (update case)
-        const existingIndex = tree.findIndex(item => item.id === id);
-        if (existingIndex !== -1) {
-          // Update existing entry with new path/name
-          tree[existingIndex] = {
-            ...tree[existingIndex],
-            name: fileName,
-            path: path,
-          };
-        } else {
-          // Add new entry
-          const newConsole = {
-            name: fileName,
-            path: path,
-            isDirectory: false,
-            id: id,
-          };
+        // 2. Find target folder
+        const targetArray = findTargetArray(tree, folderSegments);
 
-          // Find the correct position to insert (alphabetically)
-          // Directories come first, then files, both sorted alphabetically
-          let insertIndex = tree.length;
-          for (let i = 0; i < tree.length; i++) {
-            const item = tree[i];
-            // If current item is a file and we're inserting a file
-            if (!item.isDirectory) {
-              // Compare names alphabetically
-              if (fileName.toLowerCase() < item.name.toLowerCase()) {
-                insertIndex = i;
-                break;
-              }
-            }
-          }
+        // 3. Create new entry, preserving metadata from existing if available
+        const newConsole: ConsoleEntry = {
+          ...(existing || {}),
+          name: fileName,
+          path: path,
+          isDirectory: false,
+          id: id,
+        };
 
-          // Insert at the correct position
-          tree.splice(insertIndex, 0, newConsole);
-        }
+        // 4. Insert alphabetically into target (or root as fallback)
+        const destination = targetArray || tree;
+        insertAlphabetically(destination, newConsole);
+
         state.trees[workspaceId] = tree;
       });
     },

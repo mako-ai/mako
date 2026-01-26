@@ -22,6 +22,7 @@ import { useChatStore } from "../store/chatStore";
 
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
+import { useConsoleTreeStore } from "../store/consoleTreeStore";
 
 interface WorkspaceContextState {
   // State
@@ -116,6 +117,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       useSchemaStore
         .getState()
         .preloadConnectionsAndDatabases(currentWorkspace.id);
+    }
+  }, [currentWorkspace?.id]);
+
+  // Background preload console tree when workspace changes
+  // This ensures the tree is ready before any optimistic addConsole calls
+  useEffect(() => {
+    if (currentWorkspace?.id) {
+      useConsoleTreeStore.getState().fetchTree(currentWorkspace.id);
     }
   }, [currentWorkspace?.id]);
 
