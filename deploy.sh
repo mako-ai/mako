@@ -69,6 +69,49 @@ echo "API startup verification succeeded."
 #   --repository-format=docker \
 #   --location=$REGION
 
+# -------------------------------------------------------------
+# Static Outbound IP Setup (ONE-TIME - already executed)
+# This enables IP whitelisting for external database connections.
+# Static IP: 34.79.190.46
+# -------------------------------------------------------------
+#
+# # 1. Reserve static IP
+# gcloud compute addresses create mako-static-ip \
+#     --region=$REGION \
+#     --project=$PROJECT_ID
+#
+# # 2. Create VPC
+# gcloud compute networks create mako-vpc \
+#     --subnet-mode=custom \
+#     --project=$PROJECT_ID
+#
+# # 3. Create subnet
+# gcloud compute networks subnets create mako-subnet \
+#     --network=mako-vpc \
+#     --region=$REGION \
+#     --range=10.0.0.0/24 \
+#     --project=$PROJECT_ID
+#
+# # 4. Create Cloud Router
+# gcloud compute routers create mako-router \
+#     --network=mako-vpc \
+#     --region=$REGION \
+#     --project=$PROJECT_ID
+#
+# # 5. Create Cloud NAT with static IP
+# gcloud compute routers nats create mako-nat \
+#     --router=mako-router \
+#     --region=$REGION \
+#     --nat-external-ip-pool=mako-static-ip \
+#     --nat-all-subnet-ip-ranges \
+#     --project=$PROJECT_ID
+#
+# # 6. Get the static IP to share with users
+# gcloud compute addresses describe mako-static-ip \
+#     --region=$REGION \
+#     --format="get(address)"
+# -------------------------------------------------------------
+
 # Rebuild and redeploy (explicitly build for linux/amd64 platform)
 echo "Building Docker image..."
 
@@ -119,7 +162,10 @@ gcloud run deploy mako \
   --region $REGION \
   --env-vars-file env.yaml \
   --min-instances=1 \
-  --timeout=600
+  --timeout=600 \
+  --network=mako-vpc \
+  --subnet=mako-subnet \
+  --vpc-egress=all-traffic
 
 # -------------------------------------------------------------
 # Run database migrations
