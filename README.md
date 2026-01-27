@@ -97,6 +97,16 @@ Mako uses a modern, scalable architecture designed for flexibility and performan
 - **Database**: MongoDB (Metadata & Data Warehouse)
 - **Sync Engine**: Custom incremental sync with atomic collection swaps
 
+## 🌐 IP Whitelisting
+
+If your database requires IP whitelisting, add the following static IP to your allowlist:
+
+```
+34.79.190.46
+```
+
+This IP is used by Mako's cloud service for all outbound database connections.
+
 ## 💻 Development Commands
 
 | Command              | Description                                 |

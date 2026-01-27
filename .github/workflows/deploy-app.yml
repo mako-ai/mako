@@ -370,6 +370,9 @@ jobs:
             --min-instances=0 \
             --max-instances=2 \
             --allow-unauthenticated \
+            --network=mako-vpc \
+            --subnet=mako-subnet \
+            --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
@@ -663,6 +666,9 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=600 \
             --min-instances=1 \
+            --network=mako-vpc \
+            --subnet=mako-subnet \
+            --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
