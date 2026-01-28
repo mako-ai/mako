@@ -54,7 +54,10 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
-import { ConsoleModification } from "../hooks/useMonacoConsole";
+import {
+  ConsoleModification,
+  ConsoleModificationPayload,
+} from "../hooks/useMonacoConsole";
 import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
 
@@ -399,15 +402,6 @@ const StreamingIndicator = React.memo(() => {
 });
 
 StreamingIndicator.displayName = "StreamingIndicator";
-
-// Extended ConsoleModification with fields for console creation
-type ConsoleModificationPayload = ConsoleModification & {
-  consoleId?: string;
-  title?: string;
-  connectionId?: string;
-  databaseId?: string;
-  databaseName?: string;
-};
 
 interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
@@ -835,6 +829,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             connectionId: effectiveConnectionId,
             databaseId: effectiveDatabaseId,
             databaseName: effectiveDatabaseName,
+            isDirty: true, // Mark as dirty so it won't be replaced by pristine tab logic
           });
         }
 

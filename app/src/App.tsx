@@ -23,7 +23,7 @@ import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
-import { ConsoleModification } from "./hooks/useMonacoConsole";
+import { ConsoleModificationPayload } from "./hooks/useMonacoConsole";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
 import { RegisterPage } from "./components/RegisterPage";
@@ -68,13 +68,7 @@ function MainApp() {
 
   // Handle console modification from AI
   const handleConsoleModification = async (
-    modification: ConsoleModification & {
-      consoleId?: string;
-      title?: string;
-      connectionId?: string;
-      databaseId?: string;
-      databaseName?: string;
-    },
+    modification: ConsoleModificationPayload,
   ) => {
     // handleConsoleModification called
 
@@ -102,6 +96,7 @@ function MainApp() {
         databaseId: modification.databaseId,
         databaseName: modification.databaseName,
         kind: "console",
+        isDirty: modification.isDirty ?? true, // Agent-created consoles are dirty by default
       });
       setActiveTab(newConsoleId);
       return;
