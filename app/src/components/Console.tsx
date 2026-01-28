@@ -915,23 +915,33 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               {isCancelling ? "Cancelling..." : "Cancel"}
             </Button>
           ) : (
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={<PlayIcon />}
-              onClick={handleExecute}
-              disabled={!connectionId}
-              disableElevation
-              sx={{
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                maxWidth: "200px",
-                minWidth: "120px",
-              }}
+            <Tooltip
+              title={
+                !connectionId
+                  ? "Select a database connection to run queries"
+                  : ""
+              }
             >
-              Run (⌘/Ctrl+Enter)
-            </Button>
+              <span>
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={<PlayIcon />}
+                  onClick={handleExecute}
+                  disabled={!connectionId}
+                  disableElevation
+                  sx={{
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    maxWidth: "200px",
+                    minWidth: "120px",
+                  }}
+                >
+                  Run (⌘/Ctrl+Enter)
+                </Button>
+              </span>
+            </Tooltip>
           )}
 
           {onSave && (
