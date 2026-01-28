@@ -12,6 +12,16 @@ export interface ConsoleModification {
   endLine?: number;
 }
 
+// Extended ConsoleModification with fields for console creation/modification handlers
+export type ConsoleModificationPayload = ConsoleModification & {
+  consoleId?: string;
+  title?: string;
+  connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
+  isDirty?: boolean;
+};
+
 interface UseMonacoConsoleOptions {
   consoleId: string;
   onContentChange?: (content: string) => void;
