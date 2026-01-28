@@ -283,7 +283,7 @@ export class DatabaseConnectionService {
   > = new Map();
 
   private cleanupInterval: NodeJS.Timeout | null = null;
-  private readonly maxIdleTime = 60 * 1000; // 60 seconds - remove unused MongoClient from cache
+  private readonly userDatabaseMaxIdleTime = 15 * 60 * 1000; // 15 minutes - keep user database pools alive during active sessions
 
   // BigQuery auth/client caching (in-memory)
   private bigQueryClientCache: Map<
@@ -314,9 +314,10 @@ export class DatabaseConnectionService {
     );
     this.drivers.set("cloudflare-d1", new CloudflareD1DatabaseDriver() as any);
     this.drivers.set("cloudflare-kv", new CloudflareKVDatabaseDriver() as any);
-    // Start cleanup interval for MongoDB connections
+    // Start cleanup interval for idle connections (MongoDB and PostgreSQL)
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
+      void this.cleanupIdlePostgresPools();
     }, 60000); // Every minute
   }
 
@@ -1581,7 +1582,7 @@ export class DatabaseConnectionService {
 
     for (const [key, connection] of this.mongoConnections.entries()) {
       const idleTime = now.getTime() - connection.lastUsed.getTime();
-      if (idleTime > this.maxIdleTime) {
+      if (idleTime > this.userDatabaseMaxIdleTime) {
         toRemove.push(key);
       }
     }
@@ -2220,8 +2221,9 @@ export class DatabaseConnectionService {
 
   // PostgreSQL specific methods
 
-  // PostgreSQL connection pools (keyed by databaseId:databaseName)
-  private postgresPools: Map<string, PgPool> = new Map();
+  // PostgreSQL connection pools with lastUsed tracking (keyed by databaseId:databaseName)
+  private postgresPools: Map<string, { pool: PgPool; lastUsed: Date }> =
+    new Map();
 
   /**
    * Build PostgreSQL pool/client configuration with timeout settings
@@ -2283,9 +2285,11 @@ export class DatabaseConnectionService {
     const dbName = targetDatabase || database.connection.database || "default";
     const key = `${database._id.toString()}:${dbName}`;
 
-    const existingPool = this.postgresPools.get(key);
-    if (existingPool) {
-      return existingPool;
+    const existing = this.postgresPools.get(key);
+    if (existing) {
+      // Update lastUsed timestamp to keep the pool alive during active use
+      existing.lastUsed = new Date();
+      return existing.pool;
     }
 
     const config = this.buildPostgreSQLConfig(database, targetDatabase);
@@ -2310,11 +2314,17 @@ export class DatabaseConnectionService {
     // Handle pool errors to prevent crashes and clean up stale pools
     pool.on("error", err => {
       logger.error("PostgreSQL pool error", { key, error: err.message });
-      // Remove the pool so it gets recreated on next use
+      // Close the pool and remove it so it gets recreated on next use
       this.postgresPools.delete(key);
+      pool.end().catch(endErr => {
+        logger.error("Error closing PostgreSQL pool after error", {
+          key,
+          error: endErr,
+        });
+      });
     });
 
-    this.postgresPools.set(key, pool);
+    this.postgresPools.set(key, { pool, lastUsed: new Date() });
     logger.debug("Created PostgreSQL pool", { key });
 
     return pool;
@@ -2326,7 +2336,7 @@ export class DatabaseConnectionService {
   private async closePostgresPool(databaseId: string): Promise<void> {
     // Find and close all pools for this database ID
     const keysToDelete: string[] = [];
-    for (const [key, pool] of this.postgresPools.entries()) {
+    for (const [key, { pool }] of this.postgresPools.entries()) {
       if (key.startsWith(`${databaseId}:`)) {
         keysToDelete.push(key);
         try {
@@ -2347,7 +2357,7 @@ export class DatabaseConnectionService {
    */
   private async closeAllPostgresPools(): Promise<void> {
     const promises = Array.from(this.postgresPools.entries()).map(
-      async ([key, pool]) => {
+      async ([key, { pool }]) => {
         try {
           await pool.end();
           logger.debug("Closed PostgreSQL pool", { key });
@@ -2358,6 +2368,35 @@ export class DatabaseConnectionService {
     );
     await Promise.all(promises);
     this.postgresPools.clear();
+  }
+
+  /**
+   * Clean up idle PostgreSQL pools that haven't been used recently
+   * Called periodically to free memory from unused pool objects
+   */
+  private async cleanupIdlePostgresPools(): Promise<void> {
+    const now = new Date();
+    const toRemove: string[] = [];
+
+    for (const [key, { lastUsed }] of this.postgresPools.entries()) {
+      const idleTime = now.getTime() - lastUsed.getTime();
+      if (idleTime > this.userDatabaseMaxIdleTime) {
+        toRemove.push(key);
+      }
+    }
+
+    for (const key of toRemove) {
+      const entry = this.postgresPools.get(key);
+      if (entry) {
+        try {
+          await entry.pool.end();
+          logger.info("Closed idle PostgreSQL pool", { key });
+        } catch (error) {
+          logger.error("Error closing idle PostgreSQL pool", { key, error });
+        }
+        this.postgresPools.delete(key);
+      }
+    }
   }
 
   private async testPostgreSQLConnection(
