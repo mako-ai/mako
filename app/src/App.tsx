@@ -74,6 +74,7 @@ function MainApp() {
       connectionId?: string;
       databaseId?: string;
       databaseName?: string;
+      isDirty?: boolean;
     },
   ) => {
     // handleConsoleModification called
