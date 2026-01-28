@@ -2355,21 +2355,29 @@ export class DatabaseConnectionService {
    * Close a specific PostgreSQL pool
    */
   private async closePostgresPool(databaseId: string): Promise<void> {
-    // Find and close all pools for this database ID
-    const keysToDelete: string[] = [];
+    // Find all pools for this database ID and collect them with their keys
+    const poolsToClose: Array<{ key: string; pool: PgPool }> = [];
     for (const [key, { pool }] of this.postgresPools.entries()) {
       if (key.startsWith(`${databaseId}:`)) {
-        keysToDelete.push(key);
-        try {
-          await pool.end();
-          logger.debug("Closed PostgreSQL pool", { key });
-        } catch (error) {
-          logger.error("Error closing PostgreSQL pool", { key, error });
-        }
+        poolsToClose.push({ key, pool });
       }
     }
-    for (const key of keysToDelete) {
+
+    // Delete all keys from map BEFORE closing pools to prevent race condition.
+    // If we delete after pool.end(), concurrent calls to getPostgresPool could
+    // retrieve the pool while it's being closed, causing pool.connect() to fail.
+    for (const { key } of poolsToClose) {
       this.postgresPools.delete(key);
+    }
+
+    // Now close all pools (order doesn't matter for correctness anymore)
+    for (const { key, pool } of poolsToClose) {
+      try {
+        await pool.end();
+        logger.debug("Closed PostgreSQL pool", { key });
+      } catch (error) {
+        logger.error("Error closing PostgreSQL pool", { key, error });
+      }
     }
   }
 
@@ -2377,18 +2385,21 @@ export class DatabaseConnectionService {
    * Close all PostgreSQL pools
    */
   private async closeAllPostgresPools(): Promise<void> {
-    const promises = Array.from(this.postgresPools.entries()).map(
-      async ([key, { pool }]) => {
-        try {
-          await pool.end();
-          logger.debug("Closed PostgreSQL pool", { key });
-        } catch (error) {
-          logger.error("Error closing PostgreSQL pool", { key, error });
-        }
-      },
-    );
-    await Promise.all(promises);
+    // Capture pools before clearing to avoid race condition.
+    // Clear map BEFORE closing pools so concurrent calls to getPostgresPool
+    // will create new pools instead of retrieving ones being closed.
+    const poolsToClose = Array.from(this.postgresPools.entries());
     this.postgresPools.clear();
+
+    const promises = poolsToClose.map(async ([key, { pool }]) => {
+      try {
+        await pool.end();
+        logger.debug("Closed PostgreSQL pool", { key });
+      } catch (error) {
+        logger.error("Error closing PostgreSQL pool", { key, error });
+      }
+    });
+    await Promise.all(promises);
   }
 
   /**
@@ -2416,13 +2427,16 @@ export class DatabaseConnectionService {
         if (idleTime <= this.userDatabaseMaxIdleTime) {
           continue; // Pool was used recently, skip closing
         }
+        // IMPORTANT: Delete from map BEFORE calling pool.end() to prevent race condition.
+        // If we delete after, concurrent calls to getPostgresPool could retrieve
+        // the pool while it's being closed, causing pool.connect() to fail.
+        this.postgresPools.delete(key);
         try {
           await entry.pool.end();
           logger.info("Closed idle PostgreSQL pool", { key });
         } catch (error) {
           logger.error("Error closing idle PostgreSQL pool", { key, error });
         }
-        this.postgresPools.delete(key);
       }
     }
   }
