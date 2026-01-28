@@ -102,6 +102,7 @@ function MainApp() {
         databaseId: modification.databaseId,
         databaseName: modification.databaseName,
         kind: "console",
+        isDirty: modification.isDirty ?? true, // Agent-created consoles are dirty by default
       });
       setActiveTab(newConsoleId);
       return;

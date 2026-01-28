@@ -407,6 +407,7 @@ type ConsoleModificationPayload = ConsoleModification & {
   connectionId?: string;
   databaseId?: string;
   databaseName?: string;
+  isDirty?: boolean;
 };
 
 interface ChatProps {
@@ -835,6 +836,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             connectionId: effectiveConnectionId,
             databaseId: effectiveDatabaseId,
             databaseName: effectiveDatabaseName,
+            isDirty: true, // Mark as dirty so it won't be replaced by pristine tab logic
           });
         }
 
