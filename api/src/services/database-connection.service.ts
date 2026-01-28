@@ -1155,6 +1155,12 @@ export class DatabaseConnectionService {
 
   /**
    * Cancel a running PostgreSQL query
+   *
+   * IMPORTANT: This intentionally creates a dedicated client outside the pool.
+   * Since the pool has limited connections (max: 2), using pool.query() would
+   * deadlock if all connections are occupied by running queries—the cancellation
+   * request would wait for a connection that can never be released because the
+   * query being cancelled is holding it.
    */
   async cancelPostgresQuery(
     executionId: string,
@@ -1164,10 +1170,14 @@ export class DatabaseConnectionService {
       return { success: false, error: "Query not found or already completed" };
     }
 
+    let cancelClient: PgClient | null = null;
     try {
-      // Use the pool to get a connection for cancellation
-      const pool = await this.getPostgresPool(query.database);
-      const res = await pool.query<{ cancelled: boolean }>(
+      // Create a dedicated connection outside the pool for cancellation
+      // This avoids deadlock when all pool connections are busy
+      const config = this.buildPostgreSQLConfig(query.database);
+      cancelClient = new PgClient(config);
+      await cancelClient.connect();
+      const res = await cancelClient.query<{ cancelled: boolean }>(
         "SELECT pg_cancel_backend($1) as cancelled",
         [query.pid],
       );
@@ -1185,6 +1195,10 @@ export class DatabaseConnectionService {
         success: false,
         error: error?.message || "Failed to cancel query",
       };
+    } finally {
+      if (cancelClient) {
+        await cancelClient.end().catch(() => {});
+      }
     }
   }
 
@@ -1590,6 +1604,13 @@ export class DatabaseConnectionService {
     for (const key of toRemove) {
       const connection = this.mongoConnections.get(key);
       if (connection) {
+        // Re-check lastUsed to avoid closing a connection that was used between passes
+        // This prevents race conditions where getMongoConnection updates lastUsed
+        // after the key was added to toRemove but before we close it
+        const idleTime = now.getTime() - connection.lastUsed.getTime();
+        if (idleTime <= this.userDatabaseMaxIdleTime) {
+          continue; // Connection was used recently, skip closing
+        }
         try {
           await connection.client.close();
           logger.info("Closed idle MongoDB connection", { key });
@@ -2388,6 +2409,13 @@ export class DatabaseConnectionService {
     for (const key of toRemove) {
       const entry = this.postgresPools.get(key);
       if (entry) {
+        // Re-check lastUsed to avoid closing a pool that was used between passes
+        // This prevents race conditions where getPostgresPool updates lastUsed
+        // after the key was added to toRemove but before we close it
+        const idleTime = now.getTime() - entry.lastUsed.getTime();
+        if (idleTime <= this.userDatabaseMaxIdleTime) {
+          continue; // Pool was used recently, skip closing
+        }
         try {
           await entry.pool.end();
           logger.info("Closed idle PostgreSQL pool", { key });
@@ -2464,8 +2492,13 @@ export class DatabaseConnectionService {
       const pool = await this.getPostgresPool(database, targetDatabase);
 
       // Get a client from the pool for this query
-      // This allows us to track the PID for cancellation
-      const client = await pool.connect();
+      // Use retry logic to handle transient connection failures and cold starts
+      // (pool is configured with min: 0, so connections may need to be established fresh)
+      const client = await withRetry(async () => pool.connect(), {
+        maxRetries: this.postgresMaxRetries,
+        baseDelayMs: this.postgresRetryBaseDelayMs,
+        signal,
+      });
 
       try {
         // Get backend PID for cancellation support
