@@ -2303,7 +2303,10 @@ export class DatabaseConnectionService {
     database: IDatabaseConnection,
     targetDatabase?: string,
   ): Promise<PgPool> {
-    const dbName = targetDatabase || database.connection.database || "default";
+    // Use empty string when no database specified to avoid collision with a database literally named "default".
+    // Empty string is not a valid PostgreSQL database name (must start with letter or underscore),
+    // so there's no risk of collision with an actual database name.
+    const dbName = targetDatabase || database.connection.database || "";
     const key = `${database._id.toString()}:${dbName}`;
 
     const existing = this.postgresPools.get(key);
@@ -2335,8 +2338,13 @@ export class DatabaseConnectionService {
     // Handle pool errors to prevent crashes and clean up stale pools
     pool.on("error", err => {
       logger.error("PostgreSQL pool error", { key, error: err.message });
-      // Close the pool and remove it so it gets recreated on next use
-      this.postgresPools.delete(key);
+      // Only remove from map if this is still the active pool for this key.
+      // If this pool was already replaced (e.g., by cleanup + new request),
+      // unconditionally deleting would orphan the new pool and leak connections.
+      const entry = this.postgresPools.get(key);
+      if (entry?.pool === pool) {
+        this.postgresPools.delete(key);
+      }
       pool.end().catch(endErr => {
         logger.error("Error closing PostgreSQL pool after error", {
           key,
