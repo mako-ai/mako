@@ -66,8 +66,13 @@ function Editor() {
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
   >({});
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [isCancelling, setIsCancelling] = useState(false);
+  // Per-tab execution state to allow parallel queries across tabs
+  const [executingTabs, setExecutingTabs] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [cancellingTabs, setCancellingTabs] = useState<Record<string, boolean>>(
+    {},
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -91,9 +96,11 @@ function Editor() {
     databaseName?: string;
   } | null>(null);
 
-  // Refs for query cancellation
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const executionIdRef = useRef<string | null>(null);
+  // Refs for query cancellation (per-tab to support parallel queries)
+  const abortControllersRef = useRef<Record<string, AbortController | null>>(
+    {},
+  );
+  const executionIdsRef = useRef<Record<string, string | null>>({});
 
   // Tab store
   const {
@@ -295,11 +302,14 @@ function Editor() {
       return;
     }
 
-    abortControllerRef.current = new AbortController();
-    executionIdRef.current = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    // Create per-tab abort controller and execution ID
+    const abortController = new AbortController();
+    const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    abortControllersRef.current[tabId] = abortController;
+    executionIdsRef.current[tabId] = executionId;
 
-    setIsExecuting(true);
-    setIsCancelling(false);
+    setExecutingTabs(prev => ({ ...prev, [tabId]: true }));
+    setCancellingTabs(prev => ({ ...prev, [tabId]: false }));
     const startTime = Date.now();
     try {
       const result = await executeQuery(
@@ -308,8 +318,8 @@ function Editor() {
         contentToExecute,
         {
           ...options,
-          executionId: executionIdRef.current,
-          signal: abortControllerRef.current.signal,
+          executionId,
+          signal: abortController.signal,
         },
       );
       const executionTime = Date.now() - startTime;
@@ -341,18 +351,19 @@ function Editor() {
         setTabResults(prev => ({ ...prev, [tabId]: null }));
       }
     } finally {
-      setIsExecuting(false);
-      setIsCancelling(false);
-      abortControllerRef.current = null;
-      executionIdRef.current = null;
+      setExecutingTabs(prev => ({ ...prev, [tabId]: false }));
+      setCancellingTabs(prev => ({ ...prev, [tabId]: false }));
+      delete abortControllersRef.current[tabId];
+      delete executionIdsRef.current[tabId];
     }
   };
 
-  const handleConsoleCancel = async () => {
-    if (!currentWorkspace || !executionIdRef.current) return;
-    setIsCancelling(true);
-    abortControllerRef.current?.abort();
-    await cancelQuery(currentWorkspace.id, executionIdRef.current);
+  const handleConsoleCancel = async (tabId: string) => {
+    const executionId = executionIdsRef.current[tabId];
+    if (!currentWorkspace || !executionId) return;
+    setCancellingTabs(prev => ({ ...prev, [tabId]: true }));
+    abortControllersRef.current[tabId]?.abort();
+    await cancelQuery(currentWorkspace.id, executionId);
   };
 
   const handleConsoleSave = async (
@@ -768,12 +779,12 @@ function Editor() {
                             databaseName: tab.databaseName,
                           })
                         }
-                        onCancel={handleConsoleCancel}
+                        onCancel={() => handleConsoleCancel(tab.id)}
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)
                         }
-                        isExecuting={isExecuting}
-                        isCancelling={isCancelling}
+                        isExecuting={executingTabs[tab.id] || false}
+                        isCancelling={cancellingTabs[tab.id] || false}
                         isSaving={isSaving}
                         onContentChange={content => {
                           updateContent(tab.id, content);
