@@ -283,7 +283,7 @@ export class DatabaseConnectionService {
   > = new Map();
 
   private cleanupInterval: NodeJS.Timeout | null = null;
-  private readonly maxIdleTime = 15 * 60 * 1000; // 15 minutes to be safe
+  private readonly maxIdleTime = 60 * 1000; // 60 seconds - remove unused MongoClient from cache
 
   // BigQuery auth/client caching (in-memory)
   private bigQueryClientCache: Map<
@@ -295,11 +295,11 @@ export class DatabaseConnectionService {
     Promise<{ token: string; expiresAtMs: number }>
   > = new Map();
 
-  // Default MongoDB connection options
+  // Default MongoDB connection options - optimized for Cloud Run / serverless
   private readonly defaultMongoOptions: MongoClientOptions = {
-    maxPoolSize: 10,
-    minPoolSize: 2,
-    maxIdleTimeMS: 900000, // 15 minutes
+    maxPoolSize: 5,
+    minPoolSize: 0, // No idle connections when unused
+    maxIdleTimeMS: 10000, // Close idle connections after 10s
     serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 0,
     connectTimeoutMS: 10000,
@@ -2290,15 +2290,21 @@ export class DatabaseConnectionService {
 
     const config = this.buildPostgreSQLConfig(database, targetDatabase);
 
-    // Create pool with conservative settings for multi-tenant SaaS:
+    // Create pool with settings optimized for Cloud Run / serverless:
     // - min: 0 = no idle connections when unused (saves memory)
     // - max: 2 = limit concurrent connections per database
-    // - idleTimeoutMillis: 30000 = close idle connections after 30s
+    // - idleTimeoutMillis: 10000 = close idle connections after 10s (pg default)
+    // - maxLifetimeSeconds: 1800 = max 30 min connection lifetime
+    // - keepAlive: true = enable TCP keepalive probes
+    // - keepAliveInitialDelayMillis: 30000 = start keepalive after 30s idle
     const pool = new PgPool({
       ...config,
       min: 0,
       max: 2,
-      idleTimeoutMillis: 30000,
+      idleTimeoutMillis: 10000,
+      maxLifetimeSeconds: 1800,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 30000,
     });
 
     // Handle pool errors to prevent crashes and clean up stale pools
