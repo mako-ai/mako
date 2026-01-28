@@ -433,6 +433,11 @@ export class DatabaseConnectionService {
       return connection.client;
     }
 
+    // For PostgreSQL, use dedicated pool management
+    if (database.type === "postgresql") {
+      return this.getPostgresPool(database);
+    }
+
     // For other database types, use basic caching
     if (this.connections.has(key)) {
       return this.connections.get(key);
@@ -441,9 +446,6 @@ export class DatabaseConnectionService {
     let connection: any;
 
     switch (database.type) {
-      case "postgresql":
-        connection = await this.createPostgreSQLConnection(database);
-        break;
       case "cloudsql-postgres":
         connection = await (
           this.drivers.get(
@@ -479,6 +481,9 @@ export class DatabaseConnectionService {
     // Try to close MongoDB connection through pool
     await this.closeMongoConnection("datasource", databaseId);
 
+    // Close PostgreSQL pools for this database
+    await this.closePostgresPool(databaseId);
+
     // Close CloudSQL through driver
     const cloudSqlDriver = this.drivers.get(
       "cloudsql-postgres",
@@ -487,7 +492,7 @@ export class DatabaseConnectionService {
       await cloudSqlDriver.closeConnection(databaseId);
     }
 
-    // Also handle any non-MongoDB connections in the local cache
+    // Also handle any non-MongoDB/non-PostgreSQL connections in the local cache
     const connection = this.connections.get(databaseId);
     if (connection) {
       try {
@@ -508,7 +513,10 @@ export class DatabaseConnectionService {
       try {
         await csConnector.close();
       } catch (error) {
-        logger.error("Error closing Cloud SQL connector", { databaseId, error });
+        logger.error("Error closing Cloud SQL connector", {
+          databaseId,
+          error,
+        });
       } finally {
         this.cloudSqlPgConnectors.delete(databaseId);
       }
@@ -539,6 +547,9 @@ export class DatabaseConnectionService {
     await Promise.all(mongoPromises);
     this.mongoConnections.clear();
 
+    // Close PostgreSQL pools
+    await this.closeAllPostgresPools();
+
     // Close other connections
     const otherPromises = Array.from(this.connections.keys()).map(id =>
       this.closeConnection(id),
@@ -555,7 +566,9 @@ export class DatabaseConnectionService {
     const poolPromises = Array.from(this.cloudSqlPgPools.values()).map(pool =>
       pool
         .end()
-        .catch(err => logger.error("Error closing Cloud SQL pool", { error: err })),
+        .catch(err =>
+          logger.error("Error closing Cloud SQL pool", { error: err }),
+        ),
     );
     await Promise.all(poolPromises);
     this.cloudSqlPgPools.clear();
@@ -625,7 +638,10 @@ export class DatabaseConnectionService {
         existing.lastUsed = new Date();
         return { client: existing.client, db: existing.db };
       } catch (error) {
-        logger.warn("MongoDB connection unhealthy, reconnecting", { key, error });
+        logger.warn("MongoDB connection unhealthy, reconnecting", {
+          key,
+          error,
+        });
         this.mongoConnections.delete(key);
         try {
           await existing.client.close();
@@ -857,7 +873,10 @@ export class DatabaseConnectionService {
           }
         }
       } catch (e) {
-        logger.warn("Failed to fetch schema for dataset", { datasetId, error: e });
+        logger.warn("Failed to fetch schema for dataset", {
+          datasetId,
+          error: e,
+        });
       }
     };
 
@@ -1144,13 +1163,10 @@ export class DatabaseConnectionService {
       return { success: false, error: "Query not found or already completed" };
     }
 
-    let cancelClient: PgClient | null = null;
     try {
-      // Create a new connection to cancel the query (with timeout settings)
-      const config = this.buildPostgreSQLClientConfig(query.database);
-      cancelClient = new PgClient(config);
-      await cancelClient.connect();
-      const res = await cancelClient.query<{ cancelled: boolean }>(
+      // Use the pool to get a connection for cancellation
+      const pool = await this.getPostgresPool(query.database);
+      const res = await pool.query<{ cancelled: boolean }>(
         "SELECT pg_cancel_backend($1) as cancelled",
         [query.pid],
       );
@@ -1168,10 +1184,6 @@ export class DatabaseConnectionService {
         success: false,
         error: error?.message || "Failed to cancel query",
       };
-    } finally {
-      if (cancelClient) {
-        await cancelClient.end().catch(() => {});
-      }
     }
   }
 
@@ -2184,7 +2196,10 @@ export class DatabaseConnectionService {
           JSON.stringify(finalResult, getCircularReplacer()),
         );
       } catch (e) {
-        logger.warn("Failed to serialize result, falling back to string representation", { error: e });
+        logger.warn(
+          "Failed to serialize result, falling back to string representation",
+          { error: e },
+        );
         serializedResult = String(finalResult);
       }
 
@@ -2205,11 +2220,14 @@ export class DatabaseConnectionService {
 
   // PostgreSQL specific methods
 
+  // PostgreSQL connection pools (keyed by databaseId:databaseName)
+  private postgresPools: Map<string, PgPool> = new Map();
+
   /**
-   * Build PostgreSQL client configuration with timeout settings
+   * Build PostgreSQL pool/client configuration with timeout settings
    * Supports both connection string and individual fields
    */
-  private buildPostgreSQLClientConfig(
+  private buildPostgreSQLConfig(
     database: IDatabaseConnection,
     targetDatabase?: string,
   ) {
@@ -2254,13 +2272,96 @@ export class DatabaseConnectionService {
     };
   }
 
+  /**
+   * Get or create a PostgreSQL connection pool for the given database
+   * Uses lazy initialization with aggressive cleanup to minimize memory usage
+   */
+  private async getPostgresPool(
+    database: IDatabaseConnection,
+    targetDatabase?: string,
+  ): Promise<PgPool> {
+    const dbName = targetDatabase || database.connection.database || "default";
+    const key = `${database._id.toString()}:${dbName}`;
+
+    const existingPool = this.postgresPools.get(key);
+    if (existingPool) {
+      return existingPool;
+    }
+
+    const config = this.buildPostgreSQLConfig(database, targetDatabase);
+
+    // Create pool with conservative settings for multi-tenant SaaS:
+    // - min: 0 = no idle connections when unused (saves memory)
+    // - max: 2 = limit concurrent connections per database
+    // - idleTimeoutMillis: 30000 = close idle connections after 30s
+    const pool = new PgPool({
+      ...config,
+      min: 0,
+      max: 2,
+      idleTimeoutMillis: 30000,
+    });
+
+    // Handle pool errors to prevent crashes and clean up stale pools
+    pool.on("error", err => {
+      logger.error("PostgreSQL pool error", { key, error: err.message });
+      // Remove the pool so it gets recreated on next use
+      this.postgresPools.delete(key);
+    });
+
+    this.postgresPools.set(key, pool);
+    logger.debug("Created PostgreSQL pool", { key });
+
+    return pool;
+  }
+
+  /**
+   * Close a specific PostgreSQL pool
+   */
+  private async closePostgresPool(databaseId: string): Promise<void> {
+    // Find and close all pools for this database ID
+    const keysToDelete: string[] = [];
+    for (const [key, pool] of this.postgresPools.entries()) {
+      if (key.startsWith(`${databaseId}:`)) {
+        keysToDelete.push(key);
+        try {
+          await pool.end();
+          logger.debug("Closed PostgreSQL pool", { key });
+        } catch (error) {
+          logger.error("Error closing PostgreSQL pool", { key, error });
+        }
+      }
+    }
+    for (const key of keysToDelete) {
+      this.postgresPools.delete(key);
+    }
+  }
+
+  /**
+   * Close all PostgreSQL pools
+   */
+  private async closeAllPostgresPools(): Promise<void> {
+    const promises = Array.from(this.postgresPools.entries()).map(
+      async ([key, pool]) => {
+        try {
+          await pool.end();
+          logger.debug("Closed PostgreSQL pool", { key });
+        } catch (error) {
+          logger.error("Error closing PostgreSQL pool", { key, error });
+        }
+      },
+    );
+    await Promise.all(promises);
+    this.postgresPools.clear();
+  }
+
   private async testPostgreSQLConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      const config = this.buildPostgreSQLClientConfig(database);
+      const config = this.buildPostgreSQLConfig(database);
 
       // Use retry logic to handle transient connection failures
+      // Use a temporary client for testing (not the pool)
       await withRetry(
         async () => {
           const client = new PgClient(config);
@@ -2291,21 +2392,9 @@ export class DatabaseConnectionService {
 
   private async createPostgreSQLConnection(
     database: IDatabaseConnection,
-  ): Promise<PgClient> {
-    const config = this.buildPostgreSQLClientConfig(database);
-
-    // Use retry logic to handle transient connection failures and cold starts
-    return withRetry(
-      async () => {
-        const client = new PgClient(config);
-        await client.connect();
-        return client;
-      },
-      {
-        maxRetries: this.postgresMaxRetries,
-        baseDelayMs: this.postgresRetryBaseDelayMs,
-      },
-    );
+  ): Promise<PgPool> {
+    // Return the pool instead of a single client
+    return this.getPostgresPool(database);
   }
 
   private async executePostgreSQLQuery(
@@ -2320,63 +2409,48 @@ export class DatabaseConnectionService {
     const targetDatabase =
       options?.databaseName || database.connection.database;
 
-    // Check if we need a different database than what's cached in the connection
-    const connectionDatabase = database.connection.database;
-    let client: PgClient | null = null;
-    let isTemporaryConnection = false;
-
     try {
       // Check if already cancelled
       if (signal?.aborted) {
         return { success: false, error: "Query cancelled" };
       }
 
-      if (targetDatabase && targetDatabase !== connectionDatabase) {
-        // Need to create a new connection for the target database
-        // Use retry logic for connection establishment
-        const config = this.buildPostgreSQLClientConfig(
-          database,
-          targetDatabase,
-        );
-        client = await withRetry(
-          async () => {
-            const newClient = new PgClient(config);
-            await newClient.connect();
-            return newClient;
-          },
-          {
-            maxRetries: this.postgresMaxRetries,
-            baseDelayMs: this.postgresRetryBaseDelayMs,
-            signal,
-          },
-        );
-        isTemporaryConnection = true;
-      } else {
-        // Use the cached connection
-        client = (await this.getConnection(database)) as PgClient;
-      }
+      // Get the pool for this database (creates one if needed)
+      const pool = await this.getPostgresPool(database, targetDatabase);
 
-      // Get backend PID for cancellation support
-      if (executionId) {
-        const pidResult = await client.query("SELECT pg_backend_pid()");
-        const pid = pidResult.rows[0]?.pg_backend_pid;
-        if (pid) {
-          this.runningPostgresQueries.set(executionId, { database, pid });
+      // Get a client from the pool for this query
+      // This allows us to track the PID for cancellation
+      const client = await pool.connect();
+
+      try {
+        // Get backend PID for cancellation support
+        if (executionId) {
+          const pidResult = await client.query("SELECT pg_backend_pid()");
+          const pid = pidResult.rows[0]?.pg_backend_pid;
+          if (pid) {
+            this.runningPostgresQueries.set(executionId, { database, pid });
+          }
+        }
+
+        // Check if already cancelled
+        if (signal?.aborted) {
+          return { success: false, error: "Query cancelled" };
+        }
+
+        const result = await client.query(query);
+        return {
+          success: true,
+          data: result.rows,
+          rowCount: result.rowCount ?? undefined,
+          fields: result.fields,
+        };
+      } finally {
+        // Always release the client back to the pool
+        client.release();
+        if (executionId) {
+          this.runningPostgresQueries.delete(executionId);
         }
       }
-
-      // Check if already cancelled
-      if (signal?.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      const result = await client.query(query);
-      return {
-        success: true,
-        data: result.rows,
-        rowCount: result.rowCount ?? undefined,
-        fields: result.fields,
-      };
     } catch (error: any) {
       if (error?.message?.includes("canceling statement")) {
         return { success: false, error: "Query cancelled" };
@@ -2386,13 +2460,6 @@ export class DatabaseConnectionService {
         error:
           error instanceof Error ? error.message : "PostgreSQL query failed",
       };
-    } finally {
-      if (executionId) {
-        this.runningPostgresQueries.delete(executionId);
-      }
-      if (isTemporaryConnection && client) {
-        await client.end().catch(() => {});
-      }
     }
   }
 
