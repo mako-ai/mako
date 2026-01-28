@@ -314,10 +314,11 @@ export class DatabaseConnectionService {
     );
     this.drivers.set("cloudflare-d1", new CloudflareD1DatabaseDriver() as any);
     this.drivers.set("cloudflare-kv", new CloudflareKVDatabaseDriver() as any);
-    // Start cleanup interval for idle connections (MongoDB and PostgreSQL)
+    // Start cleanup interval for idle connections (MongoDB, PostgreSQL, MySQL)
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
       void this.cleanupIdlePostgresPools();
+      void this.cleanupIdleMySQLPools();
     }, 60000); // Every minute
   }
 
@@ -439,6 +440,11 @@ export class DatabaseConnectionService {
       return this.getPostgresPool(database);
     }
 
+    // For MySQL, use dedicated pool management
+    if (database.type === "mysql") {
+      return this.getMySQLPool(database);
+    }
+
     // For other database types, use basic caching
     if (this.connections.has(key)) {
       return this.connections.get(key);
@@ -453,9 +459,6 @@ export class DatabaseConnectionService {
             "cloudsql-postgres",
           ) as CloudSQLPostgresDatabaseDriver
         ).getConnection(database);
-        break;
-      case "mysql":
-        connection = await this.createMySQLConnection(database);
         break;
       case "mssql":
         connection = await this.createMSSQLConnection(database);
@@ -484,6 +487,9 @@ export class DatabaseConnectionService {
 
     // Close PostgreSQL pools for this database
     await this.closePostgresPool(databaseId);
+
+    // Close MySQL pools for this database
+    await this.closeMySQLPool(databaseId);
 
     // Close CloudSQL through driver
     const cloudSqlDriver = this.drivers.get(
@@ -550,6 +556,9 @@ export class DatabaseConnectionService {
 
     // Close PostgreSQL pools
     await this.closeAllPostgresPools();
+
+    // Close MySQL pools
+    await this.closeAllMySQLPools();
 
     // Close other connections
     const otherPromises = Array.from(this.connections.keys()).map(id =>
@@ -2246,6 +2255,10 @@ export class DatabaseConnectionService {
   private postgresPools: Map<string, { pool: PgPool; lastUsed: Date }> =
     new Map();
 
+  // MySQL connection pools with lastUsed tracking (keyed by databaseId:databaseName)
+  private mysqlPools: Map<string, { pool: mysql.Pool; lastUsed: Date }> =
+    new Map();
+
   /**
    * Build PostgreSQL pool/client configuration with timeout settings
    * Supports both connection string and individual fields
@@ -2564,21 +2577,164 @@ export class DatabaseConnectionService {
   }
 
   // MySQL specific methods
+  private buildMySQLConfig(
+    database: IDatabaseConnection,
+    targetDatabase?: string,
+  ) {
+    const conn = database.connection;
+    const baseConfig = {
+      connectTimeout: this.mysqlConnectionTimeoutMs,
+    };
+
+    if (conn.connectionString) {
+      try {
+        let urlString = conn.connectionString;
+        if (!urlString.startsWith("mysql://")) {
+          urlString = `mysql://${urlString}`;
+        }
+        const url = new URL(urlString);
+        if (targetDatabase) {
+          url.pathname = `/${targetDatabase}`;
+        }
+
+        const sslParam = url.searchParams.get("ssl");
+        const sslMode = url.searchParams.get("sslmode");
+        const ssl =
+          conn.ssl ||
+          sslParam === "true" ||
+          sslParam === "1" ||
+          sslMode === "require" ||
+          sslMode === "verify-ca" ||
+          sslMode === "verify-full" ||
+          sslMode === "prefer";
+
+        return {
+          host: url.hostname || undefined,
+          port: url.port ? Number.parseInt(url.port, 10) : 3306,
+          database: url.pathname.slice(1) || undefined,
+          user: url.username ? decodeURIComponent(url.username) : undefined,
+          password: url.password ? decodeURIComponent(url.password) : undefined,
+          ssl: ssl ? { rejectUnauthorized: false } : undefined,
+          ...baseConfig,
+        };
+      } catch (error) {
+        logger.warn("Failed to parse MySQL connection string", { error });
+      }
+    }
+
+    return {
+      host: conn.host,
+      port: conn.port || 3306,
+      database: targetDatabase || conn.database,
+      user: conn.username,
+      password: conn.password,
+      ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
+      ...baseConfig,
+    };
+  }
+
+  private async getMySQLPool(
+    database: IDatabaseConnection,
+    targetDatabase?: string,
+  ): Promise<mysql.Pool> {
+    const dbName = targetDatabase || database.connection.database || "";
+    const key = `${database._id.toString()}:${dbName}`;
+
+    const existing = this.mysqlPools.get(key);
+    if (existing) {
+      existing.lastUsed = new Date();
+      return existing.pool;
+    }
+
+    const config = this.buildMySQLConfig(database, targetDatabase);
+    const pool = mysql.createPool({
+      ...config,
+      waitForConnections: true,
+      connectionLimit: 2,
+      maxIdle: 2,
+      idleTimeout: 10000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 30000,
+    });
+
+    this.mysqlPools.set(key, { pool, lastUsed: new Date() });
+    logger.debug("Created MySQL pool", { key });
+    return pool;
+  }
+
+  private async closeMySQLPool(databaseId: string): Promise<void> {
+    const poolsToClose: Array<{ key: string; pool: mysql.Pool }> = [];
+    for (const [key, { pool }] of this.mysqlPools.entries()) {
+      if (key.startsWith(`${databaseId}:`)) {
+        poolsToClose.push({ key, pool });
+      }
+    }
+
+    for (const { key } of poolsToClose) {
+      this.mysqlPools.delete(key);
+    }
+
+    for (const { key, pool } of poolsToClose) {
+      try {
+        await pool.end();
+        logger.debug("Closed MySQL pool", { key });
+      } catch (error) {
+        logger.error("Error closing MySQL pool", { key, error });
+      }
+    }
+  }
+
+  private async closeAllMySQLPools(): Promise<void> {
+    const poolsToClose = Array.from(this.mysqlPools.entries());
+    this.mysqlPools.clear();
+
+    const promises = poolsToClose.map(async ([key, { pool }]) => {
+      try {
+        await pool.end();
+        logger.debug("Closed MySQL pool", { key });
+      } catch (error) {
+        logger.error("Error closing MySQL pool", { key, error });
+      }
+    });
+    await Promise.all(promises);
+  }
+
+  private async cleanupIdleMySQLPools(): Promise<void> {
+    const now = new Date();
+    const toRemove: string[] = [];
+
+    for (const [key, { lastUsed }] of this.mysqlPools.entries()) {
+      const idleTime = now.getTime() - lastUsed.getTime();
+      if (idleTime > this.userDatabaseMaxIdleTime) {
+        toRemove.push(key);
+      }
+    }
+
+    for (const key of toRemove) {
+      const entry = this.mysqlPools.get(key);
+      if (entry) {
+        const idleTime = now.getTime() - entry.lastUsed.getTime();
+        if (idleTime <= this.userDatabaseMaxIdleTime) {
+          continue;
+        }
+        this.mysqlPools.delete(key);
+        try {
+          await entry.pool.end();
+          logger.info("Closed idle MySQL pool", { key });
+        } catch (error) {
+          logger.error("Error closing idle MySQL pool", { key, error });
+        }
+      }
+    }
+  }
+
   private async testMySQLConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
     let connection: mysql.Connection | null = null;
     try {
-      connection = await mysql.createConnection({
-        host: database.connection.host,
-        port: database.connection.port || 3306,
-        database: database.connection.database,
-        user: database.connection.username,
-        password: database.connection.password,
-        ssl: database.connection.ssl
-          ? { rejectUnauthorized: false }
-          : undefined,
-      });
+      const config = this.buildMySQLConfig(database);
+      connection = await mysql.createConnection(config);
       await connection.ping();
       return { success: true };
     } catch (error) {
@@ -2594,76 +2750,46 @@ export class DatabaseConnectionService {
     }
   }
 
-  private async createMySQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<mysql.Connection> {
-    const connection = await mysql.createConnection({
-      host: database.connection.host,
-      port: database.connection.port || 3306,
-      database: database.connection.database,
-      user: database.connection.username,
-      password: database.connection.password,
-      ssl: database.connection.ssl ? { rejectUnauthorized: false } : undefined,
-    });
-    return connection;
-  }
-
   private async executeMySQLQuery(
     database: IDatabaseConnection,
     query: string,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
-    // Determine the target database: options override or connection default
+    const signal = options?.signal;
     const targetDatabase =
       options?.databaseName || database.connection.database;
 
-    const connectionDatabase = database.connection.database;
-    let connection: mysql.Connection;
+    try {
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
 
-    if (targetDatabase && targetDatabase !== connectionDatabase) {
-      // Need to create a new connection for the target database
-      connection = await mysql.createConnection({
-        host: database.connection.host,
-        port: database.connection.port || 3306,
-        database: targetDatabase,
-        user: database.connection.username,
-        password: database.connection.password,
-        ssl: database.connection.ssl
-          ? { rejectUnauthorized: false }
-          : undefined,
+      const pool = await this.getMySQLPool(database, targetDatabase);
+      const connection = await withRetry(async () => pool.getConnection(), {
+        maxRetries: this.mysqlMaxRetries,
+        baseDelayMs: this.mysqlRetryBaseDelayMs,
+        signal,
       });
 
       try {
+        if (signal?.aborted) {
+          return { success: false, error: "Query cancelled" };
+        }
+
         const [rows, fields] = await connection.execute(query);
         return {
           success: true,
           data: rows,
           fields: fields,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "MySQL query failed",
         };
       } finally {
-        await connection.end();
+        connection.release();
       }
-    } else {
-      // Use the cached connection
-      connection = (await this.getConnection(database)) as mysql.Connection;
-      try {
-        const [rows, fields] = await connection.execute(query);
-        return {
-          success: true,
-          data: rows,
-          fields: fields,
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "MySQL query failed",
-        };
-      }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "MySQL query failed",
+      };
     }
   }
 
@@ -2808,6 +2934,11 @@ export class DatabaseConnectionService {
   private readonly postgresQueryTimeoutMs = 120_000; // 120 seconds query timeout
   private readonly postgresMaxRetries = 3;
   private readonly postgresRetryBaseDelayMs = 1000; // 1 second base delay
+
+  // MySQL client configuration constants
+  private readonly mysqlConnectionTimeoutMs = 30_000; // 30 seconds connection timeout
+  private readonly mysqlMaxRetries = 3;
+  private readonly mysqlRetryBaseDelayMs = 1000; // 1 second base delay
 
   /**
    * Build ClickHouse client config from database connection

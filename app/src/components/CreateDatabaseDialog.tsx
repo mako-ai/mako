@@ -34,6 +34,10 @@ import {
   parsePostgresConnectionString,
   buildPostgresConnectionString,
 } from "../utils/postgres-connection-string";
+import {
+  parseMySQLConnectionString,
+  buildMySQLConnectionString,
+} from "../utils/mysql-connection-string";
 
 interface CreateDatabaseDialogProps {
   open: boolean;
@@ -133,15 +137,19 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   const watchedConnection = watch("connection");
   const watchedType = watch("type");
 
-  // Two-way binding: Connection string -> Individual fields (for PostgreSQL)
+  const supportsConnectionStringType =
+    watchedType === "postgresql" || watchedType === "mysql";
+
+  // Two-way binding: Connection string -> Individual fields (PostgreSQL/MySQL)
   useEffect(() => {
-    if (watchedType !== "postgresql") return;
+    if (!supportsConnectionStringType) return;
     if (isUpdatingFromFields.current) return;
     if (!watchedConnection?.connectionString) return;
 
-    const parsed = parsePostgresConnectionString(
-      watchedConnection.connectionString,
-    );
+    const parsed =
+      watchedType === "postgresql"
+        ? parsePostgresConnectionString(watchedConnection.connectionString)
+        : parseMySQLConnectionString(watchedConnection.connectionString);
     if (!parsed) return;
 
     isUpdatingFromConnectionString.current = true;
@@ -179,11 +187,16 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setTimeout(() => {
       isUpdatingFromConnectionString.current = false;
     }, 0);
-  }, [watchedType, watchedConnection?.connectionString, setValue]);
+  }, [
+    supportsConnectionStringType,
+    watchedType,
+    watchedConnection?.connectionString,
+    setValue,
+  ]);
 
-  // Two-way binding: Individual fields -> Connection string (for PostgreSQL)
+  // Two-way binding: Individual fields -> Connection string (PostgreSQL/MySQL)
   useEffect(() => {
-    if (watchedType !== "postgresql") return;
+    if (!supportsConnectionStringType) return;
     if (isUpdatingFromConnectionString.current) return;
     if (!watchedConnection?.use_connection_string) return;
 
@@ -192,14 +205,24 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
 
     isUpdatingFromFields.current = true;
 
-    const builtString = buildPostgresConnectionString({
-      host: watchedConnection.host,
-      port: watchedConnection.port,
-      database: watchedConnection.database,
-      username: watchedConnection.username,
-      password: watchedConnection.password,
-      ssl: watchedConnection.ssl,
-    });
+    const builtString =
+      watchedType === "postgresql"
+        ? buildPostgresConnectionString({
+            host: watchedConnection.host,
+            port: watchedConnection.port,
+            database: watchedConnection.database,
+            username: watchedConnection.username,
+            password: watchedConnection.password,
+            ssl: watchedConnection.ssl,
+          })
+        : buildMySQLConnectionString({
+            host: watchedConnection.host,
+            port: watchedConnection.port,
+            database: watchedConnection.database,
+            username: watchedConnection.username,
+            password: watchedConnection.password,
+            ssl: watchedConnection.ssl,
+          });
 
     if (builtString && builtString !== watchedConnection.connectionString) {
       setValue("connection.connectionString", builtString);
@@ -209,6 +232,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
       isUpdatingFromFields.current = false;
     }, 0);
   }, [
+    supportsConnectionStringType,
     watchedType,
     watchedConnection?.use_connection_string,
     watchedConnection?.host,
