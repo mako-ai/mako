@@ -2792,6 +2792,14 @@ export class DatabaseConnectionService {
       return value.map(item => this.normalizeMySQLValue(item));
     }
 
+    // Handle Date objects before generic object check - mysql2 returns
+    // DATETIME, TIMESTAMP, and DATE columns as JavaScript Date objects.
+    // Date passes typeof === "object" but Object.entries() returns [] since
+    // Date has no enumerable own properties, which would convert dates to {}.
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
     if (value && typeof value === "object") {
       const record = value as Record<string, unknown>;
       const normalized: Record<string, unknown> = {};
