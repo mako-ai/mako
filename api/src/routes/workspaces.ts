@@ -24,7 +24,7 @@ workspaceRoutes.get(
     try {
       const user = c.get("user");
       const invites = await workspaceService.getPendingInvitesForEmail(
-        user!.email,
+        user?.email ?? "",
       );
 
       return c.json({
@@ -57,7 +57,9 @@ workspaceRoutes.get(
 workspaceRoutes.get("/", authMiddleware, async (c: AuthenticatedContext) => {
   try {
     const user = c.get("user");
-    const workspaces = await workspaceService.getWorkspacesForUser(user!.id);
+    const workspaces = await workspaceService.getWorkspacesForUser(
+      user?.id ?? "",
+    );
     return c.json({
       success: true,
       data: workspaces.map(({ workspace, role }) => ({
@@ -98,7 +100,7 @@ workspaceRoutes.post("/", authMiddleware, async (c: AuthenticatedContext) => {
     }
 
     const workspace = await workspaceService.createWorkspace(
-      user!.id,
+      user?.id ?? "",
       name,
       slug,
     );
@@ -265,7 +267,7 @@ workspaceRoutes.post(
       }
 
       // Enforce email matching
-      if (normalizeEmail(user!.email) !== normalizeEmail(invite.email)) {
+      if (normalizeEmail(user?.email ?? "") !== normalizeEmail(invite.email)) {
         return c.json(
           {
             success: false,
@@ -275,7 +277,10 @@ workspaceRoutes.post(
         );
       }
 
-      const workspace = await workspaceService.acceptInvite(token, user!.id);
+      const workspace = await workspaceService.acceptInvite(
+        token,
+        user?.id ?? "",
+      );
 
       return c.json({
         success: true,
@@ -311,7 +316,10 @@ workspaceRoutes.get("/:id", authMiddleware, async (c: AuthenticatedContext) => {
     }
 
     // Check if user has access
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user!.id);
+    const hasAccess = await workspaceService.hasAccess(
+      workspaceId,
+      user?.id ?? "",
+    );
     if (!hasAccess) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
@@ -321,7 +329,10 @@ workspaceRoutes.get("/:id", authMiddleware, async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Workspace not found" }, 404);
     }
 
-    const member = await workspaceService.getMember(workspaceId, user!.id);
+    const member = await workspaceService.getMember(
+      workspaceId,
+      user?.id ?? "",
+    );
 
     return c.json({
       success: true,
@@ -378,11 +389,11 @@ workspaceRoutes.put(
       return c.json({
         success: true,
         data: {
-          id: updatedWorkspace!._id,
-          name: updatedWorkspace!.name,
-          slug: updatedWorkspace!.slug,
-          updatedAt: updatedWorkspace!.updatedAt,
-          settings: updatedWorkspace!.settings,
+          id: updatedWorkspace?._id,
+          name: updatedWorkspace?.name,
+          slug: updatedWorkspace?.slug,
+          updatedAt: updatedWorkspace?.updatedAt,
+          settings: updatedWorkspace?.settings,
         },
       });
     } catch (error) {
@@ -451,7 +462,7 @@ workspaceRoutes.post(
         return c.json({ success: false, error: "Invalid workspace ID" }, 400);
       }
 
-      await workspaceService.switchWorkspace(user!.id, workspaceId);
+      await workspaceService.switchWorkspace(user?.id ?? "", workspaceId);
 
       return c.json({
         success: true,
@@ -739,7 +750,7 @@ workspaceRoutes.post(
         workspaceId,
         email,
         role,
-        user!.id,
+        user?.id ?? "",
       );
 
       return c.json(
@@ -933,7 +944,7 @@ workspaceRoutes.post(
         keyHash: hash,
         prefix,
         createdAt: new Date(),
-        createdBy: user!.id,
+        createdBy: user?.id ?? "",
       };
 
       const updatedWorkspace = await Workspace.findByIdAndUpdate(

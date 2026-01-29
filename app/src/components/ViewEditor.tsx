@@ -1,4 +1,4 @@
-import {
+import React, {
   useRef,
   useEffect,
   useState,
@@ -52,7 +52,7 @@ export interface ViewEditorRef {
 }
 
 const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
-  (
+  function ViewEditor(
     {
       viewDefinition,
       selectedView,
@@ -62,9 +62,9 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
       onDelete,
       isExecuting,
       isSaving,
-    },
-    ref,
-  ) => {
+    }: ViewEditorProps,
+    ref: React.Ref<ViewEditorRef>,
+  ) {
     const editorRef = useRef<any>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const { effectiveMode } = useTheme();
@@ -125,6 +125,7 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
       if (viewDefinition && isCreatingNew) {
         setIsCreatingNew(false);
       }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [viewDefinition]);
 
     useEffect(() => {
@@ -355,8 +356,8 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
           <DialogTitle id="delete-dialog-title">Delete View</DialogTitle>
           <DialogContent>
             <DialogContentText id="delete-dialog-description">
-              Are you sure you want to delete the view "{selectedView}"? This
-              action cannot be undone.
+              Are you sure you want to delete the view &quot;{selectedView}
+              &quot;? This action cannot be undone.
             </DialogContentText>
           </DialogContent>
           <DialogActions>

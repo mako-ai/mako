@@ -81,7 +81,7 @@ workspaceDatabaseRoutes.post(
         type: demoConfig.type,
         connection: demoConfig.connection,
         isDemo: true,
-        createdBy: user!.id,
+        createdBy: user?.id ?? "",
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -341,7 +341,7 @@ workspaceDatabaseRoutes.post(
         name: body.name,
         type: body.type,
         connection: body.connection || {},
-        createdBy: user!.id,
+        createdBy: user?.id ?? "",
         createdAt: new Date(),
         updatedAt: new Date(),
       });

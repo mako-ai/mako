@@ -382,10 +382,13 @@ export class DatabaseConnectionService {
           return await this.executeMongoDBQuery(database, query, options);
         case "postgresql":
           return await this.executePostgreSQLQuery(database, query, options);
-        case "cloudsql-postgres":
-          return await this.drivers
-            .get("cloudsql-postgres")!
-            .executeQuery(database, query, options);
+        case "cloudsql-postgres": {
+          const cloudSqlDriver = this.drivers.get("cloudsql-postgres");
+          if (!cloudSqlDriver) {
+            return { success: false, error: "CloudSQL driver not available" };
+          }
+          return await cloudSqlDriver.executeQuery(database, query, options);
+        }
         case "mysql":
           return await this.executeMySQLQuery(database, query, options);
         case "mssql":
@@ -394,14 +397,26 @@ export class DatabaseConnectionService {
           return await this.executeBigQueryQuery(database, query, options);
         case "clickhouse":
           return await this.executeClickHouseQuery(database, query, options);
-        case "cloudflare-d1":
-          return await this.drivers
-            .get("cloudflare-d1")!
-            .executeQuery(database, query, options);
-        case "cloudflare-kv":
-          return await this.drivers
-            .get("cloudflare-kv")!
-            .executeQuery(database, query, options);
+        case "cloudflare-d1": {
+          const d1Driver = this.drivers.get("cloudflare-d1");
+          if (!d1Driver) {
+            return {
+              success: false,
+              error: "Cloudflare D1 driver not available",
+            };
+          }
+          return await d1Driver.executeQuery(database, query, options);
+        }
+        case "cloudflare-kv": {
+          const kvDriver = this.drivers.get("cloudflare-kv");
+          if (!kvDriver) {
+            return {
+              success: false,
+              error: "Cloudflare KV driver not available",
+            };
+          }
+          return await kvDriver.executeQuery(database, query, options);
+        }
         default:
           return {
             success: false,
@@ -1671,7 +1686,7 @@ export class DatabaseConnectionService {
     const connectionString = process.env.DATABASE_URL;
     const databaseName =
       process.env.DATABASE_NAME ||
-      this.extractDatabaseName(connectionString!) ||
+      this.extractDatabaseName(connectionString ?? "") ||
       "mako";
 
     if (!connectionString) {
@@ -2883,11 +2898,11 @@ export class DatabaseConnectionService {
     let pool: ConnectionPool | null = null;
     try {
       pool = new ConnectionPool({
-        server: database.connection.host!,
+        server: database.connection.host ?? "",
         port: database.connection.port || 1433,
-        database: database.connection.database!,
-        user: database.connection.username!,
-        password: database.connection.password!,
+        database: database.connection.database ?? "",
+        user: database.connection.username ?? "",
+        password: database.connection.password ?? "",
         options: {
           encrypt: database.connection.ssl || false,
           trustServerCertificate: true,
@@ -2913,11 +2928,11 @@ export class DatabaseConnectionService {
     database: IDatabaseConnection,
   ): Promise<ConnectionPool> {
     const pool = new ConnectionPool({
-      server: database.connection.host!,
+      server: database.connection.host ?? "",
       port: database.connection.port || 1433,
-      database: database.connection.database!,
-      user: database.connection.username!,
-      password: database.connection.password!,
+      database: database.connection.database ?? "",
+      user: database.connection.username ?? "",
+      password: database.connection.password ?? "",
       options: {
         encrypt: database.connection.ssl || false,
         trustServerCertificate: true,

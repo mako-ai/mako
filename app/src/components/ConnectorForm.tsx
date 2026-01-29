@@ -319,7 +319,7 @@ function ConnectorForm({
             hasItemErrors = true;
           }
           items.forEach((item, idx) => {
-            f.itemFields!.forEach(sub => {
+            (f.itemFields ?? []).forEach(sub => {
               if (sub.required) {
                 const v = item?.[sub.name as keyof typeof item];
                 const isEmpty =

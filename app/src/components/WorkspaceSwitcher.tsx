@@ -188,7 +188,8 @@ export function WorkspaceSwitcher() {
                   onClick={e => {
                     e.stopPropagation();
                     // TODO: Navigate to workspace settings
-                    console.log("Navigate to workspace settings", workspace.id);
+                    // Placeholder for future implementation
+                    void workspace.id;
                   }}
                 >
                   <Settings fontSize="small" />

@@ -58,8 +58,9 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
 
   private getHttpClient(database: IDatabaseConnection): AxiosInstance {
     const key = database._id.toString();
-    if (this.httpClients.has(key)) {
-      return this.httpClients.get(key)!;
+    const existingClient = this.httpClients.get(key);
+    if (existingClient) {
+      return existingClient;
     }
 
     const conn = database.connection as unknown as KVConnection;
@@ -168,11 +169,16 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
         case "list":
           return this.kvList(client, namespaceId, parsed.options);
         case "get":
-          return this.kvGet(client, namespaceId, parsed.key!);
+          return this.kvGet(client, namespaceId, parsed.key ?? "");
         case "put":
-          return this.kvPut(client, namespaceId, parsed.key!, parsed.value);
+          return this.kvPut(
+            client,
+            namespaceId,
+            parsed.key ?? "",
+            parsed.value,
+          );
         case "delete":
-          return this.kvDelete(client, namespaceId, parsed.key!);
+          return this.kvDelete(client, namespaceId, parsed.key ?? "");
         default:
           return { success: false, error: `Unknown method: ${parsed.method}` };
       }

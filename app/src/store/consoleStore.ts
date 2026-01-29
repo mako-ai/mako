@@ -517,7 +517,8 @@ export const useConsoleStore = create<ConsoleStore>()(
             );
             lastSavedContentHash.set(consoleId, stateHash);
           } catch (e) {
-            console.debug("[AutoSave] Failed to save console:", e);
+            // Auto-save failure - silently ignore as this is a best-effort operation
+            void e;
           }
         }, DRAFT_SAVE_DEBOUNCE_MS);
 

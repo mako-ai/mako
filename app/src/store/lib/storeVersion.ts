@@ -48,9 +48,7 @@ export function initializeStoreVersion(): void {
   LEGACY_KEYS.forEach(key => localStorage.removeItem(key));
 
   if (storedVersion !== CURRENT_VERSION) {
-    console.info(
-      `[StoreVersion] Version changed from ${storedVersion} to ${CURRENT_VERSION}. Clearing stored data.`,
-    );
+    // Store version changed - clearing stored data for clean upgrade
 
     // Clear all persisted stores
     PERSISTED_STORE_KEYS.forEach(key => localStorage.removeItem(key));

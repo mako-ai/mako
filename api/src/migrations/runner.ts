@@ -183,7 +183,8 @@ export async function getMigrationFullStatus(
 
     let description: string | undefined;
     if (hasLocalFile) {
-      const file = files.find(f => f.id === id)!;
+      const file = files.find(f => f.id === id);
+      if (!file) continue;
       try {
         const module = await loadMigration(file.filepath);
         description = module.description;

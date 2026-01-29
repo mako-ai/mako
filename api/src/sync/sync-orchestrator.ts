@@ -346,7 +346,7 @@ export async function performSyncChunk(
         lastSyncDate = lastRecord[0]._syncedAt;
         logger?.log(
           "info",
-          `Syncing ${entity} updated after: ${lastSyncDate!.toISOString()}`,
+          `Syncing ${entity} updated after: ${lastSyncDate?.toISOString() ?? "unknown"}`,
         );
       }
     }
@@ -682,7 +682,7 @@ export async function performSync(
           );
           logger?.log(
             "info",
-            `Syncing ${entityName} updated after: ${lastSyncDate!.toISOString()}`,
+            `Syncing ${entityName} updated after: ${lastSyncDate?.toISOString() ?? "unknown"}`,
           );
         } else {
           logger?.log(

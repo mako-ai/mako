@@ -67,6 +67,7 @@ export function OnboardingProvider({
  * Hook to access shared onboarding state.
  * Must be used within an OnboardingProvider.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useOnboarding(): OnboardingContextValue {
   const context = useContext(OnboardingContext);
   if (!context) {

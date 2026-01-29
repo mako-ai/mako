@@ -279,7 +279,7 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
               Welcome to {successWorkspace}!
             </Typography>
             <Alert severity="success" sx={{ mb: 3 }}>
-              You've successfully joined the workspace.
+              You&apos;ve successfully joined the workspace.
             </Alert>
             <Typography color="text.secondary">
               Redirecting to the application...
@@ -338,7 +338,7 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
 
             <Alert severity="warning" sx={{ mb: 3 }}>
               This invitation was sent to{" "}
-              <strong>{inviteDetails?.inviteeEmail}</strong>, but you're
+              <strong>{inviteDetails?.inviteeEmail}</strong>, but you&apos;re
               currently logged in as <strong>{user?.email}</strong>.
             </Alert>
 
@@ -384,7 +384,7 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
           <Box sx={{ textAlign: "center", mb: 3 }}>
             <EmailIcon color="primary" sx={{ fontSize: 60, mb: 2 }} />
             <Typography variant="h5" gutterBottom>
-              You're Invited!
+              You&apos;re Invited!
             </Typography>
           </Box>
 
@@ -434,7 +434,7 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
             // User is logged in and email matches
             <Stack spacing={2}>
               <Alert severity="info">
-                You're logged in as <strong>{user.email}</strong>
+                You&apos;re logged in as <strong>{user.email}</strong>
               </Alert>
               <Button
                 variant="contained"

@@ -112,6 +112,7 @@ db.${selectedCollection || "collection_name"}.countDocuments({
     if (selectedCollection && !isCreatingNew) {
       fetchCollectionDetails();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCollection, isCreatingNew]);
 
   // Update query template when collection changes
@@ -128,6 +129,7 @@ db.createCollection("new_collection_name", {
   // max: 5000       // Maximum number of documents for capped collections
 })`);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCollection, isCreatingNew]);
 
   const fetchCollectionDetails = async () => {
@@ -451,9 +453,9 @@ db.createCollection("new_collection_name", {
         <DialogTitle id="delete-dialog-title">Delete Collection</DialogTitle>
         <DialogContent>
           <DialogContentText id="delete-dialog-description">
-            Are you sure you want to delete the collection "{selectedCollection}
-            "? This action cannot be undone and will permanently delete all
-            documents in the collection.
+            Are you sure you want to delete the collection &quot;
+            {selectedCollection}&quot;? This action cannot be undone and will
+            permanently delete all documents in the collection.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

@@ -53,6 +53,7 @@ export function FlowsExplorer() {
     if (currentWorkspace) {
       init(currentWorkspace.id);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id, init]);
 
   const handleRefresh = async () => {
