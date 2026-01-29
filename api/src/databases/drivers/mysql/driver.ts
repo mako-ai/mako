@@ -76,7 +76,7 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
 
       const result = await this.executeQuery(
         database,
-        `SELECT table_name, table_type
+        `SELECT table_name AS table_name, table_type AS table_type
          FROM information_schema.tables
          WHERE table_schema = '${safeDbName}'
          ORDER BY table_name;`,
@@ -85,18 +85,29 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
 
       if (!result.success || !result.data) return [];
 
-      return result.data.map(
-        (row: {
-          table_name: string;
-          table_type: string;
-        }): DatabaseTreeNode => ({
-          id: `${dbName}.${row.table_name}`,
-          label: row.table_name,
-          kind: row.table_type === "VIEW" ? "view" : "table",
+      return result.data
+        .map(
+          (row: {
+            table_name?: string;
+            TABLE_NAME?: string;
+            table_type?: string;
+            TABLE_TYPE?: string;
+          }) => ({
+            tableName: row.table_name ?? row.TABLE_NAME,
+            tableType: row.table_type ?? row.TABLE_TYPE,
+          }),
+        )
+        .filter(
+          (row): row is { tableName: string; tableType?: string } =>
+            !!row.tableName,
+        )
+        .map<DatabaseTreeNode>(({ tableName, tableType }) => ({
+          id: `${dbName}.${tableName}`,
+          label: tableName,
+          kind: tableType === "VIEW" ? "view" : "table",
           hasChildren: true,
-          metadata: { databaseName: dbName, tableName: row.table_name },
-        }),
-      );
+          metadata: { databaseName: dbName, tableName },
+        }));
     }
 
     if (parent.kind === "table" || parent.kind === "view") {
@@ -108,7 +119,7 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
 
       const result = await this.executeQuery(
         database,
-        `SELECT column_name, data_type
+        `SELECT column_name AS column_name, data_type AS data_type
          FROM information_schema.columns
          WHERE table_schema = '${safeDbName}'
            AND table_name = '${safeTableName}'
@@ -118,23 +129,34 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
 
       if (!result.success || !result.data) return [];
 
-      return result.data.map(
-        (row: {
-          column_name: string;
-          data_type: string;
-        }): DatabaseTreeNode => ({
-          id: `${databaseName}.${tableName}.${row.column_name}`,
-          label: `${row.column_name}: ${row.data_type}`,
+      return result.data
+        .map(
+          (row: {
+            column_name?: string;
+            COLUMN_NAME?: string;
+            data_type?: string;
+            DATA_TYPE?: string;
+          }) => ({
+            columnName: row.column_name ?? row.COLUMN_NAME,
+            dataType: row.data_type ?? row.DATA_TYPE,
+          }),
+        )
+        .filter(
+          (row): row is { columnName: string; dataType?: string } =>
+            !!row.columnName,
+        )
+        .map<DatabaseTreeNode>(({ columnName, dataType }) => ({
+          id: `${databaseName}.${tableName}.${columnName}`,
+          label: `${columnName}: ${dataType ?? ""}`.trim(),
           kind: "column",
           hasChildren: false,
           metadata: {
             databaseName,
             tableName,
-            columnName: row.column_name,
-            columnType: row.data_type,
+            columnName,
+            columnType: dataType,
           },
-        }),
-      );
+        }));
     }
 
     return [];
