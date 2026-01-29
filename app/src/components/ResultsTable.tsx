@@ -275,21 +275,23 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
     }
 
     const normalizedResults = normalizeToArray(results.results);
-    if (normalizedResults.length === 0) {
+
+    // Get column headers (excluding row index column)
+    const headers = columns
+      .map(col => col.field)
+      .filter(field => field !== "__rowIndex");
+
+    // If no data and no columns, nothing to copy
+    if (normalizedResults.length === 0 && headers.length === 0) {
       return;
     }
 
     try {
-      // Get column headers
-      const headers = columns
-        .map(col => col.field)
-        .filter(field => field !== "__rowIndex");
-
       // Create CSV-like format that works well with Google Sheets
       const csvContent = [
         // Header row
         headers.join("\t"),
-        // Data rows
+        // Data rows (empty array if no results)
         ...normalizedResults.map(row =>
           headers
             .map(header => {
