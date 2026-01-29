@@ -121,7 +121,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       return { columns: cols, rows: [], hasFieldColumns: true };
     }
 
-    // Generate columns from the first 10 results (or all if fewer than 10)
+    // Generate columns from the first 100 results (or all if fewer than 100)
     const sampleResults = normalizedResults.slice(0, 100);
     const allKeys = new Set<string>();
 
@@ -132,19 +132,38 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       }
     });
 
-    // Function to check if a key starts with a number
-    const startsWithNumber = (key: string): boolean => {
-      return /^\d/.test(key.trim());
-    };
+    // Determine column ordering:
+    // 1. If fieldNames is available, use it as the primary ordering (preserves DB column order)
+    // 2. Add any additional keys found in results that aren't in fieldNames
+    // 3. If no fieldNames, fall back to alphabetical ordering
+    let orderedKeys: string[];
 
-    // Separate keys that start with numbers from those that don't
-    const allKeysArray = Array.from(allKeys);
-    const numericKeys = allKeysArray.filter(startsWithNumber);
-    const sortedNumericKeys = numericKeys.sort();
-    const alphabeticKeys = allKeysArray.filter(key => !startsWithNumber(key));
+    if (fieldNames.length > 0) {
+      // Use fieldNames as the base ordering, then append any extra keys from data
+      const fieldNamesSet = new Set(fieldNames);
+      const extraKeys = Array.from(allKeys).filter(
+        key => !fieldNamesSet.has(key),
+      );
+      orderedKeys = [
+        ...fieldNames.filter(key => allKeys.has(key)),
+        ...extraKeys,
+      ];
+    } else {
+      // No fieldNames available - fall back to alphabetical ordering
+      // Function to check if a key starts with a number
+      const startsWithNumber = (key: string): boolean => {
+        return /^\d/.test(key.trim());
+      };
 
-    // Combine alphabetic keys first, then numeric keys
-    const orderedKeys = [...alphabeticKeys, ...sortedNumericKeys];
+      // Separate keys that start with numbers from those that don't
+      const allKeysArray = Array.from(allKeys);
+      const numericKeys = allKeysArray.filter(startsWithNumber);
+      const sortedNumericKeys = numericKeys.sort();
+      const alphabeticKeys = allKeysArray.filter(key => !startsWithNumber(key));
+
+      // Combine alphabetic keys first, then numeric keys
+      orderedKeys = [...alphabeticKeys, ...sortedNumericKeys];
+    }
 
     const cols: GridColDef[] = orderedKeys.map(key => {
       // Check if this column contains numeric values by sampling the first few rows
