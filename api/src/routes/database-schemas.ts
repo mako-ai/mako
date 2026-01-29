@@ -282,28 +282,53 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
   mysql: {
     fields: [
       {
+        name: "use_connection_string",
+        label: "Use Connection String",
+        type: "boolean",
+        default: false,
+      },
+      {
+        name: "connectionString",
+        label: "Connection String",
+        type: "password",
+        required: false,
+        placeholder: "mysql://user:password@host:3306/database?ssl=true",
+        helperText:
+          "Full MySQL connection URI. Editing this will update the fields below.",
+      },
+      {
         name: "host",
         label: "Host",
         type: "string",
-        required: true,
+        required: false,
         placeholder: "localhost",
       },
       {
         name: "port",
         label: "Port",
         type: "number",
-        required: true,
+        required: false,
         default: 3306,
       },
       {
         name: "database",
         label: "Database",
         type: "string",
-        required: true,
+        required: false,
         placeholder: "mydb",
       },
-      { name: "username", label: "Username", type: "string", required: true },
-      { name: "password", label: "Password", type: "password", required: true },
+      {
+        name: "username",
+        label: "Username",
+        type: "string",
+        required: false,
+      },
+      {
+        name: "password",
+        label: "Password",
+        type: "password",
+        required: false,
+      },
       { name: "ssl", label: "Use SSL/TLS", type: "boolean", default: false },
     ],
   },

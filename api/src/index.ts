@@ -30,6 +30,7 @@ import { CloudSQLPostgresDatabaseDriver } from "./databases/drivers/cloudsql-pos
 import { CloudflareD1DatabaseDriver } from "./databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/driver";
 import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver";
+import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { flowRoutes } from "./routes/flows";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
@@ -112,6 +113,7 @@ app.route("/api/workspaces/:workspaceId/databases", databaseTreeRoutes);
 databaseRegistry.register(new BigQueryDatabaseDriver());
 databaseRegistry.register(new MongoDatabaseDriver());
 databaseRegistry.register(new PostgreSQLDatabaseDriver());
+databaseRegistry.register(new MySQLDatabaseDriver());
 databaseRegistry.register(new CloudSQLPostgresDatabaseDriver());
 databaseRegistry.register(new CloudflareD1DatabaseDriver());
 databaseRegistry.register(new CloudflareKVDatabaseDriver());

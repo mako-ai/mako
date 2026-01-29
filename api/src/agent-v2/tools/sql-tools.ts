@@ -1,6 +1,6 @@
 /**
  * Unified SQL Tools for Agent V2
- * Supports PostgreSQL, BigQuery, SQLite, and Cloudflare D1 with a single tool surface.
+ * Supports PostgreSQL, MySQL, BigQuery, SQLite, and Cloudflare D1 with a single tool surface.
  */
 
 import { z } from "zod";
@@ -14,12 +14,14 @@ import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
 } from "./shared/truncation";
+import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
 
 // SQL dialect types for routing
-type SqlDialect = "postgresql" | "bigquery" | "sqlite" | "clickhouse";
+type SqlDialect = "postgresql" | "mysql" | "bigquery" | "sqlite" | "clickhouse";
 
 const SQL_TYPES = {
   postgres: new Set(["postgresql", "cloudsql-postgres"]),
+  mysql: new Set(["mysql"]),
   bigquery: new Set(["bigquery"]),
   sqlite: new Set(["sqlite", "cloudflare-d1"]),
   clickhouse: new Set(["clickhouse"]),
@@ -27,6 +29,7 @@ const SQL_TYPES = {
 
 const ALL_SQL_TYPES = new Set([
   ...SQL_TYPES.postgres,
+  ...SQL_TYPES.mysql,
   ...SQL_TYPES.bigquery,
   ...SQL_TYPES.sqlite,
   ...SQL_TYPES.clickhouse,
@@ -34,6 +37,7 @@ const ALL_SQL_TYPES = new Set([
 
 const getDialect = (type: string): SqlDialect => {
   if (SQL_TYPES.postgres.has(type)) return "postgresql";
+  if (SQL_TYPES.mysql.has(type)) return "mysql";
   if (SQL_TYPES.bigquery.has(type)) return "bigquery";
   if (SQL_TYPES.sqlite.has(type)) return "sqlite";
   if (SQL_TYPES.clickhouse.has(type)) return "clickhouse";
@@ -57,6 +61,9 @@ const escapePostgresIdentifier = (value: string): string =>
 
 const escapeBigQueryIdentifier = (value: string): string =>
   `\`${value.replace(/`/g, "\\`")}\``;
+
+const escapeMySqlIdentifier = (value: string): string =>
+  `\`${value.replace(/`/g, "``")}\``;
 
 const escapeSqliteLiteral = (value: string): string =>
   `'${value.replace(/'/g, "''")}'`;
@@ -107,7 +114,7 @@ const fetchSqlDatabase = async (connectionId: string, workspaceId: string) => {
 
   if (!ALL_SQL_TYPES.has(database.type)) {
     throw new Error(
-      `This tool only supports SQL database connections (PostgreSQL, BigQuery, SQLite, D1). Got: ${database.type}`,
+      `This tool only supports SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, D1). Got: ${database.type}`,
     );
   }
 
@@ -158,7 +165,7 @@ async function listSqlConnectionsImpl(workspaceId: string) {
     const dialect = getDialect(db.type);
 
     let displayInfo: string;
-    if (dialect === "postgresql") {
+    if (dialect === "postgresql" || dialect === "mysql") {
       const host = (connection.host || connection.instanceConnectionName) as
         | string
         | undefined;
@@ -207,6 +214,31 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
       name: row.datname,
       sqlDialect: dialect,
     }));
+  }
+
+  if (dialect === "mysql") {
+    const result = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      "SHOW DATABASES",
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || "Failed to list databases");
+    }
+
+    return (result.data || [])
+      .map(
+        (row: { Database?: string; database?: string }) =>
+          row.Database || row.database,
+      )
+      .filter(
+        (name: string | undefined): name is string =>
+          !!name && !MYSQL_SYSTEM_DATABASES_SET.has(name),
+      )
+      .map((name: string) => ({
+        name,
+        sqlDialect: dialect,
+      }));
   }
 
   if (dialect === "bigquery") {
@@ -307,6 +339,49 @@ async function listTablesImpl(
         };
       },
     );
+  }
+
+  if (dialect === "mysql") {
+    const safeDb = databaseName.replace(/'/g, "''");
+    const result = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT table_name AS table_name, table_type AS table_type
+       FROM information_schema.tables
+       WHERE table_schema = '${safeDb}'
+       ORDER BY table_name;`,
+      { databaseName },
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || "Failed to list tables");
+    }
+
+    return (result.data || [])
+      .map(
+        (row: {
+          table_name?: string;
+          TABLE_NAME?: string;
+          table_type?: string;
+          TABLE_TYPE?: string;
+        }) => ({
+          name: row.table_name ?? row.TABLE_NAME,
+          type: row.table_type ?? row.TABLE_TYPE,
+        }),
+      )
+      .filter(
+        (row: {
+          name?: string;
+          type?: string;
+        }): row is {
+          name: string;
+          type?: string;
+        } => !!row.name,
+      )
+      .map((row: { name: string; type?: string }) => ({
+        name: row.name,
+        type: row.type === "VIEW" ? "view" : "table",
+        sqlDialect: dialect,
+      }));
   }
 
   if (dialect === "bigquery") {
@@ -571,6 +646,79 @@ async function inspectTableImpl(
     if (samplesResult.success && samplesResult.data) {
       samples = samplesResult.data;
     }
+  } else if (dialect === "mysql") {
+    const safeDb = databaseName.replace(/'/g, "''");
+    const safeTable = tableName.replace(/'/g, "''");
+
+    const columnsResult = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT column_name AS column_name, data_type AS data_type, is_nullable AS is_nullable, column_default AS column_default
+       FROM information_schema.columns
+       WHERE table_schema = '${safeDb}'
+         AND table_name = '${safeTable}'
+       ORDER BY ordinal_position;`,
+      { databaseName },
+    );
+
+    if (!columnsResult.success) {
+      throw new Error(columnsResult.error || "Failed to get columns");
+    }
+
+    type MySqlColumn = {
+      name?: string;
+      types: string[];
+      nullable?: boolean;
+      defaultValue?: string;
+    };
+
+    columns = (columnsResult.data || [])
+      .map(
+        (row: {
+          column_name?: string;
+          COLUMN_NAME?: string;
+          data_type?: string;
+          DATA_TYPE?: string;
+          is_nullable?: string;
+          IS_NULLABLE?: string;
+          column_default?: string;
+          COLUMN_DEFAULT?: string;
+        }): MySqlColumn => ({
+          name: row.column_name ?? row.COLUMN_NAME,
+          types: [row.data_type ?? row.DATA_TYPE].filter(
+            (value): value is string => !!value,
+          ),
+          nullable:
+            (row.is_nullable ?? row.IS_NULLABLE)?.toUpperCase() === "YES",
+          defaultValue: row.column_default ?? row.COLUMN_DEFAULT,
+        }),
+      )
+      .filter((row: MySqlColumn): row is Required<MySqlColumn> => !!row.name);
+
+    const typeResult = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT table_type AS table_type
+       FROM information_schema.tables
+       WHERE table_schema = '${safeDb}'
+         AND table_name = '${safeTable}';`,
+      { databaseName },
+    );
+    const typeValue =
+      (typeResult.success && typeResult.data?.[0]?.table_type) ||
+      (typeResult.success && typeResult.data?.[0]?.TABLE_TYPE);
+    if (typeValue === "VIEW") {
+      entityKind = "view";
+    }
+
+    const qualifiedName = `${escapeMySqlIdentifier(databaseName)}.${escapeMySqlIdentifier(tableName)}`;
+    const samplesResult = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS};`,
+      { databaseName },
+    );
+
+    if (samplesResult.success && samplesResult.data) {
+      samples = samplesResult.data;
+    }
   } else {
     // SQLite/D1
     // Get columns using PRAGMA
@@ -652,7 +800,7 @@ async function executeQueryImpl(
   const safeQuery = appendLimitIfMissing(query);
 
   let options: Record<string, string> = {};
-  if (dialect === "postgresql") {
+  if (dialect === "postgresql" || dialect === "mysql") {
     options = { databaseName };
   } else if (dialect === "sqlite") {
     options = { databaseId: databaseName };
@@ -686,14 +834,14 @@ export const createSqlToolsV2 = (
 
     sql_list_connections: {
       description:
-        "List all SQL database connections (PostgreSQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",
+        "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",
       inputSchema: emptySchema,
       execute: async () => listSqlConnectionsImpl(workspaceId),
     },
 
     sql_list_databases: {
       description:
-        "List databases (PostgreSQL), datasets (BigQuery), or database files (SQLite/D1) within a SQL connection. Returns array of database names with sqlDialect.",
+        "List databases (PostgreSQL/MySQL), datasets (BigQuery), or database files (SQLite/D1) within a SQL connection. Returns array of database names with sqlDialect.",
       inputSchema: connectionIdSchema,
       execute: async (params: { connectionId: string }) =>
         listDatabasesImpl(params.connectionId, workspaceId),
