@@ -27,6 +27,7 @@ interface QueryResult {
   executedAt: string;
   resultCount: number;
   executionTime?: number; // Execution time in milliseconds
+  fields?: Array<{ name?: string } | string>;
 }
 
 interface ResultsTableProps {
@@ -65,16 +66,59 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
     return [data];
   };
 
-  const { columns, rows } = useMemo(() => {
+  const getFieldNames = (fields?: Array<{ name?: string } | string>) => {
+    if (!Array.isArray(fields)) return [];
+    return fields
+      .map(field => {
+        if (typeof field === "string") return field;
+        if (field && typeof field === "object" && "name" in field) {
+          return field.name ? String(field.name) : "";
+        }
+        return "";
+      })
+      .filter(Boolean);
+  };
+
+  const { columns, rows, hasFieldColumns } = useMemo(() => {
     if (!results || results.results === null || results.results === undefined) {
-      return { columns: [], rows: [] };
+      return { columns: [], rows: [], hasFieldColumns: false };
     }
+
+    const fieldNames = getFieldNames(results.fields);
 
     // Normalize results to array format
     const normalizedResults = normalizeToArray(results.results);
 
     if (normalizedResults.length === 0) {
-      return { columns: [], rows: [] };
+      if (fieldNames.length === 0) {
+        return { columns: [], rows: [], hasFieldColumns: false };
+      }
+
+      const orderedKeys = Array.from(new Set(fieldNames));
+      const cols: GridColDef[] = orderedKeys.map(key => ({
+        field: key,
+        headerName: key,
+        width: Math.min(Math.max(key.length * 8 + 24, 60), 400),
+        align: "left",
+        headerAlign: "left",
+      }));
+
+      cols.unshift({
+        field: "__rowIndex",
+        headerName: "#",
+        width: 50,
+        minWidth: 50,
+        maxWidth: 50,
+        sortable: false,
+        filterable: false,
+        disableColumnMenu: true,
+        disableReorder: true,
+        resizable: false,
+        align: "right",
+        headerAlign: "right",
+      });
+
+      return { columns: cols, rows: [], hasFieldColumns: true };
     }
 
     // Generate columns from the first 10 results (or all if fewer than 10)
@@ -108,14 +152,16 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
         .map(row => row?.[key])
         .filter(value => value !== undefined);
 
-      const isNumericColumn = sampleValues.every(
-        value =>
-          value === null ||
-          (typeof value === "number" && !isNaN(value)) ||
-          (typeof value === "string" &&
-            !isNaN(Number(value)) &&
-            value.trim() !== ""),
-      );
+      const isNumericColumn =
+        sampleValues.length > 0 &&
+        sampleValues.every(
+          value =>
+            value === null ||
+            (typeof value === "number" && !isNaN(value)) ||
+            (typeof value === "string" &&
+              !isNaN(Number(value)) &&
+              value.trim() !== ""),
+        );
 
       // Calculate column width based on content length
       const getDisplayLength = (value: unknown): number => {
@@ -220,7 +266,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       };
     });
 
-    return { columns: cols, rows: rowsData };
+    return { columns: cols, rows: rowsData, hasFieldColumns: false };
   }, [results]);
 
   const copyToClipboard = useCallback(async () => {
@@ -300,7 +346,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
 
   // Check if results are empty using the normalizeToArray helper
   const normalizedForCheck = normalizeToArray(results.results);
-  if (normalizedForCheck.length === 0) {
+  if (normalizedForCheck.length === 0 && !hasFieldColumns) {
     return (
       <Box
         sx={{
@@ -392,6 +438,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
             density="compact"
             disableRowSelectionOnClick
             hideFooter
+            localeText={{ noRowsLabel: "No rows returned" }}
             columnHeaderHeight={40}
             rowHeight={40}
             style={{

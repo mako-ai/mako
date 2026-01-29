@@ -48,6 +48,7 @@ interface QueryResult {
   executedAt: string;
   resultCount: number;
   executionTime?: number;
+  fields?: Array<{ name?: string } | string>;
 }
 
 // Styled PanelResizeHandle components
@@ -330,6 +331,11 @@ function Editor() {
           duration_ms: executionTime,
         });
 
+        const fields =
+          "fields" in result
+            ? (result as { fields?: Array<{ name?: string } | string> }).fields
+            : undefined;
+
         setTabResults(prev => ({
           ...prev,
           [tabId]: {
@@ -337,6 +343,7 @@ function Editor() {
             executedAt: new Date().toISOString(),
             resultCount: Array.isArray(result.data) ? result.data.length : 1,
             executionTime,
+            fields,
           },
         }));
       } else if (result.error !== "Query cancelled") {
