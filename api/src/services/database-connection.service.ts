@@ -2611,7 +2611,9 @@ export class DatabaseConnectionService {
         return {
           host: url.hostname || undefined,
           port: url.port ? Number.parseInt(url.port, 10) : 3306,
-          database: url.pathname.slice(1) || undefined,
+          database: url.pathname.slice(1)
+            ? decodeURIComponent(url.pathname.slice(1))
+            : undefined,
           user: url.username ? decodeURIComponent(url.username) : undefined,
           password: url.password ? decodeURIComponent(url.password) : undefined,
           ssl: ssl ? { rejectUnauthorized: false } : undefined,

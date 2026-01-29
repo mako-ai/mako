@@ -14,6 +14,7 @@ import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
 } from "./shared/truncation";
+import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
 
 // SQL dialect types for routing
 type SqlDialect = "postgresql" | "mysql" | "bigquery" | "sqlite" | "clickhouse";
@@ -225,13 +226,6 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
       throw new Error(result.error || "Failed to list databases");
     }
 
-    const systemDatabases = new Set([
-      "information_schema",
-      "mysql",
-      "performance_schema",
-      "sys",
-    ]);
-
     return (result.data || [])
       .map(
         (row: { Database?: string; database?: string }) =>
@@ -239,7 +233,7 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
       )
       .filter(
         (name: string | undefined): name is string =>
-          !!name && !systemDatabases.has(name),
+          !!name && !MYSQL_SYSTEM_DATABASES_SET.has(name),
       )
       .map((name: string) => ({
         name,

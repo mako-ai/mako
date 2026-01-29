@@ -9,6 +9,21 @@ import { loggers } from "../../../logging";
 
 const logger = loggers.db("mysql");
 
+/**
+ * MySQL system databases that should be excluded from user-facing lists.
+ * Exported for reuse in sql-tools and other MySQL-related code.
+ */
+export const MYSQL_SYSTEM_DATABASES = [
+  "information_schema",
+  "mysql",
+  "performance_schema",
+  "sys",
+] as const;
+
+export const MYSQL_SYSTEM_DATABASES_SET = new Set<string>(
+  MYSQL_SYSTEM_DATABASES,
+);
+
 export class MySQLDatabaseDriver implements DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata {
     return {
@@ -40,16 +55,12 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
       const result = await this.executeQuery(database, "SHOW DATABASES");
       if (!result.success || !result.data) return [];
 
-      const systemDatabases = new Set([
-        "information_schema",
-        "mysql",
-        "performance_schema",
-        "sys",
-      ]);
-
       return (result.data as Array<Record<string, string>>)
         .map(row => row.Database || row.database || row.name)
-        .filter((name): name is string => !!name && !systemDatabases.has(name))
+        .filter(
+          (name): name is string =>
+            !!name && !MYSQL_SYSTEM_DATABASES_SET.has(name),
+        )
         .map<DatabaseTreeNode>(dbName => ({
           id: dbName,
           label: dbName,
@@ -85,29 +96,36 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
 
       if (!result.success || !result.data) return [];
 
-      return result.data
+      type TableRow = {
+        table_name?: string;
+        TABLE_NAME?: string;
+        table_type?: string;
+        TABLE_TYPE?: string;
+      };
+
+      type MappedTable = {
+        tableName: string | undefined;
+        tableType: string | undefined;
+      };
+
+      const tables = (result.data as TableRow[])
         .map(
-          (row: {
-            table_name?: string;
-            TABLE_NAME?: string;
-            table_type?: string;
-            TABLE_TYPE?: string;
-          }) => ({
+          (row): MappedTable => ({
             tableName: row.table_name ?? row.TABLE_NAME,
             tableType: row.table_type ?? row.TABLE_TYPE,
           }),
         )
         .filter(
-          (row): row is { tableName: string; tableType?: string } =>
-            !!row.tableName,
-        )
-        .map<DatabaseTreeNode>(({ tableName, tableType }) => ({
-          id: `${dbName}.${tableName}`,
-          label: tableName,
-          kind: tableType === "VIEW" ? "view" : "table",
-          hasChildren: true,
-          metadata: { databaseName: dbName, tableName },
-        }));
+          (row): row is MappedTable & { tableName: string } => !!row.tableName,
+        );
+
+      return tables.map<DatabaseTreeNode>(({ tableName, tableType }) => ({
+        id: `${dbName}.${tableName}`,
+        label: tableName,
+        kind: tableType === "VIEW" ? "view" : "table",
+        hasChildren: true,
+        metadata: { databaseName: dbName, tableName },
+      }));
     }
 
     if (parent.kind === "table" || parent.kind === "view") {
@@ -129,34 +147,42 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
 
       if (!result.success || !result.data) return [];
 
-      return result.data
+      type ColumnRow = {
+        column_name?: string;
+        COLUMN_NAME?: string;
+        data_type?: string;
+        DATA_TYPE?: string;
+      };
+
+      type MappedColumn = {
+        columnName: string | undefined;
+        dataType: string | undefined;
+      };
+
+      const columns = (result.data as ColumnRow[])
         .map(
-          (row: {
-            column_name?: string;
-            COLUMN_NAME?: string;
-            data_type?: string;
-            DATA_TYPE?: string;
-          }) => ({
+          (row): MappedColumn => ({
             columnName: row.column_name ?? row.COLUMN_NAME,
             dataType: row.data_type ?? row.DATA_TYPE,
           }),
         )
         .filter(
-          (row): row is { columnName: string; dataType?: string } =>
+          (row): row is MappedColumn & { columnName: string } =>
             !!row.columnName,
-        )
-        .map<DatabaseTreeNode>(({ columnName, dataType }) => ({
-          id: `${databaseName}.${tableName}.${columnName}`,
-          label: `${columnName}: ${dataType ?? ""}`.trim(),
-          kind: "column",
-          hasChildren: false,
-          metadata: {
-            databaseName,
-            tableName,
-            columnName,
-            columnType: dataType,
-          },
-        }));
+        );
+
+      return columns.map<DatabaseTreeNode>(({ columnName, dataType }) => ({
+        id: `${databaseName}.${tableName}.${columnName}`,
+        label: `${columnName}: ${dataType ?? ""}`.trim(),
+        kind: "column",
+        hasChildren: false,
+        metadata: {
+          databaseName,
+          tableName,
+          columnName,
+          columnType: dataType,
+        },
+      }));
     }
 
     return [];
@@ -167,11 +193,14 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
   ): Promise<
     Record<string, Record<string, Array<{ name: string; type: string }>>>
   > {
+    const excludedSchemas = MYSQL_SYSTEM_DATABASES.map(db => `'${db}'`).join(
+      ", ",
+    );
     const result = await this.executeQuery(
       database,
-      `SELECT table_schema, table_name, column_name, data_type
+      `SELECT table_schema AS table_schema, table_name AS table_name, column_name AS column_name, data_type AS data_type
        FROM information_schema.columns
-       WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+       WHERE table_schema NOT IN (${excludedSchemas})
        ORDER BY table_schema, table_name, ordinal_position;`,
     );
 
@@ -192,6 +221,10 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
     }>) {
       const { table_schema, table_name, column_name, data_type } = row;
 
+      if (!table_schema || !table_name || !column_name) {
+        continue;
+      }
+
       if (!schema[table_schema]) {
         schema[table_schema] = {};
       }
@@ -201,7 +234,7 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
 
       schema[table_schema][table_name].push({
         name: column_name,
-        type: data_type,
+        type: data_type || "unknown",
       });
     }
 
