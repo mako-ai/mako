@@ -2657,6 +2657,25 @@ export class DatabaseConnectionService {
       keepAliveInitialDelay: 30000,
     });
 
+    pool.on("connection", connection => {
+      connection.on("error", err => {
+        logger.error("MySQL pool connection error", {
+          key,
+          error: err instanceof Error ? err.message : err,
+        });
+        const entry = this.mysqlPools.get(key);
+        if (entry?.pool === pool) {
+          this.mysqlPools.delete(key);
+        }
+        pool.end().catch(endErr => {
+          logger.error("Error closing MySQL pool after error", {
+            key,
+            error: endErr,
+          });
+        });
+      });
+    });
+
     this.mysqlPools.set(key, { pool, lastUsed: new Date() });
     logger.debug("Created MySQL pool", { key });
     return pool;
