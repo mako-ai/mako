@@ -2750,6 +2750,39 @@ export class DatabaseConnectionService {
     }
   }
 
+  private normalizeMySQLValue(value: unknown): unknown {
+    if (Buffer.isBuffer(value)) {
+      const text = value.toString("utf8");
+      const trimmed = text.trim();
+      if (
+        (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+        (trimmed.startsWith("[") && trimmed.endsWith("]"))
+      ) {
+        try {
+          return JSON.parse(trimmed);
+        } catch {
+          return text;
+        }
+      }
+      return text;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(item => this.normalizeMySQLValue(item));
+    }
+
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const normalized: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(record)) {
+        normalized[key] = this.normalizeMySQLValue(entry);
+      }
+      return normalized;
+    }
+
+    return value;
+  }
+
   private async executeMySQLQuery(
     database: IDatabaseConnection,
     query: string,
@@ -2777,10 +2810,31 @@ export class DatabaseConnectionService {
         }
 
         const [rows, fields] = await connection.execute(query);
+        const normalizedRows = Array.isArray(rows)
+          ? rows.map(row => this.normalizeMySQLValue(row))
+          : rows;
+        const normalizedFields = Array.isArray(fields)
+          ? fields.map(field => {
+              const fieldPacket =
+                field && typeof field === "object"
+                  ? (field as mysql.FieldPacket)
+                  : undefined;
+              return {
+                name: fieldPacket?.name,
+                type: fieldPacket?.type ?? fieldPacket?.columnType,
+                columnType: fieldPacket?.columnType,
+                columnLength: fieldPacket?.columnLength,
+                decimals: fieldPacket?.decimals,
+                flags: fieldPacket?.flags,
+                characterSet: fieldPacket?.characterSet,
+                encoding: fieldPacket?.encoding,
+              };
+            })
+          : fields;
         return {
           success: true,
-          data: rows,
-          fields: fields,
+          data: normalizedRows,
+          fields: normalizedFields,
         };
       } finally {
         connection.release();
