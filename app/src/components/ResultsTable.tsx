@@ -174,12 +174,14 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
     if (fieldInfo.length > 0) {
       // Use fieldInfo as the base ordering, then append any extra keys from data
       // Note: For duplicates, dataKey is the same, so they'll show the same value
+      // Include ALL fields from fieldInfo, even if no row contains that key (e.g., columns with all NULLs)
+      // The valueGetter handles missing keys by returning undefined
       const dataKeysSet = new Set(fieldInfo.map(f => f.dataKey));
       const extraKeys = Array.from(allKeys).filter(
         key => !dataKeysSet.has(key),
       );
       orderedFields = [
-        ...fieldInfo.filter(f => allKeys.has(f.dataKey)),
+        ...fieldInfo,
         ...extraKeys.map(key => ({
           fieldId: key,
           dataKey: key,
