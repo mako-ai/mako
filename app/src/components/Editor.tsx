@@ -48,7 +48,7 @@ interface QueryResult {
   executedAt: string;
   resultCount: number;
   executionTime?: number;
-  fields?: Array<{ name?: string } | string>;
+  fields?: Array<{ name?: string; originalName?: string } | string>;
 }
 
 // Styled PanelResizeHandle components
@@ -333,7 +333,13 @@ function Editor() {
 
         const fields =
           "fields" in result
-            ? (result as { fields?: Array<{ name?: string } | string> }).fields
+            ? (
+                result as {
+                  fields?: Array<
+                    { name?: string; originalName?: string } | string
+                  >;
+                }
+              ).fields
             : undefined;
 
         setTabResults(prev => ({
