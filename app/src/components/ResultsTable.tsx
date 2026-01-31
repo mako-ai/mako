@@ -27,6 +27,7 @@ interface QueryResult {
   executedAt: string;
   resultCount: number;
   executionTime?: number; // Execution time in milliseconds
+  fields?: Array<{ name?: string; originalName?: string } | string>;
 }
 
 interface ResultsTableProps {
@@ -65,19 +66,91 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
     return [data];
   };
 
-  const { columns, rows } = useMemo(() => {
+  // Returns field info with unique field ID (for DataGrid), data key (for row access), and display name (for headers)
+  // Note: When SQL has duplicate column names (e.g., "SELECT id, created_by as id"), the row data
+  // only contains one value per key (JavaScript object limitation). Both columns will show the same value.
+  // This function creates unique field IDs for DataGrid while preserving the original column names for display.
+  const getFieldInfo = (
+    fields?: Array<{ name?: string; originalName?: string } | string>,
+  ) => {
+    if (!Array.isArray(fields)) return [];
+
+    const fieldCounts = new Map<string, number>();
+    return fields
+      .map(field => {
+        let name: string;
+        if (typeof field === "string") {
+          name = field;
+        } else if (field && typeof field === "object" && "name" in field) {
+          name = field.name ? String(field.name) : "";
+        } else {
+          return null;
+        }
+
+        if (!name) return null;
+
+        // Create unique field ID for DataGrid (handles duplicate column names)
+        const count = fieldCounts.get(name) || 0;
+        fieldCounts.set(name, count + 1);
+        const uniqueFieldId = count === 0 ? name : `${name}__${count}`;
+
+        return {
+          fieldId: uniqueFieldId, // Unique ID for DataGrid's field prop
+          dataKey: name, // Key to access row data (same for duplicates - will show same value)
+          displayName: name, // Original column name for header display
+        };
+      })
+      .filter(
+        (f): f is { fieldId: string; dataKey: string; displayName: string } =>
+          f !== null,
+      );
+  };
+
+  const { columns, rows, hasFieldColumns } = useMemo(() => {
     if (!results || results.results === null || results.results === undefined) {
-      return { columns: [], rows: [] };
+      return { columns: [], rows: [], hasFieldColumns: false };
     }
+
+    // Get field info with unique IDs for DataGrid, data keys for row access, and display names for headers
+    // Note: Duplicate column names (e.g., "SELECT id, id") will show the same value due to JS object limitations
+    const fieldInfo = getFieldInfo(results.fields);
 
     // Normalize results to array format
     const normalizedResults = normalizeToArray(results.results);
 
     if (normalizedResults.length === 0) {
-      return { columns: [], rows: [] };
+      if (fieldInfo.length === 0) {
+        return { columns: [], rows: [], hasFieldColumns: false };
+      }
+
+      // Create columns for empty result set (show headers only)
+      const cols: GridColDef[] = fieldInfo.map(({ fieldId, displayName }) => ({
+        field: fieldId,
+        headerName: displayName,
+        width: Math.min(Math.max(displayName.length * 8 + 24, 60), 400),
+        align: "left" as const,
+        headerAlign: "left" as const,
+      }));
+
+      cols.unshift({
+        field: "__rowIndex",
+        headerName: "#",
+        width: 50,
+        minWidth: 50,
+        maxWidth: 50,
+        sortable: false,
+        filterable: false,
+        disableColumnMenu: true,
+        disableReorder: true,
+        resizable: false,
+        align: "right",
+        headerAlign: "right",
+      });
+
+      return { columns: cols, rows: [], hasFieldColumns: true };
     }
 
-    // Generate columns from the first 10 results (or all if fewer than 10)
+    // Generate columns from the first 100 results (or all if fewer than 100)
     const sampleResults = normalizedResults.slice(0, 100);
     const allKeys = new Set<string>();
 
@@ -88,74 +161,118 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       }
     });
 
-    // Function to check if a key starts with a number
-    const startsWithNumber = (key: string): boolean => {
-      return /^\d/.test(key.trim());
-    };
+    // Determine column ordering:
+    // 1. If fieldInfo is available, use it as the primary ordering (preserves DB column order)
+    // 2. Add any additional keys found in results that aren't in fieldInfo
+    // 3. If no fieldInfo, fall back to alphabetical ordering
+    let orderedFields: Array<{
+      fieldId: string;
+      dataKey: string;
+      displayName: string;
+    }>;
 
-    // Separate keys that start with numbers from those that don't
-    const allKeysArray = Array.from(allKeys);
-    const numericKeys = allKeysArray.filter(startsWithNumber);
-    const sortedNumericKeys = numericKeys.sort();
-    const alphabeticKeys = allKeysArray.filter(key => !startsWithNumber(key));
-
-    // Combine alphabetic keys first, then numeric keys
-    const orderedKeys = [...alphabeticKeys, ...sortedNumericKeys];
-
-    const cols: GridColDef[] = orderedKeys.map(key => {
-      // Check if this column contains numeric values by sampling the first few rows
-      const sampleValues = sampleResults
-        .map(row => row?.[key])
-        .filter(value => value !== undefined);
-
-      const isNumericColumn = sampleValues.every(
-        value =>
-          value === null ||
-          (typeof value === "number" && !isNaN(value)) ||
-          (typeof value === "string" &&
-            !isNaN(Number(value)) &&
-            value.trim() !== ""),
+    if (fieldInfo.length > 0) {
+      // Use fieldInfo as the base ordering, then append any extra keys from data
+      // Note: For duplicates, dataKey is the same, so they'll show the same value
+      // Include ALL fields from fieldInfo, even if no row contains that key (e.g., columns with all NULLs)
+      // The valueGetter handles missing keys by returning undefined
+      const dataKeysSet = new Set(fieldInfo.map(f => f.dataKey));
+      const extraKeys = Array.from(allKeys).filter(
+        key => !dataKeysSet.has(key),
       );
-
-      // Calculate column width based on content length
-      const getDisplayLength = (value: unknown): number => {
-        if (value === null || value === undefined) return 4; // "null"
-        if (typeof value === "object") return JSON.stringify(value).length;
-        return String(value).length;
+      orderedFields = [
+        ...fieldInfo,
+        ...extraKeys.map(key => ({
+          fieldId: key,
+          dataKey: key,
+          displayName: key,
+        })),
+      ];
+    } else {
+      // No fieldInfo available - fall back to alphabetical ordering
+      // Function to check if a key starts with a number
+      const startsWithNumber = (key: string): boolean => {
+        return /^\d/.test(key.trim());
       };
 
-      // Get max content length from sample (header included)
-      const contentLengths = sampleValues.map(getDisplayLength);
-      const headerLength = key.length;
-      const maxContentLength = Math.max(headerLength, ...contentLengths, 0);
+      // Separate keys that start with numbers from those that don't
+      const allKeysArray = Array.from(allKeys);
+      const numericKeys = allKeysArray.filter(startsWithNumber);
+      const sortedNumericKeys = numericKeys.sort();
+      const alphabeticKeys = allKeysArray.filter(key => !startsWithNumber(key));
 
-      // Calculate width: ~8px per character + 24px padding, capped at 400px
-      const calculatedWidth = Math.min(
-        Math.max(maxContentLength * 8 + 24, 60), // min 60px
-        400, // max 400px
-      );
+      // Combine alphabetic keys first, then numeric keys
+      const orderedKeys = [...alphabeticKeys, ...sortedNumericKeys];
+      orderedFields = orderedKeys.map(key => ({
+        fieldId: key,
+        dataKey: key,
+        displayName: key,
+      }));
+    }
 
-      return {
-        field: key,
-        headerName: key,
-        width: calculatedWidth,
-        align: isNumericColumn ? "right" : "left",
-        headerAlign: isNumericColumn ? "right" : "left",
-        renderCell: params => {
-          const value = params.value;
-          if (typeof value === "undefined") {
-            return undefined;
-          }
-          if (value === null) {
-            return null;
-          }
-          if (typeof value === "object" && value !== null) {
-            return JSON.stringify(value);
-          }
-          return String(value);
-        },
-      };
-    });
+    // Create columns with unique field IDs for DataGrid
+    // Note: Duplicate columns will show the same value (JS object limitation)
+    const cols: GridColDef[] = orderedFields.map(
+      ({ fieldId, dataKey, displayName }) => {
+        // Check if this column contains numeric values by sampling the first few rows
+        const sampleValues = sampleResults
+          .map(row => row?.[dataKey])
+          .filter(value => value !== undefined);
+
+        const isNumericColumn =
+          sampleValues.length > 0 &&
+          sampleValues.every(
+            value =>
+              value === null ||
+              (typeof value === "number" && !isNaN(value)) ||
+              (typeof value === "string" &&
+                !isNaN(Number(value)) &&
+                value.trim() !== ""),
+          );
+
+        // Calculate column width based on content length
+        const getDisplayLength = (value: unknown): number => {
+          if (value === null || value === undefined) return 4; // "null"
+          if (typeof value === "object") return JSON.stringify(value).length;
+          return String(value).length;
+        };
+
+        // Get max content length from sample (header included)
+        const contentLengths = sampleValues.map(getDisplayLength);
+        const headerLength = displayName.length;
+        const maxContentLength = Math.max(headerLength, ...contentLengths, 0);
+
+        // Calculate width: ~8px per character + 24px padding, capped at 400px
+        const calculatedWidth = Math.min(
+          Math.max(maxContentLength * 8 + 24, 60), // min 60px
+          400, // max 400px
+        );
+
+        return {
+          field: fieldId, // Unique ID for DataGrid (e.g., "id", "id__1" for duplicates)
+          headerName: displayName, // Original column name for display
+          width: calculatedWidth,
+          align: isNumericColumn ? "right" : "left",
+          headerAlign: isNumericColumn ? "right" : "left",
+          // Use valueGetter to access data by dataKey (handles duplicate column names)
+          valueGetter: (_value: unknown, row: Record<string, unknown>) =>
+            row[dataKey],
+          renderCell: params => {
+            const value = params.value;
+            if (typeof value === "undefined") {
+              return undefined;
+            }
+            if (value === null) {
+              return null;
+            }
+            if (typeof value === "object" && value !== null) {
+              return JSON.stringify(value);
+            }
+            return String(value);
+          },
+        };
+      },
+    );
 
     // Prepend index column on the far left
     cols.unshift({
@@ -220,7 +337,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
       };
     });
 
-    return { columns: cols, rows: rowsData };
+    return { columns: cols, rows: rowsData, hasFieldColumns: false };
   }, [results]);
 
   const copyToClipboard = useCallback(async () => {
@@ -229,27 +346,33 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
     }
 
     const normalizedResults = normalizeToArray(results.results);
-    if (normalizedResults.length === 0) {
+
+    // Get column info (excluding row index column)
+    // Note: For duplicate columns, both will access the same key in row data (JS object limitation)
+    const columnInfo = columns
+      .filter(col => col.field !== "__rowIndex")
+      .map(col => ({
+        headerName: col.headerName as string, // Original column name for display
+        dataKey: col.headerName as string, // Original column name for row data access
+      }));
+
+    // If no data and no columns, nothing to copy
+    if (normalizedResults.length === 0 && columnInfo.length === 0) {
       return;
     }
 
     try {
-      // Get column headers
-      const headers = columns
-        .map(col => col.field)
-        .filter(field => field !== "__rowIndex");
-
       // Create CSV-like format that works well with Google Sheets
       const csvContent = [
-        // Header row
-        headers.join("\t"),
-        // Data rows
+        // Header row (use original column names)
+        columnInfo.map(c => c.headerName).join("\t"),
+        // Data rows (empty array if no results)
         ...normalizedResults.map(row =>
-          headers
-            .map(header => {
+          columnInfo
+            .map(({ dataKey }) => {
               const value =
                 row && typeof row === "object" && !Array.isArray(row)
-                  ? row[header]
+                  ? row[dataKey]
                   : row;
               if (value === null || value === undefined) {
                 return "";
@@ -300,7 +423,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
 
   // Check if results are empty using the normalizeToArray helper
   const normalizedForCheck = normalizeToArray(results.results);
-  if (normalizedForCheck.length === 0) {
+  if (normalizedForCheck.length === 0 && !hasFieldColumns) {
     return (
       <Box
         sx={{
@@ -392,6 +515,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
             density="compact"
             disableRowSelectionOnClick
             hideFooter
+            localeText={{ noRowsLabel: "No rows returned" }}
             columnHeaderHeight={40}
             rowHeight={40}
             style={{
