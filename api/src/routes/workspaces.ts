@@ -386,14 +386,18 @@ workspaceRoutes.put(
         updates,
       );
 
+      if (!updatedWorkspace) {
+        return c.json({ success: false, error: "Workspace not found" }, 404);
+      }
+
       return c.json({
         success: true,
         data: {
-          id: updatedWorkspace?._id,
-          name: updatedWorkspace?.name,
-          slug: updatedWorkspace?.slug,
-          updatedAt: updatedWorkspace?.updatedAt,
-          settings: updatedWorkspace?.settings,
+          id: updatedWorkspace._id,
+          name: updatedWorkspace.name,
+          slug: updatedWorkspace.slug,
+          updatedAt: updatedWorkspace.updatedAt,
+          settings: updatedWorkspace.settings,
         },
       });
     } catch (error) {

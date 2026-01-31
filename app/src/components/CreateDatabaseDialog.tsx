@@ -187,6 +187,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setTimeout(() => {
       isUpdatingFromConnectionString.current = false;
     }, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     supportsConnectionStringType,
     watchedType,
