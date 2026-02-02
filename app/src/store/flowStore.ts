@@ -84,6 +84,58 @@ const flowSchema = z.object({
   createdBy: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  // Database-to-database sync fields
+  sourceType: z.enum(["connector", "database"]).optional(),
+  databaseSource: z
+    .object({
+      connectionId: z.string(),
+      database: z.string().optional(),
+      query: z.string(),
+    })
+    .optional(),
+  tableDestination: z
+    .object({
+      connectionId: z.string(),
+      database: z.string().optional(),
+      schema: z.string().optional(),
+      tableName: z.string(),
+      createIfNotExists: z.boolean().optional(),
+    })
+    .optional(),
+  incrementalConfig: z
+    .object({
+      trackingColumn: z.string(),
+      trackingType: z.enum(["numeric", "timestamp"]),
+      lastValue: z.string().nullable().optional(),
+    })
+    .optional(),
+  conflictConfig: z
+    .object({
+      keyColumns: z.array(z.string()),
+      strategy: z.enum(["upsert", "ignore", "replace"]),
+    })
+    .optional(),
+  paginationConfig: z
+    .object({
+      mode: z.enum(["offset", "keyset"]),
+      keysetColumn: z.string().optional(),
+      keysetDirection: z.enum(["asc", "desc"]).optional(),
+      lastKeysetValue: z.string().nullable().optional(),
+    })
+    .optional(),
+  typeCoercions: z
+    .array(
+      z.object({
+        column: z.string(),
+        sourceType: z.string().optional(),
+        targetType: z.string(),
+        format: z.string().optional(),
+        nullValue: z.unknown().optional(),
+        transformer: z.string().optional(),
+      }),
+    )
+    .optional(),
+  batchSize: z.number().optional(),
 });
 
 export type Flow = z.infer<typeof flowSchema>;
