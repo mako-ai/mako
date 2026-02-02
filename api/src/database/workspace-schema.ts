@@ -32,7 +32,11 @@ function encrypt(text: string): string {
 
 function decrypt(text: string): string {
   const textParts = text.split(":");
-  const iv = Buffer.from(textParts.shift()!, "hex");
+  const ivHex = textParts.shift();
+  if (!ivHex) {
+    throw new Error("Invalid encrypted text format: missing IV");
+  }
+  const iv = Buffer.from(ivHex, "hex");
   const encryptedText = Buffer.from(textParts.join(":"), "hex");
   const decipher = crypto.createDecipheriv(
     "aes-256-cbc",

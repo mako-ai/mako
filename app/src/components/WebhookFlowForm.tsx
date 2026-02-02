@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useForm, Controller } from "react-hook-form";
 import {
   Box,
@@ -62,7 +62,10 @@ export function WebhookFlowForm({
   } = useFlowStore();
 
   // Get workspace-specific data
-  const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
+  const flows = useMemo(
+    () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, flowsMap],
+  );
   void loadingMap; // Acknowledge loadingMap is available but not currently used
   const storeError = currentWorkspace
     ? errorMap[currentWorkspace.id] || null
@@ -122,6 +125,7 @@ export function WebhookFlowForm({
       fetchDataSources(currentWorkspace.id);
       ensureConnections(currentWorkspace.id);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id, ensureConnections]);
 
   // Load flow data if editing

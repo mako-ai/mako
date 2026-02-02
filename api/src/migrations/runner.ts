@@ -183,7 +183,14 @@ export async function getMigrationFullStatus(
 
     let description: string | undefined;
     if (hasLocalFile) {
-      const file = files.find(f => f.id === id)!;
+      const file = files.find(f => f.id === id);
+      if (!file) {
+        // This should never happen since hasLocalFile is derived from the same files array.
+        // Throw to make any logic bug visible rather than silently omitting the migration.
+        throw new Error(
+          `Internal error: migration ${id} marked as having local file but not found in files array`,
+        );
+      }
       try {
         const module = await loadMigration(file.filepath);
         description = module.description;

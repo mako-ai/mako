@@ -81,9 +81,10 @@ function Editor() {
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const connectionsMap = useSchemaStore(state => state.connections);
   const ensureConnections = useSchemaStore(state => state.ensureConnections);
-  const availableDatabases = currentWorkspace
-    ? connectionsMap[currentWorkspace.id] || []
-    : [];
+  const availableDatabases = React.useMemo(
+    () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, connectionsMap],
+  );
 
   // Conflict resolution state
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
@@ -235,8 +236,9 @@ function Editor() {
       if (!targetConsoleId) return;
 
       const showDiffWithRetry = (retries = 10, delay = 100) => {
-        if (consoleRefs.current[targetConsoleId]?.current) {
-          consoleRefs.current[targetConsoleId].current!.showDiff(modification);
+        const consoleRef = consoleRefs.current[targetConsoleId]?.current;
+        if (consoleRef) {
+          consoleRef.showDiff(modification);
         } else if (retries > 0) {
           setTimeout(() => {
             showDiffWithRetry(retries - 1, delay);
@@ -475,7 +477,7 @@ function Editor() {
           );
           useConsoleTreeStore
             .getState()
-            .addConsole(currentWorkspace.id, savePath!, tabId);
+            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
         }
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));

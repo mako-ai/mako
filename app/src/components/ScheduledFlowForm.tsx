@@ -466,6 +466,7 @@ export function ScheduledFlowForm({
       fetchDataSources(currentWorkspace.id);
       ensureConnections(currentWorkspace.id);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id, ensureConnections]);
 
   // Update entities when data source changes

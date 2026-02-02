@@ -94,9 +94,9 @@ const ConflictResolutionDialog: React.FC<ConflictResolutionDialogProps> = ({
 
       <DialogContent dividers sx={{ display: "flex", flexDirection: "column" }}>
         <Alert severity="warning" sx={{ mb: 2 }}>
-          A file named <strong>"{conflict.existingName}"</strong> already exists
-          at <code>{conflict.path}</code>. Compare the differences below and
-          choose how to proceed.
+          A file named <strong>&quot;{conflict.existingName}&quot;</strong>{" "}
+          already exists at <code>{conflict.path}</code>. Compare the
+          differences below and choose how to proceed.
         </Alert>
 
         {/* Labels for the diff editor */}

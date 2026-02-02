@@ -141,6 +141,7 @@ function DatabaseExplorer({
     if (currentWorkspace) {
       ensureConnections(currentWorkspace.id);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id, ensureConnections]);
 
   // Fetch tree roots for all databases
@@ -166,6 +167,7 @@ function DatabaseExplorer({
         fetchDatabaseDataLocal(db.id);
       }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [databases, currentWorkspace?.id, treeNodes, fetchDatabaseDataLocal]);
 
   // Re-fetch children for expanded nodes that lost their data (e.g., after refresh)
@@ -202,6 +204,7 @@ function DatabaseExplorer({
 
       rootNodes.forEach(checkAndFetchMissingChildren);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     currentWorkspace?.id,
     databases,

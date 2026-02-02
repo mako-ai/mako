@@ -52,6 +52,9 @@ workspaceDatabaseRoutes.post(
   async (c: AuthenticatedContext) => {
     try {
       const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
       const workspace = c.get("workspace");
 
       // Check if workspace already has a demo database
@@ -81,7 +84,7 @@ workspaceDatabaseRoutes.post(
         type: demoConfig.type,
         connection: demoConfig.connection,
         isDemo: true,
-        createdBy: user!.id,
+        createdBy: user.id,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -335,13 +338,17 @@ workspaceDatabaseRoutes.post(
         );
       }
 
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+
       // Create database connection
       const database = new DatabaseConnection({
         workspaceId: workspace._id,
         name: body.name,
         type: body.type,
         connection: body.connection || {},
-        createdBy: user!.id,
+        createdBy: user.id,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

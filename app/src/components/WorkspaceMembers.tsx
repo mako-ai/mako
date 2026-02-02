@@ -289,8 +289,8 @@ export function WorkspaceMembers() {
                       {row.status === "active" ? "Joined" : "Expires"}{" "}
                       {new Date(
                         row.status === "active"
-                          ? row.joinedAt!
-                          : row.expiresAt!,
+                          ? (row.joinedAt ?? "")
+                          : (row.expiresAt ?? ""),
                       ).toLocaleDateString()}
                     </Typography>
                   </TableCell>
@@ -301,7 +301,7 @@ export function WorkspaceMembers() {
                           <Tooltip title="Copy invite link">
                             <IconButton
                               size="small"
-                              onClick={() => copyInviteLink(row.token!)}
+                              onClick={() => copyInviteLink(row.token ?? "")}
                             >
                               <ContentCopy fontSize="small" />
                             </IconButton>
@@ -326,7 +326,7 @@ export function WorkspaceMembers() {
                             value={row.role}
                             onChange={e =>
                               handleRoleChange(
-                                row.userId!,
+                                row.userId ?? "",
                                 e.target.value as "admin" | "member" | "viewer",
                               )
                             }
@@ -341,7 +341,7 @@ export function WorkspaceMembers() {
                         <Tooltip title="Remove member">
                           <IconButton
                             size="small"
-                            onClick={() => handleRemoveMember(row.userId!)}
+                            onClick={() => handleRemoveMember(row.userId ?? "")}
                             color="error"
                           >
                             <Delete fontSize="small" />

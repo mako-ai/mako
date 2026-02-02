@@ -100,6 +100,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       // instead of briefly flashing OnboardingFlow before workspaces load
       setInitialized(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, authLoading]);
 
   // Load current workspace data when it changes
@@ -108,6 +109,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       loadMembers();
       loadInvites();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id]);
 
   // Background preload schema data (connections and databases) when workspace changes
@@ -226,6 +228,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         throw err;
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -296,6 +299,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         throw err;
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [currentWorkspace, workspaces],
   );
 
@@ -509,6 +513,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useWorkspace() {
   const context = useContext(WorkspaceContext);
   if (context === undefined) {

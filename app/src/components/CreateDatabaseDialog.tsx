@@ -131,7 +131,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     } finally {
       setTestingConnection(false);
     }
-  }, [currentWorkspace, watch]);
+  }, [currentWorkspace, watch, testConnection]);
 
   // Watch PostgreSQL fields for two-way binding
   const watchedConnection = watch("connection");
@@ -187,6 +187,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setTimeout(() => {
       isUpdatingFromConnectionString.current = false;
     }, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     supportsConnectionStringType,
     watchedType,
@@ -241,6 +242,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     watchedConnection?.username,
     watchedConnection?.password,
     watchedConnection?.ssl,
+    watchedConnection?.connectionString,
     setValue,
   ]);
 
@@ -286,7 +288,15 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
       setStep("select");
       setError(null);
     }
-  }, [open, databaseId, currentWorkspace, reset, fetchSchema, schemas]);
+  }, [
+    open,
+    databaseId,
+    currentWorkspace,
+    reset,
+    fetchSchema,
+    schemas,
+    fetchDatabase,
+  ]);
 
   const handleClose = () => {
     reset({ name: "", type: "", connection: {} });

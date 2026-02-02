@@ -126,6 +126,7 @@ export function UrlSync() {
     }
 
     isHydrated.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace, user]); // Only run when workspace is ready and user is authenticated
 
   // --- Synchronization: Update URL when state changes ---

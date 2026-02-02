@@ -87,8 +87,9 @@ class DatabaseDataSourceManager {
   private async getConnectorSchema(
     connectorType: string,
   ): Promise<ConnectorSchema | null> {
-    if (this.schemaCache.has(connectorType)) {
-      return this.schemaCache.get(connectorType)!;
+    const cachedSchema = this.schemaCache.get(connectorType);
+    if (cachedSchema) {
+      return cachedSchema;
     }
     // Ask the connector registry for the live schema
     const schema =

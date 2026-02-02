@@ -276,7 +276,7 @@ export function ApiKeyManager() {
         <DialogTitle>API Key Created Successfully</DialogTitle>
         <DialogContent>
           <Alert severity="warning" sx={{ mb: 2 }}>
-            Store this key securely - it won't be shown again!
+            Store this key securely - it won&apos;t be shown again!
           </Alert>
           <Box sx={{ mb: 2 }}>
             <Typography variant="body2" color="text.secondary" gutterBottom>
