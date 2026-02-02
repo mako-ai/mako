@@ -188,8 +188,6 @@ export function WorkspaceSwitcher() {
                   onClick={e => {
                     e.stopPropagation();
                     // TODO: Navigate to workspace settings
-                    // Placeholder for future implementation
-                    void workspace.id;
                   }}
                 >
                   <Settings fontSize="small" />

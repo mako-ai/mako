@@ -516,9 +516,8 @@ export const useConsoleStore = create<ConsoleStore>()(
               },
             );
             lastSavedContentHash.set(consoleId, stateHash);
-          } catch (e) {
+          } catch (_e) {
             // Auto-save failure - silently ignore as this is a best-effort operation
-            void e;
           }
         }, DRAFT_SAVE_DEBOUNCE_MS);
 
