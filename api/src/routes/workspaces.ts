@@ -23,8 +23,11 @@ workspaceRoutes.get(
   async (c: AuthenticatedContext) => {
     try {
       const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
       const invites = await workspaceService.getPendingInvitesForEmail(
-        user?.email ?? "",
+        user.email,
       );
 
       return c.json({
@@ -57,9 +60,10 @@ workspaceRoutes.get(
 workspaceRoutes.get("/", authMiddleware, async (c: AuthenticatedContext) => {
   try {
     const user = c.get("user");
-    const workspaces = await workspaceService.getWorkspacesForUser(
-      user?.id ?? "",
-    );
+    if (!user) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const workspaces = await workspaceService.getWorkspacesForUser(user.id);
     return c.json({
       success: true,
       data: workspaces.map(({ workspace, role }) => ({
@@ -99,8 +103,12 @@ workspaceRoutes.post("/", authMiddleware, async (c: AuthenticatedContext) => {
       );
     }
 
+    if (!user) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
     const workspace = await workspaceService.createWorkspace(
-      user?.id ?? "",
+      user.id,
       name,
       slug,
     );
@@ -239,6 +247,9 @@ workspaceRoutes.post(
   async (c: AuthenticatedContext) => {
     try {
       const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
       const token = c.req.param("token");
 
       // Get invite to check email
@@ -267,7 +278,7 @@ workspaceRoutes.post(
       }
 
       // Enforce email matching
-      if (normalizeEmail(user?.email ?? "") !== normalizeEmail(invite.email)) {
+      if (normalizeEmail(user.email) !== normalizeEmail(invite.email)) {
         return c.json(
           {
             success: false,
@@ -277,10 +288,7 @@ workspaceRoutes.post(
         );
       }
 
-      const workspace = await workspaceService.acceptInvite(
-        token,
-        user?.id ?? "",
-      );
+      const workspace = await workspaceService.acceptInvite(token, user.id);
 
       return c.json({
         success: true,
@@ -309,6 +317,9 @@ workspaceRoutes.post(
 workspaceRoutes.get("/:id", authMiddleware, async (c: AuthenticatedContext) => {
   try {
     const user = c.get("user");
+    if (!user) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
     const workspaceId = c.req.param("id");
 
     if (!Types.ObjectId.isValid(workspaceId)) {
@@ -316,10 +327,7 @@ workspaceRoutes.get("/:id", authMiddleware, async (c: AuthenticatedContext) => {
     }
 
     // Check if user has access
-    const hasAccess = await workspaceService.hasAccess(
-      workspaceId,
-      user?.id ?? "",
-    );
+    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
     if (!hasAccess) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
@@ -329,10 +337,7 @@ workspaceRoutes.get("/:id", authMiddleware, async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Workspace not found" }, 404);
     }
 
-    const member = await workspaceService.getMember(
-      workspaceId,
-      user?.id ?? "",
-    );
+    const member = await workspaceService.getMember(workspaceId, user.id);
 
     return c.json({
       success: true,
@@ -460,13 +465,16 @@ workspaceRoutes.post(
   async (c: AuthenticatedContext) => {
     try {
       const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
       const workspaceId = c.req.param("id");
 
       if (!Types.ObjectId.isValid(workspaceId)) {
         return c.json({ success: false, error: "Invalid workspace ID" }, 400);
       }
 
-      await workspaceService.switchWorkspace(user?.id ?? "", workspaceId);
+      await workspaceService.switchWorkspace(user.id, workspaceId);
 
       return c.json({
         success: true,
@@ -750,11 +758,15 @@ workspaceRoutes.post(
         );
       }
 
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+
       const invite = await workspaceService.createInvite(
         workspaceId,
         email,
         role,
-        user?.id ?? "",
+        user.id,
       );
 
       return c.json(
@@ -936,6 +948,10 @@ workspaceRoutes.post(
         );
       }
 
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+
       // Import the generateApiKey function
       const { generateApiKey } = await import("../auth/api-key.middleware");
 
@@ -948,7 +964,7 @@ workspaceRoutes.post(
         keyHash: hash,
         prefix,
         createdAt: new Date(),
-        createdBy: user?.id ?? "",
+        createdBy: user.id,
       };
 
       const updatedWorkspace = await Workspace.findByIdAndUpdate(
