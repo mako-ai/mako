@@ -101,19 +101,33 @@ export function FlowsExplorer() {
         setActiveTab(existingTab.id);
       } else {
         const id = openTab({
-          title: `${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`,
+          title: getFlowTitle(flow),
           content: "",
           kind: "flow-editor",
           metadata: {
             flowId,
             isNew: false,
-            flowType: flow.type,
+            flowType:
+              flow.sourceType === "database" ? "db-scheduled" : flow.type,
             enabled: flow.enabled,
           },
         });
         setActiveTab(id);
       }
     }
+  };
+
+  // Helper to get a display title for a flow
+  const getFlowTitle = (flow: any): string => {
+    if (flow.sourceType === "database") {
+      // Database-to-database flow
+      const destName = flow.tableDestination?.tableName || "Table";
+      return `Query → ${destName}`;
+    }
+    // Connector flow
+    const sourceName = flow.dataSourceId?.name || "Source";
+    const destName = flow.destinationDatabaseId?.name || "Destination";
+    return `${sourceName} → ${destName}`;
   };
 
   const getFlowStatus = (flow: any) => {
@@ -302,7 +316,7 @@ export function FlowsExplorer() {
                       )}
                     </ListItemIcon>
                     <ListItemText
-                      primary={`${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`}
+                      primary={getFlowTitle(flow)}
                       secondary={null}
                       sx={{
                         pr: 6,
