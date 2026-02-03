@@ -65,8 +65,8 @@ export type FlowQuery = z.infer<typeof flowQuerySchema>;
 const flowSchema = z.object({
   _id: z.string(),
   workspaceId: z.string(),
-  dataSourceId: flowDataSourceSchema,
-  destinationDatabaseId: flowDestinationSchema,
+  dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
+  destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseName: z.string().nullable().optional(),
   type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
   schedule: flowScheduleSchema,
