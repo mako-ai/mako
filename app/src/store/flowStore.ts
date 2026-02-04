@@ -226,6 +226,22 @@ interface FlowStatusResponse {
   } | null;
 }
 
+// Query validation result
+interface QueryValidationResult {
+  success: boolean;
+  columns?: Array<{ name: string; type: string }>;
+  sampleRow?: Record<string, unknown>;
+  connectionName?: string;
+  connectionType?: string;
+  safetyCheck?: {
+    safe: boolean;
+    warnings: string[];
+    errors: string[];
+    suggestedFixes?: string[];
+  };
+  error?: string;
+}
+
 interface ExecutionDetails {
   executionId: string;
   executedAt: string;
@@ -338,6 +354,15 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     executionId?: string | null,
   ) => Promise<boolean>;
+
+  // Database query validation
+  validateDbQuery: (
+    workspaceId: string,
+    connectionId: string,
+    query: string,
+    database?: string,
+  ) => Promise<QueryValidationResult>;
+
   reset: () => void;
 }
 
@@ -792,6 +817,63 @@ export const useFlowStore = create<FlowStore>()(
         } catch (error) {
           console.error("Failed to cancel flow execution", error);
           return false;
+        }
+      },
+
+      validateDbQuery: async (workspaceId, connectionId, query, database) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data?: {
+              columns?: Array<{ name: string; type: string }>;
+              sampleRow?: Record<string, unknown>;
+              connectionName?: string;
+              connectionType?: string;
+              safetyCheck?: {
+                safe: boolean;
+                warnings: string[];
+                errors: string[];
+                suggestedFixes?: string[];
+              };
+            };
+            error?: string;
+            safetyCheck?: {
+              safe: boolean;
+              warnings: string[];
+              errors: string[];
+              suggestedFixes?: string[];
+            };
+          }>(`/workspaces/${workspaceId}/flows/validate-query`, {
+            connectionId,
+            query,
+            database,
+          });
+
+          if (response.success && response.data) {
+            return {
+              success: true,
+              columns: response.data.columns,
+              sampleRow: response.data.sampleRow,
+              connectionName: response.data.connectionName,
+              connectionType: response.data.connectionType,
+              safetyCheck: response.data.safetyCheck,
+            };
+          }
+
+          return {
+            success: false,
+            error: response.error || "Query validation failed",
+            safetyCheck: response.safetyCheck,
+          };
+        } catch (error) {
+          console.error("Failed to validate query:", error);
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Query validation failed",
+          };
         }
       },
 

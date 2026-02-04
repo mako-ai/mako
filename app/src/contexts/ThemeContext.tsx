@@ -158,6 +158,71 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       },
     },
     components: {
+      // ============ Dropdown/Popup styling (shadcn-like) ============
+      // Apply subtle shadow and border to all dropdown-type components
+      MuiMenu: {
+        styleOverrides: {
+          paper: ({ theme }: any) => ({
+            boxShadow:
+              "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: 8,
+            marginTop: 4,
+          }),
+          list: {
+            padding: "4px",
+          },
+        },
+      },
+      MuiPopover: {
+        styleOverrides: {
+          paper: ({ theme }: any) => ({
+            boxShadow:
+              "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: 8,
+          }),
+        },
+      },
+      MuiAutocomplete: {
+        styleOverrides: {
+          paper: ({ theme }: any) => ({
+            boxShadow:
+              "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: 8,
+            marginTop: 4,
+          }),
+          listbox: {
+            padding: "4px",
+          },
+          option: ({ theme }: any) => ({
+            fontSize: "0.8125rem",
+            minHeight: 28,
+            borderRadius: 4,
+            margin: "1px 0",
+            '&[aria-selected="true"]': {
+              backgroundColor: theme.palette.action.selected,
+            },
+            "&.Mui-focused": {
+              backgroundColor: theme.palette.action.hover,
+            },
+            '&[aria-selected="true"].Mui-focused': {
+              backgroundColor: theme.palette.action.selected,
+            },
+          }),
+        },
+      },
+      MuiPopper: {
+        styleOverrides: {
+          root: {
+            // Popper itself doesn't have paper, but this ensures consistent z-index
+            zIndex: 1300,
+          },
+        },
+      },
+      // ============ End Dropdown/Popup styling ============
+
       MuiButton: {
         styleOverrides: {
           root: {
@@ -260,9 +325,25 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       },
       MuiMenuItem: {
         styleOverrides: {
-          root: {
-            fontSize: 12,
-          },
+          root: ({ theme }: any) => ({
+            fontSize: "0.75rem",
+            minHeight: 28,
+            padding: "4px 8px",
+            borderRadius: 4,
+            margin: "1px 0",
+            "&:hover": {
+              backgroundColor: theme.palette.action.hover,
+            },
+            "&.Mui-selected": {
+              backgroundColor: theme.palette.action.selected,
+              "&:hover": {
+                backgroundColor: theme.palette.action.selected,
+              },
+            },
+            "&.Mui-focusVisible": {
+              backgroundColor: theme.palette.action.focus,
+            },
+          }),
         },
       },
       MuiInputLabel: {
