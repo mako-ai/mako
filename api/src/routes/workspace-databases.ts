@@ -1027,7 +1027,10 @@ workspaceExecuteRoutes.post(
             }
           } catch (error) {
             // Invalid consoleId, just log and continue without it
-            logger.warn("Invalid consoleId format in tracking", { consoleId });
+            logger.warn("Invalid consoleId format in tracking", {
+              consoleId,
+              error,
+            });
           }
         }
 
