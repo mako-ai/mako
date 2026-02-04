@@ -1018,13 +1018,26 @@ workspaceExecuteRoutes.post(
           ? "api"
           : source || "console_ui";
 
+        // Validate consoleId before converting to ObjectId
+        let validConsoleId: Types.ObjectId | undefined;
+        if (consoleId) {
+          try {
+            if (Types.ObjectId.isValid(consoleId)) {
+              validConsoleId = new Types.ObjectId(consoleId);
+            }
+          } catch (error) {
+            // Invalid consoleId, just log and continue without it
+            logger.warn("Invalid consoleId format in tracking", { consoleId });
+          }
+        }
+
         queryExecutionService.track({
           userId,
           apiKeyId: apiKey?._id,
           workspaceId: workspace._id,
           connectionId: database._id,
           databaseName: databaseName || database.connection.database,
-          consoleId: consoleId ? new Types.ObjectId(consoleId) : undefined,
+          consoleId: validConsoleId,
           source: executionSource,
           databaseType: database.type,
           queryLanguage: getQueryLanguage(database.type),

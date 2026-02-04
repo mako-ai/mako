@@ -263,6 +263,15 @@ async function executeQueryImpl(
       }
     }
 
+    // Determine execution status based on error type
+    let executionStatus: "success" | "error" | "timeout" | "cancelled" =
+      result.success ? "success" : "error";
+    if (!result.success && errorType === "timeout") {
+      executionStatus = "timeout";
+    } else if (!result.success && errorType === "cancelled") {
+      executionStatus = "cancelled";
+    }
+
     queryExecutionService.track({
       userId,
       workspaceId: new Types.ObjectId(workspaceId),
@@ -271,7 +280,7 @@ async function executeQueryImpl(
       source: "agent",
       databaseType: database.type,
       queryLanguage: "mongodb",
-      status: result.success ? "success" : "error",
+      status: executionStatus,
       executionTimeMs: Date.now() - startTime,
       rowCount,
       errorType,
