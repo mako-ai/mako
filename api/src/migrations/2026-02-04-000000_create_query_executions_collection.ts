@@ -36,43 +36,74 @@ export async function up(db: Db): Promise<void> {
 
   const collection = db.collection("query_executions");
 
+  // Helper function to check if an index with specific key exists
+  const indexExists = async (keyPattern: any): Promise<boolean> => {
+    const indexes = await collection.listIndexes().toArray();
+    return indexes.some(idx => {
+      const keys = Object.keys(idx.key);
+      const patternKeys = Object.keys(keyPattern);
+      if (keys.length !== patternKeys.length) return false;
+      return keys.every(key => idx.key[key] === keyPattern[key]);
+    });
+  };
+
   // Create indexes
-  // Note: createIndex is idempotent - it won't fail if index already exists
+  // Note: We check for existing indexes to avoid conflicts with different names
 
   // Usage over time per workspace
-  await collection.createIndex(
-    { workspaceId: 1, executedAt: -1 },
-    { name: "workspace_time_idx" },
-  );
-  log.info("✅ Created index: workspace_time_idx");
+  if (!(await indexExists({ workspaceId: 1, executedAt: -1 }))) {
+    await collection.createIndex(
+      { workspaceId: 1, executedAt: -1 },
+      { name: "workspace_time_idx" },
+    );
+    log.info("✅ Created index: workspace_time_idx");
+  } else {
+    log.info("ℹ️  Index workspace_time_idx already exists (or equivalent)");
+  }
 
   // Per-user analytics
-  await collection.createIndex(
-    { userId: 1, executedAt: -1 },
-    { name: "user_time_idx" },
-  );
-  log.info("✅ Created index: user_time_idx");
+  if (!(await indexExists({ userId: 1, executedAt: -1 }))) {
+    await collection.createIndex(
+      { userId: 1, executedAt: -1 },
+      { name: "user_time_idx" },
+    );
+    log.info("✅ Created index: user_time_idx");
+  } else {
+    log.info("ℹ️  Index user_time_idx already exists (or equivalent)");
+  }
 
   // API key usage (sparse - only for API key executions)
-  await collection.createIndex(
-    { apiKeyId: 1, executedAt: -1 },
-    { name: "apikey_time_idx", sparse: true },
-  );
-  log.info("✅ Created index: apikey_time_idx (sparse)");
+  if (!(await indexExists({ apiKeyId: 1, executedAt: -1 }))) {
+    await collection.createIndex(
+      { apiKeyId: 1, executedAt: -1 },
+      { name: "apikey_time_idx", sparse: true },
+    );
+    log.info("✅ Created index: apikey_time_idx (sparse)");
+  } else {
+    log.info("ℹ️  Index apikey_time_idx already exists (or equivalent)");
+  }
 
   // Error rate monitoring
-  await collection.createIndex(
-    { workspaceId: 1, status: 1 },
-    { name: "workspace_status_idx" },
-  );
-  log.info("✅ Created index: workspace_status_idx");
+  if (!(await indexExists({ workspaceId: 1, status: 1 }))) {
+    await collection.createIndex(
+      { workspaceId: 1, status: 1 },
+      { name: "workspace_status_idx" },
+    );
+    log.info("✅ Created index: workspace_status_idx");
+  } else {
+    log.info("ℹ️  Index workspace_status_idx already exists (or equivalent)");
+  }
 
   // TTL index for auto-cleanup (90 days = 7776000 seconds)
-  await collection.createIndex(
-    { executedAt: 1 },
-    { name: "ttl_idx", expireAfterSeconds: 7776000 },
-  );
-  log.info("✅ Created TTL index: ttl_idx (90 days retention)");
+  if (!(await indexExists({ executedAt: 1 }))) {
+    await collection.createIndex(
+      { executedAt: 1 },
+      { name: "ttl_idx", expireAfterSeconds: 7776000 },
+    );
+    log.info("✅ Created TTL index: ttl_idx (90 days retention)");
+  } else {
+    log.info("ℹ️  Index ttl_idx already exists (or equivalent)");
+  }
 
   log.info("✅ Migration complete: query_executions collection ready");
 }
