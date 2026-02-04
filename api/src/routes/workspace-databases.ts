@@ -11,10 +11,29 @@ import {
   Flow,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
+import {
+  queryExecutionService,
+  QueryLanguage,
+  QuerySource,
+  QueryStatus,
+} from "../services/query-execution.service";
 import { Types } from "mongoose";
 import { loggers } from "../logging";
 
 const logger = loggers.db();
+
+/**
+ * Determine query language from database type
+ */
+function getQueryLanguage(databaseType: string): QueryLanguage {
+  if (databaseType === "mongodb") {
+    return "mongodb";
+  }
+  if (databaseType === "cloudflare-kv") {
+    return "javascript";
+  }
+  return "sql";
+}
 
 // Demo database configuration - returns config with connection string read at runtime
 function getDemoDatabaseConfig() {
@@ -888,12 +907,27 @@ workspaceExecuteRoutes.post(
   authMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
+    const startTime = Date.now();
+    let database: IDatabaseConnection | null = null;
+    let executionStatus: QueryStatus = "error";
+    let rowCount: number | undefined;
+    let errorType: string | undefined;
+
     try {
       const workspace = c.get("workspace");
+      const user = c.get("user");
+      const apiKey = c.get("apiKey");
       const body = await c.req.json();
 
-      const { connectionId, databaseId, databaseName, query, executionId } =
-        body;
+      const {
+        connectionId,
+        databaseId,
+        databaseName,
+        query,
+        executionId,
+        consoleId,
+        source,
+      } = body;
 
       // Validate required fields
       if (!connectionId) {
@@ -915,7 +949,7 @@ workspaceExecuteRoutes.post(
       }
 
       // Find the database connection
-      const database = await DatabaseConnection.findOne({
+      database = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(connectionId),
         workspaceId: workspace._id,
       });
@@ -940,9 +974,109 @@ workspaceExecuteRoutes.post(
         options,
       );
 
+      // Determine execution status and extract row count
+      if (result.success) {
+        executionStatus = "success";
+        rowCount =
+          result.rowCount ??
+          (Array.isArray(result.data) ? result.data.length : undefined);
+      } else {
+        executionStatus = "error";
+        // Categorize error type
+        const errorMsg = result.error?.toLowerCase() || "";
+        if (errorMsg.includes("syntax")) {
+          errorType = "syntax";
+        } else if (
+          errorMsg.includes("timeout") ||
+          errorMsg.includes("timed out")
+        ) {
+          errorType = "timeout";
+          executionStatus = "timeout";
+        } else if (errorMsg.includes("cancel") || errorMsg.includes("abort")) {
+          errorType = "cancelled";
+          executionStatus = "cancelled";
+        } else if (
+          errorMsg.includes("connection") ||
+          errorMsg.includes("connect")
+        ) {
+          errorType = "connection";
+        } else if (
+          errorMsg.includes("permission") ||
+          errorMsg.includes("access denied")
+        ) {
+          errorType = "permission";
+        } else {
+          errorType = "unknown";
+        }
+      }
+
+      // Track query execution (fire-and-forget)
+      const userId = user?.id || apiKey?.createdBy;
+      if (userId && database) {
+        // Determine source: API key auth = "api", otherwise check body or default to "console_ui"
+        const executionSource: QuerySource = apiKey
+          ? "api"
+          : source || "console_ui";
+
+        // Validate consoleId before converting to ObjectId
+        let validConsoleId: Types.ObjectId | undefined;
+        if (consoleId) {
+          try {
+            if (Types.ObjectId.isValid(consoleId)) {
+              validConsoleId = new Types.ObjectId(consoleId);
+            }
+          } catch (error) {
+            // Invalid consoleId, just log and continue without it
+            logger.warn("Invalid consoleId format in tracking", {
+              consoleId,
+              error,
+            });
+          }
+        }
+
+        queryExecutionService.track({
+          userId,
+          apiKeyId: apiKey?._id,
+          workspaceId: workspace._id,
+          connectionId: database._id,
+          databaseName: databaseName || database.connection.database,
+          consoleId: validConsoleId,
+          source: executionSource,
+          databaseType: database.type,
+          queryLanguage: getQueryLanguage(database.type),
+          status: executionStatus,
+          executionTimeMs: Date.now() - startTime,
+          rowCount,
+          errorType,
+        });
+      }
+
       return c.json(result);
     } catch (error) {
       logger.error("Error executing query", { error });
+
+      // Track failed execution
+      const workspace = c.get("workspace");
+      const user = c.get("user");
+      const apiKey = c.get("apiKey");
+      const userId = user?.id || apiKey?.createdBy;
+
+      if (userId && database && workspace) {
+        queryExecutionService.track({
+          userId,
+          apiKeyId: apiKey?._id,
+          workspaceId: workspace._id,
+          connectionId: database._id,
+          databaseName: database.connection.database,
+          source: apiKey ? "api" : "console_ui",
+          databaseType: database.type,
+          queryLanguage: getQueryLanguage(database.type),
+          status: "error",
+          executionTimeMs: Date.now() - startTime,
+          errorType: "unknown",
+        });
+      }
+
       return c.json(
         {
           success: false,

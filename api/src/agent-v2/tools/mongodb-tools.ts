@@ -7,6 +7,7 @@ import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import { queryExecutionService } from "../../services/query-execution.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -205,7 +206,10 @@ async function executeQueryImpl(
   connectionId: string,
   databaseName: string,
   workspaceId: string,
+  userId?: string,
 ) {
+  const startTime = Date.now();
+
   if (
     !Types.ObjectId.isValid(connectionId) ||
     !Types.ObjectId.isValid(workspaceId)
@@ -226,6 +230,62 @@ async function executeQueryImpl(
     query,
     { databaseName },
   );
+
+  // Track query execution (fire-and-forget)
+  if (userId) {
+    const rowCount = result.success
+      ? (result.rowCount ??
+        (Array.isArray(result.data) ? result.data.length : undefined))
+      : undefined;
+
+    let errorType: string | undefined;
+    if (!result.success) {
+      const errorMsg = result.error?.toLowerCase() || "";
+      if (errorMsg.includes("syntax")) {
+        errorType = "syntax";
+      } else if (
+        errorMsg.includes("timeout") ||
+        errorMsg.includes("timed out")
+      ) {
+        errorType = "timeout";
+      } else if (
+        errorMsg.includes("connection") ||
+        errorMsg.includes("connect")
+      ) {
+        errorType = "connection";
+      } else if (
+        errorMsg.includes("permission") ||
+        errorMsg.includes("access denied")
+      ) {
+        errorType = "permission";
+      } else {
+        errorType = "unknown";
+      }
+    }
+
+    // Determine execution status based on error type
+    let executionStatus: "success" | "error" | "timeout" | "cancelled" =
+      result.success ? "success" : "error";
+    if (!result.success && errorType === "timeout") {
+      executionStatus = "timeout";
+    } else if (!result.success && errorType === "cancelled") {
+      executionStatus = "cancelled";
+    }
+
+    queryExecutionService.track({
+      userId,
+      workspaceId: new Types.ObjectId(workspaceId),
+      connectionId: database._id,
+      databaseName,
+      source: "agent",
+      databaseType: database.type,
+      queryLanguage: "mongodb",
+      status: executionStatus,
+      executionTimeMs: Date.now() - startTime,
+      rowCount,
+      errorType,
+    });
+  }
 
   if (result && result.success && result.data) {
     const truncatedData = truncateQueryResults(result.data);
@@ -249,6 +309,7 @@ export const createMongoToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
+  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
@@ -310,6 +371,7 @@ export const createMongoToolsV2 = (
           params.connectionId,
           params.databaseName,
           workspaceId,
+          userId,
         ),
     },
   };
