@@ -2,6 +2,7 @@ import {
   DatabaseDriver,
   DatabaseDriverMetadata,
   DatabaseTreeNode,
+  ColumnDefinition,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
@@ -228,6 +229,207 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         error: errorMessage,
       };
     }
+  }
+
+  /**
+   * Get the schema (column types) for a query.
+   * SQLite/D1 doesn't have a dry run feature, so we use multiple strategies:
+   *
+   * 1. For simple "SELECT * FROM table" queries, use PRAGMA table_info
+   * 2. Try LIMIT 1 to get a sample row
+   * 3. If sample has NULLs, try finding non-NULL values with targeted queries
+   * 4. Fall back to TEXT for columns that are always NULL
+   */
+  async getQuerySchema(
+    database: IDatabaseConnection,
+    query: string,
+    options?: { databaseName?: string },
+  ): Promise<{
+    success: boolean;
+    columns?: ColumnDefinition[];
+    error?: string;
+  }> {
+    try {
+      const dbOptions = {
+        databaseId: options?.databaseName,
+        databaseName: options?.databaseName,
+      };
+
+      // Strategy 1: Check if this is a simple "SELECT * FROM table" query
+      // and use PRAGMA table_info for accurate types
+      const simpleTableMatch = query
+        .trim()
+        .match(/^\s*SELECT\s+\*\s+FROM\s+["'`]?(\w+)["'`]?\s*$/i);
+
+      if (simpleTableMatch) {
+        const tableName = simpleTableMatch[1];
+        const pragmaResult = await this.executeQuery(
+          database,
+          `PRAGMA table_info("${tableName}")`,
+          dbOptions,
+        );
+
+        if (pragmaResult.success && pragmaResult.data?.length > 0) {
+          const columns: ColumnDefinition[] = pragmaResult.data.map(
+            (col: any) => ({
+              name: col.name,
+              type: this.normalizeSqliteType(col.type || "TEXT"),
+              nullable: col.notnull === 0,
+            }),
+          );
+          return { success: true, columns };
+        }
+      }
+
+      // Strategy 2: Execute with LIMIT 1 to get sample data
+      const schemaQuery = `SELECT * FROM (${query}) AS _schema_query LIMIT 1`;
+      const result = await this.executeQuery(database, schemaQuery, dbOptions);
+
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+
+      const rows = result.data || [];
+
+      // No rows - try to at least get column names
+      if (rows.length === 0) {
+        // Strategy 3: Try PRAGMA for the base table if we can extract it
+        const fromMatch = query.match(/FROM\s+["'`]?(\w+)["'`]?/i);
+        if (fromMatch) {
+          const tableName = fromMatch[1];
+          const pragmaResult = await this.executeQuery(
+            database,
+            `PRAGMA table_info("${tableName}")`,
+            dbOptions,
+          );
+
+          if (pragmaResult.success && pragmaResult.data?.length > 0) {
+            // We have table schema - now we need to figure out which columns
+            // are in the query. Execute the query to at least get column names.
+            // Since there are 0 rows, we'll use TEXT as fallback for computed columns.
+            const columns: ColumnDefinition[] = pragmaResult.data.map(
+              (col: any) => ({
+                name: col.name,
+                type: this.normalizeSqliteType(col.type || "TEXT"),
+                nullable: true,
+              }),
+            );
+            return { success: true, columns };
+          }
+        }
+
+        return {
+          success: false,
+          error: "Query returned no rows - cannot infer column types",
+        };
+      }
+
+      // Strategy 4: Infer from sample row, with fallback queries for NULL values
+      const sampleRow = rows[0];
+      const columnEntries = Object.entries(sampleRow);
+
+      // Find columns with NULL values that need better type detection
+      const nullColumns = columnEntries
+        .filter(([, value]) => value === null)
+        .map(([name]) => name);
+
+      // If we have NULL columns, try to find non-NULL values
+      if (nullColumns.length > 0 && nullColumns.length < columnEntries.length) {
+        // Use a single query with COALESCE-style sampling
+        // Select first non-NULL value for each column
+        const sampleNonNullQuery = `
+          SELECT ${nullColumns.map(col => `(SELECT "${col}" FROM (${query}) WHERE "${col}" IS NOT NULL LIMIT 1) AS "${col}"`).join(", ")}
+        `;
+
+        const nonNullResult = await this.executeQuery(
+          database,
+          sampleNonNullQuery,
+          dbOptions,
+        );
+
+        if (nonNullResult.success && nonNullResult.data?.[0]) {
+          const nonNullSample = nonNullResult.data[0];
+          // Merge non-NULL samples into our sample row
+          for (const col of nullColumns) {
+            if (nonNullSample[col] !== null) {
+              sampleRow[col] = nonNullSample[col];
+            }
+          }
+        }
+      }
+
+      // Build final column definitions
+      const columns: ColumnDefinition[] = columnEntries.map(([name]) => ({
+        name,
+        type: this.inferSqliteType(sampleRow[name]),
+        nullable: true,
+      }));
+
+      return { success: true, columns };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error?.message || "Failed to get query schema",
+      };
+    }
+  }
+
+  /**
+   * Normalize SQLite type names from PRAGMA to standard types
+   */
+  private normalizeSqliteType(type: string): string {
+    const upper = type.toUpperCase().trim();
+    // SQLite type affinity rules
+    if (upper.includes("INT")) return "INTEGER";
+    if (
+      upper.includes("CHAR") ||
+      upper.includes("CLOB") ||
+      upper.includes("TEXT")
+    )
+      return "TEXT";
+    if (
+      upper.includes("BLOB") ||
+      upper === "" // No type = BLOB affinity
+    )
+      return "BLOB";
+    if (
+      upper.includes("REAL") ||
+      upper.includes("FLOA") ||
+      upper.includes("DOUB")
+    )
+      return "REAL";
+    // NUMERIC affinity for everything else
+    if (
+      upper.includes("NUMERIC") ||
+      upper.includes("DECIMAL") ||
+      upper.includes("BOOL") ||
+      upper.includes("DATE") ||
+      upper.includes("TIME")
+    )
+      return upper; // Keep original for clarity
+    return "TEXT";
+  }
+
+  /**
+   * Infer SQLite column type from a JavaScript value
+   */
+  private inferSqliteType(value: unknown): string {
+    if (value === null || value === undefined) return "TEXT";
+    if (typeof value === "boolean") return "INTEGER"; // SQLite stores booleans as 0/1
+    if (typeof value === "number") {
+      return Number.isInteger(value) ? "INTEGER" : "REAL";
+    }
+    if (typeof value === "bigint") return "INTEGER";
+    if (value instanceof Date) return "TEXT"; // SQLite stores dates as text
+    if (typeof value === "string") {
+      // Try to detect date strings
+      if (/^\d{4}-\d{2}-\d{2}(T|\s)\d{2}:\d{2}:\d{2}/.test(value)) {
+        return "TEXT"; // Keep as TEXT for timestamps
+      }
+      return "TEXT";
+    }
+    if (typeof value === "object") return "TEXT"; // JSON stored as text
+    return "TEXT";
   }
 
   async testConnection(

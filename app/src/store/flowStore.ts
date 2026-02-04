@@ -44,6 +44,7 @@ const webhookConfigSchema = z
   .optional();
 
 // Query schema for GraphQL/PostHog flows
+// Use coerce for numeric fields since they may come as strings from API
 const flowQuerySchema = z.object({
   name: z.string(),
   query: z.string(),
@@ -56,8 +57,8 @@ const flowQuerySchema = z.object({
   cursor_path: z.string().optional(),
   totalCountPath: z.string().optional(),
   total_count_path: z.string().optional(),
-  batchSize: z.number().optional(),
-  batch_size: z.number().optional(),
+  batchSize: z.coerce.number().optional(),
+  batch_size: z.coerce.number().optional(),
 });
 
 export type FlowQuery = z.infer<typeof flowQuerySchema>;
@@ -135,7 +136,7 @@ const flowSchema = z.object({
       }),
     )
     .optional(),
-  batchSize: z.number().optional(),
+  batchSize: z.coerce.number().optional(),
 });
 
 export type Flow = z.infer<typeof flowSchema>;

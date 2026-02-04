@@ -131,8 +131,12 @@ flowRoutes.get("/", async c => {
               else: { $arrayElemAt: ["$dataSourceLookup", 0] },
             },
           },
-          destinationDatabaseId: { $arrayElemAt: ["$destinationDatabaseLookup", 0] },
-          tableDestinationConnection: { $arrayElemAt: ["$tableDestinationLookup", 0] },
+          destinationDatabaseId: {
+            $arrayElemAt: ["$destinationDatabaseLookup", 0],
+          },
+          tableDestinationConnection: {
+            $arrayElemAt: ["$tableDestinationLookup", 0],
+          },
         },
       },
       {
@@ -283,7 +287,10 @@ flowRoutes.post("/", async c => {
 
       if (!destDb) {
         return c.json(
-          { success: false, error: "Destination database connection not found" },
+          {
+            success: false,
+            error: "Destination database connection not found",
+          },
           404,
         );
       }
@@ -296,7 +303,9 @@ flowRoutes.post("/", async c => {
       }
 
       // Use the table destination connection as the destinationDatabaseId
-      destinationDatabaseId = new Types.ObjectId(body.tableDestination.connectionId);
+      destinationDatabaseId = new Types.ObjectId(
+        body.tableDestination.connectionId,
+      );
     } else if (body.destinationDatabaseId) {
       // MongoDB destination validation
       const database = await DatabaseConnection.findOne({
@@ -314,7 +323,10 @@ flowRoutes.post("/", async c => {
       destinationDatabaseId = new Types.ObjectId(body.destinationDatabaseId);
     } else {
       return c.json(
-        { success: false, error: "destinationDatabaseId or tableDestination is required" },
+        {
+          success: false,
+          error: "destinationDatabaseId or tableDestination is required",
+        },
         400,
       );
     }
@@ -357,12 +369,17 @@ flowRoutes.post("/", async c => {
         flowData.typeCoercions = body.typeCoercions;
       }
       if (body.batchSize) {
-        flowData.batchSize = body.batchSize;
+        flowData.batchSize = Number(body.batchSize);
       }
     } else {
       flowData.dataSourceId = new Types.ObjectId(body.dataSourceId);
       flowData.entityFilter = body.entityFilter || [];
-      flowData.queries = body.queries || [];
+      // Ensure numeric fields in queries are properly typed
+      flowData.queries = (body.queries || []).map((q: any) => ({
+        ...q,
+        batch_size: q.batch_size ? Number(q.batch_size) : undefined,
+        batchSize: q.batchSize ? Number(q.batchSize) : undefined,
+      }));
     }
 
     // Add table destination if specified
@@ -516,18 +533,35 @@ flowRoutes.put("/:flowId", async c => {
 
     // Update connector source specific fields
     if (flow.sourceType !== "database") {
-      if (body.entityFilter !== undefined) flow.entityFilter = body.entityFilter;
-      if (body.queries !== undefined) flow.queries = body.queries;
+      if (body.entityFilter !== undefined)
+        flow.entityFilter = body.entityFilter;
+      if (body.queries !== undefined) {
+        // Ensure numeric fields in queries are properly typed
+        flow.queries = body.queries.map((q: any) => ({
+          ...q,
+          batch_size: q.batch_size ? Number(q.batch_size) : undefined,
+          batchSize: q.batchSize ? Number(q.batchSize) : undefined,
+        }));
+      }
     }
 
     // Update database source specific fields
     if (flow.sourceType === "database") {
-      if (body.databaseSource?.query !== undefined && flow.databaseSource) {
-        flow.databaseSource.query = body.databaseSource.query;
+      // Merge databaseSource object to avoid missing fields
+      if (body.databaseSource) {
+        const newConnectionId = body.databaseSource.connectionId
+          ? new Types.ObjectId(body.databaseSource.connectionId)
+          : flow.databaseSource?.connectionId;
+
+        flow.databaseSource = {
+          connectionId: newConnectionId,
+          database:
+            body.databaseSource.database ?? flow.databaseSource?.database,
+          query: body.databaseSource.query ?? flow.databaseSource?.query ?? "",
+        };
       }
-      if (body.databaseSource?.database !== undefined && flow.databaseSource) {
-        flow.databaseSource.database = body.databaseSource.database;
-      }
+
+      // Update other database source config fields
       if (body.incrementalConfig !== undefined) {
         flow.incrementalConfig = body.incrementalConfig;
       }
@@ -541,23 +575,36 @@ flowRoutes.put("/:flowId", async c => {
         flow.typeCoercions = body.typeCoercions;
       }
       if (body.batchSize !== undefined) {
-        flow.batchSize = body.batchSize;
+        flow.batchSize = Number(body.batchSize);
       }
     }
 
-    // Update table destination specific fields
-    if (flow.tableDestination && body.tableDestination) {
-      if (body.tableDestination.tableName !== undefined) {
-        flow.tableDestination.tableName = body.tableDestination.tableName;
-      }
-      if (body.tableDestination.schema !== undefined) {
-        flow.tableDestination.schema = body.tableDestination.schema;
-      }
-      if (body.tableDestination.database !== undefined) {
-        flow.tableDestination.database = body.tableDestination.database;
-      }
-      if (body.tableDestination.createIfNotExists !== undefined) {
-        flow.tableDestination.createIfNotExists = body.tableDestination.createIfNotExists;
+    // Update table destination - merge entire object to avoid missing fields
+    if (body.tableDestination) {
+      const newConnectionId = body.tableDestination.connectionId
+        ? new Types.ObjectId(body.tableDestination.connectionId)
+        : flow.tableDestination?.connectionId;
+
+      flow.tableDestination = {
+        connectionId: newConnectionId,
+        database:
+          body.tableDestination.database ?? flow.tableDestination?.database,
+        schema: body.tableDestination.schema ?? flow.tableDestination?.schema,
+        tableName:
+          body.tableDestination.tableName ??
+          flow.tableDestination?.tableName ??
+          "",
+        createIfNotExists:
+          body.tableDestination.createIfNotExists ??
+          flow.tableDestination?.createIfNotExists ??
+          true,
+      };
+
+      // Keep destinationDatabaseId in sync (used for population/lookups)
+      if (body.tableDestination.connectionId) {
+        flow.destinationDatabaseId = new Types.ObjectId(
+          body.tableDestination.connectionId,
+        );
       }
     }
 

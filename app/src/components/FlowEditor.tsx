@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { Box } from "@mui/material";
 import { ScheduledFlowForm } from "./ScheduledFlowForm";
 import { WebhookFlowForm } from "./WebhookFlowForm";
-import { DbFlowForm } from "./DbFlowForm";
+import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
 import { FlowLogs } from "./FlowLogs";
 import { WebhookStats } from "./WebhookStats";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -14,6 +14,7 @@ interface FlowEditorProps {
   flowType?: "scheduled" | "webhook" | "db-scheduled"; // For new flows, specify the type
   onSave?: () => void;
   onCancel?: () => void;
+  dbFlowFormRef?: RefObject<DbFlowFormRef | null>;
 }
 
 export function FlowEditor({
@@ -22,6 +23,7 @@ export function FlowEditor({
   flowType = "scheduled",
   onSave,
   onCancel,
+  dbFlowFormRef,
 }: FlowEditorProps) {
   const [isEditing, setIsEditing] = useState(isNew);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
@@ -93,6 +95,7 @@ export function FlowEditor({
           />
         ) : isDbFlow ? (
           <DbFlowForm
+            ref={dbFlowFormRef as React.Ref<DbFlowFormRef>}
             flowId={currentFlowId}
             isNew={isNew && !currentFlowId}
             onSave={onSave}

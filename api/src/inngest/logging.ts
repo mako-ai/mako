@@ -64,6 +64,56 @@ export function getDatabaseSink(options: DatabaseSinkOptions = {}): Sink {
 // Note: LogTape is configured once in api/src/logging/index.ts
 // This file provides Inngest-specific logging utilities that work with the global config
 
+/**
+ * Extracts a readable error message from various error types.
+ * Handles Error objects, plain objects with message/error properties, and strings.
+ */
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === "string") {
+    return err;
+  }
+  if (typeof err === "object" && err !== null) {
+    // Check for common error-like properties
+    const obj = err as Record<string, unknown>;
+    if (typeof obj.message === "string") {
+      return obj.message;
+    }
+    if (typeof obj.error === "string") {
+      return obj.error;
+    }
+    // Try to stringify, but avoid [object Object]
+    try {
+      const str = JSON.stringify(err);
+      // Truncate very long strings
+      return str.length > 500 ? str.slice(0, 500) + "..." : str;
+    } catch {
+      return "Unknown error (unstringifiable object)";
+    }
+  }
+  return String(err);
+}
+
+/**
+ * Extracts structured error properties for logging context.
+ */
+function extractErrorProperties(err: unknown): Record<string, unknown> {
+  if (err instanceof Error) {
+    return {
+      errorName: err.name,
+      errorMessage: err.message,
+      errorStack: err.stack?.split("\n").slice(0, 5).join("\n"),
+      ...(err as Error & Record<string, unknown>), // Include any custom properties
+    };
+  }
+  if (typeof err === "object" && err !== null) {
+    return { errorDetails: err };
+  }
+  return { errorValue: err };
+}
+
 // Create a LogTape logger wrapper that implements Inngest's logger interface
 export class LogTapeInngestLogger {
   private logger;
@@ -74,19 +124,23 @@ export class LogTapeInngestLogger {
   }
 
   info(msg: string, ...args: any[]): void {
-    this.logger.info(msg, this.parseArgs(args));
+    const { message, props } = this.normalizeLogArgs(msg, args);
+    this.logger.info(message, props);
   }
 
   warn(msg: string, ...args: any[]): void {
-    this.logger.warn(msg, this.parseArgs(args));
+    const { message, props } = this.normalizeLogArgs(msg, args);
+    this.logger.warn(message, props);
   }
 
   error(msg: string, ...args: any[]): void {
-    this.logger.error(msg, this.parseArgs(args));
+    const { message, props } = this.normalizeLogArgs(msg, args, true);
+    this.logger.error(message, props);
   }
 
   debug(msg: string, ...args: any[]): void {
-    this.logger.debug(msg, this.parseArgs(args));
+    const { message, props } = this.normalizeLogArgs(msg, args);
+    this.logger.debug(message, props);
   }
 
   // Support child logger creation for Inngest
@@ -96,19 +150,58 @@ export class LogTapeInngestLogger {
     return childLogger;
   }
 
-  private parseArgs(args: any[]): Record<string, unknown> {
-    // Merge any existing bindings
+  /**
+   * Normalizes log arguments to handle various calling patterns:
+   * - logger.error("message", { props })
+   * - logger.error(errorObject)
+   * - logger.error({ error: "something" })
+   */
+  private normalizeLogArgs(
+    msg: unknown,
+    args: unknown[],
+    isError = false,
+  ): { message: string; props: Record<string, unknown> } {
+    // Start with bindings
     const props: Record<string, unknown> = { ...this._bindings };
 
-    // If first arg is an object, merge it as properties
-    if (args.length > 0 && typeof args[0] === "object" && args[0] !== null) {
-      Object.assign(props, args[0]);
-    } else if (args.length > 0) {
-      // Otherwise, add args as an array property
-      props.args = args;
+    // Case 1: First argument is an Error object
+    if (msg instanceof Error) {
+      Object.assign(props, extractErrorProperties(msg));
+      // Merge any additional args
+      if (args.length > 0 && typeof args[0] === "object" && args[0] !== null) {
+        Object.assign(props, args[0]);
+      }
+      return { message: msg.message, props };
     }
 
-    return props;
+    // Case 2: First argument is an object (not a string)
+    if (typeof msg === "object" && msg !== null) {
+      const message = extractErrorMessage(msg);
+      if (isError) {
+        Object.assign(props, extractErrorProperties(msg));
+      } else {
+        Object.assign(props, msg as Record<string, unknown>);
+      }
+      // Merge any additional args
+      if (args.length > 0 && typeof args[0] === "object" && args[0] !== null) {
+        Object.assign(props, args[0]);
+      }
+      return { message, props };
+    }
+
+    // Case 3: First argument is a string (normal case)
+    const message = typeof msg === "string" ? msg : String(msg);
+
+    // Process additional arguments
+    for (const arg of args) {
+      if (arg instanceof Error) {
+        Object.assign(props, extractErrorProperties(arg));
+      } else if (typeof arg === "object" && arg !== null) {
+        Object.assign(props, arg);
+      }
+    }
+
+    return { message, props };
   }
 }
 

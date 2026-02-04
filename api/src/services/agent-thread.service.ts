@@ -2,7 +2,7 @@ import { ObjectId } from "mongodb";
 import { v4 as uuidv4 } from "uuid";
 import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
-import type { AgentKind } from "../agent-v2";
+import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
 
 const logger = loggers.agent();
@@ -468,7 +468,10 @@ export const persistChatError = async (
     );
   } catch (persistError) {
     // Don't throw - this is best-effort error logging
-    logger.error("Failed to persist chat error", { sessionId, error: persistError });
+    logger.error("Failed to persist chat error", {
+      sessionId,
+      error: persistError,
+    });
   }
 };
 

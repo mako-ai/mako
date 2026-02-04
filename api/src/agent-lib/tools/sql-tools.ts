@@ -1,13 +1,11 @@
 /**
- * Unified SQL Tools for Agent V2
+ * Unified SQL Tools for Agent Library
  * Supports PostgreSQL, MySQL, BigQuery, SQLite, and Cloudflare D1 with a single tool surface.
  */
 
 import { z } from "zod";
-import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
-import { queryExecutionService } from "../../services/query-execution.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -15,64 +13,20 @@ import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
 } from "./shared/truncation";
+import {
+  ALL_SQL_TYPES,
+  getDialect,
+  ensureValidObjectId,
+  escapePostgresLiteral,
+  escapePostgresIdentifier,
+  escapeBigQueryIdentifier,
+  escapeMySqlIdentifier,
+  escapeSqliteLiteral,
+  escapeSqliteIdentifier,
+} from "./shared/sql-dialects";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
 
-// SQL dialect types for routing
-type SqlDialect = "postgresql" | "mysql" | "bigquery" | "sqlite" | "clickhouse";
-
-const SQL_TYPES = {
-  postgres: new Set(["postgresql", "cloudsql-postgres"]),
-  mysql: new Set(["mysql"]),
-  bigquery: new Set(["bigquery"]),
-  sqlite: new Set(["sqlite", "cloudflare-d1"]),
-  clickhouse: new Set(["clickhouse"]),
-};
-
-const ALL_SQL_TYPES = new Set([
-  ...SQL_TYPES.postgres,
-  ...SQL_TYPES.mysql,
-  ...SQL_TYPES.bigquery,
-  ...SQL_TYPES.sqlite,
-  ...SQL_TYPES.clickhouse,
-]);
-
-const getDialect = (type: string): SqlDialect => {
-  if (SQL_TYPES.postgres.has(type)) return "postgresql";
-  if (SQL_TYPES.mysql.has(type)) return "mysql";
-  if (SQL_TYPES.bigquery.has(type)) return "bigquery";
-  if (SQL_TYPES.sqlite.has(type)) return "sqlite";
-  if (SQL_TYPES.clickhouse.has(type)) return "clickhouse";
-  throw new Error(`Unknown SQL type: ${type}`);
-};
-
-// Validation helpers
-const ensureValidObjectId = (value: string, label: string): Types.ObjectId => {
-  if (typeof value !== "string" || !Types.ObjectId.isValid(value)) {
-    throw new Error(`'${label}' must be a valid identifier`);
-  }
-  return new Types.ObjectId(value);
-};
-
-// SQL escaping helpers
-const escapePostgresLiteral = (value: string): string =>
-  `'${value.replace(/'/g, "''")}'`;
-
-const escapePostgresIdentifier = (value: string): string =>
-  `"${value.replace(/"/g, '""')}"`;
-
-const escapeBigQueryIdentifier = (value: string): string =>
-  `\`${value.replace(/`/g, "\\`")}\``;
-
-const escapeMySqlIdentifier = (value: string): string =>
-  `\`${value.replace(/`/g, "``")}\``;
-
-const escapeSqliteLiteral = (value: string): string =>
-  `'${value.replace(/'/g, "''")}'`;
-
-const escapeSqliteIdentifier = (value: string): string =>
-  `"${value.replace(/"/g, '""')}"`;
-
-// LIMIT enforcement
+// LIMIT enforcement (kept local as it has sql-tools specific logic)
 const needsDefaultLimit = (sql: string): boolean => {
   const trimmed = sql.trim();
   if (!trimmed) return false;
@@ -814,10 +768,7 @@ async function executeQueryImpl(
   databaseName: string,
   query: string,
   workspaceId: string,
-  userId?: string,
 ) {
-  const startTime = Date.now();
-
   if (!databaseName) {
     throw new Error("'database' is required");
   }
@@ -843,62 +794,6 @@ async function executeQueryImpl(
     options,
   );
 
-  // Track query execution (fire-and-forget)
-  if (userId) {
-    const rowCount = result.success
-      ? (result.rowCount ??
-        (Array.isArray(result.data) ? result.data.length : undefined))
-      : undefined;
-
-    let errorType: string | undefined;
-    if (!result.success) {
-      const errorMsg = result.error?.toLowerCase() || "";
-      if (errorMsg.includes("syntax")) {
-        errorType = "syntax";
-      } else if (
-        errorMsg.includes("timeout") ||
-        errorMsg.includes("timed out")
-      ) {
-        errorType = "timeout";
-      } else if (
-        errorMsg.includes("connection") ||
-        errorMsg.includes("connect")
-      ) {
-        errorType = "connection";
-      } else if (
-        errorMsg.includes("permission") ||
-        errorMsg.includes("access denied")
-      ) {
-        errorType = "permission";
-      } else {
-        errorType = "unknown";
-      }
-    }
-
-    // Determine execution status based on error type
-    let executionStatus: "success" | "error" | "timeout" | "cancelled" =
-      result.success ? "success" : "error";
-    if (!result.success && errorType === "timeout") {
-      executionStatus = "timeout";
-    } else if (!result.success && errorType === "cancelled") {
-      executionStatus = "cancelled";
-    }
-
-    queryExecutionService.track({
-      userId,
-      workspaceId: new Types.ObjectId(workspaceId),
-      connectionId: database._id,
-      databaseName,
-      source: "agent",
-      databaseType: database.type,
-      queryLanguage: "sql",
-      status: executionStatus,
-      executionTimeMs: Date.now() - startTime,
-      rowCount,
-      errorType,
-    });
-  }
-
   if (result && result.success && result.data) {
     const truncatedData = truncateQueryResults(result.data);
     return { ...result, data: truncatedData, sqlDialect: dialect };
@@ -914,7 +809,6 @@ export const createSqlToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
-  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
@@ -973,7 +867,6 @@ export const createSqlToolsV2 = (
           params.database,
           params.query,
           workspaceId,
-          userId,
         ),
     },
   };
