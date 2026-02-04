@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Box, CircularProgress, styled } from "@mui/material";
 import {
   Routes,
@@ -24,6 +24,7 @@ import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import { ConsoleModificationPayload } from "./hooks/useMonacoConsole";
+import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
 import { RegisterPage } from "./components/RegisterPage";
@@ -65,6 +66,9 @@ import { UrlSync } from "./components/UrlSync";
 function MainApp() {
   const activeView = useUIStore(s => s.leftPane);
   // Avoid re-rendering MainApp on console state changes; use getState on demand
+
+  // Ref for DbFlowForm - allows AI agent to manipulate form state
+  const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
 
   // Handle console modification from AI
   const handleConsoleModification = async (
@@ -316,7 +320,7 @@ function MainApp() {
 
           {/* Editor + Results vertical layout inside Editor component */}
           <Panel defaultSize={30} minSize={30}>
-            <Editor />
+            <Editor dbFlowFormRef={dbFlowFormRef} />
           </Panel>
 
           <StyledHorizontalResizeHandle />
@@ -330,7 +334,10 @@ function MainApp() {
                 borderColor: "divider",
               }}
             >
-              <Chat onConsoleModification={handleConsoleModification} />
+              <Chat
+                onConsoleModification={handleConsoleModification}
+                dbFlowFormRef={dbFlowFormRef}
+              />
             </Box>
           </Panel>
         </PanelGroup>

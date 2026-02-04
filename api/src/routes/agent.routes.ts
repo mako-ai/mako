@@ -1,6 +1,7 @@
 /**
  * Agent Routes
  * Native Vercel AI SDK streaming protocol for useChat compatibility
+ * Uses agent registry for multi-agent support
  */
 
 import { Hono } from "hono";
@@ -18,10 +19,8 @@ import { google } from "@ai-sdk/google";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
-import type { ConsoleDataV2 } from "../agent-v2/types";
-import { createUniversalTools } from "../agent-v2/tools/universal-tools";
-import { UNIVERSAL_PROMPT_V2 } from "../agent-v2/prompts/universal";
-import { getModelById, getAvailableModels } from "../agent-v2/ai-models";
+import type { ConsoleDataV2 } from "../agent-lib/types";
+import { getModelById, getAvailableModels } from "../agent-lib/ai-models";
 import {
   Workspace,
   DatabaseConnection,
@@ -31,6 +30,12 @@ import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { loggers, enrichContextWithWorkspace } from "../logging";
+import {
+  getAgentFactory,
+  detectAgentId,
+  getAllAgentMeta,
+  type AgentContext,
+} from "../agents";
 
 const logger = loggers.agent();
 
@@ -45,6 +50,14 @@ agentRoutes.use("*", unifiedAuthMiddleware);
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   const models = getAvailableModels();
   return c.json({ models });
+});
+
+/**
+ * GET /agents - List available agent modes
+ */
+agentRoutes.get("/agents", async (c: AuthenticatedContext) => {
+  const agents = getAllAgentMeta();
+  return c.json({ agents });
 });
 
 /**
@@ -112,15 +125,31 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     lineCount: number;
   }
 
-  const { messages, chatId, workspaceId, openConsoles, consoleId, modelId } =
-    body as {
-      messages?: UIMessage[];
-      chatId?: string; // Frontend-owned chat ID (AI SDK best practice)
-      workspaceId?: string;
-      openConsoles?: OpenConsoleContext[];
-      consoleId?: string;
-      modelId?: string;
-    };
+  const {
+    messages,
+    chatId,
+    workspaceId,
+    openConsoles,
+    consoleId,
+    modelId,
+    // Agent mode selection (new)
+    agentId,
+    tabKind,
+    flowType,
+    flowFormState,
+  } = body as {
+    messages?: UIMessage[];
+    chatId?: string; // Frontend-owned chat ID (AI SDK best practice)
+    workspaceId?: string;
+    openConsoles?: OpenConsoleContext[];
+    consoleId?: string;
+    modelId?: string;
+    // Agent mode selection
+    agentId?: string;
+    tabKind?: string;
+    flowType?: string;
+    flowFormState?: Record<string, unknown>;
+  };
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return c.json({ error: "'messages' array is required" }, 400);
@@ -220,9 +249,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
 
-  // Build system prompt
-  const systemPrompt = UNIVERSAL_PROMPT_V2;
-
   // Get workspace database connections for context
   const workspaceDatabases = await DatabaseConnection.find({
     workspaceId: new ObjectId(workspaceId),
@@ -248,86 +274,35 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined),
   }));
 
-  // Get tools (uses client-side console tools)
-  const tools = createUniversalTools(
-    workspaceId,
-    enrichedConsoles,
-    consoleId,
-    userId,
-  );
+  // Resolve agent: explicit ID > auto-detect from tab context > default to console
+  const resolvedAgentId = agentId || detectAgentId(tabKind, flowType);
+  const agentFactory = getAgentFactory(resolvedAgentId);
 
-  // Build custom prompt context for the full system message
-  const customPromptContext =
-    workspaceCustomPrompt.trim().length > 0
-      ? `\n\n---\n\n### Workspace Context\n${workspaceCustomPrompt.trim()}`
-      : "";
-
-  // Build runtime context with open consoles and available connections
-  let runtimeContext = "";
-
-  if (
-    (openConsoles && openConsoles.length > 0) ||
-    workspaceDatabases.length > 0
-  ) {
-    runtimeContext += "\n\n---\n\n## Current State (auto-injected)\n";
-
-    // Open Consoles section
-    if (openConsoles && openConsoles.length > 0) {
-      runtimeContext += "\n### Open Consoles:\n";
-      for (let i = 0; i < openConsoles.length; i++) {
-        const c = openConsoles[i];
-        const connType =
-          c.connectionType ||
-          (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined);
-        const connName =
-          c.connectionName ||
-          (c.connectionId ? databaseNameMap.get(c.connectionId) : undefined);
-
-        // Determine active console using consoleId param (avoids frontend re-render loops)
-        const isActive = c.id === consoleId;
-        const activeLabel = isActive ? "[ACTIVE] " : "";
-        runtimeContext += `\n${i + 1}. ${activeLabel}"${c.title}" (id: ${c.id})\n`;
-
-        // Connection info
-        if (connType || connName || c.databaseName) {
-          const parts: string[] = [];
-          if (connType) parts.push(connType);
-          if (connName) parts.push(connName);
-          if (c.databaseName) parts.push(`db: ${c.databaseName}`);
-          runtimeContext += `   - Connection: ${parts.join(" / ")}\n`;
-        } else {
-          runtimeContext += `   - Connection: none\n`;
-        }
-
-        // Content
-        const trimmedContent = c.content.trim();
-        if (!trimmedContent) {
-          runtimeContext += `   - Content: empty\n`;
-        } else {
-          const truncatedNote = c.contentTruncated
-            ? ` (truncated from ${c.lineCount} lines)`
-            : "";
-          runtimeContext += `   - Content${truncatedNote}:\n`;
-          // Indent the content
-          const indentedContent = trimmedContent
-            .split("\n")
-            .map(line => `     ${line}`)
-            .join("\n");
-          runtimeContext += `${indentedContent}\n`;
-        }
-      }
-    }
-
-    // Available Connections section
-    if (workspaceDatabases.length > 0) {
-      runtimeContext += "\n### Available Connections:\n";
-      for (const db of workspaceDatabases) {
-        runtimeContext += `- ${db.type}: ${db.name} (id: ${db._id.toString()})\n`;
-      }
-    }
-
-    runtimeContext += "\n---";
+  if (!agentFactory) {
+    logger.error("Agent not found", { agentId: resolvedAgentId });
+    return c.json({ error: `Agent '${resolvedAgentId}' not found` }, 404);
   }
+
+  logger.info("Using agent", { agentId: resolvedAgentId, tabKind, flowType });
+
+  // Build agent context
+  const agentContext: AgentContext = {
+    workspaceId,
+    userId: userId.toString(),
+    consoles: enrichedConsoles,
+    consoleId,
+    databases: workspaceDatabases.map(db => ({
+      id: db._id.toString(),
+      name: db.name,
+      type: db.type,
+    })),
+    flowFormState,
+    workspaceCustomPrompt,
+  };
+
+  // Create agent configuration
+  const agentConfig = agentFactory(agentContext);
+  const { systemPrompt, tools } = agentConfig;
 
   // Get model instance
   const model = getModelInstance(modelId);
@@ -348,9 +323,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   const result = streamText({
     model,
-    system: systemPrompt + customPromptContext + runtimeContext,
+    system: systemPrompt,
     messages: modelMessages,
-    tools: tools as any,
+    tools: tools as Record<string, any>,
     stopWhen: stepCountIs(MAX_STEPS),
     onStepFinish: ({ toolCalls }) => {
       stepsCompleted += 1;

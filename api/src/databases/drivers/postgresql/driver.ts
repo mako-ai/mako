@@ -15,6 +15,76 @@ import { loggers } from "../../../logging";
 const logger = loggers.db("postgresql");
 
 /**
+ * Map PostgreSQL OID (dataTypeID) to type name
+ * Common OIDs from PostgreSQL's pg_type catalog
+ * See: https://www.postgresql.org/docs/current/datatype.html
+ */
+function mapPostgresOidToType(oid: number): string {
+  const oidMap: Record<number, string> = {
+    // Boolean
+    16: "BOOLEAN",
+    // Numeric
+    20: "BIGINT",
+    21: "SMALLINT",
+    23: "INTEGER",
+    26: "OID",
+    700: "REAL",
+    701: "DOUBLE PRECISION",
+    1700: "NUMERIC",
+    // Character
+    18: "CHAR",
+    25: "TEXT",
+    1042: "CHAR",
+    1043: "VARCHAR",
+    // Binary
+    17: "BYTEA",
+    // Date/Time
+    1082: "DATE",
+    1083: "TIME",
+    1114: "TIMESTAMP",
+    1184: "TIMESTAMPTZ",
+    1186: "INTERVAL",
+    1266: "TIMETZ",
+    // UUID
+    2950: "UUID",
+    // JSON
+    114: "JSON",
+    3802: "JSONB",
+    // Arrays (common)
+    1000: "BOOLEAN[]",
+    1005: "SMALLINT[]",
+    1007: "INTEGER[]",
+    1016: "BIGINT[]",
+    1009: "TEXT[]",
+    1015: "VARCHAR[]",
+    1021: "REAL[]",
+    1022: "DOUBLE PRECISION[]",
+    // Network
+    869: "INET",
+    650: "CIDR",
+    829: "MACADDR",
+    // Geometric
+    600: "POINT",
+    601: "LSEG",
+    602: "PATH",
+    603: "BOX",
+    604: "POLYGON",
+    628: "LINE",
+    718: "CIRCLE",
+    // Other
+    2249: "RECORD",
+    2287: "RECORD[]",
+    3904: "INT4RANGE",
+    3906: "INT8RANGE",
+    3908: "NUMRANGE",
+    3912: "DATERANGE",
+    3910: "TSRANGE",
+    3914: "TSTZRANGE",
+  };
+  return oidMap[oid] || "TEXT";
+}
+
+/**
  * Map JavaScript types to PostgreSQL types
  */
 function inferPostgresType(value: unknown): string {
@@ -39,7 +109,11 @@ function inferPostgresType(value: unknown): string {
       return "DATE";
     }
     // Check for UUID
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+    if (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        value,
+      )
+    ) {
       return "UUID";
     }
     return "TEXT";
@@ -60,7 +134,8 @@ function escapeIdentifier(name: string): string {
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "number" || typeof value === "bigint") return String(value);
+  if (typeof value === "number" || typeof value === "bigint")
+    return String(value);
   if (value instanceof Date) return `'${value.toISOString()}'`;
   if (typeof value === "object") {
     return `'${JSON.stringify(value).replace(/'/g, "''")}'::jsonb`;
@@ -246,7 +321,101 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Get the schema (column types) for a query using PostgreSQL's metadata.
+   *
+   * PostgreSQL returns column metadata (OIDs) even for empty result sets,
+   * making this more reliable than inferring from sample data.
+   */
+  async getQuerySchema(
+    database: IDatabaseConnection,
+    query: string,
+    options?: { databaseName?: string },
+  ): Promise<{
+    success: boolean;
+    columns?: ColumnDefinition[];
+    error?: string;
+  }> {
+    try {
+      // LIMIT 0 gives us column metadata without fetching any data
+      const schemaQuery = `SELECT * FROM (${query}) AS _schema_query LIMIT 0`;
+
+      const result = await databaseConnectionService.executeQuery(
+        database,
+        schemaQuery,
+        { databaseName: options?.databaseName },
+      );
+
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+
+      // PostgreSQL's pg library returns field metadata with OIDs
+      const fields = result.fields || [];
+
+      if (fields.length > 0) {
+        // Map PostgreSQL OIDs to type names
+        const columns: ColumnDefinition[] = fields.map((field: any) => ({
+          name: field.name,
+          type: mapPostgresOidToType(field.dataTypeID),
+          nullable: true,
+        }));
+        return { success: true, columns };
+      }
+
+      // Fallback: try with LIMIT 1 and infer from data
+      const sampleQuery = `SELECT * FROM (${query}) AS _schema_query LIMIT 1`;
+      const sampleResult = await databaseConnectionService.executeQuery(
+        database,
+        sampleQuery,
+        { databaseName: options?.databaseName },
+      );
+
+      if (!sampleResult.success) {
+        return { success: false, error: sampleResult.error };
+      }
+
+      // Check fields again from sample query
+      if (sampleResult.fields && sampleResult.fields.length > 0) {
+        const columns: ColumnDefinition[] = sampleResult.fields.map(
+          (field: any) => ({
+            name: field.name,
+            type: mapPostgresOidToType(field.dataTypeID),
+            nullable: true,
+          }),
+        );
+        return { success: true, columns };
+      }
+
+      // Last resort: infer from data values
+      const rows = sampleResult.data || [];
+      if (rows.length === 0) {
+        return {
+          success: false,
+          error: "Query returned no rows and no field metadata",
+        };
+      }
+
+      const sampleRow = rows[0];
+      const columns: ColumnDefinition[] = Object.entries(sampleRow).map(
+        ([name, value]) => ({
+          name,
+          type: inferPostgresType(value),
+          nullable: true,
+        }),
+      );
+
+      return { success: true, columns };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error?.message || "Failed to get query schema",
+      };
+    }
+  }
+
+  /**
    * Infer column definitions from sample data
+   * @deprecated Prefer getQuerySchema() which is more reliable
    */
   inferSchema(rows: Record<string, unknown>[]): ColumnDefinition[] {
     if (rows.length === 0) return [];
@@ -280,7 +449,11 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
         type = typeArray[0];
       } else if (typeArray.length > 1) {
         // Try to find a common type
-        if (typeArray.every(t => ["INTEGER", "BIGINT", "DOUBLE PRECISION"].includes(t))) {
+        if (
+          typeArray.every(t =>
+            ["INTEGER", "BIGINT", "DOUBLE PRECISION"].includes(t),
+          )
+        ) {
           type = "DOUBLE PRECISION";
         } else if (typeArray.every(t => ["INTEGER", "BIGINT"].includes(t))) {
           type = "BIGINT";
@@ -406,7 +579,11 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     }
 
     if (keyColumns.length === 0) {
-      return { success: false, rowsWritten: 0, error: "Key columns required for upsert" };
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "Key columns required for upsert",
+      };
     }
 
     const schema = options?.schema || "public";
@@ -589,7 +766,8 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
       return {
         success: false,
         totalRows,
-        error: error instanceof Error ? error.message : "Streaming query failed",
+        error:
+          error instanceof Error ? error.message : "Streaming query failed",
       };
     }
   }

@@ -10,6 +10,7 @@ import {
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
+import { loggers } from "../../../logging";
 
 /**
  * Map JavaScript types to BigQuery types
@@ -55,24 +56,161 @@ function escapeIdentifier(name: string): string {
 
 /**
  * Format a value for BigQuery insertion
+ * @param value - The value to format
+ * @param targetType - Optional target column type to cast to (e.g., "STRING", "INT64")
+ * @param useCast - If true, wrap value in CAST() to ensure consistent types (for STRUCT arrays)
  */
-function formatBigQueryValue(value: unknown): string {
+function formatBigQueryValue(
+  value: unknown,
+  targetType?: string,
+  useCast = false,
+): string {
   if (value === null || value === undefined) return "NULL";
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "number" || typeof value === "bigint") return String(value);
-  if (value instanceof Date) return `TIMESTAMP '${value.toISOString()}'`;
+
+  const upperType = targetType?.toUpperCase();
+  const isNumericTarget =
+    upperType === "INT64" ||
+    upperType === "INTEGER" ||
+    upperType === "FLOAT64" ||
+    upperType === "FLOAT" ||
+    upperType === "NUMERIC" ||
+    upperType === "BIGNUMERIC";
+
+  // When useCast is true (for STRUCT arrays in MERGE), we need to ensure ALL values
+  // are formatted consistently to avoid "Array elements of types do not have a common supertype"
+  // We do this by always formatting as string and casting to target type
+  if (useCast && targetType) {
+    // First, format the value as a plain string literal
+    let stringValue: string;
+
+    if (value === null || value === undefined) {
+      return `CAST(NULL AS ${upperType})`;
+    } else if (typeof value === "boolean") {
+      stringValue = value ? "true" : "false";
+    } else if (value instanceof Date) {
+      stringValue = value.toISOString();
+    } else if (Array.isArray(value)) {
+      // Arrays need special handling - format each element and wrap in CAST
+      const elements = value
+        .map(v => formatBigQueryValue(v, undefined, false))
+        .join(", ");
+      return `[${elements}]`;
+    } else if (typeof value === "object") {
+      stringValue = JSON.stringify(value).replace(/'/g, "\\'");
+      // JSON columns: use JSON literal syntax
+      if (upperType === "JSON") {
+        return `JSON '${stringValue}'`;
+      }
+    } else {
+      stringValue = String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    }
+
+    // Use SAFE_CAST for type conversion to handle mismatched data gracefully
+    // This ensures all STRUCTs have consistent schema
+    if (isNumericTarget) {
+      return `SAFE_CAST('${stringValue}' AS ${upperType})`;
+    } else if (upperType === "BOOL" || upperType === "BOOLEAN") {
+      // BigQuery SAFE_CAST doesn't handle 'true'/'false' strings well for BOOL
+      // Use explicit CASE for boolean conversion
+      const lower = stringValue.toLowerCase();
+      if (lower === "true" || lower === "1" || lower === "yes") return "TRUE";
+      if (lower === "false" || lower === "0" || lower === "no") return "FALSE";
+      return `SAFE_CAST('${stringValue}' AS BOOL)`;
+    } else if (upperType === "TIMESTAMP" || upperType === "DATETIME") {
+      return `SAFE_CAST('${stringValue}' AS TIMESTAMP)`;
+    } else if (upperType === "DATE") {
+      return `SAFE_CAST('${stringValue.slice(0, 10)}' AS DATE)`;
+    } else if (upperType === "STRING") {
+      return `CAST('${stringValue}' AS STRING)`;
+    } else {
+      return `SAFE_CAST('${stringValue}' AS ${upperType})`;
+    }
+  }
+
+  // Non-CAST mode (for VALUES clause in INSERT, which handles types per-row)
+  // Handle numbers: ONLY unquote if we have EXPLICIT numeric target type
+  // When targetType is undefined/unknown, ALWAYS quote (safer default)
+  if (typeof value === "number" || typeof value === "bigint") {
+    // Only output unquoted number if we're 100% sure target is numeric
+    if (targetType && isNumericTarget) {
+      return String(value);
+    }
+    // For STRING, unknown, or ANY other case: quote the number
+    return `'${String(value)}'`;
+  }
+
+  // Handle booleans
+  if (typeof value === "boolean") {
+    if (upperType === "BOOL" || upperType === "BOOLEAN") {
+      return value ? "TRUE" : "FALSE";
+    }
+    // For STRING or unknown, quote it
+    return value ? "'true'" : "'false'";
+  }
+
+  // Handle dates
+  if (value instanceof Date) {
+    if (upperType === "DATE") {
+      return `DATE '${value.toISOString().slice(0, 10)}'`;
+    }
+    if (upperType === "TIMESTAMP" || upperType === "DATETIME" || !upperType) {
+      return `TIMESTAMP '${value.toISOString()}'`;
+    }
+    // For STRING target, quote the ISO string
+    return `'${value.toISOString()}'`;
+  }
+
+  // Handle arrays
   if (Array.isArray(value)) {
-    const elements = value.map(v => formatBigQueryValue(v)).join(", ");
+    const elements = value
+      .map(v => formatBigQueryValue(v, undefined, false))
+      .join(", ");
     return `[${elements}]`;
   }
+
+  // Handle objects (JSON)
   if (typeof value === "object") {
-    return `JSON '${JSON.stringify(value).replace(/'/g, "\\'")}'`;
+    const jsonStr = JSON.stringify(value).replace(/'/g, "\\'");
+    if (upperType === "JSON") {
+      return `JSON '${jsonStr}'`;
+    }
+    // For STRING or unknown, just quote the JSON string
+    return `'${jsonStr}'`;
   }
-  // String - escape single quotes and backslashes
-  return `'${String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+
+  // Handle strings
+  const strVal = String(value);
+  const escapedStr = strVal.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
+  // If target is TIMESTAMP, wrap with TIMESTAMP keyword
+  if (upperType === "TIMESTAMP" || upperType === "DATETIME") {
+    return `TIMESTAMP '${escapedStr}'`;
+  }
+
+  // If target is DATE, extract date part and wrap
+  if (upperType === "DATE") {
+    return `DATE '${escapedStr.slice(0, 10)}'`;
+  }
+
+  // If target is numeric, try to parse string as number
+  if (isNumericTarget) {
+    const parsed = parseFloat(strVal);
+    if (!isNaN(parsed)) return String(parsed);
+  }
+
+  // If target is BOOL, try to parse string as boolean
+  if (upperType === "BOOL" || upperType === "BOOLEAN") {
+    const lower = strVal.toLowerCase();
+    if (lower === "true" || lower === "1") return "TRUE";
+    if (lower === "false" || lower === "0") return "FALSE";
+  }
+
+  // Default: quoted string
+  return `'${escapedStr}'`;
 }
 
 export class BigQueryDatabaseDriver implements DatabaseDriver {
+  private logger = loggers.db("bigquery");
   getMetadata(): DatabaseDriverMetadata {
     return {
       type: "bigquery",
@@ -151,7 +289,43 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Get the schema (column types) for a query using BigQuery's dry run feature.
+   * This is more reliable than inferring from sample data because:
+   * - NULL values are handled correctly
+   * - No data sampling variance
+   * - Works even if query returns 0 rows
+   */
+  async getQuerySchema(
+    database: IDatabaseConnection,
+    query: string,
+    _options?: { databaseName?: string },
+  ): Promise<{
+    success: boolean;
+    columns?: ColumnDefinition[];
+    error?: string;
+  }> {
+    const result = await databaseConnectionService.getBigQueryQuerySchema(
+      database,
+      query,
+    );
+
+    if (!result.success || !result.columns) {
+      return { success: false, error: result.error };
+    }
+
+    // Map to ColumnDefinition format
+    const columns: ColumnDefinition[] = result.columns.map(col => ({
+      name: col.name,
+      type: col.type,
+      nullable: col.nullable,
+    }));
+
+    return { success: true, columns };
+  }
+
+  /**
    * Infer column definitions from sample data
+   * @deprecated Prefer getQuerySchema() which is more reliable
    */
   inferSchema(rows: Record<string, unknown>[]): ColumnDefinition[] {
     if (rows.length === 0) return [];
@@ -213,7 +387,10 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
     if (!dataset) {
-      return { success: false, error: "Dataset (schema) is required for BigQuery" };
+      return {
+        success: false,
+        error: "Dataset (schema) is required for BigQuery",
+      };
     }
 
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
@@ -258,8 +435,39 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Get column types for an existing table from INFORMATION_SCHEMA
+   * Returns a map of column name -> BigQuery data type
+   */
+  private async getTableColumnTypes(
+    database: IDatabaseConnection,
+    tableName: string,
+    dataset: string,
+  ): Promise<Map<string, string>> {
+    const projectId = this.getProjectId(database);
+    const columnTypes = new Map<string, string>();
+
+    const query = `
+      SELECT column_name, data_type
+      FROM ${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.INFORMATION_SCHEMA.COLUMNS
+      WHERE table_name = '${tableName.replace(/'/g, "\\'")}'
+    `;
+
+    const result = await this.executeQuery(database, query);
+    if (result.success && result.data) {
+      for (const row of result.data) {
+        if (row.column_name && row.data_type) {
+          // Store with lowercase key for case-insensitive lookup
+          columnTypes.set(row.column_name.toLowerCase(), row.data_type);
+        }
+      }
+    }
+
+    return columnTypes;
+  }
+
+  /**
    * Insert a batch of rows into a table using INSERT statement
-   * BigQuery has a 10,000 rows per INSERT limit, so we chunk if necessary
+   * BigQuery has a 1MB query size limit, so we chunk adaptively based on query size
    */
   async insertBatch(
     database: IDatabaseConnection,
@@ -274,10 +482,23 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
     if (!dataset) {
-      return { success: false, rowsWritten: 0, error: "Dataset (schema) is required for BigQuery" };
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "Dataset (schema) is required for BigQuery",
+      };
     }
 
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
+
+    // ALWAYS get column types from INFORMATION_SCHEMA for existing tables
+    // This is more reliable than passed types which come from source schema mapping
+    // and may not match the actual destination table schema
+    const columnTypes = await this.getTableColumnTypes(
+      database,
+      tableName,
+      dataset,
+    );
 
     // Get all unique column names from all rows
     const allColumns = new Set<string>();
@@ -287,27 +508,58 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const columns = Array.from(allColumns);
     const columnList = columns.map(escapeIdentifier).join(", ");
 
-    // BigQuery INSERT limit is 10,000 rows per statement
-    const chunkSize = 5000;
+    // Start with a reasonable chunk size, will adapt based on query size
+    // BigQuery has a 1MB (1,024,000 chars) query limit
+    const MAX_QUERY_SIZE = 900_000; // Leave some buffer below 1MB
+    let chunkSize = 1000; // Start smaller to be safe
     let totalWritten = 0;
 
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
+    for (let i = 0; i < rows.length; ) {
+      // Build query for current chunk using VALUES syntax (more compact than SELECT...UNION ALL)
+      let chunk = rows.slice(i, i + chunkSize);
+      let query = this.buildInsertQuery(
+        fullTableName,
+        columnList,
+        columns,
+        chunk,
+        columnTypes,
+      );
 
-      // Build values using SELECT ... UNION ALL pattern for better performance
-      const valueRows = chunk.map(row => {
-        const values = columns.map(col => {
-          const val = row[col];
-          return `${formatBigQueryValue(val)} AS ${escapeIdentifier(col)}`;
-        });
-        return `SELECT ${values.join(", ")}`;
-      });
+      // If query is too large, reduce chunk size and retry
+      while (query.length > MAX_QUERY_SIZE && chunkSize > 50) {
+        chunkSize = Math.floor(chunkSize / 2);
+        chunk = rows.slice(i, i + chunkSize);
+        query = this.buildInsertQuery(
+          fullTableName,
+          columnList,
+          columns,
+          chunk,
+          columnTypes,
+        );
+      }
 
-      const query = `INSERT INTO ${fullTableName} (${columnList})\n${valueRows.join("\nUNION ALL\n")};`;
+      // If still too large with minimum chunk size, fail with helpful error
+      if (query.length > MAX_QUERY_SIZE) {
+        return {
+          success: false,
+          rowsWritten: totalWritten,
+          error: `Query size (${Math.round(query.length / 1024)}KB) exceeds BigQuery limit even with minimum batch size. Consider reducing data size per row or using BigQuery load jobs for very large data.`,
+        };
+      }
 
       const result = await this.executeQuery(database, query);
 
       if (!result.success) {
+        const preview =
+          rows.length > 0 ? JSON.stringify(rows[0]).slice(0, 1000) : "{}";
+        this.logger.error("BigQuery insert failed", {
+          table: tableName,
+          dataset,
+          error: result.error,
+          queryPreview: query.slice(0, 2000),
+          firstRowPreview: preview,
+          columnTypes: Object.fromEntries(columnTypes.entries()),
+        });
         return {
           success: false,
           rowsWritten: totalWritten,
@@ -316,13 +568,44 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       }
 
       totalWritten += chunk.length;
+      i += chunk.length;
+
+      // If query was well under the limit, try increasing chunk size for efficiency
+      if (query.length < MAX_QUERY_SIZE * 0.5 && chunkSize < 2000) {
+        chunkSize = Math.min(chunkSize * 2, 2000);
+      }
     }
 
     return { success: true, rowsWritten: totalWritten };
   }
 
   /**
+   * Build an INSERT query using VALUES syntax (more compact than SELECT...UNION ALL)
+   * @param columnTypes - Optional map of column name -> BigQuery type for type coercion
+   */
+  private buildInsertQuery(
+    fullTableName: string,
+    columnList: string,
+    columns: string[],
+    rows: Record<string, unknown>[],
+    columnTypes?: Map<string, string>,
+  ): string {
+    // Use VALUES syntax: INSERT INTO table (cols) VALUES (v1, v2), (v1, v2), ...
+    const valueRows = rows.map(row => {
+      const values = columns.map(col => {
+        // Use lowercase for case-insensitive lookup
+        const targetType = columnTypes?.get(col.toLowerCase());
+        return formatBigQueryValue(row[col], targetType, true);
+      });
+      return `(${values.join(", ")})`;
+    });
+
+    return `INSERT INTO ${fullTableName} (${columnList}) VALUES\n${valueRows.join(",\n")};`;
+  }
+
+  /**
    * Upsert a batch of rows using MERGE statement
+   * Chunks data adaptively to stay under BigQuery's 1MB query limit
    */
   async upsertBatch(
     database: IDatabaseConnection,
@@ -336,17 +619,34 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     }
 
     if (keyColumns.length === 0) {
-      return { success: false, rowsWritten: 0, error: "Key columns required for upsert" };
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "Key columns required for upsert",
+      };
     }
 
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
     if (!dataset) {
-      return { success: false, rowsWritten: 0, error: "Dataset (schema) is required for BigQuery" };
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "Dataset (schema) is required for BigQuery",
+      };
     }
 
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
     const strategy = options?.conflictStrategy || "update";
+
+    // ALWAYS get column types from INFORMATION_SCHEMA for existing tables
+    // This is more reliable than passed types which come from source schema mapping
+    // and may not match the actual destination table schema
+    const columnTypes = await this.getTableColumnTypes(
+      database,
+      tableName,
+      dataset,
+    );
 
     // Get all unique column names from all rows
     const allColumns = new Set<string>();
@@ -355,16 +655,110 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     }
     const columns = Array.from(allColumns);
 
-    // Build source data as CTE
-    const valueRows = rows.map(row => {
+    // BigQuery has a 1MB (1,024,000 chars) query limit
+    const MAX_QUERY_SIZE = 900_000; // Leave some buffer below 1MB
+    let chunkSize = 500; // MERGE is more verbose, start smaller
+    let totalWritten = 0;
+
+    for (let i = 0; i < rows.length; ) {
+      // Build MERGE query for current chunk
+      let chunk = rows.slice(i, i + chunkSize);
+      let query = this.buildMergeQuery(
+        fullTableName,
+        columns,
+        chunk,
+        keyColumns,
+        strategy,
+        columnTypes,
+      );
+
+      // If query is too large, reduce chunk size and retry
+      while (query.length > MAX_QUERY_SIZE && chunkSize > 25) {
+        chunkSize = Math.floor(chunkSize / 2);
+        chunk = rows.slice(i, i + chunkSize);
+        query = this.buildMergeQuery(
+          fullTableName,
+          columns,
+          chunk,
+          keyColumns,
+          strategy,
+          columnTypes,
+        );
+      }
+
+      // If still too large with minimum chunk size, fail with helpful error
+      if (query.length > MAX_QUERY_SIZE) {
+        return {
+          success: false,
+          rowsWritten: totalWritten,
+          error: `MERGE query size (${Math.round(query.length / 1024)}KB) exceeds BigQuery limit even with minimum batch size. Consider reducing data size per row.`,
+        };
+      }
+
+      const result = await this.executeQuery(database, query);
+
+      if (!result.success) {
+        const preview =
+          rows.length > 0 ? JSON.stringify(rows[0]).slice(0, 1000) : "{}";
+        this.logger.error("BigQuery merge failed", {
+          table: tableName,
+          dataset,
+          error: result.error,
+          queryPreview: query.slice(0, 2000),
+          firstRowPreview: preview,
+          columnTypes: Object.fromEntries(columnTypes.entries()),
+        });
+        return {
+          success: false,
+          rowsWritten: totalWritten,
+          error: result.error,
+        };
+      }
+
+      totalWritten += chunk.length;
+      i += chunk.length;
+
+      // If query was well under the limit, try increasing chunk size for efficiency
+      if (query.length < MAX_QUERY_SIZE * 0.5 && chunkSize < 1000) {
+        chunkSize = Math.min(chunkSize * 2, 1000);
+      }
+    }
+
+    return { success: true, rowsWritten: totalWritten };
+  }
+
+  /**
+   * Build a MERGE query using a more compact source format
+   * Uses UNNEST with STRUCT array for better efficiency than SELECT...UNION ALL
+   * @param columnTypes - Optional map of column name -> BigQuery type for type coercion
+   *
+   * IMPORTANT: We use SAFE_CAST for all values in STRUCTs to ensure consistent types.
+   * Without this, if source data has mixed types (e.g., template_id is INT64 in one row
+   * and STRING in another), BigQuery throws "Array elements of types do not have a
+   * common supertype" because each STRUCT would have a different schema.
+   */
+  private buildMergeQuery(
+    fullTableName: string,
+    columns: string[],
+    rows: Record<string, unknown>[],
+    keyColumns: string[],
+    strategy: string,
+    columnTypes?: Map<string, string>,
+  ): string {
+    // Build source data using UNNEST with STRUCT - more compact than SELECT...UNION ALL
+    // Format: UNNEST([STRUCT(v1 AS c1, v2 AS c2), STRUCT(v1 AS c1, v2 AS c2), ...])
+    // We use useCast=true to ensure all STRUCTs have consistent column types via SAFE_CAST
+    const structRows = rows.map(row => {
       const values = columns.map(col => {
-        const val = row[col];
-        return `${formatBigQueryValue(val)} AS ${escapeIdentifier(col)}`;
+        // Use lowercase for case-insensitive lookup
+        const targetType = columnTypes?.get(col.toLowerCase());
+        // useCast=true ensures consistent types across all STRUCTs in the array
+        return `${formatBigQueryValue(row[col], targetType, true)} AS ${escapeIdentifier(col)}`;
       });
-      return `SELECT ${values.join(", ")}`;
+      return `STRUCT(${values.join(", ")})`;
     });
 
-    const sourceQuery = valueRows.join("\nUNION ALL\n");
+    const sourceQuery = `UNNEST([${structRows.join(", ")}])`;
 
     // Build MERGE conditions
     const joinConditions = keyColumns
@@ -373,41 +767,35 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
     // Build update and insert columns
     const nonKeyColumns = columns.filter(c => !keyColumns.includes(c));
-    const updateClause = nonKeyColumns.length > 0
-      ? `UPDATE SET ${nonKeyColumns.map(c => `${escapeIdentifier(c)} = S.${escapeIdentifier(c)}`).join(", ")}`
-      : "";
+    const updateClause =
+      nonKeyColumns.length > 0
+        ? `UPDATE SET ${nonKeyColumns.map(c => `${escapeIdentifier(c)} = S.${escapeIdentifier(c)}`).join(", ")}`
+        : "";
     const insertColumns = columns.map(escapeIdentifier).join(", ");
-    const insertValues = columns.map(c => `S.${escapeIdentifier(c)}`).join(", ");
+    const insertValues = columns
+      .map(c => `S.${escapeIdentifier(c)}`)
+      .join(", ");
 
-    let query: string;
     if (strategy === "ignore") {
       // Only insert if not matched
-      query = `
+      return `
         MERGE INTO ${fullTableName} T
-        USING (${sourceQuery}) S
+        USING ${sourceQuery} AS S
         ON ${joinConditions}
         WHEN NOT MATCHED THEN
           INSERT (${insertColumns}) VALUES (${insertValues});
       `;
     } else {
       // Update when matched, insert when not matched
-      query = `
+      return `
         MERGE INTO ${fullTableName} T
-        USING (${sourceQuery}) S
+        USING ${sourceQuery} AS S
         ON ${joinConditions}
         ${updateClause ? `WHEN MATCHED THEN ${updateClause}` : ""}
         WHEN NOT MATCHED THEN
           INSERT (${insertColumns}) VALUES (${insertValues});
       `;
     }
-
-    const result = await this.executeQuery(database, query);
-
-    return {
-      success: result.success,
-      rowsWritten: result.success ? rows.length : 0,
-      error: result.error,
-    };
   }
 
   /**
@@ -422,14 +810,20 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
     if (!dataset) {
-      return { success: false, error: "Dataset (schema) is required for BigQuery" };
+      return {
+        success: false,
+        error: "Dataset (schema) is required for BigQuery",
+      };
     }
 
     const fullOriginal = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(originalTableName)}`;
     const fullStaging = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(stagingTableName)}`;
 
     // Drop staging table if exists
-    const dropResult = await this.executeQuery(database, `DROP TABLE IF EXISTS ${fullStaging};`);
+    const dropResult = await this.executeQuery(
+      database,
+      `DROP TABLE IF EXISTS ${fullStaging};`,
+    );
     if (!dropResult.success) {
       return { success: false, error: dropResult.error };
     }
@@ -454,7 +848,10 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
     if (!dataset) {
-      return { success: false, error: "Dataset (schema) is required for BigQuery" };
+      return {
+        success: false,
+        error: "Dataset (schema) is required for BigQuery",
+      };
     }
 
     const fullOriginal = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(originalTableName)}`;
@@ -462,23 +859,41 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const fullBackup = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(`${originalTableName}_backup_${Date.now()}`)}`;
 
     // Step 1: Rename original to backup (using CREATE ... AS SELECT and DROP)
-    let result = await this.executeQuery(database, `CREATE TABLE ${fullBackup} AS SELECT * FROM ${fullOriginal};`);
+    let result = await this.executeQuery(
+      database,
+      `CREATE TABLE ${fullBackup} AS SELECT * FROM ${fullOriginal};`,
+    );
     if (!result.success) {
-      return { success: false, error: `Failed to backup original: ${result.error}` };
+      return {
+        success: false,
+        error: `Failed to backup original: ${result.error}`,
+      };
     }
 
     // Step 2: Drop original
     result = await this.executeQuery(database, `DROP TABLE ${fullOriginal};`);
     if (!result.success) {
-      return { success: false, error: `Failed to drop original: ${result.error}` };
+      return {
+        success: false,
+        error: `Failed to drop original: ${result.error}`,
+      };
     }
 
     // Step 3: Create new original from staging
-    result = await this.executeQuery(database, `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullStaging};`);
+    result = await this.executeQuery(
+      database,
+      `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullStaging};`,
+    );
     if (!result.success) {
       // Try to restore from backup
-      await this.executeQuery(database, `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullBackup};`);
-      return { success: false, error: `Failed to create new table: ${result.error}` };
+      await this.executeQuery(
+        database,
+        `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullBackup};`,
+      );
+      return {
+        success: false,
+        error: `Failed to create new table: ${result.error}`,
+      };
     }
 
     // Step 4: Drop staging and backup
@@ -499,7 +914,10 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
     if (!dataset) {
-      return { success: false, error: "Dataset (schema) is required for BigQuery" };
+      return {
+        success: false,
+        error: "Dataset (schema) is required for BigQuery",
+      };
     }
 
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
@@ -561,7 +979,8 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       return {
         success: false,
         totalRows,
-        error: error instanceof Error ? error.message : "Streaming query failed",
+        error:
+          error instanceof Error ? error.message : "Streaming query failed",
       };
     }
   }

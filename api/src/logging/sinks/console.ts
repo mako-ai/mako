@@ -74,6 +74,38 @@ function formatValue(value: unknown, indent: number = 0): string {
     return lines.join("\n");
   }
 
+  // Handle error-like objects (e.g., serialized errors, errors from different contexts)
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "message" in value &&
+    typeof (value as Record<string, unknown>).message === "string"
+  ) {
+    const errorLike = value as Record<string, unknown>;
+    // Check if this looks like an error (has message and optionally stack/name)
+    if (
+      errorLike.stack !== undefined ||
+      errorLike.name !== undefined ||
+      (Object.keys(errorLike).length <= 3 &&
+        Object.keys(errorLike).every(k =>
+          ["message", "stack", "name", "code"].includes(k),
+        ))
+    ) {
+      const lines = [
+        `${colors.red}${errorLike.name || "Error"}: ${errorLike.message}${colors.reset}`,
+      ];
+      if (typeof errorLike.stack === "string") {
+        const stackLines = errorLike.stack.split("\n").slice(1, 6);
+        lines.push(
+          ...stackLines.map(
+            l => `${pad}  ${colors.dim}${l.trim()}${colors.reset}`,
+          ),
+        );
+      }
+      return lines.join("\n");
+    }
+  }
+
   if (Array.isArray(value)) {
     if (value.length === 0) return "[]";
     if (value.length > 10) {

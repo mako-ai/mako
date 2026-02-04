@@ -30,6 +30,12 @@ import {
   databaseConnectionService,
   ConnectionConfig,
 } from "./database-connection.service";
+import {
+  prepareQueryForValidation,
+  substituteTemplates,
+  hasTemplates,
+  detectTemplates,
+} from "../utils/template-substitution";
 
 export interface DestinationConfig {
   // For MongoDB collections
@@ -52,6 +58,12 @@ export interface WriteOptions {
   // For full sync with staging
   useStaging?: boolean;
   stagingTableName?: string;
+
+  // Type coercions to apply during table creation (overrides inferred types)
+  typeCoercions?: ITypeCoercion[];
+
+  // Pre-fetched schema from source database (more reliable than inferring from data)
+  sourceSchema?: ColumnDefinition[];
 }
 
 export interface WriteResult {
@@ -71,6 +83,7 @@ export interface DbSyncChunkState {
   lastKeysetValue?: string; // For keyset pagination
   estimatedTotal?: number;
   stagingPrepared?: boolean;
+  sourceSchema?: ColumnDefinition[]; // Cached schema from source query (fetched once)
 }
 
 /**
@@ -84,6 +97,22 @@ export interface DbSyncChunkResult {
 }
 
 /**
+ * Map source database types to BigQuery types
+ * This ensures columns are created with correct BigQuery types regardless of source
+ */
+function mapToBigQueryType(sourceType: string): string {
+  const t = sourceType.toUpperCase();
+  if (t === "TEXT" || t.includes("CHAR") || t.includes("CLOB")) return "STRING";
+  if (t === "INTEGER" || t === "INT" || t.includes("INT")) return "INT64";
+  if (t === "REAL" || t === "FLOAT" || t === "DOUBLE" || t === "NUMERIC")
+    return "FLOAT64";
+  if (t === "BLOB") return "BYTES";
+  if (t.includes("BOOL")) return "BOOL";
+  if (t.includes("TIME") || t.includes("DATE")) return "TIMESTAMP";
+  return "STRING"; // Default to STRING for safety
+}
+
+/**
  * Unified destination writer that handles both MongoDB and SQL destinations
  */
 export class DestinationWriter {
@@ -92,6 +121,7 @@ export class DestinationWriter {
   private connection?: IDatabaseConnection;
   private stagingActive = false;
   private inferredColumns?: ColumnDefinition[];
+  private columnTypeMap: Map<string, string> | null = null; // Mapped types for BigQuery writes
 
   constructor(config: DestinationConfig) {
     this.config = config;
@@ -236,7 +266,11 @@ export class DestinationWriter {
     options: WriteOptions,
   ): Promise<WriteResult> {
     if (!this.config.mongoDb || !this.config.collectionName) {
-      return { success: false, rowsWritten: 0, error: "MongoDB not configured" };
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "MongoDB not configured",
+      };
     }
 
     try {
@@ -420,11 +454,80 @@ export class DestinationWriter {
       );
 
       if (!tableExists && createIfNotExists) {
-        // Infer schema from first batch if not already done
+        // Get schema for table creation
+        // Priority order:
+        // 1. typeCoercions (explicit user-defined schema from ETL mapping) - AUTHORITATIVE
+        // 2. sourceSchema (pre-fetched from source database)
+        // 3. inferred from data (fallback, less reliable for NULLs)
         if (!this.inferredColumns) {
-          this.inferredColumns = this.driver.inferSchema?.(rows);
-          if (!this.inferredColumns) {
-            throw new Error("Failed to infer schema from data");
+          // Priority 1: Use typeCoercions as AUTHORITATIVE schema if available
+          // This is the explicit mapping configured by the user in the schema mapping step
+          if (options.typeCoercions && options.typeCoercions.length > 0) {
+            // Convert typeCoercions directly to column definitions
+            // The targetType from typeCoercions IS the authoritative destination type
+            this.inferredColumns = options.typeCoercions.map(tc => ({
+              name: tc.column,
+              type: tc.targetType, // Use targetType directly (already in destination format)
+              nullable: true, // Default to nullable for safety
+            }));
+
+            // For BigQuery: ensure types are valid BigQuery types
+            if (this.connection?.type === "bigquery") {
+              this.columnTypeMap = new Map(
+                this.inferredColumns.map(c => [
+                  c.name.toLowerCase(),
+                  c.type, // Already in BigQuery format from typeCoercions
+                ]),
+              );
+            }
+          }
+          // Priority 2: Use pre-fetched source schema (most reliable after explicit mapping)
+          else if (options.sourceSchema && options.sourceSchema.length > 0) {
+            this.inferredColumns = options.sourceSchema;
+
+            // Apply type coercions as overrides if present
+            if (options.typeCoercions && options.typeCoercions.length > 0) {
+              this.inferredColumns = applyTypeCoercionsToSchema(
+                this.inferredColumns,
+                options.typeCoercions,
+              );
+            }
+
+            // For BigQuery: map source types to BigQuery types
+            if (this.connection?.type === "bigquery") {
+              this.columnTypeMap = new Map(
+                this.inferredColumns.map(c => [
+                  c.name.toLowerCase(),
+                  mapToBigQueryType(c.type),
+                ]),
+              );
+              this.inferredColumns = this.inferredColumns.map(c => ({
+                ...c,
+                type: mapToBigQueryType(c.type),
+              }));
+            }
+          } else {
+            // Priority 3: Fallback to inferring from data (less reliable for NULLs)
+            this.inferredColumns = this.driver.inferSchema?.(rows);
+            if (!this.inferredColumns) {
+              throw new Error("Failed to infer schema from data");
+            }
+
+            // For BigQuery: map source types to BigQuery types and store for writes
+            // Use lowercase keys for case-insensitive lookup
+            if (this.connection?.type === "bigquery") {
+              this.columnTypeMap = new Map(
+                this.inferredColumns.map(c => [
+                  c.name.toLowerCase(),
+                  mapToBigQueryType(c.type),
+                ]),
+              );
+              // Update inferredColumns with mapped types for table creation
+              this.inferredColumns = this.inferredColumns.map(c => ({
+                ...c,
+                type: mapToBigQueryType(c.type),
+              }));
+            }
           }
         }
 
@@ -446,22 +549,34 @@ export class DestinationWriter {
       // Write data
       let result: BatchWriteResult;
 
-      if (options.keyColumns && options.keyColumns.length > 0 && !this.stagingActive) {
+      if (
+        options.keyColumns &&
+        options.keyColumns.length > 0 &&
+        !this.stagingActive
+      ) {
         // Upsert for incremental sync
-        result =
-          (await this.driver.upsertBatch?.(
-            this.connection,
-            targetTable,
-            rows,
-            options.keyColumns,
-            { schema, conflictStrategy: options.conflictStrategy || "update" },
-          )) || { success: false, rowsWritten: 0, error: "Upsert not supported" };
+        result = (await this.driver.upsertBatch?.(
+          this.connection,
+          targetTable,
+          rows,
+          options.keyColumns,
+          {
+            schema,
+            conflictStrategy: options.conflictStrategy || "update",
+            columnTypes: this.columnTypeMap ?? undefined,
+          },
+        )) || { success: false, rowsWritten: 0, error: "Upsert not supported" };
       } else {
         // Insert for full sync (staging) or when no key columns
-        result =
-          (await this.driver.insertBatch?.(this.connection, targetTable, rows, {
+        result = (await this.driver.insertBatch?.(
+          this.connection,
+          targetTable,
+          rows,
+          {
             schema,
-          })) || { success: false, rowsWritten: 0, error: "Insert not supported" };
+            columnTypes: this.columnTypeMap ?? undefined,
+          },
+        )) || { success: false, rowsWritten: 0, error: "Insert not supported" };
       }
 
       return result;
@@ -581,6 +696,7 @@ export async function streamFromDatabaseToDestination(options: {
     trackingType: "timestamp" | "numeric";
     lastValue?: string;
   };
+  typeCoercions?: ITypeCoercion[];
   keyColumns?: string[];
   onProgress?: (rowsProcessed: number) => void;
   signal?: AbortSignal;
@@ -593,6 +709,7 @@ export async function streamFromDatabaseToDestination(options: {
     batchSize = 2000,
     syncMode,
     incrementalConfig,
+    typeCoercions,
     keyColumns,
     onProgress,
     signal,
@@ -622,8 +739,7 @@ export async function streamFromDatabaseToDestination(options: {
     incrementalConfig?.trackingColumn &&
     incrementalConfig?.lastValue
   ) {
-    const operator =
-      incrementalConfig.trackingType === "timestamp" ? ">" : ">";
+    const operator = incrementalConfig.trackingType === "timestamp" ? ">" : ">";
     const value =
       incrementalConfig.trackingType === "timestamp"
         ? `'${incrementalConfig.lastValue}'`
@@ -642,6 +758,20 @@ export async function streamFromDatabaseToDestination(options: {
     await destinationWriter.prepareFullSync();
   }
 
+  // Get source schema upfront for reliable table creation
+  // This is more reliable than inferring from data values
+  let sourceSchema: ColumnDefinition[] | undefined;
+  if (driver.getQuerySchema) {
+    const schemaResult = await driver.getQuerySchema(
+      sourceConnection,
+      sourceQuery,
+      { databaseName: sourceDatabase },
+    );
+    if (schemaResult.success && schemaResult.columns) {
+      sourceSchema = schemaResult.columns;
+    }
+  }
+
   let totalRows = 0;
   let lastError: string | undefined;
 
@@ -654,10 +784,23 @@ export async function streamFromDatabaseToDestination(options: {
         databaseName: sourceDatabase,
         signal,
         onBatch: async (rows: Record<string, unknown>[]) => {
-          const writeResult = await destinationWriter.writeBatch(rows, {
-            keyColumns,
-            conflictStrategy: "update",
-          });
+          // Apply type coercions to data if configured
+          let processedRows = rows;
+          if (typeCoercions && typeCoercions.length > 0) {
+            processedRows = rows.map(row =>
+              applyTypeCoercions(row, typeCoercions),
+            );
+          }
+
+          const writeResult = await destinationWriter.writeBatch(
+            processedRows,
+            {
+              keyColumns,
+              conflictStrategy: "update",
+              typeCoercions, // Pass coercions for table creation schema overrides
+              sourceSchema, // Use source schema for reliable table creation
+            },
+          );
 
           if (!writeResult.success) {
             throw new Error(
@@ -699,7 +842,10 @@ export async function estimateQueryRowCount(
 ): Promise<{ success: boolean; estimatedCount?: number; error?: string }> {
   const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
-    return { success: false, error: `No driver found for type: ${connection.type}` };
+    return {
+      success: false,
+      error: `No driver found for type: ${connection.type}`,
+    };
   }
 
   try {
@@ -713,7 +859,8 @@ export async function estimateQueryRowCount(
     });
 
     if (result.success && result.data && result.data.length > 0) {
-      const count = result.data[0].total || result.data[0].count || result.data[0].COUNT;
+      const count =
+        result.data[0].total || result.data[0].count || result.data[0].COUNT;
       return { success: true, estimatedCount: Number(count) };
     }
 
@@ -740,7 +887,10 @@ export async function getMaxTrackingValue(
 ): Promise<{ success: boolean; maxValue?: string; error?: string }> {
   const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
-    return { success: false, error: `No driver found for type: ${connection.type}` };
+    return {
+      success: false,
+      error: `No driver found for type: ${connection.type}`,
+    };
   }
 
   try {
@@ -786,19 +936,29 @@ export async function validateQuery(
 }> {
   const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
-    return { success: false, error: `No driver found for type: ${connection.type}` };
+    return {
+      success: false,
+      error: `No driver found for type: ${connection.type}`,
+    };
   }
 
   try {
+    // Substitute template placeholders with safe defaults for validation
+    // This handles {{limit}}, {{offset}}, {{last_sync_value}}, {{keyset_value}}
+    const preparedQuery = prepareQueryForValidation(query);
+
     // Execute with LIMIT 1 to validate and get schema
-    const testQuery = `SELECT * FROM (${query}) AS validation_subquery LIMIT 1`;
+    const testQuery = `SELECT * FROM (${preparedQuery}) AS validation_subquery LIMIT 1`;
 
     const result = await driver.executeQuery(connection, testQuery, {
       databaseName: database,
     });
 
     if (!result.success) {
-      return { success: false, error: result.error || "Query validation failed" };
+      return {
+        success: false,
+        error: result.error || "Query validation failed",
+      };
     }
 
     // Infer columns from result
@@ -851,7 +1011,11 @@ const DANGEROUS_PATTERNS = [
   { pattern: /^\s*UPDATE\s+/i, name: "UPDATE" },
   { pattern: /^\s*GRANT\s+/i, name: "GRANT" },
   { pattern: /^\s*REVOKE\s+/i, name: "REVOKE" },
-  { pattern: /;\s*(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|GRANT|REVOKE)\s+/i, name: "multi-statement" },
+  {
+    pattern:
+      /;\s*(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|GRANT|REVOKE)\s+/i,
+    name: "multi-statement",
+  },
 ];
 
 /**
@@ -883,36 +1047,51 @@ export function checkQuerySafety(query: string): QuerySafetyResult {
     if (pattern.test(trimmedQuery)) {
       result.safe = false;
       result.errors.push(
-        `Query contains dangerous ${name} statement. Only SELECT queries are allowed for sync operations.`
+        `Query contains dangerous ${name} statement. Only SELECT queries are allowed for sync operations.`,
       );
     }
   }
 
   // Check if query starts with SELECT
-  if (!trimmedQuery.match(/^\s*SELECT\s+/i) && !trimmedQuery.match(/^\s*WITH\s+/i)) {
+  if (
+    !trimmedQuery.match(/^\s*SELECT\s+/i) &&
+    !trimmedQuery.match(/^\s*WITH\s+/i)
+  ) {
     result.safe = false;
-    result.errors.push("Query must start with SELECT or WITH (CTE). Only read operations are allowed.");
+    result.errors.push(
+      "Query must start with SELECT or WITH (CTE). Only read operations are allowed.",
+    );
   }
 
   // Check for ORDER BY (warning, not error)
   if (!trimmedQuery.match(/ORDER\s+BY\s+/i)) {
     result.warnings.push(
-      "Query does not have ORDER BY clause. For consistent pagination results, consider adding ORDER BY."
+      "Query does not have ORDER BY clause. For consistent pagination results, consider adding ORDER BY.",
     );
-    result.suggestedFixes?.push("Add ORDER BY clause with a unique column (e.g., ORDER BY id ASC)");
+    result.suggestedFixes?.push(
+      "Add ORDER BY clause with a unique column (e.g., ORDER BY id ASC)",
+    );
   }
 
   // Check for multiple statements (semicolons)
   const semicolonCount = (trimmedQuery.match(/;/g) || []).length;
-  if (semicolonCount > 1 || (semicolonCount === 1 && !trimmedQuery.endsWith(";"))) {
+  if (
+    semicolonCount > 1 ||
+    (semicolonCount === 1 && !trimmedQuery.endsWith(";"))
+  ) {
     result.safe = false;
-    result.errors.push("Query contains multiple statements. Only single SELECT queries are allowed.");
+    result.errors.push(
+      "Query contains multiple statements. Only single SELECT queries are allowed.",
+    );
   }
 
   // Check for LIMIT without ORDER BY (warning)
-  if (trimmedQuery.match(/LIMIT\s+\d+/i) && !trimmedQuery.match(/ORDER\s+BY\s+/i)) {
+  if (
+    trimmedQuery.match(/LIMIT\s+\d+/i) &&
+    !trimmedQuery.match(/ORDER\s+BY\s+/i)
+  ) {
     result.warnings.push(
-      "Query has LIMIT without ORDER BY. Results may be non-deterministic across runs."
+      "Query has LIMIT without ORDER BY. Results may be non-deterministic across runs.",
     );
   }
 
@@ -946,7 +1125,7 @@ export function extractOrderByDirection(query: string): "asc" | "desc" {
  */
 export function applyTypeCoercions(
   row: Record<string, unknown>,
-  coercions: ITypeCoercion[]
+  coercions: ITypeCoercion[],
 ): Record<string, unknown> {
   const result = { ...row };
 
@@ -1007,7 +1186,9 @@ export function applyTypeCoercions(
         break;
       case "boolean":
         if (typeof value === "string") {
-          result[column] = ["true", "1", "yes", "on"].includes(value.toLowerCase());
+          result[column] = ["true", "1", "yes", "on"].includes(
+            value.toLowerCase(),
+          );
         } else {
           result[column] = Boolean(value);
         }
@@ -1049,6 +1230,51 @@ export function applyTypeCoercions(
   }
 
   return result;
+}
+
+/**
+ * Map type coercion target types to database column types
+ * This is used to override inferred schema during table creation
+ */
+const coercionTypeToDbType: Record<string, string> = {
+  string: "STRING",
+  integer: "INT64",
+  number: "FLOAT64",
+  float: "FLOAT64",
+  double: "FLOAT64",
+  boolean: "BOOL",
+  timestamp: "TIMESTAMP",
+  date: "DATE",
+  datetime: "TIMESTAMP",
+  json: "JSON",
+};
+
+/**
+ * Apply type coercions to the inferred schema
+ * This ensures that the table is created with the correct column types
+ * even when the data values might infer a different type
+ */
+export function applyTypeCoercionsToSchema(
+  columns: ColumnDefinition[],
+  coercions: ITypeCoercion[],
+): ColumnDefinition[] {
+  // Create a map of column name -> target type
+  const coercionMap = new Map<string, string>();
+  for (const coercion of coercions) {
+    const dbType = coercionTypeToDbType[coercion.targetType.toLowerCase()];
+    if (dbType) {
+      coercionMap.set(coercion.column, dbType);
+    }
+  }
+
+  // Apply overrides to the column definitions
+  return columns.map(col => {
+    const overrideType = coercionMap.get(col.name);
+    if (overrideType) {
+      return { ...col, type: overrideType };
+    }
+    return col;
+  });
 }
 
 /**
@@ -1117,6 +1343,22 @@ export async function executeDbSyncChunk(options: {
     }
   }
 
+  // Get source schema on first chunk (more reliable than inferring from data)
+  // This uses the source database's metadata rather than sampling data values
+  if (!currentState.sourceSchema && currentState.offset === 0) {
+    if (driver.getQuerySchema) {
+      const schemaResult = await driver.getQuerySchema(
+        sourceConnection,
+        sourceQuery,
+        { databaseName: sourceDatabase },
+      );
+      if (schemaResult.success && schemaResult.columns) {
+        currentState.sourceSchema = schemaResult.columns;
+      }
+      // If getQuerySchema fails, we'll fall back to inferSchema when writing
+    }
+  }
+
   // Prepare staging on first chunk for full sync
   if (syncMode === "full" && !currentState.stagingPrepared) {
     await destinationWriter.prepareFullSync();
@@ -1128,62 +1370,106 @@ export async function executeDbSyncChunk(options: {
   const keysetColumn = paginationConfig?.keysetColumn;
   const keysetDirection = paginationConfig?.keysetDirection || "asc";
 
+  // Check if the query uses template placeholders
+  const queryTemplates = detectTemplates(sourceQuery);
+  const usesTemplates =
+    queryTemplates.hasLimit ||
+    queryTemplates.hasOffset ||
+    queryTemplates.hasLastSyncValue ||
+    queryTemplates.hasKeysetValue;
+
   // Build paginated query
-  let effectiveQuery = sourceQuery;
-
-  // Add incremental filter if applicable
-  if (
-    syncMode === "incremental" &&
-    incrementalConfig?.trackingColumn &&
-    incrementalConfig?.lastValue
-  ) {
-    const operator = ">";
-    const value =
-      incrementalConfig.trackingType === "timestamp"
-        ? `'${incrementalConfig.lastValue}'`
-        : incrementalConfig.lastValue;
-
-    if (effectiveQuery.toLowerCase().includes("where")) {
-      effectiveQuery = `${effectiveQuery} AND ${incrementalConfig.trackingColumn} ${operator} ${value}`;
-    } else {
-      effectiveQuery = `${effectiveQuery} WHERE ${incrementalConfig.trackingColumn} ${operator} ${value}`;
-    }
-  }
-
-  // Handle pagination based on mode
   let paginatedQuery: string;
 
-  if (paginationMode === "keyset" && keysetColumn) {
-    // Keyset pagination: use WHERE column > last_value
-    const lastKeyset = currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
+  if (usesTemplates) {
+    // Template-based query: substitute placeholders with runtime values
+    const lastKeyset =
+      currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
 
-    if (lastKeyset) {
-      // Add keyset filter
-      const keysetOperator = keysetDirection === "asc" ? ">" : "<";
-      const keysetValue = isNaN(Number(lastKeyset)) ? `'${lastKeyset}'` : lastKeyset;
+    // Prepare last_sync_value: format based on tracking type
+    let lastSyncValue: string | number | null = null;
+    if (
+      syncMode === "incremental" &&
+      incrementalConfig?.trackingColumn &&
+      incrementalConfig?.lastValue
+    ) {
+      lastSyncValue =
+        incrementalConfig.trackingType === "timestamp"
+          ? incrementalConfig.lastValue // Keep as string for timestamps
+          : incrementalConfig.lastValue;
+    }
+
+    // Prepare keyset_value: preserve type (string vs number)
+    let keysetValue: string | number | null = null;
+    if (paginationMode === "keyset" && lastKeyset) {
+      keysetValue = isNaN(Number(lastKeyset)) ? lastKeyset : Number(lastKeyset);
+    }
+
+    paginatedQuery = substituteTemplates(sourceQuery, {
+      limit: maxRowsPerChunk,
+      offset: currentState.offset,
+      last_sync_value: lastSyncValue,
+      keyset_value: keysetValue,
+    });
+  } else {
+    // Legacy mode: append WHERE clauses and LIMIT/OFFSET dynamically
+    let effectiveQuery = sourceQuery;
+
+    // Add incremental filter if applicable
+    if (
+      syncMode === "incremental" &&
+      incrementalConfig?.trackingColumn &&
+      incrementalConfig?.lastValue
+    ) {
+      const operator = ">";
+      const value =
+        incrementalConfig.trackingType === "timestamp"
+          ? `'${incrementalConfig.lastValue}'`
+          : incrementalConfig.lastValue;
 
       if (effectiveQuery.toLowerCase().includes("where")) {
-        effectiveQuery = `${effectiveQuery} AND ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+        effectiveQuery = `${effectiveQuery} AND ${incrementalConfig.trackingColumn} ${operator} ${value}`;
       } else {
-        effectiveQuery = `${effectiveQuery} WHERE ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+        effectiveQuery = `${effectiveQuery} WHERE ${incrementalConfig.trackingColumn} ${operator} ${value}`;
       }
     }
 
-    // Ensure ORDER BY matches keyset column and direction
-    if (!effectiveQuery.toLowerCase().includes("order by")) {
-      effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
-    }
+    // Handle pagination based on mode
+    if (paginationMode === "keyset" && keysetColumn) {
+      // Keyset pagination: use WHERE column > last_value
+      const lastKeyset =
+        currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
 
-    // Add LIMIT only (no OFFSET needed for keyset)
-    paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk}`;
-  } else {
-    // Offset pagination: use LIMIT/OFFSET
-    const orderColumn = incrementalConfig?.trackingColumn || "1";
-    if (!effectiveQuery.toLowerCase().includes("order by")) {
-      effectiveQuery = `${effectiveQuery} ORDER BY ${orderColumn}`;
-    }
+      if (lastKeyset) {
+        // Add keyset filter
+        const keysetOperator = keysetDirection === "asc" ? ">" : "<";
+        const keysetValue = isNaN(Number(lastKeyset))
+          ? `'${lastKeyset}'`
+          : lastKeyset;
 
-    paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`;
+        if (effectiveQuery.toLowerCase().includes("where")) {
+          effectiveQuery = `${effectiveQuery} AND ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+        } else {
+          effectiveQuery = `${effectiveQuery} WHERE ${keysetColumn} ${keysetOperator} ${keysetValue}`;
+        }
+      }
+
+      // Ensure ORDER BY matches keyset column and direction
+      if (!effectiveQuery.toLowerCase().includes("order by")) {
+        effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
+      }
+
+      // Add LIMIT only (no OFFSET needed for keyset)
+      paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk}`;
+    } else {
+      // Offset pagination: use LIMIT/OFFSET
+      const orderColumn = incrementalConfig?.trackingColumn || "1";
+      if (!effectiveQuery.toLowerCase().includes("order by")) {
+        effectiveQuery = `${effectiveQuery} ORDER BY ${orderColumn}`;
+      }
+
+      paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`;
+    }
   }
 
   let rowsProcessedInChunk = 0;
@@ -1208,7 +1494,9 @@ export async function executeDbSyncChunk(options: {
 
     // Apply type coercions if configured
     if (typeCoercions && typeCoercions.length > 0) {
-      rows = rows.map((row: Record<string, unknown>) => applyTypeCoercions(row, typeCoercions));
+      rows = rows.map((row: Record<string, unknown>) =>
+        applyTypeCoercions(row, typeCoercions),
+      );
     }
 
     // Process in smaller batches for writing
@@ -1218,6 +1506,8 @@ export async function executeDbSyncChunk(options: {
       const writeResult = await destinationWriter.writeBatch(batch, {
         keyColumns,
         conflictStrategy: "update",
+        typeCoercions, // Pass coercions for table creation schema overrides
+        sourceSchema: currentState.sourceSchema, // Use source schema for reliable table creation
       });
 
       if (!writeResult.success) {
@@ -1371,7 +1661,9 @@ export async function dryRunDbSync(options: {
 
         if (lastKeysetValue) {
           const keysetOperator = keysetDirection === "asc" ? ">" : "<";
-          const keysetValue = isNaN(Number(lastKeysetValue)) ? `'${lastKeysetValue}'` : lastKeysetValue;
+          const keysetValue = isNaN(Number(lastKeysetValue))
+            ? `'${lastKeysetValue}'`
+            : lastKeysetValue;
 
           if (effectiveQuery.toLowerCase().includes("where")) {
             effectiveQuery = `${effectiveQuery} AND ${keysetColumn} ${keysetOperator} ${keysetValue}`;
@@ -1393,9 +1685,13 @@ export async function dryRunDbSync(options: {
         paginatedQuery = `${effectiveQuery} LIMIT ${pageSize} OFFSET ${page * pageSize}`;
       }
 
-      const result = await driver.executeQuery(sourceConnection, paginatedQuery, {
-        databaseName: sourceDatabase,
-      });
+      const result = await driver.executeQuery(
+        sourceConnection,
+        paginatedQuery,
+        {
+          databaseName: sourceDatabase,
+        },
+      );
 
       if (!result.success) {
         return {
@@ -1414,7 +1710,9 @@ export async function dryRunDbSync(options: {
 
       // Apply type coercions
       if (typeCoercions && typeCoercions.length > 0) {
-        rows = rows.map((row: Record<string, unknown>) => applyTypeCoercions(row, typeCoercions));
+        rows = rows.map((row: Record<string, unknown>) =>
+          applyTypeCoercions(row, typeCoercions),
+        );
       }
 
       allRows.push(...rows);
@@ -1424,7 +1722,8 @@ export async function dryRunDbSync(options: {
         const lastRow = rows[rows.length - 1];
         const value = lastRow[keysetColumn];
         if (value !== null && value !== undefined) {
-          lastKeysetValue = value instanceof Date ? value.toISOString() : String(value);
+          lastKeysetValue =
+            value instanceof Date ? value.toISOString() : String(value);
         }
       }
 

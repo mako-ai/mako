@@ -716,6 +716,33 @@ export class DatabaseConnectionService {
     return datasets.sort((a, b) => a.localeCompare(b));
   }
 
+  /**
+   * List all D1 databases in a Cloudflare account
+   * Returns both uuid (for API calls) and name (human-readable)
+   */
+  async listD1Databases(
+    database: IDatabaseConnection,
+  ): Promise<Array<{ uuid: string; name: string }>> {
+    if (database.type !== "cloudflare-d1") {
+      throw new Error(
+        "listD1Databases only works with cloudflare-d1 connections",
+      );
+    }
+
+    const d1Driver = this.drivers.get(
+      "cloudflare-d1",
+    ) as CloudflareD1DatabaseDriver;
+    if (!d1Driver) {
+      throw new Error("D1 driver not initialized");
+    }
+
+    const databases = await d1Driver.listDatabases(database);
+    return databases.map(db => ({
+      uuid: db.uuid,
+      name: db.name,
+    }));
+  }
+
   // Public (autocomplete): list BigQuery datasets with prefix/limit and early-stop pagination
   async listBigQueryDatasetsForAutocomplete(
     database: IDatabaseConnection,
@@ -1178,6 +1205,111 @@ export class DatabaseConnectionService {
   }
 
   /**
+   * Get the schema (column types) of a BigQuery query without executing it.
+   * Uses BigQuery's dry run feature which validates the query and returns
+   * the result schema without actually running it.
+   *
+   * This is more reliable than inferring types from sample data because:
+   * - NULL values are handled correctly (column type is known)
+   * - No data sampling variance issues
+   * - Works even if query returns 0 rows
+   *
+   * @param database - BigQuery database connection
+   * @param query - SQL query to analyze
+   * @returns Column definitions with name and BigQuery type
+   */
+  async getBigQueryQuerySchema(
+    database: IDatabaseConnection,
+    query: string,
+  ): Promise<{
+    success: boolean;
+    columns?: Array<{ name: string; type: string; nullable: boolean }>;
+    error?: string;
+  }> {
+    try {
+      const { project_id, service_account_json, location, api_base_url } =
+        (database.connection as any) || {};
+      if (!project_id || !service_account_json) {
+        return {
+          success: false,
+          error:
+            "BigQuery requires 'project_id' and 'service_account_json' in connection",
+        };
+      }
+
+      const client = await this.getBigQueryHttpClient(
+        service_account_json,
+        api_base_url,
+      );
+
+      // Use dry run to get schema without executing
+      const body: any = {
+        query,
+        useLegacySql: false,
+        dryRun: true, // Key: validates query and returns schema without running
+      };
+      if (location) body.location = location;
+
+      const response = await client.post(
+        `/projects/${project_id}/queries`,
+        body,
+      );
+
+      const schema = response?.data?.schema;
+      if (!schema?.fields) {
+        return {
+          success: false,
+          error: "No schema returned from dry run query",
+        };
+      }
+
+      // Map BigQuery schema fields to column definitions
+      const columns = this.flattenBigQuerySchemaFields(schema.fields);
+
+      return { success: true, columns };
+    } catch (error: any) {
+      return {
+        success: false,
+        error:
+          error?.response?.data?.error?.message ||
+          error?.message ||
+          "Failed to get query schema",
+      };
+    }
+  }
+
+  /**
+   * Flatten BigQuery schema fields to column definitions
+   * Handles nested RECORD/STRUCT types by flattening with dot notation
+   */
+  private flattenBigQuerySchemaFields(
+    fields: any[],
+    prefix = "",
+  ): Array<{ name: string; type: string; nullable: boolean }> {
+    const columns: Array<{ name: string; type: string; nullable: boolean }> =
+      [];
+
+    for (const field of fields) {
+      const name = prefix ? `${prefix}.${field.name}` : field.name;
+      const mode = field.mode || "NULLABLE";
+      const nullable = mode !== "REQUIRED";
+
+      if (field.type === "RECORD" && Array.isArray(field.fields)) {
+        // Flatten nested records
+        columns.push(...this.flattenBigQuerySchemaFields(field.fields, name));
+      } else {
+        columns.push({
+          name,
+          type: field.type,
+          nullable,
+        });
+      }
+    }
+
+    return columns;
+  }
+
+  /**
    * Cancel a running PostgreSQL query
    *
    * IMPORTANT: This intentionally creates a dedicated client outside the pool.
@@ -1478,7 +1610,7 @@ export class DatabaseConnectionService {
     const header = { alg: "RS256", typ: "JWT" };
     const payload = {
       iss: sa.client_email,
-      scope: "https://www.googleapis.com/auth/bigquery.readonly",
+      scope: "https://www.googleapis.com/auth/bigquery",
       aud: sa.token_uri,
       iat: now,
       exp: now + 3600,

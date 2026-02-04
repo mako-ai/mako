@@ -41,6 +41,8 @@ export interface BatchWriteResult {
 export interface InsertOptions {
   /** Schema/dataset name for the target table */
   schema?: string;
+  /** Pre-mapped column types for write operations (avoids re-querying INFORMATION_SCHEMA) */
+  columnTypes?: Map<string, string>;
 }
 
 /**
@@ -72,7 +74,9 @@ export interface DatabaseDriver {
     database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]>;
-  getAutocompleteData?(database: IDatabaseConnection): Promise<Record<string, any>>;
+  getAutocompleteData?(
+    database: IDatabaseConnection,
+  ): Promise<Record<string, any>>;
   executeQuery(
     database: IDatabaseConnection,
     query: string,
@@ -101,8 +105,31 @@ export interface DatabaseDriver {
   supportsWrites?(): boolean;
 
   /**
+   * Get the schema (column definitions) for a query without fully executing it.
+   * This is more robust than inferring from sample data as it:
+   * - Handles NULL values correctly (knows the actual column type)
+   * - Doesn't depend on data sampling
+   * - Uses database metadata (INFORMATION_SCHEMA, dry run, etc.)
+   *
+   * @param database - Database connection
+   * @param query - The SQL query to analyze
+   * @param options - Additional options (databaseName for cluster mode)
+   * @returns Column definitions from the database
+   */
+  getQuerySchema?(
+    database: IDatabaseConnection,
+    query: string,
+    options?: { databaseName?: string },
+  ): Promise<{
+    success: boolean;
+    columns?: ColumnDefinition[];
+    error?: string;
+  }>;
+
+  /**
    * Infer column definitions from query result data
-   * Used for auto-creating tables when they don't exist
+   * DEPRECATED: Prefer getQuerySchema() which is more reliable
+   * Used as fallback when getQuerySchema is not available
    */
   inferSchema?(rows: Record<string, unknown>[]): ColumnDefinition[];
 
