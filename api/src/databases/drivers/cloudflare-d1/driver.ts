@@ -167,11 +167,14 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { databaseId?: string },
+    options?: { databaseId?: string; databaseName?: string },
   ): Promise<D1QueryResult> {
     try {
       const conn = database.connection as unknown as D1Connection;
-      const databaseId = options?.databaseId || conn.database_id;
+      // D1 uses UUID for database identification; accept both databaseId and databaseName
+      // since other parts of the system may pass databaseName (which for D1 is also the UUID)
+      const databaseId =
+        options?.databaseId || options?.databaseName || conn.database_id;
 
       if (!databaseId) {
         return {

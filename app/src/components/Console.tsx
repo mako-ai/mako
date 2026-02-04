@@ -42,6 +42,7 @@ import ConsoleInfoModal from "./ConsoleInfoModal";
 import { useConsoleStore } from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
+import { ConnectionSelector } from "./ConnectionSelector";
 
 interface DatabaseConnection {
   id: string;
@@ -237,33 +238,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     connectionIdRef.current = connectionId;
     databaseIdRef.current = databaseId;
   }, [connectionId, databaseId]);
-
-  // Handler for connection selection change - calls parent callback directly (unidirectional flow)
-  const handleDatabaseSelection = useCallback(
-    (event: any) => {
-      const newConnectionId = event.target.value;
-      const newConnection = databases.find(db => db.id === newConnectionId);
-
-      if (onDatabaseChange) {
-        onDatabaseChange(newConnectionId);
-      }
-
-      // For non-cluster mode: set databaseName from the connection's database
-      // For cluster mode: clear and let user select from dropdown
-      if (onDatabaseNameChange) {
-        if (
-          newConnection &&
-          !newConnection.isClusterMode &&
-          newConnection.databaseName
-        ) {
-          onDatabaseNameChange(undefined, newConnection.databaseName);
-        } else {
-          onDatabaseNameChange(undefined, undefined);
-        }
-      }
-    },
-    [onDatabaseChange, onDatabaseNameChange, databases],
-  );
 
   // Derived state for databases
   const selectedConnection = useMemo(
@@ -1044,32 +1018,34 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           {/* Connection selector */}
-          <FormControl
-            size="small"
-            variant="standard"
-            sx={{ minWidth: 80, m: 0, p: 0 }}
-          >
-            <Select
-              variant="standard"
-              disableUnderline
-              labelId="database-select-label"
-              value={connectionId || ""}
-              onChange={handleDatabaseSelection}
-              disabled={databases.length === 0}
-            >
-              {databases.length === 0 ? (
-                <MenuItem value="" disabled>
-                  No connections available
-                </MenuItem>
-              ) : (
-                databases.map(db => (
-                  <MenuItem key={db.id} value={db.id}>
-                    {db.displayName || db.name || "Unknown Connection"}
-                  </MenuItem>
-                ))
-              )}
-            </Select>
-          </FormControl>
+          <ConnectionSelector
+            value={connectionId || ""}
+            onChange={newConnectionId => {
+              const newConnection = databases.find(
+                db => db.id === newConnectionId,
+              );
+              if (onDatabaseChange) {
+                onDatabaseChange(newConnectionId);
+              }
+              // For non-cluster mode: set databaseName from the connection's database
+              // For cluster mode: clear and let user select from dropdown
+              if (onDatabaseNameChange) {
+                if (
+                  newConnection &&
+                  !newConnection.isClusterMode &&
+                  newConnection.databaseName
+                ) {
+                  onDatabaseNameChange(undefined, newConnection.databaseName);
+                } else {
+                  onDatabaseNameChange(undefined, undefined);
+                }
+              }
+            }}
+            size="compact"
+            showLabel={false}
+            placeholder="Select connection"
+            width={160}
+          />
 
           {/* Database selector (only shown for cluster mode connections) */}
           {selectedConnection?.isClusterMode && (

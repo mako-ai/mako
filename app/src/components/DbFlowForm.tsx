@@ -26,11 +26,15 @@ import {
   Storage as DatabaseIcon,
   Add as AddIcon,
   Delete as DeleteIcon,
+  PlayArrow as ValidateIcon,
+  CheckCircle as CheckIcon,
+  Warning as WarningIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { trackEvent } from "../lib/analytics";
+import { ConnectionSelector } from "./ConnectionSelector";
 
 interface DbFlowFormProps {
   flowId?: string;
@@ -58,6 +62,10 @@ interface FormData {
   batchSize: number;
   enabled: boolean;
   createTableIfNotExists: boolean;
+  // Pagination config
+  paginationMode: "offset" | "keyset";
+  keysetColumn?: string;
+  keysetDirection?: "asc" | "desc";
 }
 
 // Common schedule presets
@@ -89,6 +97,7 @@ export function DbFlowForm({
     updateFlow,
     clearError,
     deleteFlow,
+    validateDbQuery,
   } = useFlowStore();
 
   // Get workspace-specific data
@@ -123,6 +132,16 @@ export function DbFlowForm({
   const [isLoadingSourceDbs, setIsLoadingSourceDbs] = useState(false);
   const [isLoadingDestDbs, setIsLoadingDestDbs] = useState(false);
 
+  // Query validation state
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState<{
+    success: boolean;
+    columns?: Array<{ name: string; type: string }>;
+    sampleRow?: Record<string, unknown>;
+    warnings?: string[];
+    error?: string;
+  } | null>(null);
+
   const {
     control,
     handleSubmit,
@@ -149,14 +168,91 @@ export function DbFlowForm({
       batchSize: 2000,
       enabled: true,
       createTableIfNotExists: true,
+      paginationMode: "offset",
+      keysetColumn: "",
+      keysetDirection: "asc",
     },
   });
 
   const watchSchedule = watch("schedule");
   const watchTimezone = watch("timezone");
   const watchSourceConnectionId = watch("sourceConnectionId");
+  const watchSourceDatabase = watch("sourceDatabase");
+  const watchQuery = watch("query");
   const watchDestConnectionId = watch("destinationConnectionId");
   const watchSyncMode = watch("syncMode");
+  const watchPaginationMode = watch("paginationMode");
+
+  // Get the selected source connection to check its type
+  const selectedSourceConnection = useMemo(
+    () => databases.find(db => db.id === watchSourceConnectionId),
+    [databases, watchSourceConnectionId],
+  );
+
+  // Check if source is BigQuery (uses datasets instead of databases)
+  const isBigQuerySource = selectedSourceConnection?.type === "bigquery";
+
+  // Get the selected destination connection to check its type
+  const selectedDestConnection = useMemo(
+    () => databases.find(db => db.id === watchDestConnectionId),
+    [databases, watchDestConnectionId],
+  );
+
+  // Check if destination is BigQuery (uses datasets instead of schemas)
+  const isBigQueryDest = selectedDestConnection?.type === "bigquery";
+
+  // Check if destination is PostgreSQL (uses schemas)
+  const isPostgresDest = selectedDestConnection?.type === "postgresql";
+
+  // Determine if we should show schema/dataset field
+  const showSchemaField = isBigQueryDest || isPostgresDest;
+
+  // Validate query handler
+  const handleValidateQuery = async () => {
+    if (
+      !currentWorkspace?.id ||
+      !watchSourceConnectionId ||
+      !watchQuery?.trim()
+    ) {
+      setValidationResult({
+        success: false,
+        error: "Please select a source connection and enter a query",
+      });
+      return;
+    }
+
+    setIsValidating(true);
+    setValidationResult(null);
+
+    try {
+      const result = await validateDbQuery(
+        currentWorkspace.id,
+        watchSourceConnectionId,
+        watchQuery.trim(),
+        watchSourceDatabase || undefined,
+      );
+
+      setValidationResult({
+        success: result.success,
+        columns: result.columns,
+        sampleRow: result.sampleRow,
+        warnings: result.safetyCheck?.warnings,
+        error: result.error,
+      });
+    } catch (err) {
+      setValidationResult({
+        success: false,
+        error: err instanceof Error ? err.message : "Validation failed",
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  // Clear validation when query changes
+  useEffect(() => {
+    setValidationResult(null);
+  }, [watchQuery, watchSourceConnectionId, watchSourceDatabase]);
 
   // Fetch source databases when source connection changes
   useEffect(() => {
@@ -173,7 +269,10 @@ export function DbFlowForm({
           currentWorkspace.id,
           watchSourceConnectionId,
         );
-        const dbNodes = nodes.filter(node => node.kind === "database");
+        // Include both "database" (PostgreSQL, etc.) and "dataset" (BigQuery) nodes
+        const dbNodes = nodes.filter(
+          node => node.kind === "database" || node.kind === "dataset",
+        );
         setSourceDatabases(dbNodes);
         if (dbNodes.length === 0) {
           setValue("sourceDatabase", "");
@@ -195,6 +294,7 @@ export function DbFlowForm({
       if (!watchDestConnectionId || !currentWorkspace?.id) {
         setDestDatabases([]);
         setValue("destinationDatabase", "");
+        setValue("destinationSchema", ""); // Clear schema/dataset when connection changes
         return;
       }
 
@@ -204,11 +304,16 @@ export function DbFlowForm({
           currentWorkspace.id,
           watchDestConnectionId,
         );
-        const dbNodes = nodes.filter(node => node.kind === "database");
+        // Include both "database" (PostgreSQL, etc.) and "dataset" (BigQuery) nodes
+        const dbNodes = nodes.filter(
+          node => node.kind === "database" || node.kind === "dataset",
+        );
         setDestDatabases(dbNodes);
         if (dbNodes.length === 0) {
           setValue("destinationDatabase", "");
         }
+        // Clear schema/dataset when connection changes
+        setValue("destinationSchema", "");
       } catch (err) {
         console.error("Failed to fetch destination databases:", err);
         setDestDatabases([]);
@@ -253,6 +358,9 @@ export function DbFlowForm({
           enabled: flow.enabled,
           createTableIfNotExists:
             flow.tableDestination?.createIfNotExists ?? true,
+          paginationMode: flow.paginationConfig?.mode || "offset",
+          keysetColumn: flow.paginationConfig?.keysetColumn || "",
+          keysetDirection: flow.paginationConfig?.keysetDirection || "asc",
         };
 
         reset(formData);
@@ -367,6 +475,19 @@ export function DbFlowForm({
         payload.conflictConfig = {
           keyColumns,
           strategy: data.conflictStrategy,
+        };
+      }
+
+      // Add pagination config if using keyset mode
+      if (data.paginationMode === "keyset" && data.keysetColumn) {
+        payload.paginationConfig = {
+          mode: "keyset",
+          keysetColumn: data.keysetColumn.trim(),
+          keysetDirection: data.keysetDirection || "asc",
+        };
+      } else if (data.paginationMode === "offset") {
+        payload.paginationConfig = {
+          mode: "offset",
         };
       }
 
@@ -498,33 +619,14 @@ export function DbFlowForm({
                     control={control}
                     rules={{ required: "Source connection is required" }}
                     render={({ field }) => (
-                      <FormControl
-                        fullWidth
+                      <ConnectionSelector
+                        value={field.value}
+                        onChange={field.onChange}
+                        label="Source Connection"
                         error={!!errors.sourceConnectionId}
-                      >
-                        <InputLabel>Source Connection</InputLabel>
-                        <Select {...field} label="Source Connection">
-                          {databases.map(db => (
-                            <MenuItem key={db.id} value={db.id}>
-                              <Box
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 1,
-                                }}
-                              >
-                                {db.name}
-                                <Chip label={db.type} size="small" />
-                              </Box>
-                            </MenuItem>
-                          ))}
-                        </Select>
-                        {errors.sourceConnectionId && (
-                          <FormHelperText>
-                            {errors.sourceConnectionId.message}
-                          </FormHelperText>
-                        )}
-                      </FormControl>
+                        helperText={errors.sourceConnectionId?.message}
+                        fullWidth
+                      />
                     )}
                   />
 
@@ -536,7 +638,9 @@ export function DbFlowForm({
                         >
                           <CircularProgress size={20} />
                           <Typography variant="body2" color="text.secondary">
-                            Loading databases...
+                            Loading{" "}
+                            {isBigQuerySource ? "datasets" : "databases"}
+                            ...
                           </Typography>
                         </Box>
                       ) : sourceDatabases.length > 0 ? (
@@ -545,8 +649,19 @@ export function DbFlowForm({
                           control={control}
                           render={({ field }) => (
                             <FormControl fullWidth>
-                              <InputLabel>Source Database</InputLabel>
-                              <Select {...field} label="Source Database">
+                              <InputLabel>
+                                {isBigQuerySource
+                                  ? "Source Dataset"
+                                  : "Source Database"}
+                              </InputLabel>
+                              <Select
+                                {...field}
+                                label={
+                                  isBigQuerySource
+                                    ? "Source Dataset"
+                                    : "Source Database"
+                                }
+                              >
                                 <MenuItem value="">
                                   <em>Default</em>
                                 </MenuItem>
@@ -557,7 +672,9 @@ export function DbFlowForm({
                                 ))}
                               </Select>
                               <FormHelperText>
-                                Select the database within this connection
+                                {isBigQuerySource
+                                  ? "Select the BigQuery dataset"
+                                  : "Select the database within this connection"}
                               </FormHelperText>
                             </FormControl>
                           )}
@@ -591,6 +708,148 @@ export function DbFlowForm({
                       />
                     )}
                   />
+
+                  {/* Validate Query Button */}
+                  <Box>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={
+                        isValidating ? (
+                          <CircularProgress size={16} />
+                        ) : (
+                          <ValidateIcon />
+                        )
+                      }
+                      onClick={handleValidateQuery}
+                      disabled={
+                        isValidating ||
+                        !watchSourceConnectionId ||
+                        !watchQuery?.trim()
+                      }
+                    >
+                      {isValidating ? "Validating..." : "Validate Query"}
+                    </Button>
+                  </Box>
+
+                  {/* Validation Results */}
+                  {validationResult && (
+                    <Box sx={{ mt: 1 }}>
+                      {validationResult.success ? (
+                        <Alert
+                          severity="success"
+                          icon={<CheckIcon />}
+                          sx={{ mb: 1 }}
+                        >
+                          <Typography variant="body2" fontWeight="medium">
+                            Query validated successfully
+                          </Typography>
+                          {validationResult.columns &&
+                            validationResult.columns.length > 0 && (
+                              <Box sx={{ mt: 1 }}>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  Columns ({validationResult.columns.length}):
+                                </Typography>
+                                <Box
+                                  sx={{
+                                    display: "flex",
+                                    flexWrap: "wrap",
+                                    gap: 0.5,
+                                    mt: 0.5,
+                                  }}
+                                >
+                                  {validationResult.columns.map((col, idx) => (
+                                    <Chip
+                                      key={idx}
+                                      label={`${col.name} (${col.type})`}
+                                      size="small"
+                                      variant="outlined"
+                                      sx={{ fontSize: "0.75rem" }}
+                                    />
+                                  ))}
+                                </Box>
+                              </Box>
+                            )}
+                        </Alert>
+                      ) : (
+                        <Alert severity="error" sx={{ mb: 1 }}>
+                          <Typography variant="body2">
+                            {validationResult.error ||
+                              "Query validation failed"}
+                          </Typography>
+                        </Alert>
+                      )}
+
+                      {/* Warnings */}
+                      {validationResult.warnings &&
+                        validationResult.warnings.length > 0 && (
+                          <Alert
+                            severity="warning"
+                            icon={<WarningIcon />}
+                            sx={{ mb: 1 }}
+                          >
+                            <Typography variant="body2" fontWeight="medium">
+                              Suggestions:
+                            </Typography>
+                            <ul
+                              style={{
+                                margin: "4px 0 0 0",
+                                paddingLeft: "20px",
+                              }}
+                            >
+                              {validationResult.warnings.map((warning, idx) => (
+                                <li key={idx}>
+                                  <Typography variant="body2">
+                                    {warning}
+                                  </Typography>
+                                </li>
+                              ))}
+                            </ul>
+                          </Alert>
+                        )}
+
+                      {/* Sample Row Preview */}
+                      {validationResult.sampleRow && (
+                        <Box
+                          sx={{
+                            mt: 1,
+                            p: 1.5,
+                            bgcolor: "action.hover",
+                            borderRadius: 1,
+                            overflow: "auto",
+                          }}
+                        >
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                          >
+                            Sample row:
+                          </Typography>
+                          <Box
+                            component="pre"
+                            sx={{
+                              m: 0,
+                              mt: 0.5,
+                              fontSize: "0.75rem",
+                              fontFamily: "monospace",
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-all",
+                            }}
+                          >
+                            {JSON.stringify(
+                              validationResult.sampleRow,
+                              null,
+                              2,
+                            )}
+                          </Box>
+                        </Box>
+                      )}
+                    </Box>
+                  )}
                 </Stack>
               </Box>
 
@@ -611,37 +870,19 @@ export function DbFlowForm({
                     control={control}
                     rules={{ required: "Destination connection is required" }}
                     render={({ field }) => (
-                      <FormControl
-                        fullWidth
+                      <ConnectionSelector
+                        value={field.value}
+                        onChange={field.onChange}
+                        label="Destination Connection"
                         error={!!errors.destinationConnectionId}
-                      >
-                        <InputLabel>Destination Connection</InputLabel>
-                        <Select {...field} label="Destination Connection">
-                          {databases.map(db => (
-                            <MenuItem key={db.id} value={db.id}>
-                              <Box
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 1,
-                                }}
-                              >
-                                {db.name}
-                                <Chip label={db.type} size="small" />
-                              </Box>
-                            </MenuItem>
-                          ))}
-                        </Select>
-                        {errors.destinationConnectionId && (
-                          <FormHelperText>
-                            {errors.destinationConnectionId.message}
-                          </FormHelperText>
-                        )}
-                      </FormControl>
+                        helperText={errors.destinationConnectionId?.message}
+                        fullWidth
+                      />
                     )}
                   />
 
-                  {watchDestConnectionId && (
+                  {/* Database selector - not shown for BigQuery (uses datasets in schema field instead) */}
+                  {watchDestConnectionId && !isBigQueryDest && (
                     <>
                       {isLoadingDestDbs ? (
                         <Box
@@ -677,19 +918,62 @@ export function DbFlowForm({
                   )}
 
                   <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                    <Controller
-                      name="destinationSchema"
-                      control={control}
-                      render={({ field }) => (
-                        <TextField
-                          {...field}
-                          label="Schema (optional)"
-                          placeholder="public"
-                          helperText="For PostgreSQL/BigQuery"
-                          sx={{ flex: 1 }}
+                    {showSchemaField &&
+                      (isBigQueryDest ? (
+                        // BigQuery: Show dataset dropdown
+                        <Controller
+                          name="destinationSchema"
+                          control={control}
+                          rules={{
+                            required: "Dataset is required for BigQuery",
+                          }}
+                          render={({ field }) => (
+                            <FormControl
+                              fullWidth
+                              sx={{ flex: 1 }}
+                              error={!!errors.destinationSchema}
+                            >
+                              <InputLabel>Dataset</InputLabel>
+                              <Select {...field} label="Dataset">
+                                {isLoadingDestDbs ? (
+                                  <MenuItem value="" disabled>
+                                    Loading datasets...
+                                  </MenuItem>
+                                ) : destDatabases.length === 0 ? (
+                                  <MenuItem value="" disabled>
+                                    No datasets found
+                                  </MenuItem>
+                                ) : (
+                                  destDatabases.map(ds => (
+                                    <MenuItem key={ds.id} value={ds.id}>
+                                      {ds.label || ds.id}
+                                    </MenuItem>
+                                  ))
+                                )}
+                              </Select>
+                              <FormHelperText>
+                                {errors.destinationSchema?.message ||
+                                  "Select the BigQuery dataset"}
+                              </FormHelperText>
+                            </FormControl>
+                          )}
                         />
-                      )}
-                    />
+                      ) : (
+                        // PostgreSQL: Show schema text field
+                        <Controller
+                          name="destinationSchema"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              label="Schema (optional)"
+                              placeholder="public"
+                              helperText="PostgreSQL schema name"
+                              sx={{ flex: 1 }}
+                            />
+                          )}
+                        />
+                      ))}
                     <Controller
                       name="destinationTable"
                       control={control}
@@ -841,44 +1125,109 @@ export function DbFlowForm({
 
               {/* Incremental Config */}
               {watchSyncMode === "incremental" && (
-                <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                  <Controller
-                    name="trackingColumn"
-                    control={control}
-                    rules={{
-                      required:
-                        watchSyncMode === "incremental"
-                          ? "Tracking column is required for incremental sync"
-                          : false,
-                    }}
-                    render={({ field }) => (
-                      <TextField
-                        {...field}
-                        label="Tracking Column"
-                        placeholder="updated_at"
-                        error={!!errors.trackingColumn}
-                        helperText={
-                          errors.trackingColumn?.message ||
-                          "Column to track for incremental updates"
-                        }
-                        sx={{ flex: 1 }}
-                      />
-                    )}
-                  />
-                  <Controller
-                    name="trackingType"
-                    control={control}
-                    render={({ field }) => (
-                      <FormControl sx={{ flex: 1 }}>
-                        <InputLabel>Tracking Type</InputLabel>
-                        <Select {...field} label="Tracking Type">
-                          <MenuItem value="timestamp">Timestamp</MenuItem>
-                          <MenuItem value="numeric">Numeric (ID)</MenuItem>
-                        </Select>
-                      </FormControl>
-                    )}
-                  />
-                </Stack>
+                <>
+                  <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                    <Controller
+                      name="trackingColumn"
+                      control={control}
+                      rules={{
+                        required:
+                          watchSyncMode === "incremental"
+                            ? "Tracking column is required for incremental sync"
+                            : false,
+                      }}
+                      render={({ field }) => (
+                        <TextField
+                          {...field}
+                          label="Tracking Column"
+                          placeholder="updated_at"
+                          error={!!errors.trackingColumn}
+                          helperText={
+                            errors.trackingColumn?.message ||
+                            "Column to track for incremental updates"
+                          }
+                          sx={{ flex: 1 }}
+                        />
+                      )}
+                    />
+                    <Controller
+                      name="trackingType"
+                      control={control}
+                      render={({ field }) => (
+                        <FormControl sx={{ flex: 1 }}>
+                          <InputLabel>Tracking Type</InputLabel>
+                          <Select {...field} label="Tracking Type">
+                            <MenuItem value="timestamp">Timestamp</MenuItem>
+                            <MenuItem value="numeric">Numeric (ID)</MenuItem>
+                          </Select>
+                        </FormControl>
+                      )}
+                    />
+                  </Stack>
+
+                  {/* Sync State Display for existing flows */}
+                  {!isNewMode &&
+                    currentFlowId &&
+                    (() => {
+                      const currentFlow = flows.find(
+                        f => f._id === currentFlowId,
+                      );
+                      const lastValue =
+                        currentFlow?.incrementalConfig?.lastValue;
+                      const trackingCol =
+                        currentFlow?.incrementalConfig?.trackingColumn;
+
+                      if (lastValue && trackingCol) {
+                        return (
+                          <Alert severity="info" sx={{ mt: 1 }}>
+                            <Typography variant="body2">
+                              <strong>Last synced value:</strong> {lastValue}
+                            </Typography>
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ mt: 0.5 }}
+                            >
+                              Next sync will fetch rows where{" "}
+                              <code
+                                style={{
+                                  backgroundColor: "rgba(0,0,0,0.08)",
+                                  padding: "2px 4px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                {trackingCol} &gt; '{lastValue}'
+                              </code>
+                            </Typography>
+                          </Alert>
+                        );
+                      }
+
+                      if (
+                        !lastValue &&
+                        currentFlow?.runCount &&
+                        currentFlow.runCount > 0
+                      ) {
+                        return (
+                          <Alert severity="warning" sx={{ mt: 1 }}>
+                            <Typography variant="body2">
+                              Flow has run but no tracking value recorded. First
+                              run may have synced all rows.
+                            </Typography>
+                          </Alert>
+                        );
+                      }
+
+                      return (
+                        <Alert severity="info" sx={{ mt: 1 }}>
+                          <Typography variant="body2">
+                            First sync will fetch all rows. Subsequent syncs
+                            will only fetch new/updated records.
+                          </Typography>
+                        </Alert>
+                      );
+                    })()}
+                </>
               )}
 
               {/* Conflict Resolution */}
@@ -930,6 +1279,85 @@ export function DbFlowForm({
                   />
                 )}
               />
+
+              <Divider />
+
+              {/* Pagination Configuration */}
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                  Pagination
+                </Typography>
+                <Stack spacing={2}>
+                  <Controller
+                    name="paginationMode"
+                    control={control}
+                    render={({ field }) => (
+                      <FormControl fullWidth>
+                        <InputLabel>Pagination Mode</InputLabel>
+                        <Select {...field} label="Pagination Mode">
+                          <MenuItem value="offset">
+                            Offset (LIMIT/OFFSET)
+                          </MenuItem>
+                          <MenuItem value="keyset">
+                            Keyset (WHERE col &gt; last_value)
+                          </MenuItem>
+                        </Select>
+                        <FormHelperText>
+                          {field.value === "offset"
+                            ? "Standard pagination. Works for any query but slower for large tables."
+                            : "Faster for large tables (100k+ rows). Requires a unique, indexed column."}
+                        </FormHelperText>
+                      </FormControl>
+                    )}
+                  />
+
+                  {watchPaginationMode === "keyset" && (
+                    <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                      <Controller
+                        name="keysetColumn"
+                        control={control}
+                        rules={{
+                          required:
+                            watchPaginationMode === "keyset"
+                              ? "Keyset column is required for keyset pagination"
+                              : false,
+                        }}
+                        render={({ field }) => (
+                          <TextField
+                            {...field}
+                            label="Keyset Column"
+                            placeholder="id"
+                            error={!!errors.keysetColumn}
+                            helperText={
+                              errors.keysetColumn?.message ||
+                              "Column to use for keyset pagination (e.g., id, created_at)"
+                            }
+                            sx={{ flex: 1 }}
+                          />
+                        )}
+                      />
+                      <Controller
+                        name="keysetDirection"
+                        control={control}
+                        render={({ field }) => (
+                          <FormControl sx={{ flex: 1 }}>
+                            <InputLabel>Sort Direction</InputLabel>
+                            <Select {...field} label="Sort Direction">
+                              <MenuItem value="asc">Ascending (ASC)</MenuItem>
+                              <MenuItem value="desc">
+                                Descending (DESC)
+                              </MenuItem>
+                            </Select>
+                            <FormHelperText>
+                              Must match ORDER BY in your query
+                            </FormHelperText>
+                          </FormControl>
+                        )}
+                      />
+                    </Stack>
+                  )}
+                </Stack>
+              </Box>
 
               {/* Schedule Preview */}
               <Alert severity="info" icon={<ScheduleIcon />}>
