@@ -249,7 +249,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   }));
 
   // Get tools (uses client-side console tools)
-  const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
+  const tools = createUniversalTools(
+    workspaceId,
+    enrichedConsoles,
+    consoleId,
+    userId,
+  );
 
   // Build custom prompt context for the full system message
   const customPromptContext =

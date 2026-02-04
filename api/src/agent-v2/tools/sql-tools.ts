@@ -7,6 +7,7 @@ import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import { queryExecutionService } from "../../services/query-execution.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -787,7 +788,10 @@ async function executeQueryImpl(
   databaseName: string,
   query: string,
   workspaceId: string,
+  userId?: string,
 ) {
+  const startTime = Date.now();
+
   if (!databaseName) {
     throw new Error("'database' is required");
   }
@@ -813,6 +817,53 @@ async function executeQueryImpl(
     options,
   );
 
+  // Track query execution (fire-and-forget)
+  if (userId) {
+    const rowCount = result.success
+      ? (result.rowCount ??
+        (Array.isArray(result.data) ? result.data.length : undefined))
+      : undefined;
+
+    let errorType: string | undefined;
+    if (!result.success) {
+      const errorMsg = result.error?.toLowerCase() || "";
+      if (errorMsg.includes("syntax")) {
+        errorType = "syntax";
+      } else if (
+        errorMsg.includes("timeout") ||
+        errorMsg.includes("timed out")
+      ) {
+        errorType = "timeout";
+      } else if (
+        errorMsg.includes("connection") ||
+        errorMsg.includes("connect")
+      ) {
+        errorType = "connection";
+      } else if (
+        errorMsg.includes("permission") ||
+        errorMsg.includes("access denied")
+      ) {
+        errorType = "permission";
+      } else {
+        errorType = "unknown";
+      }
+    }
+
+    queryExecutionService.track({
+      userId,
+      workspaceId: new Types.ObjectId(workspaceId),
+      connectionId: database._id,
+      databaseName,
+      source: "agent",
+      databaseType: database.type,
+      queryLanguage: "sql",
+      status: result.success ? "success" : "error",
+      executionTimeMs: Date.now() - startTime,
+      rowCount,
+      errorType,
+    });
+  }
+
   if (result && result.success && result.data) {
     const truncatedData = truncateQueryResults(result.data);
     return { ...result, data: truncatedData, sqlDialect: dialect };
@@ -828,6 +879,7 @@ export const createSqlToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
+  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
@@ -886,6 +938,7 @@ export const createSqlToolsV2 = (
           params.database,
           params.query,
           workspaceId,
+          userId,
         ),
     },
   };

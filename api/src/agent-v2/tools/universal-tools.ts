@@ -132,12 +132,14 @@ export const createUniversalTools = (
   workspaceId: string,
   consoles: ConsoleDataV2[],
   preferredConsoleId?: string,
+  userId?: string,
 ) => {
   // Get MongoDB tools and extract just the database-specific ones
   const mongoTools = createMongoToolsV2(
     workspaceId,
     consoles,
     preferredConsoleId,
+    userId,
   );
   const {
     // Strip console tools (we use client-side versions)
@@ -153,7 +155,12 @@ export const createUniversalTools = (
   } = mongoTools;
 
   // Get SQL tools and extract just the database-specific ones
-  const sqlTools = createSqlToolsV2(workspaceId, consoles, preferredConsoleId);
+  const sqlTools = createSqlToolsV2(
+    workspaceId,
+    consoles,
+    preferredConsoleId,
+    userId,
+  );
   const {
     // Strip console tools
     modify_console: _sqlModify,

@@ -4,12 +4,32 @@ import {
   unifiedAuthMiddleware,
   isApiKeyAuth,
 } from "../auth/unified-auth.middleware";
-import { DatabaseConnection, SavedConsole } from "../database/workspace-schema";
+import {
+  DatabaseConnection,
+  SavedConsole,
+  IDatabaseConnection,
+} from "../database/workspace-schema";
 import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
+import {
+  queryExecutionService,
+  QueryLanguage,
+  QueryStatus,
+} from "../services/query-execution.service";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+
+/**
+ * Map console language to query language for tracking
+ */
+function mapConsoleLanguageToQueryLanguage(
+  language: "sql" | "javascript" | "mongodb",
+): QueryLanguage {
+  if (language === "mongodb") return "mongodb";
+  if (language === "javascript") return "javascript";
+  return "sql";
+}
 
 const logger = loggers.api("consoles");
 
@@ -827,6 +847,14 @@ consoleRoutes.delete("/folders/:id", async (c: Context) => {
 
 // POST /api/workspaces/:workspaceId/consoles/:id/execute - Execute a saved console
 consoleRoutes.post("/:id/execute", async (c: Context) => {
+  const startTime = Date.now();
+  let database: IDatabaseConnection | null = null;
+  let executionStatus: QueryStatus = "error";
+  let rowCount: number | undefined;
+  let errorType: string | undefined;
+  let workspaceId: string | undefined;
+  let consoleIdParsed: Types.ObjectId | undefined;
+
   try {
     const access = await verifyWorkspaceAccess(c);
     if (!access) {
@@ -835,17 +863,21 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
         403,
       );
     }
+    workspaceId = access.workspaceId;
 
+    const user = c.get("user");
+    const apiKey = c.get("apiKey");
     const consoleId = c.req.param("id");
 
     // Validate console ID
     if (!Types.ObjectId.isValid(consoleId)) {
       return c.json({ success: false, error: "Invalid console ID" }, 400);
     }
+    consoleIdParsed = new Types.ObjectId(consoleId);
 
     // Find the console
     const savedConsole = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
+      _id: consoleIdParsed,
       workspaceId: new Types.ObjectId(access.workspaceId),
     });
 
@@ -854,7 +886,6 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
     }
 
     // If console has a connection ID, verify it exists and belongs to workspace
-    let database = null;
     if (savedConsole.connectionId) {
       database = await DatabaseConnection.findOne({
         _id: savedConsole.connectionId,
@@ -936,7 +967,59 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
 
     // Return the result
     const data = result.data || [];
-    const rowCount = result.rowCount || (Array.isArray(data) ? data.length : 0);
+    rowCount = result.rowCount || (Array.isArray(data) ? data.length : 0);
+
+    // Determine execution status
+    if (result.success) {
+      executionStatus = "success";
+    } else {
+      executionStatus = "error";
+      const errorMsg = result.error?.toLowerCase() || "";
+      if (errorMsg.includes("syntax")) {
+        errorType = "syntax";
+      } else if (
+        errorMsg.includes("timeout") ||
+        errorMsg.includes("timed out")
+      ) {
+        errorType = "timeout";
+        executionStatus = "timeout";
+      } else if (errorMsg.includes("cancel") || errorMsg.includes("abort")) {
+        errorType = "cancelled";
+        executionStatus = "cancelled";
+      } else if (
+        errorMsg.includes("connection") ||
+        errorMsg.includes("connect")
+      ) {
+        errorType = "connection";
+      } else if (
+        errorMsg.includes("permission") ||
+        errorMsg.includes("access denied")
+      ) {
+        errorType = "permission";
+      } else {
+        errorType = "unknown";
+      }
+    }
+
+    // Track query execution (fire-and-forget)
+    const userId = user?.id || apiKey?.createdBy;
+    if (userId && database) {
+      queryExecutionService.track({
+        userId,
+        apiKeyId: apiKey?._id,
+        workspaceId: new Types.ObjectId(access.workspaceId),
+        connectionId: database._id,
+        databaseName: savedConsole.databaseName || database.connection.database,
+        consoleId: savedConsole._id,
+        source: apiKey ? "api" : "console_ui",
+        databaseType: database.type,
+        queryLanguage: mapConsoleLanguageToQueryLanguage(savedConsole.language),
+        status: executionStatus,
+        executionTimeMs: Date.now() - startTime,
+        rowCount,
+        errorType,
+      });
+    }
 
     return c.json({
       success: true,
@@ -952,6 +1035,31 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
     });
   } catch (error) {
     logger.error("Error executing console", { error });
+
+    // Track failed execution
+    const user = c.get("user");
+    const apiKey = c.get("apiKey");
+    const userId = user?.id || apiKey?.createdBy;
+
+    if (userId && database && workspaceId) {
+      queryExecutionService.track({
+        userId,
+        apiKeyId: apiKey?._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        connectionId: database._id,
+        databaseName: database.connection.database,
+        consoleId: consoleIdParsed,
+        source: apiKey ? "api" : "console_ui",
+        databaseType: database.type,
+        queryLanguage: mapConsoleLanguageToQueryLanguage(
+          database.type === "mongodb" ? "mongodb" : "sql",
+        ),
+        status: "error",
+        executionTimeMs: Date.now() - startTime,
+        errorType: "unknown",
+      });
+    }
+
     return c.json(
       {
         success: false,

@@ -492,6 +492,41 @@ export interface IWebhookEvent extends Document {
 }
 
 /**
+ * QueryExecution model interface
+ * Tracks all query executions for usage analytics and billing
+ */
+export interface IQueryExecution extends Document {
+  _id: Types.ObjectId;
+  executedAt: Date;
+
+  // Who executed
+  userId: string; // Always populated (user or API key owner)
+  apiKeyId?: Types.ObjectId; // If executed via API key (nullable for UI sessions)
+
+  // What was executed against
+  workspaceId: Types.ObjectId;
+  connectionId: Types.ObjectId; // The database connection
+  databaseName?: string; // For multi-database connections (D1, clusters)
+
+  // Optional console tracking
+  consoleId?: Types.ObjectId; // If executed from a saved console
+
+  // Execution context
+  source: "console_ui" | "api" | "agent" | "flow";
+  databaseType: string; // postgresql, mongodb, bigquery, etc.
+  queryLanguage: "sql" | "mongodb" | "javascript";
+
+  // Results
+  status: "success" | "error" | "cancelled" | "timeout";
+  executionTimeMs: number;
+  rowCount?: number; // Rows returned (if applicable)
+  errorType?: string; // If failed: syntax, connection, timeout, permission
+
+  // Optional resource tracking (some DBs provide this)
+  bytesScanned?: number; // BigQuery, ClickHouse report this
+}
+
+/**
  * Workspace Schema
  */
 const WorkspaceSchema = new Schema<IWorkspace>(
@@ -1321,6 +1356,77 @@ WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 
+/**
+ * QueryExecution Schema
+ * Tracks all query executions for usage analytics and billing
+ */
+const QueryExecutionSchema = new Schema<IQueryExecution>(
+  {
+    executedAt: { type: Date, required: true, default: Date.now },
+
+    // Who executed
+    userId: { type: String, ref: "User", required: true },
+    apiKeyId: { type: Schema.Types.ObjectId, required: false },
+
+    // What was executed against
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    connectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
+      required: true,
+    },
+    databaseName: { type: String, required: false },
+
+    // Optional console tracking
+    consoleId: {
+      type: Schema.Types.ObjectId,
+      ref: "SavedConsole",
+      required: false,
+    },
+
+    // Execution context
+    source: {
+      type: String,
+      enum: ["console_ui", "api", "agent", "flow"],
+      required: true,
+    },
+    databaseType: { type: String, required: true },
+    queryLanguage: {
+      type: String,
+      enum: ["sql", "mongodb", "javascript"],
+      required: true,
+    },
+
+    // Results
+    status: {
+      type: String,
+      enum: ["success", "error", "cancelled", "timeout"],
+      required: true,
+    },
+    executionTimeMs: { type: Number, required: true },
+    rowCount: { type: Number, required: false },
+    errorType: { type: String, required: false },
+
+    // Optional resource tracking
+    bytesScanned: { type: Number, required: false },
+  },
+  {
+    collection: "query_executions",
+    timestamps: false,
+  },
+);
+
+// Indexes for QueryExecution
+QueryExecutionSchema.index({ workspaceId: 1, executedAt: -1 }); // Usage over time per workspace
+QueryExecutionSchema.index({ userId: 1, executedAt: -1 }); // Per-user analytics
+QueryExecutionSchema.index({ apiKeyId: 1, executedAt: -1 }, { sparse: true }); // API key usage
+QueryExecutionSchema.index({ workspaceId: 1, status: 1 }); // Error rate monitoring
+QueryExecutionSchema.index({ executedAt: 1 }, { expireAfterSeconds: 7776000 }); // TTL: 90 days
+
 // Models
 export const Workspace = mongoose.model<IWorkspace>(
   "Workspace",
@@ -1361,4 +1467,8 @@ export const FlowExecution = mongoose.model<IFlowExecution>(
 export const WebhookEvent = mongoose.model<IWebhookEvent>(
   "WebhookEvent",
   WebhookEventSchema,
+);
+export const QueryExecution = mongoose.model<IQueryExecution>(
+  "QueryExecution",
+  QueryExecutionSchema,
 );
