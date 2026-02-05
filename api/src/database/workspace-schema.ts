@@ -481,8 +481,9 @@ export interface IFlow extends Document {
   destinationDatabaseName?: string;
   tableDestination?: ITableDestination; // For writing to SQL tables instead of MongoDB collections
 
-  schedule: {
-    cron: string;
+  schedule?: {
+    enabled: boolean;
+    cron?: string;
     timezone?: string;
   };
   webhookConfig?: {
@@ -503,7 +504,6 @@ export interface IFlow extends Document {
   typeCoercions?: ITypeCoercion[]; // Type coercion rules for column mapping
   batchSize?: number; // Batch size for processing (default: 2000)
 
-  enabled: boolean;
   lastRunAt?: Date;
   lastSuccessAt?: Date;
   lastError?: string;
@@ -1280,15 +1280,20 @@ const FlowSchema = new Schema<IFlow>(
       },
     },
     schedule: {
+      enabled: {
+        type: Boolean,
+        default: true,
+      },
       cron: {
         type: String,
         required: function () {
-          return this.type === "scheduled";
+          return this.type === "scheduled" && this.schedule?.enabled;
         },
         validate: {
           validator: function (v: string) {
             // Skip validation for webhook flows
             if (this.type === "webhook") return true;
+            if (!this.schedule?.enabled) return true;
             // Basic cron validation - 5 or 6 fields
             const fields = v.split(" ");
             return fields.length === 5 || fields.length === 6;
@@ -1396,10 +1401,6 @@ const FlowSchema = new Schema<IFlow>(
       min: 100,
       max: 50000,
     },
-    enabled: {
-      type: Boolean,
-      default: true,
-    },
     lastRunAt: Date,
     lastSuccessAt: Date,
     lastError: String,
@@ -1424,7 +1425,7 @@ const FlowSchema = new Schema<IFlow>(
 );
 
 // Indexes
-FlowSchema.index({ workspaceId: 1, enabled: 1 });
+FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
 FlowSchema.index({ workspaceId: 1, sourceType: 1 });
 FlowSchema.index({ dataSourceId: 1 }, { sparse: true }); // Sparse since not required for database sources
 FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });

@@ -76,10 +76,10 @@ interface FormData {
   dataSourceId: string;
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
+  scheduleEnabled: boolean;
   schedule: string;
   timezone: string;
   syncMode: "full" | "incremental";
-  enabled: boolean;
   entityFilter: string[];
   queries: TransferQuery[];
 }
@@ -104,6 +104,17 @@ const SCHEDULE_PRESETS = [
   { label: "Weekly on Sunday", cron: "0 0 * * 0" },
   { label: "Monthly on 1st", cron: "0 0 1 * *" },
 ];
+
+const normalizeCronValue = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const maybeCron = (value as { cron?: unknown }).cron;
+    if (typeof maybeCron === "string") return maybeCron;
+    const maybeValue = (value as { value?: unknown }).value;
+    if (typeof maybeValue === "string") return maybeValue;
+  }
+  return "";
+};
 
 export function ScheduledFlowForm({
   flowId,
@@ -184,19 +195,24 @@ export function ScheduledFlowForm({
       dataSourceId: "",
       destinationDatabaseId: "",
       destinationDatabaseName: "",
+      scheduleEnabled: true,
       schedule: "0 * * * *", // Default hourly
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
       syncMode: "full",
-      enabled: true,
       entityFilter: [],
       queries: [],
     },
   });
 
+  const watchScheduleEnabled = watch("scheduleEnabled");
   const watchSchedule = watch("schedule");
   const watchTimezone = watch("timezone");
   const watchDataSourceId = watch("dataSourceId");
   const watchDestinationDatabaseId = watch("destinationDatabaseId");
+  const normalizedSchedule = useMemo(
+    () => normalizeCronValue(watchSchedule),
+    [watchSchedule],
+  );
 
   // Field array for queries (schema-driven)
   const {
@@ -498,10 +514,11 @@ export function ScheduledFlowForm({
           dataSourceId: dataSourceId || "",
           destinationDatabaseId: destinationDatabaseId || "",
           destinationDatabaseName: flow.destinationDatabaseName || "",
+          scheduleEnabled:
+            flow.schedule?.enabled ?? !!flow.schedule?.cron,
           schedule: flow.schedule?.cron || "0 * * * *",
           timezone: flow.schedule?.timezone || "UTC",
           syncMode: flow.syncMode as "full" | "incremental",
-          enabled: flow.enabled,
           entityFilter: flow.entityFilter || [],
           queries: flow.queries || [],
         };
@@ -628,12 +645,12 @@ export function ScheduledFlowForm({
         destinationDatabaseId: data.destinationDatabaseId,
         destinationDatabaseName: data.destinationDatabaseName?.trim() || null,
         syncMode: data.syncMode,
-        enabled: data.enabled,
         entityFilter: data.entityFilter,
         queries: data.queries, // GraphQL/PostHog queries
         schedule: {
-          cron: data.schedule,
-          timezone: data.timezone,
+          enabled: data.scheduleEnabled,
+          cron: data.scheduleEnabled ? data.schedule : undefined,
+          timezone: data.scheduleEnabled ? data.timezone : undefined,
         },
       };
 
@@ -685,7 +702,9 @@ export function ScheduledFlowForm({
     }
   };
 
-  const getCronDescription = (cron: string) => {
+  const getCronDescription = (cronValue: unknown) => {
+    const cron = normalizeCronValue(cronValue);
+    if (!cron) return "No schedule selected";
     const preset = SCHEDULE_PRESETS.find(p => p.cron === cron);
     if (preset) return preset.label;
 
@@ -716,6 +735,21 @@ export function ScheduledFlowForm({
 
     return `Custom: ${cron}`;
   };
+
+  const handleScheduleModeChange = useCallback(
+    (_: unknown, value: "preset" | "custom" | null) => {
+      if (!value) return;
+      setScheduleMode(value);
+      if (value === "preset") {
+        const currentCron = normalizeCronValue(getValues("schedule"));
+        const isPreset = SCHEDULE_PRESETS.some(p => p.cron === currentCron);
+        if (!isPreset) {
+          setValue("schedule", SCHEDULE_PRESETS[0].cron, { shouldDirty: true });
+        }
+      }
+    },
+    [getValues, setValue],
+  );
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -1368,69 +1402,117 @@ export function ScheduledFlowForm({
                 <ToggleButtonGroup
                   value={scheduleMode}
                   exclusive
-                  onChange={(_, value) => value && setScheduleMode(value)}
+                  onChange={handleScheduleModeChange}
                   size="small"
-                  sx={{ mb: 2 }}
+                  fullWidth
+                  sx={{
+                    mb: 2,
+                    width: "100%",
+                    p: 0.125,
+                    bgcolor: "action.hover",
+                    borderRadius: 1,
+                    "& .MuiToggleButton-root": {
+                      flex: 1,
+                      textTransform: "none",
+                      border: "none",
+                      borderRadius: 0.75,
+                      fontWeight: 600,
+                      fontSize: "0.875rem",
+                      lineHeight: 1.2,
+                      minHeight: 36,
+                      py: 0.5,
+                    },
+                    "& .MuiToggleButton-root.Mui-selected": {
+                      bgcolor: "background.paper",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                    },
+                  }}
                 >
                   <ToggleButton value="preset">Preset</ToggleButton>
                   <ToggleButton value="custom">Custom</ToggleButton>
                 </ToggleButtonGroup>
               </Box>
 
-              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                <Box sx={{ flex: scheduleMode === "preset" ? 2 : 1.5 }}>
-                  <Controller
-                    name="schedule"
-                    control={control}
-                    rules={{
-                      required: "Schedule is required",
-                    }}
-                    render={({ field }) =>
-                      scheduleMode === "preset" ? (
-                        <FormControl fullWidth>
-                          <InputLabel>Schedule Preset</InputLabel>
-                          <Select {...field} label="Schedule Preset">
-                            {SCHEDULE_PRESETS.map(preset => (
-                              <MenuItem key={preset.cron} value={preset.cron}>
-                                {preset.label}
-                              </MenuItem>
-                            ))}
-                          </Select>
-                        </FormControl>
-                      ) : (
+              <Box>
+                <Controller
+                  name="scheduleEnabled"
+                  control={control}
+                  render={({ field }) => (
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={field.value}
+                          onChange={field.onChange}
+                        />
+                      }
+                      label="Enable automatic scheduling"
+                    />
+                  )}
+                />
+              </Box>
+
+              {watchScheduleEnabled && (
+                <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                  <Box sx={{ flex: scheduleMode === "preset" ? 2 : 1.5 }}>
+                    <Controller
+                      name="schedule"
+                      control={control}
+                      rules={{
+                        required: "Schedule is required",
+                      }}
+                      render={({ field }) => {
+                        const scheduleValue = normalizeCronValue(field.value);
+                        return scheduleMode === "preset" ? (
+                          <FormControl fullWidth>
+                            <InputLabel>Schedule Preset</InputLabel>
+                            <Select
+                              {...field}
+                              value={scheduleValue || ""}
+                              label="Schedule Preset"
+                            >
+                              {SCHEDULE_PRESETS.map(preset => (
+                                <MenuItem key={preset.cron} value={preset.cron}>
+                                  {preset.label}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        ) : (
+                          <TextField
+                            {...field}
+                            value={scheduleValue}
+                            fullWidth
+                            label="Cron Expression"
+                            error={!!errors.schedule}
+                            helperText={
+                              errors.schedule?.message ||
+                              "Format: minute hour day month weekday"
+                            }
+                            placeholder="0 * * * *"
+                          />
+                        );
+                      }}
+                    />
+                  </Box>
+
+                  <Box sx={{ flex: 1 }}>
+                    <Controller
+                      name="timezone"
+                      control={control}
+                      render={({ field }) => (
                         <TextField
                           {...field}
                           fullWidth
-                          label="Cron Expression"
-                          error={!!errors.schedule}
-                          helperText={
-                            errors.schedule?.message ||
-                            "Format: minute hour day month weekday"
-                          }
-                          placeholder="0 * * * *"
+                          label="Timezone"
+                          helperText="e.g., America/New_York"
                         />
-                      )
-                    }
-                  />
-                </Box>
+                      )}
+                    />
+                  </Box>
+                </Stack>
+              )}
 
-                <Box sx={{ flex: 1 }}>
-                  <Controller
-                    name="timezone"
-                    control={control}
-                    render={({ field }) => (
-                      <TextField
-                        {...field}
-                        fullWidth
-                        label="Timezone"
-                        helperText="e.g., America/New_York"
-                      />
-                    )}
-                  />
-                </Box>
-              </Stack>
-
-              {/* Sync Mode and Enabled */}
+              {/* Sync Mode */}
               <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                 <Controller
                   name="syncMode"
@@ -1453,32 +1535,18 @@ export function ScheduledFlowForm({
                   )}
                 />
 
-                <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
-                  <Controller
-                    name="enabled"
-                    control={control}
-                    render={({ field }) => (
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={field.value}
-                            onChange={field.onChange}
-                          />
-                        }
-                        label="Enable Flow"
-                      />
-                    )}
-                  />
-                </Box>
               </Stack>
 
               {/* Schedule Preview */}
-              <Alert severity="info" icon={<ScheduleIcon />}>
-                <Typography variant="body2">
-                  <strong>Schedule:</strong> {getCronDescription(watchSchedule)}
-                  {watchTimezone && ` in ${watchTimezone}`}
-                </Typography>
-              </Alert>
+              {watchScheduleEnabled && (
+                <Alert severity="info" icon={<ScheduleIcon />}>
+                  <Typography variant="body2">
+                    <strong>Schedule:</strong>{" "}
+                    {getCronDescription(normalizedSchedule)}
+                    {watchTimezone && ` in ${watchTimezone}`}
+                  </Typography>
+                </Alert>
+              )}
             </Stack>
           </form>
         </Box>

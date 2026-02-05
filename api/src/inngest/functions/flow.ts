@@ -430,10 +430,6 @@ export const flowFunction = inngest.createFunction(
         return found.toObject() as IFlow;
       })) as IFlow;
 
-      if (!flow || !flow.enabled) {
-        return { success: false, message: "Flow is disabled" };
-      }
-
       // Webhook flows should not be executed by the flow function
       if (flow.type === "webhook") {
         logger.error("CRITICAL: Webhook flow reached flow executor!", {
@@ -1304,13 +1300,13 @@ export const flowSchedulerFunction = inngest.createFunction(
       timestamp: new Date().toISOString(),
     });
 
-    // Get all enabled scheduled flows (not webhooks)
+    // Get all scheduled flows with enabled schedules
     const flows = (await step.run("fetch-enabled-flows", async () => {
       const found = await Flow.find({
-        enabled: true,
         type: "scheduled", // Only get scheduled flows explicitly
+        "schedule.enabled": true,
       });
-      scheduleLogger.info("Found enabled scheduled flows", {
+      scheduleLogger.info("Found scheduled flows with enabled schedules", {
         count: found.length,
         // Log flow types for debugging
         flowTypes: found.map(f => ({

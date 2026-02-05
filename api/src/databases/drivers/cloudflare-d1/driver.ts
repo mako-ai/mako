@@ -269,8 +269,9 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
           dbOptions,
         );
 
-        if (pragmaResult.success && pragmaResult.data?.length > 0) {
-          const columns: ColumnDefinition[] = pragmaResult.data.map(
+        const pragmaData = pragmaResult.data ?? [];
+        if (pragmaResult.success && pragmaData.length > 0) {
+          const columns: ColumnDefinition[] = pragmaData.map(
             (col: any) => ({
               name: col.name,
               type: this.normalizeSqliteType(col.type || "TEXT"),
@@ -303,11 +304,12 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
             dbOptions,
           );
 
-          if (pragmaResult.success && pragmaResult.data?.length > 0) {
+          const pragmaData = pragmaResult.data ?? [];
+          if (pragmaResult.success && pragmaData.length > 0) {
             // We have table schema - now we need to figure out which columns
             // are in the query. Execute the query to at least get column names.
             // Since there are 0 rows, we'll use TEXT as fallback for computed columns.
-            const columns: ColumnDefinition[] = pragmaResult.data.map(
+            const columns: ColumnDefinition[] = pragmaData.map(
               (col: any) => ({
                 name: col.name,
                 type: this.normalizeSqliteType(col.type || "TEXT"),

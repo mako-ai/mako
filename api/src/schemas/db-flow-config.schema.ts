@@ -97,14 +97,16 @@ export const TableDestinationSchema = z.object({
  * Schedule configuration schema
  */
 export const ScheduleConfigSchema = z.object({
-  cron: z.string().refine(
+  enabled: z.boolean().default(false),
+  cron: z.string().optional().refine(
     (val) => {
+      if (!val) return true;
       const parts = val.trim().split(/\s+/);
       return parts.length === 5 || parts.length === 6;
     },
     { message: "Invalid cron expression. Must have 5 or 6 fields." }
   ),
-  timezone: z.string().default("UTC"),
+  timezone: z.string().default("UTC").optional(),
 });
 
 /**
@@ -126,7 +128,7 @@ export const DbFlowConfigSchema = z.object({
   // Destination configuration
   tableDestination: TableDestinationSchema,
 
-  // Schedule (required for scheduled flows)
+  // Schedule (optional; enabled flag controls automatic runs)
   schedule: ScheduleConfigSchema.optional(),
 
   // Sync mode
@@ -141,19 +143,15 @@ export const DbFlowConfigSchema = z.object({
   // Batch size
   batchSize: z.number().min(100).max(50000).default(2000),
 
-  // Enabled state
-  enabled: z.boolean().default(true),
 }).refine(
   (data) => {
-    // If type is scheduled, schedule is required
-    if (data.type === "scheduled" && !data.schedule) {
-      return false;
-    }
+    // If schedule is enabled, cron is required
+    if (data.schedule?.enabled && !data.schedule?.cron) return false;
     return true;
   },
   {
-    message: "Schedule is required for scheduled flows",
-    path: ["schedule"],
+    message: "Schedule cron is required when schedule is enabled",
+    path: ["schedule", "cron"],
   }
 ).refine(
   (data) => {
@@ -280,8 +278,12 @@ Database Flow Configuration Schema:
   // Batch size
   "batchSize": number (100-50000, default: 2000),
 
-  // Enabled state
-  "enabled": boolean (default: true)
+  // Schedule enabled flag
+  "schedule": {
+    "enabled": boolean (default: false),
+    "cron": "string - Cron expression (required if enabled)",
+    "timezone": "string (default: 'UTC')"
+  }
 }
 
 Important notes:

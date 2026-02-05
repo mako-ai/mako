@@ -11,13 +11,12 @@ import {
   MenuItem,
   FormControl,
   Checkbox,
-  Chip,
   Typography,
   Paper,
   Tooltip,
   IconButton,
 } from "@mui/material";
-import { Info as InfoIcon, Warning as WarningIcon } from "@mui/icons-material";
+import { Warning as WarningIcon } from "@mui/icons-material";
 
 /**
  * Column mapping for schema transformation
@@ -85,6 +84,34 @@ const POSTGRESQL_TYPES = [
   { value: "BYTEA", label: "BYTEA", description: "Binary data" },
 ];
 
+// Generic source type options (covers common types across databases)
+const SOURCE_TYPES = [
+  { value: "", label: "(empty)" },
+  { value: "TEXT", label: "TEXT" },
+  { value: "VARCHAR", label: "VARCHAR" },
+  { value: "STRING", label: "STRING" },
+  { value: "INTEGER", label: "INTEGER" },
+  { value: "INT", label: "INT" },
+  { value: "BIGINT", label: "BIGINT" },
+  { value: "INT64", label: "INT64" },
+  { value: "REAL", label: "REAL" },
+  { value: "FLOAT", label: "FLOAT" },
+  { value: "FLOAT64", label: "FLOAT64" },
+  { value: "DOUBLE", label: "DOUBLE" },
+  { value: "NUMERIC", label: "NUMERIC" },
+  { value: "BOOLEAN", label: "BOOLEAN" },
+  { value: "BOOL", label: "BOOL" },
+  { value: "TIMESTAMP", label: "TIMESTAMP" },
+  { value: "DATETIME", label: "DATETIME" },
+  { value: "DATE", label: "DATE" },
+  { value: "TIME", label: "TIME" },
+  { value: "JSON", label: "JSON" },
+  { value: "JSONB", label: "JSONB" },
+  { value: "BLOB", label: "BLOB" },
+  { value: "BYTES", label: "BYTES" },
+  { value: "BYTEA", label: "BYTEA" },
+];
+
 // Transformer options
 const TRANSFORMERS = [
   { value: "", label: "None" },
@@ -139,52 +166,6 @@ function detectTypeMismatch(
   return null;
 }
 
-/**
- * Get source type color based on type category
- */
-function getSourceTypeColor(
-  sourceType: string,
-): "default" | "primary" | "secondary" | "success" | "warning" | "info" {
-  const upper = sourceType.toUpperCase();
-
-  if (
-    upper.includes("INT") ||
-    upper.includes("REAL") ||
-    upper.includes("FLOAT") ||
-    upper.includes("DOUBLE") ||
-    upper.includes("NUMERIC")
-  ) {
-    return "info";
-  }
-
-  if (
-    upper.includes("TEXT") ||
-    upper.includes("VARCHAR") ||
-    upper.includes("CHAR") ||
-    upper.includes("STRING")
-  ) {
-    return "success";
-  }
-
-  if (upper.includes("BOOL")) {
-    return "secondary";
-  }
-
-  if (
-    upper.includes("DATE") ||
-    upper.includes("TIME") ||
-    upper.includes("TIMESTAMP")
-  ) {
-    return "warning";
-  }
-
-  if (upper.includes("BLOB") || upper.includes("BYTES")) {
-    return "default";
-  }
-
-  return "default";
-}
-
 export function SchemaMappingTable({
   columns,
   onChange,
@@ -200,13 +181,22 @@ export function SchemaMappingTable({
     return BIGQUERY_TYPES;
   }, [destinationType]);
 
+  const handleSourceTypeChange = (index: number, newType: string) => {
+    if (disabled) return;
+    const updated = [...columns];
+    updated[index] = { ...updated[index], sourceType: newType };
+    onChange(updated);
+  };
+
   const handleDestTypeChange = (index: number, newType: string) => {
+    if (disabled) return;
     const updated = [...columns];
     updated[index] = { ...updated[index], destType: newType };
     onChange(updated);
   };
 
   const handleNullableChange = (index: number, nullable: boolean) => {
+    if (disabled) return;
     const updated = [...columns];
     updated[index] = { ...updated[index], nullable };
     onChange(updated);
@@ -216,6 +206,7 @@ export function SchemaMappingTable({
     index: number,
     transformer: string | undefined,
   ) => {
+    if (disabled) return;
     const updated = [...columns];
     updated[index] = {
       ...updated[index],
@@ -235,15 +226,15 @@ export function SchemaMappingTable({
         }}
       >
         <Typography variant="body2" color="text.secondary">
-          No columns to map. Run "Analyze Schema" to detect columns from your
-          query.
+          No columns to map. Validate your query to detect columns.
         </Typography>
       </Box>
     );
   }
 
   return (
-    <TableContainer component={Paper} variant="outlined">
+    <Box>
+      <TableContainer component={Paper} variant="outlined">
       <Table size="small">
         <TableHead>
           <TableRow>
@@ -300,13 +291,23 @@ export function SchemaMappingTable({
                   </Box>
                 </TableCell>
                 <TableCell>
-                  <Chip
-                    label={col.sourceType}
-                    size="small"
-                    color={getSourceTypeColor(col.sourceType)}
-                    variant="outlined"
-                    sx={{ fontFamily: "monospace", fontSize: "0.75rem" }}
-                  />
+                  <FormControl size="small" sx={{ minWidth: 120 }}>
+                    <Select
+                      value={col.sourceType}
+                      onChange={e =>
+                        handleSourceTypeChange(index, e.target.value)
+                      }
+                      disabled={disabled}
+                      displayEmpty
+                      sx={{ fontSize: "0.8125rem" }}
+                    >
+                      {SOURCE_TYPES.map(opt => (
+                        <MenuItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
                 </TableCell>
                 <TableCell>
                   <FormControl size="small" sx={{ minWidth: 140 }}>
@@ -316,6 +317,7 @@ export function SchemaMappingTable({
                         handleDestTypeChange(index, e.target.value)
                       }
                       disabled={disabled}
+                      displayEmpty
                       sx={{ fontSize: "0.8125rem" }}
                     >
                       {typeOptions.map(opt => (
@@ -363,6 +365,7 @@ export function SchemaMappingTable({
         </TableBody>
       </Table>
     </TableContainer>
+    </Box>
   );
 }
 

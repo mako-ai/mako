@@ -151,7 +151,6 @@ flowRoutes.get("/", async c => {
           entityFilter: 1,
           queries: 1,
           syncMode: 1,
-          enabled: 1,
           lastRunAt: 1,
           lastSuccessAt: 1,
           lastError: 1,
@@ -222,9 +221,16 @@ flowRoutes.post("/", async c => {
     const flowType = body.type || "scheduled";
     const sourceType = body.sourceType || "connector";
 
-    // Schedule is required for scheduled flows
-    if (flowType === "scheduled" && !body.schedule) {
-      return c.json({ success: false, error: "schedule is required" }, 400);
+    // Schedule cron required only when schedule is enabled
+    if (
+      flowType === "scheduled" &&
+      body.schedule?.enabled &&
+      !body.schedule?.cron
+    ) {
+      return c.json(
+        { success: false, error: "schedule.cron is required when enabled" },
+        400,
+      );
     }
 
     // Validate source configuration based on sourceType
@@ -343,7 +349,6 @@ flowRoutes.post("/", async c => {
           ? body.destinationDatabaseName.trim()
           : undefined,
       syncMode: body.syncMode || "full",
-      enabled: body.enabled !== false,
       createdBy: userId,
     };
 
@@ -394,9 +399,15 @@ flowRoutes.post("/", async c => {
     }
 
     if (flowType === "scheduled") {
+      const scheduleEnabled = body.schedule?.enabled === true;
       flowData.schedule = {
-        cron: body.schedule.cron || body.schedule,
-        timezone: body.schedule.timezone || body.timezone || "UTC",
+        enabled: scheduleEnabled,
+        cron: scheduleEnabled
+          ? body.schedule?.cron || body.schedule
+          : undefined,
+        timezone: scheduleEnabled
+          ? body.schedule?.timezone || body.timezone || "UTC"
+          : undefined,
       };
     } else if (flowType === "webhook") {
       // Generate webhook configuration
@@ -430,13 +441,7 @@ flowRoutes.post("/", async c => {
     if (sourceType === "connector" && flow.dataSourceId) {
       await flow.populate("dataSourceId", "name type");
     }
-    if (flow.databaseSource?.connectionId) {
-      await flow.populate("databaseSource.connectionId", "name type");
-    }
     await flow.populate("destinationDatabaseId", "name type");
-    if (flow.tableDestination?.connectionId) {
-      await flow.populate("tableDestination.connectionId", "name type");
-    }
 
     return c.json({
       success: true,
@@ -473,13 +478,7 @@ flowRoutes.get("/:flowId", async c => {
     if (flow.sourceType !== "database" && flow.dataSourceId) {
       await flow.populate("dataSourceId", "name type config");
     }
-    if (flow.databaseSource?.connectionId) {
-      await flow.populate("databaseSource.connectionId", "name type");
-    }
     await flow.populate("destinationDatabaseId", "name type");
-    if (flow.tableDestination?.connectionId) {
-      await flow.populate("tableDestination.connectionId", "name type");
-    }
 
     return c.json({
       success: true,
@@ -516,9 +515,15 @@ flowRoutes.put("/:flowId", async c => {
 
     // Update common fields
     if (flow.type === "scheduled" && body.schedule) {
+      const scheduleEnabled = body.schedule.enabled === true;
       flow.schedule = {
-        cron: body.schedule.cron || body.schedule,
-        timezone: body.schedule.timezone || flow.schedule.timezone,
+        enabled: scheduleEnabled,
+        cron: scheduleEnabled
+          ? body.schedule.cron || body.schedule
+          : flow.schedule?.cron,
+        timezone: scheduleEnabled
+          ? body.schedule.timezone || flow.schedule?.timezone || "UTC"
+          : flow.schedule?.timezone,
       };
     }
     if (body.destinationDatabaseName !== undefined) {
@@ -529,7 +534,6 @@ flowRoutes.put("/:flowId", async c => {
           : undefined;
     }
     if (body.syncMode) flow.syncMode = body.syncMode;
-    if (body.enabled !== undefined) flow.enabled = body.enabled;
 
     // Update connector source specific fields
     if (flow.sourceType !== "database") {
@@ -626,13 +630,7 @@ flowRoutes.put("/:flowId", async c => {
     if (flow.sourceType !== "database" && flow.dataSourceId) {
       await flow.populate("dataSourceId", "name type");
     }
-    if (flow.databaseSource?.connectionId) {
-      await flow.populate("databaseSource.connectionId", "name type");
-    }
     await flow.populate("destinationDatabaseId", "name type");
-    if (flow.tableDestination?.connectionId) {
-      await flow.populate("tableDestination.connectionId", "name type");
-    }
 
     return c.json({
       success: true,
@@ -696,14 +694,29 @@ flowRoutes.post("/:flowId/toggle", async c => {
       return c.json({ success: false, error: "Flow not found" }, 404);
     }
 
-    flow.enabled = !flow.enabled;
+    if (flow.type !== "scheduled") {
+      return c.json(
+        { success: false, error: "Only scheduled flows can be toggled" },
+        400,
+      );
+    }
+
+    if (!flow.schedule) {
+      flow.schedule = {
+        enabled: true,
+        cron: "0 * * * *",
+        timezone: "UTC",
+      } as any;
+    } else {
+      flow.schedule.enabled = !flow.schedule.enabled;
+    }
     await flow.save();
 
     return c.json({
       success: true,
       data: {
-        enabled: flow.enabled,
-        message: `Flow ${flow.enabled ? "enabled" : "disabled"} successfully`,
+        enabled: flow.schedule?.enabled ?? false,
+        message: `Schedule ${flow.schedule?.enabled ? "enabled" : "disabled"} successfully`,
       },
     });
   } catch (error) {
