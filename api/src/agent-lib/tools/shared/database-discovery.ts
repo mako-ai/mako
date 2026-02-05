@@ -478,6 +478,9 @@ export async function inspectTableImpl(
   if (!tableName) {
     throw new Error("'table' is required");
   }
+  if (!databaseName) {
+    throw new Error("'database' is required");
+  }
 
   const database = await fetchDatabase(connectionId, workspaceId, {
     sqlOnly: true,
@@ -487,10 +490,17 @@ export async function inspectTableImpl(
   let samples: Record<string, unknown>[] = [];
 
   if (dialect === "postgresql") {
-    // Split schema.table if needed
-    const [schemaName, tblName] = tableName.includes(".")
-      ? tableName.split(".")
-      : ["public", tableName];
+    // Split schema.table if needed - preserve table name parts after first dot
+    let schemaName: string;
+    let tblName: string;
+    if (tableName.includes(".")) {
+      const dotIndex = tableName.indexOf(".");
+      schemaName = tableName.slice(0, dotIndex);
+      tblName = tableName.slice(dotIndex + 1);
+    } else {
+      schemaName = "public";
+      tblName = tableName;
+    }
 
     const safeSchema = schemaName.replace(/'/g, "''");
     const safeTable = tblName.replace(/'/g, "''");
@@ -659,10 +669,12 @@ export async function inspectTableImpl(
       }));
     }
 
-    // Get samples
+    // Get samples - escape identifiers to prevent SQL injection
+    const escapedDbName = databaseName.replace(/"/g, '""');
+    const escapedTblName = tableName.replace(/"/g, '""');
     const sampleResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      `SELECT * FROM "${databaseName}"."${tableName}" LIMIT ${MAX_SAMPLE_ROWS}`,
+      `SELECT * FROM "${escapedDbName}"."${escapedTblName}" LIMIT ${MAX_SAMPLE_ROWS}`,
     );
 
     if (sampleResult.success && sampleResult.data) {
