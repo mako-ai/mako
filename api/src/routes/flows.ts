@@ -249,6 +249,19 @@ flowRoutes.post("/", async c => {
         );
       }
 
+      // Validate query safety (read-only SELECT only)
+      const safetyCheck = checkQuerySafety(body.databaseSource.query);
+      if (!safetyCheck.safe) {
+        return c.json(
+          {
+            success: false,
+            error: `Unsafe query: ${safetyCheck.errors.join("; ")}`,
+            safetyCheck,
+          },
+          400,
+        );
+      }
+
       // Validate source database connection exists and belongs to workspace
       const sourceDb = await DatabaseConnection.findOne({
         _id: new Types.ObjectId(body.databaseSource.connectionId),
@@ -552,6 +565,21 @@ flowRoutes.put("/:flowId", async c => {
 
     // Update database source specific fields
     if (flow.sourceType === "database") {
+      // Validate query safety if query is being updated
+      if (body.databaseSource?.query) {
+        const safetyCheck = checkQuerySafety(body.databaseSource.query);
+        if (!safetyCheck.safe) {
+          return c.json(
+            {
+              success: false,
+              error: `Unsafe query: ${safetyCheck.errors.join("; ")}`,
+              safetyCheck,
+            },
+            400,
+          );
+        }
+      }
+
       // Merge databaseSource object to avoid missing fields
       if (body.databaseSource) {
         const newConnectionId = body.databaseSource.connectionId

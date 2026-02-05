@@ -196,7 +196,7 @@ function formatBigQueryValue(
 
   // Handle objects (JSON)
   if (typeof value === "object") {
-    const jsonStr = JSON.stringify(value).replace(/'/g, "\\'");
+    const jsonStr = JSON.stringify(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     if (upperType === "JSON") {
       return `JSON '${jsonStr}'`;
     }

@@ -1076,6 +1076,11 @@ const DANGEROUS_PATTERNS = [
       /;\s*(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|GRANT|REVOKE)\s+/i,
     name: "multi-statement",
   },
+  // CTE with data-modifying operations (e.g., WITH deleted AS (DELETE FROM ...) SELECT ...)
+  {
+    pattern: /\bWITH\b[^;]*\b(DELETE|INSERT|UPDATE|DROP|TRUNCATE|ALTER)\b/i,
+    name: "data-modifying CTE",
+  },
 ];
 
 /**
