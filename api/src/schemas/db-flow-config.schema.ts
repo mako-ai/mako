@@ -70,7 +70,7 @@ export const IncrementalConfigSchema = z.object({
  */
 export const ConflictConfigSchema = z.object({
   keyColumns: z.array(z.string().min(1)).min(1, "At least one key column is required"),
-  strategy: z.enum(["upsert", "ignore", "replace"]).default("upsert"),
+  strategy: z.enum(["update", "ignore", "replace"]).default("update"),
 });
 
 /**
@@ -256,7 +256,7 @@ Database Flow Configuration Schema:
   // Conflict resolution (optional, for upserts)
   "conflictConfig": {
     "keyColumns": ["string"] - Columns that form the unique key,
-    "strategy": "upsert" | "ignore" | "replace" (default: "upsert")
+    "strategy": "update" | "ignore" | "replace" (default: "update")
   },
 
   // Pagination mode (optional)
