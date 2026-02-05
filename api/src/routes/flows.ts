@@ -400,6 +400,18 @@ flowRoutes.post("/", async c => {
       }));
     }
 
+    // Validate: connector sources don't support tableDestination (they always write to MongoDB)
+    if (sourceType === "connector" && body.tableDestination?.connectionId) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
+        },
+        400,
+      );
+    }
+
     // Add table destination if specified
     if (body.tableDestination?.connectionId) {
       flowData.tableDestination = {
