@@ -304,16 +304,32 @@ export class DestinationWriter {
       }));
 
       // Use bulkWrite with upserts
-      const bulkOps = processedRecords.map(record => ({
-        replaceOne: {
-          filter: {
-            id: (record as any).id,
-            _dataSourceId: this.config.dataSourceId,
-          },
-          replacement: record,
-          upsert: true,
-        },
-      }));
+      // When records have an 'id' field, use it for deduplication.
+      // When records lack an 'id' field, fall back to plain inserts
+      // to avoid matching documents with { id: undefined } which would
+      // cause data loss by overwriting unrelated documents.
+      const hasIdField = processedRecords.length > 0 && (processedRecords[0] as any).id !== undefined;
+
+      const bulkOps = processedRecords.map(record => {
+        if (hasIdField) {
+          return {
+            replaceOne: {
+              filter: {
+                id: (record as any).id,
+                _dataSourceId: this.config.dataSourceId,
+              },
+              replacement: record,
+              upsert: true,
+            },
+          };
+        } else {
+          return {
+            insertOne: {
+              document: record,
+            },
+          };
+        }
+      });
 
       const result = await collection.bulkWrite(bulkOps, { ordered: false });
 
@@ -337,18 +353,40 @@ export class DestinationWriter {
 
     const stagingName =
       options.stagingTableName || `${this.config.collectionName}_staging`;
+    const backupName = `${this.config.collectionName}_backup_${Date.now()}`;
 
-    // Drop the original collection
+    // Step 1: Rename original to backup (if it exists)
     try {
-      await this.config.mongoDb.collection(this.config.collectionName).drop();
+      await this.config.mongoDb
+        .collection(this.config.collectionName)
+        .rename(backupName);
     } catch {
-      // Ignore if doesn't exist
+      // Ignore if original doesn't exist (first sync)
     }
 
-    // Rename staging to original
-    await this.config.mongoDb
-      .collection(stagingName)
-      .rename(this.config.collectionName);
+    // Step 2: Rename staging to original
+    try {
+      await this.config.mongoDb
+        .collection(stagingName)
+        .rename(this.config.collectionName);
+    } catch (error) {
+      // If rename fails, try to restore from backup
+      try {
+        await this.config.mongoDb
+          .collection(backupName)
+          .rename(this.config.collectionName);
+      } catch {
+        // Backup restore failed too - log but don't mask original error
+      }
+      throw error;
+    }
+
+    // Step 3: Drop backup collection (non-critical)
+    try {
+      await this.config.mongoDb.collection(backupName).drop();
+    } catch {
+      // Ignore cleanup errors - backup will be cleaned up eventually
+    }
   }
 
   private async cleanupMongoStaging(options: WriteOptions): Promise<void> {
@@ -748,23 +786,46 @@ export async function streamFromDatabaseToDestination(options: {
   }
 
   // Modify query for incremental sync
-  let effectiveQuery = sourceQuery;
+  let effectiveQuery = sourceQuery.replace(/;\s*$/, "");
   if (
     syncMode === "incremental" &&
     incrementalConfig?.trackingColumn &&
     incrementalConfig?.lastValue
   ) {
-    const operator = incrementalConfig.trackingType === "timestamp" ? ">" : ">";
-    const value =
+    // Escape the value to prevent SQL injection
+    const escapedValue =
       incrementalConfig.trackingType === "timestamp"
-        ? `'${incrementalConfig.lastValue}'`
-        : incrementalConfig.lastValue;
+        ? `'${incrementalConfig.lastValue.replace(/'/g, "''")}'`
+        : (() => {
+            const num = Number(incrementalConfig.lastValue);
+            if (!isNaN(num) && isFinite(num)) return String(num);
+            return `'${incrementalConfig.lastValue.replace(/'/g, "''")}'`;
+          })();
 
-    // Simple WHERE clause injection (assumes query doesn't have WHERE or we append with AND)
-    if (effectiveQuery.toLowerCase().includes("where")) {
-      effectiveQuery = `${effectiveQuery} AND ${incrementalConfig.trackingColumn} ${operator} ${value}`;
+    // Insert condition before ORDER BY/GROUP BY/LIMIT if present
+    const clauseRegex = /\b(ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/gi;
+    let firstClausePos = -1;
+    let match: RegExpExecArray | null;
+    while ((match = clauseRegex.exec(effectiveQuery)) !== null) {
+      if (firstClausePos === -1) firstClausePos = match.index;
+    }
+
+    const condition = `${incrementalConfig.trackingColumn} > ${escapedValue}`;
+
+    if (firstClausePos === -1) {
+      if (effectiveQuery.toLowerCase().includes("where")) {
+        effectiveQuery = `${effectiveQuery} AND ${condition}`;
+      } else {
+        effectiveQuery = `${effectiveQuery} WHERE ${condition}`;
+      }
     } else {
-      effectiveQuery = `${effectiveQuery} WHERE ${incrementalConfig.trackingColumn} ${operator} ${value}`;
+      const beforeClause = effectiveQuery.slice(0, firstClausePos).trimEnd();
+      const afterClause = effectiveQuery.slice(firstClausePos);
+      if (beforeClause.toUpperCase().includes("WHERE")) {
+        effectiveQuery = `${beforeClause} AND ${condition} ${afterClause}`;
+      } else {
+        effectiveQuery = `${beforeClause} WHERE ${condition} ${afterClause}`;
+      }
     }
   }
 
@@ -1362,6 +1423,10 @@ export async function executeDbSyncChunk(options: {
   if (syncMode === "full" && !currentState.stagingPrepared) {
     await destinationWriter.prepareFullSync();
     currentState.stagingPrepared = true;
+  } else if (syncMode === "full" && currentState.stagingPrepared) {
+    // Restore staging state for subsequent chunks (new writer instances
+    // default to stagingActive=false, but staging was already prepared)
+    (destinationWriter as any).stagingActive = true;
   }
 
   // Determine pagination mode
@@ -1412,7 +1477,54 @@ export async function executeDbSyncChunk(options: {
     });
   } else {
     // Legacy mode: append WHERE clauses and LIMIT/OFFSET dynamically
-    let effectiveQuery = sourceQuery;
+    // Strip trailing semicolons to avoid "... ; LIMIT ..." syntax errors
+    let effectiveQuery = sourceQuery.replace(/;\s*$/, "");
+
+    // Helper: insert a WHERE/AND condition BEFORE any ORDER BY/GROUP BY/HAVING/LIMIT
+    const appendWhereCondition = (query: string, condition: string): string => {
+      // Find the position of ORDER BY, GROUP BY, HAVING, or LIMIT (not inside subqueries)
+      const upperQuery = query.toUpperCase();
+      // Simple heuristic: find last occurrence of these clauses at the top level
+      const clauseRegex = /\b(ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/gi;
+      let firstClausePos = -1;
+      let match: RegExpExecArray | null;
+      while ((match = clauseRegex.exec(query)) !== null) {
+        if (firstClausePos === -1) {
+          firstClausePos = match.index;
+        }
+      }
+
+      if (firstClausePos === -1) {
+        // No trailing clauses, safe to append directly
+        if (upperQuery.includes("WHERE")) {
+          return `${query} AND ${condition}`;
+        }
+        return `${query} WHERE ${condition}`;
+      }
+
+      // Insert condition before the first trailing clause
+      const beforeClause = query.slice(0, firstClausePos).trimEnd();
+      const afterClause = query.slice(firstClausePos);
+      if (beforeClause.toUpperCase().includes("WHERE")) {
+        return `${beforeClause} AND ${condition} ${afterClause}`;
+      }
+      return `${beforeClause} WHERE ${condition} ${afterClause}`;
+    };
+
+    // Helper: escape a value for safe SQL interpolation
+    const escapeValue = (val: string, type: string): string => {
+      if (type === "timestamp") {
+        // Escape single quotes in timestamp values
+        return `'${val.replace(/'/g, "''")}'`;
+      }
+      // Numeric values - validate they are actually numeric
+      const num = Number(val);
+      if (!isNaN(num) && isFinite(num)) {
+        return String(num);
+      }
+      // Fallback: treat as string
+      return `'${val.replace(/'/g, "''")}'`;
+    };
 
     // Add incremental filter if applicable
     if (
@@ -1420,17 +1532,12 @@ export async function executeDbSyncChunk(options: {
       incrementalConfig?.trackingColumn &&
       incrementalConfig?.lastValue
     ) {
-      const operator = ">";
-      const value =
-        incrementalConfig.trackingType === "timestamp"
-          ? `'${incrementalConfig.lastValue}'`
-          : incrementalConfig.lastValue;
-
-      if (effectiveQuery.toLowerCase().includes("where")) {
-        effectiveQuery = `${effectiveQuery} AND ${incrementalConfig.trackingColumn} ${operator} ${value}`;
-      } else {
-        effectiveQuery = `${effectiveQuery} WHERE ${incrementalConfig.trackingColumn} ${operator} ${value}`;
-      }
+      const value = escapeValue(
+        incrementalConfig.lastValue,
+        incrementalConfig.trackingType || "timestamp",
+      );
+      const condition = `${incrementalConfig.trackingColumn} > ${value}`;
+      effectiveQuery = appendWhereCondition(effectiveQuery, condition);
     }
 
     // Handle pagination based on mode
@@ -1440,17 +1547,13 @@ export async function executeDbSyncChunk(options: {
         currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
 
       if (lastKeyset) {
-        // Add keyset filter
+        // Add keyset filter with proper escaping
         const keysetOperator = keysetDirection === "asc" ? ">" : "<";
         const keysetValue = isNaN(Number(lastKeyset))
-          ? `'${lastKeyset}'`
+          ? `'${String(lastKeyset).replace(/'/g, "''")}'`
           : lastKeyset;
-
-        if (effectiveQuery.toLowerCase().includes("where")) {
-          effectiveQuery = `${effectiveQuery} AND ${keysetColumn} ${keysetOperator} ${keysetValue}`;
-        } else {
-          effectiveQuery = `${effectiveQuery} WHERE ${keysetColumn} ${keysetOperator} ${keysetValue}`;
-        }
+        const condition = `${keysetColumn} ${keysetOperator} ${keysetValue}`;
+        effectiveQuery = appendWhereCondition(effectiveQuery, condition);
       }
 
       // Ensure ORDER BY matches keyset column and direction
@@ -1654,14 +1757,16 @@ export async function dryRunDbSync(options: {
     // Execute specified number of pages
     for (let page = 0; page < pages; page++) {
       let paginatedQuery: string;
+      // Strip trailing semicolons before appending clauses
+      const baseQuery = sourceQuery.replace(/;\s*$/, "");
 
       if (paginationMode === "keyset" && keysetColumn) {
-        let effectiveQuery = sourceQuery;
+        let effectiveQuery = baseQuery;
 
         if (lastKeysetValue) {
           const keysetOperator = keysetDirection === "asc" ? ">" : "<";
           const keysetValue = isNaN(Number(lastKeysetValue))
-            ? `'${lastKeysetValue}'`
+            ? `'${String(lastKeysetValue).replace(/'/g, "''")}'`
             : lastKeysetValue;
 
           if (effectiveQuery.toLowerCase().includes("where")) {
@@ -1677,7 +1782,7 @@ export async function dryRunDbSync(options: {
 
         paginatedQuery = `${effectiveQuery} LIMIT ${pageSize}`;
       } else {
-        let effectiveQuery = sourceQuery;
+        let effectiveQuery = baseQuery;
         if (!effectiveQuery.toLowerCase().includes("order by")) {
           effectiveQuery = `${effectiveQuery} ORDER BY 1`;
         }

@@ -688,36 +688,50 @@ export const flowFunction = inngest.createFunction(
         if (
           flow.syncMode === "incremental" &&
           flow.incrementalConfig?.trackingColumn &&
-          totalRowsProcessed > 0 &&
-          flow.tableDestination?.connectionId
+          totalRowsProcessed > 0
         ) {
           await step.run("update-incremental-tracking", async () => {
             logger.info("Updating incremental tracking value", { flowId });
 
-            const destConnection = await DatabaseConnection.findById(
-              flow.tableDestination!.connectionId,
-            );
-
-            if (destConnection) {
-              const maxValueResult = await getMaxTrackingValue(
-                destConnection,
-                flow.tableDestination!.tableName,
-                flow.incrementalConfig!.trackingColumn,
-                flow.tableDestination!.schema,
-                flow.tableDestination!.database,
+            if (flow.tableDestination?.connectionId) {
+              // SQL table destination: query the destination table for max tracking value
+              const destConnection = await DatabaseConnection.findById(
+                flow.tableDestination.connectionId,
               );
 
-              if (maxValueResult.success && maxValueResult.maxValue) {
-                await Flow.findByIdAndUpdate(flowId, {
-                  "incrementalConfig.lastValue": maxValueResult.maxValue,
-                });
+              if (destConnection) {
+                const maxValueResult = await getMaxTrackingValue(
+                  destConnection,
+                  flow.tableDestination.tableName,
+                  flow.incrementalConfig!.trackingColumn,
+                  flow.tableDestination.schema,
+                  flow.tableDestination.database,
+                );
 
-                logger.info("Incremental tracking updated", {
-                  flowId,
-                  trackingColumn: flow.incrementalConfig!.trackingColumn,
-                  newLastValue: maxValueResult.maxValue,
-                });
+                if (maxValueResult.success && maxValueResult.maxValue) {
+                  await Flow.findByIdAndUpdate(flowId, {
+                    "incrementalConfig.lastValue": maxValueResult.maxValue,
+                  });
+
+                  logger.info("Incremental tracking updated", {
+                    flowId,
+                    trackingColumn: flow.incrementalConfig!.trackingColumn,
+                    newLastValue: maxValueResult.maxValue,
+                  });
+                }
               }
+            } else if (chunkState?.lastTrackingValue) {
+              // MongoDB destination: use the last tracking value from chunk state
+              // (since we can't easily query MongoDB for MAX of an arbitrary column)
+              await Flow.findByIdAndUpdate(flowId, {
+                "incrementalConfig.lastValue": chunkState.lastTrackingValue,
+              });
+
+              logger.info("Incremental tracking updated (from chunk state)", {
+                flowId,
+                trackingColumn: flow.incrementalConfig!.trackingColumn,
+                newLastValue: chunkState.lastTrackingValue,
+              });
             }
           });
         }
