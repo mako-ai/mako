@@ -14,7 +14,7 @@ export interface AIModel {
 
 /**
  * All supported AI models across providers
- * Updated December 2025 with latest models
+ * Updated February 2026 with latest models
  */
 export const ALL_MODELS: AIModel[] = [
   // OpenAI - GPT-5.2 series (released Dec 11, 2025)
@@ -30,12 +30,18 @@ export const ALL_MODELS: AIModel[] = [
     name: "GPT-4o",
     description: "Previous generation, reliable and capable",
   },
-  // Anthropic - Claude 4.5 series (latest)
+  // Anthropic - Claude 4 series (latest)
+  {
+    id: "claude-opus-4-6",
+    provider: "anthropic",
+    name: "Claude Opus 4.6",
+    description: "Most capable, latest flagship with enhanced reasoning",
+  },
   {
     id: "claude-opus-4-5",
     provider: "anthropic",
     name: "Claude Opus 4.5",
-    description: "Most capable, autonomous coding for 30+ hours",
+    description: "Previous flagship, autonomous coding for 30+ hours",
   },
   {
     id: "claude-sonnet-4-5",
@@ -106,10 +112,10 @@ export function getModelById(modelId: string): AIModel | undefined {
 }
 
 /**
- * Get the default model (Claude Opus 4.5 if available, otherwise first available)
+ * Get the default model (Claude Opus 4.6 if available, otherwise first available)
  */
 export function getDefaultModel(): AIModel {
   const available = getAvailableModels();
-  const opus = available.find(m => m.id === "claude-opus-4-5");
+  const opus = available.find(m => m.id === "claude-opus-4-6");
   return opus || available[0] || ALL_MODELS[0];
 }
