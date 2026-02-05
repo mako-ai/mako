@@ -9,7 +9,10 @@
  * field definitions and prevents documentation drift.
  */
 
-import { generateFieldDocs, FIELD_PATHS } from "../../schemas/db-flow-form.schema";
+import {
+  generateFieldDocs,
+  FIELD_PATHS,
+} from "../../schemas/db-flow-form.schema";
 
 /**
  * Build the flow prompt with auto-generated field documentation
@@ -73,7 +76,7 @@ LIMIT {{limit}}
 4. **Write Query:** Create an appropriate query with template placeholders based on the user's needs.
 5. **Validate Query:** Use \`validate_query\` to test the query BEFORE setting form fields. This returns columns and sample data so you can verify it works. Template placeholders like \`{{limit}}\` are automatically substituted with safe defaults during validation.
 6. **⭐ Get Source Schema (CRITICAL):** Use \`inspect_table\` to get the authoritative source column types (declared types, nullability). If you need more information, use \`execute_query\` to run any query - introspection queries, NULL checks, data sampling, etc.
-7. **Set Schema Mappings:** Use \`set_form_field\` with \`fieldName="columnMappings"\` or \`set_form_field\` with \`fieldName="typeCoercions"\` to apply the correct source types mapped to appropriate destination types. Explain your reasoning to the user.
+7. **Set Schema Mappings:** Use \`set_form_field\` with \`fieldName="typeCoercions"\` to set column type mappings. Each item has: \`column\` (name), \`sourceType\`, \`targetType\`, \`nullable\` (boolean), and optional \`transformer\`. Explain your reasoning to the user.
 8. **Discover Destination Options:** 
    - Use \`list_databases\` on the destination connection to get available databases/datasets
    - **For BigQuery:** You MUST set \`tableDestination.schema\` (the dataset name). If not specified by user, ask which dataset to use.
@@ -113,7 +116,7 @@ LIMIT {{limit}}
 1. Use \`validate_query\` (server-side) to test queries first
 2. Use \`inspect_table\` to get the authoritative source column types
 3. Use \`execute_query\` if you need to run additional queries (introspection, NULL checks, data sampling)
-4. Use \`set_form_field\` with nested paths like \`columnMappings\` or \`typeCoercions\` to apply type mappings
+4. Use \`set_form_field\` with \`fieldName="typeCoercions"\` to apply type mappings (array of {column, sourceType, targetType, nullable, transformer})
 
 ---
 
@@ -222,7 +225,7 @@ After writing and validating the query, you MUST get the source schema to propos
    - TEXT columns with JSON data → suggest JSON type for structured storage
    - Columns named \`*_at\` or \`*_time\` with DATETIME type → TIMESTAMP
    - Ask user if unsure about ambiguous mappings
-5. **Set the mappings** using \`set_form_field\` with fieldName="columnMappings" or "typeCoercions"
+5. **Set the mappings** using \`set_form_field\` with fieldName="typeCoercions" - each item: {column, sourceType, targetType, nullable, transformer}
 6. **Explain your choices** to the user so they can make informed edits
 
 **Example Reasoning:**
