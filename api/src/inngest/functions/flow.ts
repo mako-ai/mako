@@ -378,6 +378,9 @@ export const flowFunction = inngest.createFunction(
 
     // Initialize execution ID for tracking
     let executionId: string | undefined;
+    // Track flow and staging state for cleanup on failure
+    let flow: IFlow | undefined;
+    let dbSyncStagingPrepared = false;
 
     // Helper to create the execution logger
     const createExecutionLogger = (flow: IFlow): FlowExecutionLogger => {
@@ -422,7 +425,7 @@ export const flowFunction = inngest.createFunction(
       });
 
       // Get flow details
-      const flow = (await step.run("fetch-flow", async () => {
+      flow = (await step.run("fetch-flow", async () => {
         const found = await Flow.findById(flowId);
         if (!found) {
           throw new Error(`Flow ${flowId} not found`);
@@ -641,6 +644,9 @@ export const flowFunction = inngest.createFunction(
           totalRowsProcessed = chunkState.totalProcessed;
           completed = chunkResult.completed;
           chunkIndex++;
+          if (chunkState.stagingPrepared) {
+            dbSyncStagingPrepared = true;
+          }
 
           logger.info("Chunk completed", {
             flowId,
@@ -1227,6 +1233,47 @@ export const flowFunction = inngest.createFunction(
         errorMessage: error.message,
         isCancelled,
       });
+
+      // Cleanup staging tables on failure (for database source full sync)
+      if (
+        flow?.sourceType === "database" &&
+        flow?.syncMode === "full" &&
+        dbSyncStagingPrepared
+      ) {
+        await step.run("cleanup-staging-on-failure", async () => {
+          try {
+            logger.info("Cleaning up staging table after failure", { flowId });
+
+            const sourceConnection = await DatabaseConnection.findById(
+              flow.databaseSource!.connectionId,
+            );
+
+            const destinationWriter = await createDestinationWriter(
+              {
+                destinationDatabaseId: flow.destinationDatabaseId,
+                destinationDatabaseName: flow.destinationDatabaseName,
+                tableDestination: flow.tableDestination,
+                dataSourceId: flow.databaseSource!.connectionId,
+              },
+              sourceConnection?.name,
+            );
+
+            if (!flow.tableDestination?.tableName && sourceConnection) {
+              (destinationWriter as any).config.collectionName =
+                `${sourceConnection.name}_sync`;
+            }
+
+            (destinationWriter as any).stagingActive = true;
+            await destinationWriter.cleanup();
+            logger.info("Staging table cleanup completed", { flowId });
+          } catch (cleanupError) {
+            logger.error("Failed to cleanup staging table", {
+              flowId,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+          }
+        });
+      }
 
       // Complete execution logging in a step to ensure it runs
       await step.run("complete-execution-error", async () => {
