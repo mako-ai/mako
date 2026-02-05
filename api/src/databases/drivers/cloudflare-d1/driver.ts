@@ -271,13 +271,11 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
 
         const pragmaData = pragmaResult.data ?? [];
         if (pragmaResult.success && pragmaData.length > 0) {
-          const columns: ColumnDefinition[] = pragmaData.map(
-            (col: any) => ({
-              name: col.name,
-              type: this.normalizeSqliteType(col.type || "TEXT"),
-              nullable: col.notnull === 0,
-            }),
-          );
+          const columns: ColumnDefinition[] = pragmaData.map((col: any) => ({
+            name: col.name,
+            type: this.normalizeSqliteType(col.type || "TEXT"),
+            nullable: col.notnull === 0,
+          }));
           return { success: true, columns };
         }
       }
@@ -309,13 +307,11 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
             // We have table schema - now we need to figure out which columns
             // are in the query. Execute the query to at least get column names.
             // Since there are 0 rows, we'll use TEXT as fallback for computed columns.
-            const columns: ColumnDefinition[] = pragmaData.map(
-              (col: any) => ({
-                name: col.name,
-                type: this.normalizeSqliteType(col.type || "TEXT"),
-                nullable: true,
-              }),
-            );
+            const columns: ColumnDefinition[] = pragmaData.map((col: any) => ({
+              name: col.name,
+              type: this.normalizeSqliteType(col.type || "TEXT"),
+              nullable: true,
+            }));
             return { success: true, columns };
           }
         }
@@ -387,19 +383,22 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
       upper.includes("CHAR") ||
       upper.includes("CLOB") ||
       upper.includes("TEXT")
-    )
+    ) {
       return "TEXT";
+    }
     if (
       upper.includes("BLOB") ||
       upper === "" // No type = BLOB affinity
-    )
+    ) {
       return "BLOB";
+    }
     if (
       upper.includes("REAL") ||
       upper.includes("FLOA") ||
       upper.includes("DOUB")
-    )
+    ) {
       return "REAL";
+    }
     // NUMERIC affinity for everything else
     if (
       upper.includes("NUMERIC") ||
@@ -407,8 +406,9 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
       upper.includes("BOOL") ||
       upper.includes("DATE") ||
       upper.includes("TIME")
-    )
-      return upper; // Keep original for clarity
+    ) {
+      return upper;
+    } // Keep original for clarity
     return "TEXT";
   }
 

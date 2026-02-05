@@ -33,9 +33,23 @@ import {
 import {
   prepareQueryForValidation,
   substituteTemplates,
-  hasTemplates,
   detectTemplates,
 } from "../utils/template-substitution";
+
+/**
+ * Helper function to infer JavaScript type from a value
+ */
+function inferJsType(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return "number";
+  if (typeof value === "string") return "string";
+  if (value instanceof Date) return "date";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "object") return "object";
+  return "unknown";
+}
 
 export interface DestinationConfig {
   // For MongoDB collections
@@ -104,8 +118,9 @@ function mapToBigQueryType(sourceType: string): string {
   const t = sourceType.toUpperCase();
   if (t === "TEXT" || t.includes("CHAR") || t.includes("CLOB")) return "STRING";
   if (t === "INTEGER" || t === "INT" || t.includes("INT")) return "INT64";
-  if (t === "REAL" || t === "FLOAT" || t === "DOUBLE" || t === "NUMERIC")
+  if (t === "REAL" || t === "FLOAT" || t === "DOUBLE" || t === "NUMERIC") {
     return "FLOAT64";
+  }
   if (t === "BLOB") return "BYTES";
   if (t.includes("BOOL")) return "BOOL";
   if (t.includes("TIME") || t.includes("DATE")) return "TIMESTAMP";

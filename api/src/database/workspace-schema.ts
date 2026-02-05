@@ -1391,7 +1391,13 @@ const FlowSchema = new Schema<IFlow>(
         nullValue: Schema.Types.Mixed,
         transformer: {
           type: String,
-          enum: ["lowercase", "uppercase", "trim", "json_parse", "json_stringify"],
+          enum: [
+            "lowercase",
+            "uppercase",
+            "trim",
+            "json_parse",
+            "json_stringify",
+          ],
         },
       },
     ],
@@ -1520,7 +1526,6 @@ WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 
-<<<<<<< HEAD
 /**
  * QueryExecution Schema
  * Tracks all query executions for usage analytics and billing
