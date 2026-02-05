@@ -65,7 +65,15 @@ function formatBigQueryValue(
   targetType?: string,
   useCast = false,
 ): string {
-  if (value === null || value === undefined) return "NULL";
+  // For useCast mode (STRUCT arrays in MERGE/INSERT), NULL must be typed to avoid
+  // BigQuery defaulting to INT64 and causing "Array elements of types do not have
+  // a common supertype" errors when mixed with other typed values
+  if (value === null || value === undefined) {
+    if (useCast && targetType) {
+      return `CAST(NULL AS ${targetType.toUpperCase()})`;
+    }
+    return "NULL";
+  }
 
   const upperType = targetType?.toUpperCase();
   const isNumericTarget =
@@ -83,9 +91,7 @@ function formatBigQueryValue(
     // First, format the value as a plain string literal
     let stringValue: string;
 
-    if (value === null || value === undefined) {
-      return `CAST(NULL AS ${upperType})`;
-    } else if (typeof value === "boolean") {
+    if (typeof value === "boolean") {
       stringValue = value ? "true" : "false";
     } else if (value instanceof Date) {
       stringValue = value.toISOString();
@@ -117,8 +123,28 @@ function formatBigQueryValue(
       if (lower === "false" || lower === "0" || lower === "no") return "FALSE";
       return `SAFE_CAST('${stringValue}' AS BOOL)`;
     } else if (upperType === "TIMESTAMP" || upperType === "DATETIME") {
+      // If the value is a numeric Unix timestamp (seconds or milliseconds),
+      // convert to ISO string first since SAFE_CAST can't parse numeric strings
+      const numericValue = Number(stringValue);
+      if (!isNaN(numericValue) && stringValue.trim() !== "") {
+        // Timestamps > 1e12 are in milliseconds, otherwise seconds
+        const ms = numericValue > 1e12 ? numericValue : numericValue * 1000;
+        const date = new Date(ms);
+        if (!isNaN(date.getTime())) {
+          stringValue = date.toISOString();
+        }
+      }
       return `SAFE_CAST('${stringValue}' AS TIMESTAMP)`;
     } else if (upperType === "DATE") {
+      // If the value is a numeric Unix timestamp, convert to date string
+      const numericValue = Number(stringValue);
+      if (!isNaN(numericValue) && stringValue.trim() !== "") {
+        const ms = numericValue > 1e12 ? numericValue : numericValue * 1000;
+        const date = new Date(ms);
+        if (!isNaN(date.getTime())) {
+          stringValue = date.toISOString();
+        }
+      }
       return `SAFE_CAST('${stringValue.slice(0, 10)}' AS DATE)`;
     } else if (upperType === "STRING") {
       return `CAST('${stringValue}' AS STRING)`;
