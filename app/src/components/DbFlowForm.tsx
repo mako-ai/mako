@@ -51,7 +51,7 @@ import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { trackEvent } from "../lib/analytics";
 import { ConnectionSelector } from "./ConnectionSelector";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
-import { SchemaMappingTable, ColumnMapping } from "./SchemaMappingTable";
+import { SchemaMappingTable, TypeCoercion } from "./SchemaMappingTable";
 
 interface DbFlowFormProps {
   flowId?: string;
@@ -74,10 +74,10 @@ export interface DbFlowFormRef {
   setMultipleFields(fields: Record<string, unknown>): void;
   /** Trigger query validation */
   validateQuery(): Promise<void>;
-  /** Set column mappings for schema transformation */
-  setColumnMappings(mappings: ColumnMapping[]): void;
-  /** Get current column mappings */
-  getColumnMappings(): ColumnMapping[];
+  /** Set type coercions (column mappings) for schema transformation */
+  setTypeCoercions(coercions: TypeCoercion[]): void;
+  /** Get current type coercions */
+  getTypeCoercions(): TypeCoercion[];
   /** Navigate to a specific step */
   goToStep(step: number): void;
   /** Get current step */
@@ -121,18 +121,27 @@ interface FormData {
     keysetColumn?: string;
     keysetDirection?: "asc" | "desc";
   };
-  // Column mappings - kept separate for UI convenience, converted to typeCoercions on save
-  columnMappings: ColumnMapping[];
+  // Type coercions - same shape as database/API, no conversion needed
+  typeCoercions: TypeCoercion[];
   schemaMappingConfirmed: boolean;
 }
 
 // Wizard steps
 const STEPS = [
   { label: "Source", description: "Configure source database and query" },
-  { label: "Destination", description: "Configure destination database and table" },
+  {
+    label: "Destination",
+    description: "Configure destination database and table",
+  },
   { label: "Schema Mapping", description: "Review and confirm column types" },
-  { label: "Sync Mode", description: "Configure sync behavior and conflict handling" },
-  { label: "Schedule", description: "Set up automatic sync schedule (optional)" },
+  {
+    label: "Sync Mode",
+    description: "Configure sync behavior and conflict handling",
+  },
+  {
+    label: "Schedule",
+    description: "Set up automatic sync schedule (optional)",
+  },
 ];
 
 // Common schedule presets
@@ -178,7 +187,7 @@ const DEFAULT_FORM_VALUES: FormData = {
     keysetColumn: "",
     keysetDirection: "asc",
   },
-  columnMappings: [],
+  typeCoercions: [],
   schemaMappingConfirmed: false,
 };
 
@@ -388,13 +397,13 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       validateQuery: async () => {
         await handleValidateQuery();
       },
-      setColumnMappings: (mappings: ColumnMapping[]) => {
-        setValue("columnMappings", mappings, { shouldValidate: true });
-        if (mappings.length > 0 && !openSteps.has(2)) {
+      setTypeCoercions: (coercions: TypeCoercion[]) => {
+        setValue("typeCoercions", coercions, { shouldValidate: true });
+        if (coercions.length > 0 && !openSteps.has(2)) {
           setOpenSteps(prev => new Set([...prev, 2]));
         }
       },
-      getColumnMappings: () => getValues("columnMappings") || [],
+      getTypeCoercions: () => getValues("typeCoercions") || [],
       goToStep: (step: number) => {
         if (step >= 0 && step < STEPS.length) {
           setOpenSteps(prev => new Set([...prev, step]));
@@ -416,7 +425,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
     const watchDestTable = watch("tableDestination.tableName");
     const watchSyncMode = watch("syncMode");
     const watchPaginationMode = watch("paginationConfig.mode");
-    const watchColumnMappings = watch("columnMappings");
+    const watchTypeCoercions = watch("typeCoercions");
     const watchSchemaMappingConfirmed = watch("schemaMappingConfirmed");
 
     // Step navigation helpers
@@ -701,24 +710,29 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       const loadFlowData = async () => {
         setIsLoadingFlow(true);
         try {
-          const flow = await fetchFlowDetails(currentWorkspace.id, currentFlowId);
-          
+          const flow = await fetchFlowDetails(
+            currentWorkspace.id,
+            currentFlowId,
+          );
+
           if (!flow || flow.sourceType !== "database") {
             return;
           }
 
-          // Convert typeCoercions to columnMappings for UI
-          const columnMappings: ColumnMapping[] = (
-            flow.typeCoercions || []
-          ).map((tc: any) => ({
-            name: tc.column,
-            sourceType: tc.sourceType || "UNKNOWN",
-            destType: tc.targetType,
-            nullable: true,
-            transformer: tc.transformer,
-          }));
+          // typeCoercions from API go straight into the form - same shape!
+          const typeCoercions: TypeCoercion[] = (flow.typeCoercions || []).map(
+            (tc: any) => ({
+              column: tc.column,
+              sourceType: tc.sourceType,
+              targetType: tc.targetType,
+              nullable: tc.nullable ?? true,
+              transformer: tc.transformer,
+              format: tc.format,
+              nullValue: tc.nullValue,
+            }),
+          );
 
-          // Form data now matches API structure directly (nested)
+          // Form data matches API structure directly (nested)
           const formData: FormData = {
             databaseSource: {
               connectionId: flow.databaseSource?.connectionId?.toString() || "",
@@ -726,11 +740,13 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
               query: flow.databaseSource?.query || "",
             },
             tableDestination: {
-              connectionId: flow.tableDestination?.connectionId?.toString() || "",
+              connectionId:
+                flow.tableDestination?.connectionId?.toString() || "",
               database: flow.tableDestination?.database || "",
               schema: flow.tableDestination?.schema || "",
               tableName: flow.tableDestination?.tableName || "",
-              createIfNotExists: flow.tableDestination?.createIfNotExists ?? true,
+              createIfNotExists:
+                flow.tableDestination?.createIfNotExists ?? true,
             },
             schedule: {
               enabled: flow.schedule?.enabled ?? !!flow.schedule?.cron,
@@ -739,21 +755,26 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             },
             syncMode: flow.syncMode as "full" | "incremental",
             batchSize: flow.batchSize || 2000,
-            incrementalConfig: flow.incrementalConfig ? {
-              trackingColumn: flow.incrementalConfig.trackingColumn || "",
-              trackingType: flow.incrementalConfig.trackingType || "timestamp",
-            } : undefined,
-            conflictConfig: flow.conflictConfig ? {
-              keyColumns: flow.conflictConfig.keyColumns || [],
-              strategy: flow.conflictConfig.strategy || "upsert",
-            } : undefined,
+            incrementalConfig: flow.incrementalConfig
+              ? {
+                  trackingColumn: flow.incrementalConfig.trackingColumn || "",
+                  trackingType:
+                    flow.incrementalConfig.trackingType || "timestamp",
+                }
+              : undefined,
+            conflictConfig: flow.conflictConfig
+              ? {
+                  keyColumns: flow.conflictConfig.keyColumns || [],
+                  strategy: flow.conflictConfig.strategy || "upsert",
+                }
+              : undefined,
             paginationConfig: {
               mode: flow.paginationConfig?.mode || "offset",
               keysetColumn: flow.paginationConfig?.keysetColumn || "",
               keysetDirection: flow.paginationConfig?.keysetDirection || "asc",
             },
-            columnMappings,
-            schemaMappingConfirmed: columnMappings.length > 0,
+            typeCoercions,
+            schemaMappingConfirmed: typeCoercions.length > 0,
           };
 
           prevSourceConnectionIdRef.current =
@@ -772,7 +793,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
           );
           setScheduleMode(isPreset ? "preset" : "custom");
 
-          if (columnMappings.length > 0) {
+          if (typeCoercions.length > 0) {
             setOpenSteps(prev => new Set([...prev, 2]));
           }
         } catch (err) {
@@ -784,7 +805,13 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       };
 
       loadFlowData();
-    }, [isNewMode, currentFlowId, currentWorkspace?.id, fetchFlowDetails, reset]);
+    }, [
+      isNewMode,
+      currentFlowId,
+      currentWorkspace?.id,
+      fetchFlowDetails,
+      reset,
+    ]);
 
     // Clear store error when component unmounts
     useEffect(() => {
@@ -812,7 +839,10 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
         return;
       }
 
-      if (data.syncMode === "incremental" && !data.incrementalConfig?.trackingColumn?.trim()) {
+      if (
+        data.syncMode === "incremental" &&
+        !data.incrementalConfig?.trackingColumn?.trim()
+      ) {
         setError("Tracking column is required for incremental sync");
         return;
       }
@@ -856,14 +886,19 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
           schedule: {
             enabled: data.schedule.enabled,
             cron: data.schedule.enabled ? data.schedule.cron : undefined,
-            timezone: data.schedule.enabled ? data.schedule.timezone : undefined,
+            timezone: data.schedule.enabled
+              ? data.schedule.timezone
+              : undefined,
           },
           syncMode: data.syncMode,
           batchSize: data.batchSize,
         };
 
         // Add incremental config if applicable
-        if (data.syncMode === "incremental" && data.incrementalConfig?.trackingColumn) {
+        if (
+          data.syncMode === "incremental" &&
+          data.incrementalConfig?.trackingColumn
+        ) {
           payload.incrementalConfig = {
             trackingColumn: data.incrementalConfig.trackingColumn.trim(),
             trackingType: data.incrementalConfig.trackingType || "timestamp",
@@ -880,7 +915,10 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
 
         // Add pagination config
         if (data.paginationConfig) {
-          if (data.paginationConfig.mode === "keyset" && data.paginationConfig.keysetColumn) {
+          if (
+            data.paginationConfig.mode === "keyset" &&
+            data.paginationConfig.keysetColumn
+          ) {
             payload.paginationConfig = {
               mode: "keyset",
               keysetColumn: data.paginationConfig.keysetColumn.trim(),
@@ -893,14 +931,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
           }
         }
 
-        // Convert columnMappings to typeCoercions for API
-        if (data.columnMappings && data.columnMappings.length > 0) {
-          payload.typeCoercions = data.columnMappings.map(col => ({
-            column: col.name,
-            sourceType: col.sourceType,
-            targetType: col.destType,
-            transformer: col.transformer || undefined,
-          }));
+        // typeCoercions go straight to API - same shape!
+        if (data.typeCoercions && data.typeCoercions.length > 0) {
+          payload.typeCoercions = data.typeCoercions;
         }
 
         let newFlow;
@@ -962,28 +995,28 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       [getValues, setValue],
     );
 
-    // Handle column mapping changes
-    const handleColumnMappingsChange = (mappings: ColumnMapping[]) => {
-      setValue("columnMappings", mappings, { shouldValidate: true });
+    // Handle type coercion changes
+    const handleTypeCoercionsChange = (coercions: TypeCoercion[]) => {
+      setValue("typeCoercions", coercions, { shouldValidate: true });
     };
 
     // Smart merge: only add new columns from validation
     const handleMergeColumnsFromValidation = () => {
       if (validationResult?.columns && validationResult.columns.length > 0) {
-        const existingMappings = getValues("columnMappings") || [];
-        const existingNames = new Set(existingMappings.map(m => m.name));
+        const existingCoercions = getValues("typeCoercions") || [];
+        const existingColumns = new Set(existingCoercions.map(c => c.column));
 
-        const newColumns: ColumnMapping[] = validationResult.columns
-          .filter(col => !existingNames.has(col.name))
+        const newCoercions: TypeCoercion[] = validationResult.columns
+          .filter(col => !existingColumns.has(col.name))
           .map(col => ({
-            name: col.name,
+            column: col.name,
             sourceType: "",
-            destType: "",
+            targetType: "",
             nullable: true,
           }));
 
-        if (newColumns.length > 0) {
-          setValue("columnMappings", [...existingMappings, ...newColumns], {
+        if (newCoercions.length > 0) {
+          setValue("typeCoercions", [...existingCoercions, ...newCoercions], {
             shouldValidate: true,
           });
         }
@@ -1067,1293 +1100,1398 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                 }}
               >
                 <CircularProgress size={32} sx={{ mr: 2 }} />
-                <Typography color="text.secondary">Loading flow configuration...</Typography>
+                <Typography color="text.secondary">
+                  Loading flow configuration...
+                </Typography>
               </Box>
             )}
 
             {!isLoadingFlow && (
-            <>
-            <form onSubmit={handleSubmit(onSubmit)}>
-              {/* Step 1: Source Configuration */}
-              <Accordion
-                expanded={openSteps.has(0)}
-                onChange={() => toggleStep(0)}
-                sx={{ mb: 1 }}
-              >
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon />}
-                  sx={{
-                    "& .MuiAccordionSummary-content": {
-                      alignItems: "center",
-                      gap: 1,
-                    },
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: "50%",
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "0.75rem",
-                      fontWeight: "bold",
-                    }}
+              <>
+                <form onSubmit={handleSubmit(onSubmit)}>
+                  {/* Step 1: Source Configuration */}
+                  <Accordion
+                    expanded={openSteps.has(0)}
+                    onChange={() => toggleStep(0)}
+                    sx={{ mb: 1 }}
                   >
-                    1
-                  </Typography>
-                  <Box>
-                    <Typography variant="subtitle2">
-                      {STEPS[0].label}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {STEPS[0].description}
-                    </Typography>
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails>
-                <Stack spacing={3}>
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
+                    <AccordionSummary
+                      expandIcon={<ExpandMoreIcon />}
                       sx={{
-                        mb: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1,
+                        "& .MuiAccordionSummary-content": {
+                          alignItems: "center",
+                          gap: 1,
+                        },
                       }}
                     >
-                      <DatabaseIcon fontSize="small" />
-                      Source Database
-                    </Typography>
-                    <Stack spacing={2}>
-                      <Controller
-                        name="databaseSource.connectionId"
-                        control={control}
-                        rules={{ required: "Source connection is required" }}
-                        render={({ field }) => (
-                          <ConnectionSelector
-                            value={field.value}
-                            onChange={field.onChange}
-                            label="Source Connection"
-                            error={!!errors.databaseSource?.connectionId}
-                            helperText={errors.databaseSource?.connectionId?.message}
-                            fullWidth
-                          />
-                        )}
-                      />
-
-                      {watchSourceConnectionId && (
-                        <>
-                          {isLoadingSourceDbs ? (
-                            <Box
-                              sx={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 2,
-                              }}
-                            >
-                              <CircularProgress size={20} />
-                              <Typography
-                                variant="body2"
-                                color="text.secondary"
-                              >
-                                Loading{" "}
-                                {isBigQuerySource ? "datasets" : "databases"}
-                                ...
-                              </Typography>
-                            </Box>
-                          ) : sourceDatabases.length > 0 ? (
+                      <Typography
+                        sx={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: "50%",
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "0.75rem",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        1
+                      </Typography>
+                      <Box>
+                        <Typography variant="subtitle2">
+                          {STEPS[0].label}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {STEPS[0].description}
+                        </Typography>
+                      </Box>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Stack spacing={3}>
+                        <Box>
+                          <Typography
+                            variant="subtitle2"
+                            sx={{
+                              mb: 1,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 1,
+                            }}
+                          >
+                            <DatabaseIcon fontSize="small" />
+                            Source Database
+                          </Typography>
+                          <Stack spacing={2}>
                             <Controller
-                              name="databaseSource.database"
+                              name="databaseSource.connectionId"
                               control={control}
+                              rules={{
+                                required: "Source connection is required",
+                              }}
                               render={({ field }) => (
-                                <FormControl fullWidth>
-                                  <InputLabel>
-                                    {isBigQuerySource
-                                      ? "Source Dataset"
-                                      : "Source Database"}
-                                  </InputLabel>
-                                  <Select
-                                    {...field}
-                                    label={
-                                      isBigQuerySource
-                                        ? "Source Dataset"
-                                        : "Source Database"
-                                    }
-                                  >
-                                    <MenuItem value="">
-                                      <em>Default</em>
-                                    </MenuItem>
-                                    {sourceDatabases.map(db => (
-                                      <MenuItem key={db.id} value={db.id}>
-                                        {db.label || db.id}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
-                                  <FormHelperText>
-                                    {isBigQuerySource
-                                      ? "Select the BigQuery dataset"
-                                      : "Select the database within this connection"}
-                                  </FormHelperText>
-                                </FormControl>
+                                <ConnectionSelector
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  label="Source Connection"
+                                  error={!!errors.databaseSource?.connectionId}
+                                  helperText={
+                                    errors.databaseSource?.connectionId?.message
+                                  }
+                                  fullWidth
+                                />
                               )}
                             />
-                          ) : null}
-                        </>
-                      )}
 
-                      <Controller
-                        name="databaseSource.query"
-                        control={control}
-                        rules={{ required: "SQL query is required" }}
-                        render={({ field }) => (
-                          <Box>
-                            <Typography
-                              variant="body2"
-                              sx={{
-                                mb: 0.5,
-                                color: errors.databaseSource?.query
-                                  ? "error.main"
-                                  : "text.secondary",
-                              }}
-                            >
-                              SQL Query *
-                            </Typography>
-                            <Box
-                              sx={{
-                                height: 200,
-                                border: 1,
-                                borderColor: errors.databaseSource?.query
-                                  ? "error.main"
-                                  : "divider",
-                                borderRadius: 1,
-                                overflow: "hidden",
-                              }}
-                            >
-                              <Editor
-                                language="sql"
-                                value={field.value}
-                                theme={
-                                  effectiveMode === "dark" ? "vs-dark" : "vs"
+                            {watchSourceConnectionId && (
+                              <>
+                                {isLoadingSourceDbs ? (
+                                  <Box
+                                    sx={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 2,
+                                    }}
+                                  >
+                                    <CircularProgress size={20} />
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
+                                      Loading{" "}
+                                      {isBigQuerySource
+                                        ? "datasets"
+                                        : "databases"}
+                                      ...
+                                    </Typography>
+                                  </Box>
+                                ) : sourceDatabases.length > 0 ? (
+                                  <Controller
+                                    name="databaseSource.database"
+                                    control={control}
+                                    render={({ field }) => (
+                                      <FormControl fullWidth>
+                                        <InputLabel>
+                                          {isBigQuerySource
+                                            ? "Source Dataset"
+                                            : "Source Database"}
+                                        </InputLabel>
+                                        <Select
+                                          {...field}
+                                          label={
+                                            isBigQuerySource
+                                              ? "Source Dataset"
+                                              : "Source Database"
+                                          }
+                                        >
+                                          <MenuItem value="">
+                                            <em>Default</em>
+                                          </MenuItem>
+                                          {sourceDatabases.map(db => (
+                                            <MenuItem key={db.id} value={db.id}>
+                                              {db.label || db.id}
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                        <FormHelperText>
+                                          {isBigQuerySource
+                                            ? "Select the BigQuery dataset"
+                                            : "Select the database within this connection"}
+                                        </FormHelperText>
+                                      </FormControl>
+                                    )}
+                                  />
+                                ) : null}
+                              </>
+                            )}
+
+                            <Controller
+                              name="databaseSource.query"
+                              control={control}
+                              rules={{ required: "SQL query is required" }}
+                              render={({ field }) => (
+                                <Box>
+                                  <Typography
+                                    variant="body2"
+                                    sx={{
+                                      mb: 0.5,
+                                      color: errors.databaseSource?.query
+                                        ? "error.main"
+                                        : "text.secondary",
+                                    }}
+                                  >
+                                    SQL Query *
+                                  </Typography>
+                                  <Box
+                                    sx={{
+                                      height: 200,
+                                      border: 1,
+                                      borderColor: errors.databaseSource?.query
+                                        ? "error.main"
+                                        : "divider",
+                                      borderRadius: 1,
+                                      overflow: "hidden",
+                                    }}
+                                  >
+                                    <Editor
+                                      language="sql"
+                                      value={field.value}
+                                      theme={
+                                        effectiveMode === "dark"
+                                          ? "vs-dark"
+                                          : "vs"
+                                      }
+                                      onChange={value =>
+                                        field.onChange(value || "")
+                                      }
+                                      options={{
+                                        minimap: { enabled: false },
+                                        fontSize: 13,
+                                        wordWrap: "on",
+                                        lineNumbers: "on",
+                                        scrollBeyondLastLine: false,
+                                        automaticLayout: true,
+                                        tabSize: 2,
+                                        padding: { top: 8, bottom: 8 },
+                                        scrollbar: {
+                                          vertical: "auto",
+                                          horizontal: "auto",
+                                        },
+                                      }}
+                                      onMount={(editor, monaco) => {
+                                        editorRef.current = editor;
+                                        monacoRef.current = monaco;
+                                        registerTemplateCompletions(monaco);
+                                      }}
+                                    />
+                                  </Box>
+                                  <FormHelperText
+                                    error={!!errors.databaseSource?.query}
+                                  >
+                                    {errors.databaseSource?.query?.message ||
+                                      "Use {{limit}}, {{offset}}, {{last_sync_value}}, {{keyset_value}} for dynamic values"}
+                                  </FormHelperText>
+                                </Box>
+                              )}
+                            />
+
+                            {/* Validate Query Button */}
+                            <Box>
+                              <Button
+                                variant="outlined"
+                                size="small"
+                                startIcon={
+                                  isValidating ? (
+                                    <CircularProgress size={16} />
+                                  ) : (
+                                    <ValidateIcon />
+                                  )
                                 }
-                                onChange={value => field.onChange(value || "")}
-                                options={{
-                                  minimap: { enabled: false },
-                                  fontSize: 13,
-                                  wordWrap: "on",
-                                  lineNumbers: "on",
-                                  scrollBeyondLastLine: false,
-                                  automaticLayout: true,
-                                  tabSize: 2,
-                                  padding: { top: 8, bottom: 8 },
-                                  scrollbar: {
-                                    vertical: "auto",
-                                    horizontal: "auto",
-                                  },
-                                }}
-                                onMount={(editor, monaco) => {
-                                  editorRef.current = editor;
-                                  monacoRef.current = monaco;
-                                  registerTemplateCompletions(monaco);
-                                }}
-                              />
+                                onClick={handleValidateQuery}
+                                disabled={
+                                  isValidating ||
+                                  !watchSourceConnectionId ||
+                                  !watchQuery?.trim()
+                                }
+                              >
+                                {isValidating
+                                  ? "Validating..."
+                                  : "Validate Query"}
+                              </Button>
                             </Box>
-                            <FormHelperText error={!!errors.databaseSource?.query}>
-                              {errors.databaseSource?.query?.message ||
-                                "Use {{limit}}, {{offset}}, {{last_sync_value}}, {{keyset_value}} for dynamic values"}
-                            </FormHelperText>
-                          </Box>
-                        )}
-                      />
 
-                      {/* Validate Query Button */}
-                      <Box>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          startIcon={
-                            isValidating ? (
-                              <CircularProgress size={16} />
-                            ) : (
-                              <ValidateIcon />
-                            )
-                          }
-                          onClick={handleValidateQuery}
-                          disabled={
-                            isValidating ||
-                            !watchSourceConnectionId ||
-                            !watchQuery?.trim()
-                          }
-                        >
-                          {isValidating ? "Validating..." : "Validate Query"}
-                        </Button>
-                      </Box>
+                            {/* Validation Results */}
+                            {validationResult && (
+                              <Box sx={{ mt: 1 }}>
+                                {validationResult.success ? (
+                                  <Alert
+                                    severity="success"
+                                    icon={<CheckIcon />}
+                                    sx={{ mb: 1 }}
+                                  >
+                                    <Typography
+                                      variant="body2"
+                                      fontWeight="medium"
+                                    >
+                                      Query validated successfully
+                                    </Typography>
+                                    {validationResult.columns &&
+                                      validationResult.columns.length > 0 && (
+                                        <Box sx={{ mt: 1 }}>
+                                          <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                          >
+                                            Columns (
+                                            {validationResult.columns.length}
+                                            ):
+                                          </Typography>
+                                          <Box
+                                            sx={{
+                                              display: "flex",
+                                              flexWrap: "wrap",
+                                              gap: 0.5,
+                                              mt: 0.5,
+                                            }}
+                                          >
+                                            {validationResult.columns.map(
+                                              (col, idx) => (
+                                                <Chip
+                                                  key={idx}
+                                                  label={`${col.name} (${col.type})`}
+                                                  size="small"
+                                                  variant="outlined"
+                                                  sx={{ fontSize: "0.75rem" }}
+                                                />
+                                              ),
+                                            )}
+                                          </Box>
+                                        </Box>
+                                      )}
+                                  </Alert>
+                                ) : (
+                                  <Alert severity="error" sx={{ mb: 1 }}>
+                                    <Typography variant="body2">
+                                      {validationResult.error ||
+                                        "Query validation failed"}
+                                    </Typography>
+                                  </Alert>
+                                )}
 
-                      {/* Validation Results */}
-                      {validationResult && (
-                        <Box sx={{ mt: 1 }}>
-                          {validationResult.success ? (
-                            <Alert
-                              severity="success"
-                              icon={<CheckIcon />}
-                              sx={{ mb: 1 }}
-                            >
-                              <Typography variant="body2" fontWeight="medium">
-                                Query validated successfully
-                              </Typography>
-                              {validationResult.columns &&
-                                validationResult.columns.length > 0 && (
-                                  <Box sx={{ mt: 1 }}>
+                                {validationResult.warnings &&
+                                  validationResult.warnings.length > 0 && (
+                                    <Alert
+                                      severity="warning"
+                                      icon={<WarningIcon />}
+                                      sx={{ mb: 1 }}
+                                    >
+                                      <Typography
+                                        variant="body2"
+                                        fontWeight="medium"
+                                      >
+                                        Suggestions:
+                                      </Typography>
+                                      <ul
+                                        style={{
+                                          margin: "4px 0 0 0",
+                                          paddingLeft: "20px",
+                                        }}
+                                      >
+                                        {validationResult.warnings.map(
+                                          (warning, idx) => (
+                                            <li key={idx}>
+                                              <Typography variant="body2">
+                                                {warning}
+                                              </Typography>
+                                            </li>
+                                          ),
+                                        )}
+                                      </ul>
+                                    </Alert>
+                                  )}
+
+                                {validationResult.sampleRow && (
+                                  <Box
+                                    sx={{
+                                      mt: 1,
+                                      p: 1.5,
+                                      bgcolor: "action.hover",
+                                      borderRadius: 1,
+                                      overflow: "auto",
+                                    }}
+                                  >
                                     <Typography
                                       variant="caption"
                                       color="text.secondary"
+                                      gutterBottom
                                     >
-                                      Columns ({validationResult.columns.length}
-                                      ):
+                                      Sample row:
                                     </Typography>
                                     <Box
+                                      component="pre"
                                       sx={{
-                                        display: "flex",
-                                        flexWrap: "wrap",
-                                        gap: 0.5,
+                                        m: 0,
                                         mt: 0.5,
+                                        fontSize: "0.75rem",
+                                        fontFamily: "monospace",
+                                        whiteSpace: "pre-wrap",
+                                        wordBreak: "break-all",
                                       }}
                                     >
-                                      {validationResult.columns.map(
-                                        (col, idx) => (
-                                          <Chip
-                                            key={idx}
-                                            label={`${col.name} (${col.type})`}
-                                            size="small"
-                                            variant="outlined"
-                                            sx={{ fontSize: "0.75rem" }}
-                                          />
-                                        ),
+                                      {JSON.stringify(
+                                        validationResult.sampleRow,
+                                        null,
+                                        2,
                                       )}
                                     </Box>
                                   </Box>
                                 )}
-                            </Alert>
-                          ) : (
-                            <Alert severity="error" sx={{ mb: 1 }}>
-                              <Typography variant="body2">
-                                {validationResult.error ||
-                                  "Query validation failed"}
-                              </Typography>
-                            </Alert>
-                          )}
-
-                          {validationResult.warnings &&
-                            validationResult.warnings.length > 0 && (
-                              <Alert
-                                severity="warning"
-                                icon={<WarningIcon />}
-                                sx={{ mb: 1 }}
-                              >
-                                <Typography variant="body2" fontWeight="medium">
-                                  Suggestions:
-                                </Typography>
-                                <ul
-                                  style={{
-                                    margin: "4px 0 0 0",
-                                    paddingLeft: "20px",
-                                  }}
-                                >
-                                  {validationResult.warnings.map(
-                                    (warning, idx) => (
-                                      <li key={idx}>
-                                        <Typography variant="body2">
-                                          {warning}
-                                        </Typography>
-                                      </li>
-                                    ),
-                                  )}
-                                </ul>
-                              </Alert>
-                            )}
-
-                          {validationResult.sampleRow && (
-                            <Box
-                              sx={{
-                                mt: 1,
-                                p: 1.5,
-                                bgcolor: "action.hover",
-                                borderRadius: 1,
-                                overflow: "auto",
-                              }}
-                            >
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                                gutterBottom
-                              >
-                                Sample row:
-                              </Typography>
-                              <Box
-                                component="pre"
-                                sx={{
-                                  m: 0,
-                                  mt: 0.5,
-                                  fontSize: "0.75rem",
-                                  fontFamily: "monospace",
-                                  whiteSpace: "pre-wrap",
-                                  wordBreak: "break-all",
-                                }}
-                              >
-                                {JSON.stringify(
-                                  validationResult.sampleRow,
-                                  null,
-                                  2,
-                                )}
                               </Box>
-                            </Box>
-                          )}
+                            )}
+                          </Stack>
                         </Box>
-                      )}
-                    </Stack>
-                  </Box>
 
-                  <Box
-                    sx={{ display: "flex", justifyContent: "flex-end", pt: 2 }}
-                  >
-                    <Button
-                      variant="contained"
-                      endIcon={<NextIcon />}
-                      onClick={() => {
-                        if (
-                          validationResult?.success &&
-                          validationResult.columns
-                        ) {
-                          handleMergeColumnsFromValidation();
-                        }
-                        openNextStep(0);
-                      }}
-                    >
-                      Continue to Destination
-                    </Button>
-                  </Box>
-                </Stack>
-                </AccordionDetails>
-              </Accordion>
+                        <Box
+                          sx={{
+                            display: "flex",
+                            justifyContent: "flex-end",
+                            pt: 2,
+                          }}
+                        >
+                          <Button
+                            variant="contained"
+                            endIcon={<NextIcon />}
+                            onClick={() => {
+                              if (
+                                validationResult?.success &&
+                                validationResult.columns
+                              ) {
+                                handleMergeColumnsFromValidation();
+                              }
+                              openNextStep(0);
+                            }}
+                          >
+                            Continue to Destination
+                          </Button>
+                        </Box>
+                      </Stack>
+                    </AccordionDetails>
+                  </Accordion>
 
-              {/* Step 2: Destination Configuration */}
-              <Accordion
-                expanded={openSteps.has(1)}
-                onChange={() => toggleStep(1)}
-                sx={{ mb: 1 }}
-              >
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon />}
-                  sx={{
-                    "& .MuiAccordionSummary-content": {
-                      alignItems: "center",
-                      gap: 1,
-                    },
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: "50%",
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "0.75rem",
-                      fontWeight: "bold",
-                    }}
+                  {/* Step 2: Destination Configuration */}
+                  <Accordion
+                    expanded={openSteps.has(1)}
+                    onChange={() => toggleStep(1)}
+                    sx={{ mb: 1 }}
                   >
-                    2
-                  </Typography>
-                  <Box>
-                    <Typography variant="subtitle2">
-                      {STEPS[1].label}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {STEPS[1].description}
-                    </Typography>
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails>
-                <Stack spacing={3}>
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
+                    <AccordionSummary
+                      expandIcon={<ExpandMoreIcon />}
                       sx={{
-                        mb: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1,
+                        "& .MuiAccordionSummary-content": {
+                          alignItems: "center",
+                          gap: 1,
+                        },
                       }}
                     >
-                      <DatabaseIcon fontSize="small" />
-                      Destination Database
-                    </Typography>
-                    <Stack spacing={2}>
-                      <Controller
-                        name="tableDestination.connectionId"
-                        control={control}
-                        rules={{
-                          required: "Destination connection is required",
+                      <Typography
+                        sx={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: "50%",
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "0.75rem",
+                          fontWeight: "bold",
                         }}
-                        render={({ field }) => (
-                          <ConnectionSelector
-                            value={field.value}
-                            onChange={field.onChange}
-                            label="Destination Connection"
-                            error={!!errors.tableDestination?.connectionId}
-                            helperText={errors.tableDestination?.connectionId?.message}
-                            fullWidth
-                          />
-                        )}
-                      />
-
-                      {watchDestConnectionId && !isBigQueryDest && (
-                        <>
-                          {isLoadingDestDbs ? (
-                            <Box
-                              sx={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 2,
-                              }}
-                            >
-                              <CircularProgress size={20} />
-                              <Typography
-                                variant="body2"
-                                color="text.secondary"
-                              >
-                                Loading databases...
-                              </Typography>
-                            </Box>
-                          ) : destDatabases.length > 0 ? (
-                            <Controller
-                              name="tableDestination.database"
-                              control={control}
-                              render={({ field }) => (
-                                <FormControl fullWidth>
-                                  <InputLabel>Destination Database</InputLabel>
-                                  <Select
-                                    {...field}
-                                    label="Destination Database"
-                                  >
-                                    <MenuItem value="">
-                                      <em>Default</em>
-                                    </MenuItem>
-                                    {destDatabases.map(db => (
-                                      <MenuItem key={db.id} value={db.id}>
-                                        {db.label || db.id}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
-                                </FormControl>
-                              )}
-                            />
-                          ) : null}
-                        </>
-                      )}
-
-                      <Stack
-                        direction={{ xs: "column", md: "row" }}
-                        spacing={2}
                       >
-                        {showSchemaField &&
-                          (isBigQueryDest ? (
+                        2
+                      </Typography>
+                      <Box>
+                        <Typography variant="subtitle2">
+                          {STEPS[1].label}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {STEPS[1].description}
+                        </Typography>
+                      </Box>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Stack spacing={3}>
+                        <Box>
+                          <Typography
+                            variant="subtitle2"
+                            sx={{
+                              mb: 1,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 1,
+                            }}
+                          >
+                            <DatabaseIcon fontSize="small" />
+                            Destination Database
+                          </Typography>
+                          <Stack spacing={2}>
                             <Controller
-                              name="tableDestination.schema"
+                              name="tableDestination.connectionId"
                               control={control}
                               rules={{
-                                required: "Dataset is required for BigQuery",
+                                required: "Destination connection is required",
                               }}
                               render={({ field }) => (
-                                <FormControl
+                                <ConnectionSelector
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  label="Destination Connection"
+                                  error={
+                                    !!errors.tableDestination?.connectionId
+                                  }
+                                  helperText={
+                                    errors.tableDestination?.connectionId
+                                      ?.message
+                                  }
                                   fullWidth
-                                  sx={{ flex: 1 }}
-                                  error={!!errors.tableDestination?.schema}
-                                >
-                                  <InputLabel>Dataset</InputLabel>
-                                  <Select {...field} label="Dataset">
-                                    {isLoadingDestDbs ? (
-                                      <MenuItem value="" disabled>
-                                        Loading datasets...
-                                      </MenuItem>
-                                    ) : destDatabases.length === 0 ? (
-                                      <MenuItem value="" disabled>
-                                        No datasets found
-                                      </MenuItem>
-                                    ) : (
-                                      destDatabases.map(ds => (
-                                        <MenuItem key={ds.id} value={ds.id}>
-                                          {ds.label || ds.id}
-                                        </MenuItem>
-                                      ))
-                                    )}
-                                  </Select>
-                                  <FormHelperText>
-                                    {errors.tableDestination?.schema?.message ||
-                                      "Select the BigQuery dataset"}
-                                  </FormHelperText>
-                                </FormControl>
-                              )}
-                            />
-                          ) : (
-                            <Controller
-                              name="tableDestination.schema"
-                              control={control}
-                              render={({ field }) => (
-                                <TextField
-                                  {...field}
-                                  label="Schema (optional)"
-                                  placeholder="public"
-                                  helperText="PostgreSQL schema name"
-                                  sx={{ flex: 1 }}
                                 />
                               )}
                             />
-                          ))}
-                        <Controller
-                          name="tableDestination.tableName"
-                          control={control}
-                          rules={{ required: "Table name is required" }}
-                          render={({ field }) => (
-                            <TextField
-                              {...field}
-                              label="Table Name"
-                              placeholder="synced_users"
-                              error={!!errors.tableDestination?.tableName}
-                              helperText={errors.tableDestination?.tableName?.message}
-                              sx={{ flex: 1 }}
-                            />
-                          )}
-                        />
-                      </Stack>
 
-                      <Controller
-                        name="tableDestination.createIfNotExists"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControlLabel
-                            control={
-                              <Switch
-                                checked={field.value}
-                                onChange={field.onChange}
-                              />
-                            }
-                            label="Create table if not exists"
-                          />
-                        )}
-                      />
-                    </Stack>
-                  </Box>
-
-                  <Box
-                    sx={{
-                      display: "flex",
-                      justifyContent: "flex-end",
-                      pt: 2,
-                    }}
-                  >
-                    <Button
-                      variant="contained"
-                      endIcon={<NextIcon />}
-                      onClick={() => openNextStep(1)}
-                    >
-                      Continue to Schema Mapping
-                    </Button>
-                  </Box>
-                </Stack>
-                </AccordionDetails>
-              </Accordion>
-
-              {/* Step 3: Schema Mapping */}
-              <Accordion
-                expanded={openSteps.has(2)}
-                onChange={() => toggleStep(2)}
-                sx={{ mb: 1 }}
-              >
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon />}
-                  sx={{
-                    "& .MuiAccordionSummary-content": {
-                      alignItems: "center",
-                      gap: 1,
-                    },
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: "50%",
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "0.75rem",
-                      fontWeight: "bold",
-                    }}
-                  >
-                    3
-                  </Typography>
-                  <Box>
-                    <Typography variant="subtitle2">
-                      {STEPS[2].label}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {STEPS[2].description}
-                    </Typography>
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails>
-                <Stack spacing={3}>
-                  <Box>
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      sx={{ mb: 2 }}
-                    >
-                      Review and adjust the destination column types. The AI
-                      agent can help inspect your source table and suggest
-                      optimal types. You can also manually adjust any column's
-                      destination type using the dropdowns below.
-                    </Typography>
-
-                    <SchemaMappingTable
-                      columns={watchColumnMappings || []}
-                      onChange={handleColumnMappingsChange}
-                      destinationType={
-                        selectedDestConnection?.type || "bigquery"
-                      }
-                    />
-
-                    {watchColumnMappings?.length === 0 && (
-                      <Alert severity="info" sx={{ mt: 2 }}>
-                        <Typography variant="body2">
-                          No columns detected yet. Go back to Step 1 and
-                          validate your query, or ask the AI agent to help
-                          configure the schema mapping.
-                        </Typography>
-                      </Alert>
-                    )}
-
-                    {watchColumnMappings?.length > 0 && (
-                      <Box sx={{ mt: 2 }}>
-                        <FormControlLabel
-                          control={
-                            <Switch
-                              checked={watchSchemaMappingConfirmed || false}
-                              onChange={e =>
-                                setValue(
-                                  "schemaMappingConfirmed",
-                                  e.target.checked,
-                                )
-                              }
-                            />
-                          }
-                          label={
-                            <Typography variant="body2">
-                              I have reviewed and confirmed the column type
-                              mappings
-                            </Typography>
-                          }
-                        />
-                      </Box>
-                    )}
-                  </Box>
-
-                  <Box
-                    sx={{
-                      display: "flex",
-                      justifyContent: "flex-end",
-                      pt: 2,
-                    }}
-                  >
-                    <Button
-                      variant="contained"
-                      endIcon={<NextIcon />}
-                      onClick={() => openNextStep(2)}
-                    >
-                      Continue to Sync Mode
-                    </Button>
-                  </Box>
-                </Stack>
-                </AccordionDetails>
-              </Accordion>
-
-              {/* Step 4: Sync Mode */}
-              <Accordion
-                expanded={openSteps.has(3)}
-                onChange={() => toggleStep(3)}
-                sx={{ mb: 1 }}
-              >
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon />}
-                  sx={{
-                    "& .MuiAccordionSummary-content": {
-                      alignItems: "center",
-                      gap: 1,
-                    },
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: "50%",
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "0.75rem",
-                      fontWeight: "bold",
-                    }}
-                  >
-                    4
-                  </Typography>
-                  <Box>
-                    <Typography variant="subtitle2">
-                      {STEPS[3].label}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {STEPS[3].description}
-                    </Typography>
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails>
-                <Stack spacing={3}>
-                  {/* Sync Mode Selection */}
-                  <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                    <Controller
-                      name="syncMode"
-                      control={control}
-                      render={({ field }) => (
-                        <FormControl sx={{ flex: 1 }}>
-                          <InputLabel>Sync Mode</InputLabel>
-                          <Select {...field} label="Sync Mode">
-                            <MenuItem value="full">Full Sync</MenuItem>
-                            <MenuItem value="incremental">
-                              Incremental Sync
-                            </MenuItem>
-                          </Select>
-                          <FormHelperText>
-                            {field.value === "full"
-                              ? "Replace all data on each sync"
-                              : "Only sync new or updated records"}
-                          </FormHelperText>
-                        </FormControl>
-                      )}
-                    />
-                  </Stack>
-
-                  {/* Incremental Config */}
-                  {watchSyncMode === "incremental" && (
-                    <>
-                      <Stack
-                        direction={{ xs: "column", md: "row" }}
-                        spacing={2}
-                      >
-                        <Controller
-                          name="incrementalConfig.trackingColumn"
-                          control={control}
-                          rules={{
-                            required:
-                              watchSyncMode === "incremental"
-                                ? "Tracking column is required for incremental sync"
-                                : false,
-                          }}
-                          render={({ field }) => (
-                            <TextField
-                              {...field}
-                              value={field.value || ""}
-                              label="Tracking Column"
-                              placeholder="updated_at"
-                              error={!!errors.incrementalConfig?.trackingColumn}
-                              helperText={
-                                errors.incrementalConfig?.trackingColumn?.message ||
-                                "Column to track for incremental updates"
-                              }
-                              sx={{ flex: 1 }}
-                            />
-                          )}
-                        />
-                        <Controller
-                          name="incrementalConfig.trackingType"
-                          control={control}
-                          render={({ field }) => (
-                            <FormControl sx={{ flex: 1 }}>
-                              <InputLabel>Tracking Type</InputLabel>
-                              <Select {...field} value={field.value || "timestamp"} label="Tracking Type">
-                                <MenuItem value="timestamp">Timestamp</MenuItem>
-                                <MenuItem value="numeric">
-                                  Numeric (ID)
-                                </MenuItem>
-                              </Select>
-                            </FormControl>
-                          )}
-                        />
-                      </Stack>
-
-                      {!isNewMode &&
-                        currentFlowId &&
-                        (() => {
-                          const currentFlow = flows.find(
-                            f => f._id === currentFlowId,
-                          );
-                          const lastValue =
-                            currentFlow?.incrementalConfig?.lastValue;
-                          const trackingCol =
-                            currentFlow?.incrementalConfig?.trackingColumn;
-
-                          if (lastValue && trackingCol) {
-                            return (
-                              <Alert severity="info" sx={{ mt: 1 }}>
-                                <Typography variant="body2">
-                                  <strong>Last synced value:</strong>{" "}
-                                  {lastValue}
-                                </Typography>
-                                <Typography
-                                  variant="body2"
-                                  color="text.secondary"
-                                  sx={{ mt: 0.5 }}
-                                >
-                                  Next sync will fetch rows where{" "}
-                                  <code
-                                    style={{
-                                      backgroundColor: "rgba(0,0,0,0.08)",
-                                      padding: "2px 4px",
-                                      borderRadius: 4,
+                            {watchDestConnectionId && !isBigQueryDest && (
+                              <>
+                                {isLoadingDestDbs ? (
+                                  <Box
+                                    sx={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 2,
                                     }}
                                   >
-                                    {trackingCol} &gt; '{lastValue}'
-                                  </code>
-                                </Typography>
-                              </Alert>
-                            );
-                          }
+                                    <CircularProgress size={20} />
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
+                                      Loading databases...
+                                    </Typography>
+                                  </Box>
+                                ) : destDatabases.length > 0 ? (
+                                  <Controller
+                                    name="tableDestination.database"
+                                    control={control}
+                                    render={({ field }) => (
+                                      <FormControl fullWidth>
+                                        <InputLabel>
+                                          Destination Database
+                                        </InputLabel>
+                                        <Select
+                                          {...field}
+                                          label="Destination Database"
+                                        >
+                                          <MenuItem value="">
+                                            <em>Default</em>
+                                          </MenuItem>
+                                          {destDatabases.map(db => (
+                                            <MenuItem key={db.id} value={db.id}>
+                                              {db.label || db.id}
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                      </FormControl>
+                                    )}
+                                  />
+                                ) : null}
+                              </>
+                            )}
 
-                          if (
-                            !lastValue &&
-                            currentFlow?.runCount &&
-                            currentFlow.runCount > 0
-                          ) {
-                            return (
-                              <Alert severity="warning" sx={{ mt: 1 }}>
-                                <Typography variant="body2">
-                                  Flow has run but no tracking value recorded.
-                                  First run may have synced all rows.
-                                </Typography>
-                              </Alert>
-                            );
-                          }
+                            <Stack
+                              direction={{ xs: "column", md: "row" }}
+                              spacing={2}
+                            >
+                              {showSchemaField &&
+                                (isBigQueryDest ? (
+                                  <Controller
+                                    name="tableDestination.schema"
+                                    control={control}
+                                    rules={{
+                                      required:
+                                        "Dataset is required for BigQuery",
+                                    }}
+                                    render={({ field }) => (
+                                      <FormControl
+                                        fullWidth
+                                        sx={{ flex: 1 }}
+                                        error={
+                                          !!errors.tableDestination?.schema
+                                        }
+                                      >
+                                        <InputLabel>Dataset</InputLabel>
+                                        <Select {...field} label="Dataset">
+                                          {isLoadingDestDbs ? (
+                                            <MenuItem value="" disabled>
+                                              Loading datasets...
+                                            </MenuItem>
+                                          ) : destDatabases.length === 0 ? (
+                                            <MenuItem value="" disabled>
+                                              No datasets found
+                                            </MenuItem>
+                                          ) : (
+                                            destDatabases.map(ds => (
+                                              <MenuItem
+                                                key={ds.id}
+                                                value={ds.id}
+                                              >
+                                                {ds.label || ds.id}
+                                              </MenuItem>
+                                            ))
+                                          )}
+                                        </Select>
+                                        <FormHelperText>
+                                          {errors.tableDestination?.schema
+                                            ?.message ||
+                                            "Select the BigQuery dataset"}
+                                        </FormHelperText>
+                                      </FormControl>
+                                    )}
+                                  />
+                                ) : (
+                                  <Controller
+                                    name="tableDestination.schema"
+                                    control={control}
+                                    render={({ field }) => (
+                                      <TextField
+                                        {...field}
+                                        label="Schema (optional)"
+                                        placeholder="public"
+                                        helperText="PostgreSQL schema name"
+                                        sx={{ flex: 1 }}
+                                      />
+                                    )}
+                                  />
+                                ))}
+                              <Controller
+                                name="tableDestination.tableName"
+                                control={control}
+                                rules={{ required: "Table name is required" }}
+                                render={({ field }) => (
+                                  <TextField
+                                    {...field}
+                                    label="Table Name"
+                                    placeholder="synced_users"
+                                    error={!!errors.tableDestination?.tableName}
+                                    helperText={
+                                      errors.tableDestination?.tableName
+                                        ?.message
+                                    }
+                                    sx={{ flex: 1 }}
+                                  />
+                                )}
+                              />
+                            </Stack>
 
-                          return (
-                            <Alert severity="info" sx={{ mt: 1 }}>
+                            <Controller
+                              name="tableDestination.createIfNotExists"
+                              control={control}
+                              render={({ field }) => (
+                                <FormControlLabel
+                                  control={
+                                    <Switch
+                                      checked={field.value}
+                                      onChange={field.onChange}
+                                    />
+                                  }
+                                  label="Create table if not exists"
+                                />
+                              )}
+                            />
+                          </Stack>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            display: "flex",
+                            justifyContent: "flex-end",
+                            pt: 2,
+                          }}
+                        >
+                          <Button
+                            variant="contained"
+                            endIcon={<NextIcon />}
+                            onClick={() => openNextStep(1)}
+                          >
+                            Continue to Schema Mapping
+                          </Button>
+                        </Box>
+                      </Stack>
+                    </AccordionDetails>
+                  </Accordion>
+
+                  {/* Step 3: Schema Mapping */}
+                  <Accordion
+                    expanded={openSteps.has(2)}
+                    onChange={() => toggleStep(2)}
+                    sx={{ mb: 1 }}
+                  >
+                    <AccordionSummary
+                      expandIcon={<ExpandMoreIcon />}
+                      sx={{
+                        "& .MuiAccordionSummary-content": {
+                          alignItems: "center",
+                          gap: 1,
+                        },
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: "50%",
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "0.75rem",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        3
+                      </Typography>
+                      <Box>
+                        <Typography variant="subtitle2">
+                          {STEPS[2].label}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {STEPS[2].description}
+                        </Typography>
+                      </Box>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Stack spacing={3}>
+                        <Box>
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{ mb: 2 }}
+                          >
+                            Review and adjust the destination column types. The
+                            AI agent can help inspect your source table and
+                            suggest optimal types. You can also manually adjust
+                            any column's destination type using the dropdowns
+                            below.
+                          </Typography>
+
+                          <SchemaMappingTable
+                            columns={watchTypeCoercions || []}
+                            onChange={handleTypeCoercionsChange}
+                            destinationType={
+                              selectedDestConnection?.type || "bigquery"
+                            }
+                          />
+
+                          {watchTypeCoercions?.length === 0 && (
+                            <Alert severity="info" sx={{ mt: 2 }}>
                               <Typography variant="body2">
-                                First sync will fetch all rows. Subsequent syncs
-                                will only fetch new/updated records.
+                                No columns detected yet. Go back to Step 1 and
+                                validate your query, or ask the AI agent to help
+                                configure the schema mapping.
                               </Typography>
                             </Alert>
-                          );
-                        })()}
-                    </>
-                  )}
+                          )}
 
-                  <Divider />
+                          {watchTypeCoercions?.length > 0 && (
+                            <Box sx={{ mt: 2 }}>
+                              <FormControlLabel
+                                control={
+                                  <Switch
+                                    checked={
+                                      watchSchemaMappingConfirmed || false
+                                    }
+                                    onChange={e =>
+                                      setValue(
+                                        "schemaMappingConfirmed",
+                                        e.target.checked,
+                                      )
+                                    }
+                                  />
+                                }
+                                label={
+                                  <Typography variant="body2">
+                                    I have reviewed and confirmed the column
+                                    type mappings
+                                  </Typography>
+                                }
+                              />
+                            </Box>
+                          )}
+                        </Box>
 
-                  {/* Conflict Resolution */}
-                  <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                    <Controller
-                      name="conflictConfig.keyColumns"
-                      control={control}
-                      render={({ field }) => (
-                        <TextField
-                          value={Array.isArray(field.value) ? field.value.join(", ") : ""}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            const columns = value ? value.split(",").map(k => k.trim()).filter(Boolean) : [];
-                            field.onChange(columns);
+                        <Box
+                          sx={{
+                            display: "flex",
+                            justifyContent: "flex-end",
+                            pt: 2,
                           }}
-                          label="Key Columns (optional)"
-                          placeholder="id, email"
-                          helperText="Comma-separated list of columns for upsert"
-                          sx={{ flex: 1 }}
-                        />
-                      )}
-                    />
-                    <Controller
-                      name="conflictConfig.strategy"
-                      control={control}
-                      render={({ field }) => (
-                        <FormControl sx={{ flex: 1 }}>
-                          <InputLabel>Conflict Strategy</InputLabel>
-                          <Select {...field} value={field.value || "upsert"} label="Conflict Strategy">
-                            <MenuItem value="upsert">
-                              Upsert (update or insert)
-                            </MenuItem>
-                            <MenuItem value="ignore">Skip duplicates</MenuItem>
-                            <MenuItem value="replace">
-                              Replace entire row
-                            </MenuItem>
-                          </Select>
-                        </FormControl>
-                      )}
-                    />
-                  </Stack>
+                        >
+                          <Button
+                            variant="contained"
+                            endIcon={<NextIcon />}
+                            onClick={() => openNextStep(2)}
+                          >
+                            Continue to Sync Mode
+                          </Button>
+                        </Box>
+                      </Stack>
+                    </AccordionDetails>
+                  </Accordion>
 
-                  {/* Batch Size */}
-                  <Controller
-                    name="batchSize"
-                    control={control}
-                    render={({ field }) => (
-                      <TextField
-                        {...field}
-                        type="number"
-                        label="Batch Size"
-                        helperText="Number of rows to process per batch (100-50000)"
-                        onChange={e =>
-                          field.onChange(parseInt(e.target.value) || 2000)
-                        }
-                        sx={{ maxWidth: 200 }}
-                        inputProps={{ min: 100, max: 50000 }}
-                      />
-                    )}
-                  />
-
-                  <Divider />
-
-                  {/* Pagination Configuration */}
-                  <Box>
-                    <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                      Pagination
-                    </Typography>
-                    <Stack spacing={2}>
-                      <Controller
-                        name="paginationConfig.mode"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControl fullWidth>
-                            <InputLabel>Pagination Mode</InputLabel>
-                            <Select {...field} value={field.value || "offset"} label="Pagination Mode">
-                              <MenuItem value="offset">
-                                Offset (LIMIT/OFFSET)
-                              </MenuItem>
-                              <MenuItem value="keyset">
-                                Keyset (WHERE col &gt; last_value)
-                              </MenuItem>
-                            </Select>
-                            <FormHelperText>
-                              {field.value === "offset"
-                                ? "Standard pagination. Works for any query but slower for large tables."
-                                : "Faster for large tables (100k+ rows). Requires a unique, indexed column."}
-                            </FormHelperText>
-                          </FormControl>
-                        )}
-                      />
-
-                      {watchPaginationMode === "keyset" && (
+                  {/* Step 4: Sync Mode */}
+                  <Accordion
+                    expanded={openSteps.has(3)}
+                    onChange={() => toggleStep(3)}
+                    sx={{ mb: 1 }}
+                  >
+                    <AccordionSummary
+                      expandIcon={<ExpandMoreIcon />}
+                      sx={{
+                        "& .MuiAccordionSummary-content": {
+                          alignItems: "center",
+                          gap: 1,
+                        },
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: "50%",
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "0.75rem",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        4
+                      </Typography>
+                      <Box>
+                        <Typography variant="subtitle2">
+                          {STEPS[3].label}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {STEPS[3].description}
+                        </Typography>
+                      </Box>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Stack spacing={3}>
+                        {/* Sync Mode Selection */}
                         <Stack
                           direction={{ xs: "column", md: "row" }}
                           spacing={2}
                         >
                           <Controller
-                            name="paginationConfig.keysetColumn"
-                            control={control}
-                            rules={{
-                              required:
-                                watchPaginationMode === "keyset"
-                                  ? "Keyset column is required for keyset pagination"
-                                  : false,
-                            }}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                value={field.value || ""}
-                                label="Keyset Column"
-                                placeholder="id"
-                                error={!!errors.paginationConfig?.keysetColumn}
-                                helperText={
-                                  errors.paginationConfig?.keysetColumn?.message ||
-                                  "Column to use for keyset pagination (e.g., id, created_at)"
-                                }
-                                sx={{ flex: 1 }}
-                              />
-                            )}
-                          />
-                          <Controller
-                            name="paginationConfig.keysetDirection"
+                            name="syncMode"
                             control={control}
                             render={({ field }) => (
                               <FormControl sx={{ flex: 1 }}>
-                                <InputLabel>Sort Direction</InputLabel>
-                                <Select {...field} value={field.value || "asc"} label="Sort Direction">
-                                  <MenuItem value="asc">
-                                    Ascending (ASC)
-                                  </MenuItem>
-                                  <MenuItem value="desc">
-                                    Descending (DESC)
+                                <InputLabel>Sync Mode</InputLabel>
+                                <Select {...field} label="Sync Mode">
+                                  <MenuItem value="full">Full Sync</MenuItem>
+                                  <MenuItem value="incremental">
+                                    Incremental Sync
                                   </MenuItem>
                                 </Select>
                                 <FormHelperText>
-                                  Must match ORDER BY in your query
+                                  {field.value === "full"
+                                    ? "Replace all data on each sync"
+                                    : "Only sync new or updated records"}
                                 </FormHelperText>
                               </FormControl>
                             )}
                           />
                         </Stack>
-                      )}
-                    </Stack>
-                  </Box>
 
-                  <Box
-                    sx={{
-                      display: "flex",
-                      justifyContent: "flex-end",
-                      pt: 2,
-                    }}
-                  >
-                    <Button
-                      variant="contained"
-                      endIcon={<NextIcon />}
-                      onClick={() => openNextStep(3)}
-                    >
-                      Continue to Schedule
-                    </Button>
-                  </Box>
-                </Stack>
-                </AccordionDetails>
-              </Accordion>
-
-              {/* Step 5: Schedule */}
-              <Accordion
-                expanded={openSteps.has(4)}
-                onChange={() => toggleStep(4)}
-                sx={{ mb: 1 }}
-              >
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon />}
-                  sx={{
-                    "& .MuiAccordionSummary-content": {
-                      alignItems: "center",
-                      gap: 1,
-                    },
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: "50%",
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "0.75rem",
-                      fontWeight: "bold",
-                    }}
-                  >
-                    5
-                  </Typography>
-                  <Box>
-                    <Typography variant="subtitle2">
-                      {STEPS[4].label}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {STEPS[4].description}
-                    </Typography>
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails>
-                <Stack spacing={3}>
-                  {/* Schedule Enable Toggle */}
-                  <Box>
-                    <Controller
-                      name="schedule.enabled"
-                      control={control}
-                      render={({ field }) => (
-                        <FormControlLabel
-                          control={
-                            <Switch
-                              checked={field.value}
-                              onChange={field.onChange}
-                            />
-                          }
-                          label={
-                            <Box>
-                              <Typography variant="body1">
-                                Enable automatic scheduling
-                              </Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                {field.value
-                                  ? "Flow will run automatically on the configured schedule"
-                                  : "Flow can only be run manually (no automatic schedule)"}
-                              </Typography>
-                            </Box>
-                          }
-                        />
-                      )}
-                    />
-                  </Box>
-
-                  {/* Schedule Configuration - only shown when enabled */}
-                  {watchScheduleEnabled && (
-                    <>
-                      <Box>
-                        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                          Schedule
-                        </Typography>
-                        <ToggleButtonGroup
-                          value={scheduleMode}
-                          exclusive
-                          onChange={handleScheduleModeChange}
-                          size="small"
-                          fullWidth
-                          sx={{
-                            mb: 2,
-                            width: "100%",
-                            p: 0.125,
-                            bgcolor: "action.hover",
-                            borderRadius: 1,
-                            "& .MuiToggleButton-root": {
-                              flex: 1,
-                              textTransform: "none",
-                              border: "none",
-                              borderRadius: 0.75,
-                              fontWeight: 600,
-                              fontSize: "0.875rem",
-                              lineHeight: 1.2,
-                              minHeight: 36,
-                              py: 0.5,
-                            },
-                            "& .MuiToggleButton-root.Mui-selected": {
-                              bgcolor: "background.paper",
-                              boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
-                            },
-                          }}
-                        >
-                          <ToggleButton value="preset">Preset</ToggleButton>
-                          <ToggleButton value="custom">Custom</ToggleButton>
-                        </ToggleButtonGroup>
-                      </Box>
-
-                      <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                        <Box sx={{ flex: scheduleMode === "preset" ? 2 : 1.5 }}>
-                          <Controller
-                            name="schedule.cron"
-                            control={control}
-                            render={({ field }) => {
-                              return scheduleMode === "preset" ? (
-                                <FormControl fullWidth>
-                                  <InputLabel>Schedule Preset</InputLabel>
-                                  <Select
+                        {/* Incremental Config */}
+                        {watchSyncMode === "incremental" && (
+                          <>
+                            <Stack
+                              direction={{ xs: "column", md: "row" }}
+                              spacing={2}
+                            >
+                              <Controller
+                                name="incrementalConfig.trackingColumn"
+                                control={control}
+                                rules={{
+                                  required:
+                                    watchSyncMode === "incremental"
+                                      ? "Tracking column is required for incremental sync"
+                                      : false,
+                                }}
+                                render={({ field }) => (
+                                  <TextField
                                     {...field}
                                     value={field.value || ""}
-                                    label="Schedule Preset"
-                                  >
-                                    {SCHEDULE_PRESETS.map(preset => (
-                                      <MenuItem
-                                        key={preset.cron}
-                                        value={preset.cron}
-                                      >
-                                        {preset.label}
+                                    label="Tracking Column"
+                                    placeholder="updated_at"
+                                    error={
+                                      !!errors.incrementalConfig?.trackingColumn
+                                    }
+                                    helperText={
+                                      errors.incrementalConfig?.trackingColumn
+                                        ?.message ||
+                                      "Column to track for incremental updates"
+                                    }
+                                    sx={{ flex: 1 }}
+                                  />
+                                )}
+                              />
+                              <Controller
+                                name="incrementalConfig.trackingType"
+                                control={control}
+                                render={({ field }) => (
+                                  <FormControl sx={{ flex: 1 }}>
+                                    <InputLabel>Tracking Type</InputLabel>
+                                    <Select
+                                      {...field}
+                                      value={field.value || "timestamp"}
+                                      label="Tracking Type"
+                                    >
+                                      <MenuItem value="timestamp">
+                                        Timestamp
                                       </MenuItem>
-                                    ))}
-                                  </Select>
-                                </FormControl>
-                              ) : (
-                                <TextField
-                                  {...field}
-                                  value={field.value || ""}
-                                  fullWidth
-                                  label="Cron Expression"
-                                  error={!!errors.schedule?.cron}
-                                  helperText={
-                                    errors.schedule?.cron?.message ||
-                                    "Format: minute hour day month weekday"
-                                  }
-                                  placeholder="0 * * * *"
-                                />
-                              );
-                            }}
-                          />
-                        </Box>
+                                      <MenuItem value="numeric">
+                                        Numeric (ID)
+                                      </MenuItem>
+                                    </Select>
+                                  </FormControl>
+                                )}
+                              />
+                            </Stack>
 
-                        <Box sx={{ flex: 1 }}>
+                            {!isNewMode &&
+                              currentFlowId &&
+                              (() => {
+                                const currentFlow = flows.find(
+                                  f => f._id === currentFlowId,
+                                );
+                                const lastValue =
+                                  currentFlow?.incrementalConfig?.lastValue;
+                                const trackingCol =
+                                  currentFlow?.incrementalConfig
+                                    ?.trackingColumn;
+
+                                if (lastValue && trackingCol) {
+                                  return (
+                                    <Alert severity="info" sx={{ mt: 1 }}>
+                                      <Typography variant="body2">
+                                        <strong>Last synced value:</strong>{" "}
+                                        {lastValue}
+                                      </Typography>
+                                      <Typography
+                                        variant="body2"
+                                        color="text.secondary"
+                                        sx={{ mt: 0.5 }}
+                                      >
+                                        Next sync will fetch rows where{" "}
+                                        <code
+                                          style={{
+                                            backgroundColor: "rgba(0,0,0,0.08)",
+                                            padding: "2px 4px",
+                                            borderRadius: 4,
+                                          }}
+                                        >
+                                          {trackingCol} &gt; '{lastValue}'
+                                        </code>
+                                      </Typography>
+                                    </Alert>
+                                  );
+                                }
+
+                                if (
+                                  !lastValue &&
+                                  currentFlow?.runCount &&
+                                  currentFlow.runCount > 0
+                                ) {
+                                  return (
+                                    <Alert severity="warning" sx={{ mt: 1 }}>
+                                      <Typography variant="body2">
+                                        Flow has run but no tracking value
+                                        recorded. First run may have synced all
+                                        rows.
+                                      </Typography>
+                                    </Alert>
+                                  );
+                                }
+
+                                return (
+                                  <Alert severity="info" sx={{ mt: 1 }}>
+                                    <Typography variant="body2">
+                                      First sync will fetch all rows. Subsequent
+                                      syncs will only fetch new/updated records.
+                                    </Typography>
+                                  </Alert>
+                                );
+                              })()}
+                          </>
+                        )}
+
+                        <Divider />
+
+                        {/* Conflict Resolution */}
+                        <Stack
+                          direction={{ xs: "column", md: "row" }}
+                          spacing={2}
+                        >
                           <Controller
-                            name="schedule.timezone"
+                            name="conflictConfig.keyColumns"
                             control={control}
                             render={({ field }) => (
                               <TextField
-                                {...field}
-                                fullWidth
-                                label="Timezone"
-                                helperText="e.g., America/New_York"
+                                value={
+                                  Array.isArray(field.value)
+                                    ? field.value.join(", ")
+                                    : ""
+                                }
+                                onChange={e => {
+                                  const value = e.target.value;
+                                  const columns = value
+                                    ? value
+                                        .split(",")
+                                        .map(k => k.trim())
+                                        .filter(Boolean)
+                                    : [];
+                                  field.onChange(columns);
+                                }}
+                                label="Key Columns (optional)"
+                                placeholder="id, email"
+                                helperText="Comma-separated list of columns for upsert"
+                                sx={{ flex: 1 }}
+                              />
+                            )}
+                          />
+                          <Controller
+                            name="conflictConfig.strategy"
+                            control={control}
+                            render={({ field }) => (
+                              <FormControl sx={{ flex: 1 }}>
+                                <InputLabel>Conflict Strategy</InputLabel>
+                                <Select
+                                  {...field}
+                                  value={field.value || "upsert"}
+                                  label="Conflict Strategy"
+                                >
+                                  <MenuItem value="upsert">
+                                    Upsert (update or insert)
+                                  </MenuItem>
+                                  <MenuItem value="ignore">
+                                    Skip duplicates
+                                  </MenuItem>
+                                  <MenuItem value="replace">
+                                    Replace entire row
+                                  </MenuItem>
+                                </Select>
+                              </FormControl>
+                            )}
+                          />
+                        </Stack>
+
+                        {/* Batch Size */}
+                        <Controller
+                          name="batchSize"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              type="number"
+                              label="Batch Size"
+                              helperText="Number of rows to process per batch (100-50000)"
+                              onChange={e =>
+                                field.onChange(parseInt(e.target.value) || 2000)
+                              }
+                              sx={{ maxWidth: 200 }}
+                              inputProps={{ min: 100, max: 50000 }}
+                            />
+                          )}
+                        />
+
+                        <Divider />
+
+                        {/* Pagination Configuration */}
+                        <Box>
+                          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                            Pagination
+                          </Typography>
+                          <Stack spacing={2}>
+                            <Controller
+                              name="paginationConfig.mode"
+                              control={control}
+                              render={({ field }) => (
+                                <FormControl fullWidth>
+                                  <InputLabel>Pagination Mode</InputLabel>
+                                  <Select
+                                    {...field}
+                                    value={field.value || "offset"}
+                                    label="Pagination Mode"
+                                  >
+                                    <MenuItem value="offset">
+                                      Offset (LIMIT/OFFSET)
+                                    </MenuItem>
+                                    <MenuItem value="keyset">
+                                      Keyset (WHERE col &gt; last_value)
+                                    </MenuItem>
+                                  </Select>
+                                  <FormHelperText>
+                                    {field.value === "offset"
+                                      ? "Standard pagination. Works for any query but slower for large tables."
+                                      : "Faster for large tables (100k+ rows). Requires a unique, indexed column."}
+                                  </FormHelperText>
+                                </FormControl>
+                              )}
+                            />
+
+                            {watchPaginationMode === "keyset" && (
+                              <Stack
+                                direction={{ xs: "column", md: "row" }}
+                                spacing={2}
+                              >
+                                <Controller
+                                  name="paginationConfig.keysetColumn"
+                                  control={control}
+                                  rules={{
+                                    required:
+                                      watchPaginationMode === "keyset"
+                                        ? "Keyset column is required for keyset pagination"
+                                        : false,
+                                  }}
+                                  render={({ field }) => (
+                                    <TextField
+                                      {...field}
+                                      value={field.value || ""}
+                                      label="Keyset Column"
+                                      placeholder="id"
+                                      error={
+                                        !!errors.paginationConfig?.keysetColumn
+                                      }
+                                      helperText={
+                                        errors.paginationConfig?.keysetColumn
+                                          ?.message ||
+                                        "Column to use for keyset pagination (e.g., id, created_at)"
+                                      }
+                                      sx={{ flex: 1 }}
+                                    />
+                                  )}
+                                />
+                                <Controller
+                                  name="paginationConfig.keysetDirection"
+                                  control={control}
+                                  render={({ field }) => (
+                                    <FormControl sx={{ flex: 1 }}>
+                                      <InputLabel>Sort Direction</InputLabel>
+                                      <Select
+                                        {...field}
+                                        value={field.value || "asc"}
+                                        label="Sort Direction"
+                                      >
+                                        <MenuItem value="asc">
+                                          Ascending (ASC)
+                                        </MenuItem>
+                                        <MenuItem value="desc">
+                                          Descending (DESC)
+                                        </MenuItem>
+                                      </Select>
+                                      <FormHelperText>
+                                        Must match ORDER BY in your query
+                                      </FormHelperText>
+                                    </FormControl>
+                                  )}
+                                />
+                              </Stack>
+                            )}
+                          </Stack>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            display: "flex",
+                            justifyContent: "flex-end",
+                            pt: 2,
+                          }}
+                        >
+                          <Button
+                            variant="contained"
+                            endIcon={<NextIcon />}
+                            onClick={() => openNextStep(3)}
+                          >
+                            Continue to Schedule
+                          </Button>
+                        </Box>
+                      </Stack>
+                    </AccordionDetails>
+                  </Accordion>
+
+                  {/* Step 5: Schedule */}
+                  <Accordion
+                    expanded={openSteps.has(4)}
+                    onChange={() => toggleStep(4)}
+                    sx={{ mb: 1 }}
+                  >
+                    <AccordionSummary
+                      expandIcon={<ExpandMoreIcon />}
+                      sx={{
+                        "& .MuiAccordionSummary-content": {
+                          alignItems: "center",
+                          gap: 1,
+                        },
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: "50%",
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "0.75rem",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        5
+                      </Typography>
+                      <Box>
+                        <Typography variant="subtitle2">
+                          {STEPS[4].label}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {STEPS[4].description}
+                        </Typography>
+                      </Box>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Stack spacing={3}>
+                        {/* Schedule Enable Toggle */}
+                        <Box>
+                          <Controller
+                            name="schedule.enabled"
+                            control={control}
+                            render={({ field }) => (
+                              <FormControlLabel
+                                control={
+                                  <Switch
+                                    checked={field.value}
+                                    onChange={field.onChange}
+                                  />
+                                }
+                                label={
+                                  <Box>
+                                    <Typography variant="body1">
+                                      Enable automatic scheduling
+                                    </Typography>
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
+                                      {field.value
+                                        ? "Flow will run automatically on the configured schedule"
+                                        : "Flow can only be run manually (no automatic schedule)"}
+                                    </Typography>
+                                  </Box>
+                                }
                               />
                             )}
                           />
                         </Box>
+
+                        {/* Schedule Configuration - only shown when enabled */}
+                        {watchScheduleEnabled && (
+                          <>
+                            <Box>
+                              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                                Schedule
+                              </Typography>
+                              <ToggleButtonGroup
+                                value={scheduleMode}
+                                exclusive
+                                onChange={handleScheduleModeChange}
+                                size="small"
+                                fullWidth
+                                sx={{
+                                  mb: 2,
+                                  width: "100%",
+                                  p: 0.125,
+                                  bgcolor: "action.hover",
+                                  borderRadius: 1,
+                                  "& .MuiToggleButton-root": {
+                                    flex: 1,
+                                    textTransform: "none",
+                                    border: "none",
+                                    borderRadius: 0.75,
+                                    fontWeight: 600,
+                                    fontSize: "0.875rem",
+                                    lineHeight: 1.2,
+                                    minHeight: 36,
+                                    py: 0.5,
+                                  },
+                                  "& .MuiToggleButton-root.Mui-selected": {
+                                    bgcolor: "background.paper",
+                                    boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                                  },
+                                }}
+                              >
+                                <ToggleButton value="preset">
+                                  Preset
+                                </ToggleButton>
+                                <ToggleButton value="custom">
+                                  Custom
+                                </ToggleButton>
+                              </ToggleButtonGroup>
+                            </Box>
+
+                            <Stack
+                              direction={{ xs: "column", md: "row" }}
+                              spacing={2}
+                            >
+                              <Box
+                                sx={{
+                                  flex: scheduleMode === "preset" ? 2 : 1.5,
+                                }}
+                              >
+                                <Controller
+                                  name="schedule.cron"
+                                  control={control}
+                                  render={({ field }) => {
+                                    return scheduleMode === "preset" ? (
+                                      <FormControl fullWidth>
+                                        <InputLabel>Schedule Preset</InputLabel>
+                                        <Select
+                                          {...field}
+                                          value={field.value || ""}
+                                          label="Schedule Preset"
+                                        >
+                                          {SCHEDULE_PRESETS.map(preset => (
+                                            <MenuItem
+                                              key={preset.cron}
+                                              value={preset.cron}
+                                            >
+                                              {preset.label}
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                      </FormControl>
+                                    ) : (
+                                      <TextField
+                                        {...field}
+                                        value={field.value || ""}
+                                        fullWidth
+                                        label="Cron Expression"
+                                        error={!!errors.schedule?.cron}
+                                        helperText={
+                                          errors.schedule?.cron?.message ||
+                                          "Format: minute hour day month weekday"
+                                        }
+                                        placeholder="0 * * * *"
+                                      />
+                                    );
+                                  }}
+                                />
+                              </Box>
+
+                              <Box sx={{ flex: 1 }}>
+                                <Controller
+                                  name="schedule.timezone"
+                                  control={control}
+                                  render={({ field }) => (
+                                    <TextField
+                                      {...field}
+                                      fullWidth
+                                      label="Timezone"
+                                      helperText="e.g., America/New_York"
+                                    />
+                                  )}
+                                />
+                              </Box>
+                            </Stack>
+
+                            {/* Schedule Preview */}
+                            <Alert severity="info" icon={<ScheduleIcon />}>
+                              <Typography variant="body2">
+                                <strong>Schedule:</strong>{" "}
+                                {getCronDescription(watchScheduleCron)}
+                                {watchScheduleTimezone &&
+                                  ` in ${watchScheduleTimezone}`}
+                              </Typography>
+                            </Alert>
+                          </>
+                        )}
+
+                        {!watchScheduleEnabled && (
+                          <Alert severity="info">
+                            <Typography variant="body2">
+                              This flow will only run when triggered manually.
+                              You can enable automatic scheduling at any time.
+                            </Typography>
+                          </Alert>
+                        )}
+
+                        {/* Save Button */}
+                        <Box
+                          sx={{
+                            display: "flex",
+                            justifyContent: "flex-end",
+                            pt: 2,
+                          }}
+                        >
+                          <Button
+                            type="submit"
+                            variant="contained"
+                            startIcon={isNewMode ? <AddIcon /> : <SaveIcon />}
+                            disabled={isSubmitting || !canSave}
+                            onClick={handleSubmit(onSubmit)}
+                          >
+                            {isSubmitting ? (
+                              <>
+                                <CircularProgress size={16} sx={{ mr: 1 }} />
+                                {isNewMode ? "Creating..." : "Saving..."}
+                              </>
+                            ) : isNewMode ? (
+                              "Create Flow"
+                            ) : (
+                              "Save Flow"
+                            )}
+                          </Button>
+                        </Box>
                       </Stack>
-
-                      {/* Schedule Preview */}
-                      <Alert severity="info" icon={<ScheduleIcon />}>
-                        <Typography variant="body2">
-                          <strong>Schedule:</strong>{" "}
-                          {getCronDescription(watchScheduleCron)}
-                          {watchScheduleTimezone && ` in ${watchScheduleTimezone}`}
-                        </Typography>
-                      </Alert>
-                    </>
-                  )}
-
-                  {!watchScheduleEnabled && (
-                    <Alert severity="info">
-                      <Typography variant="body2">
-                        This flow will only run when triggered manually. You can
-                        enable automatic scheduling at any time.
-                      </Typography>
-                    </Alert>
-                  )}
-
-                  {/* Save Button */}
-                  <Box
-                    sx={{
-                      display: "flex",
-                      justifyContent: "flex-end",
-                      pt: 2,
-                    }}
-                  >
-                    <Button
-                      type="submit"
-                      variant="contained"
-                      startIcon={isNewMode ? <AddIcon /> : <SaveIcon />}
-                      disabled={isSubmitting || !canSave}
-                      onClick={handleSubmit(onSubmit)}
-                    >
-                      {isSubmitting ? (
-                        <>
-                          <CircularProgress size={16} sx={{ mr: 1 }} />
-                          {isNewMode ? "Creating..." : "Saving..."}
-                        </>
-                      ) : isNewMode ? (
-                        "Create Flow"
-                      ) : (
-                        "Save Flow"
-                      )}
-                    </Button>
-                  </Box>
-                </Stack>
-                </AccordionDetails>
-              </Accordion>
-            </form>
-            </>
+                    </AccordionDetails>
+                  </Accordion>
+                </form>
+              </>
             )}
           </Box>
         </Box>

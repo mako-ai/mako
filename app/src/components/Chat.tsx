@@ -23,6 +23,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Tooltip,
 } from "@mui/material";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
@@ -1039,6 +1040,10 @@ const Chat: React.FC<ChatProps> = ({
             fieldName: string;
             value: unknown;
           };
+
+          // The tool schema uses a structured z.union() instead of z.any(),
+          // so the LLM returns proper typed values (arrays as arrays, not strings).
+          // See: TYPE_COERCION_SCHEMA in db-flow-form.schema.ts
           formRef.setField(fieldName, value);
           addToolOutput({
             tool: "set_form_field",
@@ -1083,8 +1088,8 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
-        // NOTE: set_column_mappings has been deprecated
-        // Use set_form_field with fieldName="columnMappings" instead
+        // NOTE: set_column_mappings has been removed
+        // Use set_form_field with fieldName="typeCoercions" instead
 
         // create_flow_tab - Create a new db-scheduled flow tab
         if (toolName === "create_flow_tab") {
@@ -1381,6 +1386,51 @@ const Chat: React.FC<ChatProps> = ({
     setSelectedTool(null);
   };
 
+  // Copy chat history handler
+  const [copiedChat, setCopiedChat] = useState(false);
+  const handleCopyChatHistory = async () => {
+    const history = messages.map(msg => {
+      const parts = (msg.parts || []).map((part: Record<string, unknown>) => {
+        const partType = part.type as string;
+        if (partType === "text") {
+          return { type: "text", text: part.text };
+        }
+        if (partType === "reasoning") {
+          return {
+            type: "reasoning",
+            text: (part as Record<string, unknown>).text,
+          };
+        }
+        if (partType?.startsWith("tool-") || partType === "dynamic-tool") {
+          return {
+            type: partType,
+            toolCallId: part.toolCallId,
+            toolName:
+              partType === "dynamic-tool"
+                ? part.toolName
+                : partType.split("-").slice(1).join("-"),
+            state: part.state,
+            input: part.input,
+            output: part.output,
+          };
+        }
+        return { type: partType, ...part };
+      });
+      return {
+        id: msg.id,
+        role: msg.role,
+        parts,
+      };
+    });
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(history, null, 2));
+      setCopiedChat(true);
+      setTimeout(() => setCopiedChat(false), 2000);
+    } catch {
+      /* clipboard not available */
+    }
+  };
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Header with history and new chat */}
@@ -1413,6 +1463,19 @@ const Chat: React.FC<ChatProps> = ({
             </Typography>
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <Tooltip
+              title={copiedChat ? "Copied!" : "Copy chat history as JSON"}
+            >
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={handleCopyChatHistory}
+                  disabled={messages.length === 0}
+                >
+                  {copiedChat ? <Check size={20} /> : <Copy size={20} />}
+                </IconButton>
+              </span>
+            </Tooltip>
             <IconButton size="small" onClick={createNewSession}>
               <Plus size={20} />
             </IconButton>

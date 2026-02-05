@@ -41,6 +41,7 @@ import {
 import {
   FIELD_PATHS,
   CONTEXT_FIELDS,
+  TYPE_COERCION_SCHEMA,
   getNestedValue,
   getFieldMeta,
   formatContextValue,
@@ -87,6 +88,45 @@ const explainTemplateParams = z.object({
  */
 const getFormStateSchema = z.object({});
 
+/**
+ * Structured value type for set_form_field.
+ *
+ * Instead of z.any() (which gives the LLM no type hints and causes it to
+ * stringify arrays), we define a union of the actual types the LLM should return.
+ * This ensures the AI SDK sends a proper JSON schema to the model, so arrays
+ * come back as arrays, objects as objects, etc.
+ *
+ * See: https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data
+ */
+const formFieldValue = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z
+    .array(TYPE_COERCION_SCHEMA)
+    .describe("Array of type coercions (for typeCoercions field)"),
+  z.array(z.string()).describe("Array of strings (e.g., keyColumns)"),
+  z
+    .object({
+      trackingColumn: z.string(),
+      trackingType: z.enum(["timestamp", "numeric"]),
+    })
+    .describe("Incremental config object"),
+  z
+    .object({
+      keyColumns: z.array(z.string()),
+      strategy: z.enum(["upsert", "ignore", "replace"]),
+    })
+    .describe("Conflict config object"),
+  z
+    .object({
+      mode: z.enum(["offset", "keyset"]),
+      keysetColumn: z.string().optional(),
+      keysetDirection: z.enum(["asc", "desc"]).optional(),
+    })
+    .describe("Pagination config object"),
+]);
+
 // Type-safe field names derived from the unified schema
 const setFormFieldSchema = z.object({
   fieldName: z
@@ -94,34 +134,15 @@ const setFormFieldSchema = z.object({
     .describe(
       'Nested field path to update (e.g., "databaseSource.query", "schedule.cron", "tableDestination.tableName")',
     ),
-  value: z.any().describe("New value for the field"),
+  value: formFieldValue.describe(
+    "New value for the field. Arrays and objects must be actual JSON, NOT stringified.",
+  ),
 });
 
 const setMultipleFieldsSchema = z.object({
   fields: z
-    .record(z.string(), z.any())
+    .record(z.string(), formFieldValue)
     .describe("Object with nested field paths as keys and new values"),
-});
-
-/**
- * Schema for column mapping (used in schema analysis)
- * Note: set via set_form_field with fieldName="typeCoercions"
- */
-const columnMappingSchema = z.object({
-  name: z.string().describe("Column name"),
-  sourceType: z.string().describe("Original type from source database"),
-  destType: z
-    .string()
-    .describe(
-      "Destination type (e.g., STRING, INT64, FLOAT64, BOOL, TIMESTAMP, DATE, JSON, BYTES)",
-    ),
-  nullable: z.boolean().describe("Whether the column can contain NULL values"),
-  transformer: z
-    .string()
-    .optional()
-    .describe(
-      "Optional transformation: lowercase, uppercase, trim, json_parse, json_stringify",
-    ),
 });
 
 /**
@@ -471,8 +492,7 @@ function createFlowTools(workspaceId: string) {
       inputSchema: setMultipleFieldsSchema,
     },
 
-    // NOTE: set_column_mappings is deprecated - use set_form_field with fieldName="columnMappings" instead
-    // Keeping for backward compatibility but prefer the unified approach
+    // NOTE: set_column_mappings has been removed - use set_form_field with fieldName="typeCoercions" instead
 
     // =========================================================================
     // Tab Management Tools (client-side - for creating/listing flow tabs)
@@ -533,12 +553,6 @@ function buildRuntimeContext(
           }
         }
       }
-    }
-
-    // Also include columnMappings if present (UI-specific field)
-    const columnMappings = flowFormState.columnMappings;
-    if (Array.isArray(columnMappings) && columnMappings.length > 0) {
-      context += `**columnMappings:** ${JSON.stringify(columnMappings)}\n`;
     }
 
     // Include schemaMappingConfirmed status

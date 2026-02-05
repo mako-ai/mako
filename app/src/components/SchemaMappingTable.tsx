@@ -19,19 +19,31 @@ import {
 import { Warning as WarningIcon } from "@mui/icons-material";
 
 /**
- * Column mapping for schema transformation
+ * Type coercion for schema transformation.
+ *
+ * This uses the SAME shape as the database/API (typeCoercions).
+ * No more ColumnMapping ↔ TypeCoercion conversion!
+ *
+ * Fields:
+ *   column      - Column name
+ *   sourceType  - Original type from source database
+ *   targetType  - Destination type
+ *   nullable    - Whether the column can contain NULL
+ *   transformer - Optional transformation function
  */
-export interface ColumnMapping {
-  name: string;
-  sourceType: string;
-  destType: string;
-  nullable: boolean;
+export interface TypeCoercion {
+  column: string;
+  sourceType?: string;
+  targetType: string;
+  nullable?: boolean;
   transformer?: string;
+  format?: string;
+  nullValue?: unknown;
 }
 
 interface SchemaMappingTableProps {
-  columns: ColumnMapping[];
-  onChange: (columns: ColumnMapping[]) => void;
+  columns: TypeCoercion[];
+  onChange: (columns: TypeCoercion[]) => void;
   destinationType?: "bigquery" | "postgresql" | "mysql" | string;
   disabled?: boolean;
 }
@@ -188,10 +200,10 @@ export function SchemaMappingTable({
     onChange(updated);
   };
 
-  const handleDestTypeChange = (index: number, newType: string) => {
+  const handleTargetTypeChange = (index: number, newType: string) => {
     if (disabled) return;
     const updated = [...columns];
-    updated[index] = { ...updated[index], destType: newType };
+    updated[index] = { ...updated[index], targetType: newType };
     onChange(updated);
   };
 
@@ -235,136 +247,141 @@ export function SchemaMappingTable({
   return (
     <Box>
       <TableContainer component={Paper} variant="outlined">
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell sx={{ fontWeight: "bold" }}>Column</TableCell>
-            <TableCell sx={{ fontWeight: "bold" }}>Source Type</TableCell>
-            <TableCell sx={{ fontWeight: "bold" }}>Destination Type</TableCell>
-            <TableCell sx={{ fontWeight: "bold", textAlign: "center" }}>
-              Nullable
-            </TableCell>
-            <TableCell sx={{ fontWeight: "bold" }}>Transformer</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {columns.map((col, index) => {
-            const mismatch = detectTypeMismatch(col.sourceType, col.name);
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ fontWeight: "bold" }}>Column</TableCell>
+              <TableCell sx={{ fontWeight: "bold" }}>Source Type</TableCell>
+              <TableCell sx={{ fontWeight: "bold" }}>
+                Destination Type
+              </TableCell>
+              <TableCell sx={{ fontWeight: "bold", textAlign: "center" }}>
+                Nullable
+              </TableCell>
+              <TableCell sx={{ fontWeight: "bold" }}>Transformer</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {columns.map((col, index) => {
+              const mismatch = detectTypeMismatch(
+                col.sourceType || "",
+                col.column,
+              );
 
-            return (
-              <TableRow
-                key={col.name}
-                sx={{
-                  "&:last-child td, &:last-child th": { border: 0 },
-                  bgcolor: mismatch ? "warning.50" : undefined,
-                }}
-              >
-                <TableCell>
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                    <Typography
-                      variant="body2"
-                      sx={{ fontFamily: "monospace" }}
-                    >
-                      {col.name}
-                    </Typography>
-                    {mismatch && (
-                      <Tooltip
-                        title={
-                          <Box>
-                            <Typography variant="body2" fontWeight="bold">
-                              {mismatch.warning}
-                            </Typography>
-                            <Typography variant="caption">
-                              {mismatch.suggestion}
-                            </Typography>
-                          </Box>
-                        }
+              return (
+                <TableRow
+                  key={col.column}
+                  sx={{
+                    "&:last-child td, &:last-child th": { border: 0 },
+                    bgcolor: mismatch ? "warning.50" : undefined,
+                  }}
+                >
+                  <TableCell>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      <Typography
+                        variant="body2"
+                        sx={{ fontFamily: "monospace" }}
                       >
-                        <IconButton size="small" sx={{ p: 0 }}>
-                          <WarningIcon
-                            fontSize="small"
-                            sx={{ color: "warning.main" }}
-                          />
-                        </IconButton>
-                      </Tooltip>
-                    )}
-                  </Box>
-                </TableCell>
-                <TableCell>
-                  <FormControl size="small" sx={{ minWidth: 120 }}>
-                    <Select
-                      value={col.sourceType}
+                        {col.column}
+                      </Typography>
+                      {mismatch && (
+                        <Tooltip
+                          title={
+                            <Box>
+                              <Typography variant="body2" fontWeight="bold">
+                                {mismatch.warning}
+                              </Typography>
+                              <Typography variant="caption">
+                                {mismatch.suggestion}
+                              </Typography>
+                            </Box>
+                          }
+                        >
+                          <IconButton size="small" sx={{ p: 0 }}>
+                            <WarningIcon
+                              fontSize="small"
+                              sx={{ color: "warning.main" }}
+                            />
+                          </IconButton>
+                        </Tooltip>
+                      )}
+                    </Box>
+                  </TableCell>
+                  <TableCell>
+                    <FormControl size="small" sx={{ minWidth: 120 }}>
+                      <Select
+                        value={col.sourceType || ""}
+                        onChange={e =>
+                          handleSourceTypeChange(index, e.target.value)
+                        }
+                        disabled={disabled}
+                        displayEmpty
+                        sx={{ fontSize: "0.8125rem" }}
+                      >
+                        {SOURCE_TYPES.map(opt => (
+                          <MenuItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </TableCell>
+                  <TableCell>
+                    <FormControl size="small" sx={{ minWidth: 140 }}>
+                      <Select
+                        value={col.targetType}
+                        onChange={e =>
+                          handleTargetTypeChange(index, e.target.value)
+                        }
+                        disabled={disabled}
+                        displayEmpty
+                        sx={{ fontSize: "0.8125rem" }}
+                      >
+                        {typeOptions.map(opt => (
+                          <MenuItem key={opt.value} value={opt.value}>
+                            <Tooltip title={opt.description} placement="right">
+                              <Box sx={{ width: "100%" }}>{opt.label}</Box>
+                            </Tooltip>
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </TableCell>
+                  <TableCell align="center">
+                    <Checkbox
+                      checked={col.nullable ?? true}
                       onChange={e =>
-                        handleSourceTypeChange(index, e.target.value)
+                        handleNullableChange(index, e.target.checked)
                       }
                       disabled={disabled}
-                      displayEmpty
-                      sx={{ fontSize: "0.8125rem" }}
-                    >
-                      {SOURCE_TYPES.map(opt => (
-                        <MenuItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </TableCell>
-                <TableCell>
-                  <FormControl size="small" sx={{ minWidth: 140 }}>
-                    <Select
-                      value={col.destType}
-                      onChange={e =>
-                        handleDestTypeChange(index, e.target.value)
-                      }
-                      disabled={disabled}
-                      displayEmpty
-                      sx={{ fontSize: "0.8125rem" }}
-                    >
-                      {typeOptions.map(opt => (
-                        <MenuItem key={opt.value} value={opt.value}>
-                          <Tooltip title={opt.description} placement="right">
-                            <Box sx={{ width: "100%" }}>{opt.label}</Box>
-                          </Tooltip>
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </TableCell>
-                <TableCell align="center">
-                  <Checkbox
-                    checked={col.nullable}
-                    onChange={e =>
-                      handleNullableChange(index, e.target.checked)
-                    }
-                    disabled={disabled}
-                    size="small"
-                  />
-                </TableCell>
-                <TableCell>
-                  <FormControl size="small" sx={{ minWidth: 130 }}>
-                    <Select
-                      value={col.transformer || ""}
-                      onChange={e =>
-                        handleTransformerChange(index, e.target.value)
-                      }
-                      disabled={disabled}
-                      displayEmpty
-                      sx={{ fontSize: "0.8125rem" }}
-                    >
-                      {TRANSFORMERS.map(opt => (
-                        <MenuItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-    </TableContainer>
+                      size="small"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <FormControl size="small" sx={{ minWidth: 130 }}>
+                      <Select
+                        value={col.transformer || ""}
+                        onChange={e =>
+                          handleTransformerChange(index, e.target.value)
+                        }
+                        disabled={disabled}
+                        displayEmpty
+                        sx={{ fontSize: "0.8125rem" }}
+                      >
+                        {TRANSFORMERS.map(opt => (
+                          <MenuItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
     </Box>
   );
 }
