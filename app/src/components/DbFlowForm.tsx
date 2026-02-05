@@ -114,7 +114,7 @@ interface FormData {
   };
   conflictConfig?: {
     keyColumns: string[];
-    strategy: "upsert" | "ignore" | "replace";
+    strategy: "update" | "ignore" | "replace";
   };
   paginationConfig?: {
     mode: "offset" | "keyset";
@@ -765,7 +765,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             conflictConfig: flow.conflictConfig
               ? {
                   keyColumns: flow.conflictConfig.keyColumns || [],
-                  strategy: flow.conflictConfig.strategy || "upsert",
+                  strategy: flow.conflictConfig.strategy || "update",
                 }
               : undefined,
             paginationConfig: {
@@ -2102,11 +2102,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                 <InputLabel>Conflict Strategy</InputLabel>
                                 <Select
                                   {...field}
-                                  value={field.value || "upsert"}
+                                  value={field.value || "update"}
                                   label="Conflict Strategy"
                                 >
-                                  <MenuItem value="upsert">
-                                    Upsert (update or insert)
+                                  <MenuItem value="update">
+                                    Update (update or insert)
                                   </MenuItem>
                                   <MenuItem value="ignore">
                                     Skip duplicates

@@ -38,7 +38,8 @@ async function getFlowDisplayName(flow: IFlow): Promise<string> {
       const sourceDb = await DatabaseConnection.findById(
         flow.databaseSource.connectionId,
       );
-      sourceName = sourceDb?.name || flow.databaseSource.connectionId.toString();
+      sourceName =
+        sourceDb?.name || flow.databaseSource.connectionId.toString();
     } else if (flow.dataSourceId) {
       const dataSource = await DataSource.findById(flow.dataSourceId);
       sourceName = dataSource?.name || flow.dataSourceId.toString();
@@ -314,14 +315,20 @@ class FlowExecutionLogger implements SyncLogger {
             _id: this.executionId.toString(),
           } as any);
           if (existsWithStringId) {
-            flowLogger.error("Flow execution found with string ID instead of ObjectId", {
-              executionId: this.executionId.toString(),
-            });
+            flowLogger.error(
+              "Flow execution found with string ID instead of ObjectId",
+              {
+                executionId: this.executionId.toString(),
+              },
+            );
           }
 
-          flowLogger.error("Failed to update flow execution - document not found", {
-            executionId: this.executionId.toString(),
-          });
+          flowLogger.error(
+            "Failed to update flow execution - document not found",
+            {
+              executionId: this.executionId.toString(),
+            },
+          );
           throw new Error(
             `Flow execution document not found: ${this.executionId}`,
           );
@@ -378,9 +385,10 @@ export const flowFunction = inngest.createFunction(
 
     // Initialize execution ID for tracking
     let executionId: string | undefined;
-    // Track flow and staging state for cleanup on failure
-    let flow: IFlow | undefined;
+    // Track staging state for cleanup on failure (flow is available inside try block)
     let dbSyncStagingPrepared = false;
+    // Store flow ref for use in error handler
+    let flowRef: IFlow | undefined;
 
     // Helper to create the execution logger
     const createExecutionLogger = (flow: IFlow): FlowExecutionLogger => {
@@ -425,13 +433,14 @@ export const flowFunction = inngest.createFunction(
       });
 
       // Get flow details
-      flow = (await step.run("fetch-flow", async () => {
+      const flow = (await step.run("fetch-flow", async () => {
         const found = await Flow.findById(flowId);
         if (!found) {
           throw new Error(`Flow ${flowId} not found`);
         }
         return found.toObject() as IFlow;
       })) as IFlow;
+      flowRef = flow; // Store for error handler
 
       // Webhook flows should not be executed by the flow function
       if (flow.type === "webhook") {
@@ -495,7 +504,8 @@ export const flowFunction = inngest.createFunction(
           sourceType: flow.sourceType || "connector",
           syncMode: flow.syncMode,
           dataSourceId: flow.dataSourceId?.toString(),
-          databaseSourceConnectionId: flow.databaseSource?.connectionId?.toString(),
+          databaseSourceConnectionId:
+            flow.databaseSource?.connectionId?.toString(),
           destinationDatabaseId: flow.destinationDatabaseId.toString(),
           tableDestination: flow.tableDestination?.tableName,
           entityFilter: flow.entityFilter,
@@ -509,16 +519,22 @@ export const flowFunction = inngest.createFunction(
       // ============ DATABASE SOURCE EXECUTION ============
       // For database-to-database flows, use chunked execution for resumability
       if (flow.sourceType === "database") {
-        logger.info("Starting database-to-database sync with chunked execution", {
-          flowId,
-          syncMode: flow.syncMode,
-          sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
-          sourceDatabase: flow.databaseSource?.database,
-        });
+        logger.info(
+          "Starting database-to-database sync with chunked execution",
+          {
+            flowId,
+            syncMode: flow.syncMode,
+            sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
+            sourceDatabase: flow.databaseSource?.database,
+          },
+        );
 
         // Validate database source configuration
         const _validation = await step.run("validate-db-source", async () => {
-          if (!flow.databaseSource?.connectionId || !flow.databaseSource?.query) {
+          if (
+            !flow.databaseSource?.connectionId ||
+            !flow.databaseSource?.query
+          ) {
             throw new Error("Database source requires connectionId and query");
           }
 
@@ -538,32 +554,35 @@ export const flowFunction = inngest.createFunction(
         });
 
         // Initialize destination writer once
-        const _writerConfig = await step.run("init-destination-writer", async () => {
-          const sourceConnection = await DatabaseConnection.findById(
-            flow.databaseSource!.connectionId,
-          );
+        const _writerConfig = await step.run(
+          "init-destination-writer",
+          async () => {
+            const sourceConnection = await DatabaseConnection.findById(
+              flow.databaseSource!.connectionId,
+            );
 
-          const destinationWriter = await createDestinationWriter(
-            {
-              destinationDatabaseId: flow.destinationDatabaseId,
-              destinationDatabaseName: flow.destinationDatabaseName,
-              tableDestination: flow.tableDestination,
-              dataSourceId: flow.databaseSource!.connectionId,
-            },
-            sourceConnection?.name,
-          );
+            const destinationWriter = await createDestinationWriter(
+              {
+                destinationDatabaseId: flow.destinationDatabaseId,
+                destinationDatabaseName: flow.destinationDatabaseName,
+                tableDestination: flow.tableDestination,
+                dataSourceId: flow.databaseSource!.connectionId,
+              },
+              sourceConnection?.name,
+            );
 
-          // Set collection name if writing to MongoDB
-          if (!flow.tableDestination?.tableName && sourceConnection) {
-            (destinationWriter as any).config.collectionName =
-              `${sourceConnection.name}_sync`;
-          }
+            // Set collection name if writing to MongoDB
+            if (!flow.tableDestination?.tableName && sourceConnection) {
+              (destinationWriter as any).config.collectionName =
+                `${sourceConnection.name}_sync`;
+            }
 
-          return {
-            collectionName: (destinationWriter as any).config?.collectionName,
-            isTableDestination: destinationWriter.isTableDestination(),
-          };
-        });
+            return {
+              collectionName: (destinationWriter as any).config?.collectionName,
+              isTableDestination: destinationWriter.isTableDestination(),
+            };
+          },
+        );
 
         // Chunked execution loop
         let chunkState: DbSyncChunkState | undefined;
@@ -661,7 +680,9 @@ export const flowFunction = inngest.createFunction(
         // Finalize staging table swap for full sync
         if (flow.syncMode === "full") {
           await step.run("finalize-staging-swap", async () => {
-            logger.info("Finalizing full sync (staging table swap)", { flowId });
+            logger.info("Finalizing full sync (staging table swap)", {
+              flowId,
+            });
 
             const sourceConnection = await DatabaseConnection.findById(
               flow.databaseSource!.connectionId,
@@ -818,7 +839,9 @@ export const flowFunction = inngest.createFunction(
       // ============ CONNECTOR SOURCE EXECUTION ============
       // Ensure dataSourceId is defined for connector execution
       if (!flow.dataSourceId) {
-        throw new Error("Flow dataSourceId is required for connector execution");
+        throw new Error(
+          "Flow dataSourceId is required for connector execution",
+        );
       }
       const dataSourceId = flow.dataSourceId;
 
@@ -1236,29 +1259,30 @@ export const flowFunction = inngest.createFunction(
 
       // Cleanup staging tables on failure (for database source full sync)
       if (
-        flow?.sourceType === "database" &&
-        flow?.syncMode === "full" &&
+        flowRef?.sourceType === "database" &&
+        flowRef?.syncMode === "full" &&
         dbSyncStagingPrepared
       ) {
+        const cleanupFlow = flowRef; // Capture for closure
         await step.run("cleanup-staging-on-failure", async () => {
           try {
             logger.info("Cleaning up staging table after failure", { flowId });
 
             const sourceConnection = await DatabaseConnection.findById(
-              flow.databaseSource!.connectionId,
+              cleanupFlow.databaseSource!.connectionId,
             );
 
             const destinationWriter = await createDestinationWriter(
               {
-                destinationDatabaseId: flow.destinationDatabaseId,
-                destinationDatabaseName: flow.destinationDatabaseName,
-                tableDestination: flow.tableDestination,
-                dataSourceId: flow.databaseSource!.connectionId,
+                destinationDatabaseId: cleanupFlow.destinationDatabaseId,
+                destinationDatabaseName: cleanupFlow.destinationDatabaseName,
+                tableDestination: cleanupFlow.tableDestination,
+                dataSourceId: cleanupFlow.databaseSource!.connectionId,
               },
               sourceConnection?.name,
             );
 
-            if (!flow.tableDestination?.tableName && sourceConnection) {
+            if (!cleanupFlow.tableDestination?.tableName && sourceConnection) {
               (destinationWriter as any).config.collectionName =
                 `${sourceConnection.name}_sync`;
             }
@@ -1269,7 +1293,10 @@ export const flowFunction = inngest.createFunction(
           } catch (cleanupError) {
             logger.error("Failed to cleanup staging table", {
               flowId,
-              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
             });
           }
         });
