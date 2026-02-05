@@ -297,9 +297,10 @@ export function FlowsExplorer() {
                           strokeWidth={1.5}
                           style={{
                             fontSize: 24,
-                            color: flow.webhookConfig?.enabled !== false
-                              ? "text.primary"
-                              : "text.disabled",
+                            color:
+                              flow.webhookConfig?.enabled !== false
+                                ? "text.primary"
+                                : "text.disabled",
                           }}
                         />
                       ) : flow.schedule?.enabled === true ? (

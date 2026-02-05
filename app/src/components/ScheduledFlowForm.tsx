@@ -514,8 +514,7 @@ export function ScheduledFlowForm({
           dataSourceId: dataSourceId || "",
           destinationDatabaseId: destinationDatabaseId || "",
           destinationDatabaseName: flow.destinationDatabaseName || "",
-          scheduleEnabled:
-            flow.schedule?.enabled ?? !!flow.schedule?.cron,
+          scheduleEnabled: flow.schedule?.enabled ?? !!flow.schedule?.cron,
           schedule: flow.schedule?.cron || "0 * * * *",
           timezone: flow.schedule?.timezone || "UTC",
           syncMode: flow.syncMode as "full" | "incremental",
@@ -1534,7 +1533,6 @@ export function ScheduledFlowForm({
                     </FormControl>
                   )}
                 />
-
               </Stack>
 
               {/* Schedule Preview */}

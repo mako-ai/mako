@@ -537,8 +537,9 @@ flowRoutes.put("/:flowId", async c => {
 
     // Update connector source specific fields
     if (flow.sourceType !== "database") {
-      if (body.entityFilter !== undefined)
+      if (body.entityFilter !== undefined) {
         flow.entityFilter = body.entityFilter;
+      }
       if (body.queries !== undefined) {
         // Ensure numeric fields in queries are properly typed
         flow.queries = body.queries.map((q: any) => ({
@@ -556,6 +557,16 @@ flowRoutes.put("/:flowId", async c => {
         const newConnectionId = body.databaseSource.connectionId
           ? new Types.ObjectId(body.databaseSource.connectionId)
           : flow.databaseSource?.connectionId;
+
+        if (!newConnectionId) {
+          return c.json(
+            {
+              success: false,
+              error: "databaseSource.connectionId is required",
+            },
+            400,
+          );
+        }
 
         flow.databaseSource = {
           connectionId: newConnectionId,
@@ -588,6 +599,16 @@ flowRoutes.put("/:flowId", async c => {
       const newConnectionId = body.tableDestination.connectionId
         ? new Types.ObjectId(body.tableDestination.connectionId)
         : flow.tableDestination?.connectionId;
+
+      if (!newConnectionId) {
+        return c.json(
+          {
+            success: false,
+            error: "tableDestination.connectionId is required",
+          },
+          400,
+        );
+      }
 
       flow.tableDestination = {
         connectionId: newConnectionId,

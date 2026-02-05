@@ -134,8 +134,9 @@ function escapeIdentifier(name: string): string {
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "number" || typeof value === "bigint")
+  if (typeof value === "number" || typeof value === "bigint") {
     return String(value);
+  }
   if (value instanceof Date) return `'${value.toISOString()}'`;
   if (typeof value === "object") {
     return `'${JSON.stringify(value).replace(/'/g, "''")}'::jsonb`;

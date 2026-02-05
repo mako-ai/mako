@@ -716,7 +716,11 @@ export const useSchemaStore = create<SchemaState>()(
             success: boolean;
             data: {
               exists: boolean;
-              columns: Array<{ name: string; type: string; nullable?: boolean }>;
+              columns: Array<{
+                name: string;
+                type: string;
+                nullable?: boolean;
+              }>;
               supported?: boolean;
               message?: string;
             };
