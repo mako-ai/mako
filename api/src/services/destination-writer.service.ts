@@ -961,15 +961,15 @@ export async function validateQuery(
       };
     }
 
-    // Infer columns from result
+    // Extract column names from result (no type inference - let AI/user set types)
     let columns: Array<{ name: string; type: string }> = [];
     let sampleRow: Record<string, unknown> | undefined;
 
     if (result.data && result.data.length > 0) {
       sampleRow = result.data[0] as Record<string, unknown>;
-      columns = Object.entries(sampleRow!).map(([name, value]) => ({
+      columns = Object.keys(sampleRow!).map(name => ({
         name,
-        type: inferJsType(value),
+        type: "", // Empty - types should be set by AI agent or user
       }));
     }
 
@@ -980,22 +980,6 @@ export async function validateQuery(
       error: error instanceof Error ? error.message : String(error),
     };
   }
-}
-
-/**
- * Infer JavaScript type from a value
- */
-function inferJsType(value: unknown): string {
-  if (value === null || value === undefined) return "unknown";
-  if (value instanceof Date) return "timestamp";
-  if (typeof value === "number") {
-    return Number.isInteger(value) ? "integer" : "number";
-  }
-  if (typeof value === "boolean") return "boolean";
-  if (typeof value === "string") return "string";
-  if (Array.isArray(value)) return "array";
-  if (typeof value === "object") return "object";
-  return "unknown";
 }
 
 /**

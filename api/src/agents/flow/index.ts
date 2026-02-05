@@ -4,6 +4,9 @@
  * Database sync configuration assistant for db-to-db flows.
  * Helps users write queries with template placeholders and configure sync settings.
  * Uses shared database discovery tools from agent-lib.
+ *
+ * IMPORTANT: This agent uses the unified schema from db-flow-form.schema.ts
+ * as the single source of truth for field names and context injection.
  */
 
 import { z } from "zod";
@@ -34,6 +37,15 @@ import {
   inspectTableSchema,
 } from "../../agent-lib/tools/shared/database-discovery";
 
+// Import unified schema for type-safe field names and context injection
+import {
+  FIELD_PATHS,
+  CONTEXT_FIELDS,
+  getNestedValue,
+  getFieldMeta,
+  formatContextValue,
+} from "../../schemas/db-flow-form.schema";
+
 /**
  * Flow agent metadata for UI and routing
  */
@@ -57,6 +69,12 @@ const validateQueryParams = z.object({
   database: z.string().optional().describe("Database name (for cluster mode)"),
 });
 
+const executeQueryParams = z.object({
+  connectionId: z.string().describe("Database connection ID"),
+  database: z.string().optional().describe("Database name (for cluster mode)"),
+  query: z.string().describe("SQL query to execute"),
+});
+
 const explainTemplateParams = z.object({
   placeholder: z
     .enum(["limit", "offset", "last_sync_value", "keyset_value"])
@@ -65,14 +83,16 @@ const explainTemplateParams = z.object({
 
 /**
  * Schemas for client-side flow tools
+ * Uses FIELD_PATHS from unified schema for type-safe field names
  */
 const getFormStateSchema = z.object({});
 
+// Type-safe field names derived from the unified schema
 const setFormFieldSchema = z.object({
   fieldName: z
-    .string()
+    .enum(FIELD_PATHS as unknown as [string, ...string[]])
     .describe(
-      'Field to update (e.g., "query", "syncMode", "tableName", "trackingColumn")',
+      'Nested field path to update (e.g., "databaseSource.query", "schedule.cron", "tableDestination.tableName")',
     ),
   value: z.any().describe("New value for the field"),
 });
@@ -80,11 +100,12 @@ const setFormFieldSchema = z.object({
 const setMultipleFieldsSchema = z.object({
   fields: z
     .record(z.string(), z.any())
-    .describe("Object with field names as keys and new values"),
+    .describe("Object with nested field paths as keys and new values"),
 });
 
 /**
  * Schema for column mapping (used in schema analysis)
+ * Note: set via set_form_field with fieldName="typeCoercions"
  */
 const columnMappingSchema = z.object({
   name: z.string().describe("Column name"),
@@ -102,171 +123,6 @@ const columnMappingSchema = z.object({
       "Optional transformation: lowercase, uppercase, trim, json_parse, json_stringify",
     ),
 });
-
-const setColumnMappingsSchema = z.object({
-  mappings: z
-    .array(columnMappingSchema)
-    .describe("Array of column mappings for the destination table"),
-});
-
-const analyzeSchemaParams = z.object({
-  connectionId: z.string().describe("Source database connection ID"),
-  database: z.string().optional().describe("Database name (for cluster mode)"),
-  query: z.string().describe("SQL query to analyze"),
-});
-
-/**
- * Analyze column values and suggest appropriate destination types
- */
-interface ColumnAnalysis {
-  name: string;
-  sourceType: string;
-  suggestedDestType: string;
-  nullable: boolean;
-  reasoning: string;
-  sampleValues: unknown[];
-}
-
-function analyzeColumnValues(
-  columnName: string,
-  sourceType: string,
-  values: unknown[],
-  destDbType: string,
-): ColumnAnalysis {
-  const isBigQuery = destDbType === "bigquery";
-  const lowerName = columnName.toLowerCase();
-  const upperSourceType = sourceType.toUpperCase();
-
-  // Default suggestions based on source type
-  let suggestedDestType: string;
-  let reasoning: string;
-
-  // Check for timestamp patterns in column names
-  const isTimestampLikeName =
-    lowerName.endsWith("_at") ||
-    lowerName.endsWith("_time") ||
-    lowerName.includes("timestamp") ||
-    lowerName.includes("created") ||
-    lowerName.includes("updated") ||
-    lowerName.includes("deleted");
-
-  // Check for JSON patterns in column names
-  const isJsonLikeName =
-    lowerName.includes("json") ||
-    lowerName.includes("data") ||
-    lowerName.includes("metadata") ||
-    lowerName.includes("config") ||
-    lowerName.includes("settings") ||
-    lowerName.includes("payload");
-
-  // Analyze actual values
-  const nonNullValues = values.filter(v => v !== null && v !== undefined);
-  const hasNulls = values.some(v => v === null || v === undefined);
-
-  // Check if integer values look like Unix timestamps (10+ digits, reasonable range)
-  const looksLikeUnixTimestamp =
-    upperSourceType.includes("INT") &&
-    nonNullValues.length > 0 &&
-    nonNullValues.every(v => {
-      const num = Number(v);
-      // Unix timestamp in seconds (10 digits) or milliseconds (13 digits)
-      return num > 1000000000 && num < 10000000000000;
-    });
-
-  // Check if text values look like JSON
-  const looksLikeJson =
-    (upperSourceType.includes("TEXT") || upperSourceType.includes("VARCHAR")) &&
-    nonNullValues.length > 0 &&
-    nonNullValues.some(v => {
-      if (typeof v !== "string") return false;
-      const trimmed = v.trim();
-      return (
-        (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-        (trimmed.startsWith("[") && trimmed.endsWith("]"))
-      );
-    });
-
-  // Check if text values are actually numeric
-  const looksLikeNumericText =
-    (upperSourceType.includes("TEXT") || upperSourceType.includes("VARCHAR")) &&
-    nonNullValues.length > 0 &&
-    nonNullValues.every(v => {
-      if (typeof v !== "string") return false;
-      return !isNaN(Number(v)) && v.trim() !== "";
-    });
-
-  // Determine destination type based on analysis
-  if (upperSourceType.includes("INT") || upperSourceType === "INTEGER") {
-    if (looksLikeUnixTimestamp && isTimestampLikeName) {
-      // Unix timestamp stored as integer
-      suggestedDestType = isBigQuery ? "STRING" : "TEXT";
-      reasoning = `Column "${columnName}" contains Unix timestamps (e.g., ${nonNullValues[0]}). Using STRING to preserve the numeric value. You could convert to TIMESTAMP if needed.`;
-    } else {
-      suggestedDestType = isBigQuery ? "INT64" : "BIGINT";
-      reasoning = `Standard integer type.`;
-    }
-  } else if (
-    upperSourceType.includes("REAL") ||
-    upperSourceType.includes("FLOAT") ||
-    upperSourceType.includes("DOUBLE") ||
-    upperSourceType.includes("NUMERIC") ||
-    upperSourceType.includes("DECIMAL")
-  ) {
-    suggestedDestType = isBigQuery ? "FLOAT64" : "DOUBLE PRECISION";
-    reasoning = `Floating point number.`;
-  } else if (upperSourceType.includes("BOOL")) {
-    suggestedDestType = isBigQuery ? "BOOL" : "BOOLEAN";
-    reasoning = `Boolean value.`;
-  } else if (
-    upperSourceType.includes("TIMESTAMP") ||
-    upperSourceType.includes("DATETIME")
-  ) {
-    suggestedDestType = isBigQuery ? "TIMESTAMP" : "TIMESTAMPTZ";
-    reasoning = `Timestamp/datetime value.`;
-  } else if (upperSourceType === "DATE") {
-    suggestedDestType = "DATE";
-    reasoning = `Date value.`;
-  } else if (upperSourceType.includes("JSON")) {
-    suggestedDestType = isBigQuery ? "JSON" : "JSONB";
-    reasoning = `JSON data.`;
-  } else if (
-    upperSourceType.includes("BLOB") ||
-    upperSourceType.includes("BYTES")
-  ) {
-    suggestedDestType = isBigQuery ? "BYTES" : "BYTEA";
-    reasoning = `Binary data.`;
-  } else if (
-    upperSourceType.includes("TEXT") ||
-    upperSourceType.includes("VARCHAR") ||
-    upperSourceType.includes("CHAR") ||
-    upperSourceType.includes("STRING")
-  ) {
-    if (looksLikeJson && isJsonLikeName) {
-      suggestedDestType = isBigQuery ? "JSON" : "JSONB";
-      reasoning = `Column "${columnName}" contains JSON data. Using JSON type for structured storage.`;
-    } else if (looksLikeNumericText) {
-      // Still default to STRING, but note it
-      suggestedDestType = isBigQuery ? "STRING" : "TEXT";
-      reasoning = `Column "${columnName}" contains numeric-looking text values (e.g., "${nonNullValues[0]}"). Keeping as STRING. Consider INT64/FLOAT64 if these should be numbers.`;
-    } else {
-      suggestedDestType = isBigQuery ? "STRING" : "TEXT";
-      reasoning = `Text value.`;
-    }
-  } else {
-    // Unknown type - default to string
-    suggestedDestType = isBigQuery ? "STRING" : "TEXT";
-    reasoning = `Unknown source type "${sourceType}". Defaulting to STRING for safety.`;
-  }
-
-  return {
-    name: columnName,
-    sourceType,
-    suggestedDestType,
-    nullable: hasNulls || true, // Default to nullable for safety
-    reasoning,
-    sampleValues: nonNullValues.slice(0, 3),
-  };
-}
 
 /**
  * Schemas for tab management tools (client-side)
@@ -490,6 +346,63 @@ function createFlowTools(workspaceId: string) {
     },
 
     /**
+     * Execute any SQL query against a database
+     */
+    execute_query: {
+      description:
+        "Execute any SQL query the database supports. Use for introspection queries, NULL checks, data sampling, or any ad-hoc queries. LIMIT 500 is automatically added to SELECT queries if missing.",
+      inputSchema: executeQueryParams,
+      execute: async (params: z.infer<typeof executeQueryParams>) => {
+        const { connectionId, database, query } = params;
+        try {
+          if (!Types.ObjectId.isValid(connectionId)) {
+            return { success: false, error: "Invalid connection ID" };
+          }
+
+          const connection = await DatabaseConnection.findOne({
+            _id: new Types.ObjectId(connectionId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          });
+
+          if (!connection) {
+            return { success: false, error: "Connection not found" };
+          }
+
+          // Add LIMIT if missing from SELECT queries (safety measure)
+          let safeQuery = query;
+          const upperQuery = query.toUpperCase().trim();
+          if (
+            upperQuery.startsWith("SELECT") &&
+            !upperQuery.includes("LIMIT")
+          ) {
+            safeQuery = `${query.replace(/;+$/, "")} LIMIT 500`;
+          }
+
+          const result = await databaseConnectionService.executeQuery(
+            connection.toObject(),
+            safeQuery,
+            { databaseName: database },
+          );
+
+          return {
+            success: result.success,
+            data: result.data,
+            rowCount: Array.isArray(result.data) ? result.data.length : 0,
+            connectionName: connection.name,
+            connectionType: connection.type,
+            error: result.error,
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error ? error.message : "Query execution failed",
+          };
+        }
+      },
+    },
+
+    /**
      * Explain what template placeholders do
      */
     explain_template: {
@@ -536,140 +449,8 @@ function createFlowTools(workspaceId: string) {
     },
 
     // =========================================================================
-    // Schema Analysis Tools
-    // =========================================================================
-
-    /**
-     * Analyze query results and suggest optimal destination column types
-     */
-    analyze_and_suggest_schema: {
-      description:
-        "Analyze a SQL query's results to suggest optimal destination column types. Runs the query with LIMIT 100, examines actual data values, and provides intelligent type suggestions with reasoning. Use this AFTER validating the query to propose type mappings.",
-      inputSchema: analyzeSchemaParams,
-      execute: async (params: z.infer<typeof analyzeSchemaParams>) => {
-        const { connectionId, database, query } = params;
-        try {
-          if (!Types.ObjectId.isValid(connectionId)) {
-            return { success: false, error: "Invalid connection ID" };
-          }
-
-          const connection = await DatabaseConnection.findOne({
-            _id: new Types.ObjectId(connectionId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          });
-
-          if (!connection) {
-            return { success: false, error: "Connection not found" };
-          }
-
-          // Run query with LIMIT to get sample data
-          const sampleQuery = `SELECT * FROM (${query.replace(/;+$/, "")}) AS __sample_query LIMIT 100`;
-
-          const result = await databaseConnectionService.executeQuery(
-            connection.toObject(),
-            sampleQuery,
-            { databaseName: database },
-          );
-
-          const rows = result.data as Record<string, unknown>[] | undefined;
-
-          if (!result.success || !rows || rows.length === 0) {
-            // If sample query fails, try to get schema from dry run (BigQuery)
-            if (connection.type === "bigquery") {
-              const schemaResult =
-                await databaseConnectionService.getBigQueryQuerySchema(
-                  connection.toObject(),
-                  query,
-                );
-              if (schemaResult.success && schemaResult.columns) {
-                return {
-                  success: true,
-                  columns: schemaResult.columns.map(col => ({
-                    name: col.name,
-                    sourceType: col.type,
-                    suggestedDestType: col.type, // BigQuery to BigQuery is 1:1
-                    nullable: col.nullable,
-                    reasoning: `Type from BigQuery schema.`,
-                  })),
-                  message:
-                    "Schema inferred from BigQuery dry run (no sample data available).",
-                };
-              }
-            }
-            return {
-              success: false,
-              error:
-                result.error ||
-                "Query returned no results. Cannot analyze schema.",
-            };
-          }
-
-          // Get column names from first row
-          const columns = Object.keys(rows[0]);
-
-          // Analyze each column
-          const columnAnalyses: ColumnAnalysis[] = columns.map(colName => {
-            // Get all values for this column
-            const values = rows.map(row => row[colName]);
-
-            // Try to determine source type from the values or result metadata
-            let sourceType = "TEXT"; // Default
-            if (result.fields && Array.isArray(result.fields)) {
-              const colInfo = result.fields.find(
-                (c: { name?: string; type?: string }) =>
-                  c.name?.toLowerCase() === colName.toLowerCase(),
-              );
-              if (colInfo?.type) {
-                sourceType = colInfo.type;
-              }
-            } else {
-              // Infer type from values
-              const firstNonNull = values.find(
-                (v: unknown) => v !== null && v !== undefined,
-              );
-              if (typeof firstNonNull === "number") {
-                sourceType = Number.isInteger(firstNonNull)
-                  ? "INTEGER"
-                  : "REAL";
-              } else if (typeof firstNonNull === "boolean") {
-                sourceType = "BOOLEAN";
-              } else if (firstNonNull instanceof Date) {
-                sourceType = "TIMESTAMP";
-              }
-            }
-
-            // Get destination database type for suggestions
-            // For now, we'll use BigQuery types as default
-            const destDbType = "bigquery";
-
-            return analyzeColumnValues(colName, sourceType, values, destDbType);
-          });
-
-          return {
-            success: true,
-            columns: columnAnalyses.map(col => ({
-              name: col.name,
-              sourceType: col.sourceType,
-              suggestedDestType: col.suggestedDestType,
-              nullable: col.nullable,
-              reasoning: col.reasoning,
-              sampleValues: col.sampleValues,
-            })),
-            rowCount: rows.length,
-            message: `Analyzed ${columns.length} columns from ${rows.length} sample rows.`,
-          };
-        } catch (error) {
-          return {
-            success: false,
-            error:
-              error instanceof Error ? error.message : "Schema analysis failed",
-          };
-        }
-      },
-    },
-
-    // =========================================================================
     // Client-side tools (no execute function - handled by frontend)
+    // Field names are now derived from the unified schema (FIELD_PATHS)
     // =========================================================================
 
     get_form_state: {
@@ -680,24 +461,18 @@ function createFlowTools(workspaceId: string) {
 
     set_form_field: {
       description:
-        "Update a single form field. Use for targeted changes to specific settings.",
+        'Update a single form field using nested path. Examples: "databaseSource.query", "schedule.cron", "tableDestination.tableName", "typeCoercions" (for column mappings array).',
       inputSchema: setFormFieldSchema,
     },
 
     set_multiple_fields: {
       description:
-        "Update multiple form fields at once. Use when configuring related settings together.",
+        "Update multiple form fields at once. Use nested paths as keys.",
       inputSchema: setMultipleFieldsSchema,
     },
 
-    /**
-     * Set column type mappings for schema transformation
-     */
-    set_column_mappings: {
-      description:
-        "Set the schema mapping for all columns. Each mapping includes column name, source type, destination type, nullable, and optional transformer. Use this after analyzing the schema to configure how data types should be converted.",
-      inputSchema: setColumnMappingsSchema,
-    },
+    // NOTE: set_column_mappings is deprecated - use set_form_field with fieldName="columnMappings" instead
+    // Keeping for backward compatibility but prefer the unified approach
 
     // =========================================================================
     // Tab Management Tools (client-side - for creating/listing flow tabs)
@@ -719,6 +494,9 @@ function createFlowTools(workspaceId: string) {
 
 /**
  * Build runtime context string for flow agent
+ *
+ * Uses CONTEXT_FIELDS from the unified schema to automatically include
+ * all fields marked with injectInContext: true. No more manual field lists!
  */
 function buildRuntimeContext(
   flowFormState: Record<string, unknown> | undefined,
@@ -734,44 +512,39 @@ function buildRuntimeContext(
     }
   }
 
-  // Add form state context
+  // Add form state context using CONTEXT_FIELDS from unified schema
   if (flowFormState && Object.keys(flowFormState).length > 0) {
     context += "\n\n## Current Form State\n\n";
 
-    const importantFields = [
-      "sourceConnectionId",
-      "sourceDatabase",
-      "query",
-      "destinationConnectionId",
-      "destinationDatabase",
-      "destinationSchema",
-      "destinationTable",
-      "syncMode",
-      "paginationMode",
-      "trackingColumn",
-      "conflictStrategy",
-      "keyColumns",
-      "batchSize",
-      "enabled",
-      "columnMappings",
-      "schemaMappingConfirmed",
-    ];
-
-    for (const field of importantFields) {
-      if (flowFormState[field] !== undefined && flowFormState[field] !== "") {
-        const value = flowFormState[field];
-        if (
-          field === "query" &&
-          typeof value === "string" &&
-          value.length > 0
-        ) {
-          context += `**${field}:**\n\`\`\`sql\n${value}\n\`\`\`\n`;
-        } else if (Array.isArray(value)) {
-          context += `**${field}:** ${JSON.stringify(value)}\n`;
+    // CONTEXT_FIELDS is derived from schema metadata (injectInContext: true)
+    // This ensures we never forget to add new fields to the context!
+    for (const fieldPath of CONTEXT_FIELDS) {
+      const value = getNestedValue(flowFormState, fieldPath);
+      if (value !== undefined && value !== "" && value !== null) {
+        const meta = getFieldMeta(fieldPath);
+        if (meta) {
+          context += formatContextValue(fieldPath, value, meta);
         } else {
-          context += `**${field}:** ${value}\n`;
+          // Fallback for fields without metadata
+          if (Array.isArray(value)) {
+            context += `**${fieldPath}:** ${JSON.stringify(value)}\n`;
+          } else {
+            context += `**${fieldPath}:** ${value}\n`;
+          }
         }
       }
+    }
+
+    // Also include columnMappings if present (UI-specific field)
+    const columnMappings = flowFormState.columnMappings;
+    if (Array.isArray(columnMappings) && columnMappings.length > 0) {
+      context += `**columnMappings:** ${JSON.stringify(columnMappings)}\n`;
+    }
+
+    // Include schemaMappingConfirmed status
+    const schemaMappingConfirmed = flowFormState.schemaMappingConfirmed;
+    if (schemaMappingConfirmed !== undefined) {
+      context += `**schemaMappingConfirmed:** ${schemaMappingConfirmed}\n`;
     }
   }
 

@@ -9,6 +9,7 @@ import { Types } from "mongoose";
 import { databaseRegistry } from "../databases/registry";
 import { DatabaseDriver } from "../databases/driver";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { loggers } from "../logging";
 
 export const databaseTreeRoutes = new Hono();
 
@@ -265,5 +266,159 @@ databaseTreeRoutes.get(
     }
 
     return c.json({ success: true, data: { language, template } });
+  },
+);
+
+// GET /api/workspaces/:workspaceId/databases/:id/table-exists
+// Check if a table exists and return its schema if it does
+databaseTreeRoutes.get(
+  "/:id/table-exists",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    const log = loggers.api("database-tree");
+    const workspace = c.get("workspace");
+    const databaseId = c.req.param("id");
+    const tableName = c.req.query("tableName");
+    const schema = c.req.query("schema"); // For PostgreSQL (default: public)
+    const database = c.req.query("database"); // For database selection (optional)
+
+    if (!Types.ObjectId.isValid(databaseId)) {
+      return c.json({ success: false, error: "Invalid database ID" }, 400);
+    }
+
+    if (!tableName) {
+      return c.json({ success: false, error: "tableName is required" }, 400);
+    }
+
+    const dbConnection = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(databaseId),
+      workspaceId: workspace._id,
+    });
+
+    if (!dbConnection) {
+      return c.json({ success: false, error: "Database not found" }, 404);
+    }
+
+    const driver = databaseRegistry.getDriver(dbConnection.type);
+    if (!driver) {
+      return c.json({ success: false, error: "Driver not found" }, 404);
+    }
+
+    // Check if driver supports tableExists
+    if (!driver.tableExists) {
+      return c.json({
+        success: true,
+        data: {
+          exists: false,
+          supported: false,
+          message: `Table existence check not supported for ${dbConnection.type}`,
+        },
+      });
+    }
+
+    try {
+      // Build options based on database type
+      const options: { schema?: string; database?: string } = {};
+      if (schema) options.schema = String(schema);
+      if (database) options.database = String(database);
+
+      // For BigQuery, schema is actually the dataset
+      if (dbConnection.type === "bigquery" && !options.schema) {
+        return c.json({
+          success: false,
+          error: "schema (dataset) is required for BigQuery",
+        }, 400);
+      }
+
+      // For PostgreSQL, default to public schema
+      if (dbConnection.type === "postgresql" && !options.schema) {
+        options.schema = "public";
+      }
+
+      const exists = await driver.tableExists(
+        dbConnection as any,
+        String(tableName),
+        options,
+      );
+
+      if (!exists) {
+        return c.json({
+          success: true,
+          data: { exists: false, columns: [] },
+        });
+      }
+
+      // Table exists - try to get column information
+      let columns: Array<{ name: string; type: string; nullable?: boolean }> = [];
+
+      if (dbConnection.type === "postgresql") {
+        // Query PostgreSQL information_schema for columns
+        const schemaName = options.schema || "public";
+        const columnQuery = `
+          SELECT column_name, data_type, is_nullable
+          FROM information_schema.columns
+          WHERE table_schema = '${schemaName.replace(/'/g, "''")}'
+            AND table_name = '${String(tableName).replace(/'/g, "''")}'
+          ORDER BY ordinal_position;
+        `;
+        const result = await driver.executeQuery(dbConnection as any, columnQuery);
+        if (result.success && result.data) {
+          columns = result.data.map((row: any) => ({
+            name: row.column_name,
+            type: row.data_type?.toUpperCase() || "UNKNOWN",
+            nullable: row.is_nullable === "YES",
+          }));
+        }
+      } else if (dbConnection.type === "bigquery") {
+        // Query BigQuery INFORMATION_SCHEMA for columns
+        const projectId = (dbConnection.connection as any)?.project_id;
+        const dataset = options.schema;
+        if (projectId && dataset) {
+          const columnQuery = `
+            SELECT column_name, data_type, is_nullable
+            FROM \`${projectId}\`.\`${dataset}\`.INFORMATION_SCHEMA.COLUMNS
+            WHERE table_name = '${String(tableName).replace(/'/g, "\\'")}'
+            ORDER BY ordinal_position;
+          `;
+          const result = await driver.executeQuery(dbConnection as any, columnQuery);
+          if (result.success && result.data) {
+            columns = result.data.map((row: any) => ({
+              name: row.column_name,
+              type: row.data_type || "UNKNOWN",
+              nullable: row.is_nullable === "YES",
+            }));
+          }
+        }
+      }
+
+      log.info("Table existence check completed", {
+        tableName,
+        exists,
+        columnCount: columns.length,
+        databaseType: dbConnection.type,
+      });
+
+      return c.json({
+        success: true,
+        data: { exists: true, columns },
+      });
+    } catch (error) {
+      log.error("Error checking table existence", {
+        error,
+        tableName,
+        databaseType: dbConnection.type,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to check table existence",
+        },
+        500,
+      );
+    }
   },
 );

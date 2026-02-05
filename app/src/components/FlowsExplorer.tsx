@@ -109,7 +109,10 @@ export function FlowsExplorer() {
             isNew: false,
             flowType:
               flow.sourceType === "database" ? "db-scheduled" : flow.type,
-            enabled: flow.enabled,
+            enabled:
+              flow.type === "webhook"
+                ? flow.webhookConfig?.enabled
+                : flow.schedule?.enabled,
           },
         });
         setActiveTab(id);
@@ -131,7 +134,11 @@ export function FlowsExplorer() {
   };
 
   const getFlowStatus = (flow: any) => {
-    if (!flow.enabled) {
+    const isEnabled =
+      flow.type === "webhook"
+        ? flow.webhookConfig?.enabled !== false
+        : flow.schedule?.enabled === true;
+    if (!isEnabled) {
       return {
         label: "Disabled",
         color: "default" as const,
@@ -290,12 +297,12 @@ export function FlowsExplorer() {
                           strokeWidth={1.5}
                           style={{
                             fontSize: 24,
-                            color: flow.enabled
+                            color: flow.webhookConfig?.enabled !== false
                               ? "text.primary"
                               : "text.disabled",
                           }}
                         />
-                      ) : flow.enabled ? (
+                      ) : flow.schedule?.enabled === true ? (
                         <ScheduleIcon
                           size={20}
                           strokeWidth={1.5}

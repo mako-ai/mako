@@ -21,6 +21,7 @@ const flowDestinationSchema = z.object({
 // Allow schedule to be absent or partial (webhook flows have no schedule)
 const flowScheduleSchema = z
   .object({
+    enabled: z.boolean().optional(),
     cron: z.string().optional(),
     timezone: z.string().optional(),
   })
@@ -75,7 +76,6 @@ const flowSchema = z.object({
   entityFilter: z.array(z.string()).nullable().optional(),
   queries: z.array(flowQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
-  enabled: z.boolean(),
   lastRunAt: z.string().nullable().optional(),
   lastSuccessAt: z.string().nullable().optional(),
   lastError: z.string().nullable().optional(),
@@ -590,7 +590,10 @@ export const useFlowStore = create<FlowStore>()(
               const flows = state.flows[workspaceId] || [];
               const index = flows.findIndex(flow => flow._id === flowId);
               if (index !== -1) {
-                flows[index].enabled = response.data.enabled;
+                if (!flows[index].schedule) {
+                  flows[index].schedule = {};
+                }
+                flows[index].schedule.enabled = response.data.enabled;
               }
             });
           } else {

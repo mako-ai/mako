@@ -62,6 +62,7 @@ import {
 } from "../hooks/useMonacoConsole";
 import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
+import { DbFlowFormRef } from "./DbFlowForm";
 
 interface ChatSessionMeta {
   _id: string;
@@ -405,15 +406,7 @@ const StreamingIndicator = React.memo(() => {
 
 StreamingIndicator.displayName = "StreamingIndicator";
 
-/**
- * Ref interface for DbFlowForm - methods exposed via useImperativeHandle
- */
-export interface DbFlowFormRef {
-  getFormState(): Record<string, unknown>;
-  setField(name: string, value: unknown): void;
-  setMultipleFields(fields: Record<string, unknown>): void;
-  validateQuery(): Promise<void>;
-}
+// DbFlowFormRef is imported from ./DbFlowForm
 
 interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
@@ -1090,55 +1083,8 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
-        // set_column_mappings - Set schema mappings for all columns
-        if (toolName === "set_column_mappings") {
-          const formRef = dbFlowFormRefCurrent.current?.current;
-          if (!formRef) {
-            addToolOutput({
-              tool: "set_column_mappings",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "Form is not available. Make sure you're in the flow editor.",
-              },
-            });
-            return;
-          }
-
-          const mappings = input.mappings as Array<{
-            name: string;
-            sourceType: string;
-            destType: string;
-            nullable: boolean;
-            transformer?: string;
-          }>;
-
-          if (!mappings || !Array.isArray(mappings)) {
-            addToolOutput({
-              tool: "set_column_mappings",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: "mappings must be an array",
-              },
-            });
-            return;
-          }
-
-          formRef.setColumnMappings(mappings);
-          addToolOutput({
-            tool: "set_column_mappings",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              columnCount: mappings.length,
-              columns: mappings.map(m => m.name),
-              message: `Set ${mappings.length} column mappings successfully. User should now review and confirm the mappings in Step 2.`,
-            },
-          });
-          return;
-        }
+        // NOTE: set_column_mappings has been deprecated
+        // Use set_form_field with fieldName="columnMappings" instead
 
         // create_flow_tab - Create a new db-scheduled flow tab
         if (toolName === "create_flow_tab") {

@@ -27,9 +27,9 @@ import {
   Stack,
   Divider,
   CircularProgress,
-  Stepper,
-  Step,
-  StepLabel,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from "@mui/material";
 import { useTheme as useMuiTheme } from "@mui/material/styles";
 import {
@@ -42,8 +42,7 @@ import {
   CheckCircle as CheckIcon,
   Warning as WarningIcon,
   NavigateNext as NextIcon,
-  NavigateBefore as BackIcon,
-  Science as AnalyzeIcon,
+  ExpandMore as ExpandMoreIcon,
 } from "@mui/icons-material";
 import Editor, { Monaco, OnMount } from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -64,13 +63,14 @@ interface DbFlowFormProps {
 
 /**
  * Ref interface for DbFlowForm - methods exposed to parent components and AI agent
+ * Uses nested field paths matching the API structure (e.g., "schedule.cron", "databaseSource.query")
  */
 export interface DbFlowFormRef {
   /** Get all current form values */
   getFormState(): Record<string, unknown>;
-  /** Set a single form field */
-  setField(name: string, value: unknown): void;
-  /** Set multiple form fields at once */
+  /** Set a single form field using nested path (e.g., "schedule.cron", "databaseSource.query") */
+  setField(path: string, value: unknown): void;
+  /** Set multiple form fields at once using nested paths */
   setMultipleFields(fields: Record<string, unknown>): void;
   /** Trigger query validation */
   validateQuery(): Promise<void>;
@@ -84,29 +84,44 @@ export interface DbFlowFormRef {
   getCurrentStep(): number;
 }
 
+/**
+ * Form data structure - MATCHES the API/database structure exactly
+ * Uses nested objects, no more flat fields!
+ */
 interface FormData {
-  sourceConnectionId: string;
-  sourceDatabase?: string;
-  query: string;
-  destinationConnectionId: string;
-  destinationDatabase?: string;
-  destinationSchema?: string;
-  destinationTable: string;
-  schedule: string;
-  timezone: string;
+  databaseSource: {
+    connectionId: string;
+    database?: string;
+    query: string;
+  };
+  tableDestination: {
+    connectionId: string;
+    database?: string;
+    schema?: string;
+    tableName: string;
+    createIfNotExists: boolean;
+  };
+  schedule: {
+    enabled: boolean;
+    cron?: string;
+    timezone: string;
+  };
   syncMode: "full" | "incremental";
-  trackingColumn?: string;
-  trackingType?: "timestamp" | "numeric";
-  keyColumns?: string | string[];
-  conflictStrategy: "upsert" | "ignore" | "replace";
   batchSize: number;
-  enabled: boolean;
-  createTableIfNotExists: boolean;
-  // Pagination config
-  paginationMode: "offset" | "keyset";
-  keysetColumn?: string;
-  keysetDirection?: "asc" | "desc";
-  // Schema mapping (Step 2)
+  incrementalConfig?: {
+    trackingColumn: string;
+    trackingType: "timestamp" | "numeric";
+  };
+  conflictConfig?: {
+    keyColumns: string[];
+    strategy: "upsert" | "ignore" | "replace";
+  };
+  paginationConfig?: {
+    mode: "offset" | "keyset";
+    keysetColumn?: string;
+    keysetDirection?: "asc" | "desc";
+  };
+  // Column mappings - kept separate for UI convenience, converted to typeCoercions on save
   columnMappings: ColumnMapping[];
   schemaMappingConfirmed: boolean;
 }
@@ -114,8 +129,10 @@ interface FormData {
 // Wizard steps
 const STEPS = [
   { label: "Source", description: "Configure source database and query" },
+  { label: "Destination", description: "Configure destination database and table" },
   { label: "Schema Mapping", description: "Review and confirm column types" },
-  { label: "Destination", description: "Configure destination and schedule" },
+  { label: "Sync Mode", description: "Configure sync behavior and conflict handling" },
+  { label: "Schedule", description: "Set up automatic sync schedule (optional)" },
 ];
 
 // Common schedule presets
@@ -130,6 +147,40 @@ const SCHEDULE_PRESETS = [
   { label: "Weekly on Sunday", cron: "0 0 * * 0" },
   { label: "Monthly on 1st", cron: "0 0 1 * *" },
 ];
+
+/**
+ * Default form values
+ */
+const DEFAULT_FORM_VALUES: FormData = {
+  databaseSource: {
+    connectionId: "",
+    database: "",
+    query: "",
+  },
+  tableDestination: {
+    connectionId: "",
+    database: "",
+    schema: "",
+    tableName: "",
+    createIfNotExists: true,
+  },
+  schedule: {
+    enabled: false,
+    cron: "0 * * * *",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  },
+  syncMode: "full",
+  batchSize: 2000,
+  incrementalConfig: undefined,
+  conflictConfig: undefined,
+  paginationConfig: {
+    mode: "offset",
+    keysetColumn: "",
+    keysetDirection: "asc",
+  },
+  columnMappings: [],
+  schemaMappingConfirmed: false,
+};
 
 export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
   function DbFlowForm(
@@ -146,6 +197,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       clearError,
       deleteFlow,
       validateDbQuery,
+      fetchFlowDetails,
     } = useFlowStore();
 
     // Get workspace-specific data
@@ -153,6 +205,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
       [currentWorkspace, flowsMap],
     );
+
+    // Loading state for fetching flow details
+    const [isLoadingFlow, setIsLoadingFlow] = useState(false);
     const storeError = currentWorkspace
       ? errorMap[currentWorkspace.id] || null
       : null;
@@ -163,6 +218,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
     );
     const ensureConnections = useSchemaStore(state => state.ensureConnections);
     const ensureTreeRoot = useSchemaStore(state => state.ensureTreeRoot);
+    const checkTableExists = useSchemaStore(state => state.checkTableExists);
 
     const [scheduleMode, setScheduleMode] = useState<"preset" | "custom">(
       "preset",
@@ -174,8 +230,8 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
     );
     const [isNewMode, setIsNewMode] = useState(isNew);
 
-    // Wizard step state
-    const [activeStep, setActiveStep] = useState(0);
+    // Wizard step state - allow multiple steps open
+    const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
 
     // Source and destination database lists
     const [sourceDatabases, setSourceDatabases] = useState<TreeNode[]>([]);
@@ -184,6 +240,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
     const [isLoadingDestDbs, setIsLoadingDestDbs] = useState(false);
 
     // Track previous connection IDs to detect user-initiated changes vs form reset
+    const prevSourceConnectionIdRef = useRef<string | null>(null);
     const prevDestConnectionIdRef = useRef<string | null>(null);
     const isFormInitializedRef = useRef(false);
 
@@ -197,7 +254,14 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       error?: string;
     } | null>(null);
 
-    // Monaco editor refs - using Parameters<OnMount>[0] and Monaco types from @monaco-editor/react
+    // Destination table existence state (value used for future UI enhancement)
+    const [_destTableExists, setDestTableExists] = useState<{
+      exists: boolean;
+      columns: Array<{ name: string; type: string; nullable?: boolean }>;
+      isChecking: boolean;
+    }>({ exists: false, columns: [], isChecking: false });
+
+    // Monaco editor refs
     const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
     const monacoRef = useRef<Monaco | null>(null);
     const templateCompletionDisposable = useRef<{ dispose: () => void } | null>(
@@ -210,7 +274,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
 
     // Register template placeholder completions
     const registerTemplateCompletions = useCallback((monaco: Monaco) => {
-      // Dispose any existing provider
       if (templateCompletionDisposable.current) {
         templateCompletionDisposable.current.dispose();
       }
@@ -226,7 +289,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
               endColumn: position.column,
             });
 
-            // Only suggest when user types "{{"
             if (textBefore !== "{{") {
               return { suggestions: [] };
             }
@@ -302,102 +364,91 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       getValues,
       trigger,
     } = useForm<FormData>({
-      defaultValues: {
-        sourceConnectionId: "",
-        sourceDatabase: "",
-        query: "",
-        destinationConnectionId: "",
-        destinationDatabase: "",
-        destinationSchema: "",
-        destinationTable: "",
-        schedule: "0 * * * *", // Default hourly
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-        syncMode: "full",
-        trackingColumn: "",
-        trackingType: "timestamp",
-        keyColumns: "",
-        conflictStrategy: "upsert",
-        batchSize: 2000,
-        enabled: true,
-        createTableIfNotExists: true,
-        paginationMode: "offset",
-        keysetColumn: "",
-        keysetDirection: "asc",
-        columnMappings: [],
-        schemaMappingConfirmed: false,
-      },
+      defaultValues: DEFAULT_FORM_VALUES,
     });
 
     // Expose methods to parent via ref (for AI agent integration)
+    // Now uses nested paths like "schedule.cron", "databaseSource.query"
     useImperativeHandle(ref, () => ({
       getFormState: () => getValues() as unknown as Record<string, unknown>,
-      setField: (name: string, value: unknown) => {
-        setValue(name as keyof FormData, value as any, {
+      setField: (path: string, value: unknown) => {
+        // React Hook Form natively supports nested paths with dot notation
+        setValue(path as any, value as any, {
           shouldValidate: true,
         });
       },
       setMultipleFields: (fields: Record<string, unknown>) => {
-        Object.entries(fields).forEach(([field, value]) => {
-          setValue(field as keyof FormData, value as any, {
+        Object.entries(fields).forEach(([path, value]) => {
+          setValue(path as any, value as any, {
             shouldValidate: false,
           });
         });
-        trigger(); // Validate all at once
+        trigger();
       },
       validateQuery: async () => {
         await handleValidateQuery();
       },
       setColumnMappings: (mappings: ColumnMapping[]) => {
         setValue("columnMappings", mappings, { shouldValidate: true });
-        // Auto-navigate to step 2 if we have mappings
-        if (mappings.length > 0 && activeStep === 0) {
-          setActiveStep(1);
+        if (mappings.length > 0 && !openSteps.has(2)) {
+          setOpenSteps(prev => new Set([...prev, 2]));
         }
       },
       getColumnMappings: () => getValues("columnMappings") || [],
       goToStep: (step: number) => {
         if (step >= 0 && step < STEPS.length) {
-          setActiveStep(step);
+          setOpenSteps(prev => new Set([...prev, step]));
         }
       },
-      getCurrentStep: () => activeStep,
+      getCurrentStep: () => Math.max(...Array.from(openSteps), 0),
     }));
 
-    const watchSchedule = watch("schedule");
-    const watchTimezone = watch("timezone");
-    const watchSourceConnectionId = watch("sourceConnectionId");
-    const watchSourceDatabase = watch("sourceDatabase");
-    const watchQuery = watch("query");
-    const watchDestConnectionId = watch("destinationConnectionId");
+    // Watch nested fields
+    const watchScheduleEnabled = watch("schedule.enabled");
+    const watchScheduleCron = watch("schedule.cron");
+    const watchScheduleTimezone = watch("schedule.timezone");
+    const watchSourceConnectionId = watch("databaseSource.connectionId");
+    const watchSourceDatabase = watch("databaseSource.database");
+    const watchQuery = watch("databaseSource.query");
+    const watchDestConnectionId = watch("tableDestination.connectionId");
+    const watchDestDatabase = watch("tableDestination.database");
+    const watchDestSchema = watch("tableDestination.schema");
+    const watchDestTable = watch("tableDestination.tableName");
     const watchSyncMode = watch("syncMode");
-    const watchPaginationMode = watch("paginationMode");
+    const watchPaginationMode = watch("paginationConfig.mode");
     const watchColumnMappings = watch("columnMappings");
     const watchSchemaMappingConfirmed = watch("schemaMappingConfirmed");
 
     // Step navigation helpers
-    const handleNext = () => {
-      setActiveStep(prev => Math.min(prev + 1, STEPS.length - 1));
+    const toggleStep = (stepIndex: number) => {
+      setOpenSteps(prev => {
+        const next = new Set(prev);
+        if (next.has(stepIndex)) {
+          next.delete(stepIndex);
+        } else {
+          next.add(stepIndex);
+        }
+        return next;
+      });
     };
 
-    const handleBack = () => {
-      setActiveStep(prev => Math.max(prev - 1, 0));
+    const openNextStep = (currentStep: number) => {
+      setOpenSteps(prev => {
+        const next = new Set(prev);
+        const nextStep = currentStep + 1;
+        if (nextStep < STEPS.length) {
+          next.add(nextStep);
+        }
+        return next;
+      });
     };
 
-    const canProceedToStep2 = useMemo(() => {
-      return (
-        watchSourceConnectionId &&
-        watchQuery?.trim() &&
-        validationResult?.success
-      );
-    }, [watchSourceConnectionId, watchQuery, validationResult]);
-
-    const canProceedToStep3 = useMemo(() => {
-      return (
-        watchColumnMappings?.length > 0 &&
-        watchColumnMappings.every(m => m.destType) &&
-        watchSchemaMappingConfirmed
-      );
-    }, [watchColumnMappings, watchSchemaMappingConfirmed]);
+    // Simplified save check
+    const canSave =
+      watchSourceConnectionId &&
+      watchQuery?.trim() &&
+      watchDestConnectionId &&
+      watchDestTable?.trim();
 
     // Get the selected source connection to check its type
     const selectedSourceConnection = useMemo(
@@ -405,7 +456,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       [databases, watchSourceConnectionId],
     );
 
-    // Check if source is BigQuery (uses datasets instead of databases)
     const isBigQuerySource = selectedSourceConnection?.type === "bigquery";
 
     // Get the selected destination connection to check its type
@@ -414,16 +464,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       [databases, watchDestConnectionId],
     );
 
-    // Check if destination is BigQuery (uses datasets instead of schemas)
     const isBigQueryDest = selectedDestConnection?.type === "bigquery";
-
-    // Check if destination is PostgreSQL (uses schemas)
     const isPostgresDest = selectedDestConnection?.type === "postgresql";
-
-    // Determine if we should show schema/dataset field
     const showSchemaField = isBigQueryDest || isPostgresDest;
 
-    // Callbacks for SQL autocomplete (must be stable to avoid re-registrations)
+    // Callbacks for SQL autocomplete
     const getSourceConnectionId = useCallback(
       () => watchSourceConnectionId,
       [watchSourceConnectionId],
@@ -493,9 +538,14 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       const loadSourceDatabases = async () => {
         if (!watchSourceConnectionId || !currentWorkspace?.id) {
           setSourceDatabases([]);
-          setValue("sourceDatabase", "");
+          setValue("databaseSource.database", "");
           return;
         }
+
+        const isUserChange =
+          isFormInitializedRef.current &&
+          prevSourceConnectionIdRef.current !== null &&
+          prevSourceConnectionIdRef.current !== watchSourceConnectionId;
 
         setIsLoadingSourceDbs(true);
         try {
@@ -503,19 +553,21 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             currentWorkspace.id,
             watchSourceConnectionId,
           );
-          // Include both "database" (PostgreSQL, etc.) and "dataset" (BigQuery) nodes
           const dbNodes = nodes.filter(
             node => node.kind === "database" || node.kind === "dataset",
           );
           setSourceDatabases(dbNodes);
-          if (dbNodes.length === 0) {
-            setValue("sourceDatabase", "");
+          if (dbNodes.length === 0 || isUserChange) {
+            if (dbNodes.length === 0) {
+              setValue("databaseSource.database", "");
+            }
           }
         } catch (err) {
           console.error("Failed to fetch source databases:", err);
           setSourceDatabases([]);
         } finally {
           setIsLoadingSourceDbs(false);
+          prevSourceConnectionIdRef.current = watchSourceConnectionId;
         }
       };
 
@@ -532,12 +584,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       const loadDestDatabases = async () => {
         if (!watchDestConnectionId || !currentWorkspace?.id) {
           setDestDatabases([]);
-          setValue("destinationDatabase", "");
-          setValue("destinationSchema", ""); // Clear schema/dataset when connection changes
+          setValue("tableDestination.database", "");
+          setValue("tableDestination.schema", "");
           return;
         }
 
-        // Determine if this is a user-initiated change (not initial form load)
         const isUserChange =
           isFormInitializedRef.current &&
           prevDestConnectionIdRef.current !== null &&
@@ -549,25 +600,21 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             currentWorkspace.id,
             watchDestConnectionId,
           );
-          // Include both "database" (PostgreSQL, etc.) and "dataset" (BigQuery) nodes
           const dbNodes = nodes.filter(
             node => node.kind === "database" || node.kind === "dataset",
           );
           setDestDatabases(dbNodes);
           if (dbNodes.length === 0) {
-            setValue("destinationDatabase", "");
+            setValue("tableDestination.database", "");
           }
-          // Only clear schema/dataset when user explicitly changes the connection
-          // (not on initial form load when editing an existing flow)
           if (isUserChange) {
-            setValue("destinationSchema", "");
+            setValue("tableDestination.schema", "");
           }
         } catch (err) {
           console.error("Failed to fetch destination databases:", err);
           setDestDatabases([]);
         } finally {
           setIsLoadingDestDbs(false);
-          // Update previous connection ID ref after processing
           prevDestConnectionIdRef.current = watchDestConnectionId;
         }
       };
@@ -582,12 +629,85 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       }
     }, [currentWorkspace?.id, ensureConnections]);
 
-    // Load flow data if editing
+    // Ref for debounce timeout
+    const tableExistsDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
     useEffect(() => {
-      if (!isNewMode && currentFlowId && flows.length > 0) {
-        const flow = flows.find(j => j._id === currentFlowId);
-        if (flow && flow.sourceType === "database") {
-          // Convert typeCoercions to columnMappings
+      return () => {
+        if (tableExistsDebounceRef.current) {
+          clearTimeout(tableExistsDebounceRef.current);
+        }
+      };
+    }, []);
+
+    // Check destination table existence when destination parameters change
+    useEffect(() => {
+      if (tableExistsDebounceRef.current) {
+        clearTimeout(tableExistsDebounceRef.current);
+      }
+
+      if (!watchDestConnectionId || !watchDestTable?.trim()) {
+        setDestTableExists({ exists: false, columns: [], isChecking: false });
+        return;
+      }
+
+      tableExistsDebounceRef.current = setTimeout(async () => {
+        if (!currentWorkspace?.id) {
+          setDestTableExists({ exists: false, columns: [], isChecking: false });
+          return;
+        }
+
+        setDestTableExists(prev => ({ ...prev, isChecking: true }));
+        try {
+          const result = await checkTableExists(
+            currentWorkspace.id,
+            watchDestConnectionId,
+            watchDestTable.trim(),
+            {
+              schema: watchDestSchema || undefined,
+              database: watchDestDatabase || undefined,
+            },
+          );
+          setDestTableExists({
+            exists: result.exists,
+            columns: result.columns,
+            isChecking: false,
+          });
+        } catch (err) {
+          console.error("Failed to check table existence:", err);
+          setDestTableExists({ exists: false, columns: [], isChecking: false });
+        }
+      }, 500);
+    }, [
+      watchDestConnectionId,
+      watchDestTable,
+      watchDestSchema,
+      watchDestDatabase,
+      currentWorkspace?.id,
+      checkTableExists,
+    ]);
+
+    // Load flow data if editing - uses nested structure directly
+    useEffect(() => {
+      if (isNewMode) {
+        isFormInitializedRef.current = true;
+        return;
+      }
+
+      if (!currentFlowId || !currentWorkspace?.id) {
+        return;
+      }
+
+      const loadFlowData = async () => {
+        setIsLoadingFlow(true);
+        try {
+          const flow = await fetchFlowDetails(currentWorkspace.id, currentFlowId);
+          
+          if (!flow || flow.sourceType !== "database") {
+            return;
+          }
+
+          // Convert typeCoercions to columnMappings for UI
           const columnMappings: ColumnMapping[] = (
             flow.typeCoercions || []
           ).map((tc: any) => ({
@@ -598,63 +718,73 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             transformer: tc.transformer,
           }));
 
+          // Form data now matches API structure directly (nested)
           const formData: FormData = {
-            sourceConnectionId:
-              flow.databaseSource?.connectionId?.toString() || "",
-            sourceDatabase: flow.databaseSource?.database || "",
-            query: flow.databaseSource?.query || "",
-            destinationConnectionId:
-              flow.tableDestination?.connectionId?.toString() || "",
-            destinationDatabase: flow.tableDestination?.database || "",
-            destinationSchema: flow.tableDestination?.schema || "",
-            destinationTable: flow.tableDestination?.tableName || "",
-            schedule: flow.schedule?.cron || "0 * * * *",
-            timezone: flow.schedule?.timezone || "UTC",
+            databaseSource: {
+              connectionId: flow.databaseSource?.connectionId?.toString() || "",
+              database: flow.databaseSource?.database || "",
+              query: flow.databaseSource?.query || "",
+            },
+            tableDestination: {
+              connectionId: flow.tableDestination?.connectionId?.toString() || "",
+              database: flow.tableDestination?.database || "",
+              schema: flow.tableDestination?.schema || "",
+              tableName: flow.tableDestination?.tableName || "",
+              createIfNotExists: flow.tableDestination?.createIfNotExists ?? true,
+            },
+            schedule: {
+              enabled: flow.schedule?.enabled ?? !!flow.schedule?.cron,
+              cron: flow.schedule?.cron || "0 * * * *",
+              timezone: flow.schedule?.timezone || "UTC",
+            },
             syncMode: flow.syncMode as "full" | "incremental",
-            trackingColumn: flow.incrementalConfig?.trackingColumn || "",
-            trackingType: flow.incrementalConfig?.trackingType || "timestamp",
-            keyColumns: flow.conflictConfig?.keyColumns?.join(", ") || "",
-            conflictStrategy:
-              (flow.conflictConfig?.strategy as any) || "upsert",
             batchSize: flow.batchSize || 2000,
-            enabled: flow.enabled,
-            createTableIfNotExists:
-              flow.tableDestination?.createIfNotExists ?? true,
-            paginationMode: flow.paginationConfig?.mode || "offset",
-            keysetColumn: flow.paginationConfig?.keysetColumn || "",
-            keysetDirection: flow.paginationConfig?.keysetDirection || "asc",
+            incrementalConfig: flow.incrementalConfig ? {
+              trackingColumn: flow.incrementalConfig.trackingColumn || "",
+              trackingType: flow.incrementalConfig.trackingType || "timestamp",
+            } : undefined,
+            conflictConfig: flow.conflictConfig ? {
+              keyColumns: flow.conflictConfig.keyColumns || [],
+              strategy: flow.conflictConfig.strategy || "upsert",
+            } : undefined,
+            paginationConfig: {
+              mode: flow.paginationConfig?.mode || "offset",
+              keysetColumn: flow.paginationConfig?.keysetColumn || "",
+              keysetDirection: flow.paginationConfig?.keysetDirection || "asc",
+            },
             columnMappings,
             schemaMappingConfirmed: columnMappings.length > 0,
           };
 
-          // Set the previous connection ID ref before reset to prevent clearing schema
+          prevSourceConnectionIdRef.current =
+            flow.databaseSource?.connectionId?.toString() || "";
           prevDestConnectionIdRef.current =
             flow.tableDestination?.connectionId?.toString() || "";
 
           reset(formData);
 
-          // Mark form as initialized after a short delay to allow effects to run
-          // This ensures the destination databases effect doesn't clear the schema
           setTimeout(() => {
             isFormInitializedRef.current = true;
           }, 100);
 
-          // Check if using a preset
           const isPreset = SCHEDULE_PRESETS.some(
             p => p.cron === (flow.schedule?.cron || "0 * * * *"),
           );
           setScheduleMode(isPreset ? "preset" : "custom");
 
-          // For existing flows with schema mappings, start at step 3
           if (columnMappings.length > 0) {
-            setActiveStep(2);
+            setOpenSteps(prev => new Set([...prev, 2]));
           }
+        } catch (err) {
+          console.error("Failed to load flow details:", err);
+          setError("Failed to load flow data");
+        } finally {
+          setIsLoadingFlow(false);
         }
-      } else if (isNewMode) {
-        // For new flows, mark as initialized immediately
-        isFormInitializedRef.current = true;
-      }
-    }, [isNewMode, currentFlowId, flows, reset]);
+      };
+
+      loadFlowData();
+    }, [isNewMode, currentFlowId, currentWorkspace?.id, fetchFlowDetails, reset]);
 
     // Clear store error when component unmounts
     useEffect(() => {
@@ -665,26 +795,24 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       };
     }, [clearError, currentWorkspace?.id]);
 
+    // Form submission - data is already in the right nested structure!
     const onSubmit = async (data: FormData) => {
       if (!currentWorkspace?.id) {
         setError("No workspace selected");
         return;
       }
 
-      // Validate query
-      if (!data.query.trim()) {
+      if (!data.databaseSource.query.trim()) {
         setError("SQL query is required");
         return;
       }
 
-      // Validate destination table
-      if (!data.destinationTable.trim()) {
+      if (!data.tableDestination.tableName.trim()) {
         setError("Destination table name is required");
         return;
       }
 
-      // Validate incremental config
-      if (data.syncMode === "incremental" && !data.trackingColumn?.trim()) {
+      if (data.syncMode === "incremental" && !data.incrementalConfig?.trackingColumn?.trim()) {
         setError("Tracking column is required for incremental sync");
         return;
       }
@@ -693,89 +821,79 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       setError(null);
 
       try {
-        // Find the selected source and destination names
         const selectedSource = databases.find(
-          db => db.id === data.sourceConnectionId,
+          db => db.id === data.databaseSource.connectionId,
         );
         const selectedDest = databases.find(
-          db => db.id === data.destinationConnectionId,
+          db => db.id === data.tableDestination.connectionId,
         );
 
-        // Auto-generate name
-        const sourceName = data.sourceDatabase
-          ? `${selectedSource?.name}/${data.sourceDatabase}`
+        const sourceName = data.databaseSource.database
+          ? `${selectedSource?.name}/${data.databaseSource.database}`
           : selectedSource?.name || "Source";
-        const destName = data.destinationDatabase
-          ? `${selectedDest?.name}/${data.destinationDatabase}`
+        const destName = data.tableDestination.database
+          ? `${selectedDest?.name}/${data.tableDestination.database}`
           : selectedDest?.name || "Destination";
-        const generatedName = `${sourceName} → ${destName}:${data.destinationTable}`;
+        const generatedName = `${sourceName} → ${destName}:${data.tableDestination.tableName}`;
 
-        // Parse key columns (handle both string and array from AI agent)
-        const keyColumns = data.keyColumns
-          ? Array.isArray(data.keyColumns)
-            ? data.keyColumns.filter(Boolean)
-            : data.keyColumns
-                .split(",")
-                .map(k => k.trim())
-                .filter(Boolean)
-          : [];
-
-        // Create payload
+        // Build payload - structure matches API directly!
         const payload: any = {
           name: generatedName,
           type: "scheduled",
           sourceType: "database",
           databaseSource: {
-            connectionId: data.sourceConnectionId,
-            database: data.sourceDatabase || undefined,
-            query: data.query.trim(),
+            connectionId: data.databaseSource.connectionId,
+            database: data.databaseSource.database || undefined,
+            query: data.databaseSource.query.trim(),
           },
           tableDestination: {
-            connectionId: data.destinationConnectionId,
-            database: data.destinationDatabase || undefined,
-            schema: data.destinationSchema || undefined,
-            tableName: data.destinationTable.trim(),
-            createIfNotExists: data.createTableIfNotExists,
+            connectionId: data.tableDestination.connectionId,
+            database: data.tableDestination.database || undefined,
+            schema: data.tableDestination.schema || undefined,
+            tableName: data.tableDestination.tableName.trim(),
+            createIfNotExists: data.tableDestination.createIfNotExists,
+          },
+          schedule: {
+            enabled: data.schedule.enabled,
+            cron: data.schedule.enabled ? data.schedule.cron : undefined,
+            timezone: data.schedule.enabled ? data.schedule.timezone : undefined,
           },
           syncMode: data.syncMode,
-          enabled: data.enabled,
           batchSize: data.batchSize,
-          schedule: {
-            cron: data.schedule,
-            timezone: data.timezone,
-          },
         };
 
         // Add incremental config if applicable
-        if (data.syncMode === "incremental" && data.trackingColumn) {
+        if (data.syncMode === "incremental" && data.incrementalConfig?.trackingColumn) {
           payload.incrementalConfig = {
-            trackingColumn: data.trackingColumn.trim(),
-            trackingType: data.trackingType || "timestamp",
+            trackingColumn: data.incrementalConfig.trackingColumn.trim(),
+            trackingType: data.incrementalConfig.trackingType || "timestamp",
           };
         }
 
         // Add conflict config if key columns specified
-        if (keyColumns.length > 0) {
+        if (data.conflictConfig && data.conflictConfig.keyColumns.length > 0) {
           payload.conflictConfig = {
-            keyColumns,
-            strategy: data.conflictStrategy,
+            keyColumns: data.conflictConfig.keyColumns,
+            strategy: data.conflictConfig.strategy,
           };
         }
 
-        // Add pagination config if using keyset mode
-        if (data.paginationMode === "keyset" && data.keysetColumn) {
-          payload.paginationConfig = {
-            mode: "keyset",
-            keysetColumn: data.keysetColumn.trim(),
-            keysetDirection: data.keysetDirection || "asc",
-          };
-        } else if (data.paginationMode === "offset") {
-          payload.paginationConfig = {
-            mode: "offset",
-          };
+        // Add pagination config
+        if (data.paginationConfig) {
+          if (data.paginationConfig.mode === "keyset" && data.paginationConfig.keysetColumn) {
+            payload.paginationConfig = {
+              mode: "keyset",
+              keysetColumn: data.paginationConfig.keysetColumn.trim(),
+              keysetDirection: data.paginationConfig.keysetDirection || "asc",
+            };
+          } else {
+            payload.paginationConfig = {
+              mode: "offset",
+            };
+          }
         }
 
-        // Add type coercions from column mappings
+        // Convert columnMappings to typeCoercions for API
         if (data.columnMappings && data.columnMappings.length > 0) {
           payload.typeCoercions = data.columnMappings.map(col => ({
             column: col.name,
@@ -789,17 +907,14 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
         if (isNewMode) {
           newFlow = await createFlow(currentWorkspace.id, payload);
 
-          // Track flow creation
           trackEvent("flow_created", {
             flow_type: "db-scheduled",
             source_type: selectedSource?.type,
             dest_type: selectedDest?.type,
           });
 
-          // Refresh the flows list
           await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
-          // Switch to edit mode
           setIsNewMode(false);
           setCurrentFlowId(newFlow._id);
 
@@ -823,96 +938,56 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
       }
     };
 
-    const getCronDescription = (cron: string) => {
+    const getCronDescription = (cron: string | undefined) => {
+      if (!cron) return "No schedule selected";
       const preset = SCHEDULE_PRESETS.find(p => p.cron === cron);
       if (preset) return preset.label;
       return `Custom: ${cron}`;
     };
+
+    const handleScheduleModeChange = useCallback(
+      (_: unknown, value: "preset" | "custom" | null) => {
+        if (!value) return;
+        setScheduleMode(value);
+        if (value === "preset") {
+          const currentCron = getValues("schedule.cron");
+          const isPreset = SCHEDULE_PRESETS.some(p => p.cron === currentCron);
+          if (!isPreset) {
+            setValue("schedule.cron", SCHEDULE_PRESETS[0].cron, {
+              shouldDirty: true,
+            });
+          }
+        }
+      },
+      [getValues, setValue],
+    );
 
     // Handle column mapping changes
     const handleColumnMappingsChange = (mappings: ColumnMapping[]) => {
       setValue("columnMappings", mappings, { shouldValidate: true });
     };
 
-    // Populate initial column mappings from validation result
-    const handlePopulateMappingsFromValidation = () => {
+    // Smart merge: only add new columns from validation
+    const handleMergeColumnsFromValidation = () => {
       if (validationResult?.columns && validationResult.columns.length > 0) {
-        const mappings: ColumnMapping[] = validationResult.columns.map(col => ({
-          name: col.name,
-          sourceType: col.type,
-          destType: suggestDestType(
-            col.type,
-            col.name,
-            selectedDestConnection?.type,
-          ),
-          nullable: true,
-        }));
-        setValue("columnMappings", mappings, { shouldValidate: true });
-      }
-    };
+        const existingMappings = getValues("columnMappings") || [];
+        const existingNames = new Set(existingMappings.map(m => m.name));
 
-    // Suggest destination type based on source type and column name
-    const suggestDestType = (
-      sourceType: string,
-      columnName: string,
-      destDbType?: string,
-    ): string => {
-      const upper = sourceType.toUpperCase();
-      const lowerName = columnName.toLowerCase();
-      const isBigQuery = destDbType === "bigquery";
+        const newColumns: ColumnMapping[] = validationResult.columns
+          .filter(col => !existingNames.has(col.name))
+          .map(col => ({
+            name: col.name,
+            sourceType: "",
+            destType: "",
+            nullable: true,
+          }));
 
-      // Integer types
-      if (upper.includes("INT") || upper === "INTEGER") {
-        // Check if this might be a timestamp
-        if (
-          lowerName.endsWith("_at") ||
-          lowerName.endsWith("_time") ||
-          lowerName.includes("timestamp")
-        ) {
-          // Unix timestamp stored as integer - suggest STRING to preserve
-          return isBigQuery ? "STRING" : "TEXT";
+        if (newColumns.length > 0) {
+          setValue("columnMappings", [...existingMappings, ...newColumns], {
+            shouldValidate: true,
+          });
         }
-        return isBigQuery ? "INT64" : "BIGINT";
       }
-
-      // Float/Real types
-      if (
-        upper.includes("REAL") ||
-        upper.includes("FLOAT") ||
-        upper.includes("DOUBLE") ||
-        upper.includes("NUMERIC") ||
-        upper.includes("DECIMAL")
-      ) {
-        return isBigQuery ? "FLOAT64" : "DOUBLE PRECISION";
-      }
-
-      // Boolean
-      if (upper.includes("BOOL")) {
-        return isBigQuery ? "BOOL" : "BOOLEAN";
-      }
-
-      // Timestamp/DateTime
-      if (upper.includes("TIMESTAMP") || upper.includes("DATETIME")) {
-        return isBigQuery ? "TIMESTAMP" : "TIMESTAMPTZ";
-      }
-
-      // Date
-      if (upper === "DATE") {
-        return "DATE";
-      }
-
-      // JSON
-      if (upper.includes("JSON")) {
-        return isBigQuery ? "JSON" : "JSONB";
-      }
-
-      // Blob/Bytes
-      if (upper.includes("BLOB") || upper.includes("BYTES")) {
-        return isBigQuery ? "BYTES" : "BYTEA";
-      }
-
-      // Default: String/Text
-      return isBigQuery ? "STRING" : "TEXT";
     };
 
     return (
@@ -929,7 +1004,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             borderColor: "divider",
           }}
         >
-          {/* Delete button on the left */}
           {!isNewMode && currentFlowId && (
             <Button
               color="error"
@@ -955,7 +1029,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
 
           <Box sx={{ flex: 1 }} />
 
-          {/* Right-aligned save/cancel buttons */}
           <Box sx={{ display: "flex", gap: 1 }}>
             {onCancel && (
               <Button size="small" onClick={onCancel} disabled={isSubmitting}>
@@ -967,7 +1040,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
               variant="contained"
               size="small"
               startIcon={isNewMode ? <AddIcon /> : <SaveIcon />}
-              disabled={isSubmitting || activeStep !== 2}
+              disabled={isSubmitting || !canSave}
               onClick={handleSubmit(onSubmit)}
             >
               {isNewMode ? "Create" : "Save"}
@@ -975,7 +1048,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
           </Box>
         </Box>
 
-        {/* Main form content with Stepper */}
+        {/* Main form content */}
         <Box sx={{ flex: 1, overflow: "auto", p: { xs: 2, sm: 3 } }}>
           <Box sx={{ maxWidth: "800px", mx: "auto" }}>
             {(error || storeError) && (
@@ -984,33 +1057,64 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
               </Alert>
             )}
 
-            {/* Horizontal Stepper */}
-            <Stepper activeStep={activeStep} sx={{ mb: 3 }}>
-              {STEPS.map((step, index) => (
-                <Step key={step.label}>
-                  <StepLabel
-                    optional={
-                      <Typography variant="caption" color="text.secondary">
-                        {step.description}
-                      </Typography>
-                    }
-                    onClick={() => {
-                      // Allow clicking on completed steps to go back
-                      if (index < activeStep) {
-                        setActiveStep(index);
-                      }
-                    }}
-                    sx={{ cursor: index < activeStep ? "pointer" : "default" }}
-                  >
-                    {step.label}
-                  </StepLabel>
-                </Step>
-              ))}
-            </Stepper>
+            {isLoadingFlow && (
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  py: 8,
+                }}
+              >
+                <CircularProgress size={32} sx={{ mr: 2 }} />
+                <Typography color="text.secondary">Loading flow configuration...</Typography>
+              </Box>
+            )}
 
+            {!isLoadingFlow && (
+            <>
             <form onSubmit={handleSubmit(onSubmit)}>
               {/* Step 1: Source Configuration */}
-              {activeStep === 0 && (
+              <Accordion
+                expanded={openSteps.has(0)}
+                onChange={() => toggleStep(0)}
+                sx={{ mb: 1 }}
+              >
+                <AccordionSummary
+                  expandIcon={<ExpandMoreIcon />}
+                  sx={{
+                    "& .MuiAccordionSummary-content": {
+                      alignItems: "center",
+                      gap: 1,
+                    },
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.75rem",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    1
+                  </Typography>
+                  <Box>
+                    <Typography variant="subtitle2">
+                      {STEPS[0].label}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {STEPS[0].description}
+                    </Typography>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
                 <Stack spacing={3}>
                   <Box>
                     <Typography
@@ -1027,7 +1131,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </Typography>
                     <Stack spacing={2}>
                       <Controller
-                        name="sourceConnectionId"
+                        name="databaseSource.connectionId"
                         control={control}
                         rules={{ required: "Source connection is required" }}
                         render={({ field }) => (
@@ -1035,8 +1139,8 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             value={field.value}
                             onChange={field.onChange}
                             label="Source Connection"
-                            error={!!errors.sourceConnectionId}
-                            helperText={errors.sourceConnectionId?.message}
+                            error={!!errors.databaseSource?.connectionId}
+                            helperText={errors.databaseSource?.connectionId?.message}
                             fullWidth
                           />
                         )}
@@ -1064,7 +1168,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             </Box>
                           ) : sourceDatabases.length > 0 ? (
                             <Controller
-                              name="sourceDatabase"
+                              name="databaseSource.database"
                               control={control}
                               render={({ field }) => (
                                 <FormControl fullWidth>
@@ -1103,7 +1207,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                       )}
 
                       <Controller
-                        name="query"
+                        name="databaseSource.query"
                         control={control}
                         rules={{ required: "SQL query is required" }}
                         render={({ field }) => (
@@ -1112,7 +1216,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                               variant="body2"
                               sx={{
                                 mb: 0.5,
-                                color: errors.query
+                                color: errors.databaseSource?.query
                                   ? "error.main"
                                   : "text.secondary",
                               }}
@@ -1123,7 +1227,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                               sx={{
                                 height: 200,
                                 border: 1,
-                                borderColor: errors.query
+                                borderColor: errors.databaseSource?.query
                                   ? "error.main"
                                   : "divider",
                                 borderRadius: 1,
@@ -1158,8 +1262,8 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                 }}
                               />
                             </Box>
-                            <FormHelperText error={!!errors.query}>
-                              {errors.query?.message ||
+                            <FormHelperText error={!!errors.databaseSource?.query}>
+                              {errors.databaseSource?.query?.message ||
                                 "Use {{limit}}, {{offset}}, {{last_sync_value}}, {{keyset_value}} for dynamic values"}
                             </FormHelperText>
                           </Box>
@@ -1243,7 +1347,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             </Alert>
                           )}
 
-                          {/* Warnings */}
                           {validationResult.warnings &&
                             validationResult.warnings.length > 0 && (
                               <Alert
@@ -1273,7 +1376,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                               </Alert>
                             )}
 
-                          {/* Sample Row Preview */}
                           {validationResult.sampleRow && (
                             <Box
                               sx={{
@@ -1315,7 +1417,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </Stack>
                   </Box>
 
-                  {/* Step 1 Navigation */}
                   <Box
                     sx={{ display: "flex", justifyContent: "flex-end", pt: 2 }}
                   >
@@ -1323,121 +1424,64 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                       variant="contained"
                       endIcon={<NextIcon />}
                       onClick={() => {
-                        // Auto-populate mappings from validation result
                         if (
                           validationResult?.success &&
                           validationResult.columns
                         ) {
-                          handlePopulateMappingsFromValidation();
+                          handleMergeColumnsFromValidation();
                         }
-                        handleNext();
+                        openNextStep(0);
                       }}
-                      disabled={!canProceedToStep2}
                     >
-                      Next: Schema Mapping
+                      Continue to Destination
                     </Button>
                   </Box>
                 </Stack>
-              )}
+                </AccordionDetails>
+              </Accordion>
 
-              {/* Step 2: Schema Mapping */}
-              {activeStep === 1 && (
-                <Stack spacing={3}>
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
-                      sx={{
-                        mb: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1,
-                      }}
-                    >
-                      <AnalyzeIcon fontSize="small" />
-                      Schema Mapping
-                    </Typography>
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      sx={{ mb: 2 }}
-                    >
-                      Review and adjust the destination column types. The AI
-                      agent can help analyze your data and suggest optimal
-                      types. You can also manually adjust any column's
-                      destination type using the dropdowns below.
-                    </Typography>
-
-                    {/* Schema Mapping Table */}
-                    <SchemaMappingTable
-                      columns={watchColumnMappings || []}
-                      onChange={handleColumnMappingsChange}
-                      destinationType={
-                        selectedDestConnection?.type || "bigquery"
-                      }
-                    />
-
-                    {watchColumnMappings?.length === 0 && (
-                      <Alert severity="info" sx={{ mt: 2 }}>
-                        <Typography variant="body2">
-                          No columns detected yet. Go back to Step 1 and
-                          validate your query, or ask the AI agent to analyze
-                          the schema for you.
-                        </Typography>
-                      </Alert>
-                    )}
-
-                    {watchColumnMappings?.length > 0 && (
-                      <Box sx={{ mt: 2 }}>
-                        <FormControlLabel
-                          control={
-                            <Switch
-                              checked={watchSchemaMappingConfirmed || false}
-                              onChange={e =>
-                                setValue(
-                                  "schemaMappingConfirmed",
-                                  e.target.checked,
-                                )
-                              }
-                            />
-                          }
-                          label={
-                            <Typography variant="body2">
-                              I have reviewed and confirmed the column type
-                              mappings
-                            </Typography>
-                          }
-                        />
-                      </Box>
-                    )}
-                  </Box>
-
-                  {/* Step 2 Navigation */}
-                  <Box
+              {/* Step 2: Destination Configuration */}
+              <Accordion
+                expanded={openSteps.has(1)}
+                onChange={() => toggleStep(1)}
+                sx={{ mb: 1 }}
+              >
+                <AccordionSummary
+                  expandIcon={<ExpandMoreIcon />}
+                  sx={{
+                    "& .MuiAccordionSummary-content": {
+                      alignItems: "center",
+                      gap: 1,
+                    },
+                  }}
+                >
+                  <Typography
                     sx={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
                       display: "flex",
-                      justifyContent: "space-between",
-                      pt: 2,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.75rem",
+                      fontWeight: "bold",
                     }}
                   >
-                    <Button startIcon={<BackIcon />} onClick={handleBack}>
-                      Back
-                    </Button>
-                    <Button
-                      variant="contained"
-                      endIcon={<NextIcon />}
-                      onClick={handleNext}
-                      disabled={!canProceedToStep3}
-                    >
-                      Next: Destination
-                    </Button>
+                    2
+                  </Typography>
+                  <Box>
+                    <Typography variant="subtitle2">
+                      {STEPS[1].label}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {STEPS[1].description}
+                    </Typography>
                   </Box>
-                </Stack>
-              )}
-
-              {/* Step 3: Destination and Schedule */}
-              {activeStep === 2 && (
+                </AccordionSummary>
+                <AccordionDetails>
                 <Stack spacing={3}>
-                  {/* Destination Configuration */}
                   <Box>
                     <Typography
                       variant="subtitle2"
@@ -1453,7 +1497,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </Typography>
                     <Stack spacing={2}>
                       <Controller
-                        name="destinationConnectionId"
+                        name="tableDestination.connectionId"
                         control={control}
                         rules={{
                           required: "Destination connection is required",
@@ -1463,14 +1507,13 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             value={field.value}
                             onChange={field.onChange}
                             label="Destination Connection"
-                            error={!!errors.destinationConnectionId}
-                            helperText={errors.destinationConnectionId?.message}
+                            error={!!errors.tableDestination?.connectionId}
+                            helperText={errors.tableDestination?.connectionId?.message}
                             fullWidth
                           />
                         )}
                       />
 
-                      {/* Database selector - not shown for BigQuery (uses datasets in schema field instead) */}
                       {watchDestConnectionId && !isBigQueryDest && (
                         <>
                           {isLoadingDestDbs ? (
@@ -1491,7 +1534,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             </Box>
                           ) : destDatabases.length > 0 ? (
                             <Controller
-                              name="destinationDatabase"
+                              name="tableDestination.database"
                               control={control}
                               render={({ field }) => (
                                 <FormControl fullWidth>
@@ -1522,9 +1565,8 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                       >
                         {showSchemaField &&
                           (isBigQueryDest ? (
-                            // BigQuery: Show dataset dropdown
                             <Controller
-                              name="destinationSchema"
+                              name="tableDestination.schema"
                               control={control}
                               rules={{
                                 required: "Dataset is required for BigQuery",
@@ -1533,7 +1575,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                 <FormControl
                                   fullWidth
                                   sx={{ flex: 1 }}
-                                  error={!!errors.destinationSchema}
+                                  error={!!errors.tableDestination?.schema}
                                 >
                                   <InputLabel>Dataset</InputLabel>
                                   <Select {...field} label="Dataset">
@@ -1554,16 +1596,15 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                     )}
                                   </Select>
                                   <FormHelperText>
-                                    {errors.destinationSchema?.message ||
+                                    {errors.tableDestination?.schema?.message ||
                                       "Select the BigQuery dataset"}
                                   </FormHelperText>
                                 </FormControl>
                               )}
                             />
                           ) : (
-                            // PostgreSQL: Show schema text field
                             <Controller
-                              name="destinationSchema"
+                              name="tableDestination.schema"
                               control={control}
                               render={({ field }) => (
                                 <TextField
@@ -1577,7 +1618,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             />
                           ))}
                         <Controller
-                          name="destinationTable"
+                          name="tableDestination.tableName"
                           control={control}
                           rules={{ required: "Table name is required" }}
                           render={({ field }) => (
@@ -1585,8 +1626,8 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                               {...field}
                               label="Table Name"
                               placeholder="synced_users"
-                              error={!!errors.destinationTable}
-                              helperText={errors.destinationTable?.message}
+                              error={!!errors.tableDestination?.tableName}
+                              helperText={errors.tableDestination?.tableName?.message}
                               sx={{ flex: 1 }}
                             />
                           )}
@@ -1594,7 +1635,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                       </Stack>
 
                       <Controller
-                        name="createTableIfNotExists"
+                        name="tableDestination.createIfNotExists"
                         control={control}
                         render={({ field }) => (
                           <FormControlLabel
@@ -1611,82 +1652,184 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </Stack>
                   </Box>
 
-                  <Divider />
+                  <Box
+                    sx={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      pt: 2,
+                    }}
+                  >
+                    <Button
+                      variant="contained"
+                      endIcon={<NextIcon />}
+                      onClick={() => openNextStep(1)}
+                    >
+                      Continue to Schema Mapping
+                    </Button>
+                  </Box>
+                </Stack>
+                </AccordionDetails>
+              </Accordion>
 
-                  {/* Schedule Configuration */}
+              {/* Step 3: Schema Mapping */}
+              <Accordion
+                expanded={openSteps.has(2)}
+                onChange={() => toggleStep(2)}
+                sx={{ mb: 1 }}
+              >
+                <AccordionSummary
+                  expandIcon={<ExpandMoreIcon />}
+                  sx={{
+                    "& .MuiAccordionSummary-content": {
+                      alignItems: "center",
+                      gap: 1,
+                    },
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.75rem",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    3
+                  </Typography>
                   <Box>
-                    <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                      Schedule
+                    <Typography variant="subtitle2">
+                      {STEPS[2].label}
                     </Typography>
-                    <ToggleButtonGroup
-                      value={scheduleMode}
-                      exclusive
-                      onChange={(_, value) => value && setScheduleMode(value)}
-                      size="small"
+                    <Typography variant="caption" color="text.secondary">
+                      {STEPS[2].description}
+                    </Typography>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                <Stack spacing={3}>
+                  <Box>
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
                       sx={{ mb: 2 }}
                     >
-                      <ToggleButton value="preset">Preset</ToggleButton>
-                      <ToggleButton value="custom">Custom</ToggleButton>
-                    </ToggleButtonGroup>
+                      Review and adjust the destination column types. The AI
+                      agent can help inspect your source table and suggest
+                      optimal types. You can also manually adjust any column's
+                      destination type using the dropdowns below.
+                    </Typography>
+
+                    <SchemaMappingTable
+                      columns={watchColumnMappings || []}
+                      onChange={handleColumnMappingsChange}
+                      destinationType={
+                        selectedDestConnection?.type || "bigquery"
+                      }
+                    />
+
+                    {watchColumnMappings?.length === 0 && (
+                      <Alert severity="info" sx={{ mt: 2 }}>
+                        <Typography variant="body2">
+                          No columns detected yet. Go back to Step 1 and
+                          validate your query, or ask the AI agent to help
+                          configure the schema mapping.
+                        </Typography>
+                      </Alert>
+                    )}
+
+                    {watchColumnMappings?.length > 0 && (
+                      <Box sx={{ mt: 2 }}>
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              checked={watchSchemaMappingConfirmed || false}
+                              onChange={e =>
+                                setValue(
+                                  "schemaMappingConfirmed",
+                                  e.target.checked,
+                                )
+                              }
+                            />
+                          }
+                          label={
+                            <Typography variant="body2">
+                              I have reviewed and confirmed the column type
+                              mappings
+                            </Typography>
+                          }
+                        />
+                      </Box>
+                    )}
                   </Box>
 
-                  <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                    <Box sx={{ flex: scheduleMode === "preset" ? 2 : 1.5 }}>
-                      <Controller
-                        name="schedule"
-                        control={control}
-                        rules={{ required: "Schedule is required" }}
-                        render={({ field }) =>
-                          scheduleMode === "preset" ? (
-                            <FormControl fullWidth>
-                              <InputLabel>Schedule Preset</InputLabel>
-                              <Select {...field} label="Schedule Preset">
-                                {SCHEDULE_PRESETS.map(preset => (
-                                  <MenuItem
-                                    key={preset.cron}
-                                    value={preset.cron}
-                                  >
-                                    {preset.label}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          ) : (
-                            <TextField
-                              {...field}
-                              fullWidth
-                              label="Cron Expression"
-                              error={!!errors.schedule}
-                              helperText={
-                                errors.schedule?.message ||
-                                "Format: minute hour day month weekday"
-                              }
-                              placeholder="0 * * * *"
-                            />
-                          )
-                        }
-                      />
-                    </Box>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      pt: 2,
+                    }}
+                  >
+                    <Button
+                      variant="contained"
+                      endIcon={<NextIcon />}
+                      onClick={() => openNextStep(2)}
+                    >
+                      Continue to Sync Mode
+                    </Button>
+                  </Box>
+                </Stack>
+                </AccordionDetails>
+              </Accordion>
 
-                    <Box sx={{ flex: 1 }}>
-                      <Controller
-                        name="timezone"
-                        control={control}
-                        render={({ field }) => (
-                          <TextField
-                            {...field}
-                            fullWidth
-                            label="Timezone"
-                            helperText="e.g., America/New_York"
-                          />
-                        )}
-                      />
-                    </Box>
-                  </Stack>
-
-                  <Divider />
-
-                  {/* Sync Mode and Options */}
+              {/* Step 4: Sync Mode */}
+              <Accordion
+                expanded={openSteps.has(3)}
+                onChange={() => toggleStep(3)}
+                sx={{ mb: 1 }}
+              >
+                <AccordionSummary
+                  expandIcon={<ExpandMoreIcon />}
+                  sx={{
+                    "& .MuiAccordionSummary-content": {
+                      alignItems: "center",
+                      gap: 1,
+                    },
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.75rem",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    4
+                  </Typography>
+                  <Box>
+                    <Typography variant="subtitle2">
+                      {STEPS[3].label}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {STEPS[3].description}
+                    </Typography>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                <Stack spacing={3}>
+                  {/* Sync Mode Selection */}
                   <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                     <Controller
                       name="syncMode"
@@ -1708,26 +1851,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         </FormControl>
                       )}
                     />
-
-                    <Box
-                      sx={{ display: "flex", alignItems: "center", flex: 1 }}
-                    >
-                      <Controller
-                        name="enabled"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControlLabel
-                            control={
-                              <Switch
-                                checked={field.value}
-                                onChange={field.onChange}
-                              />
-                            }
-                            label="Enable Flow"
-                          />
-                        )}
-                      />
-                    </Box>
                   </Stack>
 
                   {/* Incremental Config */}
@@ -1738,7 +1861,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         spacing={2}
                       >
                         <Controller
-                          name="trackingColumn"
+                          name="incrementalConfig.trackingColumn"
                           control={control}
                           rules={{
                             required:
@@ -1749,11 +1872,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                           render={({ field }) => (
                             <TextField
                               {...field}
+                              value={field.value || ""}
                               label="Tracking Column"
                               placeholder="updated_at"
-                              error={!!errors.trackingColumn}
+                              error={!!errors.incrementalConfig?.trackingColumn}
                               helperText={
-                                errors.trackingColumn?.message ||
+                                errors.incrementalConfig?.trackingColumn?.message ||
                                 "Column to track for incremental updates"
                               }
                               sx={{ flex: 1 }}
@@ -1761,12 +1885,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                           )}
                         />
                         <Controller
-                          name="trackingType"
+                          name="incrementalConfig.trackingType"
                           control={control}
                           render={({ field }) => (
                             <FormControl sx={{ flex: 1 }}>
                               <InputLabel>Tracking Type</InputLabel>
-                              <Select {...field} label="Tracking Type">
+                              <Select {...field} value={field.value || "timestamp"} label="Tracking Type">
                                 <MenuItem value="timestamp">Timestamp</MenuItem>
                                 <MenuItem value="numeric">
                                   Numeric (ID)
@@ -1777,7 +1901,6 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         />
                       </Stack>
 
-                      {/* Sync State Display for existing flows */}
                       {!isNewMode &&
                         currentFlowId &&
                         (() => {
@@ -1843,14 +1966,21 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </>
                   )}
 
+                  <Divider />
+
                   {/* Conflict Resolution */}
                   <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                     <Controller
-                      name="keyColumns"
+                      name="conflictConfig.keyColumns"
                       control={control}
                       render={({ field }) => (
                         <TextField
-                          {...field}
+                          value={Array.isArray(field.value) ? field.value.join(", ") : ""}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            const columns = value ? value.split(",").map(k => k.trim()).filter(Boolean) : [];
+                            field.onChange(columns);
+                          }}
                           label="Key Columns (optional)"
                           placeholder="id, email"
                           helperText="Comma-separated list of columns for upsert"
@@ -1859,12 +1989,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                       )}
                     />
                     <Controller
-                      name="conflictStrategy"
+                      name="conflictConfig.strategy"
                       control={control}
                       render={({ field }) => (
                         <FormControl sx={{ flex: 1 }}>
                           <InputLabel>Conflict Strategy</InputLabel>
-                          <Select {...field} label="Conflict Strategy">
+                          <Select {...field} value={field.value || "upsert"} label="Conflict Strategy">
                             <MenuItem value="upsert">
                               Upsert (update or insert)
                             </MenuItem>
@@ -1906,12 +2036,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </Typography>
                     <Stack spacing={2}>
                       <Controller
-                        name="paginationMode"
+                        name="paginationConfig.mode"
                         control={control}
                         render={({ field }) => (
                           <FormControl fullWidth>
                             <InputLabel>Pagination Mode</InputLabel>
-                            <Select {...field} label="Pagination Mode">
+                            <Select {...field} value={field.value || "offset"} label="Pagination Mode">
                               <MenuItem value="offset">
                                 Offset (LIMIT/OFFSET)
                               </MenuItem>
@@ -1934,7 +2064,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                           spacing={2}
                         >
                           <Controller
-                            name="keysetColumn"
+                            name="paginationConfig.keysetColumn"
                             control={control}
                             rules={{
                               required:
@@ -1945,11 +2075,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             render={({ field }) => (
                               <TextField
                                 {...field}
+                                value={field.value || ""}
                                 label="Keyset Column"
                                 placeholder="id"
-                                error={!!errors.keysetColumn}
+                                error={!!errors.paginationConfig?.keysetColumn}
                                 helperText={
-                                  errors.keysetColumn?.message ||
+                                  errors.paginationConfig?.keysetColumn?.message ||
                                   "Column to use for keyset pagination (e.g., id, created_at)"
                                 }
                                 sx={{ flex: 1 }}
@@ -1957,12 +2088,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             )}
                           />
                           <Controller
-                            name="keysetDirection"
+                            name="paginationConfig.keysetDirection"
                             control={control}
                             render={({ field }) => (
                               <FormControl sx={{ flex: 1 }}>
                                 <InputLabel>Sort Direction</InputLabel>
-                                <Select {...field} label="Sort Direction">
+                                <Select {...field} value={field.value || "asc"} label="Sort Direction">
                                   <MenuItem value="asc">
                                     Ascending (ASC)
                                   </MenuItem>
@@ -1981,31 +2112,229 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </Stack>
                   </Box>
 
-                  {/* Schedule Preview */}
-                  <Alert severity="info" icon={<ScheduleIcon />}>
-                    <Typography variant="body2">
-                      <strong>Schedule:</strong>{" "}
-                      {getCronDescription(watchSchedule)}
-                      {watchTimezone && ` in ${watchTimezone}`}
-                    </Typography>
-                  </Alert>
-
-                  {/* Step 3 Navigation */}
                   <Box
                     sx={{
                       display: "flex",
-                      justifyContent: "space-between",
+                      justifyContent: "flex-end",
                       pt: 2,
                     }}
                   >
-                    <Button startIcon={<BackIcon />} onClick={handleBack}>
-                      Back
+                    <Button
+                      variant="contained"
+                      endIcon={<NextIcon />}
+                      onClick={() => openNextStep(3)}
+                    >
+                      Continue to Schedule
                     </Button>
+                  </Box>
+                </Stack>
+                </AccordionDetails>
+              </Accordion>
+
+              {/* Step 5: Schedule */}
+              <Accordion
+                expanded={openSteps.has(4)}
+                onChange={() => toggleStep(4)}
+                sx={{ mb: 1 }}
+              >
+                <AccordionSummary
+                  expandIcon={<ExpandMoreIcon />}
+                  sx={{
+                    "& .MuiAccordionSummary-content": {
+                      alignItems: "center",
+                      gap: 1,
+                    },
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.75rem",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    5
+                  </Typography>
+                  <Box>
+                    <Typography variant="subtitle2">
+                      {STEPS[4].label}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {STEPS[4].description}
+                    </Typography>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                <Stack spacing={3}>
+                  {/* Schedule Enable Toggle */}
+                  <Box>
+                    <Controller
+                      name="schedule.enabled"
+                      control={control}
+                      render={({ field }) => (
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              checked={field.value}
+                              onChange={field.onChange}
+                            />
+                          }
+                          label={
+                            <Box>
+                              <Typography variant="body1">
+                                Enable automatic scheduling
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {field.value
+                                  ? "Flow will run automatically on the configured schedule"
+                                  : "Flow can only be run manually (no automatic schedule)"}
+                              </Typography>
+                            </Box>
+                          }
+                        />
+                      )}
+                    />
+                  </Box>
+
+                  {/* Schedule Configuration - only shown when enabled */}
+                  {watchScheduleEnabled && (
+                    <>
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                          Schedule
+                        </Typography>
+                        <ToggleButtonGroup
+                          value={scheduleMode}
+                          exclusive
+                          onChange={handleScheduleModeChange}
+                          size="small"
+                          fullWidth
+                          sx={{
+                            mb: 2,
+                            width: "100%",
+                            p: 0.125,
+                            bgcolor: "action.hover",
+                            borderRadius: 1,
+                            "& .MuiToggleButton-root": {
+                              flex: 1,
+                              textTransform: "none",
+                              border: "none",
+                              borderRadius: 0.75,
+                              fontWeight: 600,
+                              fontSize: "0.875rem",
+                              lineHeight: 1.2,
+                              minHeight: 36,
+                              py: 0.5,
+                            },
+                            "& .MuiToggleButton-root.Mui-selected": {
+                              bgcolor: "background.paper",
+                              boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                            },
+                          }}
+                        >
+                          <ToggleButton value="preset">Preset</ToggleButton>
+                          <ToggleButton value="custom">Custom</ToggleButton>
+                        </ToggleButtonGroup>
+                      </Box>
+
+                      <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                        <Box sx={{ flex: scheduleMode === "preset" ? 2 : 1.5 }}>
+                          <Controller
+                            name="schedule.cron"
+                            control={control}
+                            render={({ field }) => {
+                              return scheduleMode === "preset" ? (
+                                <FormControl fullWidth>
+                                  <InputLabel>Schedule Preset</InputLabel>
+                                  <Select
+                                    {...field}
+                                    value={field.value || ""}
+                                    label="Schedule Preset"
+                                  >
+                                    {SCHEDULE_PRESETS.map(preset => (
+                                      <MenuItem
+                                        key={preset.cron}
+                                        value={preset.cron}
+                                      >
+                                        {preset.label}
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+                              ) : (
+                                <TextField
+                                  {...field}
+                                  value={field.value || ""}
+                                  fullWidth
+                                  label="Cron Expression"
+                                  error={!!errors.schedule?.cron}
+                                  helperText={
+                                    errors.schedule?.cron?.message ||
+                                    "Format: minute hour day month weekday"
+                                  }
+                                  placeholder="0 * * * *"
+                                />
+                              );
+                            }}
+                          />
+                        </Box>
+
+                        <Box sx={{ flex: 1 }}>
+                          <Controller
+                            name="schedule.timezone"
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                fullWidth
+                                label="Timezone"
+                                helperText="e.g., America/New_York"
+                              />
+                            )}
+                          />
+                        </Box>
+                      </Stack>
+
+                      {/* Schedule Preview */}
+                      <Alert severity="info" icon={<ScheduleIcon />}>
+                        <Typography variant="body2">
+                          <strong>Schedule:</strong>{" "}
+                          {getCronDescription(watchScheduleCron)}
+                          {watchScheduleTimezone && ` in ${watchScheduleTimezone}`}
+                        </Typography>
+                      </Alert>
+                    </>
+                  )}
+
+                  {!watchScheduleEnabled && (
+                    <Alert severity="info">
+                      <Typography variant="body2">
+                        This flow will only run when triggered manually. You can
+                        enable automatic scheduling at any time.
+                      </Typography>
+                    </Alert>
+                  )}
+
+                  {/* Save Button */}
+                  <Box
+                    sx={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      pt: 2,
+                    }}
+                  >
                     <Button
                       type="submit"
                       variant="contained"
                       startIcon={isNewMode ? <AddIcon /> : <SaveIcon />}
-                      disabled={isSubmitting}
+                      disabled={isSubmitting || !canSave}
                       onClick={handleSubmit(onSubmit)}
                     >
                       {isSubmitting ? (
@@ -2021,8 +2350,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                     </Button>
                   </Box>
                 </Stack>
-              )}
+                </AccordionDetails>
+              </Accordion>
             </form>
+            </>
+            )}
           </Box>
         </Box>
       </Box>
