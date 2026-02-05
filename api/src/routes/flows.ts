@@ -1331,7 +1331,7 @@ flowRoutes.post("/validate-query", async c => {
       },
     });
   } catch (error) {
-    console.error("Error validating query:", error);
+    logger.error("Error validating query", { error });
     return c.json(
       {
         success: false,
@@ -1414,7 +1414,7 @@ flowRoutes.post("/dry-run", async c => {
       },
     });
   } catch (error) {
-    console.error("Error running dry-run:", error);
+    logger.error("Error running dry-run", { error });
     return c.json(
       {
         success: false,
