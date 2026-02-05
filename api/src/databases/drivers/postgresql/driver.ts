@@ -610,7 +610,7 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     let conflictClause: string;
 
     if (strategy === "ignore") {
-      conflictClause = "ON CONFLICT DO NOTHING";
+      conflictClause = `ON CONFLICT (${keyColumnList}) DO NOTHING`;
     } else if (strategy === "replace") {
       // Update all columns on conflict
       const updateCols = columns
@@ -680,12 +680,13 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     const schema = options?.schema || "public";
     const fullOriginal = `${escapeIdentifier(schema)}.${escapeIdentifier(originalTableName)}`;
     const fullStaging = `${escapeIdentifier(schema)}.${escapeIdentifier(stagingTableName)}`;
-    const tempName = `${escapeIdentifier(schema)}.${escapeIdentifier(`${originalTableName}_old_${Date.now()}`)}`;
+    const backupSuffix = `${originalTableName}_old_${Date.now()}`;
+    const tempName = `${escapeIdentifier(schema)}.${escapeIdentifier(backupSuffix)}`;
 
     // Atomic swap using transaction
     const query = `
       BEGIN;
-      ALTER TABLE IF EXISTS ${fullOriginal} RENAME TO ${escapeIdentifier(`${originalTableName}_old_${Date.now()}`)};
+      ALTER TABLE IF EXISTS ${fullOriginal} RENAME TO ${escapeIdentifier(backupSuffix)};
       ALTER TABLE ${fullStaging} RENAME TO ${escapeIdentifier(originalTableName)};
       DROP TABLE IF EXISTS ${tempName};
       COMMIT;
