@@ -51,6 +51,35 @@ describe("findTopLevelKeyword", () => {
     expect(findTopLevelKeyword(q, ORDER_BY)).toBe(-1);
   });
 
+  // --- double-quoted identifiers ---
+
+  it("ignores keyword inside double-quoted identifier", () => {
+    const q = 'SELECT "WHERE" FROM t WHERE id = 1';
+    // Only the real WHERE should be found, not the one inside double quotes
+    expect(findTopLevelKeyword(q, WHERE)).toBe(q.lastIndexOf("WHERE"));
+  });
+
+  it("ignores ORDER BY inside double-quoted identifier", () => {
+    const q = 'SELECT "ORDER BY" FROM t ORDER BY id';
+    expect(findTopLevelKeyword(q, ORDER_BY)).toBe(q.lastIndexOf("ORDER"));
+  });
+
+  it("returns -1 when keyword is only inside a double-quoted identifier", () => {
+    const q = 'SELECT "ORDER BY" FROM t';
+    expect(findTopLevelKeyword(q, ORDER_BY)).toBe(-1);
+  });
+
+  it("handles escaped double quotes inside identifier (doubled)", () => {
+    const q = 'SELECT "col""ORDER" FROM t ORDER BY id';
+    // The ORDER inside the identifier is escaped; real ORDER BY is at end
+    expect(findTopLevelKeyword(q, ORDER_BY)).toBe(q.lastIndexOf("ORDER"));
+  });
+
+  it("handles double-quoted identifier containing single quotes text", () => {
+    const q = 'SELECT "WHERE\'s" FROM t WHERE id = 1';
+    expect(findTopLevelKeyword(q, WHERE)).toBe(q.lastIndexOf("WHERE"));
+  });
+
   // --- line comments (--) ---
 
   it("ignores keyword inside a line comment", () => {
@@ -201,6 +230,18 @@ describe("appendWhereCondition", () => {
     expect(result).toBe(
       `SELECT * FROM t WHERE active = true -- filter\nAND ${cond}`,
     );
+  });
+
+  it("does not break when ORDER BY is inside a double-quoted identifier", () => {
+    const q = 'SELECT "ORDER BY" FROM t WHERE x = 1';
+    const result = appendWhereCondition(q, cond);
+    expect(result).toBe(`SELECT "ORDER BY" FROM t WHERE x = 1 AND ${cond}`);
+  });
+
+  it("inserts WHERE before real ORDER BY, ignoring double-quoted one", () => {
+    const q = 'SELECT "ORDER" FROM t ORDER BY name';
+    const result = appendWhereCondition(q, cond);
+    expect(result).toBe(`SELECT "ORDER" FROM t WHERE ${cond} ORDER BY name`);
   });
 });
 
