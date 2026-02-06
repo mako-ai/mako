@@ -378,7 +378,14 @@ flowRoutes.post("/", async c => {
         flowData.incrementalConfig = body.incrementalConfig;
       }
       if (body.conflictConfig) {
-        flowData.conflictConfig = body.conflictConfig;
+        flowData.conflictConfig = {
+          ...body.conflictConfig,
+          // Normalize legacy "upsert" strategy to "update"
+          strategy:
+            body.conflictConfig.strategy === "upsert"
+              ? "update"
+              : body.conflictConfig.strategy,
+        };
       }
       if (body.paginationConfig) {
         flowData.paginationConfig = body.paginationConfig;
@@ -621,7 +628,16 @@ flowRoutes.put("/:flowId", async c => {
         flow.incrementalConfig = body.incrementalConfig;
       }
       if (body.conflictConfig !== undefined) {
-        flow.conflictConfig = body.conflictConfig;
+        flow.conflictConfig = body.conflictConfig
+          ? {
+              ...body.conflictConfig,
+              // Normalize legacy "upsert" strategy to "update"
+              strategy:
+                body.conflictConfig.strategy === "upsert"
+                  ? "update"
+                  : body.conflictConfig.strategy,
+            }
+          : body.conflictConfig;
       }
       if (body.paginationConfig !== undefined) {
         flow.paginationConfig = body.paginationConfig;
@@ -683,6 +699,11 @@ flowRoutes.put("/:flowId", async c => {
           flow.webhookConfig.enabled = body.webhookConfig.enabled;
         }
       }
+    }
+
+    // Normalize legacy "upsert" strategy to "update" before saving
+    if (flow.conflictConfig?.strategy === "upsert") {
+      flow.conflictConfig.strategy = "update";
     }
 
     await flow.save();

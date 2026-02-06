@@ -438,7 +438,7 @@ export interface IIncrementalConfig {
  */
 export interface IConflictConfig {
   keyColumns: string[]; // Columns that form the unique key
-  strategy: "update" | "ignore" | "replace";
+  strategy: "update" | "ignore" | "replace" | "upsert";
 }
 
 /**
@@ -1362,7 +1362,7 @@ const FlowSchema = new Schema<IFlow>(
       keyColumns: [String],
       strategy: {
         type: String,
-        enum: ["update", "ignore", "replace"],
+        enum: ["update", "ignore", "replace", "upsert"],
         default: "update",
       },
     },
