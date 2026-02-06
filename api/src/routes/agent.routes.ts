@@ -331,6 +331,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Get model instance
   const model = getModelInstance(modelId);
+  const modelDef = modelId ? getModelById(modelId) : undefined;
   logger.info("Using model", { model: modelId || "gpt-5.2 (default)" });
 
   // Sanitize messages to remove incomplete tool calls from interrupted streams
@@ -346,12 +347,26 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const MAX_STEPS = 256;
   let stepsCompleted = 0;
 
+  // Enable Anthropic extended thinking for models that support it.
+  // The @ai-sdk/anthropic provider computes max_tokens = maxOutputTokens + budgetTokens
+  // then clamps to the model's known cap. We must NOT set maxOutputTokens ourselves
+  // (let the SDK use its model default) and keep budgetTokens under that cap.
+  const enableThinking = modelDef?.supportsThinking === true;
+  const thinkingBudget = modelDef?.thinkingBudgetTokens ?? 10000;
+
   const result = streamText({
     model,
     system: systemPrompt + customPromptContext + runtimeContext,
     messages: modelMessages,
     tools: tools as any,
     stopWhen: stepCountIs(MAX_STEPS),
+    providerOptions: enableThinking
+      ? {
+          anthropic: {
+            thinking: { type: "enabled", budgetTokens: thinkingBudget },
+          },
+        }
+      : undefined,
     onStepFinish: ({ toolCalls }) => {
       stepsCompleted += 1;
 

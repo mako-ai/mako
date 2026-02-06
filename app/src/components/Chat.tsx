@@ -33,6 +33,7 @@ import { StreamingMarkdown } from "./StreamingMarkdown";
 import {
   ArrowUp,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Copy,
   Check,
@@ -303,27 +304,84 @@ const ToolCallsDisplay = React.memo(
 
 ToolCallsDisplay.displayName = "ToolCallsDisplay";
 
-// ReasoningDisplay for showing reasoning/thinking parts
+// ReasoningDisplay for showing reasoning/thinking parts inline.
+// - Auto-opens while streaming, auto-collapses when done.
+// - Shows elapsed thinking time ("Thought for Xs").
+// - Scrollable container with max height, auto-scrolls during streaming.
 const ReasoningDisplay = React.memo(
-  ({ messageParts }: { messageParts?: Array<Record<string, unknown>> }) => {
-    const [expanded, setExpanded] = React.useState(false);
+  ({
+    reasoningText,
+    isStreaming,
+  }: {
+    reasoningText: string;
+    isStreaming: boolean;
+  }) => {
+    const [userToggled, setUserToggled] = React.useState(false);
+    const [userOpen, setUserOpen] = React.useState(false);
+    const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+    // Track whether this component was live-streamed (vs loaded from history)
+    const wasLiveRef = React.useRef(false);
+    const startTimeRef = React.useRef<number | null>(null);
+    const scrollRef = React.useRef<HTMLDivElement>(null);
 
-    if (!messageParts) return null;
+    // Auto-open while streaming, auto-close when done.
+    // If the user manually toggled, respect their choice.
+    const isOpen = userToggled ? userOpen : isStreaming;
 
-    const reasoningParts = messageParts.filter(
-      (p): p is { type: "reasoning"; text: string } =>
-        p.type === "reasoning" && typeof p.text === "string",
-    );
+    const handleToggle = () => {
+      setUserToggled(true);
+      setUserOpen(prev => !prev);
+    };
 
-    if (reasoningParts.length === 0) return null;
+    // Timer: start counting when streaming begins, freeze when it stops
+    React.useEffect(() => {
+      if (isStreaming) {
+        // Mark that this component saw a live session
+        wasLiveRef.current = true;
+        // Reset for new streaming session
+        setUserToggled(false);
+        startTimeRef.current = Date.now();
+        setElapsedSeconds(0);
+
+        const interval = setInterval(() => {
+          if (startTimeRef.current) {
+            setElapsedSeconds(
+              Math.round((Date.now() - startTimeRef.current) / 1000),
+            );
+          }
+        }, 1000);
+
+        return () => clearInterval(interval);
+      }
+      // Streaming just stopped — freeze the elapsed time
+      // (elapsedSeconds already holds the last value)
+      startTimeRef.current = null;
+    }, [isStreaming]);
+
+    // Auto-scroll the reasoning container to the bottom while streaming
+    React.useEffect(() => {
+      if (isStreaming && isOpen && scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }, [reasoningText, isStreaming, isOpen]);
+
+    // Build the label text
+    let label: string;
+    if (isStreaming) {
+      label = `Thinking${elapsedSeconds > 0 ? ` for ${elapsedSeconds}s` : ""}...`;
+    } else if (wasLiveRef.current) {
+      label = `Thought for ${elapsedSeconds || "<1"}s`;
+    } else {
+      label = "Thinking process";
+    }
 
     return (
-      <Box sx={{ my: 1 }}>
+      <Box sx={{ my: 0.5 }}>
         <Button
           size="small"
-          onClick={() => setExpanded(!expanded)}
-          startIcon={
-            expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />
+          onClick={handleToggle}
+          endIcon={
+            isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />
           }
           sx={{
             color: "text.secondary",
@@ -331,31 +389,37 @@ const ReasoningDisplay = React.memo(
             fontSize: "0.8rem",
             p: 0,
             minWidth: "auto",
+            "& .MuiButton-endIcon": {
+              opacity: isOpen ? 1 : 0,
+              transition: "opacity 0.15s ease",
+            },
+            "&:hover .MuiButton-endIcon": {
+              opacity: 1,
+            },
             "&:hover": {
               backgroundColor: "transparent",
-              textDecoration: "underline",
             },
           }}
           disableRipple
         >
-          Thinking Process
+          {label}
         </Button>
-        {expanded && (
+        {isOpen && (
           <Box
+            ref={scrollRef}
             sx={{
-              mt: 1,
+              mt: 0.5,
               pl: 2,
               borderLeft: 2,
               borderColor: "divider",
               color: "text.secondary",
-              fontSize: "0.875rem",
+              fontSize: "0.85rem",
+              maxHeight: 300,
+              overflowY: "auto",
+              "& p": { my: 0.5 },
             }}
           >
-            {reasoningParts.map((part, i) => (
-              <Box key={i} sx={{ mb: 1, whiteSpace: "pre-wrap" }}>
-                {part.text}
-              </Box>
-            ))}
+            <StreamingMarkdown>{reasoningText}</StreamingMarkdown>
           </Box>
         )}
       </Box>
@@ -1419,105 +1483,179 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                   }}
                 >
                   {/* Render message parts in chronological order */}
-                  {(message.parts || []).map((part, partIndex) => {
-                    const partType = (part as Record<string, unknown>)
-                      .type as string;
+                  {/* Groups consecutive reasoning parts into collapsible blocks */}
+                  {(() => {
+                    const parts = message.parts || [];
+                    const isLastMessage =
+                      message.id === messages[messages.length - 1]?.id;
+                    const isStreamingNow = status === "streaming";
 
-                    // Render tool invocations inline (no box wrapper)
-                    if (
-                      partType?.startsWith("tool-") ||
-                      partType === "dynamic-tool"
-                    ) {
-                      const toolName =
+                    // Pre-compute reasoning groups: consecutive runs of reasoning parts
+                    // Each group maps from the index of the first part in the run
+                    // to the combined text of all parts in that run.
+                    const reasoningGroups = new Map<
+                      number,
+                      { text: string; lastIndex: number }
+                    >();
+                    const partInGroup = new Set<number>();
+
+                    for (let i = 0; i < parts.length; i++) {
+                      const p = parts[i] as Record<string, unknown>;
+                      if (p.type !== "reasoning") continue;
+                      const text =
+                        typeof p.text === "string" ? p.text.trim() : "";
+                      if (!text) {
+                        partInGroup.add(i); // skip empty, mark as handled
+                        continue;
+                      }
+
+                      // Check if previous part was also reasoning (extend group)
+                      const prevIndex = i - 1;
+                      let groupStart = i;
+                      for (const [start, group] of reasoningGroups) {
+                        if (group.lastIndex === prevIndex) {
+                          groupStart = start;
+                          break;
+                        }
+                      }
+
+                      if (groupStart === i) {
+                        // New group
+                        reasoningGroups.set(i, {
+                          text: (p.text as string).trim(),
+                          lastIndex: i,
+                        });
+                      } else {
+                        // Extend existing group
+                        const existing = reasoningGroups.get(groupStart);
+                        if (existing) {
+                          existing.text += "\n\n" + (p.text as string).trim();
+                          existing.lastIndex = i;
+                        }
+                      }
+                      partInGroup.add(i);
+                    }
+
+                    // The last reasoning group is streaming if the message
+                    // is the last one, we're streaming, and the very last
+                    // part in the message is a reasoning part.
+                    const lastPart = parts.at(-1);
+                    const isLastPartReasoning =
+                      isLastMessage &&
+                      isStreamingNow &&
+                      lastPart?.type === "reasoning";
+
+                    // Find the start index of the last group (if any)
+                    let lastGroupStart = -1;
+                    for (const [start] of reasoningGroups) {
+                      if (start > lastGroupStart) lastGroupStart = start;
+                    }
+
+                    return parts.map((part, partIndex) => {
+                      const partType = (part as Record<string, unknown>)
+                        .type as string;
+
+                      // Render tool invocations inline (no box wrapper)
+                      if (
+                        partType?.startsWith("tool-") ||
                         partType === "dynamic-tool"
-                          ? ((part as Record<string, unknown>)
-                              .toolName as string)
-                          : partType.split("-").slice(1).join("-");
-                      const toolPart = part as Record<string, unknown>;
-                      return (
-                        <Chip
-                          key={partIndex}
-                          icon={
-                            toolPart.state === "output-available" ? (
-                              <Check size={16} />
-                            ) : toolPart.state === "error" ? (
-                              <Check
-                                size={16}
-                                style={{
-                                  color:
-                                    "var(--mui-palette-error-main, #f44336)",
-                                }}
-                              />
-                            ) : (
-                              <CircularProgress size={14} thickness={5} />
-                            )
-                          }
-                          label={toolName}
-                          size="small"
-                          variant="outlined"
-                          sx={{
-                            backgroundColor: "background.paper",
-                            borderRadius: 2,
-                            opacity: 0.8,
-                            fontSize: "0.75rem",
-                            cursor: "pointer",
-                            mr: 0.5,
-                            mb: 0.5,
-                            "& .MuiChip-icon": {
-                              color:
-                                toolPart.state === "output-available"
-                                  ? "success.main"
-                                  : toolPart.state === "error"
-                                    ? "error.main"
-                                    : "primary.main",
-                            },
-                          }}
-                          onClick={() =>
-                            handleToolClick({
-                              toolCallId: (toolPart.toolCallId as string) || "",
-                              toolName: toolName || "",
-                              state:
-                                toolPart.state as ToolInvocationInfo["state"],
-                              input: toolPart.input,
-                              output: toolPart.output,
-                            })
-                          }
-                          title={
-                            toolPart.state === "output-available"
-                              ? "Tool executed successfully"
-                              : toolPart.state === "error"
-                                ? "Tool execution failed"
-                                : "Tool executing..."
-                          }
-                        />
-                      );
-                    }
+                      ) {
+                        const toolName =
+                          partType === "dynamic-tool"
+                            ? ((part as Record<string, unknown>)
+                                .toolName as string)
+                            : partType.split("-").slice(1).join("-");
+                        const toolPart = part as Record<string, unknown>;
+                        return (
+                          <Chip
+                            key={partIndex}
+                            icon={
+                              toolPart.state === "output-available" ? (
+                                <Check size={16} />
+                              ) : toolPart.state === "error" ? (
+                                <Check
+                                  size={16}
+                                  style={{
+                                    color:
+                                      "var(--mui-palette-error-main, #f44336)",
+                                  }}
+                                />
+                              ) : (
+                                <CircularProgress size={14} thickness={5} />
+                              )
+                            }
+                            label={toolName}
+                            size="small"
+                            variant="outlined"
+                            sx={{
+                              backgroundColor: "background.paper",
+                              borderRadius: 2,
+                              opacity: 0.8,
+                              fontSize: "0.75rem",
+                              cursor: "pointer",
+                              mr: 0.5,
+                              mb: 0.5,
+                              "& .MuiChip-icon": {
+                                color:
+                                  toolPart.state === "output-available"
+                                    ? "success.main"
+                                    : toolPart.state === "error"
+                                      ? "error.main"
+                                      : "primary.main",
+                              },
+                            }}
+                            onClick={() =>
+                              handleToolClick({
+                                toolCallId:
+                                  (toolPart.toolCallId as string) || "",
+                                toolName: toolName || "",
+                                state:
+                                  toolPart.state as ToolInvocationInfo["state"],
+                                input: toolPart.input,
+                                output: toolPart.output,
+                              })
+                            }
+                            title={
+                              toolPart.state === "output-available"
+                                ? "Tool executed successfully"
+                                : toolPart.state === "error"
+                                  ? "Tool execution failed"
+                                  : "Tool executing..."
+                            }
+                          />
+                        );
+                      }
 
-                    // Render reasoning parts
-                    if (partType === "reasoning") {
-                      return null; // Skip inline, will be shown via ReasoningDisplay
-                    }
+                      // Render reasoning: each consecutive group renders at the first part's position
+                      if (partType === "reasoning") {
+                        const group = reasoningGroups.get(partIndex);
+                        if (!group) return null; // part of a group but not the start
+                        const isGroupStreaming =
+                          isLastPartReasoning && partIndex === lastGroupStart;
+                        return (
+                          <ReasoningDisplay
+                            key={`reasoning-${partIndex}`}
+                            reasoningText={group.text}
+                            isStreaming={isGroupStreaming}
+                          />
+                        );
+                      }
 
-                    // Render text parts using StreamingMarkdown for optimized streaming
-                    if (
-                      partType === "text" &&
-                      (part as { text?: string }).text
-                    ) {
-                      return (
-                        <StreamingMarkdown key={partIndex}>
-                          {(part as { text: string }).text}
-                        </StreamingMarkdown>
-                      );
-                    }
+                      // Render text parts using StreamingMarkdown for optimized streaming
+                      if (
+                        partType === "text" &&
+                        (part as { text?: string }).text
+                      ) {
+                        return (
+                          <StreamingMarkdown key={partIndex}>
+                            {(part as { text: string }).text}
+                          </StreamingMarkdown>
+                        );
+                      }
 
-                    return null;
-                  })}
-                  {/* Display reasoning (collapsible) */}
-                  <ReasoningDisplay
-                    messageParts={
-                      message.parts as Array<Record<string, unknown>>
-                    }
-                  />
+                      return null;
+                    });
+                  })()}
                   {/* Show streaming indicator on last message while streaming */}
                   {status === "streaming" &&
                     message.id === messages[messages.length - 1]?.id && (
