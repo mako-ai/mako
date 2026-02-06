@@ -373,12 +373,17 @@ jobs:
           echo "Dropping existing ephemeral database if it exists..."
           mongosh "$EPHEMERAL_DB_URL" --eval "db.dropDatabase()" || true
 
-          # Extract production database name from URL
+          # Extract production database name from URL and build a base URI without the db path
           # Format: mongodb+srv://user:pass@cluster/dbname?params
+          # mongodump errors with "cannot specify both a URI with a database and --db"
+          # when the URI contains a database path AND --db is passed, so we strip the
+          # database component from the URI and pass it separately via --db.
           if [[ "$PROD_DATABASE_URL" == *"?"* ]]; then
             PROD_DB_NAME=$(echo "$PROD_DATABASE_URL" | sed -E 's|.*/([^/?]+)\?.*|\1|')
+            PROD_URI_NO_DB=$(echo "$PROD_DATABASE_URL" | sed -E 's|/[^/?]+\?|/?|')
           else
             PROD_DB_NAME=$(echo "$PROD_DATABASE_URL" | sed -E 's|.*/([^/]+)$|\1|')
+            PROD_URI_NO_DB=$(echo "$PROD_DATABASE_URL" | sed -E 's|/[^/]+$||')
           fi
           echo "Production database name: $PROD_DB_NAME"
 
@@ -397,7 +402,7 @@ jobs:
 
           echo "Copying production database to ephemeral database: ${EPHEMERAL_DB_NAME}"
           echo "Excluding collections: ${EXCLUDE_COLLECTIONS[*]}"
-          if ! mongodump --uri="$PROD_DATABASE_URL" --db="${PROD_DB_NAME}" ${EXCLUDE_ARGS} --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
+          if ! mongodump --uri="$PROD_URI_NO_DB" --db="${PROD_DB_NAME}" ${EXCLUDE_ARGS} --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
             --nsInclude="${PROD_DB_NAME}.*" \
             --nsFrom="${PROD_DB_NAME}.*" \
             --nsTo="${EPHEMERAL_DB_NAME}.*"; then
