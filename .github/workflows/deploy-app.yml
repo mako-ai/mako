@@ -331,8 +331,21 @@ jobs:
               if [ -n "$db_name" ] && [ "$db_name" != "$CURRENT_DB" ]; then
                 # Extract PR number and check if PR is still open
                 pr_num=$(echo "$db_name" | sed 's/staging_pr_//')
-                pr_state=$(gh pr view "$pr_num" --repo "${{ github.repository }}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
-                if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ] || [ "$pr_state" = "UNKNOWN" ]; then
+
+                # Retry gh pr view up to 3 times with backoff to handle transient GitHub API failures.
+                # If the state cannot be determined, we keep the database to avoid accidentally
+                # dropping staging environments for open PRs during API outages or rate limiting.
+                pr_state=""
+                for attempt in 1 2 3; do
+                  pr_state=$(gh pr view "$pr_num" --repo "${{ github.repository }}" --json state --jq '.state' 2>/dev/null) && break
+                  echo "⚠️ gh pr view for PR #$pr_num failed (attempt $attempt/3), retrying in ${attempt}s..."
+                  pr_state=""
+                  sleep "$attempt"
+                done
+
+                if [ -z "$pr_state" ]; then
+                  echo "⚠️ Could not determine state of PR #$pr_num after 3 attempts — keeping database $db_name to be safe"
+                elif [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ]; then
                   echo "Dropping stale database: $db_name (PR #$pr_num is $pr_state)"
                   mongosh "$STAGING_DATABASE_URL" --quiet --eval "db.getSiblingDB('$db_name').dropDatabase()" || true
                 else
