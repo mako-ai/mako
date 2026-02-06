@@ -1,4 +1,8 @@
-import { findTopLevelKeyword, appendWhereCondition } from "./sql-query-utils";
+import {
+  findTopLevelKeyword,
+  appendWhereCondition,
+  appendSqlClause,
+} from "./sql-query-utils";
 
 /* ------------------------------------------------------------------ */
 /*  findTopLevelKeyword                                               */
@@ -174,6 +178,69 @@ describe("appendWhereCondition", () => {
     const result = appendWhereCondition(q, cond);
     expect(result).toBe(
       `SELECT * FROM t -- ORDER BY x\nWHERE ${cond} ORDER BY name`,
+    );
+  });
+
+  it("inserts newline before WHERE when query ends with a line comment (no trailing clause)", () => {
+    const q = "SELECT * FROM t -- filter";
+    const result = appendWhereCondition(q, cond);
+    expect(result).toBe(`SELECT * FROM t -- filter\nWHERE ${cond}`);
+  });
+
+  it("inserts newline before AND when query ends with a line comment (no trailing clause)", () => {
+    const q = "SELECT * FROM t WHERE active = true -- filter";
+    const result = appendWhereCondition(q, cond);
+    expect(result).toBe(
+      `SELECT * FROM t WHERE active = true -- filter\nAND ${cond}`,
+    );
+  });
+
+  it("trims trailing whitespace even with trailing line comment", () => {
+    const q = "SELECT * FROM t WHERE active = true -- filter   ";
+    const result = appendWhereCondition(q, cond);
+    expect(result).toBe(
+      `SELECT * FROM t WHERE active = true -- filter\nAND ${cond}`,
+    );
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  appendSqlClause                                                   */
+/* ------------------------------------------------------------------ */
+
+describe("appendSqlClause", () => {
+  it("appends clause with a space when no trailing line comment", () => {
+    const q = "SELECT * FROM t WHERE id > 10";
+    expect(appendSqlClause(q, "ORDER BY id")).toBe(
+      "SELECT * FROM t WHERE id > 10 ORDER BY id",
+    );
+  });
+
+  it("inserts newline before clause when query ends with a line comment", () => {
+    const q = "SELECT * FROM t WHERE active = true -- filter";
+    expect(appendSqlClause(q, "ORDER BY id")).toBe(
+      "SELECT * FROM t WHERE active = true -- filter\nORDER BY id",
+    );
+  });
+
+  it("inserts newline before LIMIT when query ends with a line comment", () => {
+    const q = "SELECT * FROM t -- comment";
+    expect(appendSqlClause(q, "LIMIT 100")).toBe(
+      "SELECT * FROM t -- comment\nLIMIT 100",
+    );
+  });
+
+  it("trims trailing whitespace before appending", () => {
+    const q = "SELECT * FROM t   ";
+    expect(appendSqlClause(q, "ORDER BY id")).toBe(
+      "SELECT * FROM t ORDER BY id",
+    );
+  });
+
+  it("handles query ending with block comment (no newline needed)", () => {
+    const q = "SELECT * FROM t /* comment */";
+    expect(appendSqlClause(q, "ORDER BY id")).toBe(
+      "SELECT * FROM t /* comment */ ORDER BY id",
     );
   });
 });

@@ -887,7 +887,11 @@ export async function validateQuery(
 }
 
 // SQL query utilities (extracted to sql-query-utils.ts for testability)
-import { findTopLevelKeyword, appendWhereCondition } from "./sql-query-utils";
+import {
+  findTopLevelKeyword,
+  appendWhereCondition,
+  appendSqlClause,
+} from "./sql-query-utils";
 
 /**
  * Dangerous SQL statement patterns that should be rejected
@@ -1344,19 +1348,31 @@ export async function executeDbSyncChunk(options: {
 
       // Ensure ORDER BY matches keyset column and direction
       if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-        effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
+        effectiveQuery = appendSqlClause(
+          effectiveQuery,
+          `ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`,
+        );
       }
 
       // Add LIMIT only (no OFFSET needed for keyset)
-      paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk}`;
+      paginatedQuery = appendSqlClause(
+        effectiveQuery,
+        `LIMIT ${maxRowsPerChunk}`,
+      );
     } else {
       // Offset pagination: use LIMIT/OFFSET
       const orderColumn = incrementalConfig?.trackingColumn || "1";
       if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-        effectiveQuery = `${effectiveQuery} ORDER BY ${orderColumn}`;
+        effectiveQuery = appendSqlClause(
+          effectiveQuery,
+          `ORDER BY ${orderColumn}`,
+        );
       }
 
-      paginatedQuery = `${effectiveQuery} LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`;
+      paginatedQuery = appendSqlClause(
+        effectiveQuery,
+        `LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`,
+      );
     }
   }
 
@@ -1559,16 +1575,22 @@ export async function dryRunDbSync(options: {
         }
 
         if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-          effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
+          effectiveQuery = appendSqlClause(
+            effectiveQuery,
+            `ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`,
+          );
         }
 
-        paginatedQuery = `${effectiveQuery} LIMIT ${pageSize}`;
+        paginatedQuery = appendSqlClause(effectiveQuery, `LIMIT ${pageSize}`);
       } else {
         let effectiveQuery = baseQuery;
         if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-          effectiveQuery = `${effectiveQuery} ORDER BY 1`;
+          effectiveQuery = appendSqlClause(effectiveQuery, `ORDER BY 1`);
         }
-        paginatedQuery = `${effectiveQuery} LIMIT ${pageSize} OFFSET ${page * pageSize}`;
+        paginatedQuery = appendSqlClause(
+          effectiveQuery,
+          `LIMIT ${pageSize} OFFSET ${page * pageSize}`,
+        );
       }
 
       const result = await driver.executeQuery(
