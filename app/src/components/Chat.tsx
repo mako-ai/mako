@@ -330,7 +330,7 @@ const ReasoningDisplay = React.memo(
 
     const handleToggle = () => {
       setUserToggled(true);
-      setUserOpen(prev => !prev);
+      setUserOpen(!isOpen);
     };
 
     // Timer: start counting when streaming begins, freeze when it stops
