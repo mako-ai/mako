@@ -650,6 +650,21 @@ flowRoutes.put("/:flowId", async c => {
       }
     }
 
+    // Validate: connector sources don't support tableDestination (they always write to MongoDB)
+    if (
+      flow.sourceType === "connector" &&
+      body.tableDestination?.connectionId
+    ) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
+        },
+        400,
+      );
+    }
+
     // Update table destination - merge entire object to avoid missing fields
     if (body.tableDestination) {
       const newConnectionId = body.tableDestination.connectionId
