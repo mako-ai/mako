@@ -10,6 +10,18 @@ export interface AIModel {
   provider: AIProvider;
   name: string;
   description?: string;
+  supportsThinking?: boolean;
+  /**
+   * Token budget for extended thinking (when supportsThinking is true).
+   * Must be less than the model's max output tokens as known by @ai-sdk/anthropic,
+   * because the SDK computes max_tokens = maxOutputTokens + budgetTokens and then
+   * clamps to the model's known limit. If budget >= modelCap the API rejects it.
+   *
+   * Known SDK caps (v3.0.0-beta.96):
+   *   claude-opus-4-5, claude-sonnet-4-5: 64 000
+   *   claude-opus-4-*  (fallback):        32 000
+   */
+  thinkingBudgetTokens?: number;
 }
 
 /**
@@ -17,12 +29,19 @@ export interface AIModel {
  * Updated February 2026 with latest models
  */
 export const ALL_MODELS: AIModel[] = [
-  // OpenAI - GPT-5.2 series (released Dec 11, 2025)
+  // OpenAI - GPT-5.3 Codex (released Feb 5, 2026)
+  {
+    id: "gpt-5.2-codex",
+    provider: "openai",
+    name: "GPT-5.2 Codex",
+    description: "Previous flagship model with enhanced intelligence",
+  },
+  // OpenAI - GPT-5.2 (released Dec 11, 2025)
   {
     id: "gpt-5.2",
     provider: "openai",
     name: "GPT-5.2",
-    description: "Latest flagship model with enhanced intelligence",
+    description: "Previous flagship model with enhanced intelligence",
   },
   {
     id: "gpt-4o",
@@ -36,18 +55,24 @@ export const ALL_MODELS: AIModel[] = [
     provider: "anthropic",
     name: "Claude Opus 4.6",
     description: "Most capable, latest flagship with enhanced reasoning",
+    supportsThinking: true,
+    thinkingBudgetTokens: 30000, // SDK caps opus-4-* at 32K total output
   },
   {
     id: "claude-opus-4-5",
     provider: "anthropic",
     name: "Claude Opus 4.5",
     description: "Previous flagship, autonomous coding for 30+ hours",
+    supportsThinking: true,
+    thinkingBudgetTokens: 60000, // SDK caps opus-4-5/sonnet-4-5 at 64K total output
   },
   {
     id: "claude-sonnet-4-5",
     provider: "anthropic",
     name: "Claude Sonnet 4.5",
     description: "Best balance of speed and intelligence",
+    supportsThinking: true,
+    thinkingBudgetTokens: 60000, // SDK caps opus-4-5/sonnet-4-5 at 64K total output
   },
   {
     id: "claude-3-5-haiku-latest",
