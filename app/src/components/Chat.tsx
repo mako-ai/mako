@@ -1497,7 +1497,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                       number,
                       { text: string; lastIndex: number }
                     >();
-                    const partInGroup = new Set<number>();
 
                     for (let i = 0; i < parts.length; i++) {
                       const p = parts[i] as Record<string, unknown>;
@@ -1505,7 +1504,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                       const text =
                         typeof p.text === "string" ? p.text.trim() : "";
                       if (!text) {
-                        partInGroup.add(i); // skip empty, mark as handled
                         // Extend the preceding group's lastIndex so the next
                         // non-empty reasoning part can still find it as adjacent.
                         for (const [, group] of reasoningGroups) {
@@ -1541,7 +1539,6 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
                           existing.lastIndex = i;
                         }
                       }
-                      partInGroup.add(i);
                     }
 
                     // The last reasoning group is streaming if the message
