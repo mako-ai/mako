@@ -113,7 +113,7 @@ const flowSchema = z.object({
   conflictConfig: z
     .object({
       keyColumns: z.array(z.string()),
-      strategy: z.enum(["update", "ignore", "replace"]),
+      strategy: z.enum(["update", "ignore", "replace", "upsert"]),
     })
     .optional(),
   paginationConfig: z

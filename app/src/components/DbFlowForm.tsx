@@ -114,7 +114,7 @@ interface FormData {
   };
   conflictConfig?: {
     keyColumns: string[];
-    strategy: "update" | "ignore" | "replace";
+    strategy: "update" | "ignore" | "replace" | "upsert";
   };
   paginationConfig?: {
     mode: "offset" | "keyset";
@@ -765,7 +765,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             conflictConfig: flow.conflictConfig
               ? {
                   keyColumns: flow.conflictConfig.keyColumns || [],
-                  strategy: flow.conflictConfig.strategy || "update",
+                  // Normalize legacy "upsert" strategy to "update"
+                  strategy:
+                    flow.conflictConfig.strategy === "upsert"
+                      ? "update"
+                      : flow.conflictConfig.strategy || "update",
                 }
               : undefined,
             paginationConfig: {
