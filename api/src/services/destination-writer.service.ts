@@ -304,16 +304,15 @@ export class DestinationWriter {
       }));
 
       // Use bulkWrite with upserts
-      // When records have an 'id' field, use it for deduplication.
-      // When records lack an 'id' field (or it is null), fall back to plain
-      // inserts to avoid matching documents with { id: null/undefined } which
-      // would cause data loss by overwriting unrelated documents.
-      const hasIdField =
-        processedRecords.length > 0 &&
-        (processedRecords[0] as any).id != null;
-
+      // When a record has a non-null 'id' field, use it for deduplication
+      // via replaceOne. When a record lacks an 'id' field (or it is null),
+      // fall back to a plain insert to avoid matching documents with
+      // { id: null/undefined } which would cause data loss by overwriting
+      // unrelated documents.
+      // NOTE: The check is per-record, not batch-level, because a batch can
+      // contain a mix of records with and without valid id values.
       const bulkOps = processedRecords.map(record => {
-        if (hasIdField) {
+        if ((record as any).id != null) {
           return {
             replaceOne: {
               filter: {
