@@ -115,7 +115,7 @@ const formFieldValue = z.union([
   z
     .object({
       keyColumns: z.array(z.string()),
-      strategy: z.enum(["upsert", "ignore", "replace"]),
+      strategy: z.enum(["update", "ignore", "replace"]),
     })
     .describe("Conflict config object"),
   z

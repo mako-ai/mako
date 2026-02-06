@@ -308,7 +308,9 @@ export class DestinationWriter {
       // When records lack an 'id' field, fall back to plain inserts
       // to avoid matching documents with { id: undefined } which would
       // cause data loss by overwriting unrelated documents.
-      const hasIdField = processedRecords.length > 0 && (processedRecords[0] as any).id !== undefined;
+      const hasIdField =
+        processedRecords.length > 0 &&
+        (processedRecords[0] as any).id !== undefined;
 
       const bulkOps = processedRecords.map(record => {
         if (hasIdField) {
@@ -335,7 +337,8 @@ export class DestinationWriter {
 
       return {
         success: true,
-        rowsWritten: result.upsertedCount + result.modifiedCount,
+        rowsWritten:
+          result.insertedCount + result.upsertedCount + result.modifiedCount,
       };
     } catch (error) {
       return {
@@ -903,8 +906,11 @@ const DANGEROUS_PATTERNS = [
     name: "multi-statement",
   },
   // CTE with data-modifying operations (e.g., WITH deleted AS (DELETE FROM ...) SELECT ...)
+  // Only match when a DML keyword appears after "AS (" inside a CTE definition,
+  // to avoid false positives on column names or string literals containing these words.
   {
-    pattern: /\bWITH\b[^;]*\b(DELETE|INSERT|UPDATE|DROP|TRUNCATE|ALTER)\b/i,
+    pattern:
+      /\bWITH\b[^;]*\bAS\s*\(\s*(DELETE|INSERT|UPDATE|DROP|TRUNCATE|ALTER)\b/i,
     name: "data-modifying CTE",
   },
 ];
