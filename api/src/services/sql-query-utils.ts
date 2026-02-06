@@ -109,10 +109,17 @@ export function appendWhereCondition(query: string, condition: string): string {
   const firstClausePos = findTopLevelKeyword(query, clausePattern);
 
   if (firstClausePos === -1) {
-    if (findTopLevelKeyword(query, wherePattern) !== -1) {
-      return `${query} AND ${condition}`;
+    // If the query ends with a line comment (-- …), appending directly would
+    // place the new clause inside the comment where the SQL engine ignores it.
+    // Insert a newline separator in that case so the clause starts on its own line.
+    const trimmed = query.trimEnd();
+    const endsWithLineComment = /--[^\n]*$/.test(trimmed);
+    const separator = endsWithLineComment ? "\n" : " ";
+
+    if (findTopLevelKeyword(trimmed, wherePattern) !== -1) {
+      return `${trimmed}${separator}AND ${condition}`;
     }
-    return `${query} WHERE ${condition}`;
+    return `${trimmed}${separator}WHERE ${condition}`;
   }
 
   const rawBefore = query.slice(0, firstClausePos);
@@ -129,4 +136,16 @@ export function appendWhereCondition(query: string, condition: string): string {
     return `${beforeClause}${separator}AND ${condition} ${afterClause}`;
   }
   return `${beforeClause}${separator}WHERE ${condition} ${afterClause}`;
+}
+
+/**
+ * Safely append a SQL clause (e.g. `ORDER BY id`, `LIMIT 100`) to a query
+ * string.  If the query ends with a line comment (`-- …`), a newline is
+ * inserted so the appended clause does not land inside the comment.
+ */
+export function appendSqlClause(query: string, clause: string): string {
+  const trimmed = query.trimEnd();
+  const endsWithLineComment = /--[^\n]*$/.test(trimmed);
+  const separator = endsWithLineComment ? "\n" : " ";
+  return `${trimmed}${separator}${clause}`;
 }
