@@ -305,12 +305,12 @@ export class DestinationWriter {
 
       // Use bulkWrite with upserts
       // When records have an 'id' field, use it for deduplication.
-      // When records lack an 'id' field, fall back to plain inserts
-      // to avoid matching documents with { id: undefined } which would
-      // cause data loss by overwriting unrelated documents.
+      // When records lack an 'id' field (or it is null), fall back to plain
+      // inserts to avoid matching documents with { id: null/undefined } which
+      // would cause data loss by overwriting unrelated documents.
       const hasIdField =
         processedRecords.length > 0 &&
-        (processedRecords[0] as any).id !== undefined;
+        (processedRecords[0] as any).id != null;
 
       const bulkOps = processedRecords.map(record => {
         if (hasIdField) {
