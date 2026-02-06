@@ -385,8 +385,6 @@ export const flowFunction = inngest.createFunction(
 
     // Initialize execution ID for tracking
     let executionId: string | undefined;
-    // Track staging state for cleanup on failure (flow is available inside try block)
-    let dbSyncStagingPrepared = false;
     // Store flow ref for use in error handler
     let flowRef: IFlow | undefined;
 
@@ -663,9 +661,6 @@ export const flowFunction = inngest.createFunction(
           totalRowsProcessed = chunkState.totalProcessed;
           completed = chunkResult.completed;
           chunkIndex++;
-          if (chunkState.stagingPrepared) {
-            dbSyncStagingPrepared = true;
-          }
 
           logger.info("Chunk completed", {
             flowId,
@@ -1258,11 +1253,15 @@ export const flowFunction = inngest.createFunction(
       });
 
       // Cleanup staging tables on failure (for database source full sync)
-      if (
-        flowRef?.sourceType === "database" &&
-        flowRef?.syncMode === "full" &&
-        dbSyncStagingPrepared
-      ) {
+      // Note: We intentionally do NOT check dbSyncStagingPrepared here.
+      // The flag is only set after step.run returns successfully, but the
+      // staging table is created inside step.run (in executeDbSyncChunk).
+      // If the first chunk creates the staging table then fails permanently,
+      // the flag would remain false and cleanup would be skipped — leaving
+      // an orphaned staging table. The cleanup logic below handles the case
+      // where no staging table exists (via try/catch), so it's safe to
+      // always attempt cleanup for database full syncs.
+      if (flowRef?.sourceType === "database" && flowRef?.syncMode === "full") {
         const cleanupFlow = flowRef; // Capture for closure
         await step.run("cleanup-staging-on-failure", async () => {
           try {
