@@ -310,7 +310,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mongodb-database-tools mongodb-mongosh
 
-      # Step 3: Rebuild ephemeral database from production (only when rebuild requested)
+      # Step 3: Clean up stale staging databases to free Atlas storage quota
+      - name: Clean up stale staging databases
+        if: needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Checking for stale staging databases to free up storage..."
+          # List all staging_pr_* databases and drop ones from closed/merged PRs
+          STALE_DBS=$(mongosh "$STAGING_DATABASE_URL" --quiet --eval "
+            const dbs = db.adminCommand({ listDatabases: 1 }).databases;
+            const prDbs = dbs.filter(d => d.name.startsWith('staging_pr_'));
+            prDbs.forEach(d => print(d.name));
+          " 2>/dev/null || true)
+
+          if [ -n "$STALE_DBS" ]; then
+            CURRENT_DB="staging_pr_${PR_NUMBER}"
+            while IFS= read -r db_name; do
+              if [ -n "$db_name" ] && [ "$db_name" != "$CURRENT_DB" ]; then
+                # Extract PR number and check if PR is still open
+                pr_num=$(echo "$db_name" | sed 's/staging_pr_//')
+                pr_state=$(gh pr view "$pr_num" --repo "${{ github.repository }}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
+                if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ] || [ "$pr_state" = "UNKNOWN" ]; then
+                  echo "Dropping stale database: $db_name (PR #$pr_num is $pr_state)"
+                  mongosh "$STAGING_DATABASE_URL" --quiet --eval "db.getSiblingDB('$db_name').dropDatabase()" || true
+                else
+                  echo "Keeping database: $db_name (PR #$pr_num is $pr_state)"
+                fi
+              fi
+            done <<< "$STALE_DBS"
+          fi
+          echo "Stale database cleanup complete"
+
+      # Step 4: Rebuild ephemeral database from production (only when rebuild requested)
       - name: Rebuild ephemeral database from production
         if: needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
         env:
@@ -338,8 +371,20 @@ jobs:
 
           # Dump from production and restore to ephemeral database using archive pipe
           # This approach preserves namespace metadata correctly for remapping
+          # Exclude large collections that aren't needed for PR preview testing
+          # to stay within Atlas storage quota limits
+          EXCLUDE_COLLECTIONS=(
+            "flow_executions"
+            "webhook_events"
+          )
+          EXCLUDE_ARGS=""
+          for col in "${EXCLUDE_COLLECTIONS[@]}"; do
+            EXCLUDE_ARGS="${EXCLUDE_ARGS} --excludeCollection=${col}"
+          done
+
           echo "Copying production database to ephemeral database: ${EPHEMERAL_DB_NAME}"
-          if ! mongodump --uri="$PROD_DATABASE_URL" --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
+          echo "Excluding collections: ${EXCLUDE_COLLECTIONS[*]}"
+          if ! mongodump --uri="$PROD_DATABASE_URL" --db="${PROD_DB_NAME}" ${EXCLUDE_ARGS} --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
             --nsInclude="${PROD_DB_NAME}.*" \
             --nsFrom="${PROD_DB_NAME}.*" \
             --nsTo="${EPHEMERAL_DB_NAME}.*"; then
