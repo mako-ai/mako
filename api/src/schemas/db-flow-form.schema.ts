@@ -47,7 +47,7 @@ interface AgentField<T extends z.ZodTypeAny> {
 
 function agentField<T extends z.ZodTypeAny>(
   schema: T,
-  meta: FieldMeta
+  meta: FieldMeta,
 ): AgentField<T> {
   return { schema: schema.describe(meta.description), meta };
 }
@@ -60,18 +60,22 @@ function agentField<T extends z.ZodTypeAny>(
  * Database Source Configuration
  */
 export const DATABASE_SOURCE_FIELDS = {
-  connectionId: agentField(z.string().min(1, "Source connection ID is required"), {
-    description: "Source database connection ID",
-    injectInContext: true,
-    category: "source",
-  }),
+  connectionId: agentField(
+    z.string().min(1, "Source connection ID is required"),
+    {
+      description: "Source database connection ID",
+      injectInContext: true,
+      category: "source",
+    },
+  ),
   database: agentField(z.string().optional(), {
     description: "Source database name (for cluster mode or BigQuery dataset)",
     injectInContext: true,
     category: "source",
   }),
   query: agentField(z.string().min(1, "SQL query is required"), {
-    description: "SQL query with template placeholders ({{limit}}, {{offset}}, etc.)",
+    description:
+      "SQL query with template placeholders ({{limit}}, {{offset}}, etc.)",
     injectInContext: true,
     category: "source",
     format: "code",
@@ -82,18 +86,22 @@ export const DATABASE_SOURCE_FIELDS = {
  * Table Destination Configuration
  */
 export const TABLE_DESTINATION_FIELDS = {
-  connectionId: agentField(z.string().min(1, "Destination connection ID is required"), {
-    description: "Destination database connection ID",
-    injectInContext: true,
-    category: "destination",
-  }),
+  connectionId: agentField(
+    z.string().min(1, "Destination connection ID is required"),
+    {
+      description: "Destination database connection ID",
+      injectInContext: true,
+      category: "destination",
+    },
+  ),
   database: agentField(z.string().optional(), {
     description: "Destination database name (for cluster mode)",
     injectInContext: true,
     category: "destination",
   }),
   schema: agentField(z.string().optional(), {
-    description: "Destination schema (PostgreSQL) or dataset (BigQuery) - REQUIRED for BigQuery",
+    description:
+      "Destination schema (PostgreSQL) or dataset (BigQuery) - REQUIRED for BigQuery",
     injectInContext: true,
     category: "destination",
   }),
@@ -119,21 +127,25 @@ export const SCHEDULE_FIELDS = {
     category: "schedule",
   }),
   cron: agentField(
-    z.string().optional().refine(
-      (val) => {
-        if (!val) return true;
-        const parts = val.trim().split(/\s+/);
-        return parts.length === 5 || parts.length === 6;
-      },
-      { message: "Invalid cron expression. Must have 5 or 6 fields." }
-    ),
+    z
+      .string()
+      .optional()
+      .refine(
+        val => {
+          if (!val) return true;
+          const parts = val.trim().split(/\s+/);
+          return parts.length === 5 || parts.length === 6;
+        },
+        { message: "Invalid cron expression. Must have 5 or 6 fields." },
+      ),
     {
-      description: "Cron expression for scheduling (e.g., '0 6 * * *' for daily at 6 AM)",
+      description:
+        "Cron expression for scheduling (e.g., '0 6 * * *' for daily at 6 AM)",
       injectInContext: true,
       category: "schedule",
       example: "0 6 * * *",
       format: "cron",
-    }
+    },
   ),
   timezone: agentField(z.string().default("UTC"), {
     description: "Timezone for the schedule",
@@ -174,13 +186,17 @@ export const CONFLICT_CONFIG_FIELDS = {
       description: "Columns that form the unique key for conflict detection",
       injectInContext: true,
       category: "sync",
-    }
+    },
   ),
-  strategy: agentField(z.enum(["upsert", "ignore", "replace"]).default("upsert"), {
-    description: "How to handle conflicts: upsert (update existing), ignore (skip), replace (delete and insert)",
-    injectInContext: true,
-    category: "sync",
-  }),
+  strategy: agentField(
+    z.enum(["update", "ignore", "replace"]).default("update"),
+    {
+      description:
+        "How to handle conflicts: update (update existing), ignore (skip), replace (delete and insert)",
+      injectInContext: true,
+      category: "sync",
+    },
+  ),
 } as const;
 
 /**
@@ -188,7 +204,8 @@ export const CONFLICT_CONFIG_FIELDS = {
  */
 export const PAGINATION_CONFIG_FIELDS = {
   mode: agentField(z.enum(["offset", "keyset"]).default("offset"), {
-    description: "Pagination strategy: offset (LIMIT/OFFSET) or keyset (WHERE col > last_value)",
+    description:
+      "Pagination strategy: offset (LIMIT/OFFSET) or keyset (WHERE col > last_value)",
     injectInContext: true,
     category: "pagination",
   }),
@@ -231,7 +248,8 @@ export type TypeCoercion = z.infer<typeof TYPE_COERCION_SCHEMA>;
  */
 export const TOP_LEVEL_FIELDS = {
   syncMode: agentField(z.enum(["full", "incremental"]).default("full"), {
-    description: "Sync strategy: full (replace all) or incremental (only new/changed)",
+    description:
+      "Sync strategy: full (replace all) or incremental (only new/changed)",
     injectInContext: true,
     category: "sync",
   }),
@@ -253,7 +271,7 @@ export const TOP_LEVEL_FIELDS = {
 // =============================================================================
 
 function buildZodObject<T extends Record<string, AgentField<z.ZodTypeAny>>>(
-  fields: T
+  fields: T,
 ): z.ZodObject<{ [K in keyof T]: T[K]["schema"] }> {
   const shape = {} as Record<string, z.ZodTypeAny>;
   for (const [key, field] of Object.entries(fields)) {
@@ -265,7 +283,9 @@ function buildZodObject<T extends Record<string, AgentField<z.ZodTypeAny>>>(
 export const DatabaseSourceSchema = buildZodObject(DATABASE_SOURCE_FIELDS);
 export const TableDestinationSchema = buildZodObject(TABLE_DESTINATION_FIELDS);
 export const ScheduleConfigSchema = buildZodObject(SCHEDULE_FIELDS);
-export const IncrementalConfigSchema = buildZodObject(INCREMENTAL_CONFIG_FIELDS);
+export const IncrementalConfigSchema = buildZodObject(
+  INCREMENTAL_CONFIG_FIELDS,
+);
 export const ConflictConfigSchema = buildZodObject(CONFLICT_CONFIG_FIELDS);
 export const PaginationConfigSchema = buildZodObject(PAGINATION_CONFIG_FIELDS);
 
@@ -401,8 +421,14 @@ export function getFieldMeta(path: string): FieldMeta | undefined {
   if (parts.length === 2) {
     const [section, fieldName] = parts;
     const sectionDef = FIELD_DEFINITIONS[section as keyof FieldDefinitions];
-    if (sectionDef && typeof sectionDef === "object" && fieldName in sectionDef) {
-      const field = (sectionDef as Record<string, AgentField<z.ZodTypeAny>>)[fieldName];
+    if (
+      sectionDef &&
+      typeof sectionDef === "object" &&
+      fieldName in sectionDef
+    ) {
+      const field = (sectionDef as Record<string, AgentField<z.ZodTypeAny>>)[
+        fieldName
+      ];
       return field?.meta;
     }
   }
@@ -418,7 +444,7 @@ export function getFieldMeta(path: string): FieldMeta | undefined {
  * Field paths that should be included in the agent's runtime context
  * Derived from field metadata (injectInContext: true)
  */
-export const CONTEXT_FIELDS = FIELD_PATHS.filter((path) => {
+export const CONTEXT_FIELDS = FIELD_PATHS.filter(path => {
   const meta = getFieldMeta(path);
   return meta?.injectInContext === true;
 });
@@ -432,7 +458,7 @@ export const CONTEXT_FIELDS = FIELD_PATHS.filter((path) => {
  */
 export function getNestedValue(
   obj: Record<string, unknown>,
-  path: string
+  path: string,
 ): unknown {
   const parts = path.split(".");
   let current: unknown = obj;
@@ -457,7 +483,7 @@ export function getNestedValue(
 export function setNestedValue(
   obj: Record<string, unknown>,
   path: string,
-  value: unknown
+  value: unknown,
 ): Record<string, unknown> {
   const parts = path.split(".");
   const result = { ...obj };
@@ -492,7 +518,7 @@ export function setNestedValue(
 export function formatContextValue(
   path: string,
   value: unknown,
-  meta: FieldMeta
+  meta: FieldMeta,
 ): string {
   if (value === undefined || value === null || value === "") {
     return "";
@@ -535,7 +561,10 @@ export function generateFieldDocs(): string {
   ];
 
   // Group fields by category
-  const byCategory: Record<FieldCategory, Array<{ path: string; meta: FieldMeta }>> = {
+  const byCategory: Record<
+    FieldCategory,
+    Array<{ path: string; meta: FieldMeta }>
+  > = {
     source: [],
     destination: [],
     schedule: [],
@@ -587,15 +616,17 @@ export function getFieldPathsEnum() {
  * Validate form data with detailed error messages
  */
 export function validateDbFlowForm(
-  data: unknown
-): { success: true; data: DbFlowFormData } | { success: false; errors: string[] } {
+  data: unknown,
+):
+  | { success: true; data: DbFlowFormData }
+  | { success: false; errors: string[] } {
   const result = DbFlowFormSchema.safeParse(data);
 
   if (result.success) {
     return { success: true, data: result.data };
   }
 
-  const errors = result.error.issues.map((issue) => {
+  const errors = result.error.issues.map(issue => {
     const path = issue.path.join(".");
     return path ? `${path}: ${issue.message}` : issue.message;
   });

@@ -888,6 +888,36 @@ export async function validateQuery(
 }
 
 /**
+ * Insert a WHERE/AND condition BEFORE any ORDER BY/GROUP BY/HAVING/LIMIT clauses.
+ * This prevents generating invalid SQL like "SELECT * FROM t ORDER BY id WHERE col > val".
+ */
+function appendWhereCondition(query: string, condition: string): string {
+  const upperQuery = query.toUpperCase();
+  const clauseRegex = /\b(ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/gi;
+  let firstClausePos = -1;
+  let match: RegExpExecArray | null;
+  while ((match = clauseRegex.exec(query)) !== null) {
+    if (firstClausePos === -1) {
+      firstClausePos = match.index;
+    }
+  }
+
+  if (firstClausePos === -1) {
+    if (upperQuery.includes("WHERE")) {
+      return `${query} AND ${condition}`;
+    }
+    return `${query} WHERE ${condition}`;
+  }
+
+  const beforeClause = query.slice(0, firstClausePos).trimEnd();
+  const afterClause = query.slice(firstClausePos);
+  if (beforeClause.toUpperCase().includes("WHERE")) {
+    return `${beforeClause} AND ${condition} ${afterClause}`;
+  }
+  return `${beforeClause} WHERE ${condition} ${afterClause}`;
+}
+
+/**
  * Dangerous SQL statement patterns that should be rejected
  */
 const DANGEROUS_PATTERNS = [
@@ -1295,37 +1325,6 @@ export async function executeDbSyncChunk(options: {
     // Strip trailing semicolons to avoid "... ; LIMIT ..." syntax errors
     let effectiveQuery = sourceQuery.replace(/;\s*$/, "");
 
-    // Helper: insert a WHERE/AND condition BEFORE any ORDER BY/GROUP BY/HAVING/LIMIT
-    const appendWhereCondition = (query: string, condition: string): string => {
-      // Find the position of ORDER BY, GROUP BY, HAVING, or LIMIT (not inside subqueries)
-      const upperQuery = query.toUpperCase();
-      // Simple heuristic: find last occurrence of these clauses at the top level
-      const clauseRegex = /\b(ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/gi;
-      let firstClausePos = -1;
-      let match: RegExpExecArray | null;
-      while ((match = clauseRegex.exec(query)) !== null) {
-        if (firstClausePos === -1) {
-          firstClausePos = match.index;
-        }
-      }
-
-      if (firstClausePos === -1) {
-        // No trailing clauses, safe to append directly
-        if (upperQuery.includes("WHERE")) {
-          return `${query} AND ${condition}`;
-        }
-        return `${query} WHERE ${condition}`;
-      }
-
-      // Insert condition before the first trailing clause
-      const beforeClause = query.slice(0, firstClausePos).trimEnd();
-      const afterClause = query.slice(firstClausePos);
-      if (beforeClause.toUpperCase().includes("WHERE")) {
-        return `${beforeClause} AND ${condition} ${afterClause}`;
-      }
-      return `${beforeClause} WHERE ${condition} ${afterClause}`;
-    };
-
     // Helper: escape a value for safe SQL interpolation
     const escapeValue = (val: string, type: string): string => {
       if (type === "timestamp") {
@@ -1583,12 +1582,8 @@ export async function dryRunDbSync(options: {
           const keysetValue = isNaN(Number(lastKeysetValue))
             ? `'${String(lastKeysetValue).replace(/'/g, "''")}'`
             : lastKeysetValue;
-
-          if (effectiveQuery.toLowerCase().includes("where")) {
-            effectiveQuery = `${effectiveQuery} AND ${keysetColumn} ${keysetOperator} ${keysetValue}`;
-          } else {
-            effectiveQuery = `${effectiveQuery} WHERE ${keysetColumn} ${keysetOperator} ${keysetValue}`;
-          }
+          const condition = `${keysetColumn} ${keysetOperator} ${keysetValue}`;
+          effectiveQuery = appendWhereCondition(effectiveQuery, condition);
         }
 
         if (!effectiveQuery.toLowerCase().includes("order by")) {
