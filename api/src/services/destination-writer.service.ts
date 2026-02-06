@@ -888,22 +888,82 @@ export async function validateQuery(
 }
 
 /**
- * Insert a WHERE/AND condition BEFORE any ORDER BY/GROUP BY/HAVING/LIMIT clauses.
- * This prevents generating invalid SQL like "SELECT * FROM t ORDER BY id WHERE col > val".
+ * Scan a SQL string and return the position of the first top-level match of
+ * the given keyword regex, or -1 if none found.  "Top-level" means the match
+ * is NOT inside parenthesized sub-expressions (subqueries, function calls) or
+ * single-quoted string literals.
+ *
+ * @param query          The SQL query string to scan.
+ * @param anchoredPattern A case-insensitive regex anchored with `^` that will
+ *                        be tested against the remainder of the string at each
+ *                        candidate position (e.g. `/^WHERE\b/i`).
  */
-function appendWhereCondition(query: string, condition: string): string {
-  const upperQuery = query.toUpperCase();
-  const clauseRegex = /\b(ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/gi;
-  let firstClausePos = -1;
-  let match: RegExpExecArray | null;
-  while ((match = clauseRegex.exec(query)) !== null) {
-    if (firstClausePos === -1) {
-      firstClausePos = match.index;
+function findTopLevelKeyword(query: string, anchoredPattern: RegExp): number {
+  let depth = 0;
+  let inString = false;
+  const len = query.length;
+
+  for (let i = 0; i < len; i++) {
+    const ch = query[i];
+
+    // Handle single-quoted SQL strings ('' is the escape for a literal quote)
+    if (ch === "'") {
+      if (inString) {
+        if (i + 1 < len && query[i + 1] === "'") {
+          i++; // skip escaped ''
+        } else {
+          inString = false;
+        }
+      } else {
+        inString = true;
+      }
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === "(") {
+      depth++;
+      continue;
+    }
+    if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+
+    // Only consider keywords at the outermost level
+    if (depth > 0) continue;
+
+    // Word-boundary check: the previous character must not be a word character
+    if (i > 0 && /\w/.test(query[i - 1])) continue;
+
+    // Test the anchored pattern against the remainder of the string
+    if (anchoredPattern.test(query.slice(i))) {
+      return i;
     }
   }
 
+  return -1;
+}
+
+/**
+ * Insert a WHERE/AND condition BEFORE any top-level ORDER BY / GROUP BY /
+ * HAVING / LIMIT clauses.  Keywords inside parenthesized subqueries or
+ * single-quoted string literals are correctly ignored so that a query like
+ *
+ *   SELECT * FROM (SELECT * FROM t ORDER BY id LIMIT 100) sub
+ *
+ * receives the WHERE clause on the *outer* query rather than inside the
+ * subquery.
+ */
+function appendWhereCondition(query: string, condition: string): string {
+  const clausePattern = /^(ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i;
+  const wherePattern = /^WHERE\b/i;
+
+  const firstClausePos = findTopLevelKeyword(query, clausePattern);
+
   if (firstClausePos === -1) {
-    if (upperQuery.includes("WHERE")) {
+    if (findTopLevelKeyword(query, wherePattern) !== -1) {
       return `${query} AND ${condition}`;
     }
     return `${query} WHERE ${condition}`;
@@ -911,7 +971,7 @@ function appendWhereCondition(query: string, condition: string): string {
 
   const beforeClause = query.slice(0, firstClausePos).trimEnd();
   const afterClause = query.slice(firstClausePos);
-  if (beforeClause.toUpperCase().includes("WHERE")) {
+  if (findTopLevelKeyword(beforeClause, wherePattern) !== -1) {
     return `${beforeClause} AND ${condition} ${afterClause}`;
   }
   return `${beforeClause} WHERE ${condition} ${afterClause}`;
@@ -1371,7 +1431,7 @@ export async function executeDbSyncChunk(options: {
       }
 
       // Ensure ORDER BY matches keyset column and direction
-      if (!effectiveQuery.toLowerCase().includes("order by")) {
+      if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
         effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
       }
 
@@ -1380,7 +1440,7 @@ export async function executeDbSyncChunk(options: {
     } else {
       // Offset pagination: use LIMIT/OFFSET
       const orderColumn = incrementalConfig?.trackingColumn || "1";
-      if (!effectiveQuery.toLowerCase().includes("order by")) {
+      if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
         effectiveQuery = `${effectiveQuery} ORDER BY ${orderColumn}`;
       }
 
@@ -1586,14 +1646,14 @@ export async function dryRunDbSync(options: {
           effectiveQuery = appendWhereCondition(effectiveQuery, condition);
         }
 
-        if (!effectiveQuery.toLowerCase().includes("order by")) {
+        if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
           effectiveQuery = `${effectiveQuery} ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`;
         }
 
         paginatedQuery = `${effectiveQuery} LIMIT ${pageSize}`;
       } else {
         let effectiveQuery = baseQuery;
-        if (!effectiveQuery.toLowerCase().includes("order by")) {
+        if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
           effectiveQuery = `${effectiveQuery} ORDER BY 1`;
         }
         paginatedQuery = `${effectiveQuery} LIMIT ${pageSize} OFFSET ${page * pageSize}`;
