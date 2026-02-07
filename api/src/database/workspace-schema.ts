@@ -405,17 +405,85 @@ export interface IFlowQuery {
 }
 
 /**
+ * Database source configuration for db-to-db flows
+ */
+export interface IDatabaseSource {
+  connectionId: Types.ObjectId;
+  database?: string; // Database name within the connection
+  query: string; // SQL query to fetch data
+}
+
+/**
+ * Table destination configuration for writing to SQL tables
+ */
+export interface ITableDestination {
+  connectionId: Types.ObjectId;
+  database?: string; // Database name within the connection
+  schema?: string; // Schema name (PostgreSQL) or dataset (BigQuery)
+  tableName: string; // Target table name
+  createIfNotExists?: boolean; // Auto-create table if it doesn't exist
+}
+
+/**
+ * Incremental sync configuration
+ */
+export interface IIncrementalConfig {
+  trackingColumn: string; // e.g., 'updated_at' or 'id'
+  trackingType: "timestamp" | "numeric";
+  lastValue?: string; // Last synced value (stored as string for flexibility)
+}
+
+/**
+ * Conflict resolution configuration for upserts
+ */
+export interface IConflictConfig {
+  keyColumns: string[]; // Columns that form the unique key
+  strategy: "update" | "ignore" | "replace" | "upsert";
+}
+
+/**
+ * Pagination configuration for database syncs
+ */
+export interface IPaginationConfig {
+  mode: "offset" | "keyset"; // offset uses LIMIT/OFFSET, keyset uses WHERE col > last_value
+  keysetColumn?: string; // Column for keyset pagination (e.g., 'id', 'created_at')
+  keysetDirection?: "asc" | "desc"; // Sort direction (must match ORDER BY in query)
+  lastKeysetValue?: string; // Last processed keyset value for resumption
+}
+
+/**
+ * Type coercion configuration for column mapping between databases
+ */
+export interface ITypeCoercion {
+  column: string; // Column name
+  sourceType?: string; // Original type (informational)
+  targetType: string; // Target type to coerce to
+  format?: string; // Optional format string (e.g., for dates: 'YYYY-MM-DD')
+  nullValue?: unknown; // Value to use when source is null
+  transformer?: string; // Optional transformation: 'lowercase' | 'uppercase' | 'trim' | 'json_parse' | 'json_stringify'
+}
+
+/**
  * Flow model interface (data sync flow configuration)
  */
 export interface IFlow extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   type: "scheduled" | "webhook"; // Required field
-  dataSourceId: Types.ObjectId;
+
+  // Source configuration - either connector or database
+  sourceType: "connector" | "database";
+  dataSourceId?: Types.ObjectId; // For connector sources (Stripe, Close, etc.)
+  databaseSource?: IDatabaseSource; // For database sources (SQL queries)
+
+  // Destination configuration
   destinationDatabaseId: Types.ObjectId;
   destinationDatabaseName?: string;
-  schedule: {
-    cron: string;
+  tableDestination?: ITableDestination; // For writing to SQL tables instead of MongoDB collections
+
+  schedule?: {
+    enabled: boolean;
+    cron?: string;
     timezone?: string;
   };
   webhookConfig?: {
@@ -425,10 +493,17 @@ export interface IFlow extends Document {
     totalReceived: number;
     enabled: boolean;
   };
-  entityFilter?: string[]; // Optional: specific entities to sync
+  entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
-  enabled: boolean;
+
+  // Incremental and conflict config (for database sources)
+  incrementalConfig?: IIncrementalConfig;
+  conflictConfig?: IConflictConfig;
+  paginationConfig?: IPaginationConfig; // Pagination mode for database syncs
+  typeCoercions?: ITypeCoercion[]; // Type coercion rules for column mapping
+  batchSize?: number; // Batch size for processing (default: 2000)
+
   lastRunAt?: Date;
   lastSuccessAt?: Date;
   lastError?: string;
@@ -1158,10 +1233,28 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["scheduled", "webhook"],
       required: true,
     },
+    // Source type discriminator - defaults to "connector" for backward compatibility
+    sourceType: {
+      type: String,
+      enum: ["connector", "database"],
+      default: "connector",
+    },
+    // For connector sources (Stripe, Close, GraphQL, etc.)
     dataSourceId: {
       type: Schema.Types.ObjectId,
       ref: "Connector",
-      required: true,
+      required: function () {
+        return (this as any).sourceType !== "database";
+      },
+    },
+    // For database sources (SQL queries)
+    databaseSource: {
+      connectionId: {
+        type: Schema.Types.ObjectId,
+        ref: "DatabaseConnection",
+      },
+      database: String,
+      query: String,
     },
     destinationDatabaseId: {
       type: Schema.Types.ObjectId,
@@ -1172,16 +1265,35 @@ const FlowSchema = new Schema<IFlow>(
       type: String,
       required: false,
     },
+    // For writing to SQL tables instead of MongoDB collections
+    tableDestination: {
+      connectionId: {
+        type: Schema.Types.ObjectId,
+        ref: "DatabaseConnection",
+      },
+      database: String,
+      schema: String,
+      tableName: String,
+      createIfNotExists: {
+        type: Boolean,
+        default: true,
+      },
+    },
     schedule: {
+      enabled: {
+        type: Boolean,
+        default: true,
+      },
       cron: {
         type: String,
         required: function () {
-          return this.type === "scheduled";
+          return this.type === "scheduled" && this.schedule?.enabled;
         },
         validate: {
           validator: function (v: string) {
             // Skip validation for webhook flows
             if (this.type === "webhook") return true;
+            if (!this.schedule?.enabled) return true;
             // Basic cron validation - 5 or 6 fields
             const fields = v.split(" ");
             return fields.length === 5 || fields.length === 6;
@@ -1236,9 +1348,64 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["full", "incremental"],
       default: "full",
     },
-    enabled: {
-      type: Boolean,
-      default: true,
+    // Incremental config for database sources
+    incrementalConfig: {
+      trackingColumn: String,
+      trackingType: {
+        type: String,
+        enum: ["timestamp", "numeric"],
+      },
+      lastValue: String,
+    },
+    // Conflict resolution for upserts
+    conflictConfig: {
+      keyColumns: [String],
+      strategy: {
+        type: String,
+        enum: ["update", "ignore", "replace", "upsert"],
+        default: "update",
+      },
+    },
+    // Pagination mode for database syncs
+    paginationConfig: {
+      mode: {
+        type: String,
+        enum: ["offset", "keyset"],
+        default: "offset",
+      },
+      keysetColumn: String,
+      keysetDirection: {
+        type: String,
+        enum: ["asc", "desc"],
+        default: "asc",
+      },
+      lastKeysetValue: String,
+    },
+    // Type coercion rules for column mapping
+    typeCoercions: [
+      {
+        column: { type: String, required: true },
+        sourceType: String,
+        targetType: { type: String, required: true },
+        format: String,
+        nullValue: Schema.Types.Mixed,
+        transformer: {
+          type: String,
+          enum: [
+            "lowercase",
+            "uppercase",
+            "trim",
+            "json_parse",
+            "json_stringify",
+          ],
+        },
+      },
+    ],
+    batchSize: {
+      type: Number,
+      default: 2000,
+      min: 100,
+      max: 50000,
     },
     lastRunAt: Date,
     lastSuccessAt: Date,
@@ -1264,9 +1431,12 @@ const FlowSchema = new Schema<IFlow>(
 );
 
 // Indexes
-FlowSchema.index({ workspaceId: 1, enabled: 1 });
-FlowSchema.index({ dataSourceId: 1 });
+FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
+FlowSchema.index({ workspaceId: 1, sourceType: 1 });
+FlowSchema.index({ dataSourceId: 1 }, { sparse: true }); // Sparse since not required for database sources
+FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ destinationDatabaseId: 1 });
+FlowSchema.index({ "tableDestination.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ nextRunAt: 1 });
 
 /**

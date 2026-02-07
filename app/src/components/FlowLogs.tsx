@@ -32,10 +32,10 @@ interface FlowDetails {
   syncMode: string;
   entityFilter?: string[];
   schedule?: {
+    enabled?: boolean;
     cron: string;
     timezone?: string;
   };
-  enabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -327,7 +327,7 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
               </Typography>
               <Typography variant="body2">
                 <strong>Status:</strong>{" "}
-                {flowDetails.enabled ? "Active" : "Inactive"}
+                {flowDetails.schedule?.enabled ? "Active" : "Inactive"}
               </Typography>
             </Box>
             {flowDetails.schedule?.cron && (

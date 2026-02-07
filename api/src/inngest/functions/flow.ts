@@ -10,6 +10,12 @@ import {
   performSyncChunk,
   SyncLogger,
 } from "../../services/sync-executor.service";
+import {
+  createDestinationWriter,
+  executeDbSyncChunk,
+  getMaxTrackingValue,
+  DbSyncChunkState,
+} from "../../services/destination-writer.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { databaseDataSourceManager } from "../../sync/database-data-source-manager";
 import { FetchState } from "../../connectors/base/BaseConnector";
@@ -24,18 +30,46 @@ const flowLogger = loggers.inngest("flow");
 // Helper function to get flow display name
 async function getFlowDisplayName(flow: IFlow): Promise<string> {
   try {
-    const [dataSource, database] = await Promise.all([
-      DataSource.findById(flow.dataSourceId),
-      DatabaseConnection.findById(flow.destinationDatabaseId),
-    ]);
+    let sourceName: string;
+    let destName: string;
 
-    const sourceName = dataSource?.name || flow.dataSourceId.toString();
-    const destName = database?.name || flow.destinationDatabaseId.toString();
+    // Get source name based on source type
+    if (flow.sourceType === "database" && flow.databaseSource?.connectionId) {
+      const sourceDb = await DatabaseConnection.findById(
+        flow.databaseSource.connectionId,
+      );
+      sourceName =
+        sourceDb?.name || flow.databaseSource.connectionId.toString();
+    } else if (flow.dataSourceId) {
+      const dataSource = await DataSource.findById(flow.dataSourceId);
+      sourceName = dataSource?.name || flow.dataSourceId.toString();
+    } else {
+      sourceName = "Unknown Source";
+    }
+
+    // Get destination name
+    if (flow.tableDestination?.connectionId) {
+      const destDb = await DatabaseConnection.findById(
+        flow.tableDestination.connectionId,
+      );
+      destName = flow.tableDestination.tableName
+        ? `${destDb?.name || "DB"}.${flow.tableDestination.tableName}`
+        : destDb?.name || flow.tableDestination.connectionId.toString();
+    } else {
+      const database = await DatabaseConnection.findById(
+        flow.destinationDatabaseId,
+      );
+      destName = database?.name || flow.destinationDatabaseId.toString();
+    }
 
     return `${sourceName} → ${destName}`;
   } catch {
     // Fallback to IDs if lookup fails
-    return `${flow.dataSourceId} → ${flow.destinationDatabaseId}`;
+    const sourceId =
+      flow.sourceType === "database"
+        ? flow.databaseSource?.connectionId?.toString()
+        : flow.dataSourceId?.toString();
+    return `${sourceId || "Unknown"} → ${flow.destinationDatabaseId}`;
   }
 }
 
@@ -281,14 +315,20 @@ class FlowExecutionLogger implements SyncLogger {
             _id: this.executionId.toString(),
           } as any);
           if (existsWithStringId) {
-            flowLogger.error("Flow execution found with string ID instead of ObjectId", {
-              executionId: this.executionId.toString(),
-            });
+            flowLogger.error(
+              "Flow execution found with string ID instead of ObjectId",
+              {
+                executionId: this.executionId.toString(),
+              },
+            );
           }
 
-          flowLogger.error("Failed to update flow execution - document not found", {
-            executionId: this.executionId.toString(),
-          });
+          flowLogger.error(
+            "Failed to update flow execution - document not found",
+            {
+              executionId: this.executionId.toString(),
+            },
+          );
           throw new Error(
             `Flow execution document not found: ${this.executionId}`,
           );
@@ -345,6 +385,8 @@ export const flowFunction = inngest.createFunction(
 
     // Initialize execution ID for tracking
     let executionId: string | undefined;
+    // Store flow ref for use in error handler
+    let flowRef: IFlow | undefined;
 
     // Helper to create the execution logger
     const createExecutionLogger = (flow: IFlow): FlowExecutionLogger => {
@@ -396,10 +438,7 @@ export const flowFunction = inngest.createFunction(
         }
         return found.toObject() as IFlow;
       })) as IFlow;
-
-      if (!flow || !flow.enabled) {
-        return { success: false, message: "Flow is disabled" };
-      }
+      flowRef = flow; // Store for error handler
 
       // Webhook flows should not be executed by the flow function
       if (flow.type === "webhook") {
@@ -460,9 +499,13 @@ export const flowFunction = inngest.createFunction(
       await step.run("validate-sync-config", async () => {
         logger.info("Validating sync configuration", {
           flowId,
+          sourceType: flow.sourceType || "connector",
           syncMode: flow.syncMode,
-          dataSourceId: flow.dataSourceId.toString(),
+          dataSourceId: flow.dataSourceId?.toString(),
+          databaseSourceConnectionId:
+            flow.databaseSource?.connectionId?.toString(),
           destinationDatabaseId: flow.destinationDatabaseId.toString(),
+          tableDestination: flow.tableDestination?.tableName,
           entityFilter: flow.entityFilter,
         });
         return true;
@@ -471,15 +514,341 @@ export const flowFunction = inngest.createFunction(
       // Variable to track entities synced
       let syncedEntities: string[] = [];
 
+      // ============ DATABASE SOURCE EXECUTION ============
+      // For database-to-database flows, use chunked execution for resumability
+      if (flow.sourceType === "database") {
+        logger.info(
+          "Starting database-to-database sync with chunked execution",
+          {
+            flowId,
+            syncMode: flow.syncMode,
+            sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
+            sourceDatabase: flow.databaseSource?.database,
+          },
+        );
+
+        // Validate database source configuration
+        const _validation = await step.run("validate-db-source", async () => {
+          if (
+            !flow.databaseSource?.connectionId ||
+            !flow.databaseSource?.query
+          ) {
+            throw new Error("Database source requires connectionId and query");
+          }
+
+          const sourceConnection = await DatabaseConnection.findById(
+            flow.databaseSource.connectionId,
+          );
+          if (!sourceConnection) {
+            throw new Error(
+              `Source database connection not found: ${flow.databaseSource.connectionId}`,
+            );
+          }
+
+          return {
+            sourceConnectionId: sourceConnection._id.toString(),
+            sourceName: sourceConnection.name,
+          };
+        });
+
+        // Initialize destination writer once
+        const _writerConfig = await step.run(
+          "init-destination-writer",
+          async () => {
+            const sourceConnection = await DatabaseConnection.findById(
+              flow.databaseSource!.connectionId,
+            );
+
+            const destinationWriter = await createDestinationWriter(
+              {
+                destinationDatabaseId: flow.destinationDatabaseId,
+                destinationDatabaseName: flow.destinationDatabaseName,
+                tableDestination: flow.tableDestination,
+                dataSourceId: flow.databaseSource!.connectionId,
+              },
+              sourceConnection?.name,
+            );
+
+            // Set collection name if writing to MongoDB
+            if (!flow.tableDestination?.tableName && sourceConnection) {
+              (destinationWriter as any).config.collectionName =
+                `${sourceConnection.name}_sync`;
+            }
+
+            return {
+              collectionName: (destinationWriter as any).config?.collectionName,
+              isTableDestination: destinationWriter.isTableDestination(),
+            };
+          },
+        );
+
+        // Chunked execution loop
+        let chunkState: DbSyncChunkState | undefined;
+        let chunkIndex = 0;
+        let completed = false;
+        let totalRowsProcessed = 0;
+
+        while (!completed) {
+          const chunkResult = await step.run(
+            `db-sync-chunk-${chunkIndex}`,
+            async () => {
+              logger.info("Executing database sync chunk", {
+                flowId,
+                chunkIndex,
+                offset: chunkState?.offset || 0,
+                totalProcessed: chunkState?.totalProcessed || 0,
+              });
+
+              // Re-create destination writer for this chunk
+              const sourceConnection = await DatabaseConnection.findById(
+                flow.databaseSource!.connectionId,
+              );
+              if (!sourceConnection) {
+                throw new Error("Source connection not found");
+              }
+
+              const destinationWriter = await createDestinationWriter(
+                {
+                  destinationDatabaseId: flow.destinationDatabaseId,
+                  destinationDatabaseName: flow.destinationDatabaseName,
+                  tableDestination: flow.tableDestination,
+                  dataSourceId: flow.databaseSource!.connectionId,
+                },
+                sourceConnection.name,
+              );
+
+              if (!flow.tableDestination?.tableName) {
+                (destinationWriter as any).config.collectionName =
+                  `${sourceConnection.name}_sync`;
+              }
+
+              // Execute chunk with pagination and type coercions
+              const result = await executeDbSyncChunk({
+                sourceConnection,
+                sourceQuery: flow.databaseSource!.query,
+                sourceDatabase: flow.databaseSource!.database,
+                destinationWriter,
+                batchSize: flow.batchSize || 2000,
+                syncMode: flow.syncMode,
+                incrementalConfig: flow.incrementalConfig,
+                paginationConfig: flow.paginationConfig,
+                typeCoercions: flow.typeCoercions,
+                keyColumns: flow.conflictConfig?.keyColumns,
+                state: chunkState,
+                maxRowsPerChunk: 10000, // Process 10k rows per Inngest step
+                onProgress: (processed, estimated) => {
+                  const progress = estimated
+                    ? `${processed}/${estimated} (${Math.round((processed / estimated) * 100)}%)`
+                    : `${processed} rows`;
+                  logger.info(`Progress: ${progress}`, {
+                    flowId,
+                    rowsProcessed: processed,
+                    estimatedTotal: estimated,
+                  });
+                },
+              });
+
+              if (result.error) {
+                throw new Error(result.error);
+              }
+
+              return result;
+            },
+          );
+
+          // Update state for next iteration
+          chunkState = chunkResult.state;
+          totalRowsProcessed = chunkState.totalProcessed;
+          completed = chunkResult.completed;
+          chunkIndex++;
+
+          logger.info("Chunk completed", {
+            flowId,
+            chunkIndex: chunkIndex - 1,
+            rowsInChunk: chunkResult.rowsProcessed,
+            totalProcessed: totalRowsProcessed,
+            estimatedTotal: chunkState.estimatedTotal,
+            completed,
+          });
+        }
+
+        // Finalize staging table swap for full sync
+        if (flow.syncMode === "full") {
+          await step.run("finalize-staging-swap", async () => {
+            logger.info("Finalizing full sync (staging table swap)", {
+              flowId,
+            });
+
+            const sourceConnection = await DatabaseConnection.findById(
+              flow.databaseSource!.connectionId,
+            );
+
+            const destinationWriter = await createDestinationWriter(
+              {
+                destinationDatabaseId: flow.destinationDatabaseId,
+                destinationDatabaseName: flow.destinationDatabaseName,
+                tableDestination: flow.tableDestination,
+                dataSourceId: flow.databaseSource!.connectionId,
+              },
+              sourceConnection?.name,
+            );
+
+            if (!flow.tableDestination?.tableName && sourceConnection) {
+              (destinationWriter as any).config.collectionName =
+                `${sourceConnection.name}_sync`;
+            }
+
+            // Mark staging as active and finalize
+            (destinationWriter as any).stagingActive = true;
+            await destinationWriter.finalize();
+
+            logger.info("Staging table swap completed", { flowId });
+          });
+        }
+
+        // Update incremental tracking value
+        if (
+          flow.syncMode === "incremental" &&
+          flow.incrementalConfig?.trackingColumn &&
+          totalRowsProcessed > 0
+        ) {
+          await step.run("update-incremental-tracking", async () => {
+            logger.info("Updating incremental tracking value", { flowId });
+
+            if (flow.tableDestination?.connectionId) {
+              // SQL table destination: query the destination table for max tracking value
+              const destConnection = await DatabaseConnection.findById(
+                flow.tableDestination.connectionId,
+              );
+
+              if (destConnection) {
+                const maxValueResult = await getMaxTrackingValue(
+                  destConnection,
+                  flow.tableDestination.tableName,
+                  flow.incrementalConfig!.trackingColumn,
+                  flow.tableDestination.schema,
+                  flow.tableDestination.database,
+                );
+
+                if (maxValueResult.success && maxValueResult.maxValue) {
+                  await Flow.findByIdAndUpdate(flowId, {
+                    "incrementalConfig.lastValue": maxValueResult.maxValue,
+                  });
+
+                  logger.info("Incremental tracking updated", {
+                    flowId,
+                    trackingColumn: flow.incrementalConfig!.trackingColumn,
+                    newLastValue: maxValueResult.maxValue,
+                  });
+                }
+              }
+            } else if (chunkState?.lastTrackingValue) {
+              // MongoDB destination: use the last tracking value from chunk state
+              // (since we can't easily query MongoDB for MAX of an arbitrary column)
+              await Flow.findByIdAndUpdate(flowId, {
+                "incrementalConfig.lastValue": chunkState.lastTrackingValue,
+              });
+
+              logger.info("Incremental tracking updated (from chunk state)", {
+                flowId,
+                trackingColumn: flow.incrementalConfig!.trackingColumn,
+                newLastValue: chunkState.lastTrackingValue,
+              });
+            }
+          });
+        }
+
+        // Skip connector-based execution
+        syncedEntities = ["database_query"];
+
+        // Update success status
+        await step.run("update-success-status", async () => {
+          logger.info("Updating flow success status", { flowId });
+          await Flow.findByIdAndUpdate(flowId, {
+            lastSuccessAt: new Date(),
+            lastError: null,
+          });
+        });
+
+        // Complete execution with proper stats
+        await step.run("complete-execution", async () => {
+          logger.info("Completing execution logging", { flowId, executionId });
+
+          if (executionId) {
+            const db = Flow.db;
+            const collection = db.collection("flow_executions");
+            const completedAt = new Date();
+
+            await collection.updateOne(
+              { _id: new Types.ObjectId(executionId) },
+              {
+                $set: {
+                  completedAt,
+                  lastHeartbeat: completedAt,
+                  status: "completed",
+                  success: true,
+                  stats: {
+                    recordsProcessed: totalRowsProcessed,
+                    recordsCreated: totalRowsProcessed,
+                    recordsUpdated: 0,
+                    recordsDeleted: 0,
+                    recordsFailed: 0,
+                    syncedEntities: ["database_query"],
+                    estimatedTotal: chunkState?.estimatedTotal,
+                    chunksProcessed: chunkIndex,
+                  },
+                },
+              },
+            );
+
+            const execution = await collection.findOne({
+              _id: new Types.ObjectId(executionId),
+            });
+            if (execution?.startedAt) {
+              const duration =
+                completedAt.getTime() - new Date(execution.startedAt).getTime();
+              await collection.updateOne(
+                { _id: new Types.ObjectId(executionId) },
+                { $set: { duration } },
+              );
+
+              logger.info("Execution completed successfully", {
+                flowId,
+                executionId,
+                duration,
+                totalRows: totalRowsProcessed,
+                chunks: chunkIndex,
+              });
+            }
+          }
+        });
+
+        return {
+          success: true,
+          message: "Database sync completed successfully",
+          totalRows: totalRowsProcessed,
+          chunks: chunkIndex,
+        };
+      }
+
+      // ============ CONNECTOR SOURCE EXECUTION ============
+      // Ensure dataSourceId is defined for connector execution
+      if (!flow.dataSourceId) {
+        throw new Error(
+          "Flow dataSourceId is required for connector execution",
+        );
+      }
+      const dataSourceId = flow.dataSourceId;
+
       // Check if connector supports chunked execution
       const supportsChunking = await step.run(
         "check-chunking-support",
         async () => {
           const dataSource = await databaseDataSourceManager.getDataSource(
-            flow.dataSourceId.toString(),
+            dataSourceId.toString(),
           );
           if (!dataSource) {
-            throw new Error(`Data source not found: ${flow.dataSourceId}`);
+            throw new Error(`Data source not found: ${dataSourceId}`);
           }
 
           const connector =
@@ -506,10 +875,10 @@ export const flowFunction = inngest.createFunction(
           "get-entities-to-sync",
           async () => {
             const dataSource = await databaseDataSourceManager.getDataSource(
-              flow.dataSourceId.toString(),
+              dataSourceId.toString(),
             );
             if (!dataSource) {
-              throw new Error(`Data source not found: ${flow.dataSourceId}`);
+              throw new Error(`Data source not found: ${dataSourceId}`);
             }
 
             // Inject flow queries into dataSource for GraphQL/PostHog connectors
@@ -613,7 +982,7 @@ export const flowFunction = inngest.createFunction(
                 };
 
                 const result = await performSyncChunk({
-                  dataSourceId: flow.dataSourceId.toString(),
+                  dataSourceId: dataSourceId.toString(),
                   destinationId: flow.destinationDatabaseId.toString(),
                   destinationDatabaseName: flow.destinationDatabaseName,
                   entity,
@@ -691,7 +1060,7 @@ export const flowFunction = inngest.createFunction(
         await step.run("execute-sync", async () => {
           // For non-chunked sync, we need to get the entities
           const dataSource = await databaseDataSourceManager.getDataSource(
-            flow.dataSourceId.toString(),
+            dataSourceId.toString(),
           );
           if (dataSource) {
             // Inject flow queries into dataSource for GraphQL/PostHog connectors
@@ -752,7 +1121,7 @@ export const flowFunction = inngest.createFunction(
             };
 
             await performSync(
-              flow.dataSourceId.toString(),
+              dataSourceId.toString(),
               flow.destinationDatabaseId.toString(),
               flow.destinationDatabaseName,
               flow.entityFilter,
@@ -883,6 +1252,55 @@ export const flowFunction = inngest.createFunction(
         isCancelled,
       });
 
+      // Cleanup staging tables on failure (for database source full sync)
+      // Note: We intentionally do NOT check dbSyncStagingPrepared here.
+      // The flag is only set after step.run returns successfully, but the
+      // staging table is created inside step.run (in executeDbSyncChunk).
+      // If the first chunk creates the staging table then fails permanently,
+      // the flag would remain false and cleanup would be skipped — leaving
+      // an orphaned staging table. The cleanup logic below handles the case
+      // where no staging table exists (via try/catch), so it's safe to
+      // always attempt cleanup for database full syncs.
+      if (flowRef?.sourceType === "database" && flowRef?.syncMode === "full") {
+        const cleanupFlow = flowRef; // Capture for closure
+        await step.run("cleanup-staging-on-failure", async () => {
+          try {
+            logger.info("Cleaning up staging table after failure", { flowId });
+
+            const sourceConnection = await DatabaseConnection.findById(
+              cleanupFlow.databaseSource!.connectionId,
+            );
+
+            const destinationWriter = await createDestinationWriter(
+              {
+                destinationDatabaseId: cleanupFlow.destinationDatabaseId,
+                destinationDatabaseName: cleanupFlow.destinationDatabaseName,
+                tableDestination: cleanupFlow.tableDestination,
+                dataSourceId: cleanupFlow.databaseSource!.connectionId,
+              },
+              sourceConnection?.name,
+            );
+
+            if (!cleanupFlow.tableDestination?.tableName && sourceConnection) {
+              (destinationWriter as any).config.collectionName =
+                `${sourceConnection.name}_sync`;
+            }
+
+            (destinationWriter as any).stagingActive = true;
+            await destinationWriter.cleanup();
+            logger.info("Staging table cleanup completed", { flowId });
+          } catch (cleanupError) {
+            logger.error("Failed to cleanup staging table", {
+              flowId,
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            });
+          }
+        });
+      }
+
       // Complete execution logging in a step to ensure it runs
       await step.run("complete-execution-error", async () => {
         if (executionId) {
@@ -969,13 +1387,13 @@ export const flowSchedulerFunction = inngest.createFunction(
       timestamp: new Date().toISOString(),
     });
 
-    // Get all enabled scheduled flows (not webhooks)
+    // Get all scheduled flows with enabled schedules
     const flows = (await step.run("fetch-enabled-flows", async () => {
       const found = await Flow.find({
-        enabled: true,
         type: "scheduled", // Only get scheduled flows explicitly
+        "schedule.enabled": true,
       });
-      scheduleLogger.info("Found enabled scheduled flows", {
+      scheduleLogger.info("Found scheduled flows with enabled schedules", {
         count: found.length,
         // Log flow types for debugging
         flowTypes: found.map(f => ({

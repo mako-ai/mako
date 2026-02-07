@@ -23,6 +23,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Tooltip,
 } from "@mui/material";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
@@ -41,6 +42,8 @@ import {
   Plus,
   MessageSquare,
   Trash2,
+  SquareChevronRight as ConsoleIcon,
+  ArrowLeftRight as FlowIcon,
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
@@ -61,6 +64,7 @@ import {
 } from "../hooks/useMonacoConsole";
 import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
+import { DbFlowFormRef } from "./DbFlowForm";
 
 interface ChatSessionMeta {
   _id: string;
@@ -467,8 +471,11 @@ const StreamingIndicator = React.memo(() => {
 
 StreamingIndicator.displayName = "StreamingIndicator";
 
+// DbFlowFormRef is imported from ./DbFlowForm
+
 interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
+  dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
 }
 
 // Suggestion prompts for the demo Chinook database
@@ -486,13 +493,33 @@ const GENERIC_SUGGESTIONS = [
   "Help me write a query to...",
 ];
 
-const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
+// Suggestions for db-flow agent (sync configuration)
+const DB_FLOW_SUGGESTIONS = [
+  "Help me write a query to sync all users",
+  "What template placeholders should I use?",
+  "Suggest an incremental sync configuration",
+  "Validate my query setup",
+];
+
+const Chat: React.FC<ChatProps> = ({
+  onConsoleModification,
+  dbFlowFormRef,
+}) => {
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
   const tabs = useConsoleStore(state => state.tabs);
   const activeTabId = useConsoleStore(state => state.activeTabId);
   const consoleTabs = useMemo(() => Object.values(tabs), [tabs]);
   const activeConsoleId = activeTabId;
+
+  // Agent mode state - manually selected via the mode switcher
+  const [agentMode, setAgentMode] = useState<"console" | "flow">("console");
+  const agentModeRef = useRef(agentMode);
+  agentModeRef.current = agentMode;
+
+  // Ref for dbFlowFormRef to avoid stale closure in onToolCall
+  const dbFlowFormRefCurrent = useRef(dbFlowFormRef);
+  dbFlowFormRefCurrent.current = dbFlowFormRef;
 
   // Get connections to check if only database is the demo
   const connections = useSchemaStore(s => s.connections);
@@ -552,6 +579,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     null,
   );
 
+  // Agent mode selector menu
+  const [modeSelectorAnchor, setModeSelectorAnchor] =
+    useState<null | HTMLElement>(null);
+  const modeSelectorOpen = Boolean(modeSelectorAnchor);
+
   // Filter to only real console tabs (used for capturedConsoleTitle)
   const realConsoleTabs = useMemo(
     () =>
@@ -594,6 +626,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
           // Get fresh console state at request time
           const store = useConsoleStore.getState();
           const tabs = Object.values(store.tabs) as ConsoleTab[];
+          const activeTab = tabs.find(t => t.id === store.activeTabId);
 
           const openConsoles = tabs
             .filter(t => t?.kind === undefined || t?.kind === "console")
@@ -618,6 +651,13 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               };
             });
 
+          // Get flow form state for flow agent mode
+          const flowFormState =
+            agentModeRef.current === "flow" &&
+            dbFlowFormRefCurrent.current?.current
+              ? dbFlowFormRefCurrent.current.current.getFormState()
+              : undefined;
+
           return {
             body: {
               messages,
@@ -626,6 +666,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               chatId: chatIdRef.current,
               openConsoles,
               consoleId: activeConsoleIdRef.current,
+              // Agent mode selection
+              agentId: agentModeRef.current,
+              tabKind: activeTab?.kind,
+              flowType: activeTab?.metadata?.flowType,
+              flowFormState,
             },
           };
         },
@@ -1009,7 +1054,167 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
         return;
       }
 
-      // Unknown tool - not a client-side console tool, let it be handled server-side
+      // Handle flow agent client-side tools
+      if (agentModeRef.current === "flow") {
+        // get_form_state - Return current form configuration
+        if (toolName === "get_form_state") {
+          const formRef = dbFlowFormRefCurrent.current?.current;
+          if (!formRef) {
+            addToolOutput({
+              tool: "get_form_state",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Form is not available. Make sure you're in the flow editor.",
+              },
+            });
+            return;
+          }
+
+          const formState = formRef.getFormState();
+          addToolOutput({
+            tool: "get_form_state",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              formState,
+            },
+          });
+          return;
+        }
+
+        // set_form_field - Update a single form field
+        if (toolName === "set_form_field") {
+          const formRef = dbFlowFormRefCurrent.current?.current;
+          if (!formRef) {
+            addToolOutput({
+              tool: "set_form_field",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Form is not available. Make sure you're in the flow editor.",
+              },
+            });
+            return;
+          }
+
+          const { fieldName, value } = input as {
+            fieldName: string;
+            value: unknown;
+          };
+
+          // The tool schema uses a structured z.union() instead of z.any(),
+          // so the LLM returns proper typed values (arrays as arrays, not strings).
+          // See: TYPE_COERCION_SCHEMA in db-flow-form.schema.ts
+          formRef.setField(fieldName, value);
+          addToolOutput({
+            tool: "set_form_field",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              fieldName,
+              value,
+              message: `Updated ${fieldName} successfully`,
+            },
+          });
+          return;
+        }
+
+        // set_multiple_fields - Update multiple fields at once
+        if (toolName === "set_multiple_fields") {
+          const formRef = dbFlowFormRefCurrent.current?.current;
+          if (!formRef) {
+            addToolOutput({
+              tool: "set_multiple_fields",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Form is not available. Make sure you're in the flow editor.",
+              },
+            });
+            return;
+          }
+
+          const { fields } = input as { fields: Record<string, unknown> };
+          formRef.setMultipleFields(fields);
+          addToolOutput({
+            tool: "set_multiple_fields",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              fields: Object.keys(fields),
+              message: `Updated ${Object.keys(fields).length} field(s) successfully`,
+            },
+          });
+          return;
+        }
+
+        // NOTE: set_column_mappings has been removed
+        // Use set_form_field with fieldName="typeCoercions" instead
+
+        // create_flow_tab - Create a new db-scheduled flow tab
+        if (toolName === "create_flow_tab") {
+          const currentStore = useConsoleStore.getState();
+          const title = (input.title as string) || "New Database Sync";
+
+          // Generate a new ID and create the flow tab
+          const newTabId = generateObjectId();
+          currentStore.openTab({
+            id: newTabId,
+            title,
+            content: "",
+            kind: "flow-editor",
+            metadata: { isNew: true, flowType: "db-scheduled" },
+          });
+          currentStore.setActiveTab(newTabId);
+
+          addToolOutput({
+            tool: "create_flow_tab",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              tabId: newTabId,
+              title,
+              message: `Created new flow tab "${title}"`,
+            },
+          });
+          return;
+        }
+
+        // list_flow_tabs - List all open flow editor tabs
+        if (toolName === "list_flow_tabs") {
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
+          const currentActiveId = currentStore.activeTabId;
+
+          const flowTabs = currentTabs
+            .filter((tab: any) => tab?.kind === "flow-editor")
+            .map((tab: any) => ({
+              id: tab.id,
+              title: tab.title || "Untitled Flow",
+              flowType: tab.metadata?.flowType || "unknown",
+              flowId: tab.metadata?.flowId,
+              isNew: tab.metadata?.isNew || false,
+              isActive: tab.id === currentActiveId,
+            }));
+
+          addToolOutput({
+            tool: "list_flow_tabs",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              flowTabs,
+              message: `Found ${flowTabs.length} open flow tab(s)`,
+            },
+          });
+          return;
+        }
+      }
+
+      // Unknown tool - not a client-side tool, let it be handled server-side
     },
 
     onError: err => {
@@ -1245,6 +1450,51 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
     setSelectedTool(null);
   };
 
+  // Copy chat history handler
+  const [copiedChat, setCopiedChat] = useState(false);
+  const handleCopyChatHistory = async () => {
+    const history = messages.map(msg => {
+      const parts = (msg.parts || []).map((part: Record<string, unknown>) => {
+        const partType = part.type as string;
+        if (partType === "text") {
+          return { type: "text", text: part.text };
+        }
+        if (partType === "reasoning") {
+          return {
+            type: "reasoning",
+            text: (part as Record<string, unknown>).text,
+          };
+        }
+        if (partType?.startsWith("tool-") || partType === "dynamic-tool") {
+          return {
+            type: partType,
+            toolCallId: part.toolCallId,
+            toolName:
+              partType === "dynamic-tool"
+                ? part.toolName
+                : partType.split("-").slice(1).join("-"),
+            state: part.state,
+            input: part.input,
+            output: part.output,
+          };
+        }
+        return { type: partType, ...part };
+      });
+      return {
+        id: msg.id,
+        role: msg.role,
+        parts,
+      };
+    });
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(history, null, 2));
+      setCopiedChat(true);
+      setTimeout(() => setCopiedChat(false), 2000);
+    } catch {
+      /* clipboard not available */
+    }
+  };
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Header with history and new chat */}
@@ -1277,6 +1527,19 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             </Typography>
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <Tooltip
+              title={copiedChat ? "Copied!" : "Copy chat history as JSON"}
+            >
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={handleCopyChatHistory}
+                  disabled={messages.length === 0}
+                >
+                  {copiedChat ? <Check size={20} /> : <Copy size={20} />}
+                </IconButton>
+              </span>
+            </Tooltip>
             <IconButton size="small" onClick={createNewSession}>
               <Plus size={20} />
             </IconButton>
@@ -1381,9 +1644,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             color="text.secondary"
             sx={{ textAlign: "center", mb: 1 }}
           >
-            {hasOnlyDemoDatabase
-              ? "Try asking about the Chinook music store data"
-              : "Ask a question about your data"}
+            {agentMode === "flow"
+              ? "I can help you configure your flow"
+              : hasOnlyDemoDatabase
+                ? "Try asking about the Chinook music store data"
+                : "Ask a question about your data"}
           </Typography>
           <Box
             sx={{
@@ -1394,9 +1659,11 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               maxWidth: 400,
             }}
           >
-            {(hasOnlyDemoDatabase
-              ? CHINOOK_SUGGESTIONS
-              : GENERIC_SUGGESTIONS
+            {(agentMode === "flow"
+              ? DB_FLOW_SUGGESTIONS
+              : hasOnlyDemoDatabase
+                ? CHINOOK_SUGGESTIONS
+                : GENERIC_SUGGESTIONS
             ).map(suggestion => (
               <Chip
                 key={suggestion}
@@ -1793,7 +2060,7 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
             }}
           />
 
-          {/* Bottom action bar with Model Selector on left, Send/Stop button on right */}
+          {/* Bottom action bar with Mode + Model Selector on left, Send/Stop button on right */}
           <Box
             sx={{
               display: "flex",
@@ -1801,7 +2068,105 @@ const Chat: React.FC<ChatProps> = ({ onConsoleModification }) => {
               alignItems: "center",
             }}
           >
-            <Box sx={{ display: "flex", alignItems: "center" }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              {/* Agent Mode Selector */}
+              <Button
+                size="small"
+                onClick={e => setModeSelectorAnchor(e.currentTarget)}
+                startIcon={
+                  agentMode === "console" ? (
+                    <ConsoleIcon size={14} />
+                  ) : (
+                    <FlowIcon size={14} />
+                  )
+                }
+                endIcon={<ChevronDown size={14} />}
+                sx={{
+                  textTransform: "none",
+                  color: "text.secondary",
+                  fontSize: 12,
+                  py: 0.25,
+                  px: 1,
+                  minWidth: "auto",
+                  borderRadius: 1.5,
+                  border: 1,
+                  borderColor: "divider",
+                  "&:hover": {
+                    backgroundColor: "action.hover",
+                    borderColor: "text.secondary",
+                  },
+                }}
+              >
+                {agentMode === "console" ? "Console" : "Flow"}
+              </Button>
+              <Menu
+                anchorEl={modeSelectorAnchor}
+                open={modeSelectorOpen}
+                onClose={() => setModeSelectorAnchor(null)}
+                anchorOrigin={{
+                  vertical: "top",
+                  horizontal: "left",
+                }}
+                transformOrigin={{
+                  vertical: "bottom",
+                  horizontal: "left",
+                }}
+                slotProps={{
+                  paper: {
+                    sx: {
+                      minWidth: 180,
+                    },
+                  },
+                }}
+              >
+                <MenuItem
+                  selected={agentMode === "console"}
+                  onClick={() => {
+                    if (agentMode !== "console") {
+                      // Create new session when switching modes
+                      setChatId(generateObjectId());
+                      setMessages([]);
+                      setIsExistingChat(false);
+                      setAgentMode("console");
+                    }
+                    setModeSelectorAnchor(null);
+                  }}
+                >
+                  <ListItemIcon>
+                    <ConsoleIcon size={16} />
+                  </ListItemIcon>
+                  <Box>
+                    <Typography variant="body2">Console</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Query writing & data analysis
+                    </Typography>
+                  </Box>
+                </MenuItem>
+                <MenuItem
+                  selected={agentMode === "flow"}
+                  onClick={() => {
+                    if (agentMode !== "flow") {
+                      // Create new session when switching modes
+                      setChatId(generateObjectId());
+                      setMessages([]);
+                      setIsExistingChat(false);
+                      setAgentMode("flow");
+                    }
+                    setModeSelectorAnchor(null);
+                  }}
+                >
+                  <ListItemIcon>
+                    <FlowIcon size={16} />
+                  </ListItemIcon>
+                  <Box>
+                    <Typography variant="body2">Flow</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Database sync configuration
+                    </Typography>
+                  </Box>
+                </MenuItem>
+              </Menu>
+
               <ModelSelector />
             </Box>
 

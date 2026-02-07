@@ -31,6 +31,7 @@ import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
+import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
@@ -62,7 +63,11 @@ const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   },
 }));
 
-function Editor() {
+interface EditorProps {
+  dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
+}
+
+function Editor({ dbFlowFormRef }: EditorProps = {}) {
   const { currentWorkspace } = useWorkspace();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
@@ -767,6 +772,7 @@ function Editor() {
                       tab.metadata?.flowType as
                         | "webhook"
                         | "scheduled"
+                        | "db-scheduled"
                         | undefined
                     }
                     onSave={() => {
@@ -775,6 +781,7 @@ function Editor() {
                     onCancel={() => {
                       closeConsole(tab.id);
                     }}
+                    dbFlowFormRef={dbFlowFormRef}
                   />
                 ) : (
                   /* Console tab: editor + results split */

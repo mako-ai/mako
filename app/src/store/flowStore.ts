@@ -21,6 +21,7 @@ const flowDestinationSchema = z.object({
 // Allow schedule to be absent or partial (webhook flows have no schedule)
 const flowScheduleSchema = z
   .object({
+    enabled: z.boolean().optional(),
     cron: z.string().optional(),
     timezone: z.string().optional(),
   })
@@ -44,6 +45,7 @@ const webhookConfigSchema = z
   .optional();
 
 // Query schema for GraphQL/PostHog flows
+// Use coerce for numeric fields since they may come as strings from API
 const flowQuerySchema = z.object({
   name: z.string(),
   query: z.string(),
@@ -56,8 +58,8 @@ const flowQuerySchema = z.object({
   cursor_path: z.string().optional(),
   totalCountPath: z.string().optional(),
   total_count_path: z.string().optional(),
-  batchSize: z.number().optional(),
-  batch_size: z.number().optional(),
+  batchSize: z.coerce.number().optional(),
+  batch_size: z.coerce.number().optional(),
 });
 
 export type FlowQuery = z.infer<typeof flowQuerySchema>;
@@ -65,8 +67,8 @@ export type FlowQuery = z.infer<typeof flowQuerySchema>;
 const flowSchema = z.object({
   _id: z.string(),
   workspaceId: z.string(),
-  dataSourceId: flowDataSourceSchema,
-  destinationDatabaseId: flowDestinationSchema,
+  dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
+  destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseName: z.string().nullable().optional(),
   type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
   schedule: flowScheduleSchema,
@@ -74,7 +76,6 @@ const flowSchema = z.object({
   entityFilter: z.array(z.string()).nullable().optional(),
   queries: z.array(flowQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
-  enabled: z.boolean(),
   lastRunAt: z.string().nullable().optional(),
   lastSuccessAt: z.string().nullable().optional(),
   lastError: z.string().nullable().optional(),
@@ -84,6 +85,58 @@ const flowSchema = z.object({
   createdBy: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  // Database-to-database sync fields
+  sourceType: z.enum(["connector", "database"]).optional(),
+  databaseSource: z
+    .object({
+      connectionId: z.string(),
+      database: z.string().optional(),
+      query: z.string(),
+    })
+    .optional(),
+  tableDestination: z
+    .object({
+      connectionId: z.string(),
+      database: z.string().optional(),
+      schema: z.string().optional(),
+      tableName: z.string(),
+      createIfNotExists: z.boolean().optional(),
+    })
+    .optional(),
+  incrementalConfig: z
+    .object({
+      trackingColumn: z.string(),
+      trackingType: z.enum(["numeric", "timestamp"]),
+      lastValue: z.string().nullable().optional(),
+    })
+    .optional(),
+  conflictConfig: z
+    .object({
+      keyColumns: z.array(z.string()),
+      strategy: z.enum(["update", "ignore", "replace", "upsert"]),
+    })
+    .optional(),
+  paginationConfig: z
+    .object({
+      mode: z.enum(["offset", "keyset"]),
+      keysetColumn: z.string().optional(),
+      keysetDirection: z.enum(["asc", "desc"]).optional(),
+      lastKeysetValue: z.string().nullable().optional(),
+    })
+    .optional(),
+  typeCoercions: z
+    .array(
+      z.object({
+        column: z.string(),
+        sourceType: z.string().optional(),
+        targetType: z.string(),
+        format: z.string().optional(),
+        nullValue: z.unknown().optional(),
+        transformer: z.string().optional(),
+      }),
+    )
+    .optional(),
+  batchSize: z.coerce.number().optional(),
 });
 
 export type Flow = z.infer<typeof flowSchema>;
@@ -172,6 +225,22 @@ interface FlowStatusResponse {
     startedAt: string;
     lastHeartbeat: string;
   } | null;
+}
+
+// Query validation result
+interface QueryValidationResult {
+  success: boolean;
+  columns?: Array<{ name: string; type: string }>;
+  sampleRow?: Record<string, unknown>;
+  connectionName?: string;
+  connectionType?: string;
+  safetyCheck?: {
+    safe: boolean;
+    warnings: string[];
+    errors: string[];
+    suggestedFixes?: string[];
+  };
+  error?: string;
 }
 
 interface ExecutionDetails {
@@ -286,6 +355,15 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     executionId?: string | null,
   ) => Promise<boolean>;
+
+  // Database query validation
+  validateDbQuery: (
+    workspaceId: string,
+    connectionId: string,
+    query: string,
+    database?: string,
+  ) => Promise<QueryValidationResult>;
+
   reset: () => void;
 }
 
@@ -512,7 +590,10 @@ export const useFlowStore = create<FlowStore>()(
               const flows = state.flows[workspaceId] || [];
               const index = flows.findIndex(flow => flow._id === flowId);
               if (index !== -1) {
-                flows[index].enabled = response.data.enabled;
+                if (!flows[index].schedule) {
+                  flows[index].schedule = {};
+                }
+                flows[index].schedule.enabled = response.data.enabled;
               }
             });
           } else {
@@ -740,6 +821,63 @@ export const useFlowStore = create<FlowStore>()(
         } catch (error) {
           console.error("Failed to cancel flow execution", error);
           return false;
+        }
+      },
+
+      validateDbQuery: async (workspaceId, connectionId, query, database) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data?: {
+              columns?: Array<{ name: string; type: string }>;
+              sampleRow?: Record<string, unknown>;
+              connectionName?: string;
+              connectionType?: string;
+              safetyCheck?: {
+                safe: boolean;
+                warnings: string[];
+                errors: string[];
+                suggestedFixes?: string[];
+              };
+            };
+            error?: string;
+            safetyCheck?: {
+              safe: boolean;
+              warnings: string[];
+              errors: string[];
+              suggestedFixes?: string[];
+            };
+          }>(`/workspaces/${workspaceId}/flows/validate-query`, {
+            connectionId,
+            query,
+            database,
+          });
+
+          if (response.success && response.data) {
+            return {
+              success: true,
+              columns: response.data.columns,
+              sampleRow: response.data.sampleRow,
+              connectionName: response.data.connectionName,
+              connectionType: response.data.connectionType,
+              safetyCheck: response.data.safetyCheck,
+            };
+          }
+
+          return {
+            success: false,
+            error: response.error || "Query validation failed",
+            safetyCheck: response.safetyCheck,
+          };
+        } catch (error) {
+          console.error("Failed to validate query:", error);
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Query validation failed",
+          };
         }
       },
 

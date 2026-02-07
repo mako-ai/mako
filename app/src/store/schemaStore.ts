@@ -173,6 +173,19 @@ interface SchemaState {
     connectionId: string,
     node?: { id: string; kind: string; metadata?: Record<string, unknown> },
   ) => Promise<{ language: string; template: string } | null>;
+
+  // === Table Existence Check ===
+  checkTableExists: (
+    workspaceId: string,
+    connectionId: string,
+    tableName: string,
+    options?: { schema?: string; database?: string },
+  ) => Promise<{
+    exists: boolean;
+    columns: Array<{ name: string; type: string; nullable?: boolean }>;
+    supported?: boolean;
+    error?: string;
+  }>;
 }
 
 // ============================================================================
@@ -686,6 +699,60 @@ export const useSchemaStore = create<SchemaState>()(
           // Fallback handled by caller
         }
         return null;
+      },
+
+      checkTableExists: async (
+        workspaceId: string,
+        connectionId: string,
+        tableName: string,
+        options?: { schema?: string; database?: string },
+      ) => {
+        try {
+          const params: Record<string, string> = { tableName };
+          if (options?.schema) params.schema = options.schema;
+          if (options?.database) params.database = options.database;
+
+          const res = await apiClient.get<{
+            success: boolean;
+            data: {
+              exists: boolean;
+              columns: Array<{
+                name: string;
+                type: string;
+                nullable?: boolean;
+              }>;
+              supported?: boolean;
+              message?: string;
+            };
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/databases/${connectionId}/table-exists`,
+            params,
+          );
+
+          if (res.success && res.data) {
+            return {
+              exists: res.data.exists,
+              columns: res.data.columns || [],
+              supported: res.data.supported,
+            };
+          }
+
+          return {
+            exists: false,
+            columns: [],
+            error: res.error || "Failed to check table existence",
+          };
+        } catch (error) {
+          return {
+            exists: false,
+            columns: [],
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to check table existence",
+          };
+        }
       },
     })),
     {

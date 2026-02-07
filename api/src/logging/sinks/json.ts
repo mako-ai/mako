@@ -14,6 +14,26 @@ const severityMap: Record<string, string> = {
 };
 
 /**
+ * Checks if a value is an error-like object (has message, optionally stack/name)
+ */
+function isErrorLike(
+  value: unknown,
+): value is { message: string; name?: string; stack?: string; code?: string } {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.message !== "string") return false;
+  // Must have at least one error-specific property or be a minimal object
+  return (
+    obj.stack !== undefined ||
+    obj.name !== undefined ||
+    (Object.keys(obj).length <= 4 &&
+      Object.keys(obj).every(k =>
+        ["message", "stack", "name", "code"].includes(k),
+      ))
+  );
+}
+
+/**
  * Serializes a value for JSON output, handling special types
  */
 function serializeValue(value: unknown): unknown {
@@ -22,6 +42,16 @@ function serializeValue(value: unknown): unknown {
       name: value.name,
       message: value.message,
       stack: value.stack,
+    };
+  }
+
+  // Handle error-like objects (serialized errors, errors from different contexts)
+  if (isErrorLike(value)) {
+    return {
+      name: value.name || "Error",
+      message: value.message,
+      stack: value.stack,
+      ...(value.code ? { code: value.code } : {}),
     };
   }
 
@@ -198,17 +228,24 @@ export function getJsonSink(options: JsonSinkOptions = {}): Sink {
       Object.assign(logEntry, serializeObject(customProps));
     }
 
-    // Add error details if present
-    if (record.properties?.error instanceof Error) {
-      const err = record.properties.error;
+    // Add error details if present (handles both Error instances and error-like objects)
+    const errorProp = record.properties?.error;
+    if (errorProp instanceof Error || isErrorLike(errorProp)) {
+      const err = errorProp as {
+        name?: string;
+        message: string;
+        stack?: string;
+      };
       // GCP-specific error reporting type
       if (isGCP) {
         logEntry["@type"] =
           "type.googleapis.com/google.devtools.clouderrorreporting.v1beta1.ReportedErrorEvent";
       }
-      logEntry.stack_trace = err.stack;
+      if (err.stack) {
+        logEntry.stack_trace = err.stack;
+      }
       logEntry.error = {
-        name: err.name,
+        name: err.name || "Error",
         message: err.message,
       };
     }

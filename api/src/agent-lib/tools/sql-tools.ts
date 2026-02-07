@@ -1,13 +1,11 @@
 /**
- * Unified SQL Tools for Agent V2
+ * Unified SQL Tools for Agent Library
  * Supports PostgreSQL, MySQL, BigQuery, SQLite, and Cloudflare D1 with a single tool surface.
  */
 
 import { z } from "zod";
-import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
-import { queryExecutionService } from "../../services/query-execution.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -15,64 +13,20 @@ import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
 } from "./shared/truncation";
+import {
+  ALL_SQL_TYPES,
+  getDialect,
+  ensureValidObjectId,
+  escapePostgresLiteral,
+  escapePostgresIdentifier,
+  escapeBigQueryIdentifier,
+  escapeMySqlIdentifier,
+  escapeSqliteLiteral,
+  escapeSqliteIdentifier,
+} from "./shared/sql-dialects";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
 
-// SQL dialect types for routing
-type SqlDialect = "postgresql" | "mysql" | "bigquery" | "sqlite" | "clickhouse";
-
-const SQL_TYPES = {
-  postgres: new Set(["postgresql", "cloudsql-postgres"]),
-  mysql: new Set(["mysql"]),
-  bigquery: new Set(["bigquery"]),
-  sqlite: new Set(["sqlite", "cloudflare-d1"]),
-  clickhouse: new Set(["clickhouse"]),
-};
-
-const ALL_SQL_TYPES = new Set([
-  ...SQL_TYPES.postgres,
-  ...SQL_TYPES.mysql,
-  ...SQL_TYPES.bigquery,
-  ...SQL_TYPES.sqlite,
-  ...SQL_TYPES.clickhouse,
-]);
-
-const getDialect = (type: string): SqlDialect => {
-  if (SQL_TYPES.postgres.has(type)) return "postgresql";
-  if (SQL_TYPES.mysql.has(type)) return "mysql";
-  if (SQL_TYPES.bigquery.has(type)) return "bigquery";
-  if (SQL_TYPES.sqlite.has(type)) return "sqlite";
-  if (SQL_TYPES.clickhouse.has(type)) return "clickhouse";
-  throw new Error(`Unknown SQL type: ${type}`);
-};
-
-// Validation helpers
-const ensureValidObjectId = (value: string, label: string): Types.ObjectId => {
-  if (typeof value !== "string" || !Types.ObjectId.isValid(value)) {
-    throw new Error(`'${label}' must be a valid identifier`);
-  }
-  return new Types.ObjectId(value);
-};
-
-// SQL escaping helpers
-const escapePostgresLiteral = (value: string): string =>
-  `'${value.replace(/'/g, "''")}'`;
-
-const escapePostgresIdentifier = (value: string): string =>
-  `"${value.replace(/"/g, '""')}"`;
-
-const escapeBigQueryIdentifier = (value: string): string =>
-  `\`${value.replace(/`/g, "\\`")}\``;
-
-const escapeMySqlIdentifier = (value: string): string =>
-  `\`${value.replace(/`/g, "``")}\``;
-
-const escapeSqliteLiteral = (value: string): string =>
-  `'${value.replace(/'/g, "''")}'`;
-
-const escapeSqliteIdentifier = (value: string): string =>
-  `"${value.replace(/"/g, '""')}"`;
-
-// LIMIT enforcement
+// LIMIT enforcement (kept local as it has sql-tools specific logic)
 const needsDefaultLimit = (sql: string): boolean => {
   const trimmed = sql.trim();
   if (!trimmed) return false;
@@ -286,6 +240,32 @@ async function listDatabasesImpl(connectionId: string, workspaceId: string) {
       .connection || {};
   const databaseId = connection.database_id as string | undefined;
 
+  // For Cloudflare D1: check if it's cluster mode (no database_id configured)
+  if (database.type === "cloudflare-d1") {
+    if (databaseId) {
+      // Single database mode: return the configured database_id as both id and name
+      return [{ id: databaseId, name: databaseId, sqlDialect: dialect }];
+    }
+
+    // Cluster mode: fetch all D1 databases from Cloudflare API
+    try {
+      const d1Databases = await databaseConnectionService.listD1Databases(
+        database as Parameters<
+          typeof databaseConnectionService.listD1Databases
+        >[0],
+      );
+      return d1Databases.map(db => ({
+        id: db.uuid, // UUID for API calls
+        name: db.name, // Human-readable name for display
+        sqlDialect: dialect,
+      }));
+    } catch {
+      // Fallback to "main" if listing fails (e.g., API error, credentials issue)
+      return [{ name: "main", sqlDialect: dialect }];
+    }
+  }
+
+  // Plain SQLite (not D1)
   if (databaseId) {
     return [{ name: databaseId, sqlDialect: dialect }];
   }
@@ -788,10 +768,7 @@ async function executeQueryImpl(
   databaseName: string,
   query: string,
   workspaceId: string,
-  userId?: string,
 ) {
-  const startTime = Date.now();
-
   if (!databaseName) {
     throw new Error("'database' is required");
   }
@@ -817,62 +794,6 @@ async function executeQueryImpl(
     options,
   );
 
-  // Track query execution (fire-and-forget)
-  if (userId) {
-    const rowCount = result.success
-      ? (result.rowCount ??
-        (Array.isArray(result.data) ? result.data.length : undefined))
-      : undefined;
-
-    let errorType: string | undefined;
-    if (!result.success) {
-      const errorMsg = result.error?.toLowerCase() || "";
-      if (errorMsg.includes("syntax")) {
-        errorType = "syntax";
-      } else if (
-        errorMsg.includes("timeout") ||
-        errorMsg.includes("timed out")
-      ) {
-        errorType = "timeout";
-      } else if (
-        errorMsg.includes("connection") ||
-        errorMsg.includes("connect")
-      ) {
-        errorType = "connection";
-      } else if (
-        errorMsg.includes("permission") ||
-        errorMsg.includes("access denied")
-      ) {
-        errorType = "permission";
-      } else {
-        errorType = "unknown";
-      }
-    }
-
-    // Determine execution status based on error type
-    let executionStatus: "success" | "error" | "timeout" | "cancelled" =
-      result.success ? "success" : "error";
-    if (!result.success && errorType === "timeout") {
-      executionStatus = "timeout";
-    } else if (!result.success && errorType === "cancelled") {
-      executionStatus = "cancelled";
-    }
-
-    queryExecutionService.track({
-      userId,
-      workspaceId: new Types.ObjectId(workspaceId),
-      connectionId: database._id,
-      databaseName,
-      source: "agent",
-      databaseType: database.type,
-      queryLanguage: "sql",
-      status: executionStatus,
-      executionTimeMs: Date.now() - startTime,
-      rowCount,
-      errorType,
-    });
-  }
-
   if (result && result.success && result.data) {
     const truncatedData = truncateQueryResults(result.data);
     return { ...result, data: truncatedData, sqlDialect: dialect };
@@ -888,7 +809,6 @@ export const createSqlToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
-  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
@@ -902,7 +822,7 @@ export const createSqlToolsV2 = (
 
     sql_list_databases: {
       description:
-        "List databases (PostgreSQL/MySQL), datasets (BigQuery), or database files (SQLite/D1) within a SQL connection. Returns array of database names with sqlDialect.",
+        "List databases (PostgreSQL/MySQL), datasets (BigQuery), or database files (SQLite/D1) within a SQL connection. Returns array with 'name' and 'sqlDialect'. IMPORTANT for Cloudflare D1: returns 'id' (UUID) and 'name' (human-readable). Use the 'id' field (not 'name') for subsequent D1 tool calls.",
       inputSchema: connectionIdSchema,
       execute: async (params: { connectionId: string }) =>
         listDatabasesImpl(params.connectionId, workspaceId),
@@ -910,7 +830,7 @@ export const createSqlToolsV2 = (
 
     sql_list_tables: {
       description:
-        "List tables and views in a database. For PostgreSQL with multiple schemas, returns schema-prefixed names (e.g., 'analytics.events'). Returns table names with type and sqlDialect.",
+        "List tables and views in a database. For PostgreSQL with multiple schemas, returns schema-prefixed names (e.g., 'analytics.events'). Returns table names with type and sqlDialect. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: connectionAndDbSchema,
       execute: async (params: { connectionId: string; database: string }) =>
         listTablesImpl(params.connectionId, params.database, workspaceId),
@@ -918,7 +838,7 @@ export const createSqlToolsV2 = (
 
     sql_inspect_table: {
       description:
-        "Get table/view schema (columns, types, nullability) plus up to 25 sample rows. Returns sqlDialect to guide query syntax. For PostgreSQL, use 'schema.table' format if not in public schema.",
+        "Get table/view schema (columns, types, nullability) plus up to 25 sample rows. Returns sqlDialect to guide query syntax. For PostgreSQL, use 'schema.table' format if not in public schema. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: inspectTableSchema,
       execute: async (params: {
         connectionId: string;
@@ -935,7 +855,7 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: {
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax.",
+        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
       execute: async (params: {
         connectionId: string;
@@ -947,7 +867,6 @@ export const createSqlToolsV2 = (
           params.database,
           params.query,
           workspaceId,
-          userId,
         ),
     },
   };

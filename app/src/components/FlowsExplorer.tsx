@@ -70,9 +70,17 @@ export function FlowsExplorer() {
     setAnchorEl(null);
   };
 
-  const handleCreateNew = (flowType: "scheduled" | "webhook") => {
+  const handleCreateNew = (
+    flowType: "scheduled" | "webhook" | "db-scheduled",
+  ) => {
+    const title =
+      flowType === "scheduled"
+        ? "New Scheduled Flow"
+        : flowType === "webhook"
+          ? "New Webhook Flow"
+          : "New Database Sync";
     const id = openTab({
-      title: `New ${flowType === "scheduled" ? "Scheduled" : "Webhook"} Flow`,
+      title,
       content: "",
       kind: "flow-editor",
       metadata: { isNew: true, flowType },
@@ -93,14 +101,18 @@ export function FlowsExplorer() {
         setActiveTab(existingTab.id);
       } else {
         const id = openTab({
-          title: `${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`,
+          title: getFlowTitle(flow),
           content: "",
           kind: "flow-editor",
           metadata: {
             flowId,
             isNew: false,
-            flowType: flow.type,
-            enabled: flow.enabled,
+            flowType:
+              flow.sourceType === "database" ? "db-scheduled" : flow.type,
+            enabled:
+              flow.type === "webhook"
+                ? flow.webhookConfig?.enabled
+                : flow.schedule?.enabled,
           },
         });
         setActiveTab(id);
@@ -108,8 +120,25 @@ export function FlowsExplorer() {
     }
   };
 
+  // Helper to get a display title for a flow
+  const getFlowTitle = (flow: any): string => {
+    if (flow.sourceType === "database") {
+      // Database-to-database flow
+      const destName = flow.tableDestination?.tableName || "Table";
+      return `Query → ${destName}`;
+    }
+    // Connector flow
+    const sourceName = flow.dataSourceId?.name || "Source";
+    const destName = flow.destinationDatabaseId?.name || "Destination";
+    return `${sourceName} → ${destName}`;
+  };
+
   const getFlowStatus = (flow: any) => {
-    if (!flow.enabled) {
+    const isEnabled =
+      flow.type === "webhook"
+        ? flow.webhookConfig?.enabled !== false
+        : flow.schedule?.enabled === true;
+    if (!isEnabled) {
       return {
         label: "Disabled",
         color: "default" as const,
@@ -268,12 +297,13 @@ export function FlowsExplorer() {
                           strokeWidth={1.5}
                           style={{
                             fontSize: 24,
-                            color: flow.enabled
-                              ? "text.primary"
-                              : "text.disabled",
+                            color:
+                              flow.webhookConfig?.enabled !== false
+                                ? "text.primary"
+                                : "text.disabled",
                           }}
                         />
-                      ) : flow.enabled ? (
+                      ) : flow.schedule?.enabled === true ? (
                         <ScheduleIcon
                           size={20}
                           strokeWidth={1.5}
@@ -294,7 +324,7 @@ export function FlowsExplorer() {
                       )}
                     </ListItemIcon>
                     <ListItemText
-                      primary={`${flow.dataSourceId.name} → ${flow.destinationDatabaseId.name}`}
+                      primary={getFlowTitle(flow)}
                       secondary={null}
                       sx={{
                         pr: 6,
@@ -376,11 +406,17 @@ export function FlowsExplorer() {
           horizontal: "right",
         }}
       >
+        <MenuItem onClick={() => handleCreateNew("db-scheduled")}>
+          <ListItemIcon>
+            <ScheduleIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Database Sync</ListItemText>
+        </MenuItem>
         <MenuItem onClick={() => handleCreateNew("scheduled")}>
           <ListItemIcon>
             <ScheduleIcon fontSize="small" />
           </ListItemIcon>
-          <ListItemText>Scheduled Sync</ListItemText>
+          <ListItemText>Connector Sync</ListItemText>
         </MenuItem>
         <MenuItem onClick={() => handleCreateNew("webhook")}>
           <ListItemIcon>

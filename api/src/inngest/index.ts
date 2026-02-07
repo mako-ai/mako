@@ -29,7 +29,7 @@ const baseFunctions = [
   webhookRetryFunction,
 ];
 
-// Conditionally add flow scheduler (only in production)
+// Conditionally add schedulers (only in production)
 export const functions = isDevelopment
   ? baseFunctions
   : [...baseFunctions, flowSchedulerFunction];

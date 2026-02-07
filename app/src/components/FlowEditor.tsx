@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { Box } from "@mui/material";
 import { ScheduledFlowForm } from "./ScheduledFlowForm";
 import { WebhookFlowForm } from "./WebhookFlowForm";
+import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
 import { FlowLogs } from "./FlowLogs";
 import { WebhookStats } from "./WebhookStats";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -10,9 +11,10 @@ import { useFlowStore } from "../store/flowStore";
 interface FlowEditorProps {
   flowId?: string;
   isNew?: boolean;
-  flowType?: "scheduled" | "webhook"; // For new flows, specify the type
+  flowType?: "scheduled" | "webhook" | "db-scheduled"; // For new flows, specify the type
   onSave?: () => void;
   onCancel?: () => void;
+  dbFlowFormRef?: RefObject<DbFlowFormRef | null>;
 }
 
 export function FlowEditor({
@@ -21,6 +23,7 @@ export function FlowEditor({
   flowType = "scheduled",
   onSave,
   onCancel,
+  dbFlowFormRef,
 }: FlowEditorProps) {
   const [isEditing, setIsEditing] = useState(isNew);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
@@ -35,10 +38,15 @@ export function FlowEditor({
     ? flows.find(f => f._id === currentFlowId)
     : null;
 
-  // Determine if this is a webhook flow - for new flows, use the prop; for existing, check the flow
+  // Determine flow type - for new flows, use the prop; for existing, check the flow
   const isWebhookFlow = isNew
     ? flowType === "webhook"
     : currentFlow?.type === "webhook";
+
+  // Check if this is a database-to-database flow
+  const isDbFlow = isNew
+    ? flowType === "db-scheduled"
+    : currentFlow?.sourceType === "database";
 
   const handleSaved = (newFlowId: string) => {
     setCurrentFlowId(newFlowId);
@@ -79,6 +87,15 @@ export function FlowEditor({
       {isEditing ? (
         isWebhookFlow ? (
           <WebhookFlowForm
+            flowId={currentFlowId}
+            isNew={isNew && !currentFlowId}
+            onSave={onSave}
+            onSaved={handleSaved}
+            onCancel={handleCancelEdit}
+          />
+        ) : isDbFlow ? (
+          <DbFlowForm
+            ref={dbFlowFormRef as React.Ref<DbFlowFormRef>}
             flowId={currentFlowId}
             isNew={isNew && !currentFlowId}
             onSave={onSave}
