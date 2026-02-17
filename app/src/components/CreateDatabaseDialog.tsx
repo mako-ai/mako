@@ -138,7 +138,9 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   const watchedType = watch("type");
 
   const supportsConnectionStringType =
-    watchedType === "postgresql" || watchedType === "mysql";
+    watchedType === "postgresql" ||
+    watchedType === "redshift" ||
+    watchedType === "mysql";
 
   // Two-way binding: Connection string -> Individual fields (PostgreSQL/MySQL)
   useEffect(() => {
@@ -147,7 +149,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     if (!watchedConnection?.connectionString) return;
 
     const parsed =
-      watchedType === "postgresql"
+      watchedType === "postgresql" || watchedType === "redshift"
         ? parsePostgresConnectionString(watchedConnection.connectionString)
         : parseMySQLConnectionString(watchedConnection.connectionString);
     if (!parsed) return;
@@ -207,7 +209,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     isUpdatingFromFields.current = true;
 
     const builtString =
-      watchedType === "postgresql"
+      watchedType === "postgresql" || watchedType === "redshift"
         ? buildPostgresConnectionString({
             host: watchedConnection.host,
             port: watchedConnection.port,

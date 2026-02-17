@@ -333,6 +333,7 @@ export class DatabaseConnectionService {
         case "mongodb":
           return await this.testMongoDBConnection(database);
         case "postgresql":
+        case "redshift":
           return await this.testPostgreSQLConnection(database);
         case "mysql":
           return await this.testMySQLConnection(database);
@@ -381,6 +382,7 @@ export class DatabaseConnectionService {
         case "mongodb":
           return await this.executeMongoDBQuery(database, query, options);
         case "postgresql":
+        case "redshift":
           return await this.executePostgreSQLQuery(database, query, options);
         case "cloudsql-postgres": {
           const cloudSqlDriver = this.drivers.get("cloudsql-postgres");
@@ -450,8 +452,8 @@ export class DatabaseConnectionService {
       return connection.client;
     }
 
-    // For PostgreSQL, use dedicated pool management
-    if (database.type === "postgresql") {
+    // For PostgreSQL and Redshift (PostgreSQL wire-compatible), use dedicated pool management
+    if (database.type === "postgresql" || database.type === "redshift") {
       return this.getPostgresPool(database);
     }
 
@@ -2443,10 +2445,11 @@ export class DatabaseConnectionService {
       };
     }
 
-    // Build from individual fields
+    // Build from individual fields (Redshift default port 5439)
+    const defaultPort = database.type === "redshift" ? 5439 : 5432;
     return {
       host: conn.host,
-      port: conn.port || 5432,
+      port: conn.port ?? defaultPort,
       database: targetDatabase || conn.database,
       user: conn.username,
       password: conn.password,

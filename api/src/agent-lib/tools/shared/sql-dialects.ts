@@ -21,7 +21,7 @@ export type SqlDialect =
  * Database type to dialect mapping
  */
 export const SQL_TYPES = {
-  postgres: new Set(["postgresql", "cloudsql-postgres"]),
+  postgres: new Set(["postgresql", "redshift", "cloudsql-postgres"]),
   mysql: new Set(["mysql"]),
   bigquery: new Set(["bigquery"]),
   sqlite: new Set(["sqlite", "cloudflare-d1"]),
