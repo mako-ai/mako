@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "crypto";
+import { loggers } from "../logging";
 
 // Encryption helper functions
 let _encryptionKey: string | null = null;
@@ -64,16 +65,22 @@ function encryptObject(obj: any): any {
 
 function decryptObject(obj: any): any {
   try {
-    // If connection was stored as a JSON string, parse and decrypt (avoids RangeError from iterating string).
+    // If connection was stored as a JSON string, parse and decrypt.
+    // Guard: only recurse when JSON.parse yields a non-string (object/array)
+    // to prevent infinite recursion on doubly-quoted strings like '"foo"'.
     if (typeof obj === "string") {
       try {
-        return decryptObject(JSON.parse(obj));
-      } catch {
-        try {
-          return decrypt(obj);
-        } catch {
-          return obj;
+        const parsed = JSON.parse(obj);
+        if (typeof parsed !== "string") {
+          return decryptObject(parsed);
         }
+      } catch {
+        // Not valid JSON — fall through to direct decrypt
+      }
+      try {
+        return decrypt(obj);
+      } catch {
+        return obj;
       }
     }
     if (obj === null || typeof obj !== "object") {
@@ -98,8 +105,11 @@ function decryptObject(obj: any): any {
       }
     }
     return decrypted;
-  } catch {
-    // Any unexpected error (e.g. RangeError from invalid hex): return object unchanged so list doesn't break.
+  } catch (err) {
+    // Unexpected error (e.g. RangeError from invalid hex): return unchanged so list doesn't break.
+    loggers
+      .db()
+      .warn("decryptObject failed — returning raw value", { error: err });
     return obj;
   }
 }

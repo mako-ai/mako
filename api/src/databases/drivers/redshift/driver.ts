@@ -1,8 +1,14 @@
 /**
  * Amazon Redshift driver.
- * Redshift is PostgreSQL wire-protocol compatible but uses pg_catalog for schema
- * listing (information_schema.schemata can be empty in Redshift). Tree and
- * execution otherwise match PostgreSQL.
+ *
+ * Redshift is PostgreSQL wire-protocol compatible but uses pg_catalog for
+ * schema listing (information_schema.schemata can be empty in Redshift).
+ * Tree browsing and query execution otherwise match PostgreSQL.
+ *
+ * Write methods (insertBatch, upsertBatch, createTable, etc.) are intentionally
+ * NOT delegated. Redshift is a read-optimised data warehouse; using it as a
+ * sync destination via row-level writes would be extremely slow. If write
+ * support is needed in the future, consider Redshift's COPY command instead.
  */
 
 import {
@@ -14,6 +20,8 @@ import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 import { PostgreSQLDatabaseDriver } from "../postgresql/driver";
 
+// Shared instance — PostgreSQLDatabaseDriver is stateless (no instance-level
+// config or logging context), so a module-level singleton is safe here.
 const postgresDriver = new PostgreSQLDatabaseDriver();
 
 export class RedshiftDatabaseDriver implements DatabaseDriver {
