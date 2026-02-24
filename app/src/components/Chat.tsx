@@ -1715,6 +1715,7 @@ const Chat: React.FC<ChatProps> = ({
                     has_context: false,
                     from_suggestion: true,
                   });
+                  setTierError(null);
                   sendMessage({ text: suggestion });
                 }}
                 sx={{
@@ -2036,6 +2037,7 @@ const Chat: React.FC<ChatProps> = ({
                 model: selectedModelId,
                 has_context: !!activeConsole?.content,
               });
+              setTierError(null);
               sendMessage({ text: input });
               setInput("");
             }
@@ -2064,6 +2066,7 @@ const Chat: React.FC<ChatProps> = ({
                     model: selectedModelId,
                     has_context: !!activeConsole?.content,
                   });
+                  setTierError(null);
                   sendMessage({ text: input });
                   setInput("");
                 }
