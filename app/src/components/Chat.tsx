@@ -57,6 +57,7 @@ import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { ModelSelector } from "./ModelSelector";
+import { UpgradePrompt } from "./UpgradePrompt";
 import { generateObjectId } from "../utils/objectId";
 import {
   ConsoleModification,
@@ -583,6 +584,10 @@ const Chat: React.FC<ChatProps> = ({
   const [modeSelectorAnchor, setModeSelectorAnchor] =
     useState<null | HTMLElement>(null);
   const modeSelectorOpen = Boolean(modeSelectorAnchor);
+
+  // Upgrade prompt triggered by tier-gated model errors
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
+  const [tierError, setTierError] = useState<string | null>(null);
 
   // Filter to only real console tabs (used for capturedConsoleTitle)
   const realConsoleTabs = useMemo(
@@ -1218,6 +1223,16 @@ const Chat: React.FC<ChatProps> = ({
     },
 
     onError: err => {
+      // Parse MODEL_TIER_REQUIRED from 403 responses embedded in the error message
+      const msg = err?.message || "";
+      if (
+        msg.includes("MODEL_TIER_REQUIRED") ||
+        msg.includes("Upgrade to Pro")
+      ) {
+        setTierError("This model requires a Pro plan");
+        setUpgradePromptOpen(true);
+        return;
+      }
       console.error("[Chat] Error:", err);
     },
     onFinish: () => {
@@ -1617,8 +1632,30 @@ const Chat: React.FC<ChatProps> = ({
         )}
       </Menu>
 
+      {/* Tier upgrade error */}
+      {tierError && (
+        <Box sx={{ p: 1 }}>
+          <Alert
+            severity="warning"
+            sx={{ fontSize: "0.875rem" }}
+            action={
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => setUpgradePromptOpen(true)}
+              >
+                Upgrade
+              </Button>
+            }
+            onClose={() => setTierError(null)}
+          >
+            {tierError}
+          </Alert>
+        </Box>
+      )}
+
       {/* Error display */}
-      {error && (
+      {error && !tierError && (
         <Box sx={{ p: 1 }}>
           <Alert severity="error" sx={{ fontSize: "0.875rem" }}>
             {error.message}
@@ -2231,6 +2268,12 @@ const Chat: React.FC<ChatProps> = ({
           </Box>
         </form>
       </Paper>
+
+      {/* Upgrade Prompt Dialog */}
+      <UpgradePrompt
+        open={upgradePromptOpen}
+        onClose={() => setUpgradePromptOpen(false)}
+      />
 
       {/* Tool Debug Dialog */}
       <Dialog

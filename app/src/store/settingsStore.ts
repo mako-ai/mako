@@ -28,7 +28,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       // Default model
-      selectedModelId: "claude-opus-4-6",
+      selectedModelId: "gemini-2.5-flash",
       setSelectedModelId: modelId => set({ selectedModelId: modelId }),
 
       // Models list

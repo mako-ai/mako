@@ -265,6 +265,8 @@ export interface AIModel {
   description?: string;
   contextLength?: number;
   supportsTools?: boolean;
+  requiredTier?: "pro" | "enterprise";
+  locked?: boolean;
 }
 
 export interface ModelListResponse {

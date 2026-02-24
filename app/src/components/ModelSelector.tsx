@@ -15,7 +15,9 @@ import {
   Tooltip,
 } from "@mui/material";
 import { KeyboardArrowDown } from "@mui/icons-material";
+import { Lock } from "lucide-react";
 import { useSettingsStore } from "../store/settingsStore";
+import { UpgradePrompt } from "./UpgradePrompt";
 
 import type { AIModel } from "../lib/api-types";
 
@@ -35,6 +37,7 @@ const PROVIDER_ORDER: Array<AIModel["provider"]> = [
 
 export const ModelSelector: React.FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
   const setSelectedModelId = useSettingsStore(s => s.setSelectedModelId);
   const models = useSettingsStore(s => s.models);
@@ -56,8 +59,13 @@ export const ModelSelector: React.FC = () => {
     setAnchorEl(null);
   };
 
-  const handleSelectModel = (modelId: string) => {
-    setSelectedModelId(modelId);
+  const handleSelectModel = (model: AIModel) => {
+    if (model.locked) {
+      handleClose();
+      setUpgradeOpen(true);
+      return;
+    }
+    setSelectedModelId(model.id);
     handleClose();
   };
 
@@ -162,28 +170,41 @@ export const ModelSelector: React.FC = () => {
             <MenuItem
               key={model.id}
               selected={model.id === selectedModelId}
-              onClick={() => handleSelectModel(model.id)}
+              onClick={() => handleSelectModel(model)}
               sx={{
                 py: 1,
                 px: 2,
+                opacity: model.locked ? 0.7 : 1,
               }}
             >
-              <Box>
-                <Typography variant="body2">{model.name}</Typography>
-                {model.description && (
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block" }}
-                  >
-                    {model.description}
-                  </Typography>
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, flex: 1 }}
+              >
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="body2">{model.name}</Typography>
+                  {model.description && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: "block" }}
+                    >
+                      {model.description}
+                    </Typography>
+                  )}
+                </Box>
+                {model.locked && (
+                  <Tooltip title="Requires Pro plan">
+                    <Box sx={{ display: "flex", color: "text.disabled" }}>
+                      <Lock size={14} />
+                    </Box>
+                  </Tooltip>
                 )}
               </Box>
             </MenuItem>
           )),
         ])}
       </Menu>
+      <UpgradePrompt open={upgradeOpen} onClose={() => setUpgradeOpen(false)} />
     </>
   );
 };
