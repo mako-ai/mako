@@ -35,7 +35,8 @@ jobs:
       - name: Mirror fork branch to origin (workaround for claude-code-action fork bug)
         if: |
           github.event_name == 'issue_comment' ||
-          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)
+          (github.event_name == 'pull_request_review_comment' && github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name) ||
+          (github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -58,7 +59,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: "--model claude-opus-4-6"
-          allowed_bots: "*"
+          allowed_bots: "dependabot[bot],renovate[bot]"
 
   auto-review:
     if: |
@@ -81,9 +82,9 @@ jobs:
         if: github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
           echo "PR #$PR_NUMBER is from a fork. Mirroring branch '$BRANCH_NAME' to origin..."
           git fetch origin "pull/$PR_NUMBER/head:$BRANCH_NAME"
           git push origin "$BRANCH_NAME" || echo "Branch may already exist on origin, continuing..."
@@ -91,7 +92,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: "--model claude-opus-4-6"
-          allowed_bots: "*"
+          allowed_bots: "dependabot[bot],renovate[bot]"
           prompt: |
             Review this PR for:
             a. TypeScript type safety and correctness
