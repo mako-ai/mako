@@ -325,14 +325,21 @@ databaseTreeRoutes.get(
 
       // For BigQuery, schema is actually the dataset
       if (dbConnection.type === "bigquery" && !options.schema) {
-        return c.json({
-          success: false,
-          error: "schema (dataset) is required for BigQuery",
-        }, 400);
+        return c.json(
+          {
+            success: false,
+            error: "schema (dataset) is required for BigQuery",
+          },
+          400,
+        );
       }
 
-      // For PostgreSQL, default to public schema
-      if (dbConnection.type === "postgresql" && !options.schema) {
+      // For PostgreSQL/Redshift, default to public schema
+      if (
+        (dbConnection.type === "postgresql" ||
+          dbConnection.type === "redshift") &&
+        !options.schema
+      ) {
         options.schema = "public";
       }
 
@@ -350,10 +357,14 @@ databaseTreeRoutes.get(
       }
 
       // Table exists - try to get column information
-      let columns: Array<{ name: string; type: string; nullable?: boolean }> = [];
+      let columns: Array<{ name: string; type: string; nullable?: boolean }> =
+        [];
 
-      if (dbConnection.type === "postgresql") {
-        // Query PostgreSQL information_schema for columns
+      if (
+        dbConnection.type === "postgresql" ||
+        dbConnection.type === "redshift"
+      ) {
+        // Query PostgreSQL/Redshift information_schema for columns
         const schemaName = options.schema || "public";
         const columnQuery = `
           SELECT column_name, data_type, is_nullable
@@ -362,7 +373,10 @@ databaseTreeRoutes.get(
             AND table_name = '${String(tableName).replace(/'/g, "''")}'
           ORDER BY ordinal_position;
         `;
-        const result = await driver.executeQuery(dbConnection as any, columnQuery);
+        const result = await driver.executeQuery(
+          dbConnection as any,
+          columnQuery,
+        );
         if (result.success && result.data) {
           columns = result.data.map((row: any) => ({
             name: row.column_name,
@@ -381,7 +395,10 @@ databaseTreeRoutes.get(
             WHERE table_name = '${String(tableName).replace(/'/g, "\\'")}'
             ORDER BY ordinal_position;
           `;
-          const result = await driver.executeQuery(dbConnection as any, columnQuery);
+          const result = await driver.executeQuery(
+            dbConnection as any,
+            columnQuery,
+          );
           if (result.success && result.data) {
             columns = result.data.map((row: any) => ({
               name: row.column_name,

@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "crypto";
+import { loggers } from "../logging";
 
 // Encryption helper functions
 let _encryptionKey: string | null = null;
@@ -63,21 +64,54 @@ function encryptObject(obj: any): any {
 }
 
 function decryptObject(obj: any): any {
-  const decrypted: any = {};
-  for (const key in obj) {
-    if (typeof obj[key] === "string" && obj[key] && obj[key].includes(":")) {
+  try {
+    // If connection was stored as a JSON string, parse and decrypt.
+    // Guard: only recurse when JSON.parse yields a non-string (object/array)
+    // to prevent infinite recursion on doubly-quoted strings like '"foo"'.
+    if (typeof obj === "string") {
       try {
-        decrypted[key] = decrypt(obj[key]);
+        const parsed = JSON.parse(obj);
+        if (typeof parsed !== "string") {
+          return decryptObject(parsed);
+        }
       } catch {
-        decrypted[key] = obj[key]; // If decryption fails, return as is
+        // Not valid JSON — fall through to direct decrypt
       }
-    } else if (typeof obj[key] === "object" && obj[key] !== null) {
-      decrypted[key] = decryptObject(obj[key]);
-    } else {
-      decrypted[key] = obj[key];
+      try {
+        return decrypt(obj);
+      } catch {
+        return obj;
+      }
     }
+    if (obj === null || typeof obj !== "object") {
+      return obj;
+    }
+    const decrypted: any = {};
+    for (const key in obj) {
+      if (typeof obj[key] === "string" && obj[key] && obj[key].includes(":")) {
+        try {
+          decrypted[key] = decrypt(obj[key]);
+        } catch {
+          decrypted[key] = obj[key]; // If decryption fails, return as is
+        }
+      } else if (typeof obj[key] === "object" && obj[key] !== null) {
+        try {
+          decrypted[key] = decryptObject(obj[key]);
+        } catch {
+          decrypted[key] = obj[key]; // Nested decrypt failure (e.g. wrong key), return as is
+        }
+      } else {
+        decrypted[key] = obj[key];
+      }
+    }
+    return decrypted;
+  } catch (err) {
+    // Unexpected error (e.g. RangeError from invalid hex): return unchanged so list doesn't break.
+    loggers
+      .db()
+      .warn("decryptObject failed — returning raw value", { error: err });
+    return obj;
   }
-  return decrypted;
 }
 
 // Pass-through for DataSource config - encryption handled at route using connector schema
@@ -159,6 +193,7 @@ export interface IDatabaseConnection extends Document {
   type:
     | "mongodb"
     | "postgresql"
+    | "redshift"
     | "cloudsql-postgres"
     | "mysql"
     | "sqlite"
@@ -802,6 +837,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       enum: [
         "mongodb",
         "postgresql",
+        "redshift",
         "cloudsql-postgres",
         "mysql",
         "sqlite",

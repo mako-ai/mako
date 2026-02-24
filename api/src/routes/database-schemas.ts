@@ -202,6 +202,62 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
       { name: "ssl", label: "Use SSL/TLS", type: "boolean", default: false },
     ],
   },
+  redshift: {
+    fields: [
+      {
+        name: "use_connection_string",
+        label: "Use Connection String",
+        type: "boolean",
+        default: false,
+      },
+      {
+        name: "connectionString",
+        label: "Connection String",
+        type: "password",
+        required: false,
+        placeholder:
+          "postgresql://user:password@cluster.region.redshift.amazonaws.com:5439/dev?sslmode=require",
+        helperText:
+          "Redshift connection URI. Use port 5439; SSL is usually required.",
+      },
+      {
+        name: "host",
+        label: "Host",
+        type: "string",
+        required: false,
+        placeholder: "cluster.region.redshift.amazonaws.com",
+      },
+      {
+        name: "port",
+        label: "Port",
+        type: "number",
+        required: false,
+        default: 5439,
+      },
+      {
+        name: "database",
+        label: "Database",
+        type: "string",
+        required: false,
+        placeholder: "dev",
+        helperText: "Redshift database name",
+      },
+      { name: "username", label: "Username", type: "string", required: false },
+      {
+        name: "password",
+        label: "Password",
+        type: "password",
+        required: false,
+      },
+      {
+        name: "ssl",
+        label: "Use SSL/TLS",
+        type: "boolean",
+        default: true,
+        helperText: "Redshift typically requires SSL",
+      },
+    ],
+  },
   "cloudsql-postgres": {
     fields: [
       {
@@ -491,6 +547,7 @@ databaseSchemaRoutes.get("/types", c => {
     if (t === "mongodb") return "mongodb";
     if (t === "clickhouse") return "sql";
     if (t === "bigquery") return "sql";
+    if (t === "redshift") return "sql";
     if (t === "cloudflare-d1") return "sql";
     if (t === "cloudflare-kv") return "javascript";
     return "sql";

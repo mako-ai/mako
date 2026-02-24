@@ -20,8 +20,9 @@ const emptySchema = z.object({});
 const SUPPORTED_CONNECTION_TYPES = new Set([
   // MongoDB
   "mongodb",
-  // PostgreSQL
+  // PostgreSQL and Redshift (PostgreSQL wire-compatible)
   "postgresql",
+  "redshift",
   "cloudsql-postgres",
   // BigQuery
   "bigquery",
@@ -71,7 +72,11 @@ async function listAllConnectionsImpl(workspaceId: string) {
       };
     }
 
-    if (db.type === "postgresql" || db.type === "cloudsql-postgres") {
+    if (
+      db.type === "postgresql" ||
+      db.type === "redshift" ||
+      db.type === "cloudsql-postgres"
+    ) {
       const host = (connection.host || connection.instanceConnectionName) as
         | string
         | undefined;
@@ -172,7 +177,7 @@ export const createUniversalTools = (
     // Cross-database connection discovery (server-side)
     list_connections: {
       description:
-        "List all database connections in this workspace (MongoDB, PostgreSQL, BigQuery, SQLite, Cloudflare D1). Use this to discover available databases before running queries.",
+        "List all database connections in this workspace (MongoDB, PostgreSQL, Redshift, BigQuery, SQLite, Cloudflare D1). Use this to discover available databases before running queries.",
       inputSchema: emptySchema,
       execute: async () => listAllConnectionsImpl(workspaceId),
     },

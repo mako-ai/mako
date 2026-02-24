@@ -2,7 +2,7 @@
  * Shared SQL Dialect Helpers
  *
  * Common utilities for working with different SQL database types.
- * Used by both sql-tools.ts and flow agent.
+ * Used by both sql-tools.ts and flow agent. Credits: Narendra
  */
 
 import { Types } from "mongoose";
@@ -21,7 +21,7 @@ export type SqlDialect =
  * Database type to dialect mapping
  */
 export const SQL_TYPES = {
-  postgres: new Set(["postgresql", "cloudsql-postgres"]),
+  postgres: new Set(["postgresql", "redshift", "cloudsql-postgres"]),
   mysql: new Set(["mysql"]),
   bigquery: new Set(["bigquery"]),
   sqlite: new Set(["sqlite", "cloudflare-d1"]),
