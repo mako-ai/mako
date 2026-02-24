@@ -23,6 +23,7 @@ import type { ConsoleDataV2 } from "../agent-lib/types";
 import {
   getModelById,
   getAvailableModels,
+  getDefaultModel,
   isTierSufficient,
 } from "../agent-lib/ai-models";
 import {
@@ -62,10 +63,14 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   if (workspace) {
     billingTier = workspace.settings?.billingTier ?? "free";
   } else {
+    const user = c.get("user");
     const workspaceId = c.req.header("x-workspace-id");
-    if (workspaceId) {
-      const ws = await Workspace.findById(workspaceId).select({ settings: 1 });
-      billingTier = ws?.settings?.billingTier ?? "free";
+    if (workspaceId && user) {
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (hasAccess) {
+        const ws = await Workspace.findById(workspaceId).select({ settings: 1 });
+        billingTier = ws?.settings?.billingTier ?? "free";
+      }
     }
   }
 
@@ -219,9 +224,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   }
 
   // Tier-gate: reject if free workspace requests a premium model
-  // Resolve the effective model – when modelId is omitted the default is gpt-5.2
   {
-    const effectiveModelId = modelId ?? "gpt-5.2";
+    const effectiveModelId = modelId ?? getDefaultModel().id;
     const requestedModel = getModelById(effectiveModelId);
     const billingTier =
       (

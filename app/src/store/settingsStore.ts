@@ -49,12 +49,15 @@ export const useSettingsStore = create<SettingsState>()(
 
           set({ models });
 
-          // Ensure selected model exists
+          // Ensure selected model exists and is not locked
           if (models.length > 0) {
             const current = get().selectedModelId;
-            const isAvailable = models.some(model => model.id === current);
+            const isAvailable = models.some(
+              model => model.id === current && !model.locked,
+            );
             if (!isAvailable) {
-              set({ selectedModelId: models[0].id });
+              const firstUnlocked = models.find(model => !model.locked);
+              set({ selectedModelId: (firstUnlocked ?? models[0]).id });
             }
           }
         } catch (error) {
