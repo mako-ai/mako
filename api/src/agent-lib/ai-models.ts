@@ -45,7 +45,7 @@ export function isTierSufficient(
 ): boolean {
   if (!requiredTier) return true;
   const userRank = TIER_RANK[workspaceTier as BillingTier] ?? 0;
-  const requiredRank = TIER_RANK[requiredTier as BillingTier] ?? 0;
+  const requiredRank = TIER_RANK[requiredTier as BillingTier] ?? Infinity;
   return userRank >= requiredRank;
 }
 

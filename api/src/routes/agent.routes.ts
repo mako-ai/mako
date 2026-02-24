@@ -54,8 +54,20 @@ agentRoutes.use("*", unifiedAuthMiddleware);
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   const models = getAvailableModels();
+
+  // Resolve billing tier: API key auth sets workspace in context; session auth does not,
+  // so fall back to a DB lookup using the x-workspace-id header sent by the frontend.
+  let billingTier: string = "free";
   const workspace = c.get("workspace");
-  const billingTier = workspace?.settings?.billingTier ?? "free";
+  if (workspace) {
+    billingTier = workspace.settings?.billingTier ?? "free";
+  } else {
+    const workspaceId = c.req.header("x-workspace-id");
+    if (workspaceId) {
+      const ws = await Workspace.findById(workspaceId).select({ settings: 1 });
+      billingTier = ws?.settings?.billingTier ?? "free";
+    }
+  }
 
   const modelsWithLock = models.map(m => ({
     ...m,
@@ -207,8 +219,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   }
 
   // Tier-gate: reject if free workspace requests a premium model
-  if (modelId) {
-    const requestedModel = getModelById(modelId);
+  // Resolve the effective model – when modelId is omitted the default is gpt-5.2
+  {
+    const effectiveModelId = modelId ?? "gpt-5.2";
+    const requestedModel = getModelById(effectiveModelId);
     const billingTier =
       (
         workspace ??
