@@ -15,6 +15,7 @@ import {
   DatabaseDriver,
   DatabaseDriverMetadata,
   DatabaseTreeNode,
+  InsertOptions,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
@@ -93,6 +94,14 @@ export class RedshiftDatabaseDriver implements DatabaseDriver {
     Record<string, Record<string, Array<{ name: string; type: string }>>>
   > {
     return postgresDriver.getAutocompleteData(database);
+  }
+
+  async tableExists(
+    database: IDatabaseConnection,
+    tableName: string,
+    options?: InsertOptions,
+  ): Promise<boolean> {
+    return postgresDriver.tableExists(database, tableName, options);
   }
 
   async executeQuery(
