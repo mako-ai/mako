@@ -20,7 +20,11 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import type { ConsoleDataV2 } from "../agent-lib/types";
-import { getModelById, getAvailableModels } from "../agent-lib/ai-models";
+import {
+  getModelById,
+  getAvailableModels,
+  isTierSufficient,
+} from "../agent-lib/ai-models";
 import {
   Workspace,
   DatabaseConnection,
@@ -46,10 +50,19 @@ agentRoutes.use("*", unifiedAuthMiddleware);
 
 /**
  * GET /models - List available AI models based on configured API keys
+ * Includes a `locked` flag per model based on workspace billing tier
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   const models = getAvailableModels();
-  return c.json({ models });
+  const workspace = c.get("workspace");
+  const billingTier = workspace?.settings?.billingTier ?? "free";
+
+  const modelsWithLock = models.map(m => ({
+    ...m,
+    locked: !isTierSufficient(billingTier, m.requiredTier),
+  }));
+
+  return c.json({ models: modelsWithLock });
 });
 
 /**
@@ -191,6 +204,29 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       { error: "'chatId' is required and must be a valid ObjectId" },
       400,
     );
+  }
+
+  // Tier-gate: reject if free workspace requests a premium model
+  if (modelId) {
+    const requestedModel = getModelById(modelId);
+    const billingTier =
+      (
+        workspace ??
+        (await Workspace.findById(workspaceId).select({ settings: 1 }))
+      )?.settings?.billingTier ?? "free";
+    if (
+      requestedModel &&
+      !isTierSufficient(billingTier, requestedModel.requiredTier)
+    ) {
+      return c.json(
+        {
+          error: "MODEL_TIER_REQUIRED",
+          requiredTier: requestedModel.requiredTier,
+          message: `Upgrade to ${requestedModel.requiredTier === "enterprise" ? "Enterprise" : "Pro"} to use this model`,
+        },
+        403,
+      );
+    }
   }
 
   // Check if this is a new chat (first message)
