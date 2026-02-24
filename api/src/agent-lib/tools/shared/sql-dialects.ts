@@ -2,7 +2,7 @@
  * Shared SQL Dialect Helpers
  *
  * Common utilities for working with different SQL database types.
- * Used by both sql-tools.ts and flow agent.
+ * Used by both sql-tools.ts and flow agent. Credits: Narendra
  */
 
 import { Types } from "mongoose";
