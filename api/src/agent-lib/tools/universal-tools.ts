@@ -91,7 +91,7 @@ async function listAllConnectionsImpl(workspaceId: string) {
         sqlDialect: "postgresql",
         host,
         databaseName,
-        displayName: `${db.name} (postgresql: ${displayInfo})`,
+        displayName: `${db.name} (${db.type}: ${displayInfo})`,
         active: true,
       };
     }
