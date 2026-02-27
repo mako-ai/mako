@@ -96,10 +96,21 @@ function getModelInstance(modelId?: string): LanguageModel {
  */
 agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const user = c.get("user");
-  const userId = user?.id;
+  const workspace = c.get("workspace");
+  const apiKey = c.get("apiKey");
 
-  if (!userId) {
-    return c.json({ error: "User not authenticated" }, 401);
+  // Allow both session auth (user) and API key auth (workspace)
+  // Actor ID: user ID for session, API key creator for programmatic access
+  // (chats appear in creator's history when they log in)
+  const actorId =
+    user?.id ??
+    (apiKey?.createdBy
+      ? String(apiKey.createdBy)
+      : workspace
+        ? "api-key"
+        : undefined);
+  if (!actorId) {
+    return c.json({ error: "Unauthorized" }, 401);
   }
 
   let body: Record<string, unknown> = {};
@@ -163,7 +174,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   }
 
   // Verify workspace access
-  const workspace = c.get("workspace");
   if (workspace) {
     // For API key auth, verify the body workspace matches the API key's workspace
     if (workspace._id.toString() !== workspaceId) {
@@ -172,9 +182,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         403,
       );
     }
-  } else if (userId) {
+  } else if (user) {
     // For session auth, verify user has access to this workspace
-    const hasAccess = await workspaceService.hasAccess(workspaceId, userId);
+    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
     if (!hasAccess) {
       return c.json({ error: "Access denied to workspace" }, 403);
     }
@@ -205,7 +215,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     await Chat.create({
       _id: new ObjectId(chatId),
       workspaceId: new ObjectId(workspaceId),
-      createdBy: userId.toString(),
+      createdBy: actorId,
       title: "New Chat",
       titleGenerated: false,
       messages: [],
@@ -288,7 +298,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Build agent context
   const agentContext: AgentContext = {
     workspaceId,
-    userId: userId.toString(),
+    userId: actorId,
     consoles: enrichedConsoles,
     consoleId,
     databases: workspaceDatabases.map(db => ({
@@ -411,7 +421,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         // Save all messages in one atomic operation (AI SDK best practice)
         // Title was already generated in parallel at the start for new chats
         // Note: Draft consoles are saved client-side when modified (debounced)
-        await saveChat(chatId, workspaceId, userId.toString(), allMessages, {
+        await saveChat(chatId, workspaceId, actorId, allMessages, {
           promptTokens,
           completionTokens,
           totalTokens,
