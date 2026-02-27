@@ -6,3 +6,11 @@ packages:
   - docs
 ignoredBuiltDependencies:
   - bcrypt
+onlyBuiltDependencies:
+  - esbuild
+  - sqlite3
+  - sharp
+  - protobufjs
+  - es5-ext
+  - "@mui/x-telemetry"
+  - workerd
