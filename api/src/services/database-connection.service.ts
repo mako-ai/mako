@@ -1685,6 +1685,19 @@ export class DatabaseConnectionService {
       case "BOOLEAN":
       case "BOOL":
         return value === true || value === "true";
+      case "TIMESTAMP": {
+        // BigQuery REST API returns TIMESTAMP as epoch-seconds float (e.g. "1.677123456E9").
+        // Convert to ISO 8601 string for human-readable display.
+        const num = Number(value);
+        if (!isNaN(num)) {
+          return new Date(num * 1000).toISOString().replace("T", " ").replace("Z", " UTC");
+        }
+        return value;
+      }
+      case "DATETIME": {
+        // DATETIME has no timezone in BigQuery; value is already a string like "2025-01-01 20:45:28".
+        return value;
+      }
       default:
         return value;
     }

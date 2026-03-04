@@ -477,7 +477,15 @@ export class BigQueryConnector extends BaseConnector {
       case "BOOLEAN":
       case "BOOL":
         return value === true || value === "true";
-      case "TIMESTAMP":
+      case "TIMESTAMP": {
+        // BigQuery REST API returns TIMESTAMP as epoch-seconds float (e.g. "1.677123456E9").
+        // Convert to ISO 8601 string for human-readable display.
+        const num = Number(value);
+        if (!isNaN(num)) {
+          return new Date(num * 1000).toISOString().replace("T", " ").replace("Z", " UTC");
+        }
+        return value;
+      }
       case "DATETIME":
       case "DATE":
       case "TIME":
