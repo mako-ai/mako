@@ -4,8 +4,10 @@
  */
 
 import { z } from "zod";
+import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import { queryExecutionService } from "../../services/query-execution.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -770,7 +772,10 @@ async function executeQueryImpl(
   databaseName: string,
   query: string,
   workspaceId: string,
+  userId?: string,
 ) {
+  const startTime = Date.now();
+
   if (!databaseName) {
     throw new Error("'database' is required");
   }
@@ -817,6 +822,20 @@ async function executeQueryImpl(
     return { ...result, sqlDialect: dialect };
   } catch (err: unknown) {
     if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
+      if (userId) {
+        queryExecutionService.track({
+          userId,
+          workspaceId: new Types.ObjectId(workspaceId),
+          connectionId: database._id,
+          databaseName,
+          source: "agent",
+          databaseType: database.type,
+          queryLanguage: "sql",
+          status: "timeout",
+          executionTimeMs: Date.now() - startTime,
+          errorType: "timeout",
+        });
+      }
       return {
         success: false,
         status: "timeout",
@@ -835,6 +854,7 @@ export const createSqlToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
+  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
@@ -941,6 +961,7 @@ export const createSqlToolsV2 = (
             params.database,
             params.query,
             workspaceId,
+            userId,
           );
         } catch (error) {
           return {
