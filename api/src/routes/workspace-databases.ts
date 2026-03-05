@@ -8,6 +8,7 @@ import {
 import {
   DatabaseConnection,
   IDatabaseConnection,
+  DatabaseAccessLevel,
   Flow,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -17,6 +18,11 @@ import {
   QuerySource,
   QueryStatus,
 } from "../services/query-execution.service";
+import {
+  checkQueryAccess,
+  canUserSeeDatabase,
+  getEffectiveAccess,
+} from "../services/database-access.service";
 import { Types } from "mongoose";
 import { loggers } from "../logging";
 
@@ -102,6 +108,8 @@ workspaceDatabaseRoutes.post(
         name: demoConfig.name,
         type: demoConfig.type,
         connection: demoConfig.connection,
+        access: "shared_write",
+        ownerId: user.id,
         isDemo: true,
         createdBy: user.id,
         createdAt: new Date(),
@@ -140,7 +148,54 @@ workspaceDatabaseRoutes.post(
   },
 );
 
-// Get all databases for workspace
+/**
+ * Transform a database connection to the API response format.
+ * Strips connection details for security and adds access metadata.
+ */
+function transformDatabaseForResponse(db: IDatabaseConnection, userId: string) {
+  let hostKey: string;
+  let hostName: string;
+  const conn: any = db.connection || {};
+  if (db.type === "bigquery") {
+    const projectId = conn.project_id || "unknown-project";
+    hostKey = `bigquery://${projectId}`;
+    hostName = `BigQuery (${projectId})`;
+  } else if (conn.connectionString) {
+    hostKey = maskPasswordInConnectionString(conn.connectionString);
+    hostName = db.type === "mongodb" ? "MongoDB Atlas" : db.type.toUpperCase();
+  } else {
+    hostKey = conn.host || "unknown";
+    hostName =
+      db.type === "mongodb"
+        ? `MongoDB (${conn.host || "localhost"})`
+        : `${db.type.toUpperCase()} (${conn.host || "localhost"})`;
+  }
+
+  const isClusterMode = !conn.database;
+  const { level, isOwner } = getEffectiveAccess(db, userId);
+
+  return {
+    id: db._id.toString(),
+    connectionId: db._id.toString(),
+    name: db.name,
+    description: "",
+    database: conn.database,
+    databaseName: conn.database,
+    type: db.type,
+    active: true,
+    lastConnectedAt: db.lastConnectedAt,
+    isClusterMode,
+    isDemo: db.isDemo || false,
+    displayName: db.name || conn.database || "Unknown Database",
+    hostKey,
+    hostName,
+    access: level,
+    isOwner,
+    ownerId: db.ownerId || db.createdBy,
+  };
+}
+
+// Get all databases for workspace (filtered by access)
 workspaceDatabaseRoutes.get(
   "/",
   authMiddleware,
@@ -148,54 +203,21 @@ workspaceDatabaseRoutes.get(
   async (c: AuthenticatedContext) => {
     try {
       const workspace = c.get("workspace");
+      const user = c.get("user");
+      const userId = user?.id;
 
       const databases = await DatabaseConnection.find({
         workspaceId: workspace._id,
       }).sort({ createdAt: -1 });
 
-      // Transform to API response format without connection details for security
-      const transformedDatabases = databases.map((db: IDatabaseConnection) => {
-        // Create masked hostKey for grouping per database type
-        let hostKey: string;
-        let hostName: string;
-        const conn: any = db.connection || {};
-        if (db.type === "bigquery") {
-          const projectId = conn.project_id || "unknown-project";
-          hostKey = `bigquery://${projectId}`;
-          hostName = `BigQuery (${projectId})`;
-        } else if (conn.connectionString) {
-          hostKey = maskPasswordInConnectionString(conn.connectionString);
-          hostName =
-            db.type === "mongodb" ? "MongoDB Atlas" : db.type.toUpperCase();
-        } else {
-          hostKey = conn.host || "unknown";
-          hostName =
-            db.type === "mongodb"
-              ? `MongoDB (${conn.host || "localhost"})`
-              : `${db.type.toUpperCase()} (${conn.host || "localhost"})`;
-        }
+      const visibleDatabases = userId
+        ? databases.filter(db => canUserSeeDatabase(db, userId))
+        : databases;
 
-        // Determine if this is a cluster/server connection without a specific database
-        const isClusterMode = !conn.database;
-
-        return {
-          id: db._id.toString(),
-          connectionId: db._id.toString(), // Explicit connection ID for clarity
-          name: db.name,
-          description: "",
-          database: conn.database,
-          databaseName: conn.database, // Alias for clarity
-          type: db.type,
-          active: true,
-          lastConnectedAt: db.lastConnectedAt,
-          isClusterMode, // true when connection can access multiple databases
-          isDemo: db.isDemo || false, // true if this is a demo database
-          // Helper fields for easier access (connection object removed for security)
-          displayName: db.name || conn.database || "Unknown Database",
-          hostKey,
-          hostName,
-        };
-      });
+      const transformedDatabases = visibleDatabases.map(
+        (db: IDatabaseConnection) =>
+          transformDatabaseForResponse(db, userId || ""),
+      );
 
       return c.json({
         success: true,
@@ -223,6 +245,7 @@ workspaceDatabaseRoutes.get(
   async (c: AuthenticatedContext) => {
     try {
       const workspace = c.get("workspace");
+      const user = c.get("user");
       const databaseId = c.req.param("id");
 
       if (!Types.ObjectId.isValid(databaseId)) {
@@ -238,8 +261,14 @@ workspaceDatabaseRoutes.get(
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
+      const userId = user?.id || "";
+      if (!canUserSeeDatabase(database, userId)) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
       const conn: any = database.connection || {};
       const isClusterMode = !conn.database;
+      const { level, isOwner } = getEffectiveAccess(database, userId);
 
       return c.json({
         success: true,
@@ -248,9 +277,12 @@ workspaceDatabaseRoutes.get(
           connectionId: database._id.toString(),
           name: database.name,
           type: database.type,
-          connection: database.connection, // Will be decrypted by getter
+          connection: database.connection,
           databaseName: conn.database,
           isClusterMode,
+          access: level,
+          isOwner,
+          ownerId: database.ownerId || database.createdBy,
           createdAt: database.createdAt,
           updatedAt: database.updatedAt,
           lastConnectedAt: database.lastConnectedAt,
@@ -367,6 +399,8 @@ workspaceDatabaseRoutes.post(
         name: body.name,
         type: body.type,
         connection: body.connection || {},
+        access: body.access || "shared_write",
+        ownerId: user.id,
         createdBy: user.id,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -429,6 +463,8 @@ workspaceDatabaseRoutes.put(
   async (c: AuthenticatedContext) => {
     try {
       const workspace = c.get("workspace");
+      const user = c.get("user");
+      const memberRole = c.get("memberRole");
       const databaseId = c.req.param("id");
       const body = await c.req.json();
 
@@ -445,8 +481,24 @@ workspaceDatabaseRoutes.put(
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
+      const dbOwnerId = database.ownerId || database.createdBy;
+      const isDbOwner = user?.id === dbOwnerId;
+      const isWorkspaceAdmin = memberRole === "owner" || memberRole === "admin";
+
+      if (!isDbOwner && !isWorkspaceAdmin) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Only the database owner or workspace admin can edit this database",
+          },
+          403,
+        );
+      }
+
       // Update fields
       if (body.name) database.name = body.name;
+      if (body.access) database.access = body.access;
       if (body.connection) {
         // Build candidate connection using decrypted previous + incoming patch
         const previous =
@@ -508,14 +560,40 @@ workspaceDatabaseRoutes.delete(
   "/:id",
   authMiddleware,
   requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
+  requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
     try {
       const workspace = c.get("workspace");
+      const user = c.get("user");
+      const memberRole = c.get("memberRole");
       const databaseId = c.req.param("id");
 
       if (!Types.ObjectId.isValid(databaseId)) {
         return c.json({ success: false, error: "Invalid database ID" }, 400);
+      }
+
+      const database = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(databaseId),
+        workspaceId: workspace._id,
+      });
+
+      if (!database) {
+        return c.json({ success: false, error: "Database not found" }, 404);
+      }
+
+      const dbOwnerId = database.ownerId || database.createdBy;
+      const isDbOwner = user?.id === dbOwnerId;
+      const isWorkspaceAdmin = memberRole === "owner" || memberRole === "admin";
+
+      if (!isDbOwner && !isWorkspaceAdmin) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Only the database owner or workspace admin can delete this database",
+          },
+          403,
+        );
       }
 
       // Check for dependent flows
@@ -615,6 +693,101 @@ workspaceDatabaseRoutes.post(
   },
 );
 
+// Update sharing settings for a database
+workspaceDatabaseRoutes.post(
+  "/:id/share",
+  authMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const user = c.get("user");
+      const memberRole = c.get("memberRole");
+      const databaseId = c.req.param("id");
+      const body = await c.req.json();
+
+      if (!Types.ObjectId.isValid(databaseId)) {
+        return c.json({ success: false, error: "Invalid database ID" }, 400);
+      }
+
+      const database = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(databaseId),
+        workspaceId: workspace._id,
+      });
+
+      if (!database) {
+        return c.json({ success: false, error: "Database not found" }, 404);
+      }
+
+      const dbOwnerId = database.ownerId || database.createdBy;
+      const isDbOwner = user?.id === dbOwnerId;
+      const isWorkspaceAdmin = memberRole === "owner" || memberRole === "admin";
+
+      if (!isDbOwner && !isWorkspaceAdmin) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Only the database owner or workspace admin can change sharing settings",
+          },
+          403,
+        );
+      }
+
+      const validAccessLevels: DatabaseAccessLevel[] = [
+        "private",
+        "shared_read",
+        "shared_write",
+      ];
+      if (body.access && !validAccessLevels.includes(body.access)) {
+        return c.json(
+          {
+            success: false,
+            error: `Invalid access level. Must be one of: ${validAccessLevels.join(", ")}`,
+          },
+          400,
+        );
+      }
+
+      if (body.access) {
+        database.access = body.access;
+      }
+
+      if (body.sharedWith && Array.isArray(body.sharedWith)) {
+        database.sharedWith = body.sharedWith
+          .filter((id: string) => Types.ObjectId.isValid(id))
+          .map((id: string) => new Types.ObjectId(id));
+      }
+
+      database.updatedAt = new Date();
+      await database.save();
+
+      return c.json({
+        success: true,
+        data: {
+          id: database._id,
+          access: database.access,
+          sharedWith: database.sharedWith,
+        },
+        message: "Sharing settings updated successfully",
+      });
+    } catch (error) {
+      logger.error("Error updating sharing settings", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to update sharing settings",
+        },
+        500,
+      );
+    }
+  },
+);
+
 // Execute query on database
 workspaceDatabaseRoutes.post(
   "/:id/execute",
@@ -623,6 +796,7 @@ workspaceDatabaseRoutes.post(
   async (c: AuthenticatedContext) => {
     try {
       const workspace = c.get("workspace");
+      const user = c.get("user");
       const databaseId = c.req.param("id");
       const body = await c.req.json();
 
@@ -641,6 +815,16 @@ workspaceDatabaseRoutes.post(
 
       if (!body.query) {
         return c.json({ success: false, error: "Query is required" }, 400);
+      }
+
+      // Enforce access controls
+      if (user?.id) {
+        const accessCheck = checkQueryAccess(database, user.id, body.query, {
+          mongoOperation: body.options?.operation,
+        });
+        if (!accessCheck.allowed) {
+          return c.json({ success: false, error: accessCheck.error }, 403);
+        }
       }
 
       const result = await databaseConnectionService.executeQuery(
@@ -961,6 +1145,15 @@ workspaceExecuteRoutes.post(
         );
       }
 
+      // Enforce access controls
+      const userId = user?.id || apiKey?.createdBy;
+      if (userId) {
+        const accessCheck = checkQueryAccess(database, userId, query);
+        if (!accessCheck.allowed) {
+          return c.json({ success: false, error: accessCheck.error }, 403);
+        }
+      }
+
       // Build options for query execution
       const options = {
         databaseId,
@@ -1011,7 +1204,6 @@ workspaceExecuteRoutes.post(
       }
 
       // Track query execution (fire-and-forget)
-      const userId = user?.id || apiKey?.createdBy;
       if (userId && database) {
         // Determine source: API key auth = "api", otherwise check body or default to "console_ui"
         const executionSource: QuerySource = apiKey

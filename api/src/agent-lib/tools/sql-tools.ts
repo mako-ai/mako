@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import { checkQueryAccess } from "../../services/database-access.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -105,7 +106,7 @@ const executeQuerySchema = z.object({
 // ============================================================================
 // sql_list_connections
 // ============================================================================
-async function listSqlConnectionsImpl(workspaceId: string) {
+async function listSqlConnectionsImpl(workspaceId: string, userId?: string) {
   const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
 
   const databases = await DatabaseConnection.find({
@@ -113,38 +114,50 @@ async function listSqlConnectionsImpl(workspaceId: string) {
     type: { $in: Array.from(ALL_SQL_TYPES) },
   }).sort({ name: 1 });
 
-  return databases.map(db => {
-    const connection: Record<string, unknown> =
-      (db as unknown as { connection: Record<string, unknown> }).connection ||
-      {};
-    const dialect = getDialect(db.type);
+  return databases
+    .filter(db => {
+      if (!userId) return true;
+      const access = db.access || "shared_write";
+      const ownerId = db.ownerId || db.createdBy;
+      if (ownerId === userId) return true;
+      return access !== "private";
+    })
+    .map(db => {
+      const connection: Record<string, unknown> =
+        (db as unknown as { connection: Record<string, unknown> }).connection ||
+        {};
+      const dialect = getDialect(db.type);
 
-    let displayInfo: string;
-    if (dialect === "postgresql" || dialect === "mysql") {
-      const host = (connection.host || connection.instanceConnectionName) as
-        | string
-        | undefined;
-      const dbName = (connection.database || connection.db) as
-        | string
-        | undefined;
-      displayInfo = `${host || "unknown-host"}/${dbName || "unknown-db"}`;
-    } else if (dialect === "bigquery") {
-      displayInfo = (connection.project_id as string) || "unknown-project";
-    } else {
-      // SQLite/D1
-      const dbId = connection.database_id as string | undefined;
-      displayInfo = dbId || "main";
-    }
+      let displayInfo: string;
+      if (dialect === "postgresql" || dialect === "mysql") {
+        const host = (connection.host || connection.instanceConnectionName) as
+          | string
+          | undefined;
+        const dbName = (connection.database || connection.db) as
+          | string
+          | undefined;
+        displayInfo = `${host || "unknown-host"}/${dbName || "unknown-db"}`;
+      } else if (dialect === "bigquery") {
+        displayInfo = (connection.project_id as string) || "unknown-project";
+      } else {
+        // SQLite/D1
+        const dbId = connection.database_id as string | undefined;
+        displayInfo = dbId || "main";
+      }
 
-    return {
-      id: db._id.toString(),
-      name: db.name,
-      type: db.type,
-      sqlDialect: dialect,
-      displayName: `${db.name} (${dialect}: ${displayInfo})`,
-      active: true,
-    };
-  });
+      const accessLevel = db.access || "shared_write";
+      const accessLabel = accessLevel === "shared_read" ? " [read-only]" : "";
+
+      return {
+        id: db._id.toString(),
+        name: db.name,
+        type: db.type,
+        sqlDialect: dialect,
+        displayName: `${db.name} (${dialect}: ${displayInfo})${accessLabel}`,
+        active: true,
+        access: accessLevel,
+      };
+    });
 }
 
 // ============================================================================
@@ -768,6 +781,7 @@ async function executeQueryImpl(
   databaseName: string,
   query: string,
   workspaceId: string,
+  userId?: string,
 ) {
   if (!databaseName) {
     throw new Error("'database' is required");
@@ -778,6 +792,14 @@ async function executeQueryImpl(
 
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
+
+  // Enforce access controls
+  if (userId) {
+    const accessResult = checkQueryAccess(database, userId, query);
+    if (!accessResult.allowed) {
+      throw new Error(accessResult.error);
+    }
+  }
   const safeQuery = appendLimitIfMissing(query);
 
   let options: Record<string, string> = {};
@@ -809,15 +831,16 @@ export const createSqlToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
+  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
 
     sql_list_connections: {
       description:
-        "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",
+        "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, sqlDialect, and access level. Connections marked [read-only] only allow SELECT queries.",
       inputSchema: emptySchema,
-      execute: async () => listSqlConnectionsImpl(workspaceId),
+      execute: async () => listSqlConnectionsImpl(workspaceId, userId),
     },
 
     sql_list_databases: {
@@ -855,7 +878,7 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: {
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. If a connection has 'access: shared_read', only SELECT/WITH/EXPLAIN queries are allowed. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
       execute: async (params: {
         connectionId: string;
@@ -867,6 +890,7 @@ export const createSqlToolsV2 = (
           params.database,
           params.query,
           workspaceId,
+          userId,
         ),
     },
   };

@@ -8,6 +8,7 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
+import { checkQueryAccess } from "../../services/database-access.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -224,6 +225,14 @@ async function executeQueryImpl(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   if (!database) throw new Error("Connection not found or access denied");
+
+  // Enforce access controls for MongoDB queries
+  if (userId) {
+    const accessResult = checkQueryAccess(database, userId, query);
+    if (!accessResult.allowed) {
+      throw new Error(accessResult.error);
+    }
+  }
 
   const result = await databaseConnectionService.executeQuery(
     database as Parameters<typeof databaseConnectionService.executeQuery>[0],
