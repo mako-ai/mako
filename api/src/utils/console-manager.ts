@@ -113,7 +113,10 @@ export class ConsoleManager {
   ): "read" | "write" | null {
     if (!sharedWith || sharedWith.length === 0) return null;
     const entry = sharedWith.find(e => e.userId === userId);
-    return entry?.access ?? null;
+    if (entry) return entry.access;
+    // Wildcard '*' grants access to all workspace members (used by migrated shared_write consoles)
+    const wildcard = sharedWith.find(e => e.userId === "*");
+    return wildcard?.access ?? null;
   }
 
   /**
@@ -733,7 +736,9 @@ export class ConsoleManager {
         }
         // Backfill access if missing
         if (!savedConsole.access) {
-          savedConsole.access = savedConsole.isPrivate ? "private" : "workspace";
+          savedConsole.access = savedConsole.isPrivate
+            ? "private"
+            : "workspace";
         }
 
         await savedConsole.save();

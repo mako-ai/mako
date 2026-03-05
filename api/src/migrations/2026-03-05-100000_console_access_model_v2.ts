@@ -37,13 +37,17 @@ export async function up(db: Db): Promise<void> {
     `Migrated ${readResult.modifiedCount} consoles from shared_read to workspace`,
   );
 
-  // 2. Map shared_write -> workspace
+  // 2. Map shared_write -> workspace, preserving write access for all workspace members
+  // The wildcard entry {userId: '*', access: 'write'} indicates workspace-wide write.
   const writeResult = await col.updateMany(
     { access: "shared_write" },
-    { $set: { access: "workspace" } },
+    {
+      $set: { access: "workspace" },
+      $addToSet: { shared_with: { userId: "*", access: "write" } },
+    },
   );
   log.info(
-    `Migrated ${writeResult.modifiedCount} consoles from shared_write to workspace`,
+    `Migrated ${writeResult.modifiedCount} consoles from shared_write to workspace (with write)`,
   );
 
   // 3. Convert flat ObjectId shared_with arrays to structured entries.

@@ -35,6 +35,35 @@ function mapConsoleLanguageToQueryLanguage(
 
 const logger = loggers.api("consoles");
 
+/**
+ * Resolve email addresses in shared_with entries to actual user IDs.
+ * Entries that are already valid ObjectIds are left unchanged.
+ */
+async function resolveSharedWithEmails(
+  entries: Array<{ userId: string; access: "read" | "write" }>,
+): Promise<Array<{ userId: string; access: "read" | "write" }>> {
+  const resolved: Array<{ userId: string; access: "read" | "write" }> = [];
+  for (const entry of entries) {
+    if (Types.ObjectId.isValid(entry.userId)) {
+      resolved.push(entry);
+    } else if (entry.userId.includes("@")) {
+      const found = await User.findOne({
+        email: entry.userId.toLowerCase().trim(),
+      });
+      if (found) {
+        resolved.push({ userId: found._id.toString(), access: entry.access });
+      } else {
+        logger.warn("Shared-with email not found, skipping", {
+          email: entry.userId,
+        });
+      }
+    } else {
+      resolved.push(entry);
+    }
+  }
+  return resolved;
+}
+
 export const consoleRoutes = new Hono();
 const consoleManager = new ConsoleManager();
 
@@ -977,12 +1006,16 @@ consoleRoutes.post("/:id/share", async (c: Context) => {
       );
     }
 
+    const resolvedSharedWith = shared_with
+      ? await resolveSharedWithEmails(shared_with)
+      : undefined;
+
     const updated = await consoleManager.updateConsoleAccess(
       consoleId,
       workspaceId,
       user.id,
       access,
-      shared_with,
+      resolvedSharedWith,
     );
 
     if (!updated) {
@@ -1053,12 +1086,16 @@ consoleRoutes.post("/folders/:id/share", async (c: Context) => {
       );
     }
 
+    const resolvedSharedWith = shared_with
+      ? await resolveSharedWithEmails(shared_with)
+      : undefined;
+
     const success = await consoleManager.updateFolderAccess(
       folderId,
       workspaceId,
       user.id,
       access,
-      shared_with,
+      resolvedSharedWith,
     );
 
     if (!success) {
