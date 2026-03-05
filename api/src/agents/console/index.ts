@@ -13,6 +13,7 @@ import type {
 } from "../types";
 import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
+import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
 
 /**
@@ -123,6 +124,7 @@ export const consoleAgentFactory: AgentFactory = (
     consoleId,
     databases = [],
     workspaceCustomPrompt = "",
+    selfDirective = "",
   } = context;
 
   // Build database lookup maps
@@ -147,6 +149,10 @@ export const consoleAgentFactory: AgentFactory = (
       ? `\n\n---\n\n### Workspace Context\n${workspaceCustomPrompt.trim()}`
       : "";
 
+  const selfDirectiveContext = selfDirective.trim()
+    ? `\n\n---\n\n### Self-Directive (agent-learned rules)\n${selfDirective.trim()}`
+    : "";
+
   const runtimeContext = buildRuntimeContext(
     enrichedConsoles,
     consoleId,
@@ -157,6 +163,7 @@ export const consoleAgentFactory: AgentFactory = (
 
   // Create tools
   const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
+  const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
 
   return {
     systemPrompt: [
@@ -169,9 +176,9 @@ export const consoleAgentFactory: AgentFactory = (
       },
       {
         role: "system" as const,
-        content: runtimeContext,
+        content: selfDirectiveContext + runtimeContext,
       },
     ],
-    tools: tools as Record<string, any>,
+    tools: { ...tools, ...selfDirectiveTools } as Record<string, any>,
   };
 };

@@ -49,6 +49,8 @@ export interface AgentContext {
   flowFormState?: Record<string, unknown>;
   /** Custom workspace prompt */
   workspaceCustomPrompt?: string;
+  /** Agent-editable self-directive (persisted workspace knowledge) */
+  selfDirective?: string;
 }
 
 /**
