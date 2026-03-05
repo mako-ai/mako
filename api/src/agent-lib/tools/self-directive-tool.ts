@@ -65,8 +65,22 @@ export function createSelfDirectiveTools(workspaceId: string) {
           };
         }
 
+        const safeContent = { $literal: content };
         const ws = await Workspace.findOneAndUpdate(
-          { _id: workspaceId },
+          {
+            _id: workspaceId,
+            $expr: {
+              $lte: [
+                {
+                  $add: [
+                    { $strLenCP: { $ifNull: ["$selfDirective", ""] } },
+                    content.length + 1,
+                  ],
+                },
+                MAX_SELF_DIRECTIVE_LENGTH,
+              ],
+            },
+          },
           [
             {
               $set: {
@@ -78,8 +92,8 @@ export function createSelfDirectiveTools(workspaceId: string) {
                         { $ne: ["$selfDirective", null] },
                       ],
                     },
-                    then: { $concat: ["$selfDirective", "\n", content] },
-                    else: content,
+                    then: { $concat: ["$selfDirective", "\n", safeContent] },
+                    else: safeContent,
                   },
                 },
               },
@@ -87,7 +101,14 @@ export function createSelfDirectiveTools(workspaceId: string) {
           ],
           { new: true, projection: { selfDirective: 1 } },
         );
-        if (!ws) return { success: false, error: "Workspace not found" };
+        if (!ws) {
+          const exists = await Workspace.exists({ _id: workspaceId });
+          if (!exists) return { success: false, error: "Workspace not found" };
+          return {
+            success: false,
+            error: `Self-directive would exceed the ${MAX_SELF_DIRECTIVE_LENGTH} character limit. Use 'replace' to rewrite it more concisely.`,
+          };
+        }
         return { success: true, length: (ws.selfDirective || "").length };
       },
     },
