@@ -914,7 +914,7 @@ function DatabaseExplorer({
           const contextDb = databaseContextMenu
             ? databases.find(d => d.id === databaseContextMenu.item.databaseId)
             : null;
-          const isCtxOwner = contextDb?.isOwner !== false;
+          const isCtxOwner = contextDb?.isOwner === true;
 
           return (
             <>

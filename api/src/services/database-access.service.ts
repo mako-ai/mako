@@ -39,6 +39,44 @@ const MONGODB_READ_ONLY_OPERATIONS = new Set([
   "explain",
 ]);
 
+const KNOWN_MONGO_OPERATIONS = [
+  "find",
+  "findOne",
+  "aggregate",
+  "count",
+  "countDocuments",
+  "estimatedDocumentCount",
+  "distinct",
+  "explain",
+  "insertOne",
+  "insertMany",
+  "updateOne",
+  "updateMany",
+  "deleteOne",
+  "deleteMany",
+  "replaceOne",
+  "bulkWrite",
+  "findOneAndUpdate",
+  "findOneAndDelete",
+  "findOneAndReplace",
+  "drop",
+  "createIndex",
+  "dropIndex",
+];
+
+const MONGO_OP_PATTERN = new RegExp(
+  `\\.(${KNOWN_MONGO_OPERATIONS.join("|")})\\s*\\(`,
+);
+
+/**
+ * Extract the MongoDB operation from a query string by finding the first
+ * known CRUD method call (e.g. `.find(`, `.aggregate(`).
+ */
+function extractMongoOperation(query: string): string | undefined {
+  const match = query.match(MONGO_OP_PATTERN);
+  return match ? match[1] : undefined;
+}
+
 export interface AccessCheckResult {
   allowed: boolean;
   error?: string;
@@ -78,21 +116,25 @@ export function checkQueryAccess(
   }
 
   if (access === "private") {
-    return {
-      allowed: false,
-      error:
-        "Access denied. This database is private and only accessible by its owner.",
-    };
+    const sharedWithIds = (database.sharedWith || []).map(
+      (id: Types.ObjectId) => id.toString(),
+    );
+    if (!sharedWithIds.includes(userId)) {
+      return {
+        allowed: false,
+        error:
+          "Access denied. This database is private and only accessible by its owner.",
+      };
+    }
+    // sharedWith users on private databases get read-only access (fall through)
   }
 
-  if (access === "shared_read") {
+  if (access === "shared_read" || access === "private") {
     const dbType = database.type;
+    const mongoOp =
+      options?.mongoOperation || extractMongoOperation(query) || "";
     const isReadOnly =
-      dbType === "mongodb"
-        ? options?.mongoOperation
-          ? isMongoReadOnly(options.mongoOperation)
-          : false
-        : isSqlReadOnly(query);
+      dbType === "mongodb" ? isMongoReadOnly(mongoOp) : isSqlReadOnly(query);
 
     if (!isReadOnly) {
       const hint =

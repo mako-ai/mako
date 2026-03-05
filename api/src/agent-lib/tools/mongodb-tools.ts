@@ -40,7 +40,7 @@ const executeQuerySchema = z.object({
 });
 
 // Helper implementations
-async function listMongoConnectionsImpl(workspaceId: string) {
+async function listMongoConnectionsImpl(workspaceId: string, userId?: string) {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
@@ -49,7 +49,14 @@ async function listMongoConnectionsImpl(workspaceId: string) {
   }).sort({ name: 1 });
 
   return databases
-    .filter(db => db.type === "mongodb")
+    .filter(db => {
+      if (db.type !== "mongodb") return false;
+      if (!userId) return true;
+      const access = db.access || "shared_write";
+      const ownerId = db.ownerId || db.createdBy;
+      if (ownerId === userId) return true;
+      return access !== "private";
+    })
     .map(db => ({
       id: db._id.toString(),
       name: db.name,
@@ -327,7 +334,7 @@ export const createMongoToolsV2 = (
       description:
         "List all MongoDB connections available in this workspace. Returns connection ID, name, and database name.",
       inputSchema: emptySchema,
-      execute: async () => listMongoConnectionsImpl(workspaceId),
+      execute: async () => listMongoConnectionsImpl(workspaceId, userId),
     },
 
     list_databases: {
