@@ -135,7 +135,29 @@ consoleRoutes.get("/", async (c: Context) => {
           userId,
           tree,
         );
-      return c.json({ success: true, tree, myConsoles, sharedConsoles });
+
+      // Filter shared consoles out of the tree so they only appear in the
+      // dedicated sharedConsoles list and are not duplicated in the main tree.
+      const filterOwned = (nodes: typeof tree): typeof tree => {
+        return nodes
+          .map(node => {
+            if (node.isDirectory) {
+              const children = node.children ? filterOwned(node.children) : [];
+              if (children.length === 0) return null;
+              return { ...node, children };
+            }
+            return node.owner_id === userId ? node : null;
+          })
+          .filter(Boolean) as typeof tree;
+      };
+      const ownedTree = filterOwned(tree);
+
+      return c.json({
+        success: true,
+        tree: ownedTree,
+        myConsoles,
+        sharedConsoles,
+      });
     }
 
     return c.json({ success: true, tree });
@@ -1051,6 +1073,11 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
+    // Deny access to private consoles not owned by the current user
+    if (user && !ConsoleManager.canRead(savedConsole, user.id)) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
     // If console has a connection ID, verify it exists and belongs to workspace
     if (savedConsole.connectionId) {
       database = await DatabaseConnection.findOne({
@@ -1335,6 +1362,19 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
     const ownerId = savedConsole.owner_id || savedConsole.createdBy;
 
+    // Deny access to private consoles not owned by the current user
+    if (resolvedAccess === "private" && user?.id && ownerId !== user.id) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    // Determine if the current user can write
+    let readOnly = false;
+    if (user?.id && ownerId) {
+      if (resolvedAccess === "shared_read" && user.id !== ownerId) {
+        readOnly = true;
+      }
+    }
+
     return c.json({
       success: true,
       console: {
@@ -1358,8 +1398,7 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
         executionCount: savedConsole.executionCount,
         access: resolvedAccess,
         owner_id: ownerId,
-        readOnly:
-          user?.id && resolvedAccess === "shared_read" && user.id !== ownerId,
+        readOnly,
       },
     });
   } catch (error) {
