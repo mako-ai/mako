@@ -578,12 +578,23 @@ export const flowAgentFactory: AgentFactory = (
   const { workspaceId, flowFormState, databases = [] } = context;
 
   const runtimeContext = buildRuntimeContext(flowFormState, databases);
-  const systemPrompt = FLOW_PROMPT + runtimeContext;
 
   const tools = createFlowTools(workspaceId);
 
   return {
-    systemPrompt,
+    systemPrompt: [
+      {
+        role: "system" as const,
+        content: FLOW_PROMPT,
+        providerOptions: {
+          anthropic: { cacheControl: { type: "ephemeral" } },
+        },
+      },
+      {
+        role: "system" as const,
+        content: runtimeContext,
+      },
+    ],
     tools,
   };
 };

@@ -6,6 +6,7 @@
  * based on runtime context.
  */
 
+import type { SystemModelMessage } from "ai";
 import type { ConsoleDataV2 } from "../agent-lib/types";
 
 /**
@@ -58,8 +59,8 @@ export interface AgentContext {
  * - Client-side tools (plain objects with description and inputSchema, no execute)
  */
 export interface AgentConfig {
-  /** System prompt for the agent */
-  systemPrompt: string;
+  /** System prompt — plain string or structured array with provider options (e.g. Anthropic cacheControl) */
+  systemPrompt: string | SystemModelMessage | SystemModelMessage[];
   /** Tools available to the agent - mix of server and client tools */
   tools: Record<string, unknown>;
 }

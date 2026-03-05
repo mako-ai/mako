@@ -155,14 +155,23 @@ export const consoleAgentFactory: AgentFactory = (
     databaseNameMap,
   );
 
-  const systemPrompt =
-    UNIVERSAL_PROMPT_V2 + customPromptContext + runtimeContext;
-
   // Create tools
   const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
 
   return {
-    systemPrompt,
+    systemPrompt: [
+      {
+        role: "system" as const,
+        content: UNIVERSAL_PROMPT_V2 + customPromptContext,
+        providerOptions: {
+          anthropic: { cacheControl: { type: "ephemeral" } },
+        },
+      },
+      {
+        role: "system" as const,
+        content: runtimeContext,
+      },
+    ],
     tools: tools as Record<string, any>,
   };
 };
