@@ -26,6 +26,8 @@ import {
 } from "./shared/sql-dialects";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
 
+const AGENT_QUERY_TIMEOUT_MS = 15_000;
+
 // LIMIT enforcement (kept local as it has sql-tools specific logic)
 const needsDefaultLimit = (sql: string): boolean => {
   const trimmed = sql.trim();
@@ -788,18 +790,42 @@ async function executeQueryImpl(
   }
   // BigQuery doesn't need options - dataset is in the query
 
-  const result = await databaseConnectionService.executeQuery(
-    database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-    safeQuery,
-    options,
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(
+      () => reject(new Error("AGENT_QUERY_TIMEOUT")),
+      AGENT_QUERY_TIMEOUT_MS,
+    ),
   );
 
-  if (result && result.success && result.data) {
-    const truncatedData = truncateQueryResults(result.data);
-    return { ...result, data: truncatedData, sqlDialect: dialect };
-  }
+  try {
+    const result = await Promise.race([
+      databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        safeQuery,
+        options,
+      ),
+      timeoutPromise,
+    ]);
 
-  return { ...result, sqlDialect: dialect };
+    if (result && result.success && result.data) {
+      const truncatedData = truncateQueryResults(result.data);
+      return { ...result, data: truncatedData, sqlDialect: dialect };
+    }
+
+    return { ...result, sqlDialect: dialect };
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
+      return {
+        success: false,
+        status: "timeout",
+        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The query may be valid but slow. Consider: (1) Add LIMIT for exploration, (2) Narrow date range, (3) Write the full query to console and use run_console to execute in the UI where there's no timeout.`,
+        sqlDialect: dialect,
+      };
+    }
+    throw err;
+  }
 }
 
 // ============================================================================

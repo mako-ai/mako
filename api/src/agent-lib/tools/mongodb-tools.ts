@@ -38,6 +38,8 @@ const executeQuerySchema = z.object({
   databaseName: z.string().describe("The target database name"),
 });
 
+const AGENT_QUERY_TIMEOUT_MS = 15_000;
+
 // Helper implementations
 async function listMongoConnectionsImpl(workspaceId: string) {
   if (!Types.ObjectId.isValid(workspaceId)) {
@@ -225,11 +227,52 @@ async function executeQueryImpl(
   });
   if (!database) throw new Error("Connection not found or access denied");
 
-  const result = await databaseConnectionService.executeQuery(
-    database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-    query,
-    { databaseName },
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(
+      () => reject(new Error("AGENT_QUERY_TIMEOUT")),
+      AGENT_QUERY_TIMEOUT_MS,
+    ),
   );
+
+  let result: Awaited<
+    ReturnType<typeof databaseConnectionService.executeQuery>
+  >;
+  try {
+    result = await Promise.race([
+      databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        query,
+        { databaseName },
+      ),
+      timeoutPromise,
+    ]);
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
+      // Track timeout (fire-and-forget)
+      if (userId) {
+        queryExecutionService.track({
+          userId,
+          workspaceId: new Types.ObjectId(workspaceId),
+          connectionId: database._id,
+          databaseName,
+          source: "agent",
+          databaseType: database.type,
+          queryLanguage: "mongodb",
+          status: "timeout",
+          executionTimeMs: Date.now() - startTime,
+          errorType: "timeout",
+        });
+      }
+      return {
+        success: false,
+        status: "timeout",
+        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The query may be valid but slow. Consider: (1) Add .limit() for exploration, (2) Narrow date range, (3) Write the full query to console and use run_console to execute in the UI where there's no timeout.`,
+      };
+    }
+    throw err;
+  }
 
   // Track query execution (fire-and-forget)
   if (userId) {

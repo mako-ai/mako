@@ -87,6 +87,14 @@ export const openConsoleSchema = z.object({
     .describe("Console ID to open (from search_consoles results)."),
 });
 
+export const runConsoleSchema = z.object({
+  consoleId: z
+    .string()
+    .describe(
+      "Console ID to execute. The console must have a query and an active connection.",
+    ),
+});
+
 export const setConsoleConnectionSchema = z.object({
   consoleId: z
     .string()
@@ -153,6 +161,13 @@ export const clientConsoleTools = {
     inputSchema: openConsoleSchema,
     // No execute function - this is a client-side tool
   },
+
+  run_console: {
+    description:
+      "Execute the query currently in a console tab. Triggers the 'Run' action in the UI and returns the results or error back to you. Use this AFTER modify_console to show results immediately. The console must be connected to a database.",
+    inputSchema: runConsoleSchema,
+    // No execute function - client-side tool
+  },
 };
 
 // Export schema types for client-side use
@@ -164,3 +179,4 @@ export type SetConsoleConnectionInput = z.infer<
   typeof setConsoleConnectionSchema
 >;
 export type OpenConsoleInput = z.infer<typeof openConsoleSchema>;
+export type RunConsoleInput = z.infer<typeof runConsoleSchema>;
