@@ -42,85 +42,34 @@ export function createSelfDirectiveTools(workspaceId: string) {
         operation: "append" | "replace";
         content: string;
       }) => {
+        if (!content) return { success: false, error: "content is required" };
+
         if (operation === "replace") {
-          const ws = await Workspace.findByIdAndUpdate(
-            workspaceId,
-            { $set: { selfDirective: content } },
-            { new: true, select: "selfDirective" },
-          );
-          if (!ws) return { success: false, error: "Workspace not found" };
-          return { success: true, length: (ws.selfDirective || "").length };
+          await Workspace.findByIdAndUpdate(workspaceId, {
+            $set: { selfDirective: content },
+          });
+          return { success: true, length: content.length };
         }
 
-        const current =
+        const ws =
           await Workspace.findById(workspaceId).select("selfDirective");
-        if (!current) return { success: false, error: "Workspace not found" };
+        if (!ws) return { success: false, error: "Workspace not found" };
 
-        const currentLen = (current.selfDirective || "").length;
-        const newLen = currentLen + (currentLen > 0 ? 1 : 0) + content.length;
-        if (newLen > MAX_SELF_DIRECTIVE_LENGTH) {
+        const newValue = ws.selfDirective
+          ? ws.selfDirective + "\n" + content
+          : content;
+
+        if (newValue.length > MAX_SELF_DIRECTIVE_LENGTH) {
           return {
             success: false,
-            error: `Self-directive would exceed the ${MAX_SELF_DIRECTIVE_LENGTH} character limit (current: ${currentLen}, incoming: ${content.length}). Use 'replace' to rewrite it more concisely.`,
+            error: `Self-directive would exceed the ${MAX_SELF_DIRECTIVE_LENGTH} character limit (current: ${(ws.selfDirective || "").length}, incoming: ${content.length}). Use 'replace' to rewrite it more concisely.`,
           };
         }
 
-        const safeContent = { $literal: content };
-        const ws = await Workspace.findOneAndUpdate(
-          {
-            _id: workspaceId,
-            $expr: {
-              $lte: [
-                {
-                  $add: [
-                    { $strLenCP: { $ifNull: ["$selfDirective", ""] } },
-                    {
-                      $cond: {
-                        if: {
-                          $and: [
-                            { $ne: ["$selfDirective", ""] },
-                            { $ne: ["$selfDirective", null] },
-                          ],
-                        },
-                        then: content.length + 1,
-                        else: content.length,
-                      },
-                    },
-                  ],
-                },
-                MAX_SELF_DIRECTIVE_LENGTH,
-              ],
-            },
-          },
-          [
-            {
-              $set: {
-                selfDirective: {
-                  $cond: {
-                    if: {
-                      $and: [
-                        { $ne: ["$selfDirective", ""] },
-                        { $ne: ["$selfDirective", null] },
-                      ],
-                    },
-                    then: { $concat: ["$selfDirective", "\n", safeContent] },
-                    else: safeContent,
-                  },
-                },
-              },
-            },
-          ],
-          { new: true, projection: { selfDirective: 1 } },
-        );
-        if (!ws) {
-          const exists = await Workspace.exists({ _id: workspaceId });
-          if (!exists) return { success: false, error: "Workspace not found" };
-          return {
-            success: false,
-            error: `Self-directive would exceed the ${MAX_SELF_DIRECTIVE_LENGTH} character limit. Use 'replace' to rewrite it more concisely.`,
-          };
-        }
-        return { success: true, length: (ws.selfDirective || "").length };
+        await Workspace.findByIdAndUpdate(workspaceId, {
+          $set: { selfDirective: newValue },
+        });
+        return { success: true, length: newValue.length };
       },
     },
   };
