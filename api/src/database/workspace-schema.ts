@@ -699,6 +699,7 @@ Add any specific instructions for how the AI should interpret your data or respo
     selfDirective: {
       type: String,
       default: "",
+      maxlength: 10000,
     },
     apiKeys: [
       {

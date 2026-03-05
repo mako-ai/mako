@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { Workspace } from "../../database/workspace-schema";
 
+const MAX_SELF_DIRECTIVE_LENGTH = 10000;
+
 const updateSelfDirectiveSchema = z.object({
   operation: z
     .enum(["append", "replace"])
@@ -9,6 +11,7 @@ const updateSelfDirectiveSchema = z.object({
     ),
   content: z
     .string()
+    .max(MAX_SELF_DIRECTIVE_LENGTH)
     .describe("The content to append or replace with. Markdown supported."),
 });
 
@@ -39,17 +42,52 @@ export function createSelfDirectiveTools(workspaceId: string) {
         operation: "append" | "replace";
         content: string;
       }) => {
-        const ws = await Workspace.findById(workspaceId);
-        if (!ws) return { success: false, error: "Workspace not found" };
-
         if (operation === "replace") {
-          ws.selfDirective = content;
-        } else {
-          ws.selfDirective = ws.selfDirective
-            ? ws.selfDirective + "\n" + content
-            : content;
+          const ws = await Workspace.findByIdAndUpdate(
+            workspaceId,
+            { $set: { selfDirective: content } },
+            { new: true, select: "selfDirective" },
+          );
+          if (!ws) return { success: false, error: "Workspace not found" };
+          return { success: true, length: (ws.selfDirective || "").length };
         }
-        await ws.save();
+
+        const current =
+          await Workspace.findById(workspaceId).select("selfDirective");
+        if (!current) return { success: false, error: "Workspace not found" };
+
+        const currentLen = (current.selfDirective || "").length;
+        const newLen = currentLen + (currentLen > 0 ? 1 : 0) + content.length;
+        if (newLen > MAX_SELF_DIRECTIVE_LENGTH) {
+          return {
+            success: false,
+            error: `Self-directive would exceed the ${MAX_SELF_DIRECTIVE_LENGTH} character limit (current: ${currentLen}, incoming: ${content.length}). Use 'replace' to rewrite it more concisely.`,
+          };
+        }
+
+        const ws = await Workspace.findOneAndUpdate(
+          { _id: workspaceId },
+          [
+            {
+              $set: {
+                selfDirective: {
+                  $cond: {
+                    if: {
+                      $and: [
+                        { $ne: ["$selfDirective", ""] },
+                        { $ne: ["$selfDirective", null] },
+                      ],
+                    },
+                    then: { $concat: ["$selfDirective", "\n", content] },
+                    else: content,
+                  },
+                },
+              },
+            },
+          ],
+          { new: true, projection: { selfDirective: 1 } },
+        );
+        if (!ws) return { success: false, error: "Workspace not found" };
         return { success: true, length: (ws.selfDirective || "").length };
       },
     },
