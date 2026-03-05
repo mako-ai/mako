@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
+import { canUserSeeDatabase } from "../../services/database-access.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import { createMongoToolsV2 } from "./mongodb-tools";
@@ -43,10 +44,7 @@ async function listAllConnectionsImpl(workspaceId: string, userId?: string) {
   return databases
     .filter(db => {
       if (!userId) return true;
-      const access = db.access || "shared_write";
-      const ownerId = db.ownerId || db.createdBy;
-      if (ownerId === userId) return true;
-      return access !== "private";
+      return canUserSeeDatabase(db, userId);
     })
     .map(db => {
       const connection: Record<string, unknown> =

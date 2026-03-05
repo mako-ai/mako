@@ -6,7 +6,10 @@
 import { z } from "zod";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
-import { checkQueryAccess } from "../../services/database-access.service";
+import {
+  checkQueryAccess,
+  canUserSeeDatabase,
+} from "../../services/database-access.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -117,10 +120,7 @@ async function listSqlConnectionsImpl(workspaceId: string, userId?: string) {
   return databases
     .filter(db => {
       if (!userId) return true;
-      const access = db.access || "shared_write";
-      const ownerId = db.ownerId || db.createdBy;
-      if (ownerId === userId) return true;
-      return access !== "private";
+      return canUserSeeDatabase(db, userId);
     })
     .map(db => {
       const connection: Record<string, unknown> =

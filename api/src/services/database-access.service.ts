@@ -84,10 +84,25 @@ export interface AccessCheckResult {
 
 /**
  * Check if a SQL query is read-only (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE).
+ * Handles multi-statement queries by validating every statement.
  */
 export function isSqlReadOnly(query: string): boolean {
-  const keyword = extractFirstSqlKeyword(query);
-  return SQL_READ_ONLY_KEYWORDS.has(keyword);
+  const stripped = query
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/--.*/g, "")
+    .trim();
+
+  const statements = stripped
+    .split(";")
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  if (statements.length === 0) return false;
+
+  return statements.every(stmt => {
+    const keyword = extractFirstSqlKeyword(stmt);
+    return SQL_READ_ONLY_KEYWORDS.has(keyword);
+  });
 }
 
 /**

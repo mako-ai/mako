@@ -819,9 +819,7 @@ workspaceDatabaseRoutes.post(
 
       // Enforce access controls
       if (user?.id) {
-        const accessCheck = checkQueryAccess(database, user.id, body.query, {
-          mongoOperation: body.options?.operation,
-        });
+        const accessCheck = checkQueryAccess(database, user.id, body.query);
         if (!accessCheck.allowed) {
           return c.json({ success: false, error: accessCheck.error }, 403);
         }
