@@ -5,16 +5,65 @@ import {
 import { Types } from "mongoose";
 
 /**
- * Strips SQL comments (single-line and multi-line) and leading whitespace,
- * then returns the first keyword to determine if the query is read-only.
+ * Strip SQL comments and string literals using a character-level state machine
+ * so that comment-like sequences inside string literals are not misinterpreted.
+ * Preserves semicolons and SQL keywords while removing content that could
+ * disguise destructive statements.
+ */
+function stripSqlCommentsAndStrings(sql: string): string {
+  let result = "";
+  let i = 0;
+  while (i < sql.length) {
+    if (sql[i] === "-" && sql[i + 1] === "-") {
+      while (i < sql.length && sql[i] !== "\n") i++;
+      continue;
+    }
+    if (sql[i] === "/" && sql[i + 1] === "*") {
+      i += 2;
+      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    if (sql[i] === "'") {
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === "'" && sql[i + 1] === "'") {
+          i += 2;
+        } else if (sql[i] === "'") {
+          i++;
+          break;
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+    if (sql[i] === '"') {
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === '"' && sql[i + 1] === '"') {
+          i += 2;
+        } else if (sql[i] === '"') {
+          i++;
+          break;
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+    result += sql[i];
+    i++;
+  }
+  return result;
+}
+
+/**
+ * Returns the first SQL keyword from a pre-stripped statement.
  */
 function extractFirstSqlKeyword(sql: string): string {
-  const stripped = sql
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/--.*/g, "")
-    .trim();
-
-  const match = stripped.match(/^[\s(]*([a-zA-Z]+)/);
+  const trimmed = sql.trim();
+  const match = trimmed.match(/^[\s(]*([a-zA-Z]+)/);
   return match ? match[1].toUpperCase() : "";
 }
 
@@ -93,10 +142,7 @@ export interface AccessCheckResult {
  * Handles multi-statement queries by validating every statement.
  */
 export function isSqlReadOnly(query: string): boolean {
-  const stripped = query
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/--.*/g, "")
-    .trim();
+  const stripped = stripSqlCommentsAndStrings(query).trim();
 
   const statements = stripped
     .split(";")

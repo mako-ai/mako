@@ -158,8 +158,13 @@ export const consoleAgentFactory: AgentFactory = (
   const systemPrompt =
     UNIVERSAL_PROMPT_V2 + customPromptContext + runtimeContext;
 
-  // Create tools
-  const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
+  // Create tools (pass userId for access control enforcement)
+  const tools = createUniversalTools(
+    workspaceId,
+    enrichedConsoles,
+    consoleId,
+    context.userId,
+  );
 
   return {
     systemPrompt,
