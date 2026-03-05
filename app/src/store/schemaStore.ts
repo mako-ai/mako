@@ -8,6 +8,9 @@ import { apiClient } from "../lib/api-client";
 // Types
 // ============================================================================
 
+/** Access level for database connections */
+export type DatabaseAccessLevel = "private" | "shared_read" | "shared_write";
+
 /** Database connection/server */
 export interface Connection {
   id: string;
@@ -24,6 +27,9 @@ export interface Connection {
   displayName: string;
   hostKey: string;
   hostName: string;
+  access?: DatabaseAccessLevel;
+  isOwner?: boolean;
+  ownerId?: string;
 }
 
 /** Tree node for databases, datasets, schemas, tables, etc. */
@@ -166,6 +172,13 @@ interface SchemaState {
     payload: Record<string, unknown>,
     databaseId?: string,
   ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+
+  // === Sharing ===
+  shareDatabase: (
+    workspaceId: string,
+    databaseId: string,
+    settings: { access?: DatabaseAccessLevel; sharedWith?: string[] },
+  ) => Promise<{ success: boolean; error?: string }>;
 
   // === Console Template ===
   fetchConsoleTemplate: (
@@ -665,6 +678,32 @@ export const useSchemaStore = create<SchemaState>()(
               error instanceof Error
                 ? error.message
                 : "Failed to save database",
+          };
+        }
+      },
+
+      shareDatabase: async (workspaceId, databaseId, settings) => {
+        try {
+          const res = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/databases/${databaseId}/share`,
+            settings,
+          );
+
+          if (res.success) {
+            await get().refreshConnections(workspaceId);
+          }
+
+          return res;
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to update sharing settings",
           };
         }
       },

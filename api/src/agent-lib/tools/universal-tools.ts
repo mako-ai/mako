@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
+import { canUserSeeDatabase } from "../../services/database-access.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import { createMongoToolsV2 } from "./mongodb-tools";
@@ -30,7 +31,7 @@ const SUPPORTED_CONNECTION_TYPES = new Set([
   "cloudflare-d1",
 ]);
 
-async function listAllConnectionsImpl(workspaceId: string) {
+async function listAllConnectionsImpl(workspaceId: string, userId?: string) {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
@@ -40,84 +41,89 @@ async function listAllConnectionsImpl(workspaceId: string) {
     type: { $in: Array.from(SUPPORTED_CONNECTION_TYPES) },
   }).sort({ name: 1 });
 
-  return databases.map(db => {
-    const connection: Record<string, unknown> =
-      (db as unknown as { connection: Record<string, unknown> }).connection ||
-      {};
+  return databases
+    .filter(db => {
+      if (!userId) return true;
+      return canUserSeeDatabase(db, userId);
+    })
+    .map(db => {
+      const connection: Record<string, unknown> =
+        (db as unknown as { connection: Record<string, unknown> }).connection ||
+        {};
 
-    if (db.type === "mongodb") {
-      const databaseName = (connection.database as string) || undefined;
-      const displayInfo = databaseName || "Unknown Database";
+      if (db.type === "mongodb") {
+        const databaseName = (connection.database as string) || undefined;
+        const displayInfo = databaseName || "Unknown Database";
+        return {
+          id: db._id.toString(),
+          name: db.name,
+          type: db.type,
+          databaseName,
+          displayName: `${db.name} (mongodb: ${displayInfo})`,
+          active: true,
+        };
+      }
+
+      if (db.type === "bigquery") {
+        const project = (connection.project_id as string) || undefined;
+        const displayInfo = project || "Unknown Project";
+        return {
+          id: db._id.toString(),
+          name: db.name,
+          type: db.type,
+          sqlDialect: "bigquery",
+          project,
+          displayName: `${db.name} (bigquery: ${displayInfo})`,
+          active: true,
+        };
+      }
+
+      if (
+        db.type === "postgresql" ||
+        db.type === "redshift" ||
+        db.type === "cloudsql-postgres"
+      ) {
+        const host = (connection.host || connection.instanceConnectionName) as
+          | string
+          | undefined;
+        const databaseName = (connection.database || connection.db) as
+          | string
+          | undefined;
+        const displayInfo = `${host || "unknown-host"}/${databaseName || "unknown-db"}`;
+        return {
+          id: db._id.toString(),
+          name: db.name,
+          type: db.type,
+          sqlDialect: "postgresql",
+          host,
+          databaseName,
+          displayName: `${db.name} (postgresql: ${displayInfo})`,
+          active: true,
+        };
+      }
+
+      if (db.type === "sqlite" || db.type === "cloudflare-d1") {
+        const databaseId = (connection.database_id as string) || "main";
+        return {
+          id: db._id.toString(),
+          name: db.name,
+          type: db.type,
+          sqlDialect: "sqlite",
+          databaseId,
+          displayName: `${db.name} (sqlite: ${databaseId})`,
+          active: true,
+        };
+      }
+
+      // Fallback for any new types
       return {
         id: db._id.toString(),
         name: db.name,
         type: db.type,
-        databaseName,
-        displayName: `${db.name} (mongodb: ${displayInfo})`,
+        displayName: `${db.name} (${db.type})`,
         active: true,
       };
-    }
-
-    if (db.type === "bigquery") {
-      const project = (connection.project_id as string) || undefined;
-      const displayInfo = project || "Unknown Project";
-      return {
-        id: db._id.toString(),
-        name: db.name,
-        type: db.type,
-        sqlDialect: "bigquery",
-        project,
-        displayName: `${db.name} (bigquery: ${displayInfo})`,
-        active: true,
-      };
-    }
-
-    if (
-      db.type === "postgresql" ||
-      db.type === "redshift" ||
-      db.type === "cloudsql-postgres"
-    ) {
-      const host = (connection.host || connection.instanceConnectionName) as
-        | string
-        | undefined;
-      const databaseName = (connection.database || connection.db) as
-        | string
-        | undefined;
-      const displayInfo = `${host || "unknown-host"}/${databaseName || "unknown-db"}`;
-      return {
-        id: db._id.toString(),
-        name: db.name,
-        type: db.type,
-        sqlDialect: "postgresql",
-        host,
-        databaseName,
-        displayName: `${db.name} (postgresql: ${displayInfo})`,
-        active: true,
-      };
-    }
-
-    if (db.type === "sqlite" || db.type === "cloudflare-d1") {
-      const databaseId = (connection.database_id as string) || "main";
-      return {
-        id: db._id.toString(),
-        name: db.name,
-        type: db.type,
-        sqlDialect: "sqlite",
-        databaseId,
-        displayName: `${db.name} (sqlite: ${databaseId})`,
-        active: true,
-      };
-    }
-
-    // Fallback for any new types
-    return {
-      id: db._id.toString(),
-      name: db.name,
-      type: db.type,
-      displayName: `${db.name} (${db.type})`,
-      active: true,
-    };
-  });
+    });
 }
 
 /**
@@ -160,7 +166,12 @@ export const createUniversalTools = (
   } = mongoTools;
 
   // Get SQL tools and extract just the database-specific ones
-  const sqlTools = createSqlToolsV2(workspaceId, consoles, preferredConsoleId);
+  const sqlTools = createSqlToolsV2(
+    workspaceId,
+    consoles,
+    preferredConsoleId,
+    userId,
+  );
   const {
     // Strip console tools
     modify_console: _sqlModify,
@@ -179,7 +190,7 @@ export const createUniversalTools = (
       description:
         "List all database connections in this workspace (MongoDB, PostgreSQL, Redshift, BigQuery, SQLite, Cloudflare D1). Use this to discover available databases before running queries.",
       inputSchema: emptySchema,
-      execute: async () => listAllConnectionsImpl(workspaceId),
+      execute: async () => listAllConnectionsImpl(workspaceId, userId),
     },
 
     // MongoDB tools (namespaced with mongo_ prefix) - server-side

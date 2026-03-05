@@ -183,6 +183,14 @@ export interface IWorkspaceInvite extends Document {
 }
 
 /**
+ * Access level for database connections
+ * - private: only owner can see and use
+ * - shared_read: workspace members can see and run read-only queries
+ * - shared_write: workspace members can see and run any query (default for backward compat)
+ */
+export type DatabaseAccessLevel = "private" | "shared_read" | "shared_write";
+
+/**
  * DatabaseConnection model interface
  * Represents a saved connection to a database server (may contain multiple databases)
  */
@@ -228,6 +236,9 @@ export interface IDatabaseConnection extends Document {
       privateKey?: string;
     };
   };
+  access: DatabaseAccessLevel;
+  ownerId: string;
+  sharedWith: Types.ObjectId[];
   isDemo?: boolean; // True if this is a demo database connection
   createdBy: string;
   createdAt: Date;
@@ -855,6 +866,21 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       set: encryptObject,
       get: decryptObject,
     },
+    access: {
+      type: String,
+      enum: ["private", "shared_read", "shared_write"],
+      default: "shared_write",
+    },
+    ownerId: {
+      type: String,
+      ref: "User",
+    },
+    sharedWith: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "WorkspaceMember",
+      },
+    ],
     isDemo: {
       type: Boolean,
       default: false,
@@ -879,6 +905,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
 // Indexes
 DatabaseConnectionSchema.index({ workspaceId: 1 });
 DatabaseConnectionSchema.index({ workspaceId: 1, name: 1 });
+DatabaseConnectionSchema.index({ workspaceId: 1, access: 1, ownerId: 1 });
 
 /**
  * Connector Schema
