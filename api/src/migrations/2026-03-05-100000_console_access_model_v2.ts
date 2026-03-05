@@ -82,13 +82,21 @@ export async function up(db: Db): Promise<void> {
   if (collectionNames.includes("consolefolders")) {
     const folderCol = db.collection("consolefolders");
 
-    // Add access field to folders that don't have it
-    const folderResult = await folderCol.updateMany(
-      { access: { $exists: false } },
+    // Add access field to folders that don't have it, respecting isPrivate
+    const privateFolderResult = await folderCol.updateMany(
+      { isPrivate: true, access: { $exists: false } },
       { $set: { access: "private", shared_with: [] } },
     );
     log.info(
-      `Initialized access fields for ${folderResult.modifiedCount} folders`,
+      `Set access='private' for ${privateFolderResult.modifiedCount} private folders`,
+    );
+
+    const workspaceFolderResult = await folderCol.updateMany(
+      { isPrivate: { $ne: true }, access: { $exists: false } },
+      { $set: { access: "workspace", shared_with: [] } },
+    );
+    log.info(
+      `Set access='workspace' for ${workspaceFolderResult.modifiedCount} workspace-visible folders`,
     );
   }
 }

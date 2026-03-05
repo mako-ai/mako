@@ -185,11 +185,7 @@ consoleRoutes.get("/content", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
-    // Fetch the full document to check access properly
-    const fullConsole = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const fullConsole = consoleData._raw;
 
     if (fullConsole && !ConsoleManager.canRead(fullConsole, user.id)) {
       return c.json({ success: false, error: "Console not found" }, 404);
@@ -198,7 +194,6 @@ consoleRoutes.get("/content", async (c: Context) => {
     const consoleAccess = consoleData.access || "private";
     const ownerId = consoleData.owner_id;
 
-    // Determine if the current user can write
     const readOnly = fullConsole
       ? !ConsoleManager.canWrite(fullConsole, user.id)
       : false;

@@ -417,6 +417,7 @@ export class ConsoleManager {
     isSaved?: boolean;
     access?: ConsoleAccessLevel;
     owner_id?: string;
+    _raw?: ISavedConsole;
   } | null> {
     try {
       // Only accept valid ObjectIds
@@ -455,6 +456,7 @@ export class ConsoleManager {
           isSaved: savedConsole.isSaved,
           access: ConsoleManager.resolveAccess(savedConsole),
           owner_id: savedConsole.owner_id || savedConsole.createdBy,
+          _raw: savedConsole,
         };
       }
 
