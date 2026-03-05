@@ -18,6 +18,7 @@ import {
 } from "../services/query-execution.service";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
+import { checkQueryAccess } from "../services/database-access.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 
 /**
@@ -913,6 +914,21 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
         },
         400,
       );
+    }
+
+    // Enforce database access controls
+    {
+      const execUserId = user?.id || apiKey?.createdBy;
+      const mongoOp = savedConsole.mongoOptions?.operation;
+      const accessCheck = checkQueryAccess(
+        database,
+        execUserId,
+        savedConsole.code,
+        { mongoOperation: mongoOp },
+      );
+      if (!accessCheck.allowed) {
+        return c.json({ success: false, error: accessCheck.error }, 403);
+      }
     }
 
     // Pass explicit databaseId and databaseName for cluster mode (D1, etc.)

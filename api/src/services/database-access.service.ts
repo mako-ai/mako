@@ -153,11 +153,18 @@ export interface AccessCheckResult {
 }
 
 /**
- * Extract all SQL keywords from a stripped statement.
+ * Check whether a stripped SQL statement contains any write keyword used
+ * in a statement context (not as an identifier fragment or function call).
+ *
+ * Uses `\b` word boundaries so that identifiers like `update_time` or
+ * `create_date` are not split into false-positive keyword matches (JS
+ * treats `_` and digits as word characters).  A negative lookahead
+ * `(?!\s*\()` excludes function-call usage such as `REPLACE(col, ...)`.
  */
-function extractAllSqlKeywords(sql: string): string[] {
-  const matches = sql.match(/[a-zA-Z]+/g);
-  return matches ? matches.map(m => m.toUpperCase()) : [];
+function containsSqlWriteKeyword(sql: string): boolean {
+  const keywords = [...SQL_WRITE_KEYWORDS].join("|");
+  const pattern = new RegExp(`\\b(${keywords})\\b(?!\\s*\\()`, "gi");
+  return pattern.test(sql);
 }
 
 /**
@@ -180,8 +187,7 @@ export function isSqlReadOnly(query: string): boolean {
     const keyword = extractFirstSqlKeyword(stmt);
     if (!SQL_READ_ONLY_KEYWORDS.has(keyword)) return false;
     if (keyword === "WITH") {
-      const allKeywords = extractAllSqlKeywords(stmt);
-      if (allKeywords.some(k => SQL_WRITE_KEYWORDS.has(k))) return false;
+      if (containsSqlWriteKeyword(stmt)) return false;
     }
     return true;
   });
