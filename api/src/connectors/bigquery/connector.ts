@@ -478,6 +478,7 @@ export class BigQueryConnector extends BaseConnector {
       case "BOOL":
         return value === true || value === "true";
       case "TIMESTAMP": {
+        if (value === "") return null;
         // BigQuery REST API returns TIMESTAMP as epoch-seconds float (e.g. "1.677123456E9").
         // Convert to ISO 8601 string for human-readable display.
         const num = Number(value);
