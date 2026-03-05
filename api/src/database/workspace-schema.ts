@@ -305,6 +305,14 @@ export interface IConsoleFolder extends Document {
 }
 
 /**
+ * Console access level.
+ * - 'private': only the owner can see/edit
+ * - 'shared_read': workspace members can view but only the owner can edit
+ * - 'shared_write': any workspace member can view and edit
+ */
+export type ConsoleAccessLevel = "private" | "shared_read" | "shared_write";
+
+/**
  * SavedConsole model interface
  *
  * Consoles can be:
@@ -314,6 +322,12 @@ export interface IConsoleFolder extends Document {
  * Draft consoles are restored when opening a chat by scanning the chat's
  * modify_console and create_console tool calls to find which console IDs were used.
  * Only saved consoles (isSaved=true) appear in the console explorer.
+ *
+ * Access model (added in console-access-model migration):
+ * - `access` is the source of truth for visibility/editability
+ * - `isPrivate` is kept for backward compatibility (deprecated; use `access` instead)
+ * - `owner_id` tracks the console creator; backfilled from `createdBy`
+ * - `shared_with` optionally restricts sharing to specific workspace members
  */
 export interface ISavedConsole extends Document {
   _id: Types.ObjectId;
@@ -339,8 +353,12 @@ export interface ISavedConsole extends Document {
       | "deleteOne";
   };
   createdBy: string;
+  /** @deprecated Use `access` field instead */
   isPrivate: boolean;
   isSaved: boolean; // true = explicitly saved, false/undefined = draft
+  access: ConsoleAccessLevel;
+  owner_id: string;
+  shared_with?: Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
   lastExecutedAt?: Date;
@@ -1062,6 +1080,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       ref: "User",
       required: true,
     },
+    /** @deprecated Kept for backward compat; use `access` instead */
     isPrivate: {
       type: Boolean,
       default: false,
@@ -1070,6 +1089,21 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: Boolean,
       default: false, // Drafts default to false, explicitly saved consoles set to true
     },
+    access: {
+      type: String,
+      enum: ["private", "shared_read", "shared_write"],
+      default: "private",
+    },
+    owner_id: {
+      type: String,
+      ref: "User",
+    },
+    shared_with: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "WorkspaceMember",
+      },
+    ],
     lastExecutedAt: {
       type: Date,
     },
@@ -1088,6 +1122,7 @@ SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, isSaved: 1 }); // For filtering saved vs draft consoles
 SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
+SavedConsoleSchema.index({ workspaceId: 1, access: 1, owner_id: 1 }); // Console access model queries
 
 /**
  * Chat Schema

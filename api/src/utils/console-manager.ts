@@ -6,6 +6,7 @@ import {
   ConsoleFolder,
   ISavedConsole,
   IConsoleFolder,
+  ConsoleAccessLevel,
 } from "../database/workspace-schema";
 import { getLogger } from "../logging";
 
@@ -27,6 +28,9 @@ export interface ConsoleFile {
   isPrivate?: boolean;
   lastExecutedAt?: Date;
   executionCount?: number;
+  access?: ConsoleAccessLevel;
+  owner_id?: string;
+  shared_with?: string[];
 }
 
 export class ConsoleManager {
@@ -80,10 +84,48 @@ export class ConsoleManager {
   }
 
   /**
-   * Get all consoles in a tree structure from database
-   * Only returns explicitly saved consoles (isSaved: true), not drafts
+   * Determine the effective access level for a console.
+   * Handles backward compatibility: consoles without an `access` field
+   * derive their level from the legacy `isPrivate` boolean.
    */
-  async listConsoles(workspaceId: string): Promise<ConsoleFile[]> {
+  static resolveAccess(console: ISavedConsole): ConsoleAccessLevel {
+    if (console.access) return console.access;
+    return console.isPrivate ? "private" : "shared_write";
+  }
+
+  /**
+   * Check whether `userId` can read the given console.
+   */
+  static canRead(console: ISavedConsole, userId: string): boolean {
+    const access = ConsoleManager.resolveAccess(console);
+    if (access === "private") {
+      return (console.owner_id || console.createdBy) === userId;
+    }
+    // shared_read and shared_write are readable by all workspace members
+    return true;
+  }
+
+  /**
+   * Check whether `userId` can write (modify) the given console.
+   */
+  static canWrite(console: ISavedConsole, userId: string): boolean {
+    const access = ConsoleManager.resolveAccess(console);
+    if (access === "private" || access === "shared_read") {
+      return (console.owner_id || console.createdBy) === userId;
+    }
+    return true; // shared_write
+  }
+
+  /**
+   * Get all consoles in a tree structure from database.
+   * When `userId` is provided the response is split into
+   * `{ myConsoles, sharedConsoles }` via the returned object.
+   * Only returns explicitly saved consoles (isSaved: true), not drafts.
+   */
+  async listConsoles(
+    workspaceId: string,
+    userId?: string,
+  ): Promise<ConsoleFile[]> {
     try {
       // Get all folders and saved consoles (not drafts) for the workspace
       const [folders, consoles] = await Promise.all([
@@ -95,6 +137,11 @@ export class ConsoleManager {
           isSaved: true, // Only explicitly saved consoles, not drafts
         }).sort({ name: 1 }),
       ]);
+
+      // Filter consoles based on access model
+      const visibleConsoles = userId
+        ? consoles.filter(c => ConsoleManager.canRead(c, userId))
+        : consoles;
 
       // Build tree structure
       const folderMap = new Map<string, ConsoleFile>();
@@ -137,7 +184,7 @@ export class ConsoleManager {
       }
 
       // Add consoles to appropriate folders or root
-      for (const console of consoles) {
+      for (const console of visibleConsoles) {
         const consoleItem: ConsoleFile = {
           path: console.folderId
             ? `${this.getFolderPath(console.folderId.toString(), folderMap)}/${console.name}`
@@ -154,6 +201,8 @@ export class ConsoleManager {
           isPrivate: console.isPrivate,
           lastExecutedAt: console.lastExecutedAt,
           executionCount: console.executionCount,
+          access: ConsoleManager.resolveAccess(console),
+          owner_id: console.owner_id || console.createdBy,
         };
 
         if (console.folderId) {
@@ -195,6 +244,38 @@ export class ConsoleManager {
       // Fallback to filesystem if database fails
       return this.listConsolesFromFilesystem();
     }
+  }
+
+  /**
+   * List consoles split into "my" and "shared" groups.
+   */
+  async listConsolesSplit(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ myConsoles: ConsoleFile[]; sharedConsoles: ConsoleFile[] }> {
+    const all = await this.listConsoles(workspaceId, userId);
+
+    const myConsoles: ConsoleFile[] = [];
+    const sharedConsoles: ConsoleFile[] = [];
+
+    const flattenTree = (items: ConsoleFile[]) => {
+      for (const item of items) {
+        if (item.isDirectory && item.children) {
+          flattenTree(item.children);
+        } else if (!item.isDirectory) {
+          const isOwner = item.owner_id === userId;
+          if (isOwner) {
+            myConsoles.push(item);
+          } else {
+            sharedConsoles.push(item);
+          }
+        }
+      }
+    };
+
+    flattenTree(all);
+
+    return { myConsoles, sharedConsoles };
   }
 
   /**
@@ -272,6 +353,8 @@ export class ConsoleManager {
     name?: string;
     path?: string;
     isSaved?: boolean;
+    access?: ConsoleAccessLevel;
+    owner_id?: string;
   } | null> {
     try {
       // Only accept valid ObjectIds
@@ -308,12 +391,50 @@ export class ConsoleManager {
           name: savedConsole.name,
           path: consolePath,
           isSaved: savedConsole.isSaved,
+          access: ConsoleManager.resolveAccess(savedConsole),
+          owner_id: savedConsole.owner_id || savedConsole.createdBy,
         };
       }
 
       return null;
     } catch (error) {
       logger.error("Error getting console with metadata", { error });
+      return null;
+    }
+  }
+
+  /**
+   * Update sharing settings for a console.
+   * Only the owner can change sharing settings.
+   */
+  async updateConsoleAccess(
+    consoleId: string,
+    workspaceId: string,
+    userId: string,
+    access: ConsoleAccessLevel,
+    sharedWith?: string[],
+  ): Promise<ISavedConsole | null> {
+    try {
+      const savedConsole = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!savedConsole) return null;
+
+      const ownerId = savedConsole.owner_id || savedConsole.createdBy;
+      if (ownerId !== userId) return null;
+
+      savedConsole.access = access;
+      savedConsole.isPrivate = access === "private";
+      if (sharedWith !== undefined) {
+        savedConsole.shared_with = sharedWith.map(id => new Types.ObjectId(id));
+      }
+      savedConsole.updatedAt = new Date();
+      await savedConsole.save();
+      return savedConsole;
+    } catch (error) {
+      logger.error("Error updating console access", { error });
       return null;
     }
   }
@@ -455,10 +576,21 @@ export class ConsoleManager {
         if (options?.isPrivate !== undefined) {
           savedConsole.isPrivate = options.isPrivate;
         }
+        // Backfill owner_id if missing
+        if (!savedConsole.owner_id) {
+          savedConsole.owner_id = savedConsole.createdBy;
+        }
+        // Backfill access if missing
+        if (!savedConsole.access) {
+          savedConsole.access = savedConsole.isPrivate
+            ? "private"
+            : "shared_write";
+        }
 
         await savedConsole.save();
       } else {
         // Create new console (explicitly saved)
+        const isPrivate = options?.isPrivate || false;
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
@@ -472,9 +604,11 @@ export class ConsoleManager {
           code: content,
           language: options?.language || this.detectLanguage(content),
           createdBy: userId,
-          isPrivate: options?.isPrivate || false,
+          isPrivate: isPrivate,
           isSaved: true, // Explicitly saved console
           executionCount: 0,
+          access: isPrivate ? "private" : "private", // New consoles default to private
+          owner_id: userId,
         };
 
         // Use client-provided ID if available and valid

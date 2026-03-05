@@ -8,6 +8,7 @@ import {
   DatabaseConnection,
   SavedConsole,
   IDatabaseConnection,
+  ConsoleAccessLevel,
 } from "../database/workspace-schema";
 import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -110,6 +111,7 @@ async function verifyWorkspaceAccess(
 }
 
 // GET /api/workspaces/:workspaceId/consoles - List all consoles (tree structure) for workspace
+// When a user is authenticated the response includes myConsoles / sharedConsoles split.
 consoleRoutes.get("/", async (c: Context) => {
   try {
     const access = await verifyWorkspaceAccess(c);
@@ -120,7 +122,17 @@ consoleRoutes.get("/", async (c: Context) => {
       );
     }
 
-    const tree = await consoleManager.listConsoles(access.workspaceId);
+    const user = c.get("user");
+    const userId: string | undefined = user?.id;
+
+    const tree = await consoleManager.listConsoles(access.workspaceId, userId);
+
+    // Also provide the split view for the frontend
+    if (userId) {
+      const { myConsoles, sharedConsoles } =
+        await consoleManager.listConsolesSplit(access.workspaceId, userId);
+      return c.json({ success: true, tree, myConsoles, sharedConsoles });
+    }
 
     return c.json({ success: true, tree });
   } catch (error) {
@@ -166,6 +178,17 @@ consoleRoutes.get("/content", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
+    // Determine if the current user can write
+    const currentUserId = user?.id;
+    const ownerId = consoleData.owner_id;
+    const consoleAccess = consoleData.access || "private";
+    let readOnly = false;
+    if (currentUserId && ownerId) {
+      if (consoleAccess === "shared_read" && currentUserId !== ownerId) {
+        readOnly = true;
+      }
+    }
+
     return c.json({
       success: true,
       content: consoleData.content,
@@ -177,6 +200,9 @@ consoleRoutes.get("/content", async (c: Context) => {
       name: consoleData.name,
       path: consoleData.path,
       isSaved: consoleData.isSaved,
+      access: consoleAccess,
+      owner_id: ownerId,
+      readOnly,
     });
   } catch (error) {
     logger.error("Error fetching console content", {
@@ -209,7 +235,9 @@ consoleRoutes.post("/", async (c: Context) => {
       description,
       language,
       isPrivate,
+      access: _requestedAccess, // New: access level (used at share endpoint, not here)
     } = body;
+    void _requestedAccess;
     const user = c.get("user");
 
     // Verify user has access to workspace
@@ -358,6 +386,22 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
 
     // Check if pathOrId is a valid ObjectId - if so, do ID-based update
     if (Types.ObjectId.isValid(pathOrId) && pathOrId.length === 24) {
+      // Check write access on existing console
+      const existingById = await SavedConsole.findOne({
+        _id: new Types.ObjectId(pathOrId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (existingById && !ConsoleManager.canWrite(existingById, user.id)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "This console is shared as read-only. Create a copy to make changes.",
+          },
+          403,
+        );
+      }
+
       const now = new Date();
       const isExplicitSave = body.isSaved === true;
 
@@ -675,6 +719,23 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
       );
     }
 
+    // Check write access
+    if (Types.ObjectId.isValid(consoleId)) {
+      const existing = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (existing && !ConsoleManager.canWrite(existing, user.id)) {
+        return c.json(
+          {
+            success: false,
+            error: "Cannot rename a read-only shared console",
+          },
+          403,
+        );
+      }
+    }
+
     if (!name || typeof name !== "string") {
       return c.json(
         { success: false, error: "Name is required and must be a string" },
@@ -725,6 +786,23 @@ consoleRoutes.delete("/:id", async (c: Context) => {
         { success: false, error: "Access denied to workspace" },
         403,
       );
+    }
+
+    // Only the owner can delete a console
+    if (Types.ObjectId.isValid(consoleId)) {
+      const existing = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (existing) {
+        const ownerId = existing.owner_id || existing.createdBy;
+        if (ownerId !== user.id) {
+          return c.json(
+            { success: false, error: "Only the console owner can delete it" },
+            403,
+          );
+        }
+      }
     }
 
     const success = await consoleManager.deleteConsole(consoleId, workspaceId);
@@ -839,6 +917,85 @@ consoleRoutes.delete("/folders/:id", async (c: Context) => {
           error instanceof Error
             ? error.message
             : "Unknown error deleting folder",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/:id/share - Update sharing settings
+consoleRoutes.post("/:id/share", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const body = await c.req.json();
+    const { access, shared_with } = body as {
+      access?: ConsoleAccessLevel;
+      shared_with?: string[];
+    };
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (
+      !access ||
+      !["private", "shared_read", "shared_write"].includes(access)
+    ) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "access is required and must be one of: private, shared_read, shared_write",
+        },
+        400,
+      );
+    }
+
+    const updated = await consoleManager.updateConsoleAccess(
+      consoleId,
+      workspaceId,
+      user.id,
+      access,
+      shared_with,
+    );
+
+    if (!updated) {
+      return c.json(
+        {
+          success: false,
+          error: "Console not found or you are not the owner",
+        },
+        404,
+      );
+    }
+
+    return c.json({
+      success: true,
+      message: "Sharing settings updated",
+      data: {
+        id: updated._id.toString(),
+        access: updated.access,
+        owner_id: updated.owner_id,
+        shared_with: updated.shared_with?.map(id => id.toString()),
+      },
+    });
+  } catch (error) {
+    logger.error("Error updating console sharing", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error updating sharing",
       },
       500,
     );
@@ -1087,14 +1244,22 @@ consoleRoutes.get("/list", async (c: Context) => {
       workspaceId: new Types.ObjectId(access.workspaceId),
     })
       .select(
-        "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount",
+        "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount access owner_id createdBy",
       )
       .populate("connectionId", "name type")
       .sort({ updatedAt: -1 });
 
+    const user = c.get("user");
+    const userId = user?.id;
+
+    // Filter by visibility when we have a user
+    const visibleConsoles = userId
+      ? consoles.filter(c => ConsoleManager.canRead(c, userId))
+      : consoles;
+
     return c.json({
       success: true,
-      consoles: consoles.map(console => ({
+      consoles: visibleConsoles.map(console => ({
         id: console._id,
         name: console.name,
         description: console.description,
@@ -1111,8 +1276,10 @@ consoleRoutes.get("/list", async (c: Context) => {
         updatedAt: console.updatedAt,
         lastExecutedAt: console.lastExecutedAt,
         executionCount: console.executionCount,
+        access: ConsoleManager.resolveAccess(console),
+        owner_id: console.owner_id || console.createdBy,
       })),
-      total: consoles.length,
+      total: visibleConsoles.length,
     });
   } catch (error) {
     logger.error("Error listing consoles", { error });
@@ -1155,6 +1322,10 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
+    const user = c.get("user");
+    const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
+    const ownerId = savedConsole.owner_id || savedConsole.createdBy;
+
     return c.json({
       success: true,
       console: {
@@ -1176,6 +1347,10 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
         updatedAt: savedConsole.updatedAt,
         lastExecutedAt: savedConsole.lastExecutedAt,
         executionCount: savedConsole.executionCount,
+        access: resolvedAccess,
+        owner_id: ownerId,
+        readOnly:
+          user?.id && resolvedAccess === "shared_read" && user.id !== ownerId,
       },
     });
   } catch (error) {

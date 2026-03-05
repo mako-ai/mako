@@ -18,11 +18,17 @@ import {
   Button,
   Tooltip,
   Alert,
+  Chip,
+  FormControl,
+  InputLabel,
+  Select as MuiSelect,
+  SelectChangeEvent,
 } from "@mui/material";
 import {
   CreateNewFolder as CreateFolderIcon,
   Edit as EditIcon,
   Delete as DeleteIcon,
+  Share as ShareIcon,
 } from "@mui/icons-material";
 import {
   SquareTerminal as ConsoleIcon,
@@ -32,29 +38,37 @@ import {
   Plus as AddIcon,
   ChevronRight as ChevronRightIcon,
   ChevronDown as ChevronDownIcon,
+  Lock as LockIcon,
+  Users as UsersIcon,
+  Eye as EyeIcon,
 } from "lucide-react";
 import { useExplorerStore } from "../store/explorerStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
+import { useAuth } from "../contexts/auth-context";
+
+type ConsoleAccessLevel = "private" | "shared_read" | "shared_write";
 
 interface ConsoleEntry {
   name: string;
   path: string;
   isDirectory: boolean;
   children?: ConsoleEntry[];
-  content?: string; // Added to match potential server object, though not used in rendering tree directly
-  id?: string; // Database ID for saved consoles/folders
-  folderId?: string; // Database ID for folders
-  connectionId?: string; // Associated connection ID (DatabaseConnection ObjectId)
-  databaseId?: string; // Associated database ID
-  databaseName?: string; // Associated database name
+  content?: string;
+  id?: string;
+  folderId?: string;
+  connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;
   lastExecutedAt?: Date;
   executionCount?: number;
+  access?: ConsoleAccessLevel;
+  owner_id?: string;
 }
 
 interface ConsoleExplorerProps {
@@ -79,13 +93,24 @@ function ConsoleExplorer(
 ) {
   const { onConsoleSelect } = props;
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const trees = useConsoleTreeStore(state => state.trees);
+  const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
+  const sharedConsolesMap = useConsoleTreeStore(state => state.sharedConsoles);
   const loadingMap = useConsoleTreeStore(state => state.loading);
   const refreshTree = useConsoleTreeStore(state => state.refresh);
 
   const consoleEntries = currentWorkspace
     ? trees[currentWorkspace.id] || []
     : [];
+  const _myConsoles = currentWorkspace
+    ? myConsolesMap[currentWorkspace.id] || []
+    : [];
+  void _myConsoles; // used indirectly through the tree
+  const sharedConsoles = currentWorkspace
+    ? sharedConsolesMap[currentWorkspace.id] || []
+    : [];
+  const hasSharedConsoles = sharedConsoles.length > 0;
   const loading = currentWorkspace ? !!loadingMap[currentWorkspace.id] : false;
   const activeTabId = useConsoleStore(state => state.activeTabId);
   const expandedFolders = useExplorerStore(
@@ -106,8 +131,11 @@ function ConsoleExplorer(
   } | null>(null);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareAccess, setShareAccess] = useState<ConsoleAccessLevel>("private");
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
   const [newItemName, setNewItemName] = useState("");
+  const [sharedSectionExpanded, setSharedSectionExpanded] = useState(true);
 
   function _errorFor(wid: string) {
     const map = useConsoleTreeStore.getState().error;
@@ -299,6 +327,45 @@ function ConsoleExplorer(
     handleContextMenuClose();
   };
 
+  const handleShare = (item: ConsoleEntry) => {
+    setSelectedItem(item);
+    setShareAccess(item.access || "private");
+    setShareDialogOpen(true);
+    handleContextMenuClose();
+  };
+
+  const handleShareConfirm = async () => {
+    if (!currentWorkspace || !selectedItem?.id) return;
+
+    try {
+      const response = await fetch(
+        `/api/workspaces/${currentWorkspace.id}/consoles/${selectedItem.id}/share`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access: shareAccess }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        setShareDialogOpen(false);
+        setSelectedItem(null);
+        fetchConsoleEntries();
+      }
+    } catch (e: any) {
+      console.error("Failed to update sharing:", e);
+    }
+  };
+
+  const isOwner = (item: ConsoleEntry): boolean => {
+    return item.owner_id === user?.id;
+  };
+
   const handleRenameConfirm = async () => {
     if (!currentWorkspace || !selectedItem || !newItemName.trim()) {
       return;
@@ -418,6 +485,8 @@ function ConsoleExplorer(
       // Use ID if available, otherwise fall back to path for key
       const nodeKey = node.id || node.path;
       const isActive = !!(node.id && activeTabId === node.id);
+      const nodeAccess = node.access || "private";
+      const isReadOnly = nodeAccess === "shared_read" && !isOwner(node);
       return (
         <ListItemButton
           key={`file-${nodeKey}`}
@@ -445,6 +514,24 @@ function ConsoleExplorer(
               },
             }}
           />
+          {isReadOnly && (
+            <Tooltip title="Read-only">
+              <LockIcon
+                size={14}
+                strokeWidth={1.5}
+                style={{ opacity: 0.5, flexShrink: 0 }}
+              />
+            </Tooltip>
+          )}
+          {nodeAccess === "shared_write" && !isOwner(node) && (
+            <Tooltip title="Shared (editable)">
+              <UsersIcon
+                size={14}
+                strokeWidth={1.5}
+                style={{ opacity: 0.5, flexShrink: 0 }}
+              />
+            </Tooltip>
+          )}
         </ListItemButton>
       );
     });
@@ -520,9 +607,7 @@ function ConsoleExplorer(
           </Typography>
         </Box>
       )}
-      <List
-        component="nav"
-        dense
+      <Box
         sx={{
           flexGrow: 1,
           overflowY: "auto",
@@ -539,19 +624,120 @@ function ConsoleExplorer(
           },
         }}
       >
-        {loading
-          ? renderSkeletonItems()
-          : consoleEntries.length > 0
-            ? renderTree(consoleEntries)
-            : !error && (
-                <Typography
-                  sx={{ p: 2, textAlign: "center", color: "text.secondary" }}
-                  variant="body2"
+        {loading ? (
+          <List component="nav" dense>
+            {renderSkeletonItems()}
+          </List>
+        ) : consoleEntries.length > 0 ? (
+          <>
+            {/* My Consoles section — always uses tree view */}
+            <List component="nav" dense>
+              {renderTree(consoleEntries)}
+            </List>
+
+            {/* Shared with me section */}
+            {hasSharedConsoles && (
+              <>
+                <ListItemButton
+                  onClick={() =>
+                    setSharedSectionExpanded(!sharedSectionExpanded)
+                  }
+                  sx={{ py: 0.25, pl: 0.5 }}
                 >
-                  No consoles found.
-                </Typography>
-              )}
-      </List>
+                  <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                    {sharedSectionExpanded ? (
+                      <ChevronDownIcon strokeWidth={1.5} size={20} />
+                    ) : (
+                      <ChevronRightIcon strokeWidth={1.5} size={20} />
+                    )}
+                  </ListItemIcon>
+                  <ListItemIcon sx={{ minWidth: 24 }}>
+                    <UsersIcon strokeWidth={1.5} size={18} />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary="Shared with me"
+                    primaryTypographyProps={{
+                      variant: "body2",
+                      fontWeight: 600,
+                      sx: {
+                        textTransform: "uppercase",
+                        fontSize: "0.75rem",
+                        letterSpacing: "0.05em",
+                      },
+                    }}
+                  />
+                  <Chip
+                    label={sharedConsoles.length}
+                    size="small"
+                    sx={{ height: 18, fontSize: "0.7rem" }}
+                  />
+                </ListItemButton>
+                {sharedSectionExpanded && (
+                  <List component="div" disablePadding dense>
+                    {sharedConsoles.map(node => {
+                      const nodeKey = node.id || node.path;
+                      const isActive = !!(node.id && activeTabId === node.id);
+                      const nodeAccess = node.access || "shared_write";
+                      const isReadOnly = nodeAccess === "shared_read";
+                      return (
+                        <ListItemButton
+                          key={`shared-${nodeKey}`}
+                          onClick={() => handleFileClick(node)}
+                          onContextMenu={e => handleContextMenu(e, node)}
+                          selected={isActive}
+                          sx={{ py: 0.25, pl: 2 }}
+                        >
+                          <ListItemIcon sx={{ minWidth: 24 }}>
+                            <ConsoleIcon size={18} strokeWidth={1.5} />
+                          </ListItemIcon>
+                          <ListItemText
+                            primary={node.name}
+                            primaryTypographyProps={{
+                              variant: "body2",
+                              fontSize: "0.9rem",
+                              style: {
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              },
+                            }}
+                          />
+                          {isReadOnly ? (
+                            <Tooltip title="Read-only">
+                              <LockIcon
+                                size={14}
+                                strokeWidth={1.5}
+                                style={{ opacity: 0.5, flexShrink: 0 }}
+                              />
+                            </Tooltip>
+                          ) : (
+                            <Tooltip title="Editable">
+                              <EyeIcon
+                                size={14}
+                                strokeWidth={1.5}
+                                style={{ opacity: 0.5, flexShrink: 0 }}
+                              />
+                            </Tooltip>
+                          )}
+                        </ListItemButton>
+                      );
+                    })}
+                  </List>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          !error && (
+            <Typography
+              sx={{ p: 2, textAlign: "center", color: "text.secondary" }}
+              variant="body2"
+            >
+              No consoles found.
+            </Typography>
+          )
+        )}
+      </Box>
 
       {/* Add Menu */}
       <Menu
@@ -584,14 +770,32 @@ function ConsoleExplorer(
             : undefined
         }
       >
-        <MenuItem onClick={() => contextMenu && handleRename(contextMenu.item)}>
-          <EditIcon sx={{ mr: 1 }} fontSize="small" />
-          Rename
-        </MenuItem>
-        <MenuItem onClick={() => contextMenu && handleDelete(contextMenu.item)}>
-          <DeleteIcon sx={{ mr: 1 }} fontSize="small" />
-          Delete
-        </MenuItem>
+        {contextMenu && isOwner(contextMenu.item) && (
+          <MenuItem
+            onClick={() => contextMenu && handleRename(contextMenu.item)}
+          >
+            <EditIcon sx={{ mr: 1 }} fontSize="small" />
+            Rename
+          </MenuItem>
+        )}
+        {contextMenu && isOwner(contextMenu.item) && (
+          <MenuItem
+            onClick={() => contextMenu && handleDelete(contextMenu.item)}
+          >
+            <DeleteIcon sx={{ mr: 1 }} fontSize="small" />
+            Delete
+          </MenuItem>
+        )}
+        {contextMenu &&
+          !contextMenu.item.isDirectory &&
+          isOwner(contextMenu.item) && (
+            <MenuItem
+              onClick={() => contextMenu && handleShare(contextMenu.item)}
+            >
+              <ShareIcon sx={{ mr: 1 }} fontSize="small" />
+              Share
+            </MenuItem>
+          )}
         {contextMenu?.item.isDirectory && (
           <MenuItem
             onClick={() => {
@@ -755,6 +959,57 @@ function ConsoleExplorer(
             variant="contained"
           >
             Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Share Dialog */}
+      <Dialog
+        open={shareDialogOpen}
+        onClose={() => setShareDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Share &ldquo;{selectedItem?.name}&rdquo;</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
+            Choose who can access this console and what they can do.
+          </Typography>
+          <FormControl fullWidth sx={{ mt: 1 }}>
+            <InputLabel id="share-access-label">Access Level</InputLabel>
+            <MuiSelect
+              labelId="share-access-label"
+              value={shareAccess}
+              label="Access Level"
+              onChange={(e: SelectChangeEvent) =>
+                setShareAccess(e.target.value as ConsoleAccessLevel)
+              }
+            >
+              <MenuItem value="private">
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <LockIcon size={16} />
+                  Private — Only you
+                </Box>
+              </MenuItem>
+              <MenuItem value="shared_read">
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <EyeIcon size={16} />
+                  Shared (read-only) — Others can view
+                </Box>
+              </MenuItem>
+              <MenuItem value="shared_write">
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <UsersIcon size={16} />
+                  Shared (editable) — Others can edit
+                </Box>
+              </MenuItem>
+            </MuiSelect>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShareDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleShareConfirm} variant="contained">
+            Save
           </Button>
         </DialogActions>
       </Dialog>

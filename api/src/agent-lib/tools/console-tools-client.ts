@@ -108,28 +108,28 @@ export const setConsoleConnectionSchema = z.object({
 export const clientConsoleTools = {
   read_console: {
     description:
-      "Read the contents of a specific console by ID. Returns content with line numbers prefixed (e.g., '  1| code here'), totalLines, and database connection info. Line numbers are for REFERENCE ONLY to help identify patch ranges. Use list_open_consoles first to get available console IDs.",
+      "Read the contents of a specific console by ID. Returns content with line numbers prefixed (e.g., '  1| code here'), totalLines, and database connection info. Line numbers are for REFERENCE ONLY to help identify patch ranges. Use list_open_consoles first to get available console IDs. Reading is allowed for any access level (private, shared_read, shared_write) as long as the console is visible to you.",
     inputSchema: readConsoleSchema,
     // No execute function - this is a client-side tool
   },
 
   modify_console: {
     description:
-      "Modify a specific console's content by ID. Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. Get consoleId from list_open_consoles or create_console.",
+      "Modify a specific console's content by ID. Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. Get consoleId from list_open_consoles or create_console. ACCESS NOTE: If the console is shared_read and you are not the owner, modification will be rejected — create a copy with create_console instead.",
     inputSchema: modifyConsoleSchema,
     // No execute function - this is a client-side tool
   },
 
   create_console: {
     description:
-      "Create a new console editor tab with the specified content. Returns a consoleId that you MUST pass to modify_console when writing to this new console.",
+      "Create a new console editor tab with the specified content. Returns a consoleId that you MUST pass to modify_console when writing to this new console. The new console will be owned by the current user with private access by default.",
     inputSchema: createConsoleSchema,
     // No execute function - this is a client-side tool
   },
 
   list_open_consoles: {
     description:
-      "List all open console tabs in the UI. Returns each console's id, title, connectionId, databaseName, content preview, and isActive flag. Call this FIRST to get console IDs before using read_console or modify_console.",
+      "List all open console tabs in the UI. Returns each console's id, title, connectionId, databaseName, content preview, isActive flag, access level, and readOnly status. Call this FIRST to get console IDs before using read_console or modify_console.",
     inputSchema: listOpenConsolesSchema,
     // No execute function - this is a client-side tool
   },

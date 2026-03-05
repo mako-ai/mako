@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 
+export type ConsoleAccessLevel = "private" | "shared_read" | "shared_write";
+
 export interface ConsoleEntry {
   name: string;
   path: string;
@@ -18,6 +20,8 @@ export interface ConsoleEntry {
   isPrivate?: boolean;
   lastExecutedAt?: Date;
   executionCount?: number;
+  access?: ConsoleAccessLevel;
+  owner_id?: string;
 }
 
 // Helper to find the correct array to insert into (navigates into nested folders)
@@ -85,6 +89,8 @@ const insertAlphabetically = (
 
 interface TreeState {
   trees: Record<string, ConsoleEntry[]>; // workspaceId => tree
+  myConsoles: Record<string, ConsoleEntry[]>; // workspaceId => flat list of owned consoles
+  sharedConsoles: Record<string, ConsoleEntry[]>; // workspaceId => flat list of shared consoles
   loading: Record<string, boolean>; // workspaceId => bool
   error: Record<string, string | null>;
   fetchTree: (workspaceId: string) => Promise<ConsoleEntry[]>;
@@ -92,12 +98,13 @@ interface TreeState {
   init: (workspaceId: string) => Promise<void>;
   setTree: (workspaceId: string, tree: ConsoleEntry[]) => void;
   addConsole: (workspaceId: string, path: string, id: string) => void;
-  // Future mutations
 }
 
 export const useConsoleTreeStore = create<TreeState>()(
   immer((set, _get) => ({
     trees: {},
+    myConsoles: {},
+    sharedConsoles: {},
     loading: {},
     error: {},
     fetchTree: async workspaceId => {
@@ -109,10 +116,19 @@ export const useConsoleTreeStore = create<TreeState>()(
         const data = await apiClient.get<{
           success: boolean;
           tree?: ConsoleEntry[];
+          myConsoles?: ConsoleEntry[];
+          sharedConsoles?: ConsoleEntry[];
         }>(`/workspaces/${workspaceId}/consoles`);
         if (data.tree && Array.isArray(data.tree)) {
           set(state => {
             state.trees[workspaceId] = data.tree as ConsoleEntry[];
+            if (data.myConsoles) {
+              state.myConsoles[workspaceId] = data.myConsoles as ConsoleEntry[];
+            }
+            if (data.sharedConsoles) {
+              state.sharedConsoles[workspaceId] =
+                data.sharedConsoles as ConsoleEntry[];
+            }
           });
           return data.tree;
         }

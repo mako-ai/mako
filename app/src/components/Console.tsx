@@ -18,6 +18,7 @@ import {
   Divider,
   Badge,
   Alert,
+  Chip,
 } from "@mui/material";
 import { PlayArrow as PlayIcon } from "@mui/icons-material";
 import {
@@ -142,6 +143,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const tab = tabs[consoleId];
   const savedStateHash = tab?.savedStateHash;
   const isSaved = tab?.isSaved ?? false;
+  const isReadOnly = tab?.readOnly ?? false;
 
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
@@ -918,7 +920,16 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             </Tooltip>
           )}
 
-          {onSave && (
+          {isReadOnly && (
+            <Chip
+              label="Read-only"
+              size="small"
+              variant="outlined"
+              sx={{ ml: 1, height: 24, fontSize: "0.75rem" }}
+            />
+          )}
+
+          {onSave && !isReadOnly && (
             <Tooltip
               title={
                 !hasUnsavedChanges
@@ -1164,7 +1175,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             onChange={handleEditorChange}
             options={{
               automaticLayout: true,
-              readOnly: false,
+              readOnly: isReadOnly,
               minimap: { enabled: false },
               fontSize: 12,
               wordWrap: "on",

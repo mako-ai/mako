@@ -819,6 +819,20 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
+        // Check if the console is read-only (shared_read and user is not owner)
+        if ((targetConsole as any).readOnly) {
+          addToolOutput({
+            tool: "modify_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error:
+                "This console is shared as read-only. Use create_console to create a copy with the desired changes instead.",
+            },
+          });
+          return;
+        }
+
         // Validate insert action has position
         if (
           action === "insert" &&
