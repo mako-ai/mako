@@ -65,10 +65,35 @@ export async function up(db: Db): Promise<void> {
     `Initialized shared_with for ${sharedWithResult.modifiedCount} consoles`,
   );
 
-  // 5. Create compound index for access model queries
-  await col.createIndex(
-    { workspaceId: 1, access: 1, owner_id: 1 },
-    { name: "workspaceId_access_ownerId", background: true },
-  );
-  log.info("Created index: workspaceId_access_ownerId");
+  // 5. Create compound index for access model queries (idempotent)
+  try {
+    const existingIndexes = await col.indexes();
+    const alreadyExists = existingIndexes.some(
+      idx =>
+        idx.key &&
+        idx.key.workspaceId === 1 &&
+        idx.key.access === 1 &&
+        idx.key.owner_id === 1,
+    );
+
+    if (alreadyExists) {
+      log.info(
+        "Index on { workspaceId, access, owner_id } already exists, skipping creation",
+      );
+    } else {
+      await col.createIndex(
+        { workspaceId: 1, access: 1, owner_id: 1 },
+        { background: true },
+      );
+      log.info("Created index: { workspaceId: 1, access: 1, owner_id: 1 }");
+    }
+  } catch (err: any) {
+    if (err?.code === 85 || err?.codeName === "IndexOptionsConflict") {
+      log.info(
+        "Index already exists (possibly under a different name), skipping",
+      );
+    } else {
+      throw err;
+    }
+  }
 }
