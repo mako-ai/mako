@@ -252,8 +252,10 @@ export class ConsoleManager {
   async listConsolesSplit(
     workspaceId: string,
     userId: string,
+    prefetchedTree?: ConsoleFile[],
   ): Promise<{ myConsoles: ConsoleFile[]; sharedConsoles: ConsoleFile[] }> {
-    const all = await this.listConsoles(workspaceId, userId);
+    const all =
+      prefetchedTree ?? (await this.listConsoles(workspaceId, userId));
 
     const myConsoles: ConsoleFile[] = [];
     const sharedConsoles: ConsoleFile[] = [];
@@ -607,7 +609,7 @@ export class ConsoleManager {
           isPrivate: isPrivate,
           isSaved: true, // Explicitly saved console
           executionCount: 0,
-          access: isPrivate ? "private" : "private", // New consoles default to private
+          access: isPrivate ? "private" : "shared_write",
           owner_id: userId,
         };
 

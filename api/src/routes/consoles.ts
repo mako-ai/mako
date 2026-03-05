@@ -130,7 +130,11 @@ consoleRoutes.get("/", async (c: Context) => {
     // Also provide the split view for the frontend
     if (userId) {
       const { myConsoles, sharedConsoles } =
-        await consoleManager.listConsolesSplit(access.workspaceId, userId);
+        await consoleManager.listConsolesSplit(
+          access.workspaceId,
+          userId,
+          tree,
+        );
       return c.json({ success: true, tree, myConsoles, sharedConsoles });
     }
 
@@ -178,10 +182,15 @@ consoleRoutes.get("/content", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
+    // Deny access to private consoles not owned by the current user
+    const consoleAccess = consoleData.access || "private";
+    const ownerId = consoleData.owner_id;
+    if (consoleAccess === "private" && ownerId !== user.id) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
     // Determine if the current user can write
     const currentUserId = user?.id;
-    const ownerId = consoleData.owner_id;
-    const consoleAccess = consoleData.access || "private";
     let readOnly = false;
     if (currentUserId && ownerId) {
       if (consoleAccess === "shared_read" && currentUserId !== ownerId) {
@@ -1254,7 +1263,7 @@ consoleRoutes.get("/list", async (c: Context) => {
 
     // Filter by visibility when we have a user
     const visibleConsoles = userId
-      ? consoles.filter(c => ConsoleManager.canRead(c, userId))
+      ? consoles.filter(doc => ConsoleManager.canRead(doc, userId))
       : consoles;
 
     return c.json({
