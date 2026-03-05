@@ -9,6 +9,7 @@ import {
   ConsoleAccessLevel,
   ISharedWithEntry,
 } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import { getLogger } from "../logging";
 
 const logger = getLogger(["api", "consoles"]);
@@ -465,6 +466,34 @@ export class ConsoleManager {
   }
 
   /**
+   * Resolve shared_with entries: if a userId looks like an email, look up
+   * the actual user ID. Entries that can't be resolved are dropped.
+   */
+  private async resolveSharedWithEntries(
+    entries: ISharedWithEntry[],
+  ): Promise<ISharedWithEntry[]> {
+    const resolved: ISharedWithEntry[] = [];
+    for (const entry of entries) {
+      if (entry.userId.includes("@")) {
+        const foundUser = await User.findOne({
+          email: entry.userId.toLowerCase().trim(),
+        })
+          .select("_id")
+          .lean();
+        if (foundUser) {
+          resolved.push({
+            userId: foundUser._id.toString(),
+            access: entry.access,
+          });
+        }
+      } else {
+        resolved.push(entry);
+      }
+    }
+    return resolved;
+  }
+
+  /**
    * Update sharing settings for a console.
    * Only the owner can change sharing settings.
    */
@@ -489,7 +518,8 @@ export class ConsoleManager {
       savedConsole.access = access;
       savedConsole.isPrivate = access === "private";
       if (sharedWith !== undefined) {
-        savedConsole.shared_with = sharedWith;
+        savedConsole.shared_with =
+          await this.resolveSharedWithEntries(sharedWith);
       }
       savedConsole.updatedAt = new Date();
       await savedConsole.save();
@@ -523,17 +553,22 @@ export class ConsoleManager {
 
       folder.access = access;
       folder.isPrivate = access === "private";
-      if (sharedWith !== undefined) {
-        folder.shared_with = sharedWith;
+      const resolvedSharedWith =
+        sharedWith !== undefined
+          ? await this.resolveSharedWithEntries(sharedWith)
+          : undefined;
+      if (resolvedSharedWith !== undefined) {
+        folder.shared_with = resolvedSharedWith;
       }
       await folder.save();
 
-      // Propagate to child folders and consoles
+      // Propagate to child folders and consoles owned by this user
       await this.propagateFolderAccess(
         folderId,
         workspaceId,
+        userId,
         access,
-        sharedWith,
+        resolvedSharedWith,
       );
 
       return true;
@@ -545,17 +580,19 @@ export class ConsoleManager {
 
   /**
    * Recursively propagate access to all children of a folder.
+   * Only updates consoles owned by the folder owner to avoid hijacking
+   * access control on other users' consoles.
    */
   private async propagateFolderAccess(
     folderId: string,
     workspaceId: string,
+    ownerId: string,
     access: ConsoleAccessLevel,
     sharedWith?: ISharedWithEntry[],
   ): Promise<void> {
     const wid = new Types.ObjectId(workspaceId);
     const fid = new Types.ObjectId(folderId);
 
-    // Update all consoles in the folder
     const consoleUpdate: Record<string, unknown> = {
       access,
       isPrivate: access === "private",
@@ -564,14 +601,19 @@ export class ConsoleManager {
       consoleUpdate.shared_with = sharedWith;
     }
     await SavedConsole.updateMany(
-      { workspaceId: wid, folderId: fid },
+      {
+        workspaceId: wid,
+        folderId: fid,
+        $or: [{ owner_id: ownerId }, { createdBy: ownerId }],
+      },
       { $set: consoleUpdate },
     );
 
-    // Update child folders recursively
+    // Update child folders owned by this user recursively
     const childFolders = await ConsoleFolder.find({
       workspaceId: wid,
       parentId: fid,
+      ownerId,
     });
 
     for (const child of childFolders) {
@@ -584,6 +626,7 @@ export class ConsoleManager {
       await this.propagateFolderAccess(
         child._id.toString(),
         workspaceId,
+        ownerId,
         access,
         sharedWith,
       );
@@ -733,7 +776,9 @@ export class ConsoleManager {
         }
         // Backfill access if missing
         if (!savedConsole.access) {
-          savedConsole.access = savedConsole.isPrivate ? "private" : "workspace";
+          savedConsole.access = savedConsole.isPrivate
+            ? "private"
+            : "workspace";
         }
 
         await savedConsole.save();
