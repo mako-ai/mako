@@ -155,7 +155,7 @@ export function createSelfDirectiveTools(workspaceId: string) {
                 error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
               };
             }
-            newValue = current.replace(find!, replace!);
+            newValue = current.split(find!).join(replace!);
             break;
 
           case "insert_after":
@@ -165,7 +165,7 @@ export function createSelfDirectiveTools(workspaceId: string) {
                 error: `Anchor text not found in self-directive: "${after!.slice(0, 80)}"`,
               };
             }
-            newValue = current.replace(after!, after! + "\n" + content!);
+            newValue = current.split(after!).join(after! + "\n" + content!);
             break;
 
           case "delete_section":
@@ -176,7 +176,8 @@ export function createSelfDirectiveTools(workspaceId: string) {
               };
             }
             newValue = current
-              .replace(find!, "")
+              .split(find!)
+              .join("")
               .replace(/\n{3,}/g, "\n\n")
               .trim();
             break;
