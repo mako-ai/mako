@@ -77,6 +77,21 @@ const SQL_READ_ONLY_KEYWORDS = new Set([
   "PRAGMA",
 ]);
 
+const SQL_WRITE_KEYWORDS = new Set([
+  "INSERT",
+  "UPDATE",
+  "DELETE",
+  "DROP",
+  "ALTER",
+  "TRUNCATE",
+  "CREATE",
+  "REPLACE",
+  "MERGE",
+  "GRANT",
+  "REVOKE",
+  "RENAME",
+]);
+
 const MONGODB_READ_ONLY_OPERATIONS = new Set([
   "find",
   "findOne",
@@ -138,8 +153,18 @@ export interface AccessCheckResult {
 }
 
 /**
+ * Extract all SQL keywords from a stripped statement.
+ */
+function extractAllSqlKeywords(sql: string): string[] {
+  const matches = sql.match(/[a-zA-Z]+/g);
+  return matches ? matches.map(m => m.toUpperCase()) : [];
+}
+
+/**
  * Check if a SQL query is read-only (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE).
  * Handles multi-statement queries by validating every statement.
+ * For WITH (CTE) statements, also scans for write keywords inside the body
+ * to block writable CTEs (e.g. WITH d AS (DELETE FROM ...) SELECT ...).
  */
 export function isSqlReadOnly(query: string): boolean {
   const stripped = stripSqlCommentsAndStrings(query).trim();
@@ -153,7 +178,12 @@ export function isSqlReadOnly(query: string): boolean {
 
   return statements.every(stmt => {
     const keyword = extractFirstSqlKeyword(stmt);
-    return SQL_READ_ONLY_KEYWORDS.has(keyword);
+    if (!SQL_READ_ONLY_KEYWORDS.has(keyword)) return false;
+    if (keyword === "WITH") {
+      const allKeywords = extractAllSqlKeywords(stmt);
+      if (allKeywords.some(k => SQL_WRITE_KEYWORDS.has(k))) return false;
+    }
+    return true;
   });
 }
 
@@ -183,22 +213,31 @@ function isMongoQueryReadOnly(
 /**
  * Central access check for database query execution.
  * Returns { allowed: true } or { allowed: false, error: "..." }.
+ * When userId is undefined, adopts a fail-closed posture: only shared_write
+ * databases allow queries; private and shared_read databases are denied.
  */
 export function checkQueryAccess(
   database: IDatabaseConnection,
-  userId: string,
+  userId: string | undefined,
   query: string,
   options?: { mongoOperation?: string },
 ): AccessCheckResult {
   const access = database.access || "shared_write";
   const ownerId = database.ownerId || database.createdBy;
-  const isOwner = ownerId === userId;
+  const isOwner = userId != null && ownerId === userId;
 
   if (isOwner) {
     return { allowed: true };
   }
 
   if (access === "private") {
+    if (!userId) {
+      return {
+        allowed: false,
+        error:
+          "Access denied. This database is private and only accessible by its owner.",
+      };
+    }
     const sharedWithIds = (database.sharedWith || []).map(
       (id: Types.ObjectId) => id.toString(),
     );

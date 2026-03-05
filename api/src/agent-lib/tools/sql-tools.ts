@@ -793,12 +793,10 @@ async function executeQueryImpl(
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
 
-  // Enforce access controls
-  if (userId) {
-    const accessResult = checkQueryAccess(database, userId, query);
-    if (!accessResult.allowed) {
-      throw new Error(accessResult.error);
-    }
+  // Enforce access controls (fail-closed)
+  const accessResult = checkQueryAccess(database, userId, query);
+  if (!accessResult.allowed) {
+    throw new Error(accessResult.error);
   }
   const safeQuery = appendLimitIfMissing(query);
 

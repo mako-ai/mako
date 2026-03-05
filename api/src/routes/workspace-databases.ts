@@ -833,9 +833,11 @@ workspaceDatabaseRoutes.post(
         return c.json({ success: false, error: "Query is required" }, 400);
       }
 
-      // Enforce access controls
-      if (user?.id) {
-        const accessCheck = checkQueryAccess(database, user.id, body.query);
+      // Enforce access controls (fail-closed: always check, even without userId)
+      const apiKey = c.get("apiKey");
+      const userId = user?.id || apiKey?.createdBy;
+      {
+        const accessCheck = checkQueryAccess(database, userId, body.query);
         if (!accessCheck.allowed) {
           return c.json({ success: false, error: accessCheck.error }, 403);
         }
@@ -1159,9 +1161,9 @@ workspaceExecuteRoutes.post(
         );
       }
 
-      // Enforce access controls
+      // Enforce access controls (fail-closed: always check, even without userId)
       const userId = user?.id || apiKey?.createdBy;
-      if (userId) {
+      {
         const accessCheck = checkQueryAccess(database, userId, query);
         if (!accessCheck.allowed) {
           return c.json({ success: false, error: accessCheck.error }, 403);

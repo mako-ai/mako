@@ -233,12 +233,10 @@ async function executeQueryImpl(
   });
   if (!database) throw new Error("Connection not found or access denied");
 
-  // Enforce access controls for MongoDB queries
-  if (userId) {
-    const accessResult = checkQueryAccess(database, userId, query);
-    if (!accessResult.allowed) {
-      throw new Error(accessResult.error);
-    }
+  // Enforce access controls for MongoDB queries (fail-closed)
+  const accessResult = checkQueryAccess(database, userId, query);
+  if (!accessResult.allowed) {
+    throw new Error(accessResult.error);
   }
 
   const result = await databaseConnectionService.executeQuery(
