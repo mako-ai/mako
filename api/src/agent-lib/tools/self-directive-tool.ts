@@ -22,7 +22,7 @@ const updateSelfDirectiveSchema = z
       .max(MAX_SELF_DIRECTIVE_LENGTH)
       .optional()
       .describe(
-        "The content to write. Required for set, append, prepend, insert_after. Also used as replacement text in find_and_replace.",
+        "The content to write. Required for set, append, prepend, insert_after.",
       ),
     find: z
       .string()
