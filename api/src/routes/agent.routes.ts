@@ -248,13 +248,16 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     }
   }
 
-  // Load workspace for custom prompt
+  // Load workspace for custom prompt and self-directive
   let workspaceCustomPrompt = "";
+  let selfDirective = "";
   try {
     const workspace = await Workspace.findById(workspaceId).select({
       settings: 1,
+      selfDirective: 1,
     });
     workspaceCustomPrompt = workspace?.settings?.customPrompt || "";
+    selfDirective = workspace?.selfDirective || "";
   } catch (err) {
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
@@ -308,6 +311,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     })),
     flowFormState,
     workspaceCustomPrompt,
+    selfDirective,
   };
 
   // Create agent configuration

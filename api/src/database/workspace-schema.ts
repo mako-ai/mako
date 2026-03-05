@@ -139,6 +139,7 @@ export interface IWorkspace extends Document {
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
   };
+  selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
 }
 
@@ -694,6 +695,10 @@ Add any specific instructions for how the AI should interpret your data or respo
 
 *This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
       },
+    },
+    selfDirective: {
+      type: String,
+      default: "",
     },
     apiKeys: [
       {
