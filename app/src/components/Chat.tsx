@@ -1566,7 +1566,7 @@ const Chat: React.FC<ChatProps> = ({
             if (result.success) {
               const data = (result.data as any[]) || [];
               const rowCount = Array.isArray(data) ? data.length : 1;
-              const preview = data.slice(0, 50);
+              const preview = Array.isArray(data) ? data.slice(0, 50) : data;
               addToolOutput({
                 tool: "run_console",
                 toolCallId: toolCall.toolCallId,
