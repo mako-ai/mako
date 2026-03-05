@@ -498,8 +498,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             $set: setFields,
             $setOnInsert: {
               createdBy: user.id,
+              owner_id: user.id,
               language: "sql" as const,
               isPrivate: false,
+              access: "shared_write" as const,
               executionCount: 0,
               createdAt: now,
             },
@@ -544,8 +546,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         // Use upsert in case console hasn't been auto-saved yet
         const setOnInsertFields: Record<string, any> = {
           createdBy: user.id,
+          owner_id: user.id,
           language: "sql" as const,
           isPrivate: false,
+          access: "shared_write" as const,
           executionCount: 0,
           createdAt: now,
         };
@@ -580,8 +584,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // Note: isSaved is NOT set here - drafts remain isSaved: false
       const setOnInsertFields: Record<string, any> = {
         createdBy: user.id,
+        owner_id: user.id,
         language: "sql" as const,
         isPrivate: false,
+        access: "shared_write" as const,
         isSaved: false, // Draft consoles are not saved to explorer
         executionCount: 0,
         createdAt: now,

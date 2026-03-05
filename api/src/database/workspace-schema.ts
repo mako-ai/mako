@@ -1092,7 +1092,6 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     access: {
       type: String,
       enum: ["private", "shared_read", "shared_write"],
-      default: "private",
     },
     owner_id: {
       type: String,
