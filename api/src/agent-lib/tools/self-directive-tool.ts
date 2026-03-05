@@ -74,7 +74,18 @@ export function createSelfDirectiveTools(workspaceId: string) {
                 {
                   $add: [
                     { $strLenCP: { $ifNull: ["$selfDirective", ""] } },
-                    content.length + 1,
+                    {
+                      $cond: {
+                        if: {
+                          $and: [
+                            { $ne: ["$selfDirective", ""] },
+                            { $ne: ["$selfDirective", null] },
+                          ],
+                        },
+                        then: content.length + 1,
+                        else: content.length,
+                      },
+                    },
                   ],
                 },
                 MAX_SELF_DIRECTIVE_LENGTH,
