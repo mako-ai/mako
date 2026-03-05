@@ -338,7 +338,10 @@ function ConsoleExplorer(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           access: shareAccess,
-          shared_with: shareAccess === "shared" ? shareUserEntries : undefined,
+          shared_with:
+            shareAccess === "shared" || shareAccess === "workspace"
+              ? shareUserEntries
+              : undefined,
         }),
       });
 

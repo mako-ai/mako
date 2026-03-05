@@ -519,7 +519,7 @@ export class ConsoleManager {
       if (!folder) return false;
 
       const ownerId = folder.ownerId;
-      if (ownerId && ownerId !== userId) return false;
+      if (ownerId !== userId) return false;
 
       folder.access = access;
       folder.isPrivate = access === "private";
@@ -733,7 +733,7 @@ export class ConsoleManager {
         }
         // Backfill access if missing
         if (!savedConsole.access) {
-          savedConsole.access = savedConsole.isPrivate ? "private" : "private";
+          savedConsole.access = savedConsole.isPrivate ? "private" : "workspace";
         }
 
         await savedConsole.save();
