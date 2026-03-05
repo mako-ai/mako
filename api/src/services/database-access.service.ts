@@ -66,15 +66,21 @@ const KNOWN_MONGO_OPERATIONS = [
 
 const MONGO_OP_PATTERN = new RegExp(
   `\\.(${KNOWN_MONGO_OPERATIONS.join("|")})\\s*\\(`,
+  "g",
 );
 
 /**
- * Extract the MongoDB operation from a query string by finding the first
- * known CRUD method call (e.g. `.find(`, `.aggregate(`).
+ * Extract all MongoDB operations from a query string by finding every
+ * known CRUD method call (e.g. `.find(`, `.aggregate(`, `.deleteMany(`).
  */
-function extractMongoOperation(query: string): string | undefined {
-  const match = query.match(MONGO_OP_PATTERN);
-  return match ? match[1] : undefined;
+function extractAllMongoOperations(query: string): string[] {
+  const ops: string[] = [];
+  let match: RegExpExecArray | null;
+  MONGO_OP_PATTERN.lastIndex = 0;
+  while ((match = MONGO_OP_PATTERN.exec(query)) !== null) {
+    ops.push(match[1]);
+  }
+  return ops;
 }
 
 export interface AccessCheckResult {
@@ -113,6 +119,22 @@ export function isMongoReadOnly(operation: string): boolean {
 }
 
 /**
+ * Check if all MongoDB operations in a query string are read-only.
+ * Handles multi-operation queries by validating every matched operation.
+ */
+function isMongoQueryReadOnly(
+  query: string,
+  explicitOperation?: string,
+): boolean {
+  if (explicitOperation) {
+    return isMongoReadOnly(explicitOperation);
+  }
+  const ops = extractAllMongoOperations(query);
+  if (ops.length === 0) return false;
+  return ops.every(op => MONGODB_READ_ONLY_OPERATIONS.has(op));
+}
+
+/**
  * Central access check for database query execution.
  * Returns { allowed: true } or { allowed: false, error: "..." }.
  */
@@ -146,10 +168,10 @@ export function checkQueryAccess(
 
   if (access === "shared_read" || access === "private") {
     const dbType = database.type;
-    const mongoOp =
-      options?.mongoOperation || extractMongoOperation(query) || "";
     const isReadOnly =
-      dbType === "mongodb" ? isMongoReadOnly(mongoOp) : isSqlReadOnly(query);
+      dbType === "mongodb"
+        ? isMongoQueryReadOnly(query, options?.mongoOperation)
+        : isSqlReadOnly(query);
 
     if (!isReadOnly) {
       const hint =

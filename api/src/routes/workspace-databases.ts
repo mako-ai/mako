@@ -498,7 +498,23 @@ workspaceDatabaseRoutes.put(
 
       // Update fields
       if (body.name) database.name = body.name;
-      if (body.access) database.access = body.access;
+      if (body.access) {
+        const validAccessLevels: DatabaseAccessLevel[] = [
+          "private",
+          "shared_read",
+          "shared_write",
+        ];
+        if (!validAccessLevels.includes(body.access)) {
+          return c.json(
+            {
+              success: false,
+              error: `Invalid access level. Must be one of: ${validAccessLevels.join(", ")}`,
+            },
+            400,
+          );
+        }
+        database.access = body.access;
+      }
       if (body.connection) {
         // Build candidate connection using decrypted previous + incoming patch
         const previous =
