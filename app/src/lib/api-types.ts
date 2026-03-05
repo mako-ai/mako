@@ -18,7 +18,7 @@ export interface ConsoleContentResponse {
   path?: string;
   name?: string;
   isSaved?: boolean;
-  access?: "private" | "shared_read" | "shared_write";
+  access?: "private" | "shared" | "workspace";
   owner_id?: string;
   readOnly?: boolean;
 }

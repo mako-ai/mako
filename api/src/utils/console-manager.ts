@@ -7,6 +7,7 @@ import {
   ISavedConsole,
   IConsoleFolder,
   ConsoleAccessLevel,
+  ISharedWithEntry,
 } from "../database/workspace-schema";
 import { getLogger } from "../logging";
 
@@ -18,11 +19,11 @@ export interface ConsoleFile {
   content: string;
   isDirectory: boolean;
   children?: ConsoleFile[];
-  id?: string; // Database ID for saved consoles
-  folderId?: string; // Database ID for folders
-  connectionId?: string; // Associated database connection ID
-  databaseName?: string; // Associated database name (human-readable)
-  databaseId?: string; // Associated database ID (e.g., D1 UUID for cluster mode)
+  id?: string;
+  folderId?: string;
+  connectionId?: string;
+  databaseName?: string;
+  databaseId?: string;
   language?: "sql" | "javascript" | "mongodb";
   description?: string;
   isPrivate?: boolean;
@@ -30,7 +31,7 @@ export interface ConsoleFile {
   executionCount?: number;
   access?: ConsoleAccessLevel;
   owner_id?: string;
-  shared_with?: string[];
+  shared_with?: ISharedWithEntry[];
 }
 
 export class ConsoleManager {
@@ -87,39 +88,92 @@ export class ConsoleManager {
    * Determine the effective access level for a console.
    * Handles backward compatibility: consoles without an `access` field
    * derive their level from the legacy `isPrivate` boolean.
+   * Old values are mapped: shared_read/shared_write -> workspace.
    */
   static resolveAccess(console: ISavedConsole): ConsoleAccessLevel {
-    if (console.access) return console.access;
-    return console.isPrivate ? "private" : "shared_write";
+    if (console.access) {
+      // Map legacy values to new model
+      if (
+        (console.access as string) === "shared_read" ||
+        (console.access as string) === "shared_write"
+      ) {
+        return "workspace";
+      }
+      return console.access;
+    }
+    return console.isPrivate ? "private" : "workspace";
+  }
+
+  /**
+   * Get the per-user permission for a specific userId in a shared_with array.
+   */
+  static getSharedAccess(
+    sharedWith: ISharedWithEntry[] | undefined,
+    userId: string,
+  ): "read" | "write" | null {
+    if (!sharedWith || sharedWith.length === 0) return null;
+    const entry = sharedWith.find(e => e.userId === userId);
+    return entry?.access ?? null;
   }
 
   /**
    * Check whether `userId` can read the given console.
    */
   static canRead(console: ISavedConsole, userId: string): boolean {
+    const ownerId = console.owner_id || console.createdBy;
+    if (ownerId === userId) return true;
+
     const access = ConsoleManager.resolveAccess(console);
-    if (access === "private") {
-      return (console.owner_id || console.createdBy) === userId;
-    }
-    // shared_read and shared_write are readable by all workspace members
-    return true;
+    if (access === "private") return false;
+    if (access === "workspace") return true;
+    // access === "shared" — check shared_with array
+    return ConsoleManager.getSharedAccess(console.shared_with, userId) !== null;
   }
 
   /**
    * Check whether `userId` can write (modify) the given console.
    */
   static canWrite(console: ISavedConsole, userId: string): boolean {
+    const ownerId = console.owner_id || console.createdBy;
+    if (ownerId === userId) return true;
+
     const access = ConsoleManager.resolveAccess(console);
-    if (access === "private" || access === "shared_read") {
-      return (console.owner_id || console.createdBy) === userId;
+    if (access === "private") return false;
+    if (access === "shared") {
+      return (
+        ConsoleManager.getSharedAccess(console.shared_with, userId) === "write"
+      );
     }
-    return true; // shared_write
+    // access === "workspace" — read-only by default, unless granted write via shared_with
+    return (
+      ConsoleManager.getSharedAccess(console.shared_with, userId) === "write"
+    );
+  }
+
+  /**
+   * Determine which section a console belongs to for a given user.
+   */
+  static classifyForUser(
+    console: ISavedConsole,
+    userId: string,
+  ): "my" | "shared" | "workspace" | null {
+    const ownerId = console.owner_id || console.createdBy;
+    if (ownerId === userId) return "my";
+
+    const access = ConsoleManager.resolveAccess(console);
+    if (access === "private") return null;
+    if (access === "shared") {
+      return ConsoleManager.getSharedAccess(console.shared_with, userId) !==
+        null
+        ? "shared"
+        : null;
+    }
+    // access === "workspace"
+    return "workspace";
   }
 
   /**
    * Get all consoles in a tree structure from database.
-   * When `userId` is provided the response is split into
-   * `{ myConsoles, sharedConsoles }` via the returned object.
    * Only returns explicitly saved consoles (isSaved: true), not drafts.
    */
   async listConsoles(
@@ -127,157 +181,162 @@ export class ConsoleManager {
     userId?: string,
   ): Promise<ConsoleFile[]> {
     try {
-      // Get all folders and saved consoles (not drafts) for the workspace
       const [folders, consoles] = await Promise.all([
         ConsoleFolder.find({
           workspaceId: new Types.ObjectId(workspaceId),
         }).sort({ name: 1 }),
         SavedConsole.find({
           workspaceId: new Types.ObjectId(workspaceId),
-          isSaved: true, // Only explicitly saved consoles, not drafts
+          isSaved: true,
         }).sort({ name: 1 }),
       ]);
 
-      // Filter consoles based on access model
       const visibleConsoles = userId
         ? consoles.filter(c => ConsoleManager.canRead(c, userId))
         : consoles;
 
-      // Build tree structure
-      const folderMap = new Map<string, ConsoleFile>();
-      const rootItems: ConsoleFile[] = [];
-
-      // Create folder entries
-      for (const folder of folders) {
-        const folderItem: ConsoleFile = {
-          path: folder.name,
-          name: folder.name,
-          content: "",
-          isDirectory: true,
-          children: [],
-          id: folder._id.toString(),
-          folderId: folder._id.toString(),
-          isPrivate: folder.isPrivate,
-        };
-
-        folderMap.set(folder._id.toString(), folderItem);
-
-        if (folder.parentId) {
-          // Child folder - will be added to parent later
-        } else {
-          // Root folder
-          rootItems.push(folderItem);
-        }
-      }
-
-      // Set up parent-child relationships for folders
-      for (const folder of folders) {
-        if (folder.parentId) {
-          const parent = folderMap.get(folder.parentId.toString());
-          const child = folderMap.get(folder._id.toString());
-          if (parent && child && parent.children) {
-            parent.children.push(child);
-            // Update path to include parent path
-            child.path = `${parent.path}/${child.name}`;
-          }
-        }
-      }
-
-      // Add consoles to appropriate folders or root
-      for (const console of visibleConsoles) {
-        const consoleItem: ConsoleFile = {
-          path: console.folderId
-            ? `${this.getFolderPath(console.folderId.toString(), folderMap)}/${console.name}`
-            : console.name,
-          name: console.name,
-          content: console.code,
-          isDirectory: false,
-          id: console._id.toString(),
-          connectionId: console.connectionId?.toString(),
-          databaseName: console.databaseName,
-          databaseId: console.databaseId,
-          language: console.language,
-          description: console.description,
-          isPrivate: console.isPrivate,
-          lastExecutedAt: console.lastExecutedAt,
-          executionCount: console.executionCount,
-          access: ConsoleManager.resolveAccess(console),
-          owner_id: console.owner_id || console.createdBy,
-        };
-
-        if (console.folderId) {
-          const folder = folderMap.get(console.folderId.toString());
-          if (folder && folder.children) {
-            folder.children.push(consoleItem);
-          } else {
-            // Folder not found, add to root
-            rootItems.push(consoleItem);
-          }
-        } else {
-          // Root console
-          rootItems.push(consoleItem);
-        }
-      }
-
-      // Sort children in each folder
-      for (const folder of folderMap.values()) {
-        if (folder.children) {
-          folder.children.sort((a, b) => {
-            // Directories first, then files
-            if (a.isDirectory && !b.isDirectory) return -1;
-            if (!a.isDirectory && b.isDirectory) return 1;
-            return a.name.localeCompare(b.name);
-          });
-        }
-      }
-
-      // Sort root items
-      rootItems.sort((a, b) => {
-        if (a.isDirectory && !b.isDirectory) return -1;
-        if (!a.isDirectory && b.isDirectory) return 1;
-        return a.name.localeCompare(b.name);
-      });
-
-      return rootItems;
+      return this.buildTree(folders, visibleConsoles);
     } catch (error) {
       logger.error("Error listing consoles from database", { error });
-      // Fallback to filesystem if database fails
       return this.listConsolesFromFilesystem();
     }
   }
 
   /**
-   * List consoles split into "my" and "shared" groups.
+   * Build a tree from folders and consoles, preserving hierarchy.
+   */
+  private buildTree(
+    folders: IConsoleFolder[],
+    consoles: ISavedConsole[],
+  ): ConsoleFile[] {
+    const folderMap = new Map<string, ConsoleFile>();
+    const rootItems: ConsoleFile[] = [];
+
+    for (const folder of folders) {
+      const folderItem: ConsoleFile = {
+        path: folder.name,
+        name: folder.name,
+        content: "",
+        isDirectory: true,
+        children: [],
+        id: folder._id.toString(),
+        folderId: folder._id.toString(),
+        isPrivate: folder.isPrivate,
+        owner_id: folder.ownerId,
+        access: folder.access || (folder.isPrivate ? "private" : "workspace"),
+      };
+      folderMap.set(folder._id.toString(), folderItem);
+      if (!folder.parentId) {
+        rootItems.push(folderItem);
+      }
+    }
+
+    for (const folder of folders) {
+      if (folder.parentId) {
+        const parent = folderMap.get(folder.parentId.toString());
+        const child = folderMap.get(folder._id.toString());
+        if (parent && child && parent.children) {
+          parent.children.push(child);
+          child.path = `${parent.path}/${child.name}`;
+        }
+      }
+    }
+
+    for (const console of consoles) {
+      const consoleItem: ConsoleFile = {
+        path: console.folderId
+          ? `${this.getFolderPath(console.folderId.toString(), folderMap)}/${console.name}`
+          : console.name,
+        name: console.name,
+        content: console.code,
+        isDirectory: false,
+        id: console._id.toString(),
+        connectionId: console.connectionId?.toString(),
+        databaseName: console.databaseName,
+        databaseId: console.databaseId,
+        language: console.language,
+        description: console.description,
+        isPrivate: console.isPrivate,
+        lastExecutedAt: console.lastExecutedAt,
+        executionCount: console.executionCount,
+        access: ConsoleManager.resolveAccess(console),
+        owner_id: console.owner_id || console.createdBy,
+        shared_with: console.shared_with,
+      };
+
+      if (console.folderId) {
+        const folder = folderMap.get(console.folderId.toString());
+        if (folder && folder.children) {
+          folder.children.push(consoleItem);
+        } else {
+          rootItems.push(consoleItem);
+        }
+      } else {
+        rootItems.push(consoleItem);
+      }
+    }
+
+    const sortNodes = (nodes: ConsoleFile[]) => {
+      nodes.sort((a, b) => {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      for (const node of nodes) {
+        if (node.isDirectory && node.children) {
+          sortNodes(node.children);
+        }
+      }
+    };
+    sortNodes(rootItems);
+
+    return rootItems;
+  }
+
+  /**
+   * List consoles split into 3 groups: my, sharedWithMe, sharedWithWorkspace.
+   * Each group preserves the original folder hierarchy.
    */
   async listConsolesSplit(
     workspaceId: string,
     userId: string,
-    prefetchedTree?: ConsoleFile[],
-  ): Promise<{ myConsoles: ConsoleFile[]; sharedConsoles: ConsoleFile[] }> {
-    const all =
-      prefetchedTree ?? (await this.listConsoles(workspaceId, userId));
+  ): Promise<{
+    myConsoles: ConsoleFile[];
+    sharedWithMe: ConsoleFile[];
+    sharedWithWorkspace: ConsoleFile[];
+  }> {
+    try {
+      const [folders, consoles] = await Promise.all([
+        ConsoleFolder.find({
+          workspaceId: new Types.ObjectId(workspaceId),
+        }).sort({ name: 1 }),
+        SavedConsole.find({
+          workspaceId: new Types.ObjectId(workspaceId),
+          isSaved: true,
+        }).sort({ name: 1 }),
+      ]);
 
-    const myConsoles: ConsoleFile[] = [];
-    const sharedConsoles: ConsoleFile[] = [];
+      // Classify each console
+      const myConsolesRaw: ISavedConsole[] = [];
+      const sharedWithMeRaw: ISavedConsole[] = [];
+      const sharedWithWorkspaceRaw: ISavedConsole[] = [];
 
-    const flattenTree = (items: ConsoleFile[]) => {
-      for (const item of items) {
-        if (item.isDirectory && item.children) {
-          flattenTree(item.children);
-        } else if (!item.isDirectory) {
-          const isOwner = item.owner_id === userId;
-          if (isOwner) {
-            myConsoles.push(item);
-          } else {
-            sharedConsoles.push(item);
-          }
-        }
+      for (const c of consoles) {
+        const classification = ConsoleManager.classifyForUser(c, userId);
+        if (classification === "my") myConsolesRaw.push(c);
+        else if (classification === "shared") sharedWithMeRaw.push(c);
+        else if (classification === "workspace") sharedWithWorkspaceRaw.push(c);
       }
-    };
 
-    flattenTree(all);
-
-    return { myConsoles, sharedConsoles };
+      return {
+        myConsoles: this.buildTree(folders, myConsolesRaw),
+        sharedWithMe: this.buildTree(folders, sharedWithMeRaw),
+        sharedWithWorkspace: this.buildTree(folders, sharedWithWorkspaceRaw),
+      };
+    } catch (error) {
+      logger.error("Error listing consoles split", { error });
+      return { myConsoles: [], sharedWithMe: [], sharedWithWorkspace: [] };
+    }
   }
 
   /**
@@ -414,7 +473,7 @@ export class ConsoleManager {
     workspaceId: string,
     userId: string,
     access: ConsoleAccessLevel,
-    sharedWith?: string[],
+    sharedWith?: ISharedWithEntry[],
   ): Promise<ISavedConsole | null> {
     try {
       const savedConsole = await SavedConsole.findOne({
@@ -430,7 +489,7 @@ export class ConsoleManager {
       savedConsole.access = access;
       savedConsole.isPrivate = access === "private";
       if (sharedWith !== undefined) {
-        savedConsole.shared_with = sharedWith.map(id => new Types.ObjectId(id));
+        savedConsole.shared_with = sharedWith;
       }
       savedConsole.updatedAt = new Date();
       await savedConsole.save();
@@ -438,6 +497,96 @@ export class ConsoleManager {
     } catch (error) {
       logger.error("Error updating console access", { error });
       return null;
+    }
+  }
+
+  /**
+   * Update sharing settings for a folder.
+   * Sharing a folder shares its entire subtree with the same access level.
+   */
+  async updateFolderAccess(
+    folderId: string,
+    workspaceId: string,
+    userId: string,
+    access: ConsoleAccessLevel,
+    sharedWith?: ISharedWithEntry[],
+  ): Promise<boolean> {
+    try {
+      const folder = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!folder) return false;
+
+      const ownerId = folder.ownerId;
+      if (ownerId !== userId) return false;
+
+      folder.access = access;
+      folder.isPrivate = access === "private";
+      if (sharedWith !== undefined) {
+        folder.shared_with = sharedWith;
+      }
+      await folder.save();
+
+      // Propagate to child folders and consoles
+      await this.propagateFolderAccess(
+        folderId,
+        workspaceId,
+        access,
+        sharedWith,
+      );
+
+      return true;
+    } catch (error) {
+      logger.error("Error updating folder access", { error });
+      return false;
+    }
+  }
+
+  /**
+   * Recursively propagate access to all children of a folder.
+   */
+  private async propagateFolderAccess(
+    folderId: string,
+    workspaceId: string,
+    access: ConsoleAccessLevel,
+    sharedWith?: ISharedWithEntry[],
+  ): Promise<void> {
+    const wid = new Types.ObjectId(workspaceId);
+    const fid = new Types.ObjectId(folderId);
+
+    // Update all consoles in the folder
+    const consoleUpdate: Record<string, unknown> = {
+      access,
+      isPrivate: access === "private",
+    };
+    if (sharedWith !== undefined) {
+      consoleUpdate.shared_with = sharedWith;
+    }
+    await SavedConsole.updateMany(
+      { workspaceId: wid, folderId: fid },
+      { $set: consoleUpdate },
+    );
+
+    // Update child folders recursively
+    const childFolders = await ConsoleFolder.find({
+      workspaceId: wid,
+      parentId: fid,
+    });
+
+    for (const child of childFolders) {
+      child.access = access;
+      child.isPrivate = access === "private";
+      if (sharedWith !== undefined) {
+        child.shared_with = sharedWith;
+      }
+      await child.save();
+      await this.propagateFolderAccess(
+        child._id.toString(),
+        workspaceId,
+        access,
+        sharedWith,
+      );
     }
   }
 
@@ -584,9 +733,7 @@ export class ConsoleManager {
         }
         // Backfill access if missing
         if (!savedConsole.access) {
-          savedConsole.access = savedConsole.isPrivate
-            ? "private"
-            : "shared_write";
+          savedConsole.access = savedConsole.isPrivate ? "private" : "workspace";
         }
 
         await savedConsole.save();
@@ -607,9 +754,9 @@ export class ConsoleManager {
           language: options?.language || this.detectLanguage(content),
           createdBy: userId,
           isPrivate: isPrivate,
-          isSaved: true, // Explicitly saved console
+          isSaved: true,
           executionCount: 0,
-          access: isPrivate ? "private" : "shared_write",
+          access: "private" as ConsoleAccessLevel,
           owner_id: userId,
         };
 

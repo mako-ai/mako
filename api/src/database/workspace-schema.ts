@@ -299,18 +299,30 @@ export interface IConsoleFolder extends Document {
   workspaceId: Types.ObjectId;
   name: string;
   parentId?: Types.ObjectId;
+  /** @deprecated Use `access` instead */
   isPrivate: boolean;
   ownerId?: string;
+  access: ConsoleAccessLevel;
+  shared_with?: ISharedWithEntry[];
   createdAt: Date;
 }
 
 /**
- * Console access level.
- * - 'private': only the owner can see/edit
- * - 'shared_read': workspace members can view but only the owner can edit
- * - 'shared_write': any workspace member can view and edit
+ * Console access level (visibility scope).
+ * - 'private': only the owner can see/edit (default for new consoles)
+ * - 'shared': shared with specific users via shared_with array
+ * - 'workspace': visible to all workspace members (read-only by default for non-owners)
  */
-export type ConsoleAccessLevel = "private" | "shared_read" | "shared_write";
+export type ConsoleAccessLevel = "private" | "shared" | "workspace";
+
+/**
+ * Per-user sharing permission entry.
+ * Stored in the `shared_with` array on consoles and folders.
+ */
+export interface ISharedWithEntry {
+  userId: string;
+  access: "read" | "write";
+}
 
 /**
  * SavedConsole model interface
@@ -358,7 +370,7 @@ export interface ISavedConsole extends Document {
   isSaved: boolean; // true = explicitly saved, false/undefined = draft
   access: ConsoleAccessLevel;
   owner_id: string;
-  shared_with?: Types.ObjectId[];
+  shared_with?: ISharedWithEntry[];
   createdAt: Date;
   updatedAt: Date;
   lastExecutedAt?: Date;
@@ -996,6 +1008,7 @@ const ConsoleFolderSchema = new Schema<IConsoleFolder>(
       type: Schema.Types.ObjectId,
       ref: "ConsoleFolder",
     },
+    /** @deprecated Use `access` instead */
     isPrivate: {
       type: Boolean,
       default: false,
@@ -1004,6 +1017,21 @@ const ConsoleFolderSchema = new Schema<IConsoleFolder>(
       type: String,
       ref: "User",
     },
+    access: {
+      type: String,
+      enum: ["private", "shared", "workspace"],
+      default: "private",
+    },
+    shared_with: [
+      {
+        userId: { type: String, ref: "User", required: true },
+        access: {
+          type: String,
+          enum: ["read", "write"],
+          default: "read",
+        },
+      },
+    ],
   },
   {
     timestamps: { createdAt: true, updatedAt: false },
@@ -1013,6 +1041,7 @@ const ConsoleFolderSchema = new Schema<IConsoleFolder>(
 // Indexes
 ConsoleFolderSchema.index({ workspaceId: 1, parentId: 1 });
 ConsoleFolderSchema.index({ workspaceId: 1, ownerId: 1, isPrivate: 1 });
+ConsoleFolderSchema.index({ workspaceId: 1, access: 1 });
 
 /**
  * SavedConsole Schema
@@ -1091,7 +1120,8 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     access: {
       type: String,
-      enum: ["private", "shared_read", "shared_write"],
+      enum: ["private", "shared", "workspace"],
+      default: "private",
     },
     owner_id: {
       type: String,
@@ -1099,8 +1129,12 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     shared_with: [
       {
-        type: Schema.Types.ObjectId,
-        ref: "WorkspaceMember",
+        userId: { type: String, ref: "User", required: true },
+        access: {
+          type: String,
+          enum: ["read", "write"],
+          default: "read",
+        },
       },
     ],
     lastExecutedAt: {

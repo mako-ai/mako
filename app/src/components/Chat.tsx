@@ -819,7 +819,7 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
-        // Check if the console is read-only (shared_read and user is not owner)
+        // Check if the console is read-only (shared/workspace without write access)
         if ((targetConsole as any).readOnly) {
           addToolOutput({
             tool: "modify_console",
