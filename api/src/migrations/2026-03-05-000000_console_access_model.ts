@@ -16,7 +16,7 @@ export const description =
  *
  * Backward compatibility:
  * - `isPrivate: true` → `access: 'private'`
- * - `isPrivate: false` (or missing) → `access: 'shared_write'`
+ * - `isPrivate: false` (or missing) → `access: 'workspace'`
  * - `isPrivate` field is kept but deprecated
  *
  * Also creates index: { workspaceId: 1, access: 1, owner_id: 1 }
@@ -47,13 +47,13 @@ export async function up(db: Db): Promise<void> {
     `Set access='private' for ${privateResult.modifiedCount} private consoles`,
   );
 
-  // 3. Set access = 'shared_write' for consoles where isPrivate !== true (false or missing)
+  // 3. Set access = 'workspace' for consoles where isPrivate !== true (false or missing)
   const sharedResult = await col.updateMany(
     { isPrivate: { $ne: true }, access: { $exists: false } },
-    { $set: { access: "shared_write" } },
+    { $set: { access: "workspace" } },
   );
   log.info(
-    `Set access='shared_write' for ${sharedResult.modifiedCount} shared consoles`,
+    `Set access='workspace' for ${sharedResult.modifiedCount} shared consoles`,
   );
 
   // 4. Initialize empty shared_with array where missing

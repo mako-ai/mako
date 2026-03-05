@@ -803,7 +803,7 @@ export class ConsoleManager {
           isPrivate: isPrivate,
           isSaved: true,
           executionCount: 0,
-          access: "private" as ConsoleAccessLevel,
+          access: (isPrivate ? "private" : "workspace") as ConsoleAccessLevel,
           owner_id: userId,
         };
 
@@ -838,7 +838,8 @@ export class ConsoleManager {
       name: folderName,
       parentId: parentId ? new Types.ObjectId(parentId) : undefined,
       isPrivate,
-      ownerId: isPrivate ? userId : undefined,
+      ownerId: userId,
+      access: isPrivate ? "private" : "workspace",
     });
 
     return await folder.save();

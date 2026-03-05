@@ -151,14 +151,15 @@ export const useConsoleTreeStore = create<TreeState>()(
         const sharedWithMeTree = data.sharedWithMe ?? [];
         const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
 
+        const prunedMyTree = pruneEmptyFolders(myTree);
         set(state => {
-          state.myConsoles[workspaceId] = myTree;
+          state.myConsoles[workspaceId] = prunedMyTree;
           state.sharedWithMe[workspaceId] = pruneEmptyFolders(sharedWithMeTree);
           state.sharedWithWorkspace[workspaceId] = pruneEmptyFolders(
             sharedWithWorkspaceTree,
           );
           // Keep trees as alias for backward compat
-          state.trees[workspaceId] = myTree;
+          state.trees[workspaceId] = prunedMyTree;
         });
         return myTree;
       } catch (err: any) {
