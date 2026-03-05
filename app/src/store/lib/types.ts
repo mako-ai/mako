@@ -16,9 +16,17 @@ export type TabKind =
   | "flow-editor";
 
 /**
- * Console access level
+ * Console access level (visibility scope)
  */
-export type ConsoleAccessLevel = "private" | "shared_read" | "shared_write";
+export type ConsoleAccessLevel = "private" | "shared" | "workspace";
+
+/**
+ * Per-user sharing permission
+ */
+export interface SharedWithEntry {
+  userId: string;
+  access: "read" | "write";
+}
 
 /**
  * Console tab state
@@ -50,10 +58,12 @@ export interface ConsoleTab {
   icon?: string;
   /** Additional data for special tab types */
   metadata?: Record<string, unknown>;
-  /** Access level: private, shared_read, shared_write */
+  /** Access level: private, shared, workspace */
   access?: ConsoleAccessLevel;
   /** User ID of the console owner */
   owner_id?: string;
+  /** Per-user sharing permissions */
+  shared_with?: SharedWithEntry[];
   /** True if the current user can only read (not edit) this console */
   readOnly?: boolean;
 }

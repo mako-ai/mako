@@ -10,6 +10,7 @@ import {
   IDatabaseConnection,
   ConsoleAccessLevel,
 } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
 import {
@@ -111,7 +112,7 @@ async function verifyWorkspaceAccess(
 }
 
 // GET /api/workspaces/:workspaceId/consoles - List all consoles (tree structure) for workspace
-// When a user is authenticated the response includes myConsoles / sharedConsoles split.
+// Returns 3 root groups: myConsoles, sharedWithMe, sharedWithWorkspace (each as tree)
 consoleRoutes.get("/", async (c: Context) => {
   try {
     const access = await verifyWorkspaceAccess(c);
@@ -125,41 +126,21 @@ consoleRoutes.get("/", async (c: Context) => {
     const user = c.get("user");
     const userId: string | undefined = user?.id;
 
-    const tree = await consoleManager.listConsoles(access.workspaceId, userId);
-
-    // Also provide the split view for the frontend
     if (userId) {
-      const { myConsoles, sharedConsoles } =
-        await consoleManager.listConsolesSplit(
-          access.workspaceId,
-          userId,
-          tree,
-        );
-
-      // Filter shared consoles out of the tree so they only appear in the
-      // dedicated sharedConsoles list and are not duplicated in the main tree.
-      const filterOwned = (nodes: typeof tree): typeof tree => {
-        return nodes
-          .map(node => {
-            if (node.isDirectory) {
-              const children = node.children ? filterOwned(node.children) : [];
-              if (children.length === 0) return null;
-              return { ...node, children };
-            }
-            return node.owner_id === userId ? node : null;
-          })
-          .filter(Boolean) as typeof tree;
-      };
-      const ownedTree = filterOwned(tree);
+      const { myConsoles, sharedWithMe, sharedWithWorkspace } =
+        await consoleManager.listConsolesSplit(access.workspaceId, userId);
 
       return c.json({
         success: true,
-        tree: ownedTree,
         myConsoles,
-        sharedConsoles,
+        sharedWithMe,
+        sharedWithWorkspace,
+        // Keep `tree` for backward compat (myConsoles)
+        tree: myConsoles,
       });
     }
 
+    const tree = await consoleManager.listConsoles(access.workspaceId, userId);
     return c.json({ success: true, tree });
   } catch (error) {
     logger.error("Error listing consoles", { error });
@@ -204,20 +185,29 @@ consoleRoutes.get("/content", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
-    // Deny access to private consoles not owned by the current user
-    const consoleAccess = consoleData.access || "private";
-    const ownerId = consoleData.owner_id;
-    if (consoleAccess === "private" && ownerId !== user.id) {
+    // Fetch the full document to check access properly
+    const fullConsole = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (fullConsole && !ConsoleManager.canRead(fullConsole, user.id)) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
+    const consoleAccess = consoleData.access || "private";
+    const ownerId = consoleData.owner_id;
+
     // Determine if the current user can write
-    const currentUserId = user?.id;
-    let readOnly = false;
-    if (currentUserId && ownerId) {
-      if (consoleAccess === "shared_read" && currentUserId !== ownerId) {
-        readOnly = true;
-      }
+    const readOnly = fullConsole
+      ? !ConsoleManager.canWrite(fullConsole, user.id)
+      : false;
+
+    // Resolve owner display name
+    let ownerDisplayName: string | undefined;
+    if (ownerId) {
+      const ownerUser = await User.findById(ownerId).select("email").lean();
+      ownerDisplayName = ownerUser?.email;
     }
 
     return c.json({
@@ -233,6 +223,7 @@ consoleRoutes.get("/content", async (c: Context) => {
       isSaved: consoleData.isSaved,
       access: consoleAccess,
       owner_id: ownerId,
+      ownerDisplayName,
       readOnly,
     });
   } catch (error) {
@@ -501,7 +492,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
               owner_id: user.id,
               language: "sql" as const,
               isPrivate: false,
-              access: "shared_write" as const,
+              access: "private" as const,
               executionCount: 0,
               createdAt: now,
             },
@@ -520,7 +511,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       }
 
       // Build $set object - only include name if title is explicitly provided
-      // This prevents overwriting the name to "Untitled" when only updating content
       const setFields: Record<string, any> = {
         code: body.content,
         connectionId: body.connectionId
@@ -542,14 +532,12 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       }
 
       if (isExplicitSave) {
-        // Explicit save without path (e.g., Cmd+S on already saved console)
-        // Use upsert in case console hasn't been auto-saved yet
         const setOnInsertFields: Record<string, any> = {
           createdBy: user.id,
           owner_id: user.id,
           language: "sql" as const,
           isPrivate: false,
-          access: "shared_write" as const,
+          access: "private" as const,
           executionCount: 0,
           createdAt: now,
         };
@@ -581,14 +569,13 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       }
 
       // Draft auto-save flow: Use upsert to create if doesn't exist
-      // Note: isSaved is NOT set here - drafts remain isSaved: false
       const setOnInsertFields: Record<string, any> = {
         createdBy: user.id,
         owner_id: user.id,
         language: "sql" as const,
         isPrivate: false,
-        access: "shared_write" as const,
-        isSaved: false, // Draft consoles are not saved to explorer
+        access: "private" as const,
+        isSaved: false,
         executionCount: 0,
         createdAt: now,
       };
@@ -960,7 +947,7 @@ consoleRoutes.delete("/folders/:id", async (c: Context) => {
   }
 });
 
-// POST /api/workspaces/:workspaceId/consoles/:id/share - Update sharing settings
+// POST /api/workspaces/:workspaceId/consoles/:id/share - Update sharing settings for a console
 consoleRoutes.post("/:id/share", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
@@ -968,7 +955,7 @@ consoleRoutes.post("/:id/share", async (c: Context) => {
     const body = await c.req.json();
     const { access, shared_with } = body as {
       access?: ConsoleAccessLevel;
-      shared_with?: string[];
+      shared_with?: Array<{ userId: string; access: "read" | "write" }>;
     };
     const user = c.get("user");
 
@@ -979,15 +966,12 @@ consoleRoutes.post("/:id/share", async (c: Context) => {
       );
     }
 
-    if (
-      !access ||
-      !["private", "shared_read", "shared_write"].includes(access)
-    ) {
+    if (!access || !["private", "shared", "workspace"].includes(access)) {
       return c.json(
         {
           success: false,
           error:
-            "access is required and must be one of: private, shared_read, shared_write",
+            "access is required and must be one of: private, shared, workspace",
         },
         400,
       );
@@ -1018,12 +1002,79 @@ consoleRoutes.post("/:id/share", async (c: Context) => {
         id: updated._id.toString(),
         access: updated.access,
         owner_id: updated.owner_id,
-        shared_with: updated.shared_with?.map(id => id.toString()),
+        shared_with: updated.shared_with,
       },
     });
   } catch (error) {
     logger.error("Error updating console sharing", {
       consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error updating sharing",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/folders/:id/share - Update sharing settings for a folder
+consoleRoutes.post("/folders/:id/share", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const folderId = c.req.param("id");
+    const body = await c.req.json();
+    const { access, shared_with } = body as {
+      access?: ConsoleAccessLevel;
+      shared_with?: Array<{ userId: string; access: "read" | "write" }>;
+    };
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (!access || !["private", "shared", "workspace"].includes(access)) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "access is required and must be one of: private, shared, workspace",
+        },
+        400,
+      );
+    }
+
+    const success = await consoleManager.updateFolderAccess(
+      folderId,
+      workspaceId,
+      user.id,
+      access,
+      shared_with,
+    );
+
+    if (!success) {
+      return c.json(
+        { success: false, error: "Folder not found or you are not the owner" },
+        404,
+      );
+    }
+
+    return c.json({
+      success: true,
+      message: "Folder sharing settings updated",
+    });
+  } catch (error) {
+    logger.error("Error updating folder sharing", {
+      folderId: c.req.param("id"),
       error,
     });
     return c.json(
@@ -1368,17 +1419,20 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
     const ownerId = savedConsole.owner_id || savedConsole.createdBy;
 
-    // Deny access to private consoles not owned by the current user
-    if (resolvedAccess === "private" && user?.id && ownerId !== user.id) {
+    // Access control
+    if (user?.id && !ConsoleManager.canRead(savedConsole, user.id)) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
-    // Determine if the current user can write
-    let readOnly = false;
-    if (user?.id && ownerId) {
-      if (resolvedAccess === "shared_read" && user.id !== ownerId) {
-        readOnly = true;
-      }
+    const readOnly = user?.id
+      ? !ConsoleManager.canWrite(savedConsole, user.id)
+      : false;
+
+    // Resolve owner display name (email as fallback since users don't have display names)
+    let ownerDisplayName: string | undefined;
+    if (ownerId) {
+      const ownerUser = await User.findById(ownerId).select("email").lean();
+      ownerDisplayName = ownerUser?.email;
     }
 
     return c.json({
@@ -1404,6 +1458,8 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
         executionCount: savedConsole.executionCount,
         access: resolvedAccess,
         owner_id: ownerId,
+        ownerDisplayName,
+        shared_with: savedConsole.shared_with,
         readOnly,
       },
     });
