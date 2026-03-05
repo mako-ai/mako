@@ -1475,6 +1475,131 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
+        // Handle run_console - execute the query in a console tab
+        if (toolName === "run_console") {
+          const consoleId = input.consoleId as string | undefined;
+
+          if (!consoleId) {
+            addToolOutput({
+              tool: "run_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "consoleId is required. Use list_open_consoles to get IDs of existing consoles.",
+              },
+            });
+            return;
+          }
+
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
+          const targetConsole = currentTabs.find(
+            (c: any) => c.id === consoleId,
+          ) as ConsoleTab | undefined;
+
+          if (!targetConsole) {
+            addToolOutput({
+              tool: "run_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
+              },
+            });
+            return;
+          }
+
+          const content = targetConsole.content;
+          const connectionId = targetConsole.connectionId;
+          const workspaceId = workspaceIdRef.current;
+
+          if (!content?.trim()) {
+            addToolOutput({
+              tool: "run_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Console is empty. Write a query first using modify_console.",
+              },
+            });
+            return;
+          }
+
+          if (!connectionId) {
+            addToolOutput({
+              tool: "run_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Console has no database connection. Use set_console_connection to attach one first.",
+              },
+            });
+            return;
+          }
+
+          if (!workspaceId) {
+            addToolOutput({
+              tool: "run_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: "No workspace selected.",
+              },
+            });
+            return;
+          }
+
+          try {
+            const result = await currentStore.executeQuery(
+              workspaceId,
+              connectionId,
+              content,
+              {
+                databaseName: targetConsole.databaseName,
+                databaseId: targetConsole.databaseId,
+              },
+            );
+
+            if (result.success) {
+              const data = (result.data as any[]) || [];
+              const rowCount = Array.isArray(data) ? data.length : 1;
+              const preview = data.slice(0, 50);
+              addToolOutput({
+                tool: "run_console",
+                toolCallId: toolCall.toolCallId,
+                output: {
+                  success: true,
+                  rowCount,
+                  preview,
+                  message: `Query executed successfully. ${rowCount} row(s) returned.`,
+                },
+              });
+            } else {
+              addToolOutput({
+                tool: "run_console",
+                toolCallId: toolCall.toolCallId,
+                output: {
+                  success: false,
+                  error: result.error || "Query execution failed.",
+                },
+              });
+            }
+          } catch (e: any) {
+            addToolOutput({
+              tool: "run_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: e?.message || "Query execution failed unexpectedly.",
+              },
+            });
+          }
+          return;
+        }
+
         // Handle flow agent client-side tools
         // get_form_state - Return current form configuration
         if (toolName === "get_form_state") {
