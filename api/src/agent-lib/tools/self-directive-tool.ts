@@ -3,6 +3,16 @@ import { Workspace } from "../../database/workspace-schema";
 
 const MAX_SELF_DIRECTIVE_LENGTH = 10000;
 
+function literalReplace(
+  source: string,
+  search: string,
+  replacement: string,
+): string {
+  const idx = source.indexOf(search);
+  if (idx === -1) return source;
+  return source.slice(0, idx) + replacement + source.slice(idx + search.length);
+}
+
 const updateSelfDirectiveSchema = z
   .object({
     operation: z
@@ -155,7 +165,7 @@ export function createSelfDirectiveTools(workspaceId: string) {
                 error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
               };
             }
-            newValue = current.replace(find!, replace!);
+            newValue = literalReplace(current, find!, replace!);
             break;
 
           case "insert_after":
@@ -165,7 +175,11 @@ export function createSelfDirectiveTools(workspaceId: string) {
                 error: `Anchor text not found in self-directive: "${after!.slice(0, 80)}"`,
               };
             }
-            newValue = current.replace(after!, after! + "\n" + content!);
+            newValue = literalReplace(
+              current,
+              after!,
+              after! + "\n" + content!,
+            );
             break;
 
           case "delete_section":
@@ -175,8 +189,7 @@ export function createSelfDirectiveTools(workspaceId: string) {
                 error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
               };
             }
-            newValue = current
-              .replace(find!, "")
+            newValue = literalReplace(current, find!, "")
               .replace(/\n{3,}/g, "\n\n")
               .trim();
             break;
