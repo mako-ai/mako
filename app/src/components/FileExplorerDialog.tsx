@@ -30,45 +30,66 @@ import {
 } from "../store/consoleTreeStore";
 import { useWorkspace } from "../contexts/workspace-context";
 
+type DialogMode = "save" | "move" | "new-folder";
+
 interface BreadcrumbItem {
   id: string | null;
   name: string;
   section: "my" | "workspace";
 }
 
-interface ConsoleSaveDialogProps {
+interface FileExplorerDialogProps {
   open: boolean;
   onClose: () => void;
-  onSave: (
+  mode: DialogMode;
+
+  /** save mode: called with (name, folderId, section) */
+  onSave?: (
     name: string,
     folderId: string | null,
     section: "my" | "workspace",
   ) => void;
   defaultName?: string;
   isSaving?: boolean;
+
+  /** move mode: called with target folderId (null = root) */
+  onMove?: (targetFolderId: string | null) => void;
+  itemName?: string;
+  isDirectory?: boolean;
+
+  /** new-folder mode: called with parent folderId (null = root) */
+  onNewFolder?: (parentFolderId: string | null) => void;
 }
 
-export default function ConsoleSaveDialog({
+export default function FileExplorerDialog({
   open,
   onClose,
+  mode,
   onSave,
   defaultName = "",
   isSaving = false,
-}: ConsoleSaveDialogProps) {
+  onMove,
+  itemName = "",
+  onNewFolder,
+}: FileExplorerDialogProps) {
   const { currentWorkspace } = useWorkspace();
-  const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
+
+  // Use the raw (unpruned) tree so empty folders are navigable in the picker
+  const myConsolesAllMap = useConsoleTreeStore(state => state.myConsolesAll);
   const sharedWithWorkspaceMap = useConsoleTreeStore(
     state => state.sharedWithWorkspace,
   );
+  const createFolderAction = useConsoleTreeStore(state => state.createFolder);
 
-  const myConsoles = currentWorkspace
-    ? myConsolesMap[currentWorkspace.id] || []
+  const myConsolesAll = currentWorkspace
+    ? myConsolesAllMap[currentWorkspace.id] || []
     : [];
   const workspaceConsoles = currentWorkspace
     ? sharedWithWorkspaceMap[currentWorkspace.id] || []
     : [];
 
   const [consoleName, setConsoleName] = useState(defaultName);
+  const [folderName, setFolderName] = useState("");
   const [currentSection, setCurrentSection] = useState<"my" | "workspace">(
     "my",
   );
@@ -77,11 +98,11 @@ export default function ConsoleSaveDialog({
   ]);
   const [newFolderMode, setNewFolderMode] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
-  const createFolder = useConsoleTreeStore(state => state.createFolder);
 
   useEffect(() => {
     if (open) {
       setConsoleName(defaultName);
+      setFolderName("");
       setCurrentSection("my");
       setBreadcrumb([{ id: null, name: "My Consoles", section: "my" }]);
       setNewFolderMode(false);
@@ -90,7 +111,8 @@ export default function ConsoleSaveDialog({
   }, [open, defaultName]);
 
   const getCurrentFolders = useCallback((): ConsoleEntry[] => {
-    const rootNodes = currentSection === "my" ? myConsoles : workspaceConsoles;
+    const rootNodes =
+      currentSection === "my" ? myConsolesAll : workspaceConsoles;
     const currentFolderId = breadcrumb[breadcrumb.length - 1]?.id;
 
     if (!currentFolderId) {
@@ -113,9 +135,10 @@ export default function ConsoleSaveDialog({
 
     const folder = findFolder(rootNodes, currentFolderId);
     return folder?.children?.filter(n => n.isDirectory) || [];
-  }, [currentSection, myConsoles, workspaceConsoles, breadcrumb]);
+  }, [currentSection, myConsolesAll, workspaceConsoles, breadcrumb]);
 
   const handleFolderClick = (folder: ConsoleEntry) => {
+    if (!folder.id) return;
     setBreadcrumb(prev => [
       ...prev,
       { id: folder.id!, name: folder.name, section: currentSection },
@@ -138,19 +161,26 @@ export default function ConsoleSaveDialog({
     ]);
   };
 
-  const handleSave = () => {
-    if (!consoleName.trim()) return;
-    const currentFolderId = breadcrumb[breadcrumb.length - 1]?.id;
-    onSave(consoleName.trim(), currentFolderId, currentSection);
+  const currentFolderId = breadcrumb[breadcrumb.length - 1]?.id ?? null;
+
+  const handleConfirm = () => {
+    if (mode === "save") {
+      if (!consoleName.trim()) return;
+      onSave?.(consoleName.trim(), currentFolderId, currentSection);
+    } else if (mode === "move") {
+      onMove?.(currentFolderId);
+    } else if (mode === "new-folder") {
+      if (!folderName.trim()) return;
+      onNewFolder?.(currentFolderId);
+    }
   };
 
   const handleCreateFolder = async () => {
     if (!currentWorkspace || !newFolderName.trim()) return;
-    const parentId = breadcrumb[breadcrumb.length - 1]?.id;
-    const result = await createFolder(
+    const result = await createFolderAction(
       currentWorkspace.id,
       newFolderName.trim(),
-      parentId,
+      currentFolderId,
     );
     if (result) {
       setNewFolderMode(false);
@@ -160,15 +190,38 @@ export default function ConsoleSaveDialog({
 
   const folders = getCurrentFolders();
 
+  const dialogTitle =
+    mode === "save"
+      ? "Save Console"
+      : mode === "move"
+        ? `Move "${itemName}"`
+        : "Create New Folder";
+
+  const confirmLabel =
+    mode === "save"
+      ? isSaving
+        ? "Saving..."
+        : "Save"
+      : mode === "move"
+        ? "Move Here"
+        : "Create Here";
+
+  const confirmDisabled =
+    mode === "save"
+      ? !consoleName.trim() || isSaving
+      : mode === "new-folder"
+        ? !folderName.trim()
+        : false;
+
   return (
     <Dialog
       open={open}
       onClose={onClose}
       maxWidth="sm"
       fullWidth
-      PaperProps={{ sx: { minHeight: 420 } }}
+      PaperProps={{ sx: { minHeight: 460 } }}
     >
-      <DialogTitle sx={{ pb: 1 }}>Save Console</DialogTitle>
+      <DialogTitle sx={{ pb: 1 }}>{dialogTitle}</DialogTitle>
       <DialogContent
         sx={{
           display: "flex",
@@ -177,22 +230,39 @@ export default function ConsoleSaveDialog({
           pt: "8px !important",
         }}
       >
-        <TextField
-          autoFocus
-          label="Console Name"
-          fullWidth
-          variant="outlined"
-          size="small"
-          value={consoleName}
-          onChange={e => setConsoleName(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === "Enter" && consoleName.trim()) {
-              handleSave();
-            }
-          }}
-          autoComplete="off"
-          spellCheck={false}
-        />
+        {/* Name input — save mode gets console name, new-folder mode gets folder name */}
+        {mode === "save" && (
+          <TextField
+            autoFocus
+            label="Console Name"
+            fullWidth
+            variant="outlined"
+            size="small"
+            value={consoleName}
+            onChange={e => setConsoleName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter" && consoleName.trim()) handleConfirm();
+            }}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        )}
+        {mode === "new-folder" && (
+          <TextField
+            autoFocus
+            label="Folder Name"
+            fullWidth
+            variant="outlined"
+            size="small"
+            value={folderName}
+            onChange={e => setFolderName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter" && folderName.trim()) handleConfirm();
+            }}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        )}
 
         <Divider />
 
@@ -205,7 +275,11 @@ export default function ConsoleSaveDialog({
             letterSpacing: "0.05em",
           }}
         >
-          Save Location
+          {mode === "save"
+            ? "Save Location"
+            : mode === "move"
+              ? "Destination"
+              : "Location"}
         </Typography>
 
         {/* Section tabs */}
@@ -269,8 +343,8 @@ export default function ConsoleSaveDialog({
             border: 1,
             borderColor: "divider",
             borderRadius: 1,
-            minHeight: 120,
-            maxHeight: 200,
+            minHeight: 140,
+            maxHeight: 220,
             overflowY: "auto",
           }}
         >
@@ -281,7 +355,11 @@ export default function ConsoleSaveDialog({
                 color="text.disabled"
                 fontStyle="italic"
               >
-                No subfolders. Save here or create one.
+                {mode === "save"
+                  ? "No subfolders. Save here or create one."
+                  : mode === "move"
+                    ? "No subfolders. Move here or create one."
+                    : "No subfolders. Create the folder here."}
               </Typography>
             </Box>
           ) : (
@@ -306,7 +384,7 @@ export default function ConsoleSaveDialog({
           )}
         </Box>
 
-        {/* New folder inline */}
+        {/* Inline new folder creation */}
         {newFolderMode ? (
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
             <FolderOpenIcon size={18} strokeWidth={1.5} />
@@ -361,12 +439,12 @@ export default function ConsoleSaveDialog({
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
         <Button
-          onClick={handleSave}
-          disabled={!consoleName.trim() || isSaving}
+          onClick={handleConfirm}
+          disabled={confirmDisabled}
           variant="contained"
           disableElevation
         >
-          {isSaving ? "Saving..." : "Save"}
+          {confirmLabel}
         </Button>
       </DialogActions>
     </Dialog>

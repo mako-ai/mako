@@ -78,7 +78,7 @@ import {
 } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
-import MoveToDialog from "./MoveToDialog";
+import FileExplorerDialog from "./FileExplorerDialog";
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -114,7 +114,6 @@ function ConsoleExplorer(
   const moveFolder = useConsoleTreeStore(state => state.moveFolder);
   const renameItem = useConsoleTreeStore(state => state.renameItem);
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
-  const createFolderAction = useConsoleTreeStore(state => state.createFolder);
 
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
@@ -141,11 +140,10 @@ function ConsoleExplorer(
 
   // Dialogs
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
-  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
-  const [newFolderName, setNewFolderName] = useState("");
-  const [selectedParentFolder, setSelectedParentFolder] = useState<
-    string | null
-  >(null);
+  const [explorerDialogOpen, setExplorerDialogOpen] = useState(false);
+  const [explorerDialogMode, setExplorerDialogMode] = useState<
+    "save" | "move" | "new-folder"
+  >("new-folder");
   const [contextMenu, setContextMenu] = useState<{
     mouseX: number;
     mouseY: number;
@@ -163,7 +161,6 @@ function ConsoleExplorer(
     "read" | "write"
   >("read");
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
-  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
 
   // Inline rename state
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
@@ -279,33 +276,14 @@ function ConsoleExplorer(
   };
 
   const handleCreateFolder = () => {
-    setFolderDialogOpen(true);
-    setSelectedParentFolder(null);
+    setExplorerDialogMode("new-folder");
+    setExplorerDialogOpen(true);
     handleMenuClose();
   };
 
-  const handleCreateFolderInParent = (parentFolderId: string) => {
-    setFolderDialogOpen(true);
-    setSelectedParentFolder(parentFolderId);
-  };
-
-  const handleFolderDialogClose = () => {
-    setFolderDialogOpen(false);
-    setNewFolderName("");
-    setSelectedParentFolder(null);
-  };
-
-  const handleFolderCreate = async () => {
-    if (!currentWorkspace || !newFolderName.trim()) {
-      return;
-    }
-
-    await createFolderAction(
-      currentWorkspace.id,
-      newFolderName.trim(),
-      selectedParentFolder,
-    );
-    handleFolderDialogClose();
+  const handleCreateFolderInParent = () => {
+    setExplorerDialogMode("new-folder");
+    setExplorerDialogOpen(true);
   };
 
   const handleContextMenu = (
@@ -423,7 +401,8 @@ function ConsoleExplorer(
 
   const handleMoveTo = (item: ConsoleEntry) => {
     setSelectedItem(item);
-    setMoveDialogOpen(true);
+    setExplorerDialogMode("move");
+    setExplorerDialogOpen(true);
     handleContextMenuClose();
   };
 
@@ -436,8 +415,12 @@ function ConsoleExplorer(
       await moveConsole(currentWorkspace.id, selectedItem.id, targetFolderId);
     }
 
-    setMoveDialogOpen(false);
+    setExplorerDialogOpen(false);
     setSelectedItem(null);
+  };
+
+  const handleNewFolderConfirm = async () => {
+    setExplorerDialogOpen(false);
   };
 
   const handleShareConfirm = async () => {
@@ -1143,9 +1126,7 @@ function ConsoleExplorer(
         {contextMenu?.item.isDirectory && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => {
-              if (contextMenu.item.id) {
-                handleCreateFolderInParent(contextMenu.item.id);
-              }
+              handleCreateFolderInParent();
               handleContextMenuClose();
             }}
           >
@@ -1195,63 +1176,6 @@ function ConsoleExplorer(
           New Folder
         </MenuItem>
       </Menu>
-
-      {/* Create Folder Dialog */}
-      <Dialog
-        open={folderDialogOpen}
-        onClose={handleFolderDialogClose}
-        maxWidth="sm"
-        fullWidth
-        TransitionProps={{
-          onEntered: () => {
-            setTimeout(() => {
-              const input = document.querySelector(
-                'input[name="folderName"]',
-              ) as HTMLInputElement;
-              if (input) {
-                input.focus();
-                input.select();
-              }
-            }, 100);
-          },
-        }}
-      >
-        <DialogTitle>
-          {selectedParentFolder ? "Create New Subfolder" : "Create New Folder"}
-        </DialogTitle>
-        <DialogContent>
-          <TextField
-            name="folderName"
-            autoFocus
-            margin="dense"
-            label="Folder Name"
-            fullWidth
-            variant="outlined"
-            value={newFolderName}
-            onChange={e => setNewFolderName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && newFolderName.trim()) {
-                handleFolderCreate();
-              }
-            }}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck="false"
-            helperText="Organize your consoles by creating folders. Right-click folders to create subfolders."
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleFolderDialogClose}>Cancel</Button>
-          <Button
-            onClick={handleFolderCreate}
-            disabled={!newFolderName.trim()}
-            variant="contained"
-          >
-            Create
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog
@@ -1425,14 +1349,16 @@ function ConsoleExplorer(
         </DialogActions>
       </Dialog>
 
-      {/* Move To Dialog */}
-      <MoveToDialog
-        open={moveDialogOpen}
+      {/* Unified File Explorer Dialog (save / move / new-folder) */}
+      <FileExplorerDialog
+        open={explorerDialogOpen}
         onClose={() => {
-          setMoveDialogOpen(false);
+          setExplorerDialogOpen(false);
           setSelectedItem(null);
         }}
+        mode={explorerDialogMode}
         onMove={handleMoveConfirm}
+        onNewFolder={handleNewFolderConfirm}
         itemName={selectedItem?.name || ""}
         isDirectory={selectedItem?.isDirectory || false}
       />

@@ -35,7 +35,7 @@ import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
-import ConsoleSaveDialog from "./ConsoleSaveDialog";
+import FileExplorerDialog from "./FileExplorerDialog";
 import { useConsoleStore } from "../store/consoleStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -1009,13 +1009,14 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
       />
 
       {/* Save Dialog (folder navigator) */}
-      <ConsoleSaveDialog
+      <FileExplorerDialog
         open={saveDialogOpen}
         onClose={() => {
           setSaveDialogOpen(false);
           setSaveDialogTabId(null);
           setSaveDialogContent("");
         }}
+        mode="save"
         onSave={handleSaveDialogConfirm}
         defaultName={saveDialogTabId ? tabs[saveDialogTabId]?.title || "" : ""}
         isSaving={isSaving}
