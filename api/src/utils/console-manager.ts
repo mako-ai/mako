@@ -899,6 +899,49 @@ export class ConsoleManager {
   }
 
   /**
+   * Move a console to a different folder (or root if folderId is null)
+   */
+  async moveConsoleToFolder(
+    consoleId: string,
+    workspaceId: string,
+    folderId: string | null,
+  ): Promise<boolean> {
+    try {
+      const query = {
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      };
+
+      if (folderId) {
+        const targetFolder = await ConsoleFolder.findOne({
+          _id: new Types.ObjectId(folderId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+        if (!targetFolder) {
+          return false;
+        }
+
+        const result = await SavedConsole.updateOne(query, {
+          $set: {
+            folderId: new Types.ObjectId(folderId),
+            updatedAt: new Date(),
+          },
+        });
+        return result.modifiedCount > 0 || result.matchedCount > 0;
+      }
+
+      const result = await SavedConsole.updateOne(query, {
+        $set: { updatedAt: new Date() },
+        $unset: { folderId: 1 },
+      });
+      return result.modifiedCount > 0 || result.matchedCount > 0;
+    } catch (error) {
+      logger.error("Error moving console", { consoleId, folderId, error });
+      return false;
+    }
+  }
+
+  /**
    * Delete a console from database
    */
   async deleteConsole(
@@ -943,6 +986,77 @@ export class ConsoleManager {
       return result.modifiedCount > 0;
     } catch (error) {
       logger.error("Error renaming folder", { error });
+      return false;
+    }
+  }
+
+  /**
+   * Move a folder under another folder (or root if parentFolderId is null)
+   */
+  async moveFolderToParent(
+    folderId: string,
+    workspaceId: string,
+    parentFolderId: string | null,
+  ): Promise<boolean> {
+    try {
+      const workspaceObjectId = new Types.ObjectId(workspaceId);
+      const sourceFolder = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: workspaceObjectId,
+      });
+
+      if (!sourceFolder) {
+        return false;
+      }
+
+      // Root move
+      if (!parentFolderId) {
+        const result = await ConsoleFolder.updateOne(
+          { _id: sourceFolder._id, workspaceId: workspaceObjectId },
+          {
+            $set: { updatedAt: new Date() },
+            $unset: { parentId: 1 },
+          },
+        );
+        return result.modifiedCount > 0 || result.matchedCount > 0;
+      }
+
+      if (folderId === parentFolderId) {
+        return false;
+      }
+
+      const targetParent = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(parentFolderId),
+        workspaceId: workspaceObjectId,
+      });
+      if (!targetParent) {
+        return false;
+      }
+
+      // Prevent cycles: target parent cannot be a descendant of source folder
+      let cursor: IConsoleFolder | null = targetParent;
+      while (cursor?.parentId) {
+        if (cursor.parentId.toString() === folderId) {
+          return false;
+        }
+        cursor = await ConsoleFolder.findOne({
+          _id: cursor.parentId,
+          workspaceId: workspaceObjectId,
+        });
+      }
+
+      const result = await ConsoleFolder.updateOne(
+        { _id: sourceFolder._id, workspaceId: workspaceObjectId },
+        {
+          $set: {
+            parentId: new Types.ObjectId(parentFolderId),
+            updatedAt: new Date(),
+          },
+        },
+      );
+      return result.modifiedCount > 0 || result.matchedCount > 0;
+    } catch (error) {
+      logger.error("Error moving folder", { folderId, parentFolderId, error });
       return false;
     }
   }

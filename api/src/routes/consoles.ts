@@ -7,6 +7,7 @@ import {
 import {
   DatabaseConnection,
   SavedConsole,
+  ConsoleFolder,
   IDatabaseConnection,
   ConsoleAccessLevel,
 } from "../database/workspace-schema";
@@ -721,6 +722,88 @@ consoleRoutes.post("/folders", async (c: Context) => {
   }
 });
 
+// PATCH /api/workspaces/:workspaceId/consoles/:id - Move a console between folders
+consoleRoutes.patch("/:id", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+    const body = await c.req.json();
+    const { folderId } = body as { folderId?: string | null };
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console ID" }, 400);
+    }
+
+    if (
+      folderId !== undefined &&
+      folderId !== null &&
+      !Types.ObjectId.isValid(folderId)
+    ) {
+      return c.json({ success: false, error: "Invalid folder ID" }, 400);
+    }
+
+    const existing = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!existing) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    if (!ConsoleManager.canWrite(existing, user.id)) {
+      return c.json(
+        {
+          success: false,
+          error: "Cannot move a read-only shared console",
+        },
+        403,
+      );
+    }
+
+    const success = await consoleManager.moveConsoleToFolder(
+      consoleId,
+      workspaceId,
+      folderId ?? null,
+    );
+
+    if (!success) {
+      return c.json(
+        {
+          success: false,
+          error: "Failed to move console",
+        },
+        400,
+      );
+    }
+
+    return c.json({ success: true, message: "Console moved successfully" });
+  } catch (error) {
+    logger.error("Error moving console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error moving console",
+      },
+      500,
+    );
+  }
+});
+
 // PATCH /api/workspaces/:workspaceId/consoles/:id/rename - Rename a console
 consoleRoutes.patch("/:id/rename", async (c: Context) => {
   try {
@@ -786,6 +869,85 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
           error instanceof Error
             ? error.message
             : "Unknown error renaming console",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/consoles/folders/:id - Move folder under another folder/root
+consoleRoutes.patch("/folders/:id", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const folderId = c.req.param("id");
+    const body = await c.req.json();
+    const { parentFolderId } = body as { parentFolderId?: string | null };
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (!Types.ObjectId.isValid(folderId)) {
+      return c.json({ success: false, error: "Invalid folder ID" }, 400);
+    }
+
+    if (
+      parentFolderId !== undefined &&
+      parentFolderId !== null &&
+      !Types.ObjectId.isValid(parentFolderId)
+    ) {
+      return c.json({ success: false, error: "Invalid parent folder ID" }, 400);
+    }
+
+    const existingFolder = await ConsoleFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!existingFolder) {
+      return c.json({ success: false, error: "Folder not found" }, 404);
+    }
+
+    if (existingFolder.ownerId && existingFolder.ownerId !== user.id) {
+      return c.json(
+        { success: false, error: "Only the folder owner can move it" },
+        403,
+      );
+    }
+
+    const success = await consoleManager.moveFolderToParent(
+      folderId,
+      workspaceId,
+      parentFolderId ?? null,
+    );
+
+    if (!success) {
+      return c.json(
+        {
+          success: false,
+          error: "Failed to move folder (invalid target or circular move)",
+        },
+        400,
+      );
+    }
+
+    return c.json({ success: true, message: "Folder moved successfully" });
+  } catch (error) {
+    logger.error("Error moving folder", {
+      folderId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error moving folder",
       },
       500,
     );

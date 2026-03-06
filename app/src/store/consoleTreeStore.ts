@@ -90,21 +90,6 @@ const insertAlphabetically = (
   nodes.splice(insertIndex, 0, entry);
 };
 
-/**
- * Prune empty folders from a tree (returns a new filtered tree).
- * A folder is pruned if it has no console descendants.
- */
-function pruneEmptyFolders(nodes: ConsoleEntry[]): ConsoleEntry[] {
-  return nodes
-    .map(node => {
-      if (!node.isDirectory) return node;
-      const children = node.children ? pruneEmptyFolders(node.children) : [];
-      if (children.length === 0) return null;
-      return { ...node, children };
-    })
-    .filter(Boolean) as ConsoleEntry[];
-}
-
 interface TreeState {
   /** Full tree owned by the current user */
   myConsoles: Record<string, ConsoleEntry[]>;
@@ -121,6 +106,37 @@ interface TreeState {
   init: (workspaceId: string) => Promise<void>;
   setTree: (workspaceId: string, tree: ConsoleEntry[]) => void;
   addConsole: (workspaceId: string, path: string, id: string) => void;
+  createFolder: (
+    workspaceId: string,
+    name: string,
+    parentId?: string | null,
+    isPrivate?: boolean,
+  ) => Promise<{ success: boolean; id?: string; error?: string }>;
+  renameEntry: (
+    workspaceId: string,
+    item: Pick<ConsoleEntry, "id" | "isDirectory">,
+    name: string,
+  ) => Promise<{ success: boolean; error?: string }>;
+  deleteEntry: (
+    workspaceId: string,
+    item: Pick<ConsoleEntry, "id" | "isDirectory">,
+  ) => Promise<{ success: boolean; error?: string }>;
+  shareEntry: (
+    workspaceId: string,
+    item: Pick<ConsoleEntry, "id" | "isDirectory">,
+    access: ConsoleAccessLevel,
+    sharedWith?: SharedWithEntry[],
+  ) => Promise<{ success: boolean; error?: string }>;
+  moveConsole: (
+    workspaceId: string,
+    consoleId: string,
+    folderId: string | null,
+  ) => Promise<{ success: boolean; error?: string }>;
+  moveFolder: (
+    workspaceId: string,
+    folderId: string,
+    parentFolderId: string | null,
+  ) => Promise<{ success: boolean; error?: string }>;
 }
 
 export const useConsoleTreeStore = create<TreeState>()(
@@ -151,15 +167,12 @@ export const useConsoleTreeStore = create<TreeState>()(
         const sharedWithMeTree = data.sharedWithMe ?? [];
         const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
 
-        const prunedMyTree = pruneEmptyFolders(myTree);
         set(state => {
-          state.myConsoles[workspaceId] = prunedMyTree;
-          state.sharedWithMe[workspaceId] = pruneEmptyFolders(sharedWithMeTree);
-          state.sharedWithWorkspace[workspaceId] = pruneEmptyFolders(
-            sharedWithWorkspaceTree,
-          );
+          state.myConsoles[workspaceId] = myTree;
+          state.sharedWithMe[workspaceId] = sharedWithMeTree;
+          state.sharedWithWorkspace[workspaceId] = sharedWithWorkspaceTree;
           // Keep trees as alias for backward compat
-          state.trees[workspaceId] = prunedMyTree;
+          state.trees[workspaceId] = myTree;
         });
         return myTree;
       } catch (err: any) {
@@ -213,6 +226,125 @@ export const useConsoleTreeStore = create<TreeState>()(
         state.myConsoles[workspaceId] = tree;
         state.trees[workspaceId] = tree;
       });
+    },
+    createFolder: async (workspaceId, name, parentId, isPrivate = false) => {
+      try {
+        const result = await apiClient.post<{
+          success: boolean;
+          error?: string;
+          data?: { id: string };
+        }>(`/workspaces/${workspaceId}/consoles/folders`, {
+          name,
+          parentId: parentId || undefined,
+          isPrivate,
+        });
+        return {
+          success: !!result.success,
+          id: result.data?.id,
+          error: result.error,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to create folder",
+        };
+      }
+    },
+    renameEntry: async (workspaceId, item, name) => {
+      if (!item.id) return { success: false, error: "Missing item ID" };
+      try {
+        const endpoint = item.isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${item.id}/rename`
+          : `/workspaces/${workspaceId}/consoles/${item.id}/rename`;
+        const result = await apiClient.patch<{
+          success: boolean;
+          error?: string;
+        }>(endpoint, { name });
+        return { success: !!result.success, error: result.error };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to rename item",
+        };
+      }
+    },
+    deleteEntry: async (workspaceId, item) => {
+      if (!item.id) return { success: false, error: "Missing item ID" };
+      try {
+        const endpoint = item.isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${item.id}`
+          : `/workspaces/${workspaceId}/consoles/${item.id}`;
+        const result = await apiClient.delete<{
+          success: boolean;
+          error?: string;
+        }>(endpoint);
+        return { success: !!result.success, error: result.error };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to delete item",
+        };
+      }
+    },
+    shareEntry: async (workspaceId, item, access, sharedWith) => {
+      if (!item.id) return { success: false, error: "Missing item ID" };
+      try {
+        const endpoint = item.isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${item.id}/share`
+          : `/workspaces/${workspaceId}/consoles/${item.id}/share`;
+        const result = await apiClient.post<{
+          success: boolean;
+          error?: string;
+        }>(endpoint, {
+          access,
+          shared_with:
+            access === "shared" || access === "workspace"
+              ? sharedWith
+              : undefined,
+        });
+        return { success: !!result.success, error: result.error };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to update sharing",
+        };
+      }
+    },
+    moveConsole: async (workspaceId, consoleId, folderId) => {
+      try {
+        const result = await apiClient.patch<{
+          success: boolean;
+          error?: string;
+        }>(`/workspaces/${workspaceId}/consoles/${consoleId}`, { folderId });
+        return { success: !!result.success, error: result.error };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to move console",
+        };
+      }
+    },
+    moveFolder: async (workspaceId, folderId, parentFolderId) => {
+      try {
+        const result = await apiClient.patch<{
+          success: boolean;
+          error?: string;
+        }>(`/workspaces/${workspaceId}/consoles/folders/${folderId}`, {
+          parentFolderId,
+        });
+        return { success: !!result.success, error: result.error };
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to move folder",
+        };
+      }
     },
   })),
 );

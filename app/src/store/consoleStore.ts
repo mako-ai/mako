@@ -69,6 +69,12 @@ interface ConsoleActions {
     databaseName?: string,
     databaseId?: string,
   ) => Promise<ConsoleSaveResponse>;
+  shareConsole: (
+    workspaceId: string,
+    consoleId: string,
+    access: "private" | "shared" | "workspace",
+    sharedWith?: Array<{ userId: string; access: "read" | "write" }>,
+  ) => Promise<{ success: boolean; error?: string }>;
   deleteConsole: (
     workspaceId: string,
     consoleId: string,
@@ -378,6 +384,10 @@ export const useConsoleStore = create<ConsoleStore>()(
         databaseId,
       ) => {
         try {
+          type SaveConsoleRawResponse = ConsoleSaveResponse & {
+            console?: { id?: string };
+            data?: { id?: string };
+          };
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
           const response = await fetch(
             `/api/workspaces/${workspaceId}/consoles/${tabId}`,
@@ -396,7 +406,7 @@ export const useConsoleStore = create<ConsoleStore>()(
             },
           );
 
-          const res = (await response.json()) as ConsoleSaveResponse;
+          const res = (await response.json()) as SaveConsoleRawResponse;
 
           if (response.status === 409 && res.error === "conflict") {
             return {
@@ -410,13 +420,36 @@ export const useConsoleStore = create<ConsoleStore>()(
             return { success: false, error: res.error || "Save failed" };
           }
 
+          const resolvedConsoleId = res.console?.id || res.data?.id || tabId;
+
           return res.success
-            ? { success: true, path: cleanPath }
+            ? { success: true, path: cleanPath, consoleId: resolvedConsoleId }
             : { success: false, error: res.error || "Save failed" };
         } catch (e) {
           return {
             success: false,
             error: e instanceof Error ? e.message : "Save failed",
+          };
+        }
+      },
+
+      shareConsole: async (workspaceId, consoleId, access, sharedWith) => {
+        try {
+          const res = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/consoles/${consoleId}/share`, {
+            access,
+            shared_with:
+              access === "shared" || access === "workspace"
+                ? sharedWith
+                : undefined,
+          });
+          return { success: !!res.success, error: res.error };
+        } catch (e) {
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Share failed",
           };
         }
       },

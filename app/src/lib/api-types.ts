@@ -26,6 +26,7 @@ export interface ConsoleContentResponse {
 export interface ConsoleSaveResponse {
   success: boolean;
   path?: string;
+  consoleId?: string;
   error?: string;
   conflict?: {
     existingId: string;

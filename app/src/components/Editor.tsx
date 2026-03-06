@@ -35,7 +35,11 @@ import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
+import ConsoleFolderNavigatorDialog, {
+  ConsoleScope,
+} from "./ConsoleFolderNavigatorDialog";
 import { useConsoleStore } from "../store/consoleStore";
+import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -102,6 +106,19 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
     databaseId?: string;
     databaseName?: string;
   } | null>(null);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveDialogDefaultName, setSaveDialogDefaultName] = useState("");
+  const [saveDialogResolver, setSaveDialogResolver] = useState<
+    | null
+    | ((
+        selection: {
+          scope: ConsoleScope;
+          folderId: string | null;
+          folderPath: string;
+          name: string;
+        } | null,
+      ) => void)
+  >(null);
 
   // Refs for query cancellation (per-tab to support parallel queries)
   const abortControllersRef = useRef<Record<string, AbortController | null>>(
@@ -125,9 +142,24 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
     executeQuery,
     cancelQuery,
     saveConsole,
+    shareConsole,
     deleteConsole,
     openTab,
   } = useConsoleStore();
+
+  const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
+  const sharedWithWorkspaceMap = useConsoleTreeStore(
+    state => state.sharedWithWorkspace,
+  );
+  const refreshConsoleTree = useConsoleTreeStore(state => state.refresh);
+  const createFolder = useConsoleTreeStore(state => state.createFolder);
+
+  const myConsoles = currentWorkspace
+    ? myConsolesMap[currentWorkspace.id] || []
+    : [];
+  const sharedWithWorkspace = currentWorkspace
+    ? sharedWithWorkspaceMap[currentWorkspace.id] || []
+    : [];
   const consoleTabs = Object.values(tabs);
   const activeConsoleId = activeTabId;
 
@@ -386,10 +418,30 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
     await cancelQuery(currentWorkspace.id, executionId);
   };
 
+  const promptSaveDestination = useCallback(
+    async (defaultName: string) => {
+      if (!currentWorkspace) return null;
+      await refreshConsoleTree(currentWorkspace.id);
+
+      return await new Promise<{
+        scope: ConsoleScope;
+        folderId: string | null;
+        folderPath: string;
+        name: string;
+      } | null>(resolve => {
+        setSaveDialogDefaultName(defaultName);
+        setSaveDialogResolver(() => resolve);
+        setSaveDialogOpen(true);
+      });
+    },
+    [currentWorkspace, refreshConsoleTree],
+  );
+
   const handleConsoleSave = async (
     tabId: string,
     contentToSave: string,
     currentPath?: string,
+    selectedScopeOverride?: ConsoleScope,
   ): Promise<boolean> => {
     if (!currentWorkspace) {
       setErrorMessage("No workspace selected");
@@ -404,18 +456,22 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
       const currentTab = tabs[tabId];
 
       let savePath = currentPath;
+      let targetScope: ConsoleScope = selectedScopeOverride || "my";
       if (!savePath) {
-        // Pre-fill with the tab's title (e.g., agent-generated title)
-        const defaultName = currentTab?.title || "";
-        const fileName = prompt(
-          "Enter a file name to save (e.g., myFolder/myConsole). .js will be appended if absent.",
-          defaultName,
-        );
-        if (!fileName) {
+        const defaultName = currentTab?.title || "New Console";
+        const selection = await promptSaveDestination(defaultName);
+        if (!selection) {
           setIsSaving(false);
           return false;
         }
-        savePath = fileName.endsWith(".js") ? fileName.slice(0, -3) : fileName;
+
+        targetScope = selection.scope;
+        const cleanName = selection.name.endsWith(".js")
+          ? selection.name.slice(0, -3)
+          : selection.name;
+        savePath = selection.folderPath
+          ? `${selection.folderPath}/${cleanName}`
+          : cleanName;
       }
 
       // Get the current connection and database info for the tab
@@ -464,6 +520,15 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
         );
         updateSavedState(tabId, true, newHash);
 
+        // If user explicitly saved into workspace scope, publish visibility.
+        if (!currentPath && targetScope === "workspace") {
+          await shareConsole(
+            currentWorkspace.id,
+            result.consoleId || tabId,
+            "workspace",
+          );
+        }
+
         trackEvent("console_saved", {
           console_id: tabId,
           is_new: !currentPath,
@@ -475,15 +540,7 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
         setSnackbarOpen(true);
         success = true;
 
-        // Add the console to the tree
-        if (!currentPath) {
-          const { useConsoleTreeStore } = await import(
-            "../store/consoleTreeStore"
-          );
-          useConsoleTreeStore
-            .getState()
-            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
-        }
+        await refreshConsoleTree(currentWorkspace.id);
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
@@ -606,24 +663,25 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
     setIsSaving(false);
   };
 
-  const handleConflictSaveAsNew = () => {
+  const handleConflictSaveAsNew = async () => {
     setConflictDialogOpen(false);
     setConflictData(null);
 
     if (pendingSaveData) {
-      // Prompt for a new filename
-      const newFileName = prompt(
-        "Enter a different file name:",
-        pendingSaveData.path + "_copy",
-      );
-      if (newFileName) {
-        const newPath = newFileName.endsWith(".js")
-          ? newFileName.slice(0, -3)
-          : newFileName;
-        handleConsoleSave(
+      const defaultCopyName = `${pendingSaveData.path}_copy`;
+      const selection = await promptSaveDestination(defaultCopyName);
+      if (selection?.name) {
+        const cleanName = selection.name.endsWith(".js")
+          ? selection.name.slice(0, -3)
+          : selection.name;
+        const newPath = selection.folderPath
+          ? `${selection.folderPath}/${cleanName}`
+          : cleanName;
+        void handleConsoleSave(
           pendingSaveData.tabId,
           pendingSaveData.content,
           newPath,
+          selection.scope,
         );
       }
     }
@@ -643,6 +701,52 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
 
   const handleCloseSnackbar = () => {
     setSnackbarOpen(false);
+  };
+
+  const handleSaveDialogClose = () => {
+    if (saveDialogResolver) {
+      saveDialogResolver(null);
+    }
+    setSaveDialogResolver(null);
+    setSaveDialogOpen(false);
+  };
+
+  const handleSaveDialogConfirm = (selection: {
+    scope: ConsoleScope;
+    folderId: string | null;
+    folderPath: string;
+    name?: string;
+  }) => {
+    if (!saveDialogResolver || !selection.name) return;
+    saveDialogResolver({
+      scope: selection.scope,
+      folderId: selection.folderId,
+      folderPath: selection.folderPath,
+      name: selection.name,
+    });
+    setSaveDialogResolver(null);
+    setSaveDialogOpen(false);
+  };
+
+  const handleSaveDialogCreateFolder = async (
+    folderName: string,
+    parentId: string | null,
+    scope: ConsoleScope,
+  ) => {
+    if (!currentWorkspace) return false;
+    const result = await createFolder(
+      currentWorkspace.id,
+      folderName,
+      parentId,
+      scope === "my",
+    );
+    if (!result.success) {
+      setErrorMessage(result.error || "Failed to create folder");
+      setErrorModalOpen(true);
+      return false;
+    }
+    await refreshConsoleTree(currentWorkspace.id);
+    return true;
   };
 
   /* ----------------------------- Render ---------------------------- */
@@ -874,6 +978,20 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
           </Button>
         </Box>
       )}
+
+      <ConsoleFolderNavigatorDialog
+        open={saveDialogOpen}
+        title="Save Console"
+        confirmLabel="Save"
+        myConsoles={myConsoles}
+        sharedWithWorkspace={sharedWithWorkspace}
+        showNameField
+        nameLabel="Console name"
+        initialName={saveDialogDefaultName}
+        onClose={handleSaveDialogClose}
+        onConfirm={handleSaveDialogConfirm}
+        onCreateFolder={handleSaveDialogCreateFolder}
+      />
 
       {/* Error Modal */}
       <Dialog
