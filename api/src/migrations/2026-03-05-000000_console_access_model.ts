@@ -47,13 +47,16 @@ export async function up(db: Db): Promise<void> {
     `Set access='private' for ${privateResult.modifiedCount} private consoles`,
   );
 
-  // 3. Set access = 'workspace' for consoles where isPrivate !== true (false or missing)
+  // 3. Set access = 'private' for all remaining consoles (isPrivate === false or missing)
+  // Rationale: We can't distinguish consoles that were explicitly shared from ones
+  // that just had isPrivate=false as the default. Safe default is private — users
+  // can re-share what they want.
   const sharedResult = await col.updateMany(
     { isPrivate: { $ne: true }, access: { $exists: false } },
-    { $set: { access: "workspace" } },
+    { $set: { access: "private" } },
   );
   log.info(
-    `Set access='workspace' for ${sharedResult.modifiedCount} shared consoles`,
+    `Set access='private' for ${sharedResult.modifiedCount} previously non-private consoles (safe default)`,
   );
 
   // 4. Initialize empty shared_with array where missing
