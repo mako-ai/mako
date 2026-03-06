@@ -90,21 +90,6 @@ const insertAlphabetically = (
   nodes.splice(insertIndex, 0, entry);
 };
 
-/**
- * Prune empty folders from a tree (returns a new filtered tree).
- * A folder is pruned if it has no console descendants.
- */
-function pruneEmptyFolders(nodes: ConsoleEntry[]): ConsoleEntry[] {
-  return nodes
-    .map(node => {
-      if (!node.isDirectory) return node;
-      const children = node.children ? pruneEmptyFolders(node.children) : [];
-      if (children.length === 0) return null;
-      return { ...node, children };
-    })
-    .filter(Boolean) as ConsoleEntry[];
-}
-
 interface TreeState {
   /** Full tree owned by the current user */
   myConsoles: Record<string, ConsoleEntry[]>;
@@ -177,15 +162,12 @@ export const useConsoleTreeStore = create<TreeState>()(
         const sharedWithMeTree = data.sharedWithMe ?? [];
         const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
 
-        const prunedMyTree = pruneEmptyFolders(myTree);
         set(state => {
-          state.myConsoles[workspaceId] = prunedMyTree;
-          state.sharedWithMe[workspaceId] = pruneEmptyFolders(sharedWithMeTree);
-          state.sharedWithWorkspace[workspaceId] = pruneEmptyFolders(
-            sharedWithWorkspaceTree,
-          );
+          state.myConsoles[workspaceId] = myTree;
+          state.sharedWithMe[workspaceId] = sharedWithMeTree;
+          state.sharedWithWorkspace[workspaceId] = sharedWithWorkspaceTree;
           // Keep trees as alias for backward compat
-          state.trees[workspaceId] = prunedMyTree;
+          state.trees[workspaceId] = myTree;
         });
         return myTree;
       } catch (err: any) {

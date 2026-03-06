@@ -314,8 +314,6 @@ function ConsoleExplorer(
     readOnly = false,
   ) => {
     event.preventDefault();
-    // Don't show empty context menus for non-owned folders
-    if (!isOwner(item) && item.isDirectory) return;
     setContextMenu({
       mouseX: event.clientX + 2,
       mouseY: event.clientY - 6,
@@ -809,14 +807,33 @@ function ConsoleExplorer(
     });
   };
 
+  // Section header context menu
+  const [sectionContextMenu, setSectionContextMenu] = useState<{
+    mouseX: number;
+    mouseY: number;
+  } | null>(null);
+
+  const handleSectionContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    setSectionContextMenu({
+      mouseX: event.clientX + 2,
+      mouseY: event.clientY - 6,
+    });
+  };
+
   const renderSectionHeader = (
     label: string,
     icon: React.ReactNode,
     isExpanded: boolean,
     onToggle: () => void,
     count: number,
+    onCtxMenu?: (e: React.MouseEvent) => void,
   ) => (
-    <ListItemButton onClick={onToggle} sx={{ py: 0.25, pl: 0.5 }}>
+    <ListItemButton
+      onClick={onToggle}
+      onContextMenu={onCtxMenu}
+      sx={{ py: 0.25, pl: 0.5 }}
+    >
       <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
         {isExpanded ? (
           <ChevronDownIcon strokeWidth={1.5} size={20} />
@@ -981,6 +998,7 @@ function ConsoleExplorer(
                 myConsolesExpanded,
                 () => setMyConsolesExpanded(!myConsolesExpanded),
                 countConsoles(myConsoles),
+                handleSectionContextMenu,
               )}
               {myConsolesExpanded && (
                 <>
@@ -1014,6 +1032,7 @@ function ConsoleExplorer(
                 () =>
                   setSharedWithWorkspaceExpanded(!sharedWithWorkspaceExpanded),
                 countConsoles(sharedWithWorkspace),
+                handleSectionContextMenu,
               )}
               {sharedWithWorkspaceExpanded && (
                 <>
@@ -1088,8 +1107,8 @@ function ConsoleExplorer(
             : undefined
         }
       >
-        {/* Owner actions: Rename, Delete, Share, Move to, New Subfolder */}
-        {contextMenu && isOwner(contextMenu.item) && (
+        {/* Owner actions (items in My Consoles section, readOnly=false) */}
+        {contextMenu && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => contextMenu && startInlineRename(contextMenu.item)}
           >
@@ -1097,7 +1116,7 @@ function ConsoleExplorer(
             Rename
           </MenuItem>
         )}
-        {contextMenu && isOwner(contextMenu.item) && (
+        {contextMenu && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => contextMenu && handleDelete(contextMenu.item)}
           >
@@ -1105,7 +1124,7 @@ function ConsoleExplorer(
             Delete
           </MenuItem>
         )}
-        {contextMenu && isOwner(contextMenu.item) && (
+        {contextMenu && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => contextMenu && handleShare(contextMenu.item)}
           >
@@ -1113,7 +1132,7 @@ function ConsoleExplorer(
             Share
           </MenuItem>
         )}
-        {contextMenu && isOwner(contextMenu.item) && (
+        {contextMenu && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => contextMenu && handleMoveTo(contextMenu.item)}
           >
@@ -1121,7 +1140,7 @@ function ConsoleExplorer(
             Move to...
           </MenuItem>
         )}
-        {contextMenu?.item.isDirectory && isOwner(contextMenu.item) && (
+        {contextMenu?.item.isDirectory && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => {
               if (contextMenu.item.id) {
@@ -1134,9 +1153,9 @@ function ConsoleExplorer(
             New Subfolder
           </MenuItem>
         )}
-        {/* Non-owner actions on shared items: Duplicate */}
+        {/* Read-only context (shared sections): Open for consoles */}
         {contextMenu &&
-          !isOwner(contextMenu.item) &&
+          contextMenu.readOnly &&
           !contextMenu.item.isDirectory && (
             <MenuItem
               onClick={() => {
@@ -1150,6 +1169,31 @@ function ConsoleExplorer(
               Open
             </MenuItem>
           )}
+      </Menu>
+
+      {/* Section Header Context Menu (My Consoles / Workspace right-click) */}
+      <Menu
+        open={sectionContextMenu !== null}
+        onClose={() => setSectionContextMenu(null)}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          sectionContextMenu !== null
+            ? {
+                top: sectionContextMenu.mouseY,
+                left: sectionContextMenu.mouseX,
+              }
+            : undefined
+        }
+      >
+        <MenuItem
+          onClick={() => {
+            setSectionContextMenu(null);
+            handleCreateFolder();
+          }}
+        >
+          <CreateFolderIcon sx={{ mr: 1 }} fontSize="small" />
+          New Folder
+        </MenuItem>
       </Menu>
 
       {/* Create Folder Dialog */}

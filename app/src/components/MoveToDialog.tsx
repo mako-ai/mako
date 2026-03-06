@@ -13,11 +13,14 @@ import {
   Box,
   Breadcrumbs,
   Link,
+  TextField,
 } from "@mui/material";
 import {
   FolderClosed as FolderIcon,
+  FolderOpen as FolderOpenIcon,
   ChevronRight as ChevronRightIcon,
 } from "lucide-react";
+import { CreateNewFolder as CreateFolderIcon } from "@mui/icons-material";
 import {
   useConsoleTreeStore,
   type ConsoleEntry,
@@ -46,6 +49,7 @@ export default function MoveToDialog({
 }: MoveToDialogProps) {
   const { currentWorkspace } = useWorkspace();
   const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
+  const createFolder = useConsoleTreeStore(state => state.createFolder);
 
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
@@ -54,10 +58,14 @@ export default function MoveToDialog({
   const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([
     { id: null, name: "My Consoles" },
   ]);
+  const [newFolderMode, setNewFolderMode] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
 
   useEffect(() => {
     if (open) {
       setBreadcrumb([{ id: null, name: "My Consoles" }]);
+      setNewFolderMode(false);
+      setNewFolderName("");
     }
   }, [open]);
 
@@ -92,6 +100,20 @@ export default function MoveToDialog({
 
   const handleBreadcrumbClick = (index: number) => {
     setBreadcrumb(prev => prev.slice(0, index + 1));
+  };
+
+  const handleCreateFolder = async () => {
+    if (!currentWorkspace || !newFolderName.trim()) return;
+    const parentId = breadcrumb[breadcrumb.length - 1]?.id;
+    const result = await createFolder(
+      currentWorkspace.id,
+      newFolderName.trim(),
+      parentId,
+    );
+    if (result) {
+      setNewFolderMode(false);
+      setNewFolderName("");
+    }
   };
 
   const handleMove = () => {
@@ -183,6 +205,58 @@ export default function MoveToDialog({
             </List>
           )}
         </Box>
+
+        {/* New folder inline */}
+        {newFolderMode ? (
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+            <FolderOpenIcon size={18} strokeWidth={1.5} />
+            <TextField
+              autoFocus
+              size="small"
+              placeholder="Folder name"
+              value={newFolderName}
+              onChange={e => setNewFolderName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && newFolderName.trim()) {
+                  handleCreateFolder();
+                }
+                if (e.key === "Escape") {
+                  setNewFolderMode(false);
+                  setNewFolderName("");
+                }
+              }}
+              sx={{ flex: 1 }}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={handleCreateFolder}
+              disabled={!newFolderName.trim()}
+            >
+              Create
+            </Button>
+            <Button
+              size="small"
+              onClick={() => {
+                setNewFolderMode(false);
+                setNewFolderName("");
+              }}
+            >
+              Cancel
+            </Button>
+          </Box>
+        ) : (
+          <Button
+            size="small"
+            startIcon={<CreateFolderIcon fontSize="small" />}
+            onClick={() => setNewFolderMode(true)}
+            sx={{ alignSelf: "flex-start", textTransform: "none" }}
+          >
+            New Folder
+          </Button>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
