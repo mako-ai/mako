@@ -1,4 +1,10 @@
-import { useState, forwardRef, useImperativeHandle } from "react";
+import {
+  useState,
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+  useEffect,
+} from "react";
 import {
   Box,
   List,
@@ -31,6 +37,8 @@ import {
   Share as ShareIcon,
   PersonAdd as PersonAddIcon,
   Close as CloseIcon,
+  DriveFileMove as MoveIcon,
+  ContentCopy as DuplicateIcon,
 } from "@mui/icons-material";
 import {
   SquareTerminal as ConsoleIcon,
@@ -46,6 +54,19 @@ import {
   Globe as GlobeIcon,
   Pencil as PencilIcon,
 } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  DragOverlay,
+  useSensor,
+  useSensors,
+  PointerSensor,
+  type DragStartEvent,
+  type DragEndEvent,
+  type DragOverEvent,
+} from "@dnd-kit/core";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useExplorerStore } from "../store/explorerStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -57,6 +78,7 @@ import {
 } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
+import MoveToDialog from "./MoveToDialog";
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -88,6 +110,11 @@ function ConsoleExplorer(
   );
   const loadingMap = useConsoleTreeStore(state => state.loading);
   const refreshTree = useConsoleTreeStore(state => state.refresh);
+  const moveConsole = useConsoleTreeStore(state => state.moveConsole);
+  const moveFolder = useConsoleTreeStore(state => state.moveFolder);
+  const renameItem = useConsoleTreeStore(state => state.renameItem);
+  const deleteItem = useConsoleTreeStore(state => state.deleteItem);
+  const createFolderAction = useConsoleTreeStore(state => state.createFolder);
 
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
@@ -123,8 +150,8 @@ function ConsoleExplorer(
     mouseX: number;
     mouseY: number;
     item: ConsoleEntry;
+    readOnly?: boolean;
   } | null>(null);
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [shareAccess, setShareAccess] = useState<ConsoleAccessLevel>("private");
@@ -136,7 +163,22 @@ function ConsoleExplorer(
     "read" | "write"
   >("read");
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
-  const [newItemName, setNewItemName] = useState("");
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+
+  // Inline rename state
+  const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  // DnD state
+  const [draggedItem, setDraggedItem] = useState<ConsoleEntry | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+  );
 
   function _errorFor(wid: string) {
     const map = useConsoleTreeStore.getState().error;
@@ -258,44 +300,27 @@ function ConsoleExplorer(
       return;
     }
 
-    try {
-      const response = await fetch(
-        `/api/workspaces/${currentWorkspace.id}/consoles/folders`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            name: newFolderName.trim(),
-            parentId: selectedParentFolder || undefined,
-            isPrivate: false,
-          }),
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      if (data.success) {
-        handleFolderDialogClose();
-        fetchConsoleEntries();
-      } else {
-        console.error("Failed to create folder:", data.error);
-      }
-    } catch (e: any) {
-      console.error("Failed to create folder:", e);
-    }
+    await createFolderAction(
+      currentWorkspace.id,
+      newFolderName.trim(),
+      selectedParentFolder,
+    );
+    handleFolderDialogClose();
   };
 
-  const handleContextMenu = (event: React.MouseEvent, item: ConsoleEntry) => {
+  const handleContextMenu = (
+    event: React.MouseEvent,
+    item: ConsoleEntry,
+    readOnly = false,
+  ) => {
     event.preventDefault();
+    // Don't show empty context menus for non-owned folders
+    if (!isOwner(item) && item.isDirectory) return;
     setContextMenu({
       mouseX: event.clientX + 2,
       mouseY: event.clientY - 6,
       item,
+      readOnly,
     });
   };
 
@@ -303,12 +328,86 @@ function ConsoleExplorer(
     setContextMenu(null);
   };
 
-  const handleRename = (item: ConsoleEntry) => {
-    setSelectedItem(item);
-    setNewItemName(item.name);
-    setRenameDialogOpen(true);
+  // Inline rename handlers
+  const startInlineRename = (item: ConsoleEntry) => {
+    if (!item.id) return;
+    setRenamingItemId(item.id);
+    setRenameValue(item.name);
     handleContextMenuClose();
   };
+
+  const commitInlineRename = async () => {
+    if (!currentWorkspace || !renamingItemId || !renameValue.trim()) {
+      cancelInlineRename();
+      return;
+    }
+
+    const findItem = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
+      for (const node of nodes) {
+        if (node.id === renamingItemId) return node;
+        if (node.isDirectory && node.children) {
+          const found = findItem(node.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const item =
+      findItem(myConsoles) ||
+      findItem(sharedWithMe) ||
+      findItem(sharedWithWorkspace);
+
+    if (item && renameValue.trim() !== item.name) {
+      await renameItem(
+        currentWorkspace.id,
+        renamingItemId,
+        renameValue.trim(),
+        item.isDirectory,
+      );
+    }
+
+    setRenamingItemId(null);
+    setRenameValue("");
+  };
+
+  const cancelInlineRename = () => {
+    setRenamingItemId(null);
+    setRenameValue("");
+  };
+
+  useEffect(() => {
+    if (renamingItemId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingItemId]);
+
+  // Keyboard handler for F2 rename
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "F2" && activeTabId) {
+        const findInTree = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
+          for (const node of nodes) {
+            if (node.id === activeTabId) return node;
+            if (node.isDirectory && node.children) {
+              const found = findInTree(node.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        const item = findInTree(myConsoles);
+        if (item && isOwner(item)) {
+          e.preventDefault();
+          startInlineRename(item);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeTabId, myConsoles]);
 
   const handleDelete = (item: ConsoleEntry) => {
     setSelectedItem(item);
@@ -322,6 +421,25 @@ function ConsoleExplorer(
     setShareUserEntries(item.shared_with || []);
     setShareDialogOpen(true);
     handleContextMenuClose();
+  };
+
+  const handleMoveTo = (item: ConsoleEntry) => {
+    setSelectedItem(item);
+    setMoveDialogOpen(true);
+    handleContextMenuClose();
+  };
+
+  const handleMoveConfirm = async (targetFolderId: string | null) => {
+    if (!currentWorkspace || !selectedItem?.id) return;
+
+    if (selectedItem.isDirectory) {
+      await moveFolder(currentWorkspace.id, selectedItem.id, targetFolderId);
+    } else {
+      await moveConsole(currentWorkspace.id, selectedItem.id, targetFolderId);
+    }
+
+    setMoveDialogOpen(false);
+    setSelectedItem(null);
   };
 
   const handleShareConfirm = async () => {
@@ -363,8 +481,6 @@ function ConsoleExplorer(
 
   const handleAddShareUser = () => {
     if (!shareUserEmail.trim()) return;
-    // For now, we store the email as userId placeholder — the backend will resolve
-    // In a production app, you'd search workspace members by email first
     const exists = shareUserEntries.some(e => e.userId === shareUserEmail);
     if (!exists) {
       setShareUserEntries([
@@ -383,72 +499,87 @@ function ConsoleExplorer(
     return item.owner_id === user?.id;
   };
 
-  const handleRenameConfirm = async () => {
-    if (!currentWorkspace || !selectedItem || !newItemName.trim()) {
+  const handleDeleteConfirm = async () => {
+    if (!currentWorkspace || !selectedItem?.id) {
       return;
     }
+    await deleteItem(
+      currentWorkspace.id,
+      selectedItem.id,
+      selectedItem.isDirectory,
+    );
+    setDeleteDialogOpen(false);
+    setSelectedItem(null);
+  };
 
-    try {
-      const endpoint = selectedItem.isDirectory
-        ? `/api/workspaces/${currentWorkspace.id}/consoles/folders/${selectedItem.id}/rename`
-        : `/api/workspaces/${currentWorkspace.id}/consoles/${selectedItem.id}/rename`;
-
-      const response = await fetch(endpoint, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: newItemName.trim(),
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+  // DnD handlers
+  const handleDragStart = (event: DragStartEvent) => {
+    const { active } = event;
+    const findInAll = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
+      for (const node of nodes) {
+        if (node.id === active.id) return node;
+        if (node.isDirectory && node.children) {
+          const found = findInAll(node.children);
+          if (found) return found;
+        }
       }
+      return null;
+    };
+    const item = findInAll(myConsoles);
+    if (item) setDraggedItem(item);
+  };
 
-      const data = await response.json();
-      if (data.success) {
-        setRenameDialogOpen(false);
-        setSelectedItem(null);
-        setNewItemName("");
-        fetchConsoleEntries();
-      } else {
-        console.error("Failed to rename item:", data.error);
-      }
-    } catch (e: any) {
-      console.error("Failed to rename item:", e);
+  const handleDragOver = (event: DragOverEvent) => {
+    const { over } = event;
+    if (over) {
+      setDropTargetId(over.id as string);
+    } else {
+      setDropTargetId(null);
     }
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!currentWorkspace || !selectedItem) {
-      return;
-    }
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    setDraggedItem(null);
+    setDropTargetId(null);
 
-    try {
-      const endpoint = selectedItem.isDirectory
-        ? `/api/workspaces/${currentWorkspace.id}/consoles/folders/${selectedItem.id}`
-        : `/api/workspaces/${currentWorkspace.id}/consoles/${selectedItem.id}`;
+    if (!over || !currentWorkspace || active.id === over.id) return;
 
-      const response = await fetch(endpoint, {
-        method: "DELETE",
-      });
+    const dragId = active.id as string;
+    const dropId = over.id as string;
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+    const findInTree = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
+      for (const node of nodes) {
+        if (node.id === dragId) return node;
+        if (node.isDirectory && node.children) {
+          const found = findInTree(node.children);
+          if (found) return found;
+        }
       }
+      return null;
+    };
 
-      const data = await response.json();
-      if (data.success) {
-        setDeleteDialogOpen(false);
-        setSelectedItem(null);
-        fetchConsoleEntries();
-      } else {
-        console.error("Failed to delete item:", data.error);
+    const findDropTarget = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
+      for (const node of nodes) {
+        if (node.id === dropId) return node;
+        if (node.isDirectory && node.children) {
+          const found = findDropTarget(node.children);
+          if (found) return found;
+        }
       }
-    } catch (e: any) {
-      console.error("Failed to delete item:", e);
+      return null;
+    };
+
+    const draggedNode = findInTree(myConsoles);
+    const dropTarget = findDropTarget(myConsoles);
+
+    if (!draggedNode || !dropTarget?.isDirectory) return;
+    if (!isOwner(draggedNode)) return;
+
+    if (draggedNode.isDirectory) {
+      await moveFolder(currentWorkspace.id, dragId, dropId);
+    } else {
+      await moveConsole(currentWorkspace.id, dragId, dropId);
     }
   };
 
@@ -511,6 +642,40 @@ function ConsoleExplorer(
     return null;
   };
 
+  const renderInlineRenameInput = () => (
+    <input
+      ref={renameInputRef}
+      value={renameValue}
+      onChange={e => setRenameValue(e.target.value)}
+      onBlur={commitInlineRename}
+      onKeyDown={e => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitInlineRename();
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelInlineRename();
+        }
+        e.stopPropagation();
+      }}
+      onClick={e => e.stopPropagation()}
+      onDoubleClick={e => e.stopPropagation()}
+      style={{
+        border: "1px solid",
+        borderColor: "inherit",
+        borderRadius: 3,
+        padding: "1px 4px",
+        fontSize: "0.9rem",
+        width: "100%",
+        outline: "none",
+        background: "transparent",
+        color: "inherit",
+        fontFamily: "inherit",
+      }}
+    />
+  );
+
   const renderTree = (
     nodes: ConsoleEntry[],
     depth = 0,
@@ -520,41 +685,66 @@ function ConsoleExplorer(
       if (node.isDirectory) {
         const isExpanded = expandedFolders.has(node.path);
         const nodeKey = node.id || node.path;
+        const isDragOver = dropTargetId === node.id;
+        const isRenaming = renamingItemId === node.id;
+
         return (
           <div key={`dir-${nodeKey}`}>
-            <ListItemButton
-              onClick={() => handleFolderToggle(node.path)}
-              onContextMenu={
-                readOnlyContext ? undefined : e => handleContextMenu(e, node)
-              }
-              sx={{ py: 0.25, pl: 0.5 + depth * 1.5 }}
+            <DraggableTreeItem
+              id={node.id || node.path}
+              disabled={readOnlyContext || !isOwner(node)}
             >
-              <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
-                {isExpanded ? (
-                  <ChevronDownIcon strokeWidth={1.5} size={20} />
-                ) : (
-                  <ChevronRightIcon strokeWidth={1.5} size={20} />
-                )}
-              </ListItemIcon>
-              <ListItemIcon sx={{ minWidth: 24 }}>
-                {isExpanded ? (
-                  <FolderOpenIcon strokeWidth={1.5} size={18} />
-                ) : (
-                  <FolderIcon strokeWidth={1.5} size={18} />
-                )}
-              </ListItemIcon>
-              <ListItemText
-                primary={node.name}
-                primaryTypographyProps={{
-                  variant: "body2",
-                  style: {
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  },
+              <ListItemButton
+                onClick={() => handleFolderToggle(node.path)}
+                onContextMenu={e => handleContextMenu(e, node, readOnlyContext)}
+                onDoubleClick={e => {
+                  if (!readOnlyContext && isOwner(node)) {
+                    e.stopPropagation();
+                    startInlineRename(node);
+                  }
                 }}
-              />
-            </ListItemButton>
+                sx={{
+                  py: 0.25,
+                  pl: 0.5 + depth * 1.5,
+                  bgcolor: isDragOver ? "action.hover" : undefined,
+                  outline: isDragOver ? "2px dashed" : undefined,
+                  outlineColor: isDragOver ? "primary.main" : undefined,
+                  borderRadius: isDragOver ? 1 : undefined,
+                }}
+              >
+                <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                  {isExpanded ? (
+                    <ChevronDownIcon strokeWidth={1.5} size={20} />
+                  ) : (
+                    <ChevronRightIcon strokeWidth={1.5} size={20} />
+                  )}
+                </ListItemIcon>
+                <ListItemIcon sx={{ minWidth: 24 }}>
+                  {isExpanded ? (
+                    <FolderOpenIcon strokeWidth={1.5} size={18} />
+                  ) : (
+                    <FolderIcon strokeWidth={1.5} size={18} />
+                  )}
+                </ListItemIcon>
+                {isRenaming ? (
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    {renderInlineRenameInput()}
+                  </Box>
+                ) : (
+                  <ListItemText
+                    primary={node.name}
+                    primaryTypographyProps={{
+                      variant: "body2",
+                      style: {
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      },
+                    }}
+                  />
+                )}
+              </ListItemButton>
+            </DraggableTreeItem>
             {isExpanded && (
               <List component="div" disablePadding dense>
                 {node.children &&
@@ -564,37 +754,57 @@ function ConsoleExplorer(
           </div>
         );
       }
+
       const nodeKey = node.id || node.path;
       const isActive = !!(node.id && activeTabId === node.id);
+      const isRenaming = renamingItemId === node.id;
+
       return (
-        <ListItemButton
+        <DraggableTreeItem
           key={`file-${nodeKey}`}
-          onClick={() => handleFileClick(node)}
-          onContextMenu={e => handleContextMenu(e, node)}
-          selected={isActive}
-          sx={{
-            py: 0.25,
-            pl: 0.5 + depth * 1.5,
-          }}
+          id={node.id || node.path}
+          disabled={readOnlyContext || !isOwner(node)}
         >
-          <ListItemIcon sx={{ minWidth: 22, visibility: "hidden", mr: 0 }} />
-          <ListItemIcon sx={{ minWidth: 24 }}>
-            <ConsoleIcon size={18} strokeWidth={1.5} />
-          </ListItemIcon>
-          <ListItemText
-            primary={node.name}
-            primaryTypographyProps={{
-              variant: "body2",
-              fontSize: "0.9rem",
-              style: {
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              },
+          <ListItemButton
+            onClick={() => handleFileClick(node)}
+            onContextMenu={e => handleContextMenu(e, node, readOnlyContext)}
+            onDoubleClick={e => {
+              if (isOwner(node)) {
+                e.stopPropagation();
+                startInlineRename(node);
+              }
             }}
-          />
-          {getAccessIcon(node)}
-        </ListItemButton>
+            selected={isActive}
+            sx={{
+              py: 0.25,
+              pl: 0.5 + depth * 1.5,
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 22, visibility: "hidden", mr: 0 }} />
+            <ListItemIcon sx={{ minWidth: 24 }}>
+              <ConsoleIcon size={18} strokeWidth={1.5} />
+            </ListItemIcon>
+            {isRenaming ? (
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                {renderInlineRenameInput()}
+              </Box>
+            ) : (
+              <ListItemText
+                primary={node.name}
+                primaryTypographyProps={{
+                  variant: "body2",
+                  fontSize: "0.9rem",
+                  style: {
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  },
+                }}
+              />
+            )}
+            {getAccessIcon(node)}
+          </ListItemButton>
+        </DraggableTreeItem>
       );
     });
   };
@@ -756,56 +966,94 @@ function ConsoleExplorer(
             {renderSkeletonItems()}
           </List>
         ) : (
-          <List component="nav" dense>
-            {/* My Consoles */}
-            {renderSectionHeader(
-              "My Consoles",
-              <ConsoleIcon strokeWidth={1.5} size={18} />,
-              myConsolesExpanded,
-              () => setMyConsolesExpanded(!myConsolesExpanded),
-              countConsoles(myConsoles),
-            )}
-            {myConsolesExpanded && (
-              <>
-                {myConsoles.length > 0
-                  ? renderTree(myConsoles, 1)
-                  : renderEmptyPlaceholder("No consoles yet")}
-              </>
-            )}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+          >
+            <List component="nav" dense>
+              {/* My Consoles */}
+              {renderSectionHeader(
+                "My Consoles",
+                <ConsoleIcon strokeWidth={1.5} size={18} />,
+                myConsolesExpanded,
+                () => setMyConsolesExpanded(!myConsolesExpanded),
+                countConsoles(myConsoles),
+              )}
+              {myConsolesExpanded && (
+                <>
+                  {myConsoles.length > 0
+                    ? renderTree(myConsoles, 1)
+                    : renderEmptyPlaceholder("No consoles yet")}
+                </>
+              )}
 
-            {/* Shared with me */}
-            {renderSectionHeader(
-              "Shared with me",
-              <UsersIcon strokeWidth={1.5} size={18} />,
-              sharedWithMeExpanded,
-              () => setSharedWithMeExpanded(!sharedWithMeExpanded),
-              countConsoles(sharedWithMe),
-            )}
-            {sharedWithMeExpanded && (
-              <>
-                {sharedWithMe.length > 0
-                  ? renderTree(sharedWithMe, 1, true)
-                  : renderEmptyPlaceholder("No shared consoles yet")}
-              </>
-            )}
+              {/* Shared with me */}
+              {renderSectionHeader(
+                "Shared with me",
+                <UsersIcon strokeWidth={1.5} size={18} />,
+                sharedWithMeExpanded,
+                () => setSharedWithMeExpanded(!sharedWithMeExpanded),
+                countConsoles(sharedWithMe),
+              )}
+              {sharedWithMeExpanded && (
+                <>
+                  {sharedWithMe.length > 0
+                    ? renderTree(sharedWithMe, 1, true)
+                    : renderEmptyPlaceholder("No shared consoles yet")}
+                </>
+              )}
 
-            {/* Shared with workspace */}
-            {renderSectionHeader(
-              "Workspace",
-              <GlobeIcon strokeWidth={1.5} size={18} />,
-              sharedWithWorkspaceExpanded,
-              () =>
-                setSharedWithWorkspaceExpanded(!sharedWithWorkspaceExpanded),
-              countConsoles(sharedWithWorkspace),
-            )}
-            {sharedWithWorkspaceExpanded && (
-              <>
-                {sharedWithWorkspace.length > 0
-                  ? renderTree(sharedWithWorkspace, 1, true)
-                  : renderEmptyPlaceholder("No workspace consoles yet")}
-              </>
-            )}
-          </List>
+              {/* Shared with workspace */}
+              {renderSectionHeader(
+                "Workspace",
+                <GlobeIcon strokeWidth={1.5} size={18} />,
+                sharedWithWorkspaceExpanded,
+                () =>
+                  setSharedWithWorkspaceExpanded(!sharedWithWorkspaceExpanded),
+                countConsoles(sharedWithWorkspace),
+              )}
+              {sharedWithWorkspaceExpanded && (
+                <>
+                  {sharedWithWorkspace.length > 0
+                    ? renderTree(sharedWithWorkspace, 1, true)
+                    : renderEmptyPlaceholder("No workspace consoles yet")}
+                </>
+              )}
+            </List>
+
+            {/* Drag overlay */}
+            <DragOverlay>
+              {draggedItem ? (
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    px: 1.5,
+                    py: 0.5,
+                    bgcolor: "background.paper",
+                    border: 1,
+                    borderColor: "divider",
+                    borderRadius: 1,
+                    boxShadow: 3,
+                    opacity: 0.9,
+                  }}
+                >
+                  {draggedItem.isDirectory ? (
+                    <FolderIcon size={16} strokeWidth={1.5} />
+                  ) : (
+                    <ConsoleIcon size={16} strokeWidth={1.5} />
+                  )}
+                  <Typography variant="body2" noWrap>
+                    {draggedItem.name}
+                  </Typography>
+                </Box>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
         )}
       </Box>
 
@@ -840,9 +1088,10 @@ function ConsoleExplorer(
             : undefined
         }
       >
+        {/* Owner actions: Rename, Delete, Share, Move to, New Subfolder */}
         {contextMenu && isOwner(contextMenu.item) && (
           <MenuItem
-            onClick={() => contextMenu && handleRename(contextMenu.item)}
+            onClick={() => contextMenu && startInlineRename(contextMenu.item)}
           >
             <EditIcon sx={{ mr: 1 }} fontSize="small" />
             Rename
@@ -864,6 +1113,14 @@ function ConsoleExplorer(
             Share
           </MenuItem>
         )}
+        {contextMenu && isOwner(contextMenu.item) && (
+          <MenuItem
+            onClick={() => contextMenu && handleMoveTo(contextMenu.item)}
+          >
+            <MoveIcon sx={{ mr: 1 }} fontSize="small" />
+            Move to...
+          </MenuItem>
+        )}
         {contextMenu?.item.isDirectory && isOwner(contextMenu.item) && (
           <MenuItem
             onClick={() => {
@@ -877,6 +1134,22 @@ function ConsoleExplorer(
             New Subfolder
           </MenuItem>
         )}
+        {/* Non-owner actions on shared items: Duplicate */}
+        {contextMenu &&
+          !isOwner(contextMenu.item) &&
+          !contextMenu.item.isDirectory && (
+            <MenuItem
+              onClick={() => {
+                if (contextMenu.item.id) {
+                  handleFileClick(contextMenu.item);
+                }
+                handleContextMenuClose();
+              }}
+            >
+              <DuplicateIcon sx={{ mr: 1 }} fontSize="small" />
+              Open
+            </MenuItem>
+          )}
       </Menu>
 
       {/* Create Folder Dialog */}
@@ -932,67 +1205,6 @@ function ConsoleExplorer(
             variant="contained"
           >
             Create
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Rename Dialog */}
-      <Dialog
-        open={renameDialogOpen}
-        onClose={() => setRenameDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-        TransitionProps={{
-          onEntered: () => {
-            setTimeout(() => {
-              const input = document.querySelector(
-                'input[name="itemName"]',
-              ) as HTMLInputElement;
-              if (input) {
-                input.focus();
-                input.select();
-              }
-            }, 100);
-          },
-        }}
-      >
-        <DialogTitle>
-          Rename {selectedItem?.isDirectory ? "Folder" : "Console"}
-        </DialogTitle>
-        <DialogContent>
-          <TextField
-            name="itemName"
-            autoFocus
-            margin="dense"
-            label="Name"
-            fullWidth
-            variant="outlined"
-            value={newItemName}
-            onChange={e => setNewItemName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && newItemName.trim()) {
-                handleRenameConfirm();
-              }
-            }}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck="false"
-            helperText={
-              selectedItem?.isDirectory
-                ? "Enter the new folder name"
-                : "Enter the new console name. Use 'folder/name' to move to a folder."
-            }
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRenameDialogOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleRenameConfirm}
-            disabled={!newItemName.trim()}
-            variant="contained"
-          >
-            Rename
           </Button>
         </DialogActions>
       </Dialog>
@@ -1076,7 +1288,6 @@ function ConsoleExplorer(
             </MuiSelect>
           </FormControl>
 
-          {/* Per-user sharing UI for "shared" and "workspace" modes */}
           {(shareAccess === "shared" || shareAccess === "workspace") && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
@@ -1085,7 +1296,6 @@ function ConsoleExplorer(
                   : "Grant write access to specific people"}
               </Typography>
 
-              {/* Existing shared users */}
               {shareUserEntries.map(entry => (
                 <Box
                   key={entry.userId}
@@ -1126,7 +1336,6 @@ function ConsoleExplorer(
                 </Box>
               ))}
 
-              {/* Add user */}
               <Box
                 sx={{ display: "flex", gap: 1, mt: 1, alignItems: "flex-end" }}
               >
@@ -1171,7 +1380,54 @@ function ConsoleExplorer(
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Move To Dialog */}
+      <MoveToDialog
+        open={moveDialogOpen}
+        onClose={() => {
+          setMoveDialogOpen(false);
+          setSelectedItem(null);
+        }}
+        onMove={handleMoveConfirm}
+        itemName={selectedItem?.name || ""}
+        isDirectory={selectedItem?.isDirectory || false}
+      />
     </Box>
+  );
+}
+
+/** Wrapper that makes a tree item draggable */
+function DraggableTreeItem({
+  id,
+  disabled,
+  children,
+}: {
+  id: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id,
+    disabled,
+  });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      {children}
+    </div>
   );
 }
 

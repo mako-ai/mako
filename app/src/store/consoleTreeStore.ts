@@ -121,6 +121,32 @@ interface TreeState {
   init: (workspaceId: string) => Promise<void>;
   setTree: (workspaceId: string, tree: ConsoleEntry[]) => void;
   addConsole: (workspaceId: string, path: string, id: string) => void;
+  moveConsole: (
+    workspaceId: string,
+    consoleId: string,
+    folderId: string | null,
+  ) => Promise<boolean>;
+  moveFolder: (
+    workspaceId: string,
+    folderId: string,
+    parentId: string | null,
+  ) => Promise<boolean>;
+  createFolder: (
+    workspaceId: string,
+    name: string,
+    parentId?: string | null,
+  ) => Promise<{ id: string; name: string } | null>;
+  renameItem: (
+    workspaceId: string,
+    itemId: string,
+    newName: string,
+    isDirectory: boolean,
+  ) => Promise<boolean>;
+  deleteItem: (
+    workspaceId: string,
+    itemId: string,
+    isDirectory: boolean,
+  ) => Promise<boolean>;
 }
 
 export const useConsoleTreeStore = create<TreeState>()(
@@ -213,6 +239,88 @@ export const useConsoleTreeStore = create<TreeState>()(
         state.myConsoles[workspaceId] = tree;
         state.trees[workspaceId] = tree;
       });
+    },
+
+    moveConsole: async (workspaceId, consoleId, folderId) => {
+      try {
+        const res = await apiClient.patch<{ success: boolean }>(
+          `/workspaces/${workspaceId}/consoles/${consoleId}/move`,
+          { folderId },
+        );
+        if (res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        return false;
+      }
+    },
+
+    moveFolder: async (workspaceId, folderId, parentId) => {
+      try {
+        const res = await apiClient.patch<{ success: boolean }>(
+          `/workspaces/${workspaceId}/consoles/folders/${folderId}/move`,
+          { parentId },
+        );
+        if (res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        return false;
+      }
+    },
+
+    createFolder: async (workspaceId, name, parentId) => {
+      try {
+        const res = await apiClient.post<{
+          success: boolean;
+          data?: { id: string; name: string };
+        }>(`/workspaces/${workspaceId}/consoles/folders`, {
+          name,
+          parentId: parentId || undefined,
+          isPrivate: false,
+        });
+        if (res.success && res.data) {
+          await _get().refresh(workspaceId);
+          return { id: res.data.id, name: res.data.name };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+
+    renameItem: async (workspaceId, itemId, newName, isDirectory) => {
+      try {
+        const endpoint = isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}/rename`
+          : `/workspaces/${workspaceId}/consoles/${itemId}/rename`;
+        const res = await apiClient.patch<{ success: boolean }>(endpoint, {
+          name: newName,
+        });
+        if (res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        return false;
+      }
+    },
+
+    deleteItem: async (workspaceId, itemId, isDirectory) => {
+      try {
+        const endpoint = isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}`
+          : `/workspaces/${workspaceId}/consoles/${itemId}`;
+        const res = await apiClient.delete<{ success: boolean }>(endpoint);
+        if (res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        return false;
+      }
     },
   })),
 );

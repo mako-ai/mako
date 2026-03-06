@@ -1282,6 +1282,83 @@ export class ConsoleManager {
   }
 
   /**
+   * Move a console to a different folder (or root if folderId is null)
+   */
+  async moveConsole(
+    consoleId: string,
+    workspaceId: string,
+    folderId: string | null,
+  ): Promise<boolean> {
+    const objectId = Types.ObjectId.isValid(consoleId)
+      ? new Types.ObjectId(consoleId)
+      : null;
+    if (!objectId) return false;
+
+    const updateFields: Record<string, any> = {
+      updatedAt: new Date(),
+    };
+
+    if (folderId) {
+      updateFields.folderId = new Types.ObjectId(folderId);
+    } else {
+      updateFields.folderId = null;
+    }
+
+    const result = await SavedConsole.updateOne(
+      {
+        _id: objectId,
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: updateFields },
+    );
+
+    return result.modifiedCount > 0;
+  }
+
+  /**
+   * Move a folder to a different parent folder (or root if parentId is null).
+   * Prevents circular nesting.
+   */
+  async moveFolder(
+    folderId: string,
+    workspaceId: string,
+    newParentId: string | null,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(folderId)) return false;
+
+    // Prevent moving folder into itself
+    if (newParentId === folderId) return false;
+
+    // Prevent circular nesting: walk up from newParentId to ensure folderId is not an ancestor
+    if (newParentId) {
+      let currentId: string | null = newParentId;
+      while (currentId) {
+        if (currentId === folderId) return false;
+        const parent: { parentId?: Types.ObjectId } | null =
+          await ConsoleFolder.findById(currentId).select("parentId").lean();
+        currentId = parent?.parentId?.toString() || null;
+      }
+    }
+
+    const updateFields: Record<string, any> = {};
+    if (newParentId) {
+      updateFields.parentId = new Types.ObjectId(newParentId);
+    } else {
+      updateFields.parentId = null;
+    }
+
+    const result = await ConsoleFolder.updateOne(
+      {
+        _id: new Types.ObjectId(folderId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: updateFields },
+    );
+
+    return result.modifiedCount > 0;
+  }
+
+  /**
    * Detect language from content
    */
   private detectLanguage(content: string): "sql" | "javascript" | "mongodb" {

@@ -942,6 +942,112 @@ consoleRoutes.delete("/folders/:id", async (c: Context) => {
   }
 });
 
+// PATCH /api/workspaces/:workspaceId/consoles/:id/move - Move a console to a different folder
+consoleRoutes.patch("/:id/move", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const body = await c.req.json();
+    const { folderId } = body as { folderId: string | null };
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (Types.ObjectId.isValid(consoleId)) {
+      const existing = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (existing && !ConsoleManager.canWrite(existing, user.id)) {
+        return c.json(
+          { success: false, error: "Cannot move a read-only shared console" },
+          403,
+        );
+      }
+    }
+
+    const success = await consoleManager.moveConsole(
+      consoleId,
+      workspaceId,
+      folderId ?? null,
+    );
+
+    if (success) {
+      return c.json({ success: true, message: "Console moved successfully" });
+    } else {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+  } catch (error) {
+    logger.error("Error moving console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error moving console",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/move - Move a folder to a different parent
+consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const folderId = c.req.param("id");
+    const body = await c.req.json();
+    const { parentId } = body as { parentId: string | null };
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const success = await consoleManager.moveFolder(
+      folderId,
+      workspaceId,
+      parentId ?? null,
+    );
+
+    if (success) {
+      return c.json({ success: true, message: "Folder moved successfully" });
+    } else {
+      return c.json(
+        { success: false, error: "Folder not found or circular nesting" },
+        404,
+      );
+    }
+  } catch (error) {
+    logger.error("Error moving folder", {
+      folderId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error moving folder",
+      },
+      500,
+    );
+  }
+});
+
 // POST /api/workspaces/:workspaceId/consoles/:id/share - Update sharing settings for a console
 consoleRoutes.post("/:id/share", async (c: Context) => {
   try {
