@@ -189,6 +189,10 @@ export class ConsoleManager {
         SavedConsole.find({
           workspaceId: new Types.ObjectId(workspaceId),
           isSaved: true,
+          $or: [
+            { is_deleted: { $ne: true } },
+            { is_deleted: { $exists: false } },
+          ],
         }).sort({ name: 1 }),
       ]);
 
@@ -314,6 +318,10 @@ export class ConsoleManager {
         SavedConsole.find({
           workspaceId: new Types.ObjectId(workspaceId),
           isSaved: true,
+          $or: [
+            { is_deleted: { $ne: true } },
+            { is_deleted: { $exists: false } },
+          ],
         }).sort({ name: 1 }),
       ]);
 
@@ -1356,6 +1364,79 @@ export class ConsoleManager {
     );
 
     return result.modifiedCount > 0;
+  }
+
+  /**
+   * Soft-delete a console (set is_deleted=true instead of removing).
+   */
+  async softDeleteConsole(
+    consoleId: string,
+    workspaceId: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(consoleId)) return false;
+    const result = await SavedConsole.updateOne(
+      {
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: { is_deleted: true, deletedAt: new Date() } },
+    );
+    return result.modifiedCount > 0;
+  }
+
+  /**
+   * Restore a soft-deleted console.
+   */
+  async restoreConsole(
+    consoleId: string,
+    workspaceId: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(consoleId)) return false;
+    const result = await SavedConsole.updateOne(
+      {
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: { is_deleted: false }, $unset: { deletedAt: "" } },
+    );
+    return result.modifiedCount > 0;
+  }
+
+  /**
+   * Duplicate a console: creates a copy with " copy" appended to the name.
+   */
+  async duplicateConsole(
+    consoleId: string,
+    workspaceId: string,
+    userId: string,
+  ): Promise<ISavedConsole | null> {
+    if (!Types.ObjectId.isValid(consoleId)) return null;
+    const original = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!original) return null;
+
+    const copy = new SavedConsole({
+      workspaceId: original.workspaceId,
+      folderId: original.folderId,
+      connectionId: original.connectionId,
+      databaseName: original.databaseName,
+      databaseId: original.databaseId,
+      name: `${original.name} copy`,
+      description: original.description,
+      code: original.code,
+      language: original.language,
+      mongoOptions: original.mongoOptions,
+      createdBy: userId,
+      isPrivate: true,
+      isSaved: true,
+      access: "private" as const,
+      owner_id: userId,
+      executionCount: 0,
+    });
+    await copy.save();
+    return copy;
   }
 
   /**

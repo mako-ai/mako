@@ -371,6 +371,8 @@ export interface ISavedConsole extends Document {
   access: ConsoleAccessLevel;
   owner_id: string;
   shared_with?: ISharedWithEntry[];
+  is_deleted?: boolean;
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
   lastExecutedAt?: Date;
@@ -1143,6 +1145,13 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     executionCount: {
       type: Number,
       default: 0,
+    },
+    is_deleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
     },
   },
   {

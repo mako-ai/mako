@@ -39,6 +39,7 @@ import {
   Close as CloseIcon,
   DriveFileMove as MoveIcon,
   ContentCopy as DuplicateIcon,
+  Info as InfoIcon,
 } from "@mui/icons-material";
 import {
   SquareTerminal as ConsoleIcon,
@@ -79,6 +80,7 @@ import {
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
 import FileExplorerDialog from "./FileExplorerDialog";
+import ConsoleInfoModal from "./ConsoleInfoModal";
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -158,6 +160,16 @@ function ConsoleExplorer(
     "read" | "write"
   >("read");
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
+  const [infoModalOpen, setInfoModalOpen] = useState(false);
+  const [infoConsoleId, setInfoConsoleId] = useState<string>("");
+
+  // Keyboard selection state (distinct from activeTabId; tracks which tree item has keyboard focus)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  // Undo stack: stores last destructive action so Cmd+Z can reverse it
+  const [undoStack, setUndoStack] = useState<
+    Array<{ type: "delete"; id: string; isDirectory: boolean }>
+  >([]);
 
   // Inline rename state
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
@@ -368,36 +380,160 @@ function ConsoleExplorer(
     }
   }, [renamingItemId]);
 
-  // Keyboard handler for F2 rename
+  // Build a flat list of visible node IDs for arrow-key navigation
+  const flatNodeIds = (() => {
+    const ids: string[] = [];
+    const collect = (nodes: ConsoleEntry[], sectionExpanded: boolean) => {
+      if (!sectionExpanded) return;
+      for (const node of nodes) {
+        if (node.id) ids.push(node.id);
+        if (
+          node.isDirectory &&
+          expandedFolders.has(node.path) &&
+          node.children
+        ) {
+          collect(node.children, true);
+        }
+      }
+    };
+    collect(myConsoles, myConsolesExpanded);
+    collect(sharedWithMe, sharedWithMeExpanded);
+    collect(sharedWithWorkspace, sharedWithWorkspaceExpanded);
+    return ids;
+  })();
+
+  const findNodeById = (targetId: string): ConsoleEntry | null => {
+    const search = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
+      for (const node of nodes) {
+        if (node.id === targetId) return node;
+        if (node.isDirectory && node.children) {
+          const found = search(node.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return (
+      search(myConsoles) || search(sharedWithMe) || search(sharedWithWorkspace)
+    );
+  };
+
+  // Comprehensive keyboard handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "F2" && activeTabId) {
-        const findInTree = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
-          for (const node of nodes) {
-            if (node.id === activeTabId) return node;
-            if (node.isDirectory && node.children) {
-              const found = findInTree(node.children);
-              if (found) return found;
-            }
-          }
-          return null;
-        };
-        const item = findInTree(myConsoles);
-        if (item && isOwner(item)) {
-          e.preventDefault();
-          startInlineRename(item);
+      // Skip if user is typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      const focusId = selectedNodeId || activeTabId;
+      const focusItem = focusId ? findNodeById(focusId) : null;
+      const meta = e.metaKey || e.ctrlKey;
+
+      // F2 → rename
+      if (e.key === "F2" && focusItem) {
+        e.preventDefault();
+        startInlineRename(focusItem);
+        return;
+      }
+
+      // Delete / Backspace → delete
+      if ((e.key === "Delete" || e.key === "Backspace") && focusItem && !meta) {
+        e.preventDefault();
+        handleDelete(focusItem);
+        return;
+      }
+
+      // Cmd+D → duplicate
+      if (meta && e.key === "d" && focusItem && !focusItem.isDirectory) {
+        e.preventDefault();
+        handleDuplicate(focusItem);
+        return;
+      }
+
+      // Cmd+I → get info
+      if (meta && e.key === "i" && focusItem && !focusItem.isDirectory) {
+        e.preventDefault();
+        handleGetInfo(focusItem);
+        return;
+      }
+
+      // Cmd+Z → undo last delete
+      if (meta && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      // Arrow Down → select next item
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const idx = focusId ? flatNodeIds.indexOf(focusId) : -1;
+        const nextId = flatNodeIds[idx + 1];
+        if (nextId) setSelectedNodeId(nextId);
+        return;
+      }
+
+      // Arrow Up → select previous item
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const idx = focusId ? flatNodeIds.indexOf(focusId) : flatNodeIds.length;
+        const prevId = flatNodeIds[idx - 1];
+        if (prevId) setSelectedNodeId(prevId);
+        return;
+      }
+
+      // Arrow Right → expand folder
+      if (e.key === "ArrowRight" && focusItem?.isDirectory) {
+        e.preventDefault();
+        if (!expandedFolders.has(focusItem.path)) {
+          toggleFolder(focusItem.path);
         }
+        return;
+      }
+
+      // Arrow Left → collapse folder
+      if (e.key === "ArrowLeft" && focusItem?.isDirectory) {
+        e.preventDefault();
+        if (expandedFolders.has(focusItem.path)) {
+          toggleFolder(focusItem.path);
+        }
+        return;
+      }
+
+      // Enter → open console / toggle folder
+      if (e.key === "Enter" && focusItem) {
+        e.preventDefault();
+        if (focusItem.isDirectory) {
+          toggleFolder(focusItem.path);
+        } else {
+          handleFileClick(focusItem);
+        }
+        return;
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeTabId, myConsoles]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedNodeId,
+    activeTabId,
+    myConsoles,
+    sharedWithMe,
+    sharedWithWorkspace,
+    flatNodeIds,
+    expandedFolders,
+    undoStack,
+  ]);
 
   const handleDelete = (item: ConsoleEntry) => {
-    setSelectedItem(item);
-    setDeleteDialogOpen(true);
-    handleContextMenuClose();
+    if (item.isDirectory) {
+      setSelectedItem(item);
+      setDeleteDialogOpen(true);
+      handleContextMenuClose();
+    } else {
+      handleSoftDelete(item);
+    }
   };
 
   const handleShare = (item: ConsoleEntry) => {
@@ -425,6 +561,52 @@ function ConsoleExplorer(
 
     setExplorerDialogOpen(false);
     setSelectedItem(null);
+  };
+
+  const handleDuplicate = async (item: ConsoleEntry) => {
+    if (!currentWorkspace || !item.id || item.isDirectory) return;
+    handleContextMenuClose();
+    const duplicateConsole = useConsoleTreeStore.getState().duplicateConsole;
+    const result = await duplicateConsole(currentWorkspace.id, item.id);
+    if (result) {
+      setRenamingItemId(result.id);
+      setRenameValue(result.name);
+    }
+  };
+
+  const handleGetInfo = (item: ConsoleEntry) => {
+    if (!item.id || item.isDirectory) return;
+    setInfoConsoleId(item.id);
+    setInfoModalOpen(true);
+    handleContextMenuClose();
+  };
+
+  const handleSoftDelete = async (item: ConsoleEntry) => {
+    if (!currentWorkspace || !item.id) return;
+    handleContextMenuClose();
+    const success = await deleteItem(
+      currentWorkspace.id,
+      item.id,
+      item.isDirectory,
+    );
+    if (success) {
+      setUndoStack(prev => [
+        ...prev,
+        { type: "delete", id: item.id!, isDirectory: item.isDirectory },
+      ]);
+    }
+  };
+
+  const handleUndo = async () => {
+    if (!currentWorkspace || undoStack.length === 0) return;
+    const last = undoStack[undoStack.length - 1];
+    if (last.type === "delete" && !last.isDirectory) {
+      const restoreConsole = useConsoleTreeStore.getState().restoreConsole;
+      const success = await restoreConsole(currentWorkspace.id, last.id);
+      if (success) {
+        setUndoStack(prev => prev.slice(0, -1));
+      }
+    }
   };
 
   const handleShareConfirm = async () => {
@@ -680,14 +862,18 @@ function ConsoleExplorer(
               disabled={readOnlyContext || !isOwner(node)}
             >
               <ListItemButton
-                onClick={() => handleFolderToggle(node.path)}
+                onClick={() => {
+                  setSelectedNodeId(node.id || null);
+                  handleFolderToggle(node.path);
+                }}
                 onContextMenu={e => handleContextMenu(e, node, readOnlyContext)}
                 onDoubleClick={e => {
-                  if (!readOnlyContext && isOwner(node)) {
+                  if (!readOnlyContext) {
                     e.stopPropagation();
                     startInlineRename(node);
                   }
                 }}
+                selected={selectedNodeId === node.id}
                 sx={{
                   py: 0.25,
                   pl: 0.5 + depth * 1.5,
@@ -751,15 +937,18 @@ function ConsoleExplorer(
           disabled={readOnlyContext || !isOwner(node)}
         >
           <ListItemButton
-            onClick={() => handleFileClick(node)}
+            onClick={() => {
+              setSelectedNodeId(node.id || null);
+              handleFileClick(node);
+            }}
             onContextMenu={e => handleContextMenu(e, node, readOnlyContext)}
             onDoubleClick={e => {
-              if (isOwner(node)) {
+              if (!readOnlyContext) {
                 e.stopPropagation();
                 startInlineRename(node);
               }
             }}
-            selected={isActive}
+            selected={isActive || selectedNodeId === node.id}
             sx={{
               py: 0.25,
               pl: 0.5 + depth * 1.5,
@@ -1143,6 +1332,26 @@ function ConsoleExplorer(
             New Subfolder
           </MenuItem>
         )}
+        {/* Duplicate — consoles only, owner context */}
+        {contextMenu &&
+          !contextMenu.readOnly &&
+          !contextMenu.item.isDirectory && (
+            <MenuItem
+              onClick={() => contextMenu && handleDuplicate(contextMenu.item)}
+            >
+              <DuplicateIcon sx={{ mr: 1 }} fontSize="small" />
+              Duplicate
+            </MenuItem>
+          )}
+        {/* Get Info — consoles only */}
+        {contextMenu && !contextMenu.item.isDirectory && (
+          <MenuItem
+            onClick={() => contextMenu && handleGetInfo(contextMenu.item)}
+          >
+            <InfoIcon sx={{ mr: 1 }} fontSize="small" />
+            Get Info
+          </MenuItem>
+        )}
         {/* Read-only context (shared sections): Open for consoles */}
         {contextMenu &&
           contextMenu.readOnly &&
@@ -1357,6 +1566,14 @@ function ConsoleExplorer(
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Console Info Modal */}
+      <ConsoleInfoModal
+        open={infoModalOpen}
+        onClose={() => setInfoModalOpen(false)}
+        consoleId={infoConsoleId}
+        workspaceId={currentWorkspace?.id}
+      />
 
       {/* File Explorer Dialog for Move */}
       <FileExplorerDialog

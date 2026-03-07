@@ -132,6 +132,11 @@ interface TreeState {
     itemId: string,
     isDirectory: boolean,
   ) => Promise<boolean>;
+  duplicateConsole: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<{ id: string; name: string } | null>;
+  restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
 }
 
 export const useConsoleTreeStore = create<TreeState>()(
@@ -295,6 +300,36 @@ export const useConsoleTreeStore = create<TreeState>()(
           ? `/workspaces/${workspaceId}/consoles/folders/${itemId}`
           : `/workspaces/${workspaceId}/consoles/${itemId}`;
         const res = await apiClient.delete<{ success: boolean }>(endpoint);
+        if (res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        return false;
+      }
+    },
+
+    duplicateConsole: async (workspaceId, consoleId) => {
+      try {
+        const res = await apiClient.post<{
+          success: boolean;
+          data?: { id: string; name: string };
+        }>(`/workspaces/${workspaceId}/consoles/${consoleId}/duplicate`);
+        if (res.success && res.data) {
+          await _get().refresh(workspaceId);
+          return { id: res.data.id, name: res.data.name };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+
+    restoreConsole: async (workspaceId, consoleId) => {
+      try {
+        const res = await apiClient.patch<{ success: boolean }>(
+          `/workspaces/${workspaceId}/consoles/${consoleId}/restore`,
+        );
         if (res.success) {
           await _get().refresh(workspaceId);
         }

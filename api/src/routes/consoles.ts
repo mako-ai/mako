@@ -792,14 +792,13 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
   }
 });
 
-// DELETE /api/workspaces/:workspaceId/consoles/:id - Delete a console
+// DELETE /api/workspaces/:workspaceId/consoles/:id - Soft-delete a console
 consoleRoutes.delete("/:id", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const consoleId = c.req.param("id");
     const user = c.get("user");
 
-    // Verify user has access to workspace
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
       return c.json(
         { success: false, error: "Access denied to workspace" },
@@ -807,7 +806,6 @@ consoleRoutes.delete("/:id", async (c: Context) => {
       );
     }
 
-    // Only the owner can delete a console
     if (Types.ObjectId.isValid(consoleId)) {
       const existing = await SavedConsole.findOne({
         _id: new Types.ObjectId(consoleId),
@@ -824,10 +822,17 @@ consoleRoutes.delete("/:id", async (c: Context) => {
       }
     }
 
-    const success = await consoleManager.deleteConsole(consoleId, workspaceId);
+    const success = await consoleManager.softDeleteConsole(
+      consoleId,
+      workspaceId,
+    );
 
     if (success) {
-      return c.json({ success: true, message: "Console deleted successfully" });
+      return c.json({
+        success: true,
+        message: "Console deleted successfully",
+        id: consoleId,
+      });
     } else {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
@@ -843,6 +848,99 @@ consoleRoutes.delete("/:id", async (c: Context) => {
           error instanceof Error
             ? error.message
             : "Unknown error deleting console",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/:id/duplicate - Duplicate a console
+consoleRoutes.post("/:id/duplicate", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const copy = await consoleManager.duplicateConsole(
+      consoleId,
+      workspaceId,
+      user.id,
+    );
+
+    if (copy) {
+      return c.json(
+        {
+          success: true,
+          message: "Console duplicated",
+          data: {
+            id: copy._id.toString(),
+            name: copy.name,
+            folderId: copy.folderId?.toString(),
+          },
+        },
+        201,
+      );
+    } else {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+  } catch (error) {
+    logger.error("Error duplicating console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error duplicating console",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/consoles/:id/restore - Restore a soft-deleted console
+consoleRoutes.patch("/:id/restore", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const success = await consoleManager.restoreConsole(consoleId, workspaceId);
+
+    if (success) {
+      return c.json({ success: true, message: "Console restored" });
+    } else {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+  } catch (error) {
+    logger.error("Error restoring console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error restoring console",
       },
       500,
     );
