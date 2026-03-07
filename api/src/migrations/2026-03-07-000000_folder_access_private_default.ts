@@ -4,18 +4,18 @@ import { loggers } from "../logging";
 const log = loggers.migration();
 
 export const description =
-  "Set folder access to 'private' for folders that have an ownerId (previously defaulted to 'workspace')";
+  "Set folder access to 'private' for owned folders (previously defaulted to 'workspace')";
 
 /**
  * Migration: Folder access private default
  *
  * Previously, createFolder set access='workspace' by default, causing every
  * folder to appear in the Workspace section for all users. Now folders default
- * to 'private'. This migration retroactively fixes existing folders:
+ * to 'private'. This migration fixes existing folders:
  *
- * - Folders WITH an ownerId and access='workspace': set to 'private'
- *   (they were created by a specific user and should be in their My Consoles)
- * - Folders WITHOUT an ownerId: left as 'workspace' (legacy data, no owner to assign)
+ * Step 1: Folders WITH ownerId + access='workspace' + no explicit shares → private
+ * Step 2: Folders WITHOUT ownerId → infer owner from consoles inside, then set private
+ * Step 3: Remaining ownerless folders → left as workspace (truly shared legacy data)
  */
 export async function up(db: Db): Promise<void> {
   const collections = await db.listCollections().toArray();
@@ -26,30 +26,71 @@ export async function up(db: Db): Promise<void> {
     return;
   }
 
-  const col = db.collection("consolefolders");
+  const folderCol = db.collection("consolefolders");
 
-  // Folders that have an owner but were set to workspace by the old default
-  const result = await col.updateMany(
+  // Step 1: Owned folders with no explicit shares → private
+  const ownedResult = await folderCol.updateMany(
     {
-      ownerId: { $exists: true, $ne: null },
+      ownerId: { $exists: true, $nin: [null, ""] },
       access: "workspace",
-      shared_with: { $in: [null, []] },
+      $or: [
+        { shared_with: { $exists: false } },
+        { shared_with: null },
+        { shared_with: { $size: 0 } },
+      ],
     },
     { $set: { access: "private", isPrivate: true } },
   );
-
   log.info(
-    `Migrated ${result.modifiedCount} owned folders from access='workspace' to access='private'`,
+    `Step 1: Set ${ownedResult.modifiedCount} owned folders to access='private'`,
   );
 
-  // Count folders left as workspace (no owner)
-  const remaining = await col.countDocuments({
-    ownerId: { $in: [null, undefined] },
-    access: "workspace",
+  // Step 2: Folders without ownerId — try to infer from consoles inside
+  if (collectionNames.includes("savedconsoles")) {
+    const consoleCol = db.collection("savedconsoles");
+    const orphanFolders = await folderCol
+      .find({
+        $or: [
+          { ownerId: { $exists: false } },
+          { ownerId: null },
+          { ownerId: "" },
+        ],
+      })
+      .toArray();
+
+    let inferredCount = 0;
+    for (const folder of orphanFolders) {
+      const firstConsole = await consoleCol.findOne({
+        folderId: folder._id,
+        owner_id: { $exists: true, $ne: null },
+      });
+
+      if (firstConsole?.owner_id) {
+        await folderCol.updateOne(
+          { _id: folder._id },
+          {
+            $set: {
+              ownerId: firstConsole.owner_id,
+              access: "private",
+              isPrivate: true,
+            },
+          },
+        );
+        inferredCount++;
+      }
+    }
+    log.info(
+      `Step 2: Inferred owner and set private for ${inferredCount} folders from their consoles`,
+    );
+  }
+
+  // Step 3: Count remaining
+  const remaining = await folderCol.countDocuments({
+    $or: [{ ownerId: { $exists: false } }, { ownerId: null }, { ownerId: "" }],
   });
   if (remaining > 0) {
     log.info(
-      `${remaining} folders without ownerId left as access='workspace' (legacy data)`,
+      `Step 3: ${remaining} folders still without owner, left as-is (workspace-visible)`,
     );
   }
 }
