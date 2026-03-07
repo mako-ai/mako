@@ -62,12 +62,12 @@ import {
   useSensor,
   useSensors,
   PointerSensor,
+  useDraggable,
+  useDroppable,
   type DragStartEvent,
   type DragEndEvent,
   type DragOverEvent,
 } from "@dnd-kit/core";
-import { useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { useExplorerStore } from "../store/explorerStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -726,7 +726,6 @@ function ConsoleExplorer(
     const dropTarget = findDropTarget(myConsoles);
 
     if (!draggedNode || !dropTarget?.isDirectory) return;
-    if (!isOwner(draggedNode)) return;
 
     if (draggedNode.isDirectory) {
       await moveFolder(currentWorkspace.id, dragId, dropId);
@@ -844,7 +843,8 @@ function ConsoleExplorer(
           <div key={`dir-${nodeKey}`}>
             <DraggableTreeItem
               id={node.id || node.path}
-              disabled={readOnlyContext || !isOwner(node)}
+              disabled={readOnlyContext}
+              isFolder
             >
               <ListItemButton
                 onClick={() => {
@@ -919,7 +919,7 @@ function ConsoleExplorer(
         <DraggableTreeItem
           key={`file-${nodeKey}`}
           id={node.id || node.path}
-          disabled={readOnlyContext || !isOwner(node)}
+          disabled={readOnlyContext}
         >
           <ListItemButton
             onClick={() => {
@@ -1576,36 +1576,42 @@ function ConsoleExplorer(
   );
 }
 
-/** Wrapper that makes a tree item draggable */
+/** Wrapper that makes a tree item draggable and a drop target (for folders) */
 function DraggableTreeItem({
   id,
   disabled,
+  isFolder,
   children,
 }: {
   id: string;
   disabled?: boolean;
+  isFolder?: boolean;
   children: React.ReactNode;
 }) {
   const {
     attributes,
     listeners,
-    setNodeRef,
-    transform,
-    transition,
+    setNodeRef: setDragRef,
     isDragging,
-  } = useSortable({
+  } = useDraggable({ id, disabled });
+
+  const { setNodeRef: setDropRef } = useDroppable({
     id,
-    disabled,
+    disabled: !isFolder,
   });
 
-  const style: React.CSSProperties = {
-    transform: CSS.Translate.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : 1,
+  const setRef = (el: HTMLElement | null) => {
+    setDragRef(el);
+    if (isFolder) setDropRef(el);
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div
+      ref={setRef}
+      style={{ opacity: isDragging ? 0.4 : 1 }}
+      {...attributes}
+      {...listeners}
+    >
       {children}
     </div>
   );
