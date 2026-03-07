@@ -367,10 +367,13 @@ export class ConsoleManager {
 
       for (const f of folders) {
         const classification = ConsoleManager.classifyFolderForUser(f, userId);
-        if (classification === "my") myFolders.push(f);
-        else if (classification === "shared") sharedWithMeFolders.push(f);
-        else if (classification === "workspace")
+        if (classification === "my") {
+          myFolders.push(f);
+        } else if (classification === "shared") {
+          sharedWithMeFolders.push(f);
+        } else if (classification === "workspace") {
           sharedWithWorkspaceFolders.push(f);
+        }
       }
 
       return {
