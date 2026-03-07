@@ -174,6 +174,28 @@ export class ConsoleManager {
   }
 
   /**
+   * Determine which section a folder belongs to for a given user.
+   * Same logic as classifyForUser but for IConsoleFolder.
+   */
+  static classifyFolderForUser(
+    folder: IConsoleFolder,
+    userId: string,
+  ): "my" | "shared" | "workspace" | null {
+    const ownerId = folder.ownerId;
+    if (ownerId === userId) return "my";
+
+    const access =
+      folder.access || (folder.isPrivate ? "private" : "workspace");
+    if (access === "private") return null;
+    if (access === "shared") {
+      return ConsoleManager.getSharedAccess(folder.shared_with, userId) !== null
+        ? "shared"
+        : null;
+    }
+    return "workspace";
+  }
+
+  /**
    * Get all consoles in a tree structure from database.
    * Only returns explicitly saved consoles (isSaved: true), not drafts.
    */
@@ -229,6 +251,7 @@ export class ConsoleManager {
         isPrivate: folder.isPrivate,
         owner_id: folder.ownerId,
         access: folder.access || (folder.isPrivate ? "private" : "workspace"),
+        shared_with: folder.shared_with,
       };
       folderMap.set(folder._id.toString(), folderItem);
       if (!folder.parentId) {
@@ -337,10 +360,26 @@ export class ConsoleManager {
         else if (classification === "workspace") sharedWithWorkspaceRaw.push(c);
       }
 
+      // Classify folders the same way as consoles
+      const myFolders: IConsoleFolder[] = [];
+      const sharedWithMeFolders: IConsoleFolder[] = [];
+      const sharedWithWorkspaceFolders: IConsoleFolder[] = [];
+
+      for (const f of folders) {
+        const classification = ConsoleManager.classifyFolderForUser(f, userId);
+        if (classification === "my") myFolders.push(f);
+        else if (classification === "shared") sharedWithMeFolders.push(f);
+        else if (classification === "workspace")
+          sharedWithWorkspaceFolders.push(f);
+      }
+
       return {
-        myConsoles: this.buildTree(folders, myConsolesRaw),
-        sharedWithMe: this.buildTree(folders, sharedWithMeRaw),
-        sharedWithWorkspace: this.buildTree(folders, sharedWithWorkspaceRaw),
+        myConsoles: this.buildTree(myFolders, myConsolesRaw),
+        sharedWithMe: this.buildTree(sharedWithMeFolders, sharedWithMeRaw),
+        sharedWithWorkspace: this.buildTree(
+          sharedWithWorkspaceFolders,
+          sharedWithWorkspaceRaw,
+        ),
       };
     } catch (error) {
       logger.error("Error listing consoles split", { error });
@@ -839,15 +878,16 @@ export class ConsoleManager {
     workspaceId: string,
     userId: string,
     parentId?: string,
-    isPrivate: boolean = false,
+    _isPrivate: boolean = false,
+    access: ConsoleAccessLevel = "private",
   ): Promise<IConsoleFolder> {
     const folder = new ConsoleFolder({
       workspaceId: new Types.ObjectId(workspaceId),
       name: folderName,
       parentId: parentId ? new Types.ObjectId(parentId) : undefined,
-      isPrivate,
+      isPrivate: access === "private",
       ownerId: userId,
-      access: isPrivate ? "private" : "workspace",
+      access,
     });
 
     return await folder.save();

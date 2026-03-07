@@ -609,40 +609,25 @@ function ConsoleExplorer(
     }
   };
 
+  const updateAccess = useConsoleTreeStore(state => state.updateAccess);
+
   const handleShareConfirm = async () => {
     if (!currentWorkspace || !selectedItem?.id) return;
 
-    const isFolder = selectedItem.isDirectory;
-    const endpoint = isFolder
-      ? `/api/workspaces/${currentWorkspace.id}/consoles/folders/${selectedItem.id}/share`
-      : `/api/workspaces/${currentWorkspace.id}/consoles/${selectedItem.id}/share`;
+    const success = await updateAccess(
+      currentWorkspace.id,
+      selectedItem.id,
+      selectedItem.isDirectory,
+      shareAccess,
+      shareAccess === "shared" || shareAccess === "workspace"
+        ? shareUserEntries
+        : undefined,
+    );
 
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          access: shareAccess,
-          shared_with:
-            shareAccess === "shared" || shareAccess === "workspace"
-              ? shareUserEntries
-              : undefined,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      if (data.success) {
-        setShareDialogOpen(false);
-        setSelectedItem(null);
-        setShareUserEntries([]);
-        fetchConsoleEntries();
-      }
-    } catch (e: any) {
-      console.error("Failed to update sharing:", e);
+    if (success) {
+      setShareDialogOpen(false);
+      setSelectedItem(null);
+      setShareUserEntries([]);
     }
   };
 

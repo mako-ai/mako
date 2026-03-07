@@ -137,6 +137,13 @@ interface TreeState {
     consoleId: string,
   ) => Promise<{ id: string; name: string } | null>;
   restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
+  updateAccess: (
+    workspaceId: string,
+    itemId: string,
+    isDirectory: boolean,
+    access: ConsoleAccessLevel,
+    shared_with?: Array<{ userId: string; access: "read" | "write" }>,
+  ) => Promise<boolean>;
 }
 
 export const useConsoleTreeStore = create<TreeState>()(
@@ -330,6 +337,30 @@ export const useConsoleTreeStore = create<TreeState>()(
         const res = await apiClient.patch<{ success: boolean }>(
           `/workspaces/${workspaceId}/consoles/${consoleId}/restore`,
         );
+        if (res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        return false;
+      }
+    },
+
+    updateAccess: async (
+      workspaceId,
+      itemId,
+      isDirectory,
+      access,
+      shared_with,
+    ) => {
+      try {
+        const endpoint = isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}/share`
+          : `/workspaces/${workspaceId}/consoles/${itemId}/share`;
+        const res = await apiClient.post<{ success: boolean }>(endpoint, {
+          access,
+          shared_with,
+        });
         if (res.success) {
           await _get().refresh(workspaceId);
         }
