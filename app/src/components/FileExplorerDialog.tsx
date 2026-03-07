@@ -74,15 +74,14 @@ export default function FileExplorerDialog({
 }: FileExplorerDialogProps) {
   const { currentWorkspace } = useWorkspace();
 
-  // Use the raw (unpruned) tree so empty folders are navigable in the picker
-  const myConsolesAllMap = useConsoleTreeStore(state => state.myConsolesAll);
+  const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
   const sharedWithWorkspaceMap = useConsoleTreeStore(
     state => state.sharedWithWorkspace,
   );
   const createFolderAction = useConsoleTreeStore(state => state.createFolder);
 
-  const myConsolesAll = currentWorkspace
-    ? myConsolesAllMap[currentWorkspace.id] || []
+  const myConsolesTree = currentWorkspace
+    ? myConsolesMap[currentWorkspace.id] || []
     : [];
   const workspaceConsoles = currentWorkspace
     ? sharedWithWorkspaceMap[currentWorkspace.id] || []
@@ -112,7 +111,7 @@ export default function FileExplorerDialog({
 
   const getCurrentFolders = useCallback((): ConsoleEntry[] => {
     const rootNodes =
-      currentSection === "my" ? myConsolesAll : workspaceConsoles;
+      currentSection === "my" ? myConsolesTree : workspaceConsoles;
     const currentFolderId = breadcrumb[breadcrumb.length - 1]?.id;
 
     if (!currentFolderId) {
@@ -135,7 +134,7 @@ export default function FileExplorerDialog({
 
     const folder = findFolder(rootNodes, currentFolderId);
     return folder?.children?.filter(n => n.isDirectory) || [];
-  }, [currentSection, myConsolesAll, workspaceConsoles, breadcrumb]);
+  }, [currentSection, myConsolesTree, workspaceConsoles, breadcrumb]);
 
   const handleFolderClick = (folder: ConsoleEntry) => {
     if (!folder.id) return;

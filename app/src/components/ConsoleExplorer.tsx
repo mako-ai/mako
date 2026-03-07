@@ -141,9 +141,6 @@ function ConsoleExplorer(
   // Dialogs
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [explorerDialogOpen, setExplorerDialogOpen] = useState(false);
-  const [explorerDialogMode, setExplorerDialogMode] = useState<
-    "save" | "move" | "new-folder"
-  >("new-folder");
   const [contextMenu, setContextMenu] = useState<{
     mouseX: number;
     mouseY: number;
@@ -275,15 +272,27 @@ function ConsoleExplorer(
     setMenuAnchor(null);
   };
 
-  const handleCreateFolder = () => {
-    setExplorerDialogMode("new-folder");
-    setExplorerDialogOpen(true);
-    handleMenuClose();
+  const createFolderInline = async (parentId: string | null) => {
+    if (!currentWorkspace) return;
+    const createFolder = useConsoleTreeStore.getState().createFolder;
+    const result = await createFolder(
+      currentWorkspace.id,
+      "New Folder",
+      parentId,
+    );
+    if (result) {
+      setRenamingItemId(result.id);
+      setRenameValue(result.name);
+    }
   };
 
-  const handleCreateFolderInParent = () => {
-    setExplorerDialogMode("new-folder");
-    setExplorerDialogOpen(true);
+  const handleCreateFolder = () => {
+    handleMenuClose();
+    createFolderInline(null);
+  };
+
+  const handleCreateFolderInParent = (parentId: string) => {
+    createFolderInline(parentId);
   };
 
   const handleContextMenu = (
@@ -401,7 +410,6 @@ function ConsoleExplorer(
 
   const handleMoveTo = (item: ConsoleEntry) => {
     setSelectedItem(item);
-    setExplorerDialogMode("move");
     setExplorerDialogOpen(true);
     handleContextMenuClose();
   };
@@ -417,10 +425,6 @@ function ConsoleExplorer(
 
     setExplorerDialogOpen(false);
     setSelectedItem(null);
-  };
-
-  const handleNewFolderConfirm = async () => {
-    setExplorerDialogOpen(false);
   };
 
   const handleShareConfirm = async () => {
@@ -1126,7 +1130,12 @@ function ConsoleExplorer(
         {contextMenu?.item.isDirectory && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => {
-              handleCreateFolderInParent();
+              if (contextMenu.item.id) {
+                handleCreateFolderInParent(contextMenu.item.id);
+                if (!expandedFolders.has(contextMenu.item.path)) {
+                  toggleFolder(contextMenu.item.path);
+                }
+              }
               handleContextMenuClose();
             }}
           >
@@ -1349,16 +1358,15 @@ function ConsoleExplorer(
         </DialogActions>
       </Dialog>
 
-      {/* Unified File Explorer Dialog (save / move / new-folder) */}
+      {/* File Explorer Dialog for Move */}
       <FileExplorerDialog
         open={explorerDialogOpen}
         onClose={() => {
           setExplorerDialogOpen(false);
           setSelectedItem(null);
         }}
-        mode={explorerDialogMode}
+        mode="move"
         onMove={handleMoveConfirm}
-        onNewFolder={handleNewFolderConfirm}
         itemName={selectedItem?.name || ""}
         isDirectory={selectedItem?.isDirectory || false}
       />

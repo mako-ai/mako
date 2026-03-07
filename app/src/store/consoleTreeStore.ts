@@ -90,26 +90,9 @@ const insertAlphabetically = (
   nodes.splice(insertIndex, 0, entry);
 };
 
-/**
- * Prune empty folders from a tree for sidebar display.
- * A folder is pruned if it has no console descendants.
- */
-function pruneEmptyFolders(nodes: ConsoleEntry[]): ConsoleEntry[] {
-  return nodes
-    .map(node => {
-      if (!node.isDirectory) return node;
-      const children = node.children ? pruneEmptyFolders(node.children) : [];
-      if (children.length === 0) return null;
-      return { ...node, children };
-    })
-    .filter(Boolean) as ConsoleEntry[];
-}
-
 interface TreeState {
-  /** Full tree owned by the current user (pruned: empty folders hidden) */
+  /** Full tree owned by the current user (includes empty folders) */
   myConsoles: Record<string, ConsoleEntry[]>;
-  /** Raw tree with all folders including empty ones (for folder picker dialogs) */
-  myConsolesAll: Record<string, ConsoleEntry[]>;
   /** Consoles explicitly shared with the current user via shared_with */
   sharedWithMe: Record<string, ConsoleEntry[]>;
   /** Consoles shared with the entire workspace */
@@ -154,7 +137,6 @@ interface TreeState {
 export const useConsoleTreeStore = create<TreeState>()(
   immer((set, _get) => ({
     myConsoles: {},
-    myConsolesAll: {},
     sharedWithMe: {},
     sharedWithWorkspace: {},
     trees: {},
@@ -180,16 +162,11 @@ export const useConsoleTreeStore = create<TreeState>()(
         const sharedWithMeTree = data.sharedWithMe ?? [];
         const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
 
-        const prunedMyTree = pruneEmptyFolders(myTree);
         set(state => {
-          state.myConsoles[workspaceId] = prunedMyTree;
-          state.myConsolesAll[workspaceId] = myTree;
-          state.sharedWithMe[workspaceId] = pruneEmptyFolders(sharedWithMeTree);
-          state.sharedWithWorkspace[workspaceId] = pruneEmptyFolders(
-            sharedWithWorkspaceTree,
-          );
-          // Keep trees as alias for backward compat
-          state.trees[workspaceId] = prunedMyTree;
+          state.myConsoles[workspaceId] = myTree;
+          state.sharedWithMe[workspaceId] = sharedWithMeTree;
+          state.sharedWithWorkspace[workspaceId] = sharedWithWorkspaceTree;
+          state.trees[workspaceId] = myTree;
         });
         return myTree;
       } catch (err: any) {
