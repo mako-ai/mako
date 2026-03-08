@@ -70,7 +70,7 @@ export async function up(db: Db): Promise<void> {
           { _id: folder._id },
           {
             $set: {
-              ownerId: firstConsole.owner_id,
+              ownerId: firstConsole.owner_id.toString(),
               access: "private",
               isPrivate: true,
             },

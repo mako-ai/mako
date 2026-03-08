@@ -181,8 +181,8 @@ export class ConsoleManager {
     folder: IConsoleFolder,
     userId: string,
   ): "my" | "shared" | "workspace" | null {
-    const ownerId = folder.ownerId;
-    if (ownerId === userId) return "my";
+    const ownerId = folder.ownerId?.toString();
+    if (ownerId && ownerId === userId) return "my";
 
     const access =
       folder.access || (folder.isPrivate ? "private" : "workspace");
