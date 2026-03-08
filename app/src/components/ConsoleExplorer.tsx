@@ -664,30 +664,38 @@ function ConsoleExplorer(
     setSelectedItem(null);
   };
 
-  // DnD handlers
-  const handleDragStart = (event: DragStartEvent) => {
-    const { active } = event;
-    const findInAll = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
+  // Search across all three section trees
+  const findInAnyTree = (
+    targetId: string,
+  ): { node: ConsoleEntry; section: "my" | "shared" | "workspace" } | null => {
+    const search = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
       for (const node of nodes) {
-        if (node.id === active.id) return node;
+        if (node.id === targetId) return node;
         if (node.isDirectory && node.children) {
-          const found = findInAll(node.children);
+          const found = search(node.children);
           if (found) return found;
         }
       }
       return null;
     };
-    const item = findInAll(myConsoles);
-    if (item) setDraggedItem(item);
+    const inMy = search(myConsoles);
+    if (inMy) return { node: inMy, section: "my" };
+    const inShared = search(sharedWithMe);
+    if (inShared) return { node: inShared, section: "shared" };
+    const inWorkspace = search(sharedWithWorkspace);
+    if (inWorkspace) return { node: inWorkspace, section: "workspace" };
+    return null;
+  };
+
+  // DnD handlers
+  const handleDragStart = (event: DragStartEvent) => {
+    const result = findInAnyTree(event.active.id as string);
+    if (result) setDraggedItem(result.node);
   };
 
   const handleDragOver = (event: DragOverEvent) => {
     const { over } = event;
-    if (over) {
-      setDropTargetId(over.id as string);
-    } else {
-      setDropTargetId(null);
-    }
+    setDropTargetId(over ? (over.id as string) : null);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -700,37 +708,28 @@ function ConsoleExplorer(
     const dragId = active.id as string;
     const dropId = over.id as string;
 
-    const findInTree = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
-      for (const node of nodes) {
-        if (node.id === dragId) return node;
-        if (node.isDirectory && node.children) {
-          const found = findInTree(node.children);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
+    const dragResult = findInAnyTree(dragId);
+    const dropResult = findInAnyTree(dropId);
 
-    const findDropTarget = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
-      for (const node of nodes) {
-        if (node.id === dropId) return node;
-        if (node.isDirectory && node.children) {
-          const found = findDropTarget(node.children);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
+    if (!dragResult || !dropResult?.node.isDirectory) return;
 
-    const draggedNode = findInTree(myConsoles);
-    const dropTarget = findDropTarget(myConsoles);
-
-    if (!draggedNode || !dropTarget?.isDirectory) return;
-
-    if (draggedNode.isDirectory) {
+    // Move into the target folder
+    if (dragResult.node.isDirectory) {
       await moveFolder(currentWorkspace.id, dragId, dropId);
     } else {
       await moveConsole(currentWorkspace.id, dragId, dropId);
+    }
+
+    // If crossing sections, update the dragged item's access to match the target
+    if (dragResult.section !== dropResult.section) {
+      const newAccess =
+        dropResult.section === "workspace" ? "workspace" : "private";
+      await updateAccess(
+        currentWorkspace.id,
+        dragId,
+        dragResult.node.isDirectory,
+        newAccess as "private" | "shared" | "workspace",
+      );
     }
   };
 
