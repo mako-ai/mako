@@ -110,13 +110,11 @@ interface TreeState {
     workspaceId: string,
     consoleId: string,
     folderId: string | null,
-    access?: ConsoleAccessLevel,
   ) => Promise<boolean>;
   moveFolder: (
     workspaceId: string,
     folderId: string,
     parentId: string | null,
-    access?: ConsoleAccessLevel,
   ) => Promise<boolean>;
   createFolder: (
     workspaceId: string,
@@ -236,11 +234,11 @@ export const useConsoleTreeStore = create<TreeState>()(
       });
     },
 
-    moveConsole: async (workspaceId, consoleId, folderId, access?) => {
+    moveConsole: async (workspaceId, consoleId, folderId) => {
       try {
         const res = await apiClient.patch<{ success: boolean }>(
           `/workspaces/${workspaceId}/consoles/${consoleId}/move`,
-          { folderId, access },
+          { folderId },
         );
         if (res.success) {
           await _get().refresh(workspaceId);
@@ -251,11 +249,11 @@ export const useConsoleTreeStore = create<TreeState>()(
       }
     },
 
-    moveFolder: async (workspaceId, folderId, parentId, access?) => {
+    moveFolder: async (workspaceId, folderId, parentId) => {
       try {
         const res = await apiClient.patch<{ success: boolean }>(
           `/workspaces/${workspaceId}/consoles/folders/${folderId}/move`,
-          { parentId, access },
+          { parentId },
         );
         if (res.success) {
           await _get().refresh(workspaceId);

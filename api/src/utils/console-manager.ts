@@ -323,7 +323,11 @@ export class ConsoleManager {
 
   /**
    * List consoles split into 3 groups: my, sharedWithMe, sharedWithWorkspace.
-   * Each group preserves the original folder hierarchy.
+   *
+   * Items inherit access from their parent folder. A console inside a
+   * "workspace" folder is workspace-visible regardless of the console's own
+   * access field. This lets users move items between sections by simply
+   * moving them into/out of shared folders — no access field update needed.
    */
   async listConsolesSplit(
     workspaceId: string,
@@ -348,30 +352,92 @@ export class ConsoleManager {
         }).sort({ name: 1 }),
       ]);
 
-      // Classify each console
+      // Build a map of folder ID → folder for ancestor lookups
+      const folderById = new Map<string, IConsoleFolder>();
+      for (const f of folders) {
+        folderById.set(f._id.toString(), f);
+      }
+
+      // Resolve the effective access for an item by walking up its folder chain.
+      // The most permissive ancestor wins: workspace > shared > private.
+      const accessRank = { private: 0, shared: 1, workspace: 2 };
+      const effectiveAccess = (
+        ownAccess: ConsoleAccessLevel,
+        folderId?: Types.ObjectId,
+      ): ConsoleAccessLevel => {
+        let best = accessRank[ownAccess] ?? 0;
+        let currentFolderId = folderId?.toString();
+        while (currentFolderId) {
+          const folder = folderById.get(currentFolderId);
+          if (!folder) break;
+          const fa =
+            folder.access || (folder.isPrivate ? "private" : "workspace");
+          const rank = accessRank[fa as ConsoleAccessLevel] ?? 0;
+          if (rank > best) best = rank;
+          currentFolderId = folder.parentId?.toString();
+        }
+        return (["private", "shared", "workspace"] as const)[best];
+      };
+
+      // Classify items using effective access (own + inherited from folders)
+      const classifyWithInheritance = (
+        ownAccess: ConsoleAccessLevel,
+        ownerId: string | undefined,
+        sharedWith: ISharedWithEntry[] | undefined,
+        folderId?: Types.ObjectId,
+      ): "my" | "shared" | "workspace" | null => {
+        const access = effectiveAccess(ownAccess, folderId);
+        if (access === "workspace") return "workspace";
+        if (access === "shared") {
+          if (ownerId === userId) return "shared";
+          return ConsoleManager.getSharedAccess(sharedWith, userId) !== null
+            ? "shared"
+            : null;
+        }
+        // private
+        if (ownerId === userId) return "my";
+        return null;
+      };
+
+      // Classify consoles
       const myConsolesRaw: ISavedConsole[] = [];
       const sharedWithMeRaw: ISavedConsole[] = [];
       const sharedWithWorkspaceRaw: ISavedConsole[] = [];
 
       for (const c of consoles) {
-        const classification = ConsoleManager.classifyForUser(c, userId);
-        if (classification === "my") myConsolesRaw.push(c);
-        else if (classification === "shared") sharedWithMeRaw.push(c);
-        else if (classification === "workspace") sharedWithWorkspaceRaw.push(c);
+        const ownerId = (c.owner_id || c.createdBy)?.toString();
+        const ownAccess = ConsoleManager.resolveAccess(c);
+        const section = classifyWithInheritance(
+          ownAccess,
+          ownerId,
+          c.shared_with,
+          c.folderId,
+        );
+        if (section === "my") myConsolesRaw.push(c);
+        else if (section === "shared") sharedWithMeRaw.push(c);
+        else if (section === "workspace") sharedWithWorkspaceRaw.push(c);
       }
 
-      // Classify folders the same way as consoles
+      // Classify folders
       const myFolders: IConsoleFolder[] = [];
       const sharedWithMeFolders: IConsoleFolder[] = [];
       const sharedWithWorkspaceFolders: IConsoleFolder[] = [];
 
       for (const f of folders) {
-        const classification = ConsoleManager.classifyFolderForUser(f, userId);
-        if (classification === "my") {
+        const ownerId = f.ownerId?.toString();
+        const ownAccess = (f.access ||
+          (f.isPrivate ? "private" : "workspace")) as ConsoleAccessLevel;
+        const section = classifyWithInheritance(
+          ownAccess,
+          ownerId,
+          f.shared_with,
+          f.parentId,
+        );
+        if (section === "my") {
           myFolders.push(f);
-        } else if (classification === "shared") {
+        } else if (section === "shared") {
           sharedWithMeFolders.push(f);
-        } else if (classification === "workspace") {
+        } else if (section === "workspace") {
           sharedWithWorkspaceFolders.push(f);
         }
       }
