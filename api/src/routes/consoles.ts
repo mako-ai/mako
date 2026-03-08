@@ -1185,12 +1185,26 @@ consoleRoutes.post("/:id/share", async (c: Context) => {
     );
 
     if (!updated) {
+      // Debug: check why it failed
+      const debugConsole = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!debugConsole) {
+        return c.json(
+          { success: false, error: "Console not found in workspace" },
+          404,
+        );
+      }
+      const docOwnerId = (
+        debugConsole.owner_id || debugConsole.createdBy
+      )?.toString();
       return c.json(
         {
           success: false,
-          error: "Console not found or you are not the owner",
+          error: `Not the owner. Console owner: ${docOwnerId}, request user: ${user.id}`,
         },
-        404,
+        403,
       );
     }
 
