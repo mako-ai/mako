@@ -713,23 +713,18 @@ function ConsoleExplorer(
 
     if (!dragResult || !dropResult?.node.isDirectory) return;
 
-    // Move into the target folder
-    if (dragResult.node.isDirectory) {
-      await moveFolder(currentWorkspace.id, dragId, dropId);
-    } else {
-      await moveConsole(currentWorkspace.id, dragId, dropId);
-    }
+    // Determine access level: if crossing sections, update to match target
+    const newAccess =
+      dragResult.section !== dropResult.section
+        ? dropResult.section === "workspace"
+          ? "workspace"
+          : ("private" as const)
+        : undefined;
 
-    // If crossing sections, update the dragged item's access to match the target
-    if (dragResult.section !== dropResult.section) {
-      const newAccess =
-        dropResult.section === "workspace" ? "workspace" : "private";
-      await updateAccess(
-        currentWorkspace.id,
-        dragId,
-        dragResult.node.isDirectory,
-        newAccess as "private" | "shared" | "workspace",
-      );
+    if (dragResult.node.isDirectory) {
+      await moveFolder(currentWorkspace.id, dragId, dropId, newAccess);
+    } else {
+      await moveConsole(currentWorkspace.id, dragId, dropId, newAccess);
     }
   };
 

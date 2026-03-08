@@ -1341,6 +1341,7 @@ export class ConsoleManager {
     consoleId: string,
     workspaceId: string,
     folderId: string | null,
+    access?: ConsoleAccessLevel,
   ): Promise<boolean> {
     const objectId = Types.ObjectId.isValid(consoleId)
       ? new Types.ObjectId(consoleId)
@@ -1355,6 +1356,11 @@ export class ConsoleManager {
       updateFields.folderId = new Types.ObjectId(folderId);
     } else {
       updateFields.folderId = null;
+    }
+
+    if (access) {
+      updateFields.access = access;
+      updateFields.isPrivate = access === "private";
     }
 
     const result = await SavedConsole.updateOne(
@@ -1376,6 +1382,7 @@ export class ConsoleManager {
     folderId: string,
     workspaceId: string,
     newParentId: string | null,
+    access?: ConsoleAccessLevel,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(folderId)) return false;
 
@@ -1398,6 +1405,11 @@ export class ConsoleManager {
       updateFields.parentId = new Types.ObjectId(newParentId);
     } else {
       updateFields.parentId = null;
+    }
+
+    if (access) {
+      updateFields.access = access;
+      updateFields.isPrivate = access === "private";
     }
 
     const result = await ConsoleFolder.updateOne(

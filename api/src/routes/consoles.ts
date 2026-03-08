@@ -1046,7 +1046,10 @@ consoleRoutes.patch("/:id/move", async (c: Context) => {
     const workspaceId = c.req.param("workspaceId");
     const consoleId = c.req.param("id");
     const body = await c.req.json();
-    const { folderId } = body as { folderId: string | null };
+    const { folderId, access } = body as {
+      folderId: string | null;
+      access?: "private" | "shared" | "workspace";
+    };
     const user = c.get("user");
 
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
@@ -1073,6 +1076,7 @@ consoleRoutes.patch("/:id/move", async (c: Context) => {
       consoleId,
       workspaceId,
       folderId ?? null,
+      access,
     );
 
     if (success) {
@@ -1104,7 +1108,10 @@ consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
     const workspaceId = c.req.param("workspaceId");
     const folderId = c.req.param("id");
     const body = await c.req.json();
-    const { parentId } = body as { parentId: string | null };
+    const { parentId, access } = body as {
+      parentId: string | null;
+      access?: "private" | "shared" | "workspace";
+    };
     const user = c.get("user");
 
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
@@ -1118,6 +1125,7 @@ consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
       folderId,
       workspaceId,
       parentId ?? null,
+      access,
     );
 
     if (success) {
@@ -1185,26 +1193,12 @@ consoleRoutes.post("/:id/share", async (c: Context) => {
     );
 
     if (!updated) {
-      // Debug: check why it failed
-      const debugConsole = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!debugConsole) {
-        return c.json(
-          { success: false, error: "Console not found in workspace" },
-          404,
-        );
-      }
-      const docOwnerId = (
-        debugConsole.owner_id || debugConsole.createdBy
-      )?.toString();
       return c.json(
         {
           success: false,
-          error: `Not the owner. Console owner: ${docOwnerId}, request user: ${user.id}`,
+          error: "Console not found or you are not the owner",
         },
-        403,
+        404,
       );
     }
 
