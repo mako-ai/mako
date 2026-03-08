@@ -121,7 +121,7 @@ export class ConsoleManager {
    * Check whether `userId` can read the given console.
    */
   static canRead(console: ISavedConsole, userId: string): boolean {
-    const ownerId = console.owner_id || console.createdBy;
+    const ownerId = (console.owner_id || console.createdBy)?.toString();
     if (ownerId === userId) return true;
 
     const access = ConsoleManager.resolveAccess(console);
@@ -135,7 +135,7 @@ export class ConsoleManager {
    * Check whether `userId` can write (modify) the given console.
    */
   static canWrite(console: ISavedConsole, userId: string): boolean {
-    const ownerId = console.owner_id || console.createdBy;
+    const ownerId = (console.owner_id || console.createdBy)?.toString();
     if (ownerId === userId) return true;
 
     const access = ConsoleManager.resolveAccess(console);
@@ -158,7 +158,7 @@ export class ConsoleManager {
     console: ISavedConsole,
     userId: string,
   ): "my" | "shared" | "workspace" | null {
-    const ownerId = console.owner_id || console.createdBy;
+    const ownerId = (console.owner_id || console.createdBy)?.toString();
     if (ownerId === userId) return "my";
 
     const access = ConsoleManager.resolveAccess(console);
@@ -564,7 +564,9 @@ export class ConsoleManager {
 
       if (!savedConsole) return null;
 
-      const ownerId = savedConsole.owner_id || savedConsole.createdBy;
+      const ownerId = (
+        savedConsole.owner_id || savedConsole.createdBy
+      )?.toString();
       if (ownerId !== userId) return null;
 
       savedConsole.access = access;
@@ -600,8 +602,8 @@ export class ConsoleManager {
       });
       if (!folder) return false;
 
-      const ownerId = folder.ownerId;
-      if (ownerId !== userId) return false;
+      const ownerId = folder.ownerId?.toString();
+      if (!ownerId || ownerId !== userId) return false;
 
       folder.access = access;
       folder.isPrivate = access === "private";
