@@ -248,6 +248,16 @@ export const useConsoleTreeStore = create<TreeState>()(
           isPrivate,
           scope,
         });
+
+        if (result.success && result.data?.id && scope) {
+          await apiClient.post<{ success: boolean; error?: string }>(
+            `/workspaces/${workspaceId}/consoles/folders/${result.data.id}/share`,
+            {
+              access: scope === "workspace" ? "workspace" : "private",
+            },
+          );
+        }
+
         return {
           success: !!result.success,
           id: result.data?.id,
@@ -333,6 +343,14 @@ export const useConsoleTreeStore = create<TreeState>()(
           folderId,
           scope,
         });
+
+        if (result.success && scope) {
+          await apiClient.post<{ success: boolean; error?: string }>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}/share`,
+            { access: scope === "workspace" ? "workspace" : "private" },
+          );
+        }
+
         return { success: !!result.success, error: result.error };
       } catch (error) {
         return {
@@ -351,6 +369,14 @@ export const useConsoleTreeStore = create<TreeState>()(
           parentFolderId,
           scope,
         });
+
+        if (result.success && scope) {
+          await apiClient.post<{ success: boolean; error?: string }>(
+            `/workspaces/${workspaceId}/consoles/folders/${folderId}/share`,
+            { access: scope === "workspace" ? "workspace" : "private" },
+          );
+        }
+
         return { success: !!result.success, error: result.error };
       } catch (error) {
         return {

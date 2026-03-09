@@ -220,8 +220,8 @@ function ConsoleExplorer(
     },
   }));
 
-  const handleFolderToggle = (folderPath: string) => {
-    toggleFolder(folderPath);
+  const handleFolderToggle = (folderKey: string) => {
+    toggleFolder(folderKey);
   };
 
   const handleFileClick = async (node: ConsoleEntry) => {
@@ -345,13 +345,6 @@ function ConsoleExplorer(
       );
 
       if (result.success) {
-        if (folderDialogScope === "workspace" && result.id) {
-          await shareEntry(
-            currentWorkspace.id,
-            { id: result.id, isDirectory: true },
-            "workspace",
-          );
-        }
         handleFolderDialogClose();
         fetchConsoleEntries();
       } else {
@@ -661,12 +654,6 @@ function ConsoleExplorer(
       );
       if (!result.success) {
         console.error(result.error || "Failed to move folder");
-      } else if (scope === "workspace") {
-        await shareEntry(
-          currentWorkspace.id,
-          { id: draggingItem.id, isDirectory: true },
-          "workspace",
-        );
       }
     } else {
       const result = await moveConsole(
@@ -677,10 +664,6 @@ function ConsoleExplorer(
       );
       if (!result.success) {
         console.error(result.error || "Failed to move console");
-      } else if (scope === "workspace") {
-        await useConsoleStore
-          .getState()
-          .shareConsole(currentWorkspace.id, draggingItem.id, "workspace");
       }
     }
 
@@ -704,13 +687,6 @@ function ConsoleExplorer(
         selection.scope,
       );
       ok = result.success;
-      if (ok && selection.scope === "workspace") {
-        await shareEntry(
-          currentWorkspace.id,
-          { id: selectedItem.id, isDirectory: true },
-          "workspace",
-        );
-      }
     } else {
       const result = await moveConsole(
         currentWorkspace.id,
@@ -719,11 +695,6 @@ function ConsoleExplorer(
         selection.scope,
       );
       ok = result.success;
-      if (ok && selection.scope === "workspace") {
-        await useConsoleStore
-          .getState()
-          .shareConsole(currentWorkspace.id, selectedItem.id, "workspace");
-      }
     }
 
     if (!ok) {
@@ -751,26 +722,26 @@ function ConsoleExplorer(
       console.error(result.error || "Failed to create folder");
       return false;
     }
-    if (scope === "workspace" && result.id) {
-      await shareEntry(
-        currentWorkspace.id,
-        { id: result.id, isDirectory: true },
-        "workspace",
-      );
-    }
     await fetchConsoleEntries();
     return true;
   };
 
-  const renderTree = (nodes: ConsoleEntry[], depth = 0) => {
+  const renderTree = (
+    nodes: ConsoleEntry[],
+    sectionKey: "my" | "shared" | "workspace",
+    depth = 0,
+  ) => {
     return nodes.map(node => {
       if (node.isDirectory) {
-        const isExpanded = expandedFolders.has(node.path);
+        const folderExpandKey = node.id
+          ? `id:${node.id}`
+          : `${sectionKey}:${node.path}`;
+        const isExpanded = expandedFolders.has(folderExpandKey);
         const nodeKey = node.id || node.path;
         return (
           <div key={`dir-${nodeKey}`}>
             <ListItemButton
-              onClick={() => handleFolderToggle(node.path)}
+              onClick={() => handleFolderToggle(folderExpandKey)}
               onContextMenu={e => handleContextMenu(e, node)}
               onDoubleClick={e => {
                 e.stopPropagation();
@@ -862,7 +833,8 @@ function ConsoleExplorer(
             </ListItemButton>
             {isExpanded && (
               <List component="div" disablePadding dense>
-                {node.children && renderTree(node.children, depth + 1)}
+                {node.children &&
+                  renderTree(node.children, sectionKey, depth + 1)}
               </List>
             )}
           </div>
@@ -1135,7 +1107,7 @@ function ConsoleExplorer(
                 }}
               >
                 {myConsoles.length > 0
-                  ? renderTree(myConsoles, 1)
+                  ? renderTree(myConsoles, "my", 1)
                   : renderEmptyPlaceholder("No consoles yet")}
               </Box>
             )}
@@ -1151,7 +1123,7 @@ function ConsoleExplorer(
             {sharedWithMeExpanded && (
               <>
                 {sharedWithMe.length > 0
-                  ? renderTree(sharedWithMe, 1)
+                  ? renderTree(sharedWithMe, "shared", 1)
                   : renderEmptyPlaceholder("No shared consoles yet")}
               </>
             )}
@@ -1185,7 +1157,7 @@ function ConsoleExplorer(
                 }}
               >
                 {sharedWithWorkspace.length > 0
-                  ? renderTree(sharedWithWorkspace, 1)
+                  ? renderTree(sharedWithWorkspace, "workspace", 1)
                   : renderEmptyPlaceholder("No workspace consoles yet")}
               </Box>
             )}

@@ -153,7 +153,6 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
   );
   const refreshConsoleTree = useConsoleTreeStore(state => state.refresh);
   const createFolder = useConsoleTreeStore(state => state.createFolder);
-  const shareTreeEntry = useConsoleTreeStore(state => state.shareEntry);
 
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
@@ -740,13 +739,6 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
       setErrorMessage(result.error || "Failed to create folder");
       setErrorModalOpen(true);
       return false;
-    }
-    if (scope === "workspace" && result.id) {
-      await shareTreeEntry(
-        currentWorkspace.id,
-        { id: result.id, isDirectory: true },
-        "workspace",
-      );
     }
     await refreshConsoleTree(currentWorkspace.id);
     return true;
