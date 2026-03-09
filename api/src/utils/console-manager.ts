@@ -383,6 +383,7 @@ export class ConsoleManager {
   async listConsolesSplit(
     workspaceId: string,
     userId: string,
+    userRole: string = "member",
   ): Promise<{
     myConsoles: ConsoleFile[];
     sharedWithMe: ConsoleFile[];
@@ -403,14 +404,16 @@ export class ConsoleManager {
         }).sort({ name: 1 }),
       ]);
 
-      // Build a map of folder ID → folder for ancestor lookups
+      const isAdmin = userRole === "owner" || userRole === "admin";
+
+      // Build folder lookup
       const folderById = new Map<string, IConsoleFolder>();
       for (const f of folders) {
         folderById.set(f._id.toString(), f);
       }
 
-      // Resolve the effective access for an item by walking up its folder chain.
-      // The most permissive ancestor wins: workspace > shared > private.
+      // Resolve effective access by walking up the folder chain.
+      // Most permissive ancestor wins: workspace > shared > private.
       const accessRank = { private: 0, shared: 1, workspace: 2 };
       const effectiveAccess = (
         ownAccess: ConsoleAccessLevel,
@@ -430,27 +433,55 @@ export class ConsoleManager {
         return (["private", "shared", "workspace"] as const)[best];
       };
 
-      // Classify items using effective access (own + inherited from folders)
-      const classifyWithInheritance = (
+      // Check if user has access to a workspace item via folder shared_with.
+      // Walks up the chain looking for a folder the user is invited to.
+      const userHasWorkspaceFolderAccess = (
+        folderId?: Types.ObjectId,
+      ): boolean => {
+        if (isAdmin) return true;
+        let currentFolderId = folderId?.toString();
+        while (currentFolderId) {
+          const folder = folderById.get(currentFolderId);
+          if (!folder) break;
+          if (
+            ConsoleManager.getSharedAccess(folder.shared_with, userId) !== null
+          ) {
+            return true;
+          }
+          currentFolderId = folder.parentId?.toString();
+        }
+        return false;
+      };
+
+      // Classify an item into a section
+      const classify = (
         ownAccess: ConsoleAccessLevel,
         ownerId: string | undefined,
         sharedWith: ISharedWithEntry[] | undefined,
         folderId?: Types.ObjectId,
       ): "my" | "shared" | "workspace" | null => {
         const access = effectiveAccess(ownAccess, folderId);
-        if (access === "workspace") return "workspace";
+
+        if (access === "workspace") {
+          if (isAdmin) return "workspace";
+          if (userHasWorkspaceFolderAccess(folderId)) return "workspace";
+          // User can't access this workspace content — fall back to "my" if owner
+          return ownerId === userId ? "my" : null;
+        }
+
         if (access === "shared") {
           if (ownerId === userId) return "shared";
           return ConsoleManager.getSharedAccess(sharedWith, userId) !== null
             ? "shared"
             : null;
         }
+
         // private
         if (ownerId === userId) return "my";
         return null;
       };
 
-      // Classify consoles
+      // --- Classify consoles ---
       const myConsolesRaw: ISavedConsole[] = [];
       const sharedWithMeRaw: ISavedConsole[] = [];
       const sharedWithWorkspaceRaw: ISavedConsole[] = [];
@@ -458,18 +489,13 @@ export class ConsoleManager {
       for (const c of consoles) {
         const ownerId = (c.owner_id || c.createdBy)?.toString();
         const ownAccess = ConsoleManager.resolveAccess(c);
-        const section = classifyWithInheritance(
-          ownAccess,
-          ownerId,
-          c.shared_with,
-          c.folderId,
-        );
+        const section = classify(ownAccess, ownerId, c.shared_with, c.folderId);
         if (section === "my") myConsolesRaw.push(c);
         else if (section === "shared") sharedWithMeRaw.push(c);
         else if (section === "workspace") sharedWithWorkspaceRaw.push(c);
       }
 
-      // Classify folders
+      // --- Classify folders ---
       const myFolders: IConsoleFolder[] = [];
       const sharedWithMeFolders: IConsoleFolder[] = [];
       const sharedWithWorkspaceFolders: IConsoleFolder[] = [];
@@ -478,12 +504,32 @@ export class ConsoleManager {
         const ownerId = f.ownerId?.toString();
         const ownAccess = (f.access ||
           (f.isPrivate ? "private" : "workspace")) as ConsoleAccessLevel;
-        const section = classifyWithInheritance(
-          ownAccess,
-          ownerId,
-          f.shared_with,
-          f.parentId,
-        );
+
+        // For workspace folders: check if this folder itself is accessible
+        if (
+          ownAccess === "workspace" ||
+          effectiveAccess(ownAccess, f.parentId) === "workspace"
+        ) {
+          if (isAdmin) {
+            sharedWithWorkspaceFolders.push(f);
+            continue;
+          }
+          // Normal user: must be invited to this folder or an ancestor
+          if (
+            ConsoleManager.getSharedAccess(f.shared_with, userId) !== null ||
+            userHasWorkspaceFolderAccess(f.parentId)
+          ) {
+            sharedWithWorkspaceFolders.push(f);
+            continue;
+          }
+          // Not invited — show in "my" if owner, otherwise hide
+          if (ownerId === userId) {
+            myFolders.push(f);
+          }
+          continue;
+        }
+
+        const section = classify(ownAccess, ownerId, f.shared_with, f.parentId);
         if (section === "my") {
           myFolders.push(f);
         } else if (section === "shared") {

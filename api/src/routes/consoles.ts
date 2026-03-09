@@ -127,15 +127,24 @@ consoleRoutes.get("/", async (c: Context) => {
     const userId: string | undefined = user?.id;
 
     if (userId) {
+      const member = await workspaceService.getMember(
+        access.workspaceId,
+        userId,
+      );
+      const userRole = member?.role || "member";
+
       const { myConsoles, sharedWithMe, sharedWithWorkspace } =
-        await consoleManager.listConsolesSplit(access.workspaceId, userId);
+        await consoleManager.listConsolesSplit(
+          access.workspaceId,
+          userId,
+          userRole,
+        );
 
       return c.json({
         success: true,
         myConsoles,
         sharedWithMe,
         sharedWithWorkspace,
-        // Keep `tree` for backward compat (myConsoles)
         tree: myConsoles,
       });
     }
