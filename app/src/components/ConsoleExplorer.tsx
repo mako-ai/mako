@@ -29,6 +29,8 @@ import {
   InputLabel,
   Select as MuiSelect,
   SelectChangeEvent,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import {
   CreateNewFolder as CreateFolderIcon,
@@ -139,6 +141,8 @@ function ConsoleExplorer(
   const [selectedParentFolder, setSelectedParentFolder] = useState<
     string | null
   >(null);
+  const [folderDialogScope, setFolderDialogScope] =
+    useState<ConsoleScope>("my");
   const [contextMenu, setContextMenu] = useState<{
     mouseX: number;
     mouseY: number;
@@ -301,18 +305,29 @@ function ConsoleExplorer(
   const handleCreateFolder = () => {
     setFolderDialogOpen(true);
     setSelectedParentFolder(null);
+    setFolderDialogScope("my");
     handleMenuClose();
   };
 
   const handleCreateFolderInParent = (parentFolderId: string) => {
     setFolderDialogOpen(true);
     setSelectedParentFolder(parentFolderId);
+    const inWorkspaceTree = !!findEntryById(
+      sharedWithWorkspace,
+      parentFolderId,
+    );
+    if (inWorkspaceTree) {
+      setFolderDialogScope("workspace");
+    } else {
+      setFolderDialogScope("my");
+    }
   };
 
   const handleFolderDialogClose = () => {
     setFolderDialogOpen(false);
     setNewFolderName("");
     setSelectedParentFolder(null);
+    setFolderDialogScope("my");
   };
 
   const handleFolderCreate = async () => {
@@ -325,7 +340,8 @@ function ConsoleExplorer(
         currentWorkspace.id,
         newFolderName.trim(),
         selectedParentFolder,
-        false,
+        folderDialogScope === "my",
+        folderDialogScope,
       );
 
       if (result.success) {
@@ -700,6 +716,7 @@ function ConsoleExplorer(
       folderName,
       parentId,
       scope === "my",
+      scope,
     );
     if (!result.success) {
       console.error(result.error || "Failed to create folder");
@@ -1251,6 +1268,19 @@ function ConsoleExplorer(
           {selectedParentFolder ? "Create New Subfolder" : "Create New Folder"}
         </DialogTitle>
         <DialogContent>
+          {!selectedParentFolder && (
+            <Box sx={{ mb: 2, mt: 1 }}>
+              <Tabs
+                value={folderDialogScope}
+                onChange={(_, value) =>
+                  setFolderDialogScope(value as ConsoleScope)
+                }
+              >
+                <Tab value="my" label="My Consoles" />
+                <Tab value="workspace" label="Shared with Workspace" />
+              </Tabs>
+            </Box>
+          )}
           <TextField
             name="folderName"
             autoFocus

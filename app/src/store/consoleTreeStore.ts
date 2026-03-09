@@ -111,6 +111,7 @@ interface TreeState {
     name: string,
     parentId?: string | null,
     isPrivate?: boolean,
+    scope?: "my" | "workspace",
   ) => Promise<{ success: boolean; id?: string; error?: string }>;
   renameEntry: (
     workspaceId: string,
@@ -229,7 +230,13 @@ export const useConsoleTreeStore = create<TreeState>()(
         state.trees[workspaceId] = tree;
       });
     },
-    createFolder: async (workspaceId, name, parentId, isPrivate = false) => {
+    createFolder: async (
+      workspaceId,
+      name,
+      parentId,
+      isPrivate = false,
+      scope,
+    ) => {
       try {
         const result = await apiClient.post<{
           success: boolean;
@@ -239,6 +246,7 @@ export const useConsoleTreeStore = create<TreeState>()(
           name,
           parentId: parentId || undefined,
           isPrivate,
+          scope,
         });
         return {
           success: !!result.success,

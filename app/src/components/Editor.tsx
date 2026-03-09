@@ -633,13 +633,7 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
         );
         updateSavedState(tabId, true, newHash);
 
-        // Update console tree
-        const { useConsoleTreeStore } = await import(
-          "../store/consoleTreeStore"
-        );
-        useConsoleTreeStore
-          .getState()
-          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
+        await refreshConsoleTree(currentWorkspace.id);
 
         setSnackbarMessage(`Console saved at '${pendingSaveData.path}.js'`);
         setSnackbarOpen(true);
@@ -739,6 +733,7 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
       folderName,
       parentId,
       scope === "my",
+      scope,
     );
     if (!result.success) {
       setErrorMessage(result.error || "Failed to create folder");

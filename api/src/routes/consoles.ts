@@ -682,7 +682,12 @@ consoleRoutes.post("/folders", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const body = await c.req.json();
-    const { name, parentId, isPrivate } = body;
+    const { name, parentId, isPrivate, scope } = body as {
+      name?: string;
+      parentId?: string;
+      isPrivate?: boolean;
+      scope?: "my" | "workspace";
+    };
     const user = c.get("user");
 
     // Verify user has access to workspace
@@ -700,12 +705,23 @@ consoleRoutes.post("/folders", async (c: Context) => {
       );
     }
 
+    if (scope !== undefined && scope !== "my" && scope !== "workspace") {
+      return c.json({ success: false, error: "Invalid scope" }, 400);
+    }
+
+    const targetIsPrivate =
+      scope === "my"
+        ? true
+        : scope === "workspace"
+          ? false
+          : isPrivate === true;
+
     const folder = await consoleManager.createFolder(
       name,
       workspaceId,
       user.id,
       parentId,
-      isPrivate || false,
+      targetIsPrivate,
     );
 
     return c.json(
