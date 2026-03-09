@@ -461,6 +461,12 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             user.id,
           );
         }
+        const targetFolder = folderId
+          ? await ConsoleFolder.findOne({
+              _id: new Types.ObjectId(folderId),
+              workspaceId: new Types.ObjectId(workspaceId),
+            })
+          : null;
 
         // Update with path information (use upsert in case console hasn't been auto-saved yet)
         const setFields: Record<string, any> = {
@@ -475,6 +481,14 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           isSaved: true,
           updatedAt: now,
         };
+
+        if (targetFolder) {
+          const inheritedAccess =
+            ConsoleManager.resolveFolderAccess(targetFolder);
+          setFields.access = inheritedAccess;
+          setFields.isPrivate = inheritedAccess === "private";
+          setFields.shared_with = targetFolder.shared_with || [];
+        }
 
         const result = await SavedConsole.findOneAndUpdate(
           {
@@ -729,7 +743,10 @@ consoleRoutes.patch("/:id", async (c: Context) => {
     const consoleId = c.req.param("id");
     const user = c.get("user");
     const body = await c.req.json();
-    const { folderId } = body as { folderId?: string | null };
+    const { folderId, scope } = body as {
+      folderId?: string | null;
+      scope?: "my" | "workspace";
+    };
 
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
       return c.json(
@@ -748,6 +765,10 @@ consoleRoutes.patch("/:id", async (c: Context) => {
       !Types.ObjectId.isValid(folderId)
     ) {
       return c.json({ success: false, error: "Invalid folder ID" }, 400);
+    }
+
+    if (scope !== undefined && scope !== "my" && scope !== "workspace") {
+      return c.json({ success: false, error: "Invalid scope" }, 400);
     }
 
     const existing = await SavedConsole.findOne({
@@ -773,6 +794,8 @@ consoleRoutes.patch("/:id", async (c: Context) => {
       consoleId,
       workspaceId,
       folderId ?? null,
+      user.id,
+      scope,
     );
 
     if (!success) {
@@ -881,7 +904,10 @@ consoleRoutes.patch("/folders/:id", async (c: Context) => {
     const workspaceId = c.req.param("workspaceId");
     const folderId = c.req.param("id");
     const body = await c.req.json();
-    const { parentFolderId } = body as { parentFolderId?: string | null };
+    const { parentFolderId, scope } = body as {
+      parentFolderId?: string | null;
+      scope?: "my" | "workspace";
+    };
     const user = c.get("user");
 
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
@@ -901,6 +927,10 @@ consoleRoutes.patch("/folders/:id", async (c: Context) => {
       !Types.ObjectId.isValid(parentFolderId)
     ) {
       return c.json({ success: false, error: "Invalid parent folder ID" }, 400);
+    }
+
+    if (scope !== undefined && scope !== "my" && scope !== "workspace") {
+      return c.json({ success: false, error: "Invalid scope" }, 400);
     }
 
     const existingFolder = await ConsoleFolder.findOne({
@@ -923,6 +953,8 @@ consoleRoutes.patch("/folders/:id", async (c: Context) => {
       folderId,
       workspaceId,
       parentFolderId ?? null,
+      user.id,
+      scope,
     );
 
     if (!success) {

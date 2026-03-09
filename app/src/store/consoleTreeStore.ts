@@ -131,11 +131,13 @@ interface TreeState {
     workspaceId: string,
     consoleId: string,
     folderId: string | null,
+    scope?: "my" | "workspace",
   ) => Promise<{ success: boolean; error?: string }>;
   moveFolder: (
     workspaceId: string,
     folderId: string,
     parentFolderId: string | null,
+    scope?: "my" | "workspace",
   ) => Promise<{ success: boolean; error?: string }>;
 }
 
@@ -314,12 +316,15 @@ export const useConsoleTreeStore = create<TreeState>()(
         };
       }
     },
-    moveConsole: async (workspaceId, consoleId, folderId) => {
+    moveConsole: async (workspaceId, consoleId, folderId, scope) => {
       try {
         const result = await apiClient.patch<{
           success: boolean;
           error?: string;
-        }>(`/workspaces/${workspaceId}/consoles/${consoleId}`, { folderId });
+        }>(`/workspaces/${workspaceId}/consoles/${consoleId}`, {
+          folderId,
+          scope,
+        });
         return { success: !!result.success, error: result.error };
       } catch (error) {
         return {
@@ -329,13 +334,14 @@ export const useConsoleTreeStore = create<TreeState>()(
         };
       }
     },
-    moveFolder: async (workspaceId, folderId, parentFolderId) => {
+    moveFolder: async (workspaceId, folderId, parentFolderId, scope) => {
       try {
         const result = await apiClient.patch<{
           success: boolean;
           error?: string;
         }>(`/workspaces/${workspaceId}/consoles/folders/${folderId}`, {
           parentFolderId,
+          scope,
         });
         return { success: !!result.success, error: result.error };
       } catch (error) {

@@ -634,6 +634,7 @@ function ConsoleExplorer(
         currentWorkspace.id,
         draggingItem.id,
         null,
+        scope,
       );
       if (!result.success) {
         console.error(result.error || "Failed to move folder");
@@ -643,17 +644,11 @@ function ConsoleExplorer(
         currentWorkspace.id,
         draggingItem.id,
         null,
+        scope,
       );
       if (!result.success) {
         console.error(result.error || "Failed to move console");
       }
-    }
-
-    // Explicitly keep scope semantics by sharing when dropped into workspace root.
-    if (!draggingItem.isDirectory && scope === "workspace") {
-      await useConsoleStore
-        .getState()
-        .shareConsole(currentWorkspace.id, draggingItem.id, "workspace");
     }
 
     resetDropState();
@@ -673,6 +668,7 @@ function ConsoleExplorer(
         currentWorkspace.id,
         selectedItem.id,
         selection.folderId,
+        selection.scope,
       );
       ok = result.success;
     } else {
@@ -680,13 +676,9 @@ function ConsoleExplorer(
         currentWorkspace.id,
         selectedItem.id,
         selection.folderId,
+        selection.scope,
       );
       ok = result.success;
-      if (ok && selection.scope === "workspace") {
-        await useConsoleStore
-          .getState()
-          .shareConsole(currentWorkspace.id, selectedItem.id, "workspace");
-      }
     }
 
     if (!ok) {
