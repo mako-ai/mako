@@ -30,40 +30,28 @@ export interface ConsoleEntry {
   shared_with?: SharedWithEntry[];
 }
 
-// Helper to find the correct array to insert into (navigates into nested folders)
+// ── Tree helpers (mutate in place, used inside immer) ──
+
 const findTargetArray = (
   nodes: ConsoleEntry[],
   remainingSegments: string[],
 ): ConsoleEntry[] | null => {
-  if (remainingSegments.length === 0) {
-    return nodes;
-  }
-
+  if (remainingSegments.length === 0) return nodes;
   const folderName = remainingSegments[0];
   const folder = nodes.find(
     node => node.isDirectory && node.name === folderName,
   );
-
-  if (!folder) {
-    return null;
-  }
-
-  if (!folder.children) {
-    folder.children = [];
-  }
-
+  if (!folder) return null;
+  if (!folder.children) folder.children = [];
   return findTargetArray(folder.children, remainingSegments.slice(1));
 };
 
-// Remove entry by ID from anywhere in tree, return removed entry if found
 const removeById = (
   nodes: ConsoleEntry[],
   targetId: string,
 ): ConsoleEntry | null => {
   const index = nodes.findIndex(item => item.id === targetId);
-  if (index !== -1) {
-    return nodes.splice(index, 1)[0];
-  }
+  if (index !== -1) return nodes.splice(index, 1)[0];
   for (const node of nodes) {
     if (node.isDirectory && node.children) {
       const removed = removeById(node.children, targetId);
@@ -73,7 +61,6 @@ const removeById = (
   return null;
 };
 
-// Insert entry alphabetically (directories first, then files sorted by name)
 const insertAlphabetically = (
   nodes: ConsoleEntry[],
   entry: ConsoleEntry,
@@ -81,46 +68,177 @@ const insertAlphabetically = (
   let insertIndex = nodes.length;
   for (let i = 0; i < nodes.length; i++) {
     const item = nodes[i];
-    if (item.isDirectory) continue;
-    if (entry.name.toLowerCase() < item.name.toLowerCase()) {
+    if (entry.isDirectory && !item.isDirectory) {
       insertIndex = i;
       break;
+    }
+    if (entry.isDirectory === item.isDirectory) {
+      if (entry.name.toLowerCase() < item.name.toLowerCase()) {
+        insertIndex = i;
+        break;
+      }
     }
   }
   nodes.splice(insertIndex, 0, entry);
 };
 
-/**
- * Prune empty folders from a tree (returns a new filtered tree).
- * A folder is pruned if it has no console descendants.
- */
-function pruneEmptyFolders(nodes: ConsoleEntry[]): ConsoleEntry[] {
-  return nodes
-    .map(node => {
-      if (!node.isDirectory) return node;
-      const children = node.children ? pruneEmptyFolders(node.children) : [];
-      if (children.length === 0) return null;
-      return { ...node, children };
-    })
-    .filter(Boolean) as ConsoleEntry[];
-}
+const findById = (
+  nodes: ConsoleEntry[],
+  targetId: string,
+): ConsoleEntry | null => {
+  for (const node of nodes) {
+    if (node.id === targetId) return node;
+    if (node.isDirectory && node.children) {
+      const found = findById(node.children, targetId);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+
+const findParentArray = (
+  nodes: ConsoleEntry[],
+  targetId: string,
+): ConsoleEntry[] | null => {
+  if (nodes.some(n => n.id === targetId)) return nodes;
+  for (const node of nodes) {
+    if (node.isDirectory && node.children) {
+      const found = findParentArray(node.children, targetId);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+
+/** Get all three section arrays for a workspace */
+const allSections = (state: TreeState, wid: string): ConsoleEntry[][] => [
+  state.myConsoles[wid] || [],
+  state.sharedWithMe[wid] || [],
+  state.sharedWithWorkspace[wid] || [],
+];
+
+/** Find a node across all three sections */
+const findInAnySectionMut = (
+  state: TreeState,
+  wid: string,
+  id: string,
+): ConsoleEntry | null => {
+  for (const section of allSections(state, wid)) {
+    const found = findById(section, id);
+    if (found) return found;
+  }
+  return null;
+};
+
+/** Remove a node from whichever section contains it */
+const removeFromAnySection = (
+  state: TreeState,
+  wid: string,
+  id: string,
+): ConsoleEntry | null => {
+  for (const section of allSections(state, wid)) {
+    const removed = removeById(section, id);
+    if (removed) return removed;
+  }
+  return null;
+};
+
+/** Insert into the children of a target folder, or at root of a section */
+const insertIntoFolder = (
+  state: TreeState,
+  wid: string,
+  entry: ConsoleEntry,
+  targetFolderId: string | null,
+  targetSection: "my" | "shared" | "workspace",
+): void => {
+  const sectionKey =
+    targetSection === "my"
+      ? "myConsoles"
+      : targetSection === "shared"
+        ? "sharedWithMe"
+        : "sharedWithWorkspace";
+  const sectionArr = state[sectionKey][wid] || [];
+  state[sectionKey][wid] = sectionArr;
+
+  if (targetFolderId) {
+    const folder = findById(sectionArr, targetFolderId);
+    if (folder && folder.isDirectory) {
+      if (!folder.children) folder.children = [];
+      insertAlphabetically(folder.children, entry);
+      return;
+    }
+  }
+  insertAlphabetically(sectionArr, entry);
+};
+
+/** Determine which section a folder ID belongs to */
+const sectionOfFolder = (
+  state: TreeState,
+  wid: string,
+  folderId: string,
+): "my" | "shared" | "workspace" => {
+  if (findById(state.sharedWithWorkspace[wid] || [], folderId)) {
+    return "workspace";
+  }
+  if (findById(state.sharedWithMe[wid] || [], folderId)) return "shared";
+  return "my";
+};
+
+// ── Store ──
 
 interface TreeState {
-  /** Full tree owned by the current user */
   myConsoles: Record<string, ConsoleEntry[]>;
-  /** Consoles explicitly shared with the current user via shared_with */
   sharedWithMe: Record<string, ConsoleEntry[]>;
-  /** Consoles shared with the entire workspace */
   sharedWithWorkspace: Record<string, ConsoleEntry[]>;
-  /** Legacy: kept as alias for myConsoles */
   trees: Record<string, ConsoleEntry[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
+
   fetchTree: (workspaceId: string) => Promise<ConsoleEntry[]>;
   refresh: (workspaceId: string) => Promise<ConsoleEntry[]>;
   init: (workspaceId: string) => Promise<void>;
   setTree: (workspaceId: string, tree: ConsoleEntry[]) => void;
   addConsole: (workspaceId: string, path: string, id: string) => void;
+
+  moveConsole: (
+    workspaceId: string,
+    consoleId: string,
+    folderId: string | null,
+  ) => Promise<boolean>;
+  moveFolder: (
+    workspaceId: string,
+    folderId: string,
+    parentId: string | null,
+  ) => Promise<boolean>;
+  createFolder: (
+    workspaceId: string,
+    name: string,
+    parentId?: string | null,
+    access?: ConsoleAccessLevel,
+  ) => Promise<{ id: string; name: string } | null>;
+  renameItem: (
+    workspaceId: string,
+    itemId: string,
+    newName: string,
+    isDirectory: boolean,
+  ) => Promise<boolean>;
+  deleteItem: (
+    workspaceId: string,
+    itemId: string,
+    isDirectory: boolean,
+  ) => Promise<boolean>;
+  duplicateConsole: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<{ id: string; name: string } | null>;
+  restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
+  updateAccess: (
+    workspaceId: string,
+    itemId: string,
+    isDirectory: boolean,
+    access: ConsoleAccessLevel,
+    shared_with?: Array<{ userId: string; access: "read" | "write" }>,
+  ) => Promise<boolean>;
 }
 
 export const useConsoleTreeStore = create<TreeState>()(
@@ -131,6 +249,7 @@ export const useConsoleTreeStore = create<TreeState>()(
     trees: {},
     loading: {},
     error: {},
+
     fetchTree: async workspaceId => {
       set(state => {
         state.loading[workspaceId] = true;
@@ -143,7 +262,6 @@ export const useConsoleTreeStore = create<TreeState>()(
           myConsoles?: ConsoleEntry[];
           sharedWithMe?: ConsoleEntry[];
           sharedWithWorkspace?: ConsoleEntry[];
-          // Legacy fields
           sharedConsoles?: ConsoleEntry[];
         }>(`/workspaces/${workspaceId}/consoles`);
 
@@ -151,15 +269,11 @@ export const useConsoleTreeStore = create<TreeState>()(
         const sharedWithMeTree = data.sharedWithMe ?? [];
         const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
 
-        const prunedMyTree = pruneEmptyFolders(myTree);
         set(state => {
-          state.myConsoles[workspaceId] = prunedMyTree;
-          state.sharedWithMe[workspaceId] = pruneEmptyFolders(sharedWithMeTree);
-          state.sharedWithWorkspace[workspaceId] = pruneEmptyFolders(
-            sharedWithWorkspaceTree,
-          );
-          // Keep trees as alias for backward compat
-          state.trees[workspaceId] = prunedMyTree;
+          state.myConsoles[workspaceId] = myTree;
+          state.sharedWithMe[workspaceId] = sharedWithMeTree;
+          state.sharedWithWorkspace[workspaceId] = sharedWithWorkspaceTree;
+          state.trees[workspaceId] = myTree;
         });
         return myTree;
       } catch (err: any) {
@@ -174,45 +288,295 @@ export const useConsoleTreeStore = create<TreeState>()(
         });
       }
     },
+
     refresh: async workspaceId => {
       return await _get().fetchTree(workspaceId);
     },
+
     init: async workspaceId => {
-      const hasData = !!_get().trees[workspaceId];
-      if (!hasData) {
+      if (!_get().trees[workspaceId]) {
         await _get().fetchTree(workspaceId);
       }
     },
+
     setTree: (workspaceId, tree) => {
       set(state => {
         state.trees[workspaceId] = tree;
         state.myConsoles[workspaceId] = tree;
       });
     },
+
     addConsole: (workspaceId, path, id) => {
       set(state => {
         const tree = state.myConsoles[workspaceId] || [];
         const segments = path.split("/").filter(Boolean);
         const fileName = segments[segments.length - 1];
         const folderSegments = segments.slice(0, -1);
-
         const existing = removeById(tree, id);
         const targetArray = findTargetArray(tree, folderSegments);
-
         const newConsole: ConsoleEntry = {
           ...(existing || {}),
           name: fileName,
-          path: path,
+          path,
           isDirectory: false,
-          id: id,
+          id,
         };
-
         const destination = targetArray || tree;
         insertAlphabetically(destination, newConsole);
-
         state.myConsoles[workspaceId] = tree;
         state.trees[workspaceId] = tree;
       });
+    },
+
+    // ── Optimistic mutations ──
+
+    moveConsole: async (workspaceId, consoleId, folderId) => {
+      // Optimistic: move in local tree
+      set(state => {
+        const entry = removeFromAnySection(state, workspaceId, consoleId);
+        if (!entry) return;
+        const targetSection = folderId
+          ? sectionOfFolder(state, workspaceId, folderId)
+          : "my";
+        insertIntoFolder(state, workspaceId, entry, folderId, targetSection);
+      });
+      try {
+        const res = await apiClient.patch<{ success: boolean }>(
+          `/workspaces/${workspaceId}/consoles/${consoleId}/move`,
+          { folderId },
+        );
+        if (!res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        await _get().refresh(workspaceId);
+        return false;
+      }
+    },
+
+    moveFolder: async (workspaceId, folderId, parentId) => {
+      set(state => {
+        const entry = removeFromAnySection(state, workspaceId, folderId);
+        if (!entry) return;
+        const targetSection = parentId
+          ? sectionOfFolder(state, workspaceId, parentId)
+          : "my";
+        insertIntoFolder(state, workspaceId, entry, parentId, targetSection);
+      });
+      try {
+        const res = await apiClient.patch<{ success: boolean }>(
+          `/workspaces/${workspaceId}/consoles/folders/${folderId}/move`,
+          { parentId },
+        );
+        if (!res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        await _get().refresh(workspaceId);
+        return false;
+      }
+    },
+
+    createFolder: async (workspaceId, name, parentId, access) => {
+      // Resolve access: if not specified, inherit from the section the parent lives in
+      let resolvedAccess = access || "private";
+      if (!access && parentId) {
+        const parentSection = sectionOfFolder(_get(), workspaceId, parentId);
+        if (parentSection === "workspace") {
+          resolvedAccess = "workspace";
+        }
+      }
+
+      const tempId = `temp-${Date.now()}`;
+      const targetSection =
+        resolvedAccess === "workspace"
+          ? "workspace"
+          : parentId
+            ? sectionOfFolder(_get(), workspaceId, parentId)
+            : "my";
+
+      set(state => {
+        const newFolder: ConsoleEntry = {
+          name,
+          path: name,
+          isDirectory: true,
+          children: [],
+          id: tempId,
+          access: resolvedAccess,
+        };
+        insertIntoFolder(
+          state,
+          workspaceId,
+          newFolder,
+          parentId ?? null,
+          targetSection,
+        );
+      });
+
+      try {
+        const res = await apiClient.post<{
+          success: boolean;
+          data?: { id: string; name: string };
+        }>(`/workspaces/${workspaceId}/consoles/folders`, {
+          name,
+          parentId: parentId || undefined,
+          isPrivate: false,
+          access: resolvedAccess,
+        });
+        if (res.success && res.data) {
+          // Replace temp ID with real ID
+          set(state => {
+            const node = findInAnySectionMut(state, workspaceId, tempId);
+            if (node) node.id = res.data!.id;
+          });
+          return { id: res.data.id, name: res.data.name };
+        }
+        await _get().refresh(workspaceId);
+        return null;
+      } catch {
+        await _get().refresh(workspaceId);
+        return null;
+      }
+    },
+
+    renameItem: async (workspaceId, itemId, newName, isDirectory) => {
+      // Optimistic: rename in local tree
+      set(state => {
+        const node = findInAnySectionMut(state, workspaceId, itemId);
+        if (node) node.name = newName;
+      });
+      try {
+        const endpoint = isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}/rename`
+          : `/workspaces/${workspaceId}/consoles/${itemId}/rename`;
+        const res = await apiClient.patch<{ success: boolean }>(endpoint, {
+          name: newName,
+        });
+        if (!res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        await _get().refresh(workspaceId);
+        return false;
+      }
+    },
+
+    deleteItem: async (workspaceId, itemId, isDirectory) => {
+      // Optimistic: remove from local tree
+      set(state => {
+        removeFromAnySection(state, workspaceId, itemId);
+      });
+      try {
+        const endpoint = isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}`
+          : `/workspaces/${workspaceId}/consoles/${itemId}`;
+        const res = await apiClient.delete<{ success: boolean }>(endpoint);
+        if (!res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        await _get().refresh(workspaceId);
+        return false;
+      }
+    },
+
+    duplicateConsole: async (workspaceId, consoleId) => {
+      try {
+        const res = await apiClient.post<{
+          success: boolean;
+          data?: { id: string; name: string; folderId?: string };
+        }>(`/workspaces/${workspaceId}/consoles/${consoleId}/duplicate`);
+        if (res.success && res.data) {
+          // Insert copy next to original optimistically
+          set(state => {
+            const original = findInAnySectionMut(state, workspaceId, consoleId);
+            if (!original) return;
+            const copy: ConsoleEntry = {
+              ...original,
+              id: res.data!.id,
+              name: res.data!.name,
+              isDirectory: false,
+            };
+            // Find which section/folder the original is in
+            for (const section of allSections(state, workspaceId)) {
+              const parent = findParentArray(section, consoleId);
+              if (parent) {
+                insertAlphabetically(parent, copy);
+                return;
+              }
+            }
+          });
+          return { id: res.data.id, name: res.data.name };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+
+    restoreConsole: async (workspaceId, consoleId) => {
+      try {
+        const res = await apiClient.patch<{ success: boolean }>(
+          `/workspaces/${workspaceId}/consoles/${consoleId}/restore`,
+        );
+        if (res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        return false;
+      }
+    },
+
+    updateAccess: async (
+      workspaceId,
+      itemId,
+      isDirectory,
+      access,
+      shared_with,
+    ) => {
+      // Optimistic: update access on node and move between sections
+      set(state => {
+        const entry = removeFromAnySection(state, workspaceId, itemId);
+        if (!entry) return;
+        entry.access = access;
+        entry.shared_with = shared_with;
+        const targetSection =
+          access === "workspace"
+            ? "workspace"
+            : access === "shared"
+              ? "shared"
+              : "my";
+        const sectionKey =
+          targetSection === "my"
+            ? "myConsoles"
+            : targetSection === "shared"
+              ? "sharedWithMe"
+              : "sharedWithWorkspace";
+        const arr = state[sectionKey][workspaceId] || [];
+        state[sectionKey][workspaceId] = arr;
+        insertAlphabetically(arr, entry);
+      });
+      try {
+        const endpoint = isDirectory
+          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}/share`
+          : `/workspaces/${workspaceId}/consoles/${itemId}/share`;
+        const res = await apiClient.post<{ success: boolean }>(endpoint, {
+          access,
+          shared_with,
+        });
+        if (!res.success) {
+          await _get().refresh(workspaceId);
+        }
+        return res.success;
+      } catch {
+        await _get().refresh(workspaceId);
+        return false;
+      }
     },
   })),
 );

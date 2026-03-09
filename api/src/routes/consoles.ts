@@ -127,15 +127,24 @@ consoleRoutes.get("/", async (c: Context) => {
     const userId: string | undefined = user?.id;
 
     if (userId) {
+      const member = await workspaceService.getMember(
+        access.workspaceId,
+        userId,
+      );
+      const userRole = member?.role || "member";
+
       const { myConsoles, sharedWithMe, sharedWithWorkspace } =
-        await consoleManager.listConsolesSplit(access.workspaceId, userId);
+        await consoleManager.listConsolesSplit(
+          access.workspaceId,
+          userId,
+          userRole,
+        );
 
       return c.json({
         success: true,
         myConsoles,
         sharedWithMe,
         sharedWithWorkspace,
-        // Keep `tree` for backward compat (myConsoles)
         tree: myConsoles,
       });
     }
@@ -187,7 +196,10 @@ consoleRoutes.get("/content", async (c: Context) => {
 
     const fullConsole = consoleData._raw;
 
-    if (fullConsole && !ConsoleManager.canRead(fullConsole, user.id)) {
+    if (
+      fullConsole &&
+      !(await consoleManager.canReadWithInheritance(fullConsole, user.id))
+    ) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
@@ -667,10 +679,9 @@ consoleRoutes.post("/folders", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const body = await c.req.json();
-    const { name, parentId, isPrivate } = body;
+    const { name, parentId, isPrivate, access } = body;
     const user = c.get("user");
 
-    // Verify user has access to workspace
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
       return c.json(
         { success: false, error: "Access denied to workspace" },
@@ -691,6 +702,7 @@ consoleRoutes.post("/folders", async (c: Context) => {
       user.id,
       parentId,
       isPrivate || false,
+      access || "private",
     );
 
     return c.json(
@@ -792,14 +804,13 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
   }
 });
 
-// DELETE /api/workspaces/:workspaceId/consoles/:id - Delete a console
+// DELETE /api/workspaces/:workspaceId/consoles/:id - Soft-delete a console
 consoleRoutes.delete("/:id", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const consoleId = c.req.param("id");
     const user = c.get("user");
 
-    // Verify user has access to workspace
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
       return c.json(
         { success: false, error: "Access denied to workspace" },
@@ -807,7 +818,6 @@ consoleRoutes.delete("/:id", async (c: Context) => {
       );
     }
 
-    // Only the owner can delete a console
     if (Types.ObjectId.isValid(consoleId)) {
       const existing = await SavedConsole.findOne({
         _id: new Types.ObjectId(consoleId),
@@ -824,10 +834,17 @@ consoleRoutes.delete("/:id", async (c: Context) => {
       }
     }
 
-    const success = await consoleManager.deleteConsole(consoleId, workspaceId);
+    const success = await consoleManager.softDeleteConsole(
+      consoleId,
+      workspaceId,
+    );
 
     if (success) {
-      return c.json({ success: true, message: "Console deleted successfully" });
+      return c.json({
+        success: true,
+        message: "Console deleted successfully",
+        id: consoleId,
+      });
     } else {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
@@ -843,6 +860,99 @@ consoleRoutes.delete("/:id", async (c: Context) => {
           error instanceof Error
             ? error.message
             : "Unknown error deleting console",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/:id/duplicate - Duplicate a console
+consoleRoutes.post("/:id/duplicate", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const copy = await consoleManager.duplicateConsole(
+      consoleId,
+      workspaceId,
+      user.id,
+    );
+
+    if (copy) {
+      return c.json(
+        {
+          success: true,
+          message: "Console duplicated",
+          data: {
+            id: copy._id.toString(),
+            name: copy.name,
+            folderId: copy.folderId?.toString(),
+          },
+        },
+        201,
+      );
+    } else {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+  } catch (error) {
+    logger.error("Error duplicating console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error duplicating console",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/consoles/:id/restore - Restore a soft-deleted console
+consoleRoutes.patch("/:id/restore", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const success = await consoleManager.restoreConsole(consoleId, workspaceId);
+
+    if (success) {
+      return c.json({ success: true, message: "Console restored" });
+    } else {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+  } catch (error) {
+    logger.error("Error restoring console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error restoring console",
       },
       500,
     );
@@ -936,6 +1046,120 @@ consoleRoutes.delete("/folders/:id", async (c: Context) => {
           error instanceof Error
             ? error.message
             : "Unknown error deleting folder",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/consoles/:id/move - Move a console to a different folder
+consoleRoutes.patch("/:id/move", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const body = await c.req.json();
+    const { folderId, access } = body as {
+      folderId: string | null;
+      access?: "private" | "shared" | "workspace";
+    };
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (Types.ObjectId.isValid(consoleId)) {
+      const existing = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (existing && !ConsoleManager.canWrite(existing, user.id)) {
+        return c.json(
+          { success: false, error: "Cannot move a read-only shared console" },
+          403,
+        );
+      }
+    }
+
+    const success = await consoleManager.moveConsole(
+      consoleId,
+      workspaceId,
+      folderId ?? null,
+      access,
+    );
+
+    if (success) {
+      return c.json({ success: true, message: "Console moved successfully" });
+    } else {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+  } catch (error) {
+    logger.error("Error moving console", {
+      consoleId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error moving console",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/move - Move a folder to a different parent
+consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const folderId = c.req.param("id");
+    const body = await c.req.json();
+    const { parentId, access } = body as {
+      parentId: string | null;
+      access?: "private" | "shared" | "workspace";
+    };
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const success = await consoleManager.moveFolder(
+      folderId,
+      workspaceId,
+      parentId ?? null,
+      access,
+    );
+
+    if (success) {
+      return c.json({ success: true, message: "Folder moved successfully" });
+    } else {
+      return c.json(
+        { success: false, error: "Folder not found or circular nesting" },
+        404,
+      );
+    }
+  } catch (error) {
+    logger.error("Error moving folder", {
+      folderId: c.req.param("id"),
+      error,
+    });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error moving folder",
       },
       500,
     );
@@ -1125,8 +1349,10 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
-    // Deny access to private consoles not owned by the current user
-    if (user && !ConsoleManager.canRead(savedConsole, user.id)) {
+    if (
+      user &&
+      !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+    ) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
@@ -1414,8 +1640,10 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
     const ownerId = savedConsole.owner_id || savedConsole.createdBy;
 
-    // Access control
-    if (user?.id && !ConsoleManager.canRead(savedConsole, user.id)) {
+    if (
+      user?.id &&
+      !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+    ) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
