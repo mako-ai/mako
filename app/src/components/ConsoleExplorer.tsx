@@ -345,6 +345,13 @@ function ConsoleExplorer(
       );
 
       if (result.success) {
+        if (folderDialogScope === "workspace" && result.id) {
+          await shareEntry(
+            currentWorkspace.id,
+            { id: result.id, isDirectory: true },
+            "workspace",
+          );
+        }
         handleFolderDialogClose();
         fetchConsoleEntries();
       } else {
@@ -654,6 +661,12 @@ function ConsoleExplorer(
       );
       if (!result.success) {
         console.error(result.error || "Failed to move folder");
+      } else if (scope === "workspace") {
+        await shareEntry(
+          currentWorkspace.id,
+          { id: draggingItem.id, isDirectory: true },
+          "workspace",
+        );
       }
     } else {
       const result = await moveConsole(
@@ -664,6 +677,10 @@ function ConsoleExplorer(
       );
       if (!result.success) {
         console.error(result.error || "Failed to move console");
+      } else if (scope === "workspace") {
+        await useConsoleStore
+          .getState()
+          .shareConsole(currentWorkspace.id, draggingItem.id, "workspace");
       }
     }
 
@@ -687,6 +704,13 @@ function ConsoleExplorer(
         selection.scope,
       );
       ok = result.success;
+      if (ok && selection.scope === "workspace") {
+        await shareEntry(
+          currentWorkspace.id,
+          { id: selectedItem.id, isDirectory: true },
+          "workspace",
+        );
+      }
     } else {
       const result = await moveConsole(
         currentWorkspace.id,
@@ -695,6 +719,11 @@ function ConsoleExplorer(
         selection.scope,
       );
       ok = result.success;
+      if (ok && selection.scope === "workspace") {
+        await useConsoleStore
+          .getState()
+          .shareConsole(currentWorkspace.id, selectedItem.id, "workspace");
+      }
     }
 
     if (!ok) {
@@ -721,6 +750,13 @@ function ConsoleExplorer(
     if (!result.success) {
       console.error(result.error || "Failed to create folder");
       return false;
+    }
+    if (scope === "workspace" && result.id) {
+      await shareEntry(
+        currentWorkspace.id,
+        { id: result.id, isDirectory: true },
+        "workspace",
+      );
     }
     await fetchConsoleEntries();
     return true;

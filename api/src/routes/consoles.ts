@@ -724,6 +724,22 @@ consoleRoutes.post("/folders", async (c: Context) => {
       targetIsPrivate,
     );
 
+    if (scope === "workspace") {
+      await consoleManager.updateFolderAccess(
+        folder._id.toString(),
+        workspaceId,
+        user.id,
+        "workspace",
+      );
+    } else if (scope === "my") {
+      await consoleManager.updateFolderAccess(
+        folder._id.toString(),
+        workspaceId,
+        user.id,
+        "private",
+      );
+    }
+
     return c.json(
       {
         success: true,
@@ -733,6 +749,7 @@ consoleRoutes.post("/folders", async (c: Context) => {
           name: folder.name,
           parentId: folder.parentId?.toString(),
           isPrivate: folder.isPrivate,
+          access: folder.access,
         },
       },
       201,
