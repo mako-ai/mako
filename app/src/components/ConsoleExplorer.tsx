@@ -284,13 +284,17 @@ function ConsoleExplorer(
     setMenuAnchor(null);
   };
 
-  const createFolderInline = async (parentId: string | null) => {
+  const createFolderInline = async (
+    parentId: string | null,
+    access: "private" | "workspace" = "private",
+  ) => {
     if (!currentWorkspace) return;
     const createFolder = useConsoleTreeStore.getState().createFolder;
     const result = await createFolder(
       currentWorkspace.id,
       "New Folder",
       parentId,
+      access,
     );
     if (result) {
       setRenamingItemId(result.id);
@@ -301,6 +305,11 @@ function ConsoleExplorer(
   const handleCreateFolder = () => {
     handleMenuClose();
     createFolderInline(null);
+  };
+
+  const handleCreateWorkspaceFolder = () => {
+    handleMenuClose();
+    createFolderInline(null, "workspace");
   };
 
   const handleCreateFolderInParent = (parentId: string) => {
@@ -707,11 +716,31 @@ function ConsoleExplorer(
 
     const dragId = active.id as string;
     const dropId = over.id as string;
-
     const dragResult = findInAnyTree(dragId);
-    const dropResult = findInAnyTree(dropId);
+    if (!dragResult) return;
 
-    if (!dragResult || !dropResult?.node.isDirectory) return;
+    // Drop on a section header: move to root of that section
+    if (dropId === "__section_my" || dropId === "__section_workspace") {
+      const newAccess =
+        dropId === "__section_workspace" ? "workspace" : "private";
+      if (dragResult.node.isDirectory) {
+        await moveFolder(currentWorkspace.id, dragId, null);
+      } else {
+        await moveConsole(currentWorkspace.id, dragId, null);
+      }
+      // Update access to match the target section
+      await updateAccess(
+        currentWorkspace.id,
+        dragId,
+        dragResult.node.isDirectory,
+        newAccess as "private" | "shared" | "workspace",
+      );
+      return;
+    }
+
+    // Drop on a folder
+    const dropResult = findInAnyTree(dropId);
+    if (!dropResult?.node.isDirectory) return;
 
     if (dragResult.node.isDirectory) {
       await moveFolder(currentWorkspace.id, dragId, dropId);
@@ -958,13 +987,18 @@ function ConsoleExplorer(
   const [sectionContextMenu, setSectionContextMenu] = useState<{
     mouseX: number;
     mouseY: number;
+    section: "my" | "workspace";
   } | null>(null);
 
-  const handleSectionContextMenu = (event: React.MouseEvent) => {
+  const handleSectionContextMenu = (
+    event: React.MouseEvent,
+    section: "my" | "workspace",
+  ) => {
     event.preventDefault();
     setSectionContextMenu({
       mouseX: event.clientX + 2,
       mouseY: event.clientY - 6,
+      section,
     });
   };
 
@@ -975,41 +1009,60 @@ function ConsoleExplorer(
     onToggle: () => void,
     count: number,
     onCtxMenu?: (e: React.MouseEvent) => void,
-  ) => (
-    <ListItemButton
-      onClick={onToggle}
-      onContextMenu={onCtxMenu}
-      sx={{ py: 0.25, pl: 0.5 }}
-    >
-      <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
-        {isExpanded ? (
-          <ChevronDownIcon strokeWidth={1.5} size={20} />
-        ) : (
-          <ChevronRightIcon strokeWidth={1.5} size={20} />
-        )}
-      </ListItemIcon>
-      <ListItemIcon sx={{ minWidth: 24 }}>{icon}</ListItemIcon>
-      <ListItemText
-        primary={label}
-        primaryTypographyProps={{
-          variant: "body2",
-          fontWeight: 600,
-          sx: {
-            textTransform: "uppercase",
-            fontSize: "0.75rem",
-            letterSpacing: "0.05em",
-          },
+    droppableId?: string,
+  ) => {
+    const isDragOver = droppableId && dropTargetId === droppableId;
+    const header = (
+      <ListItemButton
+        onClick={onToggle}
+        onContextMenu={onCtxMenu}
+        sx={{
+          py: 0.25,
+          pl: 0.5,
+          bgcolor: isDragOver ? "action.hover" : undefined,
+          outline: isDragOver ? "2px dashed" : undefined,
+          outlineColor: isDragOver ? "primary.main" : undefined,
+          borderRadius: isDragOver ? 1 : undefined,
         }}
-      />
-      {count > 0 && (
-        <Chip
-          label={count}
-          size="small"
-          sx={{ height: 18, fontSize: "0.7rem" }}
+      >
+        <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+          {isExpanded ? (
+            <ChevronDownIcon strokeWidth={1.5} size={20} />
+          ) : (
+            <ChevronRightIcon strokeWidth={1.5} size={20} />
+          )}
+        </ListItemIcon>
+        <ListItemIcon sx={{ minWidth: 24 }}>{icon}</ListItemIcon>
+        <ListItemText
+          primary={label}
+          primaryTypographyProps={{
+            variant: "body2",
+            fontWeight: 600,
+            sx: {
+              textTransform: "uppercase",
+              fontSize: "0.75rem",
+              letterSpacing: "0.05em",
+            },
+          }}
         />
-      )}
-    </ListItemButton>
-  );
+        {count > 0 && (
+          <Chip
+            label={count}
+            size="small"
+            sx={{ height: 18, fontSize: "0.7rem" }}
+          />
+        )}
+      </ListItemButton>
+    );
+    if (droppableId) {
+      return (
+        <DroppableSectionHeader id={droppableId}>
+          {header}
+        </DroppableSectionHeader>
+      );
+    }
+    return header;
+  };
 
   const countConsoles = (nodes: ConsoleEntry[]): number => {
     let count = 0;
@@ -1145,7 +1198,8 @@ function ConsoleExplorer(
                 myConsolesExpanded,
                 () => setMyConsolesExpanded(!myConsolesExpanded),
                 countConsoles(myConsoles),
-                handleSectionContextMenu,
+                e => handleSectionContextMenu(e, "my"),
+                "__section_my",
               )}
               {myConsolesExpanded && (
                 <>
@@ -1179,7 +1233,8 @@ function ConsoleExplorer(
                 () =>
                   setSharedWithWorkspaceExpanded(!sharedWithWorkspaceExpanded),
                 countConsoles(sharedWithWorkspace),
-                handleSectionContextMenu,
+                e => handleSectionContextMenu(e, "workspace"),
+                "__section_workspace",
               )}
               {sharedWithWorkspaceExpanded && (
                 <>
@@ -1324,7 +1379,7 @@ function ConsoleExplorer(
         )}
       </Menu>
 
-      {/* Section Header Context Menu (My Consoles / Workspace right-click) */}
+      {/* Section Header Context Menu */}
       <Menu
         open={sectionContextMenu !== null}
         onClose={() => setSectionContextMenu(null)}
@@ -1340,8 +1395,13 @@ function ConsoleExplorer(
       >
         <MenuItem
           onClick={() => {
+            const section = sectionContextMenu?.section;
             setSectionContextMenu(null);
-            handleCreateFolder();
+            if (section === "workspace") {
+              handleCreateWorkspaceFolder();
+            } else {
+              handleCreateFolder();
+            }
           }}
         >
           <CreateFolderIcon sx={{ mr: 1 }} fontSize="small" />
@@ -1543,6 +1603,18 @@ function ConsoleExplorer(
       />
     </Box>
   );
+}
+
+/** Wrapper that makes a section header a drop target */
+function DroppableSectionHeader({
+  id,
+  children,
+}: {
+  id: string;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef } = useDroppable({ id });
+  return <div ref={setNodeRef}>{children}</div>;
 }
 
 /** Wrapper that makes a tree item draggable and a drop target (for folders) */

@@ -679,10 +679,9 @@ consoleRoutes.post("/folders", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const body = await c.req.json();
-    const { name, parentId, isPrivate } = body;
+    const { name, parentId, isPrivate, access } = body;
     const user = c.get("user");
 
-    // Verify user has access to workspace
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
       return c.json(
         { success: false, error: "Access denied to workspace" },
@@ -703,6 +702,7 @@ consoleRoutes.post("/folders", async (c: Context) => {
       user.id,
       parentId,
       isPrivate || false,
+      access || "private",
     );
 
     return c.json(
