@@ -286,10 +286,11 @@ function ConsoleExplorer(
 
   const createFolderInline = async (
     parentId: string | null,
-    access: "private" | "workspace" = "private",
+    access?: "private" | "workspace",
   ) => {
     if (!currentWorkspace) return;
     const createFolder = useConsoleTreeStore.getState().createFolder;
+    // access is resolved by the store (inherits from parent if not specified)
     const result = await createFolder(
       currentWorkspace.id,
       "New Folder",
@@ -304,7 +305,7 @@ function ConsoleExplorer(
 
   const handleCreateFolder = () => {
     handleMenuClose();
-    createFolderInline(null);
+    createFolderInline(null, "private");
   };
 
   const handleCreateWorkspaceFolder = () => {
