@@ -1049,13 +1049,31 @@ export class ConsoleManager {
     _isPrivate: boolean = false,
     access: ConsoleAccessLevel = "private",
   ): Promise<IConsoleFolder> {
+    // Inherit access from parent folder if creating a subfolder
+    let resolvedAccess = access;
+    if (parentId) {
+      const parentFolder = (await ConsoleFolder.findById(parentId)
+        .select("access isPrivate")
+        .lean()) as { access?: string; isPrivate?: boolean } | null;
+      if (parentFolder) {
+        const parentAccess = (parentFolder.access ||
+          (parentFolder.isPrivate
+            ? "private"
+            : "workspace")) as ConsoleAccessLevel;
+        // Inherit workspace access from parent
+        if (parentAccess === "workspace") {
+          resolvedAccess = "workspace";
+        }
+      }
+    }
+
     const folder = new ConsoleFolder({
       workspaceId: new Types.ObjectId(workspaceId),
       name: folderName,
       parentId: parentId ? new Types.ObjectId(parentId) : undefined,
-      isPrivate: access === "private",
+      isPrivate: resolvedAccess === "private",
       ownerId: userId,
-      access,
+      access: resolvedAccess,
     });
 
     return await folder.save();

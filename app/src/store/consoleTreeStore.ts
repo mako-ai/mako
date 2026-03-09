@@ -380,16 +380,15 @@ export const useConsoleTreeStore = create<TreeState>()(
     },
 
     createFolder: async (workspaceId, name, parentId, access) => {
-      // Resolve access: inherit from parent folder if not specified
+      // Resolve access: if not specified, inherit from the section the parent lives in
       let resolvedAccess = access || "private";
       if (!access && parentId) {
-        const parent = findInAnySectionMut(_get(), workspaceId, parentId);
-        if (parent?.access === "workspace") {
+        const parentSection = sectionOfFolder(_get(), workspaceId, parentId);
+        if (parentSection === "workspace") {
           resolvedAccess = "workspace";
         }
       }
 
-      // Generate a temporary ID for optimistic insert
       const tempId = `temp-${Date.now()}`;
       const targetSection =
         resolvedAccess === "workspace"
