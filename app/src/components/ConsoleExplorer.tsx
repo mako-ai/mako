@@ -1184,7 +1184,7 @@ function ConsoleExplorer(
               {sharedWithWorkspaceExpanded && (
                 <>
                   {sharedWithWorkspace.length > 0
-                    ? renderTree(sharedWithWorkspace, 1, true)
+                    ? renderTree(sharedWithWorkspace, 1)
                     : renderEmptyPlaceholder("No workspace consoles yet")}
                 </>
               )}
@@ -1254,8 +1254,8 @@ function ConsoleExplorer(
             : undefined
         }
       >
-        {/* Owner actions (items in My Consoles section, readOnly=false) */}
-        {contextMenu && !contextMenu.readOnly && (
+        {/* Owner actions: Rename, Delete, Share, Move to */}
+        {contextMenu && isOwner(contextMenu.item) && (
           <MenuItem
             onClick={() => contextMenu && startInlineRename(contextMenu.item)}
           >
@@ -1263,7 +1263,7 @@ function ConsoleExplorer(
             Rename
           </MenuItem>
         )}
-        {contextMenu && !contextMenu.readOnly && (
+        {contextMenu && isOwner(contextMenu.item) && (
           <MenuItem
             onClick={() => contextMenu && handleDelete(contextMenu.item)}
           >
@@ -1271,7 +1271,7 @@ function ConsoleExplorer(
             Delete
           </MenuItem>
         )}
-        {contextMenu && !contextMenu.readOnly && (
+        {contextMenu && isOwner(contextMenu.item) && (
           <MenuItem
             onClick={() => contextMenu && handleShare(contextMenu.item)}
           >
@@ -1279,7 +1279,7 @@ function ConsoleExplorer(
             Share
           </MenuItem>
         )}
-        {contextMenu && !contextMenu.readOnly && (
+        {contextMenu && isOwner(contextMenu.item) && (
           <MenuItem
             onClick={() => contextMenu && handleMoveTo(contextMenu.item)}
           >
@@ -1287,6 +1287,7 @@ function ConsoleExplorer(
             Move to...
           </MenuItem>
         )}
+        {/* New Subfolder — any writable folder */}
         {contextMenu?.item.isDirectory && !contextMenu.readOnly && (
           <MenuItem
             onClick={() => {
@@ -1303,17 +1304,15 @@ function ConsoleExplorer(
             New Subfolder
           </MenuItem>
         )}
-        {/* Duplicate — consoles only, owner context */}
-        {contextMenu &&
-          !contextMenu.readOnly &&
-          !contextMenu.item.isDirectory && (
-            <MenuItem
-              onClick={() => contextMenu && handleDuplicate(contextMenu.item)}
-            >
-              <DuplicateIcon sx={{ mr: 1 }} fontSize="small" />
-              Duplicate
-            </MenuItem>
-          )}
+        {/* Duplicate — consoles only */}
+        {contextMenu && !contextMenu.item.isDirectory && (
+          <MenuItem
+            onClick={() => contextMenu && handleDuplicate(contextMenu.item)}
+          >
+            <DuplicateIcon sx={{ mr: 1 }} fontSize="small" />
+            Duplicate
+          </MenuItem>
+        )}
         {/* Get Info — consoles only */}
         {contextMenu && !contextMenu.item.isDirectory && (
           <MenuItem
@@ -1323,22 +1322,6 @@ function ConsoleExplorer(
             Get Info
           </MenuItem>
         )}
-        {/* Read-only context (shared sections): Open for consoles */}
-        {contextMenu &&
-          contextMenu.readOnly &&
-          !contextMenu.item.isDirectory && (
-            <MenuItem
-              onClick={() => {
-                if (contextMenu.item.id) {
-                  handleFileClick(contextMenu.item);
-                }
-                handleContextMenuClose();
-              }}
-            >
-              <DuplicateIcon sx={{ mr: 1 }} fontSize="small" />
-              Open
-            </MenuItem>
-          )}
       </Menu>
 
       {/* Section Header Context Menu (My Consoles / Workspace right-click) */}

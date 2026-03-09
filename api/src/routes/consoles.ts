@@ -187,7 +187,10 @@ consoleRoutes.get("/content", async (c: Context) => {
 
     const fullConsole = consoleData._raw;
 
-    if (fullConsole && !ConsoleManager.canRead(fullConsole, user.id)) {
+    if (
+      fullConsole &&
+      !(await consoleManager.canReadWithInheritance(fullConsole, user.id))
+    ) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
@@ -1337,8 +1340,10 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
-    // Deny access to private consoles not owned by the current user
-    if (user && !ConsoleManager.canRead(savedConsole, user.id)) {
+    if (
+      user &&
+      !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+    ) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 
@@ -1626,8 +1631,10 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
     const ownerId = savedConsole.owner_id || savedConsole.createdBy;
 
-    // Access control
-    if (user?.id && !ConsoleManager.canRead(savedConsole, user.id)) {
+    if (
+      user?.id &&
+      !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+    ) {
       return c.json({ success: false, error: "Console not found" }, 404);
     }
 

@@ -196,6 +196,57 @@ export class ConsoleManager {
   }
 
   /**
+   * Check if a user can read a console, considering inherited folder access.
+   * Walks up the folder chain to find the effective access level.
+   */
+  async canReadWithInheritance(
+    console: ISavedConsole,
+    userId: string,
+  ): Promise<boolean> {
+    const ownerId = (console.owner_id || console.createdBy)?.toString();
+    if (ownerId === userId) return true;
+
+    // Check own access first
+    const ownAccess = ConsoleManager.resolveAccess(console);
+    if (ownAccess === "workspace") return true;
+    if (ownAccess === "shared") {
+      if (
+        ConsoleManager.getSharedAccess(console.shared_with, userId) !== null
+      ) {
+        return true;
+      }
+    }
+
+    // Walk up folder chain looking for workspace/shared access
+    let currentFolderId = console.folderId?.toString();
+    while (currentFolderId) {
+      const folder = (await ConsoleFolder.findById(currentFolderId)
+        .select("access isPrivate shared_with parentId")
+        .lean()) as {
+        access?: string;
+        isPrivate?: boolean;
+        shared_with?: ISharedWithEntry[];
+        parentId?: Types.ObjectId;
+      } | null;
+      if (!folder) break;
+
+      const folderAccess =
+        folder.access || (folder.isPrivate ? "private" : "workspace");
+      if (folderAccess === "workspace") return true;
+      if (folderAccess === "shared") {
+        if (
+          ConsoleManager.getSharedAccess(folder.shared_with, userId) !== null
+        ) {
+          return true;
+        }
+      }
+      currentFolderId = folder.parentId?.toString();
+    }
+
+    return false;
+  }
+
+  /**
    * Get all consoles in a tree structure from database.
    * Only returns explicitly saved consoles (isSaved: true), not drafts.
    */
