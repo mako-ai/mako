@@ -13,6 +13,7 @@
     "sync:help": "ts-node api/src/sync/cli.ts --help",
     "migrate": "ts-node -r dotenv/config api/src/migrations/cli.ts",
     "query": "tsx api/src/sync/query-runner.ts",
+    "backfill:descriptions": "tsx api/src/scripts/backfill-console-descriptions.ts",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
