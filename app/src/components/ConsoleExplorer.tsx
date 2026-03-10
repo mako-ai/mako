@@ -81,6 +81,7 @@ import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
+import FolderInfoModal from "./FolderInfoModal";
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -162,6 +163,10 @@ function ConsoleExplorer(
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const [infoConsoleId, setInfoConsoleId] = useState<string>("");
+  const [folderInfoOpen, setFolderInfoOpen] = useState(false);
+  const [folderInfoItem, setFolderInfoItem] = useState<ConsoleEntry | null>(
+    null,
+  );
 
   // Keyboard selection state (distinct from activeTabId; tracks which tree item has keyboard focus)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -588,6 +593,13 @@ function ConsoleExplorer(
     if (!item.id || item.isDirectory) return;
     setInfoConsoleId(item.id);
     setInfoModalOpen(true);
+    handleContextMenuClose();
+  };
+
+  const handleFolderInfo = (item: ConsoleEntry) => {
+    if (!item.isDirectory) return;
+    setFolderInfoItem(item);
+    setFolderInfoOpen(true);
     handleContextMenuClose();
   };
 
@@ -1378,6 +1390,15 @@ function ConsoleExplorer(
             Get Info
           </MenuItem>
         )}
+        {/* Information — folders only */}
+        {contextMenu && contextMenu.item.isDirectory && (
+          <MenuItem
+            onClick={() => contextMenu && handleFolderInfo(contextMenu.item)}
+          >
+            <InfoIcon sx={{ mr: 1 }} fontSize="small" />
+            Information
+          </MenuItem>
+        )}
       </Menu>
 
       {/* Section Header Context Menu */}
@@ -1588,6 +1609,13 @@ function ConsoleExplorer(
         onClose={() => setInfoModalOpen(false)}
         consoleId={infoConsoleId}
         workspaceId={currentWorkspace?.id}
+      />
+
+      {/* Folder Info Modal */}
+      <FolderInfoModal
+        open={folderInfoOpen}
+        onClose={() => setFolderInfoOpen(false)}
+        folder={folderInfoItem}
       />
 
       {/* File Explorer Dialog for Move */}

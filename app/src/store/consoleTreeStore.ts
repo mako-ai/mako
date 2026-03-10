@@ -28,6 +28,7 @@ export interface ConsoleEntry {
   access?: ConsoleAccessLevel;
   owner_id?: string;
   shared_with?: SharedWithEntry[];
+  createdAt?: string;
 }
 
 // ── Tree helpers (mutate in place, used inside immer) ──

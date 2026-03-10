@@ -33,6 +33,7 @@ export interface ConsoleFile {
   access?: ConsoleAccessLevel;
   owner_id?: string;
   shared_with?: ISharedWithEntry[];
+  createdAt?: Date;
 }
 
 export class ConsoleManager {
@@ -303,6 +304,7 @@ export class ConsoleManager {
         owner_id: folder.ownerId,
         access: folder.access || (folder.isPrivate ? "private" : "workspace"),
         shared_with: folder.shared_with,
+        createdAt: folder.createdAt,
       };
       folderMap.set(folder._id.toString(), folderItem);
       if (!folder.parentId) {
