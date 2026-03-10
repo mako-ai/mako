@@ -7,6 +7,7 @@ import {
 import {
   DatabaseConnection,
   SavedConsole,
+  ConsoleFolder,
   IDatabaseConnection,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
@@ -859,10 +860,21 @@ consoleRoutes.delete("/:id", async (c: Context) => {
       if (existing) {
         const ownerId = existing.owner_id || existing.createdBy;
         if (ownerId !== user.id) {
-          return c.json(
-            { success: false, error: "Only the console owner can delete it" },
-            403,
+          const isAdminOrOwner = await workspaceService.hasRole(
+            workspaceId,
+            user.id,
+            ["owner", "admin"],
           );
+          if (!isAdminOrOwner) {
+            return c.json(
+              {
+                success: false,
+                error:
+                  "Only the console owner or a workspace admin can delete it",
+              },
+              403,
+            );
+          }
         }
       }
     }
@@ -1058,6 +1070,34 @@ consoleRoutes.delete("/folders/:id", async (c: Context) => {
         { success: false, error: "Access denied to workspace" },
         403,
       );
+    }
+
+    // Verify ownership or admin/owner role
+    if (Types.ObjectId.isValid(folderId)) {
+      const folder = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (folder) {
+        const isOwnFolder = folder.ownerId?.toString() === user.id;
+        if (!isOwnFolder) {
+          const isAdminOrOwner = await workspaceService.hasRole(
+            workspaceId,
+            user.id,
+            ["owner", "admin"],
+          );
+          if (!isAdminOrOwner) {
+            return c.json(
+              {
+                success: false,
+                error:
+                  "Only the folder owner or a workspace admin can delete it",
+              },
+              403,
+            );
+          }
+        }
+      }
     }
 
     const success = await consoleManager.deleteFolder(folderId, workspaceId);

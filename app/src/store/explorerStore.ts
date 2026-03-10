@@ -53,6 +53,7 @@ interface ExplorerActions {
 
   // Console explorer
   toggleFolder: (folderPath: string) => void;
+  expandFolder: (folderPath: string) => void;
   isFolderExpanded: (folderPath: string) => boolean;
 
   // View explorer
@@ -147,6 +148,11 @@ export const useExplorerStore = create<ExplorerStore>()(
       toggleFolder: folderPath =>
         set(state => {
           toggleInSet(state.console.expandedFolders, folderPath);
+        }),
+
+      expandFolder: folderPath =>
+        set(state => {
+          state.console.expandedFolders.add(folderPath);
         }),
 
       isFolderExpanded: folderPath =>
