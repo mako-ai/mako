@@ -339,14 +339,19 @@ function ConsoleExplorer(
     };
 
     const item = findItem(myConsoles) || findItem(sharedWithWorkspace);
+    const trimmedName = renameValue.trim();
 
-    if (item) {
+    if (item && trimmedName !== item.name) {
       await renameItem(
         currentWorkspace.id,
         renamingItemId,
-        renameValue.trim(),
+        trimmedName,
         item.isDirectory,
       );
+    } else if (item) {
+      useConsoleTreeStore
+        .getState()
+        .resortItem(currentWorkspace.id, renamingItemId);
     }
 
     setRenamingItemId(null);
@@ -652,10 +657,12 @@ function ConsoleExplorer(
 
     // Drop on a section header: move to root of that section
     if (dropId === "__section_my" || dropId === "__section_workspace") {
+      const newAccess =
+        dropId === "__section_workspace" ? "workspace" : "private";
       if (dragResult.node.isDirectory) {
-        await moveFolder(currentWorkspace.id, dragId, null);
+        await moveFolder(currentWorkspace.id, dragId, null, newAccess);
       } else {
-        await moveConsole(currentWorkspace.id, dragId, null);
+        await moveConsole(currentWorkspace.id, dragId, null, newAccess);
       }
       return;
     }
@@ -710,16 +717,19 @@ function ConsoleExplorer(
       onClick={e => e.stopPropagation()}
       onDoubleClick={e => e.stopPropagation()}
       style={{
-        border: "1px solid",
-        borderColor: "inherit",
+        border: "none",
         borderRadius: 3,
-        padding: "1px 4px",
-        fontSize: "0.9rem",
+        padding: 0,
+        margin: 0,
+        fontSize: "0.875rem",
+        lineHeight: "1.43",
         width: "100%",
-        outline: "none",
+        outline: "1px solid currentColor",
+        outlineOffset: "1px",
         background: "transparent",
         color: "inherit",
         fontFamily: "inherit",
+        boxSizing: "border-box",
       }}
     />
   );

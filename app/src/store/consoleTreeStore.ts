@@ -198,11 +198,13 @@ interface TreeState {
     workspaceId: string,
     consoleId: string,
     folderId: string | null,
+    access?: ConsoleAccessLevel,
   ) => Promise<boolean>;
   moveFolder: (
     workspaceId: string,
     folderId: string,
     parentId: string | null,
+    access?: ConsoleAccessLevel,
   ) => Promise<boolean>;
   createFolder: (
     workspaceId: string,
@@ -221,6 +223,7 @@ interface TreeState {
     itemId: string,
     isDirectory: boolean,
   ) => Promise<boolean>;
+  resortItem: (workspaceId: string, itemId: string) => void;
   duplicateConsole: (
     workspaceId: string,
     consoleId: string,
@@ -318,20 +321,26 @@ export const useConsoleTreeStore = create<TreeState>()(
 
     // ── Optimistic mutations ──
 
-    moveConsole: async (workspaceId, consoleId, folderId) => {
-      // Optimistic: move in local tree
+    moveConsole: async (workspaceId, consoleId, folderId, access) => {
       set(state => {
         const entry = removeFromAnySection(state, workspaceId, consoleId);
         if (!entry) return;
-        const targetSection = folderId
-          ? sectionOfFolder(state, workspaceId, folderId)
-          : "my";
+        if (access) entry.access = access;
+        const targetSection = access
+          ? access === "workspace"
+            ? "workspace"
+            : "my"
+          : folderId
+            ? sectionOfFolder(state, workspaceId, folderId)
+            : "my";
         insertIntoFolder(state, workspaceId, entry, folderId, targetSection);
       });
       try {
+        const body: Record<string, unknown> = { folderId };
+        if (access) body.access = access;
         const res = await apiClient.patch<{ success: boolean }>(
           `/workspaces/${workspaceId}/consoles/${consoleId}/move`,
-          { folderId },
+          body,
         );
         if (!res.success) {
           await _get().refresh(workspaceId);
@@ -343,19 +352,26 @@ export const useConsoleTreeStore = create<TreeState>()(
       }
     },
 
-    moveFolder: async (workspaceId, folderId, parentId) => {
+    moveFolder: async (workspaceId, folderId, parentId, access) => {
       set(state => {
         const entry = removeFromAnySection(state, workspaceId, folderId);
         if (!entry) return;
-        const targetSection = parentId
-          ? sectionOfFolder(state, workspaceId, parentId)
-          : "my";
+        if (access) entry.access = access;
+        const targetSection = access
+          ? access === "workspace"
+            ? "workspace"
+            : "my"
+          : parentId
+            ? sectionOfFolder(state, workspaceId, parentId)
+            : "my";
         insertIntoFolder(state, workspaceId, entry, parentId, targetSection);
       });
       try {
+        const body: Record<string, unknown> = { parentId };
+        if (access) body.access = access;
         const res = await apiClient.patch<{ success: boolean }>(
           `/workspaces/${workspaceId}/consoles/folders/${folderId}/move`,
-          { parentId },
+          body,
         );
         if (!res.success) {
           await _get().refresh(workspaceId);
@@ -483,6 +499,25 @@ export const useConsoleTreeStore = create<TreeState>()(
         await _get().refresh(workspaceId);
         return false;
       }
+    },
+
+    resortItem: (workspaceId, itemId) => {
+      set(state => {
+        const parent = (() => {
+          for (const section of allSections(state, workspaceId)) {
+            const found = findParentArray(section, itemId);
+            if (found) return found;
+          }
+          return null;
+        })();
+        if (parent) {
+          const idx = parent.findIndex(n => n.id === itemId);
+          if (idx !== -1) {
+            const [node] = parent.splice(idx, 1);
+            insertAlphabetically(parent, node);
+          }
+        }
+      });
     },
 
     duplicateConsole: async (workspaceId, consoleId) => {
