@@ -75,7 +75,6 @@ import {
   useConsoleTreeStore,
   type ConsoleEntry,
   type ConsoleAccessLevel,
-  type SharedWithEntry,
 } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
@@ -107,7 +106,6 @@ function ConsoleExplorer(
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
-  const sharedWithMeMap = useConsoleTreeStore(state => state.sharedWithMe);
   const sharedWithWorkspaceMap = useConsoleTreeStore(
     state => state.sharedWithWorkspace,
   );
@@ -120,9 +118,6 @@ function ConsoleExplorer(
 
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
-    : [];
-  const sharedWithMe = currentWorkspace
-    ? sharedWithMeMap[currentWorkspace.id] || []
     : [];
   const sharedWithWorkspace = currentWorkspace
     ? sharedWithWorkspaceMap[currentWorkspace.id] || []
@@ -137,7 +132,6 @@ function ConsoleExplorer(
 
   // Section expanded states
   const [myConsolesExpanded, setMyConsolesExpanded] = useState(true);
-  const [sharedWithMeExpanded, setSharedWithMeExpanded] = useState(true);
   const [sharedWithWorkspaceExpanded, setSharedWithWorkspaceExpanded] =
     useState(true);
 
@@ -151,15 +145,6 @@ function ConsoleExplorer(
     readOnly?: boolean;
   } | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [shareDialogOpen, setShareDialogOpen] = useState(false);
-  const [shareAccess, setShareAccess] = useState<ConsoleAccessLevel>("private");
-  const [shareUserEntries, setShareUserEntries] = useState<SharedWithEntry[]>(
-    [],
-  );
-  const [shareUserEmail, setShareUserEmail] = useState("");
-  const [shareUserPermission, setShareUserPermission] = useState<
-    "read" | "write"
-  >("read");
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const [infoConsoleId, setInfoConsoleId] = useState<string>("");
@@ -365,10 +350,7 @@ function ConsoleExplorer(
       return null;
     };
 
-    const item =
-      findItem(myConsoles) ||
-      findItem(sharedWithMe) ||
-      findItem(sharedWithWorkspace);
+    const item = findItem(myConsoles) || findItem(sharedWithWorkspace);
 
     if (item && renameValue.trim() !== item.name) {
       await renameItem(
@@ -412,7 +394,6 @@ function ConsoleExplorer(
       }
     };
     collect(myConsoles, myConsolesExpanded);
-    collect(sharedWithMe, sharedWithMeExpanded);
     collect(sharedWithWorkspace, sharedWithWorkspaceExpanded);
     return ids;
   })();
@@ -428,9 +409,7 @@ function ConsoleExplorer(
       }
       return null;
     };
-    return (
-      search(myConsoles) || search(sharedWithMe) || search(sharedWithWorkspace)
-    );
+    return search(myConsoles) || search(sharedWithWorkspace);
   };
 
   // Comprehensive keyboard handler
@@ -534,7 +513,6 @@ function ConsoleExplorer(
     selectedNodeId,
     activeTabId,
     myConsoles,
-    sharedWithMe,
     sharedWithWorkspace,
     flatNodeIds,
     expandedFolders,
@@ -549,14 +527,6 @@ function ConsoleExplorer(
     } else {
       handleSoftDelete(item);
     }
-  };
-
-  const handleShare = (item: ConsoleEntry) => {
-    setSelectedItem(item);
-    setShareAccess(item.access || "private");
-    setShareUserEntries(item.shared_with || []);
-    setShareDialogOpen(true);
-    handleContextMenuClose();
   };
 
   const handleMoveTo = (item: ConsoleEntry) => {
@@ -631,44 +601,6 @@ function ConsoleExplorer(
     }
   };
 
-  const updateAccess = useConsoleTreeStore(state => state.updateAccess);
-
-  const handleShareConfirm = async () => {
-    if (!currentWorkspace || !selectedItem?.id) return;
-
-    const success = await updateAccess(
-      currentWorkspace.id,
-      selectedItem.id,
-      selectedItem.isDirectory,
-      shareAccess,
-      shareAccess === "shared" || shareAccess === "workspace"
-        ? shareUserEntries
-        : undefined,
-    );
-
-    if (success) {
-      setShareDialogOpen(false);
-      setSelectedItem(null);
-      setShareUserEntries([]);
-    }
-  };
-
-  const handleAddShareUser = () => {
-    if (!shareUserEmail.trim()) return;
-    const exists = shareUserEntries.some(e => e.userId === shareUserEmail);
-    if (!exists) {
-      setShareUserEntries([
-        ...shareUserEntries,
-        { userId: shareUserEmail.trim(), access: shareUserPermission },
-      ]);
-    }
-    setShareUserEmail("");
-  };
-
-  const handleRemoveShareUser = (userId: string) => {
-    setShareUserEntries(shareUserEntries.filter(e => e.userId !== userId));
-  };
-
   const isOwner = (item: ConsoleEntry): boolean => {
     return item.owner_id === user?.id;
   };
@@ -702,8 +634,6 @@ function ConsoleExplorer(
     };
     const inMy = search(myConsoles);
     if (inMy) return { node: inMy, section: "my" };
-    const inShared = search(sharedWithMe);
-    if (inShared) return { node: inShared, section: "shared" };
     const inWorkspace = search(sharedWithWorkspace);
     if (inWorkspace) return { node: inWorkspace, section: "workspace" };
     return null;
@@ -1222,23 +1152,7 @@ function ConsoleExplorer(
                 </>
               )}
 
-              {/* Shared with me */}
-              {renderSectionHeader(
-                "Shared with me",
-                <UsersIcon strokeWidth={1.5} size={18} />,
-                sharedWithMeExpanded,
-                () => setSharedWithMeExpanded(!sharedWithMeExpanded),
-                countConsoles(sharedWithMe),
-              )}
-              {sharedWithMeExpanded && (
-                <>
-                  {sharedWithMe.length > 0
-                    ? renderTree(sharedWithMe, 1, true)
-                    : renderEmptyPlaceholder("No shared consoles yet")}
-                </>
-              )}
-
-              {/* Shared with workspace */}
+              {/* Workspace */}
               {renderSectionHeader(
                 "Workspace",
                 <GlobeIcon strokeWidth={1.5} size={18} />,
@@ -1337,14 +1251,6 @@ function ConsoleExplorer(
           >
             <DeleteIcon sx={{ mr: 1 }} fontSize="small" />
             Delete
-          </MenuItem>
-        )}
-        {contextMenu && isOwner(contextMenu.item) && (
-          <MenuItem
-            onClick={() => contextMenu && handleShare(contextMenu.item)}
-          >
-            <ShareIcon sx={{ mr: 1 }} fontSize="small" />
-            Share
           </MenuItem>
         )}
         {contextMenu && isOwner(contextMenu.item) && (
@@ -1459,146 +1365,6 @@ function ConsoleExplorer(
             variant="contained"
           >
             Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Share Dialog */}
-      <Dialog
-        open={shareDialogOpen}
-        onClose={() => setShareDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Share &ldquo;{selectedItem?.name}&rdquo;</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
-            Choose who can access this{" "}
-            {selectedItem?.isDirectory ? "folder" : "console"} and what they can
-            do.
-            {selectedItem?.isDirectory &&
-              " Sharing a folder shares its entire contents."}
-          </Typography>
-          <FormControl fullWidth sx={{ mt: 1 }}>
-            <InputLabel id="share-access-label">Visibility</InputLabel>
-            <MuiSelect
-              labelId="share-access-label"
-              value={shareAccess}
-              label="Visibility"
-              onChange={(e: SelectChangeEvent) =>
-                setShareAccess(e.target.value as ConsoleAccessLevel)
-              }
-            >
-              <MenuItem value="private">
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <LockIcon size={16} />
-                  Private — Only you
-                </Box>
-              </MenuItem>
-              <MenuItem value="shared">
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <UsersIcon size={16} />
-                  Shared — Specific people
-                </Box>
-              </MenuItem>
-              <MenuItem value="workspace">
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <GlobeIcon size={16} />
-                  Workspace — Everyone (read-only by default)
-                </Box>
-              </MenuItem>
-            </MuiSelect>
-          </FormControl>
-
-          {(shareAccess === "shared" || shareAccess === "workspace") && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
-                {shareAccess === "shared"
-                  ? "People with access"
-                  : "Grant write access to specific people"}
-              </Typography>
-
-              {shareUserEntries.map(entry => (
-                <Box
-                  key={entry.userId}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    mb: 0.5,
-                    py: 0.5,
-                    px: 1,
-                    borderRadius: 1,
-                    backgroundColor: "action.hover",
-                  }}
-                >
-                  <Typography
-                    variant="body2"
-                    sx={{
-                      flex: 1,
-                      fontFamily: "monospace",
-                      fontSize: "0.85rem",
-                    }}
-                  >
-                    {entry.userId}
-                  </Typography>
-                  <Chip
-                    label={entry.access}
-                    size="small"
-                    color={entry.access === "write" ? "primary" : "default"}
-                    sx={{ height: 20, fontSize: "0.7rem" }}
-                  />
-                  <IconButton
-                    size="small"
-                    onClick={() => handleRemoveShareUser(entry.userId)}
-                    sx={{ p: 0.25 }}
-                  >
-                    <CloseIcon sx={{ fontSize: 16 }} />
-                  </IconButton>
-                </Box>
-              ))}
-
-              <Box
-                sx={{ display: "flex", gap: 1, mt: 1, alignItems: "flex-end" }}
-              >
-                <TextField
-                  size="small"
-                  label="User ID or email"
-                  value={shareUserEmail}
-                  onChange={e => setShareUserEmail(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") handleAddShareUser();
-                  }}
-                  sx={{ flex: 1 }}
-                />
-                <FormControl size="small" sx={{ minWidth: 100 }}>
-                  <MuiSelect
-                    value={shareUserPermission}
-                    onChange={(e: SelectChangeEvent) =>
-                      setShareUserPermission(e.target.value as "read" | "write")
-                    }
-                  >
-                    <MenuItem value="read">Read</MenuItem>
-                    <MenuItem value="write">Write</MenuItem>
-                  </MuiSelect>
-                </FormControl>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={handleAddShareUser}
-                  disabled={!shareUserEmail.trim()}
-                  startIcon={<PersonAddIcon />}
-                >
-                  Add
-                </Button>
-              </Box>
-            </Box>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setShareDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleShareConfirm} variant="contained">
-            Save
           </Button>
         </DialogActions>
       </Dialog>

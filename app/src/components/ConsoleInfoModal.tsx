@@ -73,10 +73,7 @@ const MonospaceField = ({ value, onCopy, disabled }: MonospaceFieldProps) => {
 
 const accessLabels: Record<string, string> = {
   private: "Private",
-  shared: "Shared with specific people",
   workspace: "Shared with workspace",
-  shared_read: "Shared (read-only)",
-  shared_write: "Shared (editable)",
 };
 
 export default function ConsoleInfoModal({

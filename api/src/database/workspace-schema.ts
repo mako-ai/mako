@@ -303,26 +303,15 @@ export interface IConsoleFolder extends Document {
   isPrivate: boolean;
   ownerId?: string;
   access: ConsoleAccessLevel;
-  shared_with?: ISharedWithEntry[];
   createdAt: Date;
 }
 
 /**
  * Console access level (visibility scope).
  * - 'private': only the owner can see/edit (default for new consoles)
- * - 'shared': shared with specific users via shared_with array
- * - 'workspace': visible to all workspace members (read-only by default for non-owners)
+ * - 'workspace': visible to all workspace members (admins can edit; others read-only unless owner)
  */
-export type ConsoleAccessLevel = "private" | "shared" | "workspace";
-
-/**
- * Per-user sharing permission entry.
- * Stored in the `shared_with` array on consoles and folders.
- */
-export interface ISharedWithEntry {
-  userId: string;
-  access: "read" | "write";
-}
+export type ConsoleAccessLevel = "private" | "workspace";
 
 /**
  * SavedConsole model interface
@@ -336,10 +325,9 @@ export interface ISharedWithEntry {
  * Only saved consoles (isSaved=true) appear in the console explorer.
  *
  * Access model (added in console-access-model migration):
- * - `access` is the source of truth for visibility/editability
+ * - `access` is the source of truth for visibility/editability ('private' | 'workspace')
  * - `isPrivate` is kept for backward compatibility (deprecated; use `access` instead)
  * - `owner_id` tracks the console creator; backfilled from `createdBy`
- * - `shared_with` optionally restricts sharing to specific workspace members
  */
 export interface ISavedConsole extends Document {
   _id: Types.ObjectId;
@@ -370,7 +358,6 @@ export interface ISavedConsole extends Document {
   isSaved: boolean; // true = explicitly saved, false/undefined = draft
   access: ConsoleAccessLevel;
   owner_id: string;
-  shared_with?: ISharedWithEntry[];
   is_deleted?: boolean;
   deletedAt?: Date;
   createdAt: Date;
@@ -1021,19 +1008,9 @@ const ConsoleFolderSchema = new Schema<IConsoleFolder>(
     },
     access: {
       type: String,
-      enum: ["private", "shared", "workspace"],
+      enum: ["private", "workspace"],
       default: "private",
     },
-    shared_with: [
-      {
-        userId: { type: String, ref: "User", required: true },
-        access: {
-          type: String,
-          enum: ["read", "write"],
-          default: "read",
-        },
-      },
-    ],
   },
   {
     timestamps: { createdAt: true, updatedAt: false },
@@ -1122,23 +1099,13 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     access: {
       type: String,
-      enum: ["private", "shared", "workspace"],
+      enum: ["private", "workspace"],
       default: "private",
     },
     owner_id: {
       type: String,
       ref: "User",
     },
-    shared_with: [
-      {
-        userId: { type: String, ref: "User", required: true },
-        access: {
-          type: String,
-          enum: ["read", "write"],
-          default: "read",
-        },
-      },
-    ],
     lastExecutedAt: {
       type: Date,
     },

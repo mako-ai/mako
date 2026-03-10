@@ -108,14 +108,14 @@ export const setConsoleConnectionSchema = z.object({
 export const clientConsoleTools = {
   read_console: {
     description:
-      "Read the contents of a specific console by ID. Returns content with line numbers prefixed (e.g., '  1| code here'), totalLines, and database connection info. Line numbers are for REFERENCE ONLY to help identify patch ranges. Use list_open_consoles first to get available console IDs. Reading is allowed for any access level (private, shared, workspace) as long as the console is visible to you.",
+      "Read the contents of a specific console by ID. Returns content with line numbers prefixed (e.g., '  1| code here'), totalLines, and database connection info. Line numbers are for REFERENCE ONLY to help identify patch ranges. Use list_open_consoles first to get available console IDs. Reading is allowed for any access level (private or workspace) as long as the console is visible to you.",
     inputSchema: readConsoleSchema,
     // No execute function - this is a client-side tool
   },
 
   modify_console: {
     description:
-      "Modify a specific console's content by ID. Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. Get consoleId from list_open_consoles or create_console. ACCESS NOTE: If the console is read-only (shared or workspace without write grant), modification will be rejected — create a copy with create_console instead.",
+      "Modify a specific console's content by ID. Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. Get consoleId from list_open_consoles or create_console. ACCESS NOTE: If the console is read-only (workspace console you don't own and you're not an admin), modification will be rejected — create a copy with create_console instead.",
     inputSchema: modifyConsoleSchema,
     // No execute function - this is a client-side tool
   },

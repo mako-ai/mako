@@ -18,15 +18,7 @@ export type TabKind =
 /**
  * Console access level (visibility scope)
  */
-export type ConsoleAccessLevel = "private" | "shared" | "workspace";
-
-/**
- * Per-user sharing permission
- */
-export interface SharedWithEntry {
-  userId: string;
-  access: "read" | "write";
-}
+export type ConsoleAccessLevel = "private" | "workspace";
 
 /**
  * Console tab state
@@ -58,12 +50,10 @@ export interface ConsoleTab {
   icon?: string;
   /** Additional data for special tab types */
   metadata?: Record<string, unknown>;
-  /** Access level: private, shared, workspace */
+  /** Access level: private or workspace */
   access?: ConsoleAccessLevel;
   /** User ID of the console owner */
   owner_id?: string;
-  /** Per-user sharing permissions */
-  shared_with?: SharedWithEntry[];
   /** True if the current user can only read (not edit) this console */
   readOnly?: boolean;
 }

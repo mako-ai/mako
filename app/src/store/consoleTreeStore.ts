@@ -2,12 +2,7 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 
-export type ConsoleAccessLevel = "private" | "shared" | "workspace";
-
-export interface SharedWithEntry {
-  userId: string;
-  access: "read" | "write";
-}
+export type ConsoleAccessLevel = "private" | "workspace";
 
 export interface ConsoleEntry {
   name: string;
@@ -27,7 +22,6 @@ export interface ConsoleEntry {
   executionCount?: number;
   access?: ConsoleAccessLevel;
   owner_id?: string;
-  shared_with?: SharedWithEntry[];
   createdAt?: string;
 }
 
@@ -111,10 +105,9 @@ const findParentArray = (
   return null;
 };
 
-/** Get all three section arrays for a workspace */
+/** Get both section arrays for a workspace */
 const allSections = (state: TreeState, wid: string): ConsoleEntry[][] => [
   state.myConsoles[wid] || [],
-  state.sharedWithMe[wid] || [],
   state.sharedWithWorkspace[wid] || [],
 ];
 
@@ -150,14 +143,10 @@ const insertIntoFolder = (
   wid: string,
   entry: ConsoleEntry,
   targetFolderId: string | null,
-  targetSection: "my" | "shared" | "workspace",
+  targetSection: "my" | "workspace",
 ): void => {
   const sectionKey =
-    targetSection === "my"
-      ? "myConsoles"
-      : targetSection === "shared"
-        ? "sharedWithMe"
-        : "sharedWithWorkspace";
+    targetSection === "my" ? "myConsoles" : "sharedWithWorkspace";
   const sectionArr = state[sectionKey][wid] || [];
   state[sectionKey][wid] = sectionArr;
 
@@ -177,11 +166,10 @@ const sectionOfFolder = (
   state: TreeState,
   wid: string,
   folderId: string,
-): "my" | "shared" | "workspace" => {
+): "my" | "workspace" => {
   if (findById(state.sharedWithWorkspace[wid] || [], folderId)) {
     return "workspace";
   }
-  if (findById(state.sharedWithMe[wid] || [], folderId)) return "shared";
   return "my";
 };
 
@@ -189,7 +177,6 @@ const sectionOfFolder = (
 
 interface TreeState {
   myConsoles: Record<string, ConsoleEntry[]>;
-  sharedWithMe: Record<string, ConsoleEntry[]>;
   sharedWithWorkspace: Record<string, ConsoleEntry[]>;
   trees: Record<string, ConsoleEntry[]>;
   loading: Record<string, boolean>;
@@ -238,14 +225,12 @@ interface TreeState {
     itemId: string,
     isDirectory: boolean,
     access: ConsoleAccessLevel,
-    shared_with?: Array<{ userId: string; access: "read" | "write" }>,
   ) => Promise<boolean>;
 }
 
 export const useConsoleTreeStore = create<TreeState>()(
   immer((set, _get) => ({
     myConsoles: {},
-    sharedWithMe: {},
     sharedWithWorkspace: {},
     trees: {},
     loading: {},
@@ -261,18 +246,14 @@ export const useConsoleTreeStore = create<TreeState>()(
           success: boolean;
           tree?: ConsoleEntry[];
           myConsoles?: ConsoleEntry[];
-          sharedWithMe?: ConsoleEntry[];
           sharedWithWorkspace?: ConsoleEntry[];
-          sharedConsoles?: ConsoleEntry[];
         }>(`/workspaces/${workspaceId}/consoles`);
 
         const myTree = data.myConsoles ?? data.tree ?? [];
-        const sharedWithMeTree = data.sharedWithMe ?? [];
         const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
 
         set(state => {
           state.myConsoles[workspaceId] = myTree;
-          state.sharedWithMe[workspaceId] = sharedWithMeTree;
           state.sharedWithWorkspace[workspaceId] = sharedWithWorkspaceTree;
           state.trees[workspaceId] = myTree;
         });
@@ -533,31 +514,13 @@ export const useConsoleTreeStore = create<TreeState>()(
       }
     },
 
-    updateAccess: async (
-      workspaceId,
-      itemId,
-      isDirectory,
-      access,
-      shared_with,
-    ) => {
-      // Optimistic: update access on node and move between sections
+    updateAccess: async (workspaceId, itemId, isDirectory, access) => {
       set(state => {
         const entry = removeFromAnySection(state, workspaceId, itemId);
         if (!entry) return;
         entry.access = access;
-        entry.shared_with = shared_with;
-        const targetSection =
-          access === "workspace"
-            ? "workspace"
-            : access === "shared"
-              ? "shared"
-              : "my";
         const sectionKey =
-          targetSection === "my"
-            ? "myConsoles"
-            : targetSection === "shared"
-              ? "sharedWithMe"
-              : "sharedWithWorkspace";
+          access === "workspace" ? "sharedWithWorkspace" : "myConsoles";
         const arr = state[sectionKey][workspaceId] || [];
         state[sectionKey][workspaceId] = arr;
         insertAlphabetically(arr, entry);
@@ -568,7 +531,6 @@ export const useConsoleTreeStore = create<TreeState>()(
           : `/workspaces/${workspaceId}/consoles/${itemId}/share`;
         const res = await apiClient.post<{ success: boolean }>(endpoint, {
           access,
-          shared_with,
         });
         if (!res.success) {
           await _get().refresh(workspaceId);

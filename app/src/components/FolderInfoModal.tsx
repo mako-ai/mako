@@ -9,11 +9,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import {
-  ConsoleEntry,
-  ConsoleAccessLevel,
-  SharedWithEntry,
-} from "../store/consoleTreeStore";
+import { ConsoleEntry, ConsoleAccessLevel } from "../store/consoleTreeStore";
 import { useWorkspace } from "../contexts/workspace-context";
 
 interface FolderInfoModalProps {
@@ -24,16 +20,8 @@ interface FolderInfoModalProps {
 
 const accessLabels: Record<ConsoleAccessLevel, string> = {
   private: "Private",
-  shared: "Shared with specific people",
   workspace: "Shared with workspace",
 };
-
-function resolveName(
-  userId: string,
-  membersLookup: Map<string, string>,
-): string {
-  return membersLookup.get(userId) || userId;
-}
 
 function formatDate(value?: string): string {
   if (!value) return "Unknown";
@@ -61,9 +49,8 @@ export default function FolderInfoModal({
   }
 
   const access: ConsoleAccessLevel = folder?.access || "private";
-  const sharedWith: SharedWithEntry[] = folder?.shared_with || [];
   const ownerName = folder?.owner_id
-    ? resolveName(folder.owner_id, membersLookup)
+    ? membersLookup.get(folder.owner_id) || folder.owner_id
     : "Unknown";
 
   return (
@@ -104,40 +91,6 @@ export default function FolderInfoModal({
               variant="outlined"
             />
           </Box>
-
-          {access === "shared" && sharedWith.length > 0 && (
-            <Box>
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                sx={{ mb: 0.5 }}
-              >
-                Shared with
-              </Typography>
-              <Stack spacing={0.5}>
-                {sharedWith.map(entry => (
-                  <Box
-                    key={entry.userId}
-                    sx={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <Typography variant="body2">
-                      {resolveName(entry.userId, membersLookup)}
-                    </Typography>
-                    <Chip
-                      label={entry.access}
-                      size="small"
-                      variant="outlined"
-                      sx={{ ml: 1 }}
-                    />
-                  </Box>
-                ))}
-              </Stack>
-            </Box>
-          )}
         </Stack>
       </DialogContent>
       <DialogActions>
