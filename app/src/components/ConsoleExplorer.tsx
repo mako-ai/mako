@@ -20,23 +20,15 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  TextField,
   Button,
   Tooltip,
   Alert,
   Chip,
-  FormControl,
-  InputLabel,
-  Select as MuiSelect,
-  SelectChangeEvent,
 } from "@mui/material";
 import {
   CreateNewFolder as CreateFolderIcon,
   Edit as EditIcon,
   Delete as DeleteIcon,
-  Share as ShareIcon,
-  PersonAdd as PersonAddIcon,
-  Close as CloseIcon,
   DriveFileMove as MoveIcon,
   ContentCopy as DuplicateIcon,
   Info as InfoIcon,
@@ -49,11 +41,8 @@ import {
   Plus as AddIcon,
   ChevronRight as ChevronRightIcon,
   ChevronDown as ChevronDownIcon,
-  Lock as LockIcon,
-  Users as UsersIcon,
   Eye as EyeIcon,
   Globe as GlobeIcon,
-  Pencil as PencilIcon,
 } from "lucide-react";
 import {
   DndContext,
@@ -74,7 +63,6 @@ import { useWorkspace } from "../contexts/workspace-context";
 import {
   useConsoleTreeStore,
   type ConsoleEntry,
-  type ConsoleAccessLevel,
 } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
@@ -621,7 +609,7 @@ function ConsoleExplorer(
   // Search across all three section trees
   const findInAnyTree = (
     targetId: string,
-  ): { node: ConsoleEntry; section: "my" | "shared" | "workspace" } | null => {
+  ): { node: ConsoleEntry; section: "my" | "workspace" } | null => {
     const search = (nodes: ConsoleEntry[]): ConsoleEntry | null => {
       for (const node of nodes) {
         if (node.id === targetId) return node;
@@ -664,20 +652,11 @@ function ConsoleExplorer(
 
     // Drop on a section header: move to root of that section
     if (dropId === "__section_my" || dropId === "__section_workspace") {
-      const newAccess =
-        dropId === "__section_workspace" ? "workspace" : "private";
       if (dragResult.node.isDirectory) {
         await moveFolder(currentWorkspace.id, dragId, null);
       } else {
         await moveConsole(currentWorkspace.id, dragId, null);
       }
-      // Update access to match the target section
-      await updateAccess(
-        currentWorkspace.id,
-        dragId,
-        dragResult.node.isDirectory,
-        newAccess as "private" | "shared" | "workspace",
-      );
       return;
     }
 
@@ -697,49 +676,9 @@ function ConsoleExplorer(
     const nodeAccess = node.access || "private";
 
     if (nodeAccess === "workspace") {
-      const sharedAccess = node.shared_with?.find(
-        e => e.userId === user?.id,
-      )?.access;
-      if (sharedAccess === "write") {
-        return (
-          <Tooltip title="Editable">
-            <PencilIcon
-              size={14}
-              strokeWidth={1.5}
-              style={{ opacity: 0.5, flexShrink: 0 }}
-            />
-          </Tooltip>
-        );
-      }
       return (
         <Tooltip title="Read-only">
           <EyeIcon
-            size={14}
-            strokeWidth={1.5}
-            style={{ opacity: 0.5, flexShrink: 0 }}
-          />
-        </Tooltip>
-      );
-    }
-
-    if (nodeAccess === "shared") {
-      const sharedAccess = node.shared_with?.find(
-        e => e.userId === user?.id,
-      )?.access;
-      if (sharedAccess === "write") {
-        return (
-          <Tooltip title="Shared (editable)">
-            <PencilIcon
-              size={14}
-              strokeWidth={1.5}
-              style={{ opacity: 0.5, flexShrink: 0 }}
-            />
-          </Tooltip>
-        );
-      }
-      return (
-        <Tooltip title="Shared (read-only)">
-          <LockIcon
             size={14}
             strokeWidth={1.5}
             style={{ opacity: 0.5, flexShrink: 0 }}
