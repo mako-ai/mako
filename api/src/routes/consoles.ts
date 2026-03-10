@@ -248,6 +248,30 @@ consoleRoutes.get("/content", async (c: Context) => {
   }
 });
 
+// GET /api/workspaces/:workspaceId/consoles/search?q=...
+consoleRoutes.get("/search", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const query = c.req.query("q") || "";
+    const limitParam = c.req.query("limit");
+    const limit = limitParam ? Math.min(parseInt(limitParam, 10), 50) : 20;
+
+    if (query.length < 2) {
+      return c.json({ results: [] });
+    }
+
+    const { searchConsoles } = await import(
+      "../agent-lib/tools/console-search-tools"
+    );
+    const results = await searchConsoles(query, workspaceId, limit);
+
+    return c.json({ results });
+  } catch (err) {
+    logger.error("Console search failed", { error: err });
+    return c.json({ success: false, error: "Search failed" }, 500);
+  }
+});
+
 // POST /api/workspaces/:workspaceId/consoles - Create new console
 consoleRoutes.post("/", async (c: Context) => {
   try {

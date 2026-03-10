@@ -24,6 +24,9 @@ import {
   Tooltip,
   Alert,
   Chip,
+  TextField,
+  InputAdornment,
+  CircularProgress,
 } from "@mui/material";
 import {
   CreateNewFolder as CreateFolderIcon,
@@ -43,6 +46,8 @@ import {
   ChevronDown as ChevronDownIcon,
   Eye as EyeIcon,
   Globe as GlobeIcon,
+  Search as SearchIcon,
+  X as ClearIcon,
 } from "lucide-react";
 import {
   DndContext,
@@ -63,6 +68,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import {
   useConsoleTreeStore,
   type ConsoleEntry,
+  type ConsoleSearchResult,
 } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
@@ -103,6 +109,11 @@ function ConsoleExplorer(
   const moveFolder = useConsoleTreeStore(state => state.moveFolder);
   const renameItem = useConsoleTreeStore(state => state.renameItem);
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
+  const searchConsoles = useConsoleTreeStore(state => state.searchConsoles);
+  const clearSearch = useConsoleTreeStore(state => state.clearSearch);
+  const searchResults = useConsoleTreeStore(state => state.searchResults);
+  const searchLoading = useConsoleTreeStore(state => state.searchLoading);
+  const searchQuery = useConsoleTreeStore(state => state.searchQuery);
 
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
@@ -148,6 +159,43 @@ function ConsoleExplorer(
   const [undoStack, setUndoStack] = useState<
     Array<{ type: "delete"; id: string; isDirectory: boolean }>
   >([]);
+
+  // Search state
+  const [localSearchQuery, setLocalSearchQuery] = useState("");
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSearchChange = (value: string) => {
+    setLocalSearchQuery(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+
+    if (value.length < 2) {
+      clearSearch();
+      return;
+    }
+
+    searchTimerRef.current = setTimeout(() => {
+      if (currentWorkspace) {
+        searchConsoles(currentWorkspace.id, value);
+      }
+    }, 400);
+  };
+
+  const handleSearchClear = () => {
+    setLocalSearchQuery("");
+    clearSearch();
+  };
+
+  const handleSearchResultClick = (result: ConsoleSearchResult) => {
+    onConsoleSelect(
+      result.title,
+      "",
+      undefined,
+      result.id,
+      false,
+      undefined,
+      result.databaseName,
+    );
+  };
 
   // Inline rename state
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
@@ -1046,6 +1094,89 @@ function ConsoleExplorer(
           </Box>
         </Box>
       </Box>
+      <Box sx={{ px: 1, pb: 0.5 }}>
+        <TextField
+          size="small"
+          fullWidth
+          placeholder="Search consoles..."
+          value={localSearchQuery}
+          onChange={e => handleSearchChange(e.target.value)}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon size={16} />
+                </InputAdornment>
+              ),
+              endAdornment: localSearchQuery ? (
+                <InputAdornment position="end">
+                  {searchLoading ? (
+                    <CircularProgress size={16} />
+                  ) : (
+                    <IconButton size="small" onClick={handleSearchClear}>
+                      <ClearIcon size={14} />
+                    </IconButton>
+                  )}
+                </InputAdornment>
+              ) : null,
+            },
+          }}
+          sx={{ "& .MuiInputBase-root": { height: 32, fontSize: "0.85rem" } }}
+        />
+      </Box>
+      {searchQuery && searchResults.length > 0 && (
+        <Box sx={{ px: 1, pb: 1 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ px: 0.5, pb: 0.5, display: "block" }}
+          >
+            {searchResults.length} result{searchResults.length !== 1 ? "s" : ""}
+          </Typography>
+          <List dense disablePadding>
+            {searchResults.map(result => (
+              <ListItemButton
+                key={result.id}
+                onClick={() => handleSearchResultClick(result)}
+                sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
+              >
+                <ListItemIcon sx={{ minWidth: 28 }}>
+                  <ConsoleIcon size={16} />
+                </ListItemIcon>
+                <ListItemText
+                  primary={result.title}
+                  secondary={result.description || result.language}
+                  primaryTypographyProps={{
+                    variant: "body2",
+                    noWrap: true,
+                    fontSize: "0.8rem",
+                  }}
+                  secondaryTypographyProps={{
+                    variant: "caption",
+                    noWrap: true,
+                    fontSize: "0.7rem",
+                  }}
+                />
+                {result.isSaved && (
+                  <Chip
+                    label="saved"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 18, fontSize: "0.65rem", ml: 0.5 }}
+                  />
+                )}
+              </ListItemButton>
+            ))}
+          </List>
+        </Box>
+      )}
+      {searchQuery && !searchLoading && searchResults.length === 0 && (
+        <Box sx={{ px: 2, py: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            No consoles found
+          </Typography>
+        </Box>
+      )}
       {error && (
         <Box sx={{ p: 2 }}>
           <Typography color="error" variant="body2">
