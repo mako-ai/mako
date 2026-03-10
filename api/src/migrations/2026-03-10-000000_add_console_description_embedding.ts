@@ -25,7 +25,7 @@ export async function up(db: Db): Promise<void> {
     `Set descriptionGeneratedAt=null for ${result.modifiedCount} consoles`,
   );
 
-  // Text index for keyword search
+  // Text index for keyword search (best-effort: never fails the migration)
   try {
     const existingIndexes = await col.indexes();
     const hasTextIndex = existingIndexes.some(
@@ -37,7 +37,7 @@ export async function up(db: Db): Promise<void> {
     } else {
       await col.createIndex(
         { name: "text", description: "text" },
-        { background: true, name: "console_text_search" },
+        { name: "console_text_search" },
       );
       log.info("Created text index on { name, description }");
     }
@@ -47,7 +47,11 @@ export async function up(db: Db): Promise<void> {
         "Text index already exists (possibly under a different name), skipping",
       );
     } else {
-      throw err;
+      const msg = err?.message || String(err);
+      log.info(
+        "Text index creation failed — keyword search may be unavailable. " +
+          `Reason: ${msg.substring(0, 200)}`,
+      );
     }
   }
 
