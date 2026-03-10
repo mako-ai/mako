@@ -69,17 +69,19 @@ async function vectorSearch(
     ])
     .toArray();
 
-  return results.map(r => ({
-    id: r._id.toString(),
-    title: r.name,
-    description: r.description || "",
-    connectionId: r.connectionId?.toString(),
-    databaseName: r.databaseName,
-    language: r.language,
-    isSaved: r.isSaved === true,
-    updatedAt: r.updatedAt,
-    score: r.vectorScore || 0,
-  })) as any[];
+  return results
+    .filter(r => r.isSaved === true)
+    .map(r => ({
+      id: r._id.toString(),
+      title: r.name,
+      description: r.description || "",
+      connectionId: r.connectionId?.toString(),
+      databaseName: r.databaseName,
+      language: r.language,
+      isSaved: true,
+      updatedAt: r.updatedAt,
+      score: r.vectorScore || 0,
+    })) as any[];
 }
 
 async function textSearch(
@@ -91,6 +93,7 @@ async function textSearch(
     {
       $text: { $search: query },
       workspaceId: new Types.ObjectId(workspaceId),
+      isSaved: true,
       $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
     },
     { score: { $meta: "textScore" } },
@@ -127,6 +130,7 @@ async function regexNameSearch(
   const results = await SavedConsole.find({
     name: { $regex: escapeRegex(query), $options: "i" },
     workspaceId: new Types.ObjectId(workspaceId),
+    isSaved: true,
     $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
   })
     .select(
@@ -273,7 +277,7 @@ export async function searchConsoles(
 export const createConsoleSearchTools = (workspaceId: string) => ({
   search_consoles: {
     description:
-      "Search saved and draft consoles across the workspace by semantic meaning or keywords. Returns matching consoles ranked by relevance, recency, and save status. Use this to find past queries, discover existing work, or locate a console the user mentions. Results include id, title, description, connection info, and language.",
+      "Search saved consoles across the workspace by semantic meaning or keywords. Returns matching consoles ranked by relevance and recency. Use this to find past queries, discover existing work, or locate a console the user mentions. Results include id, title, description, connection info, and language.",
     inputSchema: z.object({
       query: z
         .string()

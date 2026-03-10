@@ -26,7 +26,6 @@ import {
   Chip,
   TextField,
   InputAdornment,
-  CircularProgress,
 } from "@mui/material";
 import {
   CreateNewFolder as CreateFolderIcon,
@@ -113,8 +112,6 @@ function ConsoleExplorer(
   const clearSearch = useConsoleTreeStore(state => state.clearSearch);
   const searchResults = useConsoleTreeStore(state => state.searchResults);
   const searchLoading = useConsoleTreeStore(state => state.searchLoading);
-  const searchQuery = useConsoleTreeStore(state => state.searchQuery);
-
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
     : [];
@@ -180,6 +177,17 @@ function ConsoleExplorer(
     return result;
   };
 
+  const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
+    const ids = new Set<string>();
+    for (const node of nodes) {
+      if (node.id) ids.add(node.id);
+      if (node.isDirectory && node.children) {
+        for (const id of collectIds(node.children)) ids.add(id);
+      }
+    }
+    return ids;
+  };
+
   const filteredMyConsoles =
     localSearchQuery.length >= 2
       ? filterTree(myConsoles, localSearchQuery)
@@ -188,9 +196,22 @@ function ConsoleExplorer(
     localSearchQuery.length >= 2
       ? filterTree(sharedWithWorkspace, localSearchQuery)
       : sharedWithWorkspace;
-  const hasClientMatches =
+
+  const treeIds =
+    localSearchQuery.length >= 2
+      ? new Set([
+          ...collectIds(filteredMyConsoles),
+          ...collectIds(filteredWorkspaceConsoles),
+        ])
+      : new Set<string>();
+  const extraServerResults = searchResults.filter(r => !treeIds.has(r.id));
+
+  const noMatches =
     localSearchQuery.length >= 2 &&
-    (filteredMyConsoles.length > 0 || filteredWorkspaceConsoles.length > 0);
+    filteredMyConsoles.length === 0 &&
+    filteredWorkspaceConsoles.length === 0 &&
+    extraServerResults.length === 0 &&
+    !searchLoading;
 
   const handleSearchChange = (value: string) => {
     setLocalSearchQuery(value);
@@ -216,13 +237,53 @@ function ConsoleExplorer(
   const handleSearchResultClick = (result: ConsoleSearchResult) => {
     onConsoleSelect(
       result.title,
-      "",
+      "loading...",
       undefined,
       result.id,
-      false,
+      true,
       undefined,
       result.databaseName,
     );
+
+    (async () => {
+      if (!currentWorkspace) return;
+      try {
+        const consoleStore = await import("../store/consoleStore");
+        const {
+          fetchConsoleContent,
+          updateContent,
+          updateConnection,
+          updateDatabase,
+          updateSavedState,
+        } = consoleStore.useConsoleStore.getState();
+        const data = await fetchConsoleContent(currentWorkspace.id, result.id);
+        if (data) {
+          useConsoleContentStore.getState().set(result.id, {
+            content: data.content,
+            connectionId: data.connectionId,
+            databaseId: data.databaseId,
+            databaseName: data.databaseName,
+          });
+          updateContent(result.id, data.content);
+          if (data.connectionId) updateConnection(result.id, data.connectionId);
+          if (data.databaseId || data.databaseName) {
+            updateDatabase(result.id, data.databaseId, data.databaseName);
+          }
+          const { computeConsoleStateHash } = await import(
+            "../utils/stateHash"
+          );
+          const hash = computeConsoleStateHash(
+            data.content,
+            data.connectionId,
+            data.databaseId,
+            data.databaseName,
+          );
+          updateSavedState(result.id, true, hash);
+        }
+      } catch (e) {
+        console.error("Failed to load search result console", e);
+      }
+    })();
   };
 
   // Inline rename state
@@ -1138,13 +1199,9 @@ function ConsoleExplorer(
               ),
               endAdornment: localSearchQuery ? (
                 <InputAdornment position="end">
-                  {searchLoading ? (
-                    <CircularProgress size={16} />
-                  ) : (
-                    <IconButton size="small" onClick={handleSearchClear}>
-                      <ClearIcon size={14} />
-                    </IconButton>
-                  )}
+                  <IconButton size="small" onClick={handleSearchClear}>
+                    <ClearIcon size={14} />
+                  </IconButton>
                 </InputAdornment>
               ) : null,
             },
@@ -1152,62 +1209,6 @@ function ConsoleExplorer(
           sx={{ "& .MuiInputBase-root": { height: 32, fontSize: "0.85rem" } }}
         />
       </Box>
-      {searchQuery && searchResults.length > 0 && (
-        <Box sx={{ px: 1, pb: 1 }}>
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ px: 0.5, pb: 0.5, display: "block" }}
-          >
-            {searchResults.length} result{searchResults.length !== 1 ? "s" : ""}
-          </Typography>
-          <List dense disablePadding>
-            {searchResults.map(result => (
-              <ListItemButton
-                key={result.id}
-                onClick={() => handleSearchResultClick(result)}
-                sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
-              >
-                <ListItemIcon sx={{ minWidth: 28 }}>
-                  <ConsoleIcon size={16} />
-                </ListItemIcon>
-                <ListItemText
-                  primary={result.title}
-                  secondary={result.description || result.language}
-                  primaryTypographyProps={{
-                    variant: "body2",
-                    noWrap: true,
-                    fontSize: "0.8rem",
-                  }}
-                  secondaryTypographyProps={{
-                    variant: "caption",
-                    noWrap: true,
-                    fontSize: "0.7rem",
-                  }}
-                />
-                {result.isSaved && (
-                  <Chip
-                    label="saved"
-                    size="small"
-                    variant="outlined"
-                    sx={{ height: 18, fontSize: "0.65rem", ml: 0.5 }}
-                  />
-                )}
-              </ListItemButton>
-            ))}
-          </List>
-        </Box>
-      )}
-      {searchQuery &&
-        !searchLoading &&
-        searchResults.length === 0 &&
-        !hasClientMatches && (
-          <Box sx={{ px: 2, py: 1 }}>
-            <Typography variant="caption" color="text.secondary">
-              No consoles found
-            </Typography>
-          </Box>
-        )}
       {error && (
         <Box sx={{ p: 2 }}>
           <Typography color="error" variant="body2">
@@ -1282,6 +1283,53 @@ function ConsoleExplorer(
                 </>
               )}
             </List>
+
+            {localSearchQuery.length >= 2 && extraServerResults.length > 0 && (
+              <Box sx={{ px: 1, pb: 1 }}>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ px: 0.5, pb: 0.5, display: "block" }}
+                >
+                  Also matched by description
+                </Typography>
+                <List dense disablePadding>
+                  {extraServerResults.map(result => (
+                    <ListItemButton
+                      key={result.id}
+                      onClick={() => handleSearchResultClick(result)}
+                      sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
+                    >
+                      <ListItemIcon sx={{ minWidth: 28 }}>
+                        <ConsoleIcon size={16} />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary={result.title}
+                        secondary={result.description || result.language}
+                        primaryTypographyProps={{
+                          variant: "body2",
+                          noWrap: true,
+                          fontSize: "0.8rem",
+                        }}
+                        secondaryTypographyProps={{
+                          variant: "caption",
+                          noWrap: true,
+                          fontSize: "0.7rem",
+                        }}
+                      />
+                    </ListItemButton>
+                  ))}
+                </List>
+              </Box>
+            )}
+
+            {noMatches && (
+              <Box sx={{ px: 2, py: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  No consoles found
+                </Typography>
+              </Box>
+            )}
 
             {/* Drag overlay */}
             <DragOverlay>

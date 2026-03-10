@@ -138,7 +138,7 @@ function extractContextFromChat(chat: IChat): {
 
 async function buildReverseIndex(
   workspaceFilter?: object,
-): Promise<Map<string, IChat[]>> {
+): Promise<Map<string, IChat>> {
   console.log("Building reverse index: console → chats...");
 
   const chatFilter: any = {};
@@ -146,16 +146,18 @@ async function buildReverseIndex(
     Object.assign(chatFilter, workspaceFilter);
   }
 
-  const chats = await Chat.find(chatFilter)
+  // Stream chats without sorting (avoids Atlas memory limit).
+  // We keep only the most recent chat per console to minimize memory.
+  const cursor = Chat.find(chatFilter)
     .select("messages pinnedConsoleId updatedAt workspaceId")
-    .sort({ updatedAt: -1 })
-    .lean<IChat[]>();
+    .lean<IChat[]>()
+    .cursor();
 
-  console.log(`  Loaded ${chats.length} chats`);
+  let chatCount = 0;
+  const index = new Map<string, IChat>();
 
-  const index = new Map<string, IChat[]>();
-
-  for (const chat of chats) {
+  for await (const chat of cursor) {
+    chatCount++;
     const consoleIds = new Set<string>();
 
     if (chat.pinnedConsoleId) {
@@ -168,19 +170,26 @@ async function buildReverseIndex(
     }
 
     for (const cid of consoleIds) {
-      const existing = index.get(cid) || [];
-      existing.push(chat);
-      index.set(cid, existing);
+      const existing = index.get(cid);
+      if (
+        !existing ||
+        (chat.updatedAt &&
+          existing.updatedAt &&
+          chat.updatedAt > existing.updatedAt)
+      ) {
+        index.set(cid, chat);
+      }
     }
   }
 
+  console.log(`  Scanned ${chatCount} chats`);
   console.log(`  Indexed ${index.size} consoles with chat associations`);
   return index;
 }
 
 async function processConsole(
   doc: ISavedConsole,
-  reverseIndex: Map<string, IChat[]>,
+  reverseIndex: Map<string, IChat>,
   connectionCache: Map<string, { name?: string; type?: string }>,
   args: Args,
 ): Promise<"processed" | "skipped" | "error"> {
@@ -200,22 +209,25 @@ async function processConsole(
   if (doc.connectionId) {
     const connId = doc.connectionId.toString();
     if (!connectionCache.has(connId)) {
-      const conn = await DatabaseConnection.findById(connId)
-        .select("name type")
-        .lean();
-      connectionCache.set(connId, conn || {});
+      if (/^[a-f\d]{24}$/i.test(connId)) {
+        const conn = await DatabaseConnection.findById(connId)
+          .select("name type")
+          .lean();
+        connectionCache.set(connId, conn || {});
+      } else {
+        connectionCache.set(connId, {});
+      }
     }
     const cached = connectionCache.get(connId);
     connectionName = cached?.name;
     databaseType = cached?.type;
   }
 
-  const chats = reverseIndex.get(id) || [];
+  const bestChat = reverseIndex.get(id);
   let conversationExcerpt = "";
   let resultSample = "";
 
-  if (chats.length > 0) {
-    const bestChat = chats[0]; // sorted by updatedAt desc
+  if (bestChat) {
     const ctx = extractContextFromChat(bestChat);
     conversationExcerpt = ctx.conversationExcerpt;
     resultSample = ctx.resultSample;

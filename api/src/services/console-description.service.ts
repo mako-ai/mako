@@ -11,21 +11,24 @@ import {
 
 const logger = loggers.app();
 
-function getDescriptionModel(): LanguageModel | null {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return anthropic("claude-3-5-haiku-latest") as unknown as LanguageModel;
-  }
+function getDescriptionModels(): LanguageModel[] {
+  const models: LanguageModel[] = [];
   if (process.env.OPENAI_API_KEY) {
-    return openai("gpt-4o-mini") as unknown as LanguageModel;
+    models.push(openai("gpt-4o-mini") as unknown as LanguageModel);
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    models.push(
+      anthropic("claude-3-5-haiku-latest") as unknown as LanguageModel,
+    );
   }
   if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    return google("gemini-2.0-flash") as unknown as LanguageModel;
+    models.push(google("gemini-2.0-flash") as unknown as LanguageModel);
   }
-  return null;
+  return models;
 }
 
 export function isDescriptionGenAvailable(): boolean {
-  return getDescriptionModel() !== null;
+  return getDescriptionModels().length > 0;
 }
 
 const DESCRIPTION_SYSTEM_PROMPT = `You are a concise technical writer. Generate a 1-2 sentence description of the given database query.
@@ -52,8 +55,8 @@ export interface ConsoleDescriptionContext {
 export async function generateConsoleDescription(
   context: ConsoleDescriptionContext,
 ): Promise<string | null> {
-  const model = getDescriptionModel();
-  if (!model) return null;
+  const models = getDescriptionModels();
+  if (models.length === 0) return null;
 
   const parts: string[] = [];
 
@@ -86,23 +89,28 @@ export async function generateConsoleDescription(
     parts.push(context.resultSample.substring(0, 500));
   }
 
-  try {
-    const { text } = await generateText({
-      model: model as any,
-      system: DESCRIPTION_SYSTEM_PROMPT,
-      prompt: parts.join("\n"),
-    });
+  const prompt = parts.join("\n");
 
-    let description = text.trim();
-    description = description.replace(/^["']|["']$/g, "");
-    description = description.substring(0, 500);
+  for (const model of models) {
+    try {
+      const { text } = await generateText({
+        model: model as any,
+        system: DESCRIPTION_SYSTEM_PROMPT,
+        prompt,
+      });
 
-    if (description.length < 5) return null;
-    return description;
-  } catch (err) {
-    logger.error("Console description generation failed", { error: err });
-    return null;
+      let description = text.trim();
+      description = description.replace(/^["']|["']$/g, "");
+      description = description.substring(0, 500);
+
+      if (description.length < 5) return null;
+      return description;
+    } catch (err) {
+      logger.error("Console description generation failed", { error: err });
+    }
   }
+
+  return null;
 }
 
 export interface DescriptionAndEmbeddingResult {

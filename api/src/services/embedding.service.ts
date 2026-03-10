@@ -85,7 +85,9 @@ export async function isVectorSearchAvailable(): Promise<boolean> {
           $vectorSearch: {
             index: "console_embeddings",
             path: "descriptionEmbedding",
-            queryVector: new Array(1536).fill(0),
+            queryVector: Array.from({ length: 1536 }, (_, i) =>
+              i === 0 ? 1 : 0,
+            ),
             numCandidates: 1,
             limit: 1,
           },
