@@ -4,7 +4,7 @@ import { loggers } from "../logging";
 const log = loggers.migration();
 
 export const description =
-  "Add description embedding fields to saved consoles and create text search index";
+  "Add description embedding fields to saved consoles and create text + vector search indexes";
 
 export async function up(db: Db): Promise<void> {
   const collections = await db.listCollections().toArray();
@@ -25,6 +25,7 @@ export async function up(db: Db): Promise<void> {
     `Set descriptionGeneratedAt=null for ${result.modifiedCount} consoles`,
   );
 
+  // Text index for keyword search
   try {
     const existingIndexes = await col.indexes();
     const hasTextIndex = existingIndexes.some(
@@ -50,10 +51,63 @@ export async function up(db: Db): Promise<void> {
     }
   }
 
-  log.info(
-    "NOTE: Atlas Vector Search index must be created manually via Atlas UI/CLI:",
-  );
-  log.info('  Index name: "console_embeddings" on collection "savedconsoles"');
-  log.info("  Fields: descriptionEmbedding (vector, 1536d, cosine),");
-  log.info("          workspaceId (filter), is_deleted (filter)");
+  // Atlas Vector Search index for semantic search
+  try {
+    const existingSearchIndexes = await col.listSearchIndexes().toArray();
+    const hasVectorIndex = existingSearchIndexes.some(
+      (idx: any) => idx.name === "console_embeddings",
+    );
+
+    if (hasVectorIndex) {
+      log.info(
+        'Atlas Vector Search index "console_embeddings" already exists, skipping',
+      );
+    } else {
+      await col.createSearchIndex({
+        name: "console_embeddings",
+        type: "vectorSearch",
+        definition: {
+          fields: [
+            {
+              path: "descriptionEmbedding",
+              type: "vector",
+              numDimensions: 1536,
+              similarity: "cosine",
+            },
+            {
+              path: "workspaceId",
+              type: "filter",
+            },
+            {
+              path: "is_deleted",
+              type: "filter",
+            },
+          ],
+        },
+      });
+      log.info(
+        'Created Atlas Vector Search index "console_embeddings" on savedconsoles',
+      );
+    }
+  } catch (err: any) {
+    if (
+      err?.message?.includes("not supported") ||
+      err?.message?.includes("no such command") ||
+      err?.codeName === "CommandNotFound"
+    ) {
+      log.info(
+        "Atlas Vector Search not available (self-hosted MongoDB) — skipping vector index creation. " +
+          "Semantic search will fall back to text search.",
+      );
+    } else if (err?.code === 68 || err?.codeName === "IndexAlreadyExists") {
+      log.info(
+        'Atlas Vector Search index "console_embeddings" already exists, skipping',
+      );
+    } else {
+      log.warn(
+        "Failed to create Atlas Vector Search index — semantic search will use text fallback",
+        { error: err?.message || err },
+      );
+    }
+  }
 }
