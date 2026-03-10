@@ -115,6 +115,40 @@ async function textSearch(
   }));
 }
 
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function regexNameSearch(
+  query: string,
+  workspaceId: string,
+  limit: number,
+): Promise<ConsoleSearchResult[]> {
+  const results = await SavedConsole.find({
+    name: { $regex: escapeRegex(query), $options: "i" },
+    workspaceId: new Types.ObjectId(workspaceId),
+    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
+  })
+    .select(
+      "name description connectionId databaseName language isSaved updatedAt",
+    )
+    .sort({ updatedAt: -1 })
+    .limit(limit * 2)
+    .lean();
+
+  return results.map((r: any) => ({
+    id: r._id.toString(),
+    title: r.name,
+    description: r.description || "",
+    connectionId: r.connectionId?.toString(),
+    databaseName: r.databaseName,
+    language: r.language,
+    isSaved: r.isSaved === true,
+    updatedAt: r.updatedAt,
+    score: 0.5,
+  }));
+}
+
 function computeCompositeScore(item: any, maxRelevanceScore: number): number {
   const relevanceNorm =
     maxRelevanceScore > 0 ? item.score / maxRelevanceScore : 0;
@@ -194,7 +228,21 @@ export async function searchConsoles(
         }
       }
     } catch (err) {
-      logger.warn("Text search failed", { error: err });
+      logger.warn("Text search failed, falling back to regex", { error: err });
+    }
+  }
+
+  if (results.length < limit) {
+    try {
+      const regexResults = await regexNameSearch(query, workspaceId, limit);
+      const existingIds = new Set(results.map(r => r.id));
+      for (const rr of regexResults) {
+        if (!existingIds.has(rr.id)) {
+          results.push(rr);
+        }
+      }
+    } catch (err) {
+      logger.warn("Regex name search failed", { error: err });
     }
   }
 

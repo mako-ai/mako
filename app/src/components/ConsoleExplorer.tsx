@@ -164,6 +164,34 @@ function ConsoleExplorer(
   const [localSearchQuery, setLocalSearchQuery] = useState("");
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const filterTree = (nodes: ConsoleEntry[], query: string): ConsoleEntry[] => {
+    const lower = query.toLowerCase();
+    const result: ConsoleEntry[] = [];
+    for (const node of nodes) {
+      if (node.isDirectory && node.children) {
+        const filteredChildren = filterTree(node.children, query);
+        if (filteredChildren.length > 0) {
+          result.push({ ...node, children: filteredChildren });
+        }
+      } else if (node.name.toLowerCase().includes(lower)) {
+        result.push(node);
+      }
+    }
+    return result;
+  };
+
+  const filteredMyConsoles =
+    localSearchQuery.length >= 2
+      ? filterTree(myConsoles, localSearchQuery)
+      : myConsoles;
+  const filteredWorkspaceConsoles =
+    localSearchQuery.length >= 2
+      ? filterTree(sharedWithWorkspace, localSearchQuery)
+      : sharedWithWorkspace;
+  const hasClientMatches =
+    localSearchQuery.length >= 2 &&
+    (filteredMyConsoles.length > 0 || filteredWorkspaceConsoles.length > 0);
+
   const handleSearchChange = (value: string) => {
     setLocalSearchQuery(value);
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
@@ -1170,13 +1198,16 @@ function ConsoleExplorer(
           </List>
         </Box>
       )}
-      {searchQuery && !searchLoading && searchResults.length === 0 && (
-        <Box sx={{ px: 2, py: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            No consoles found
-          </Typography>
-        </Box>
-      )}
+      {searchQuery &&
+        !searchLoading &&
+        searchResults.length === 0 &&
+        !hasClientMatches && (
+          <Box sx={{ px: 2, py: 1 }}>
+            <Typography variant="caption" color="text.secondary">
+              No consoles found
+            </Typography>
+          </Box>
+        )}
       {error && (
         <Box sx={{ p: 2 }}>
           <Typography color="error" variant="body2">
@@ -1220,14 +1251,14 @@ function ConsoleExplorer(
                 <ConsoleIcon strokeWidth={1.5} size={18} />,
                 myConsolesExpanded,
                 () => setMyConsolesExpanded(!myConsolesExpanded),
-                countConsoles(myConsoles),
+                countConsoles(filteredMyConsoles),
                 e => handleSectionContextMenu(e, "my"),
                 "__section_my",
               )}
               {myConsolesExpanded && (
                 <>
-                  {myConsoles.length > 0
-                    ? renderTree(myConsoles, 1)
+                  {filteredMyConsoles.length > 0
+                    ? renderTree(filteredMyConsoles, 1)
                     : renderEmptyPlaceholder("No consoles yet")}
                 </>
               )}
@@ -1239,14 +1270,14 @@ function ConsoleExplorer(
                 sharedWithWorkspaceExpanded,
                 () =>
                   setSharedWithWorkspaceExpanded(!sharedWithWorkspaceExpanded),
-                countConsoles(sharedWithWorkspace),
+                countConsoles(filteredWorkspaceConsoles),
                 e => handleSectionContextMenu(e, "workspace"),
                 "__section_workspace",
               )}
               {sharedWithWorkspaceExpanded && (
                 <>
-                  {sharedWithWorkspace.length > 0
-                    ? renderTree(sharedWithWorkspace, 1)
+                  {filteredWorkspaceConsoles.length > 0
+                    ? renderTree(filteredWorkspaceConsoles, 1)
                     : renderEmptyPlaceholder("No workspace consoles yet")}
                 </>
               )}
