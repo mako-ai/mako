@@ -25,9 +25,20 @@ import {
   Workspace,
   DatabaseConnection,
   Chat,
+  SavedConsole,
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
+import {
+  isDescriptionGenAvailable,
+  extractConsoleContextFromMessages,
+  generateDescriptionAndEmbedding,
+} from "../services/console-description.service";
+import {
+  isEmbeddingAvailable,
+  isVectorSearchAvailable,
+} from "../services/embedding.service";
+import { searchConsoles } from "../agent-lib/tools/console-search-tools";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import {
@@ -298,6 +309,43 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   logger.info("Using agent", { agentId: resolvedAgentId, tabKind, flowType });
 
+  // Auto-discover relevant consoles via embedding search (parallel with other setup)
+  let consoleHints = "";
+  if (
+    resolvedAgentId === "console" &&
+    isEmbeddingAvailable() &&
+    messages.length > 0
+  ) {
+    try {
+      const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+      const userText = lastUserMsg?.parts
+        ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map(p => p.text)
+        .join("");
+
+      if (
+        userText &&
+        userText.length >= 5 &&
+        (await isVectorSearchAvailable())
+      ) {
+        const hints = await searchConsoles(userText, workspaceId, 3);
+        if (hints.length > 0) {
+          consoleHints =
+            "\n\n---\n\n### Relevant Saved Consoles (auto-discovered)\n" +
+            hints
+              .map(
+                h =>
+                  `- "${h.title}" — ${h.description || "no description"} (id: ${h.id}${h.connectionName ? `, connection: ${h.connectionName}` : ""}, ${h.language})${h.isSaved ? " [saved]" : ""}`,
+              )
+              .join("\n") +
+            "\nUse search_consoles for more, or open_console to load one into the editor.";
+        }
+      }
+    } catch (err) {
+      logger.debug("Console hint injection skipped", { error: err });
+    }
+  }
+
   // Build agent context
   const agentContext: AgentContext = {
     workspaceId,
@@ -312,6 +360,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     flowFormState,
     workspaceCustomPrompt,
     selfDirective,
+    consoleHints,
   };
 
   // Create agent configuration
@@ -433,6 +482,54 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         });
       } catch (error) {
         logger.error("Error saving chat", { error });
+      }
+
+      if (isDescriptionGenAvailable()) {
+        void (async () => {
+          try {
+            const consoleContexts =
+              extractConsoleContextFromMessages(allMessages);
+            for (const [consoleId, ctx] of consoleContexts) {
+              const console = await SavedConsole.findById(consoleId).select(
+                "code name connectionId databaseName language",
+              );
+              if (!console) continue;
+
+              const connDoc = console.connectionId
+                ? await DatabaseConnection.findById(console.connectionId)
+                : null;
+
+              const { description, embedding, embeddingModel } =
+                await generateDescriptionAndEmbedding({
+                  code: console.code,
+                  title: console.name,
+                  connectionName: connDoc?.name,
+                  databaseType: connDoc?.type,
+                  databaseName: console.databaseName,
+                  language: console.language,
+                  conversationExcerpt: ctx.conversationExcerpt,
+                  resultSample: ctx.resultSample,
+                });
+
+              const $set: Record<string, any> = {
+                descriptionGeneratedAt: new Date(),
+              };
+              if (description) $set.description = description;
+              if (embedding) {
+                $set.descriptionEmbedding = embedding;
+                $set.embeddingModel = embeddingModel;
+              }
+              await SavedConsole.updateOne(
+                { _id: new ObjectId(consoleId) },
+                { $set },
+              );
+            }
+          } catch (err) {
+            logger.error("Background description generation failed", {
+              error: err,
+            });
+          }
+        })();
       }
     },
   });
