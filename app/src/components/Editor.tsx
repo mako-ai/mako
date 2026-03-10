@@ -35,6 +35,7 @@ import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
+import FileExplorerDialog from "./FileExplorerDialog";
 import { useConsoleStore } from "../store/consoleStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -90,6 +91,11 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
     () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
     [currentWorkspace, connectionsMap],
   );
+
+  // Save dialog state (folder navigator)
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveDialogTabId, setSaveDialogTabId] = useState<string | null>(null);
+  const [saveDialogContent, setSaveDialogContent] = useState("");
 
   // Conflict resolution state
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
@@ -403,19 +409,14 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
       // Get the current tab info (needed for default filename and connection info)
       const currentTab = tabs[tabId];
 
-      let savePath = currentPath;
+      const savePath = currentPath;
       if (!savePath) {
-        // Pre-fill with the tab's title (e.g., agent-generated title)
-        const defaultName = currentTab?.title || "";
-        const fileName = prompt(
-          "Enter a file name to save (e.g., myFolder/myConsole). .js will be appended if absent.",
-          defaultName,
-        );
-        if (!fileName) {
-          setIsSaving(false);
-          return false;
-        }
-        savePath = fileName.endsWith(".js") ? fileName.slice(0, -3) : fileName;
+        // Open the folder navigator save dialog instead of prompt()
+        setSaveDialogTabId(tabId);
+        setSaveDialogContent(contentToSave);
+        setSaveDialogOpen(true);
+        setIsSaving(false);
+        return false;
       }
 
       // Get the current connection and database info for the tab
@@ -606,26 +607,109 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
     setIsSaving(false);
   };
 
+  const handleSaveDialogConfirm = async (
+    name: string,
+    folderId: string | null,
+    _section: "my" | "workspace",
+  ) => {
+    if (!saveDialogTabId || !currentWorkspace) return;
+    setSaveDialogOpen(false);
+
+    // Build the path: if folderId is provided the API will handle folder association via the path or directly
+    const savePath = name.endsWith(".js") ? name.slice(0, -3) : name;
+
+    setIsSaving(true);
+    try {
+      const currentTab = tabs[saveDialogTabId];
+      const connectionId = currentTab?.connectionId;
+      const databaseId = currentTab?.databaseId;
+      const databaseName = currentTab?.databaseName;
+
+      // Use POST to create with explicit folderId
+      const response = await fetch(
+        `/api/workspaces/${currentWorkspace.id}/consoles`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            id: saveDialogTabId,
+            path: savePath,
+            content: saveDialogContent,
+            connectionId,
+            databaseName,
+            databaseId,
+            folderId: folderId || undefined,
+          }),
+        },
+      );
+
+      const result = await response.json();
+
+      if (response.status === 409 && result.error === "conflict") {
+        setPendingSaveData({
+          tabId: saveDialogTabId,
+          content: saveDialogContent,
+          path: savePath,
+          connectionId,
+          databaseId,
+          databaseName,
+        });
+        setConflictData(result.conflict);
+        setConflictDialogOpen(true);
+        setIsSaving(false);
+        return;
+      }
+
+      if (result.success) {
+        const tabId = saveDialogTabId;
+        updateFilePath(tabId, savePath);
+        updateTitle(tabId, savePath);
+        updateDirty(tabId, true);
+
+        const newHash = computeConsoleStateHash(
+          saveDialogContent,
+          connectionId,
+          databaseId,
+          databaseName,
+        );
+        updateSavedState(tabId, true, newHash);
+
+        trackEvent("console_saved", {
+          console_id: tabId,
+          is_new: true,
+        });
+
+        setSnackbarMessage(`Console saved as '${savePath}'`);
+        setSnackbarOpen(true);
+
+        const { useConsoleTreeStore } = await import(
+          "../store/consoleTreeStore"
+        );
+        useConsoleTreeStore.getState().refresh(currentWorkspace.id);
+      } else {
+        setErrorMessage(JSON.stringify(result.error, null, 2));
+        setErrorModalOpen(true);
+      }
+    } catch (e: any) {
+      setErrorMessage(JSON.stringify(e, null, 2));
+      setErrorModalOpen(true);
+    } finally {
+      setIsSaving(false);
+      setSaveDialogTabId(null);
+      setSaveDialogContent("");
+    }
+  };
+
   const handleConflictSaveAsNew = () => {
     setConflictDialogOpen(false);
     setConflictData(null);
 
     if (pendingSaveData) {
-      // Prompt for a new filename
-      const newFileName = prompt(
-        "Enter a different file name:",
-        pendingSaveData.path + "_copy",
-      );
-      if (newFileName) {
-        const newPath = newFileName.endsWith(".js")
-          ? newFileName.slice(0, -3)
-          : newFileName;
-        handleConsoleSave(
-          pendingSaveData.tabId,
-          pendingSaveData.content,
-          newPath,
-        );
-      }
+      // Open save dialog with a suggested copy name
+      setSaveDialogTabId(pendingSaveData.tabId);
+      setSaveDialogContent(pendingSaveData.content);
+      setSaveDialogOpen(true);
     }
     setPendingSaveData(null);
   };
@@ -922,6 +1006,20 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
         onOverwrite={handleConflictOverwrite}
         onSaveAsNew={handleConflictSaveAsNew}
         isProcessing={isSaving}
+      />
+
+      {/* Save Dialog (folder navigator) */}
+      <FileExplorerDialog
+        open={saveDialogOpen}
+        onClose={() => {
+          setSaveDialogOpen(false);
+          setSaveDialogTabId(null);
+          setSaveDialogContent("");
+        }}
+        mode="save"
+        onSave={handleSaveDialogConfirm}
+        defaultName={saveDialogTabId ? tabs[saveDialogTabId]?.title || "" : ""}
+        isSaving={isSaving}
       />
 
       {/* Success Snackbar */}

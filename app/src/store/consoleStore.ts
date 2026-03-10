@@ -344,6 +344,9 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.databaseId = res.databaseId;
                 tab.databaseName = res.databaseName;
                 tab.filePath = filePath;
+                tab.access = res.access;
+                tab.owner_id = res.owner_id;
+                tab.readOnly = res.readOnly;
               }
             });
 

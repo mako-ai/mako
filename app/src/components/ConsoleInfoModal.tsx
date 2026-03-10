@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Box,
   Button,
@@ -9,14 +9,27 @@ import {
   Typography,
   Stack,
   IconButton,
+  Skeleton,
+  Chip,
 } from "@mui/material";
 import { ContentCopy } from "@mui/icons-material";
+import { apiClient } from "../lib/api-client";
 
 interface ConsoleInfoModalProps {
   open: boolean;
   onClose: () => void;
   consoleId: string;
   workspaceId?: string;
+}
+
+interface ConsoleDetails {
+  ownerDisplayName?: string;
+  owner_id?: string;
+  access?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  executionCount?: number;
+  lastExecutedAt?: string;
 }
 
 interface MonospaceFieldProps {
@@ -58,15 +71,53 @@ const MonospaceField = ({ value, onCopy, disabled }: MonospaceFieldProps) => {
   );
 };
 
+const accessLabels: Record<string, string> = {
+  private: "Private",
+  workspace: "Shared with workspace",
+};
+
 export default function ConsoleInfoModal({
   open,
   onClose,
   consoleId,
   workspaceId,
 }: ConsoleInfoModalProps) {
+  const [details, setDetails] = useState<ConsoleDetails | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+
   const handleCopyToClipboard = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
   }, []);
+
+  useEffect(() => {
+    if (!open || !workspaceId || !consoleId) {
+      setDetails(null);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingDetails(true);
+
+    apiClient
+      .get<{ success: boolean; console?: ConsoleDetails }>(
+        `/workspaces/${workspaceId}/consoles/${consoleId}/details`,
+      )
+      .then(data => {
+        if (!cancelled && data.console) {
+          setDetails(data.console);
+        }
+      })
+      .catch(() => {
+        // Ignore errors for details fetch
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetails(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, workspaceId, consoleId]);
 
   const apiEndpoint = `/workspaces/${workspaceId || ":id"}/consoles/${consoleId}/execute`;
 
@@ -99,6 +150,36 @@ export default function ConsoleInfoModal({
               disabled={!workspaceId}
             />
           </Box>
+
+          <Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+              Created by
+            </Typography>
+            {loadingDetails ? (
+              <Skeleton variant="text" width="60%" height={24} />
+            ) : (
+              <Typography variant="body2">
+                {details?.ownerDisplayName || details?.owner_id || "Unknown"}
+              </Typography>
+            )}
+          </Box>
+
+          {details?.access && (
+            <Box>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mb: 0.5 }}
+              >
+                Access
+              </Typography>
+              <Chip
+                label={accessLabels[details.access] || details.access}
+                size="small"
+                variant="outlined"
+              />
+            </Box>
+          )}
 
           <Box>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>

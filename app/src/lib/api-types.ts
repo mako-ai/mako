@@ -18,6 +18,9 @@ export interface ConsoleContentResponse {
   path?: string;
   name?: string;
   isSaved?: boolean;
+  access?: "private" | "workspace";
+  owner_id?: string;
+  readOnly?: boolean;
 }
 
 export interface ConsoleSaveResponse {
