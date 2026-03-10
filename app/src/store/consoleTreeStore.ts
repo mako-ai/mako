@@ -77,6 +77,10 @@ const insertAlphabetically = (
   nodes.splice(insertIndex, 0, entry);
 };
 
+const insertAtTop = (nodes: ConsoleEntry[], entry: ConsoleEntry): void => {
+  nodes.unshift(entry);
+};
+
 const findById = (
   nodes: ConsoleEntry[],
   targetId: string,
@@ -144,21 +148,23 @@ const insertIntoFolder = (
   entry: ConsoleEntry,
   targetFolderId: string | null,
   targetSection: "my" | "workspace",
+  placement: "alphabetical" | "top" = "alphabetical",
 ): void => {
   const sectionKey =
     targetSection === "my" ? "myConsoles" : "sharedWithWorkspace";
   const sectionArr = state[sectionKey][wid] || [];
   state[sectionKey][wid] = sectionArr;
+  const insert = placement === "top" ? insertAtTop : insertAlphabetically;
 
   if (targetFolderId) {
     const folder = findById(sectionArr, targetFolderId);
     if (folder && folder.isDirectory) {
       if (!folder.children) folder.children = [];
-      insertAlphabetically(folder.children, entry);
+      insert(folder.children, entry);
       return;
     }
   }
-  insertAlphabetically(sectionArr, entry);
+  insert(sectionArr, entry);
 };
 
 /** Determine which section a folder ID belongs to */
@@ -394,6 +400,7 @@ export const useConsoleTreeStore = create<TreeState>()(
           newFolder,
           parentId ?? null,
           targetSection,
+          "top",
         );
       });
 
@@ -424,10 +431,22 @@ export const useConsoleTreeStore = create<TreeState>()(
     },
 
     renameItem: async (workspaceId, itemId, newName, isDirectory) => {
-      // Optimistic: rename in local tree
       set(state => {
-        const node = findInAnySectionMut(state, workspaceId, itemId);
-        if (node) node.name = newName;
+        const parent = (() => {
+          for (const section of allSections(state, workspaceId)) {
+            const found = findParentArray(section, itemId);
+            if (found) return found;
+          }
+          return null;
+        })();
+        if (parent) {
+          const idx = parent.findIndex(n => n.id === itemId);
+          if (idx !== -1) {
+            const [node] = parent.splice(idx, 1);
+            node.name = newName;
+            insertAlphabetically(parent, node);
+          }
+        }
       });
       try {
         const endpoint = isDirectory

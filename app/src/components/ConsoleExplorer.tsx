@@ -340,7 +340,7 @@ function ConsoleExplorer(
 
     const item = findItem(myConsoles) || findItem(sharedWithWorkspace);
 
-    if (item && renameValue.trim() !== item.name) {
+    if (item) {
       await renameItem(
         currentWorkspace.id,
         renamingItemId,
