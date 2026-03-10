@@ -14,6 +14,7 @@ import type {
 import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
+import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
 
 /**
@@ -125,6 +126,7 @@ export const consoleAgentFactory: AgentFactory = (
     databases = [],
     workspaceCustomPrompt = "",
     selfDirective = "",
+    consoleHints = "",
   } = context;
 
   // Build database lookup maps
@@ -164,6 +166,7 @@ export const consoleAgentFactory: AgentFactory = (
   // Create tools
   const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
+  const consoleSearchTools = createConsoleSearchTools(workspaceId);
 
   return {
     systemPrompt: [
@@ -176,9 +179,13 @@ export const consoleAgentFactory: AgentFactory = (
       },
       {
         role: "system" as const,
-        content: selfDirectiveContext + runtimeContext,
+        content: selfDirectiveContext + consoleHints + runtimeContext,
       },
     ],
-    tools: { ...tools, ...selfDirectiveTools } as Record<string, any>,
+    tools: {
+      ...tools,
+      ...selfDirectiveTools,
+      ...consoleSearchTools,
+    } as Record<string, any>,
   };
 };

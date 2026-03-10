@@ -81,6 +81,12 @@ export const createConsoleSchema = z.object({
 
 export const listOpenConsolesSchema = z.object({});
 
+export const openConsoleSchema = z.object({
+  consoleId: z
+    .string()
+    .describe("Console ID to open (from search_consoles results)."),
+});
+
 export const setConsoleConnectionSchema = z.object({
   consoleId: z
     .string()
@@ -140,6 +146,13 @@ export const clientConsoleTools = {
     inputSchema: setConsoleConnectionSchema,
     // No execute function - this is a client-side tool
   },
+
+  open_console: {
+    description:
+      "Open a saved or draft console in the editor by its ID. Use after search_consoles to let the user see and interact with a found console. The console will be loaded into a new tab.",
+    inputSchema: openConsoleSchema,
+    // No execute function - this is a client-side tool
+  },
 };
 
 // Export schema types for client-side use
@@ -150,3 +163,4 @@ export type ListOpenConsolesInput = z.infer<typeof listOpenConsolesSchema>;
 export type SetConsoleConnectionInput = z.infer<
   typeof setConsoleConnectionSchema
 >;
+export type OpenConsoleInput = z.infer<typeof openConsoleSchema>;
