@@ -89,17 +89,7 @@ export class ConsoleManager {
    * derive their level from the legacy `isPrivate` boolean.
    */
   static resolveAccess(console: ISavedConsole): ConsoleAccessLevel {
-    if (console.access) {
-      if (
-        (console.access as string) === "shared_read" ||
-        (console.access as string) === "shared_write" ||
-        (console.access as string) === "shared"
-      ) {
-        return "workspace";
-      }
-      return console.access;
-    }
-    return console.isPrivate ? "private" : "workspace";
+    return console.access || (console.isPrivate ? "private" : "workspace");
   }
 
   /**
@@ -321,7 +311,7 @@ export class ConsoleManager {
   }
 
   /**
-   * List consoles split into 3 groups: my, sharedWithMe, sharedWithWorkspace.
+   * List consoles split into 2 groups: myConsoles and sharedWithWorkspace.
    *
    * Items inherit access from their parent folder. A console inside a
    * "workspace" folder is workspace-visible regardless of the console's own
