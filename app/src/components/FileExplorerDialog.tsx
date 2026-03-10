@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Dialog,
   DialogTitle,
@@ -6,24 +6,13 @@ import {
   DialogActions,
   Button,
   TextField,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
-  Typography,
   Box,
-  Breadcrumbs,
-  Link,
-  Divider,
+  IconButton,
+  Tooltip,
+  Typography,
 } from "@mui/material";
-import {
-  FolderClosed as FolderIcon,
-  FolderOpen as FolderOpenIcon,
-  ChevronRight as ChevronRightIcon,
-  SquareTerminal as ConsoleIcon,
-  Globe as GlobeIcon,
-} from "lucide-react";
-import { CreateNewFolder as CreateFolderIcon } from "@mui/icons-material";
+import { FolderPlus as CreateFolderIcon } from "lucide-react";
+import ConsoleTree, { type ConsoleTreeRef } from "./ConsoleTree";
 import {
   useConsoleTreeStore,
   type ConsoleEntry,
@@ -31,12 +20,6 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 
 type DialogMode = "save" | "move" | "new-folder";
-
-interface BreadcrumbItem {
-  id: string | null;
-  name: string;
-  section: "my" | "workspace";
-}
 
 interface FileExplorerDialogProps {
   open: boolean;
@@ -52,13 +35,16 @@ interface FileExplorerDialogProps {
   defaultName?: string;
   isSaving?: boolean;
 
-  /** move mode: called with target folderId (null = root) */
-  onMove?: (targetFolderId: string | null) => void;
+  /** move mode: called with (targetFolderId, newName) */
+  onMove?: (targetFolderId: string | null, newName?: string) => void;
   itemName?: string;
   isDirectory?: boolean;
 
   /** new-folder mode: called with parent folderId (null = root) */
   onNewFolder?: (parentFolderId: string | null) => void;
+
+  /** Pre-select this folder on open (e.g. the item's current parent) */
+  initialFolderId?: string | null;
 }
 
 export default function FileExplorerDialog({
@@ -71,123 +57,133 @@ export default function FileExplorerDialog({
   onMove,
   itemName = "",
   onNewFolder,
+  initialFolderId,
+  isDirectory = false,
 }: FileExplorerDialogProps) {
   const { currentWorkspace } = useWorkspace();
-
   const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
   const sharedWithWorkspaceMap = useConsoleTreeStore(
     state => state.sharedWithWorkspace,
   );
-  const createFolderAction = useConsoleTreeStore(state => state.createFolder);
-
-  const myConsolesTree = currentWorkspace
-    ? myConsolesMap[currentWorkspace.id] || []
-    : [];
-  const workspaceConsoles = currentWorkspace
-    ? sharedWithWorkspaceMap[currentWorkspace.id] || []
-    : [];
 
   const [consoleName, setConsoleName] = useState(defaultName);
   const [folderName, setFolderName] = useState("");
-  const [currentSection, setCurrentSection] = useState<"my" | "workspace">(
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [selectedSection, setSelectedSection] = useState<"my" | "workspace">(
     "my",
   );
-  const [breadcrumb, setBreadcrumb] = useState<BreadcrumbItem[]>([
-    { id: null, name: "My Consoles", section: "my" },
-  ]);
-  const [newFolderMode, setNewFolderMode] = useState(false);
-  const [newFolderName, setNewFolderName] = useState("");
+  const [overwriteConfirm, setOverwriteConfirm] = useState(false);
+
+  const treeRef = useRef<ConsoleTreeRef | null>(null);
+
+  const effectiveName = mode === "move" ? itemName : defaultName;
 
   useEffect(() => {
     if (open) {
-      setConsoleName(defaultName);
+      setConsoleName(effectiveName);
       setFolderName("");
-      setCurrentSection("my");
-      setBreadcrumb([{ id: null, name: "My Consoles", section: "my" }]);
-      setNewFolderMode(false);
-      setNewFolderName("");
+      setSelectedFolderId(initialFolderId ?? null);
+      setSelectedSection("my");
+      setOverwriteConfirm(false);
     }
-  }, [open, defaultName]);
+  }, [open, effectiveName, initialFolderId]);
 
-  const getCurrentFolders = useCallback((): ConsoleEntry[] => {
-    const rootNodes =
-      currentSection === "my" ? myConsolesTree : workspaceConsoles;
-    const currentFolderId = breadcrumb[breadcrumb.length - 1]?.id;
+  const handleLocationChange = (
+    folderId: string | null,
+    section: "my" | "workspace",
+  ) => {
+    setSelectedFolderId(folderId);
+    setSelectedSection(section);
+  };
 
-    if (!currentFolderId) {
-      return rootNodes.filter(n => n.isDirectory);
-    }
+  const findExistingConsole = useCallback(
+    (name: string, folderId: string | null): ConsoleEntry | null => {
+      if (!currentWorkspace) return null;
+      const myConsoles = myConsolesMap[currentWorkspace.id] || [];
+      const workspaceConsoles =
+        sharedWithWorkspaceMap[currentWorkspace.id] || [];
 
-    const findFolder = (
-      nodes: ConsoleEntry[],
-      targetId: string,
-    ): ConsoleEntry | null => {
-      for (const node of nodes) {
-        if (node.id === targetId && node.isDirectory) return node;
-        if (node.isDirectory && node.children) {
-          const found = findFolder(node.children, targetId);
-          if (found) return found;
+      const searchInFolder = (
+        nodes: ConsoleEntry[],
+        targetFolderId: string | null,
+      ): ConsoleEntry | null => {
+        if (!targetFolderId) {
+          return (
+            nodes.find(
+              n =>
+                !n.isDirectory && n.name.toLowerCase() === name.toLowerCase(),
+            ) ?? null
+          );
         }
-      }
-      return null;
-    };
+        for (const node of nodes) {
+          if (node.id === targetFolderId && node.isDirectory && node.children) {
+            return (
+              node.children.find(
+                n =>
+                  !n.isDirectory && n.name.toLowerCase() === name.toLowerCase(),
+              ) ?? null
+            );
+          }
+          if (node.isDirectory && node.children) {
+            const found = searchInFolder(node.children, targetFolderId);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
 
-    const folder = findFolder(rootNodes, currentFolderId);
-    return folder?.children?.filter(n => n.isDirectory) || [];
-  }, [currentSection, myConsolesTree, workspaceConsoles, breadcrumb]);
-
-  const handleFolderClick = (folder: ConsoleEntry) => {
-    if (!folder.id) return;
-    setBreadcrumb(prev => [
-      ...prev,
-      { id: folder.id!, name: folder.name, section: currentSection },
-    ]);
-  };
-
-  const handleBreadcrumbClick = (index: number) => {
-    setBreadcrumb(prev => prev.slice(0, index + 1));
-    setCurrentSection(breadcrumb[index].section);
-  };
-
-  const handleSectionSwitch = (section: "my" | "workspace") => {
-    setCurrentSection(section);
-    setBreadcrumb([
-      {
-        id: null,
-        name: section === "my" ? "My Consoles" : "Workspace",
-        section,
-      },
-    ]);
-  };
-
-  const currentFolderId = breadcrumb[breadcrumb.length - 1]?.id ?? null;
+      return (
+        searchInFolder(myConsoles, folderId) ??
+        searchInFolder(workspaceConsoles, folderId)
+      );
+    },
+    [currentWorkspace, myConsolesMap, sharedWithWorkspaceMap],
+  );
 
   const handleConfirm = () => {
     if (mode === "save") {
       if (!consoleName.trim()) return;
-      onSave?.(consoleName.trim(), currentFolderId, currentSection);
+      const existing = findExistingConsole(
+        consoleName.trim(),
+        selectedFolderId,
+      );
+      if (existing && !overwriteConfirm) {
+        setOverwriteConfirm(true);
+        return;
+      }
+      setOverwriteConfirm(false);
+      onSave?.(consoleName.trim(), selectedFolderId, selectedSection);
     } else if (mode === "move") {
-      onMove?.(currentFolderId);
+      const newName = consoleName.trim();
+      const nameChanged = newName && newName !== itemName;
+      onMove?.(selectedFolderId, nameChanged ? newName : undefined);
     } else if (mode === "new-folder") {
       if (!folderName.trim()) return;
-      onNewFolder?.(currentFolderId);
+      onNewFolder?.(selectedFolderId);
     }
   };
 
-  const handleCreateFolder = async () => {
-    if (!currentWorkspace || !newFolderName.trim()) return;
-    const result = await createFolderAction(
-      currentWorkspace.id,
-      newFolderName.trim(),
-      currentFolderId,
-    );
-    if (result) {
-      setNewFolderMode(false);
-      setNewFolderName("");
+  const handleCancelOverwrite = () => {
+    setOverwriteConfirm(false);
+  };
+
+  const handleNewFolder = () => {
+    const access = selectedSection === "workspace" ? "workspace" : "private";
+    treeRef.current?.createFolder(selectedFolderId, access);
+  };
+
+  const handleFileClick = (node: ConsoleEntry) => {
+    if (mode === "save" || mode === "move") {
+      setConsoleName(node.name);
     }
   };
 
-  const folders = getCurrentFolders();
+  const handleNameChange = (value: string) => {
+    setConsoleName(value);
+    if (overwriteConfirm) setOverwriteConfirm(false);
+  };
+
+  const showNameField = mode === "save" || (mode === "move" && !isDirectory);
 
   const dialogTitle =
     mode === "save"
@@ -198,9 +194,11 @@ export default function FileExplorerDialog({
 
   const confirmLabel =
     mode === "save"
-      ? isSaving
-        ? "Saving..."
-        : "Save"
+      ? overwriteConfirm
+        ? "Replace"
+        : isSaving
+          ? "Saving..."
+          : "Save"
       : mode === "move"
         ? "Move Here"
         : "Create Here";
@@ -220,25 +218,36 @@ export default function FileExplorerDialog({
       fullWidth
       PaperProps={{ sx: { minHeight: 460 } }}
     >
-      <DialogTitle sx={{ pb: 1 }}>{dialogTitle}</DialogTitle>
+      <DialogTitle
+        sx={{ pb: 0, pt: 1.5, px: 2, display: "flex", alignItems: "center" }}
+      >
+        <Box sx={{ flex: 1 }}>{dialogTitle}</Box>
+        <Tooltip title="New Folder">
+          <IconButton size="small" onClick={handleNewFolder}>
+            <CreateFolderIcon size={18} strokeWidth={1.5} />
+          </IconButton>
+        </Tooltip>
+      </DialogTitle>
       <DialogContent
         sx={{
           display: "flex",
           flexDirection: "column",
-          gap: 1.5,
-          pt: "8px !important",
+          gap: 0.75,
+          pt: "4px !important",
+          px: 2,
+          pb: 1,
+          overflow: "hidden",
         }}
       >
-        {/* Name input — save mode gets console name, new-folder mode gets folder name */}
-        {mode === "save" && (
+        {showNameField && (
           <TextField
             autoFocus
-            label="Console Name"
+            label={mode === "move" ? "Name" : "Console Name"}
             fullWidth
             variant="outlined"
             size="small"
             value={consoleName}
-            onChange={e => setConsoleName(e.target.value)}
+            onChange={e => handleNameChange(e.target.value)}
             onKeyDown={e => {
               if (e.key === "Enter" && consoleName.trim()) handleConfirm();
             }}
@@ -263,185 +272,53 @@ export default function FileExplorerDialog({
           />
         )}
 
-        <Divider />
-
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-          }}
-        >
-          {mode === "save"
-            ? "Save Location"
-            : mode === "move"
-              ? "Destination"
-              : "Location"}
-        </Typography>
-
-        {/* Section tabs */}
-        <Box sx={{ display: "flex", gap: 1 }}>
-          <Button
-            size="small"
-            variant={currentSection === "my" ? "contained" : "outlined"}
-            disableElevation
-            onClick={() => handleSectionSwitch("my")}
-            startIcon={<ConsoleIcon size={16} />}
-            sx={{ textTransform: "none", fontSize: "0.8rem" }}
-          >
-            My Consoles
-          </Button>
-          <Button
-            size="small"
-            variant={currentSection === "workspace" ? "contained" : "outlined"}
-            disableElevation
-            onClick={() => handleSectionSwitch("workspace")}
-            startIcon={<GlobeIcon size={16} />}
-            sx={{ textTransform: "none", fontSize: "0.8rem" }}
-          >
-            Workspace
-          </Button>
-        </Box>
-
-        {/* Breadcrumb */}
-        <Breadcrumbs
-          separator={<ChevronRightIcon size={14} />}
-          sx={{ fontSize: "0.85rem" }}
-        >
-          {breadcrumb.map((item, index) => {
-            const isLast = index === breadcrumb.length - 1;
-            return isLast ? (
-              <Typography
-                key={index}
-                variant="body2"
-                fontWeight={600}
-                fontSize="0.85rem"
-              >
-                {item.name}
-              </Typography>
-            ) : (
-              <Link
-                key={index}
-                component="button"
-                variant="body2"
-                underline="hover"
-                onClick={() => handleBreadcrumbClick(index)}
-                sx={{ fontSize: "0.85rem", cursor: "pointer" }}
-              >
-                {item.name}
-              </Link>
-            );
-          })}
-        </Breadcrumbs>
-
-        {/* Folder list */}
         <Box
           sx={{
+            flex: 1,
+            minHeight: 0,
             border: 1,
             borderColor: "divider",
             borderRadius: 1,
-            minHeight: 140,
-            maxHeight: 220,
-            overflowY: "auto",
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
-          {folders.length === 0 && !newFolderMode ? (
-            <Box sx={{ p: 2, textAlign: "center" }}>
-              <Typography
-                variant="body2"
-                color="text.disabled"
-                fontStyle="italic"
-              >
-                {mode === "save"
-                  ? "No subfolders. Save here or create one."
-                  : mode === "move"
-                    ? "No subfolders. Move here or create one."
-                    : "No subfolders. Create the folder here."}
-              </Typography>
-            </Box>
-          ) : (
-            <List dense disablePadding>
-              {folders.map(folder => (
-                <ListItemButton
-                  key={folder.id || folder.path}
-                  onClick={() => handleFolderClick(folder)}
-                  sx={{ py: 0.5 }}
-                >
-                  <ListItemIcon sx={{ minWidth: 32 }}>
-                    <FolderIcon size={18} strokeWidth={1.5} />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={folder.name}
-                    primaryTypographyProps={{ variant: "body2" }}
-                  />
-                  <ChevronRightIcon size={16} style={{ opacity: 0.4 }} />
-                </ListItemButton>
-              ))}
-            </List>
-          )}
+          <ConsoleTree
+            ref={treeRef}
+            mode="picker"
+            showFiles
+            enableDragDrop
+            enableRename
+            enableDelete
+            enableDuplicate={false}
+            enableInfo={false}
+            enableMove={false}
+            onLocationChange={handleLocationChange}
+            onFileClick={handleFileClick}
+            selectedLocationId={selectedFolderId}
+            initialFolderId={initialFolderId}
+          />
         </Box>
 
-        {/* Inline new folder creation */}
-        {newFolderMode ? (
-          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-            <FolderOpenIcon size={18} strokeWidth={1.5} />
-            <TextField
-              autoFocus
-              size="small"
-              placeholder="Folder name"
-              value={newFolderName}
-              onChange={e => setNewFolderName(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === "Enter" && newFolderName.trim()) {
-                  handleCreateFolder();
-                }
-                if (e.key === "Escape") {
-                  setNewFolderMode(false);
-                  setNewFolderName("");
-                }
-              }}
-              sx={{ flex: 1 }}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={handleCreateFolder}
-              disabled={!newFolderName.trim()}
-            >
-              Create
-            </Button>
-            <Button
-              size="small"
-              onClick={() => {
-                setNewFolderMode(false);
-                setNewFolderName("");
-              }}
-            >
-              Cancel
-            </Button>
-          </Box>
-        ) : (
-          <Button
-            size="small"
-            startIcon={<CreateFolderIcon fontSize="small" />}
-            onClick={() => setNewFolderMode(true)}
-            sx={{ alignSelf: "flex-start", textTransform: "none" }}
-          >
-            New Folder
-          </Button>
+        {overwriteConfirm && (
+          <Typography variant="body2" color="warning.main" sx={{ mt: 0.5 }}>
+            A console named &ldquo;{consoleName.trim()}&rdquo; already exists
+            here. Click Replace to overwrite it.
+          </Typography>
         )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
+        {overwriteConfirm && (
+          <Button onClick={handleCancelOverwrite}>Back</Button>
+        )}
         <Button
           onClick={handleConfirm}
           disabled={confirmDisabled}
           variant="contained"
           disableElevation
+          color={overwriteConfirm ? "warning" : "primary"}
         >
           {confirmLabel}
         </Button>
