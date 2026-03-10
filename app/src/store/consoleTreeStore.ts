@@ -181,6 +181,17 @@ const sectionOfFolder = (
 
 // ── Store ──
 
+export interface ConsoleSearchResult {
+  id: string;
+  title: string;
+  description: string;
+  connectionName?: string;
+  databaseName?: string;
+  language: string;
+  isSaved: boolean;
+  score: number;
+}
+
 interface TreeState {
   myConsoles: Record<string, ConsoleEntry[]>;
   sharedWithWorkspace: Record<string, ConsoleEntry[]>;
@@ -188,11 +199,17 @@ interface TreeState {
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
 
+  searchQuery: string;
+  searchResults: ConsoleSearchResult[];
+  searchLoading: boolean;
+
   fetchTree: (workspaceId: string) => Promise<ConsoleEntry[]>;
   refresh: (workspaceId: string) => Promise<ConsoleEntry[]>;
   init: (workspaceId: string) => Promise<void>;
   setTree: (workspaceId: string, tree: ConsoleEntry[]) => void;
   addConsole: (workspaceId: string, path: string, id: string) => void;
+  searchConsoles: (workspaceId: string, query: string) => Promise<void>;
+  clearSearch: () => void;
 
   moveConsole: (
     workspaceId: string,
@@ -244,6 +261,41 @@ export const useConsoleTreeStore = create<TreeState>()(
     trees: {},
     loading: {},
     error: {},
+
+    searchQuery: "",
+    searchResults: [],
+    searchLoading: false,
+
+    searchConsoles: async (workspaceId, query) => {
+      set(state => {
+        state.searchQuery = query;
+        state.searchLoading = true;
+      });
+      try {
+        const data = await apiClient.get<{
+          results: ConsoleSearchResult[];
+        }>(
+          `/workspaces/${workspaceId}/consoles/search?q=${encodeURIComponent(query)}`,
+        );
+        set(state => {
+          state.searchResults = data.results || [];
+          state.searchLoading = false;
+        });
+      } catch {
+        set(state => {
+          state.searchResults = [];
+          state.searchLoading = false;
+        });
+      }
+    },
+
+    clearSearch: () => {
+      set(state => {
+        state.searchQuery = "";
+        state.searchResults = [];
+        state.searchLoading = false;
+      });
+    },
 
     fetchTree: async workspaceId => {
       set(state => {

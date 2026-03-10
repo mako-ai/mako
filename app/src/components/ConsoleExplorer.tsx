@@ -24,6 +24,8 @@ import {
   Tooltip,
   Alert,
   Chip,
+  TextField,
+  InputAdornment,
 } from "@mui/material";
 import {
   CreateNewFolder as CreateFolderIcon,
@@ -43,6 +45,8 @@ import {
   ChevronDown as ChevronDownIcon,
   Eye as EyeIcon,
   Globe as GlobeIcon,
+  Search as SearchIcon,
+  X as ClearIcon,
 } from "lucide-react";
 import {
   DndContext,
@@ -63,6 +67,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import {
   useConsoleTreeStore,
   type ConsoleEntry,
+  type ConsoleSearchResult,
 } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { useAuth } from "../contexts/auth-context";
@@ -103,7 +108,10 @@ function ConsoleExplorer(
   const moveFolder = useConsoleTreeStore(state => state.moveFolder);
   const renameItem = useConsoleTreeStore(state => state.renameItem);
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
-
+  const searchConsoles = useConsoleTreeStore(state => state.searchConsoles);
+  const clearSearch = useConsoleTreeStore(state => state.clearSearch);
+  const searchResults = useConsoleTreeStore(state => state.searchResults);
+  const searchLoading = useConsoleTreeStore(state => state.searchLoading);
   const myConsoles = currentWorkspace
     ? myConsolesMap[currentWorkspace.id] || []
     : [];
@@ -148,6 +156,135 @@ function ConsoleExplorer(
   const [undoStack, setUndoStack] = useState<
     Array<{ type: "delete"; id: string; isDirectory: boolean }>
   >([]);
+
+  // Search state
+  const [localSearchQuery, setLocalSearchQuery] = useState("");
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const filterTree = (nodes: ConsoleEntry[], query: string): ConsoleEntry[] => {
+    const lower = query.toLowerCase();
+    const result: ConsoleEntry[] = [];
+    for (const node of nodes) {
+      if (node.isDirectory && node.children) {
+        const filteredChildren = filterTree(node.children, query);
+        if (filteredChildren.length > 0) {
+          result.push({ ...node, children: filteredChildren });
+        }
+      } else if (node.name.toLowerCase().includes(lower)) {
+        result.push(node);
+      }
+    }
+    return result;
+  };
+
+  const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
+    const ids = new Set<string>();
+    for (const node of nodes) {
+      if (node.id) ids.add(node.id);
+      if (node.isDirectory && node.children) {
+        for (const id of collectIds(node.children)) ids.add(id);
+      }
+    }
+    return ids;
+  };
+
+  const filteredMyConsoles =
+    localSearchQuery.length >= 2
+      ? filterTree(myConsoles, localSearchQuery)
+      : myConsoles;
+  const filteredWorkspaceConsoles =
+    localSearchQuery.length >= 2
+      ? filterTree(sharedWithWorkspace, localSearchQuery)
+      : sharedWithWorkspace;
+
+  const treeIds =
+    localSearchQuery.length >= 2
+      ? new Set([
+          ...collectIds(filteredMyConsoles),
+          ...collectIds(filteredWorkspaceConsoles),
+        ])
+      : new Set<string>();
+  const extraServerResults = searchResults.filter(r => !treeIds.has(r.id));
+
+  const noMatches =
+    localSearchQuery.length >= 2 &&
+    filteredMyConsoles.length === 0 &&
+    filteredWorkspaceConsoles.length === 0 &&
+    extraServerResults.length === 0 &&
+    !searchLoading;
+
+  const handleSearchChange = (value: string) => {
+    setLocalSearchQuery(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+
+    if (value.length < 2) {
+      clearSearch();
+      return;
+    }
+
+    searchTimerRef.current = setTimeout(() => {
+      if (currentWorkspace) {
+        searchConsoles(currentWorkspace.id, value);
+      }
+    }, 400);
+  };
+
+  const handleSearchClear = () => {
+    setLocalSearchQuery("");
+    clearSearch();
+  };
+
+  const handleSearchResultClick = (result: ConsoleSearchResult) => {
+    onConsoleSelect(
+      result.title,
+      "loading...",
+      undefined,
+      result.id,
+      true,
+      undefined,
+      result.databaseName,
+    );
+
+    (async () => {
+      if (!currentWorkspace) return;
+      try {
+        const consoleStore = await import("../store/consoleStore");
+        const {
+          fetchConsoleContent,
+          updateContent,
+          updateConnection,
+          updateDatabase,
+          updateSavedState,
+        } = consoleStore.useConsoleStore.getState();
+        const data = await fetchConsoleContent(currentWorkspace.id, result.id);
+        if (data) {
+          useConsoleContentStore.getState().set(result.id, {
+            content: data.content,
+            connectionId: data.connectionId,
+            databaseId: data.databaseId,
+            databaseName: data.databaseName,
+          });
+          updateContent(result.id, data.content);
+          if (data.connectionId) updateConnection(result.id, data.connectionId);
+          if (data.databaseId || data.databaseName) {
+            updateDatabase(result.id, data.databaseId, data.databaseName);
+          }
+          const { computeConsoleStateHash } = await import(
+            "../utils/stateHash"
+          );
+          const hash = computeConsoleStateHash(
+            data.content,
+            data.connectionId,
+            data.databaseId,
+            data.databaseName,
+          );
+          updateSavedState(result.id, true, hash);
+        }
+      } catch (e) {
+        console.error("Failed to load search result console", e);
+      }
+    })();
+  };
 
   // Inline rename state
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
@@ -1046,6 +1183,32 @@ function ConsoleExplorer(
           </Box>
         </Box>
       </Box>
+      <Box sx={{ px: 1, pb: 0.5 }}>
+        <TextField
+          size="small"
+          fullWidth
+          placeholder="Search consoles..."
+          value={localSearchQuery}
+          onChange={e => handleSearchChange(e.target.value)}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon size={16} />
+                </InputAdornment>
+              ),
+              endAdornment: localSearchQuery ? (
+                <InputAdornment position="end">
+                  <IconButton size="small" onClick={handleSearchClear}>
+                    <ClearIcon size={14} />
+                  </IconButton>
+                </InputAdornment>
+              ) : null,
+            },
+          }}
+          sx={{ "& .MuiInputBase-root": { height: 32, fontSize: "0.85rem" } }}
+        />
+      </Box>
       {error && (
         <Box sx={{ p: 2 }}>
           <Typography color="error" variant="body2">
@@ -1089,14 +1252,14 @@ function ConsoleExplorer(
                 <ConsoleIcon strokeWidth={1.5} size={18} />,
                 myConsolesExpanded,
                 () => setMyConsolesExpanded(!myConsolesExpanded),
-                countConsoles(myConsoles),
+                countConsoles(filteredMyConsoles),
                 e => handleSectionContextMenu(e, "my"),
                 "__section_my",
               )}
               {myConsolesExpanded && (
                 <>
-                  {myConsoles.length > 0
-                    ? renderTree(myConsoles, 1)
+                  {filteredMyConsoles.length > 0
+                    ? renderTree(filteredMyConsoles, 1)
                     : renderEmptyPlaceholder("No consoles yet")}
                 </>
               )}
@@ -1108,18 +1271,65 @@ function ConsoleExplorer(
                 sharedWithWorkspaceExpanded,
                 () =>
                   setSharedWithWorkspaceExpanded(!sharedWithWorkspaceExpanded),
-                countConsoles(sharedWithWorkspace),
+                countConsoles(filteredWorkspaceConsoles),
                 e => handleSectionContextMenu(e, "workspace"),
                 "__section_workspace",
               )}
               {sharedWithWorkspaceExpanded && (
                 <>
-                  {sharedWithWorkspace.length > 0
-                    ? renderTree(sharedWithWorkspace, 1)
+                  {filteredWorkspaceConsoles.length > 0
+                    ? renderTree(filteredWorkspaceConsoles, 1)
                     : renderEmptyPlaceholder("No workspace consoles yet")}
                 </>
               )}
             </List>
+
+            {localSearchQuery.length >= 2 && extraServerResults.length > 0 && (
+              <Box sx={{ px: 1, pb: 1 }}>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ px: 0.5, pb: 0.5, display: "block" }}
+                >
+                  Also matched by description
+                </Typography>
+                <List dense disablePadding>
+                  {extraServerResults.map(result => (
+                    <ListItemButton
+                      key={result.id}
+                      onClick={() => handleSearchResultClick(result)}
+                      sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
+                    >
+                      <ListItemIcon sx={{ minWidth: 28 }}>
+                        <ConsoleIcon size={16} />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary={result.title}
+                        secondary={result.description || result.language}
+                        primaryTypographyProps={{
+                          variant: "body2",
+                          noWrap: true,
+                          fontSize: "0.8rem",
+                        }}
+                        secondaryTypographyProps={{
+                          variant: "caption",
+                          noWrap: true,
+                          fontSize: "0.7rem",
+                        }}
+                      />
+                    </ListItemButton>
+                  ))}
+                </List>
+              </Box>
+            )}
+
+            {noMatches && (
+              <Box sx={{ px: 2, py: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  No consoles found
+                </Typography>
+              </Box>
+            )}
 
             {/* Drag overlay */}
             <DragOverlay>

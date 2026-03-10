@@ -23,6 +23,7 @@ interface ConsoleInfoModalProps {
 }
 
 interface ConsoleDetails {
+  description?: string;
   ownerDisplayName?: string;
   owner_id?: string;
   access?: string;
@@ -149,6 +150,26 @@ export default function ConsoleInfoModal({
               }
               disabled={!workspaceId}
             />
+          </Box>
+
+          <Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+              Description
+            </Typography>
+            {loadingDetails ? (
+              <Skeleton variant="text" width="80%" height={24} />
+            ) : (
+              <Typography
+                variant="body2"
+                sx={
+                  details?.description
+                    ? { fontStyle: "italic" }
+                    : { color: "text.disabled" }
+                }
+              >
+                {details?.description || "No description"}
+              </Typography>
+            )}
           </Box>
 
           <Box>

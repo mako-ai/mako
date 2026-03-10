@@ -51,6 +51,8 @@ export interface AgentContext {
   workspaceCustomPrompt?: string;
   /** Agent-editable self-directive (persisted workspace knowledge) */
   selfDirective?: string;
+  /** Auto-discovered relevant consoles (injected via embedding search) */
+  consoleHints?: string;
 }
 
 /**

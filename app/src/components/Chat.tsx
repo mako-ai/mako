@@ -1068,6 +1068,89 @@ const Chat: React.FC<ChatProps> = ({
         return;
       }
 
+      // Handle open_console - fetch and open a saved console
+      if (toolName === "open_console") {
+        const consoleId = input.consoleId as string | undefined;
+        if (!consoleId) {
+          addToolOutput({
+            tool: "open_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: "consoleId is required.",
+            },
+          });
+          return;
+        }
+
+        try {
+          const currentStore = useConsoleStore.getState();
+          const existingTab = currentStore.tabs[consoleId];
+          if (existingTab) {
+            currentStore.setActiveTab(consoleId);
+            addToolOutput({
+              tool: "open_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: true,
+                consoleId,
+                title: existingTab.title,
+                message: `Console "${existingTab.title}" is already open — switched to it.`,
+              },
+            });
+            return;
+          }
+
+          const data = await currentStore.fetchConsoleContent(
+            workspaceIdRef.current!,
+            consoleId,
+          );
+          if (!data) {
+            addToolOutput({
+              tool: "open_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Console ${consoleId} not found or access denied.`,
+              },
+            });
+            return;
+          }
+
+          const title = data.name || data.path || "Untitled";
+          currentStore.openTab({
+            id: consoleId,
+            title,
+            content: data.content || "",
+            connectionId: data.connectionId,
+            databaseId: data.databaseId,
+            databaseName: data.databaseName,
+          });
+          currentStore.setActiveTab(consoleId);
+
+          addToolOutput({
+            tool: "open_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              consoleId,
+              title,
+              message: `Console "${title}" opened successfully.`,
+            },
+          });
+        } catch (err) {
+          addToolOutput({
+            tool: "open_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: `Failed to open console: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          });
+        }
+        return;
+      }
+
       // Handle flow agent client-side tools
       if (agentModeRef.current === "flow") {
         // get_form_state - Return current form configuration

@@ -339,6 +339,9 @@ export interface ISavedConsole extends Document {
   databaseId?: string;
   name: string;
   description?: string;
+  descriptionEmbedding?: number[];
+  embeddingModel?: string;
+  descriptionGeneratedAt?: Date;
   code: string;
   language: "sql" | "javascript" | "mongodb";
   mongoOptions?: {
@@ -1064,6 +1067,16 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: String,
       trim: true,
     },
+    descriptionEmbedding: {
+      type: [Number],
+      select: false,
+    },
+    embeddingModel: {
+      type: String,
+    },
+    descriptionGeneratedAt: {
+      type: Date,
+    },
     code: {
       type: String,
       required: true,
@@ -1138,6 +1151,10 @@ SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, isSaved: 1 }); // For filtering saved vs draft consoles
 SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
 SavedConsoleSchema.index({ workspaceId: 1, access: 1, owner_id: 1 }); // Console access model queries
+SavedConsoleSchema.index(
+  { name: "text", description: "text" },
+  { name: "console_text_search" },
+);
 
 /**
  * Chat Schema
