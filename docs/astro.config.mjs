@@ -12,22 +12,38 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/withastro/starlight",
+          href: "https://github.com/mako-ai/mono",
         },
       ],
       sidebar: [
         {
-          label: "Product",
+          label: "Getting Started",
           items: [
+            { label: "Welcome", slug: "index" },
             { label: "Introduction", slug: "intro" },
-            { label: "PRD", slug: "prd" },
-            { label: "Architecture", slug: "architecture" },
+            { label: "Getting Started", slug: "getting-started" },
+          ],
+        },
+        {
+          label: "Core Features",
+          items: [
+            { label: "AI Agent", slug: "ai-agent" },
+            { label: "Console", slug: "console" },
+            { label: "Query Runner", slug: "query-runner" },
+            { label: "Self-Directive", slug: "self-directive" },
+          ],
+        },
+        {
+          label: "Data",
+          items: [
+            { label: "Connectors", slug: "connectors" },
+            { label: "Data Sync & Flows", slug: "data-sync" },
+            { label: "Connect Databases", slug: "databases/connect-databases" },
           ],
         },
         {
           label: "Guides",
           items: [
-            { label: "Getting Started", slug: "getting-started" },
             { label: "Authentication", slug: "guides/authentication" },
             {
               label: "Building Connectors",
@@ -36,9 +52,10 @@ export default defineConfig({
           ],
         },
         {
-          label: "Databases",
+          label: "Operations",
           items: [
-            { label: "Connect Databases", slug: "databases/connect-databases" },
+            { label: "Architecture", slug: "architecture" },
+            { label: "Deployment", slug: "deployment" },
           ],
         },
         {

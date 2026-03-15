@@ -1,28 +1,57 @@
 ---
 title: Introduction
-description: What is Mako?
+description: What is Mako and why does it exist?
 ---
 
-**Mako** is an AI-powered data platform designed to be the "Cursor for Data." It enables you to build a data warehouse by connecting to your existing databases and third-party data sources, and then use AI to write queries and analyze your data.
+## The Problem
 
-## Core Concept
+Data lives everywhere. Payments in Stripe, customers in your CRM, product events in PostHog, operational data in your own Postgres. Because the data is scattered:
 
-Mako stacks four key components to solve the data fragmentation problem:
+- You can't join it together to build a single customer view
+- Third-party data (Stripe, CRM) isn't queryable with SQL
+- Even with a data warehouse, you still need a SQL client or BI tool
+- Even with ChatGPT, the LLM can't see your actual schema or test queries against real data
 
-1.  **ETL Pipeline**: Connects to various data sources (Stripe, CRMs, Databases) and syncs data into a unified warehouse.
-2.  **Database Client**: A universal interface to run queries across all your connected data.
-3.  **AI Analyst**: An AI assistant equipped with tools to inspect schemas, write SQL, and explain results.
-4.  **Collaboration**: A multi-tenant SaaS layer to share insights and queries with your team.
+## What Mako Does
 
-## Why Mako?
+Mako stacks four components to solve this:
 
-- **Unified View**: Break down silos by pulling data from Stripe, Close.com, Postgres, and more into one place.
-- **AI-First**: Don't just run SQL; ask questions in plain English. Mako understands your schema.
-- **Open Source**: Built on modern open-source technologies. You own your data and your infrastructure.
-- **Extensible**: Add new data sources easily using the Connector SDK.
+1. **ETL Pipeline** — Connectors pull data from Stripe, Close CRM, PostHog, REST/GraphQL APIs, and databases into a unified warehouse. Syncs are chunked and resumable.
+2. **Universal Database Client** — A console that talks to PostgreSQL, MongoDB, BigQuery, MySQL, ClickHouse, Redshift, SQLite, and Cloudflare D1. One interface for everything.
+3. **AI Agent** — An assistant with real tools: it inspects your schemas, writes queries, executes them, reads results, and places the working query in your console. Not a chatbot — a copilot.
+4. **Collaboration** — Multi-tenant workspaces with shared consoles, saved queries, API keys, and team management.
 
-## Who is it for?
+## Architecture at a Glance
 
-- **CEOs/Founders**: Get answers to business questions without waiting for a data analyst.
-- **Data Analysts**: Automate the boring parts of ETL and query writing.
-- **Product Managers**: Make data-driven decisions with direct access to product metrics.
+```
+┌─────────────┐  ┌──────────────┐  ┌──────────────┐
+│  React App  │  │  Hono API    │  │  Inngest     │
+│  (Vite)     │──│  (Node.js)   │──│  (Job Queue) │
+└─────────────┘  └──────┬───────┘  └──────────────┘
+                        │
+          ┌─────────────┼─────────────┐
+          │             │             │
+   ┌──────┴──────┐ ┌───┴────┐ ┌─────┴─────┐
+   │ Connectors  │ │ Query  │ │ AI Agent  │
+   │ (ETL)       │ │ Runner │ │ (Vercel   │
+   │             │ │        │ │  AI SDK)  │
+   └─────────────┘ └────────┘ └───────────┘
+```
+
+- **Web App** (`app/`): React + Vite + Tailwind. Console editor, database explorer, chat interface, flow configuration.
+- **API** (`api/`): Hono on Node.js. MongoDB for application state. Lucia Auth + Arctic for OAuth.
+- **Sync Engine** (`api/src/sync/`): Chunked, resumable ETL with retry logic and Inngest orchestration.
+- **Query Runner** (`api/src/databases/`): Uniform interface across 9 database drivers.
+- **AI Agent** (`api/src/agent-lib/`): Vercel AI SDK with schema inspection, query execution, and console management tools.
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Frontend | React, Vite, Tailwind CSS, React Router |
+| API | Hono, Node.js |
+| App Database | MongoDB (Mongoose ODM) |
+| Auth | Lucia Auth + Arctic (Google, GitHub OAuth) |
+| Job Queue | Inngest |
+| AI | Vercel AI SDK, OpenAI, Anthropic, Google |
+| Deployment | Docker, Google Cloud Run, Cloudflare |
