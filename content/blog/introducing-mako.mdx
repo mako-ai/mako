@@ -1,0 +1,71 @@
+---
+title: "Introducing Mako: The SQL Client That Understands Your Database"
+slug: introducing-mako
+date: "2025-03-15"
+author: Mako Team
+tags:
+  - announcement
+  - product
+  - ai
+excerpt: "Mako isn't another chat wrapper bolted onto a query editor. It's a real SQL console where the AI is the interface — built from the ground up to understand your schema and give you accurate answers."
+draft: false
+---
+
+# Introducing Mako
+
+We built Mako because every SQL client we tried fell into one of two buckets: powerful but bloated, or lightweight but dumb. The AI-powered ones were worse — chat wrappers that hallucinate column names and generate queries against tables that don't exist.
+
+Mako is different. It's a SQL client where the AI *is* the interface.
+
+## Not Another Chat Wrapper
+
+Most "AI SQL tools" paste your question into a prompt and hope for the best. Mako actually inspects your schema before generating anything. It knows your tables, your columns, your relationships. When it writes a query, every identifier is real.
+
+This means you can ask in plain English:
+
+```sql
+-- "Show me users who haven't logged in for 30 days"
+SELECT * FROM users
+WHERE last_login < NOW() - INTERVAL '30 days'
+ORDER BY last_login DESC;
+```
+
+And the query runs. No fixing column names. No guessing at table structures.
+
+## Nine Database Drivers, One Interface
+
+Mako connects to the databases you actually use:
+
+- **PostgreSQL** — the workhorse
+- **MySQL** — because legacy systems exist
+- **MongoDB** — aggregation pipelines included
+- **ClickHouse** — for your analytics warehouse
+- **BigQuery** — Google's serverless data warehouse
+- **SQLite** — lightweight and local
+- **MSSQL** — enterprise environments
+- **Cloudflare D1** — edge SQL
+- **Cloud SQL (Postgres)** — GCP-managed databases
+
+Same interface, same AI, same experience — regardless of what's underneath.
+
+## Schema-Aware AI That Doesn't Hallucinate
+
+Here's what makes Mako's AI actually useful: it reads your database schema before answering. Every suggestion references real tables and columns. If you ask about revenue, it looks for `revenue`, `amount`, `total`, or whatever your schema actually calls it.
+
+The AI also builds context over time. It learns which tables you query most, what joins make sense in your schema, and how your naming conventions work. We call this self-directive memory — the more you use Mako, the better it gets at understanding *your* database.
+
+## Built for Teams
+
+Mako is workspace-based. Your team shares database connections (encrypted at rest), saves queries to a shared library, and collaborates in real time. No more Slack threads with SQL snippets. No more "which database has the users table?"
+
+Every query is saved, searchable, and synced across devices.
+
+## Open Source, Free Forever
+
+Mako is MIT licensed and free to use. No credit card, no trial period, no feature gates. Run it in the cloud at [app.mako.ai](https://app.mako.ai) or self-host it from the [GitHub repo](https://github.com/mako-ai/mono).
+
+We believe the best developer tools are open. Mako is no exception.
+
+## Try It Now
+
+Head to [app.mako.ai](https://app.mako.ai), connect a database, and ask your first question. The AI takes it from there.
