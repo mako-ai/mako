@@ -27,17 +27,15 @@ export default defineConfig({
         {
           label: "Core Features",
           items: [
-            { label: "AI Agent", slug: "ai-agent" },
+            { label: "AI-Powered SQL Client", slug: "ai-agent" },
             { label: "Console", slug: "console" },
             { label: "Query Runner", slug: "query-runner" },
             { label: "Self-Directive", slug: "self-directive" },
           ],
         },
         {
-          label: "Data",
+          label: "Databases",
           items: [
-            { label: "Connectors", slug: "connectors" },
-            { label: "Data Sync & Flows", slug: "data-sync" },
             { label: "Connect Databases", slug: "databases/connect-databases" },
           ],
         },
@@ -45,10 +43,6 @@ export default defineConfig({
           label: "Guides",
           items: [
             { label: "Authentication", slug: "guides/authentication" },
-            {
-              label: "Building Connectors",
-              slug: "guides/building-connectors",
-            },
           ],
         },
         {
@@ -61,6 +55,18 @@ export default defineConfig({
         {
           label: "Reference",
           items: [{ label: "API Reference", slug: "api-reference" }],
+        },
+        {
+          label: "Experimental",
+          collapsed: true,
+          items: [
+            { label: "Connectors", slug: "connectors" },
+            { label: "Data Sync & Flows", slug: "data-sync" },
+            {
+              label: "Building Connectors",
+              slug: "guides/building-connectors",
+            },
+          ],
         },
       ],
     }),

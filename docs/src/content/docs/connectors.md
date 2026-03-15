@@ -1,104 +1,48 @@
 ---
 title: Connectors
-description: Sync data from external sources into your warehouse with pluggable connectors.
+description: Sync data from external services into your databases.
 ---
 
-Connectors are how Mako pulls data from external services into your data warehouse. Each connector implements a standard interface for chunked, resumable data fetching.
+:::caution[Experimental]
+Connectors and data sync are experimental features under active development. The API and behavior may change.
+:::
+
+Connectors pull data from external services (Stripe, Close CRM, PostHog, REST APIs) and sync it into your connected databases. This lets you query third-party data with SQL alongside your own data.
 
 ## Available Connectors
 
-| Connector | Data Source | Entities |
+| Connector | Source | Entities |
 |---|---|---|
-| **Stripe** | Payment data | Customers, subscriptions, invoices, charges, payments |
-| **Close** | CRM data | Leads, contacts, activities, opportunities |
-| **PostHog** | Product analytics | Events, persons, groups |
-| **BigQuery** | Data warehouse | Tables and views |
-| **REST** | Any REST API | Custom entities via configuration |
-| **GraphQL** | Any GraphQL API | Custom queries |
+| **Stripe** | Stripe API | Customers, Subscriptions, Invoices, Charges, Products, Prices |
+| **PostHog** | PostHog API | Events, Persons, Groups |
+| **Close CRM** | Close API | Leads, Contacts, Activities, Opportunities |
+| **REST** | Any REST API | Configurable endpoints |
 
-## How Sync Works
+## How It Works
 
-Mako uses a **chunked sync** architecture:
+1. **Configure** — Add a connector with API credentials and select which entities to sync
+2. **Map** — Choose a destination database and table naming convention
+3. **Sync** — Connectors fetch data in chunks with cursor-based pagination
+4. **Resume** — If a sync fails, it resumes from the last saved cursor (idempotent upserts)
 
-1. **Fetch chunk** — The connector fetches a batch of records and returns a cursor
-2. **Save state** — The sync orchestrator persists the cursor after each chunk
-3. **Resume** — If a sync fails mid-way, it resumes from the last successful chunk
-4. **Upsert** — All writes are idempotent (upsert-based) so re-running is safe
+## Building Custom Connectors
 
-This means syncs are:
-- **Resumable** — network failures don't restart from scratch
-- **Incremental** — only fetch new/changed data on subsequent runs
-- **Idempotent** — safe to re-run without creating duplicates
+See the [Building Connectors](/guides/building-connectors/) guide for implementing new data sources.
 
-## Running Syncs
-
-### From the UI
-Navigate to **Flows** in the sidebar. Create a new flow, select a source connector and destination, configure entities, and run.
-
-### From the CLI
-```bash
-# Interactive — prompts for source, destination
-pnpm run sync
-
-# Direct
-pnpm run sync -- -s <source_id> -d <destination_id>
-
-# Specific entities only
-pnpm run sync -- -s <source_id> -d <destination_id> -e customers,invoices
-```
-
-### Scheduled (Inngest)
-Flows can be scheduled via cron in the flow configuration. Inngest handles the orchestration with automatic retry on failure.
-
-### Webhook-triggered
-Some flows can be triggered by webhooks for real-time sync.
-
-## Building a Custom Connector
-
-Extend `BaseConnector` and implement three methods:
+Each connector implements:
 
 ```typescript
-import { BaseConnector } from "./base/BaseConnector";
-
-class MyServiceConnector extends BaseConnector {
-  // Define what this connector can sync
-  getMetadata() {
-    return {
-      name: "My Service",
-      version: "1.0.0",
-      description: "Syncs data from My Service",
-      supportedEntities: ["users", "orders"],
-    };
-  }
-
-  // Validate the connection works
-  async testConnection() {
-    const ok = await this.client.ping();
-    return { success: ok, message: ok ? "Connected" : "Failed" };
-  }
-
-  // Fetch one chunk of data, return cursor for next chunk
-  async fetchEntityChunk(options) {
-    const { entity, state } = options;
-    const page = state?.page || 1;
-
-    const response = await this.client.getUsers({ page });
-    await options.onBatch(response.data);
-
-    return {
-      totalProcessed: (state?.totalProcessed || 0) + response.data.length,
-      hasMore: response.hasMore,
-      page: page + 1,
-    };
-  }
+interface Connector {
+  fetchEntityChunk(entity: string, cursor?: string): Promise<{
+    records: Record<string, any>[];
+    nextCursor?: string;
+    hasMore: boolean;
+  }>;
+  getEntities(): string[];
+  getSchema(entity: string): SchemaDefinition;
 }
 ```
 
-Register it in `api/src/connectors/registry.ts` — the registry auto-discovers connector directories, but you can also register manually.
+## Configuration
 
-### Best Practices
-
-- **Idempotency**: Use upsert operations in the destination
-- **Rate limiting**: Respect API limits with built-in delays
-- **Typing**: Define interfaces for API responses
-- **Icons**: Add an `icon.svg` to your connector directory for the UI
+Connectors are configured per-workspace through the UI or API. Credentials are encrypted at rest using the `ENCRYPTION_KEY` environment variable.

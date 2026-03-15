@@ -30,7 +30,7 @@ mono/
 | Routing | React Router |
 | Editor | Monaco / CodeMirror |
 
-Key UI components: Console editor, Database explorer, Chat interface, Flow editor, Connector configuration, Collection/View editors, Onboarding flow.
+Key UI: Console editor, Database explorer, Chat interface, Collection/View editors, Onboarding flow.
 
 ### API Server (`api/`)
 
@@ -47,73 +47,55 @@ The API handles:
 - Database connection management (encrypted credentials)
 - Query execution via the [Query Runner](/query-runner/)
 - AI agent streaming via the [Chat API](/api-reference/)
-- Sync orchestration via [Connectors](/connectors/) and [Flows](/data-sync/)
-
-### Sync Engine (`api/src/sync/`)
-
-The sync engine moves data from sources to destinations:
-
-1. **Connector** fetches a chunk of records using `fetchEntityChunk`
-2. **Orchestrator** saves the cursor and progress after each chunk
-3. On failure, resumes from the last saved cursor
-4. All writes are upsert-based (idempotent)
-
-Orchestrated by **Inngest** for serverless-friendly execution with automatic retry.
-
-### Query Runner (`api/src/databases/`)
-
-A driver registry with implementations for:
-- PostgreSQL, Cloud SQL (Postgres), Redshift
-- BigQuery
-- MongoDB
-- MySQL
-- ClickHouse
-- SQLite, Cloudflare D1
-
-Each driver implements: connection pooling, query execution, schema inspection, and dialect handling.
 
 ### AI Agent (`api/src/agent-lib/`)
 
-Multi-agent architecture with specialized agents:
-- **Console Agent**: Database query assistant
-- **Flow Agent**: Sync configuration assistant
+The agent system uses a multi-agent architecture:
 
-Both share a common toolset (database discovery, query execution, console management) but have different system prompts and specialized tools.
+| Agent | Purpose |
+|---|---|
+| **Console Agent** | SQL generation, schema inspection, query execution. The primary agent. |
+| **Flow Agent** | Experimental. Orchestrates data sync pipelines. |
+| **Universal Tools** | Shared tooling: schema inspection, query execution, self-directive |
 
-The agent uses the **Vercel AI SDK** for streaming, tool calling, and multi-provider support.
+The console agent has access to real database schemas via `inspect_schema` and can execute queries via `sql_execute_query` / `mongodb_execute_query`. Results flow back to the chat and — critically — get placed directly in the console editor via `write_to_interface`.
 
-### Background Jobs (Inngest)
+### Query Runner (`api/src/databases/`)
 
-Inngest handles:
-- Scheduled and triggered sync flows
-- Webhook-triggered flows
-- Long-running sync operations with step-based retry
+Supports 9 database drivers through a unified interface:
+
+PostgreSQL, MongoDB, BigQuery, MySQL, ClickHouse, Redshift, SQLite, Snowflake, Cloudflare D1.
+
+Each driver implements `executeQuery()` and `inspectSchema()`. Connections are encrypted at rest and pooled per workspace.
+
+### Authentication
+
+Lucia Auth with Arctic OAuth providers (Google, GitHub). Sessions stored in MongoDB. API key authentication available for programmatic access.
 
 ## Data Flow
 
 ```
-User Question
-    │
-    ▼
-Chat API (/api/agent/chat)
-    │
-    ▼
-Agent selects tools based on question
-    │
-    ├── list_connections → discover databases
-    ├── sql_inspect_table → understand schema
-    ├── sql_execute_query → run query via Query Runner
-    ├── modify_console → deliver working query to UI
-    └── update_self_directive → remember for next time
-    │
-    ▼
-Streaming SSE response to frontend
+User types in console
+        │
+        ▼
+React App → POST /api/chat (streaming)
+        │
+        ▼
+Hono API → Build agent context (schema + self-directive + history)
+        │
+        ▼
+AI Agent → inspect_schema → sql_execute_query → write_to_interface
+        │
+        ▼
+Streaming response → Chat UI + Console editor updated
 ```
 
-## Security
+## Design Decisions
 
-- Database credentials are encrypted at rest with `ENCRYPTION_KEY`
-- Sessions use HTTP-only cookies with CSRF protection
-- API keys are hashed (bcrypt) before storage
-- OAuth via Lucia Auth + Arctic (no password storage for social login)
-- Rate limiting on authentication endpoints
+**Why Hono?** Lightweight, fast, runs everywhere (Node, Cloudflare Workers, Deno). Good TypeScript support.
+
+**Why MongoDB for the app database?** Flexible schema for workspaces, connections, and consoles that evolve rapidly. User databases are whatever the user connects — Mako's own storage is separate.
+
+**Why Vercel AI SDK?** Provider-agnostic streaming. Swap between OpenAI, Anthropic, and Google models without changing the agent code.
+
+**Why Monaco/CodeMirror?** Professional SQL editing with syntax highlighting, auto-completion, and multi-cursor support. The console is the product — it needs to feel like a real editor.
