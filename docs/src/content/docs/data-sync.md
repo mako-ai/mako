@@ -1,59 +1,51 @@
 ---
 title: Data Sync & Flows
-description: Move data between databases with configurable, resumable sync flows.
+description: Move data between sources and destinations on a schedule.
 ---
 
-Flows are Mako's way of moving data between sources and destinations. They combine extraction queries, schema mapping, and scheduling into a configurable pipeline.
+:::caution[Experimental]
+Data sync and flows are experimental features under active development. The API and behavior may change.
+:::
 
-## Flow Types
+Flows orchestrate data movement from [Connectors](/connectors/) into your databases. They handle scheduling, chunking, error recovery, and progress tracking.
 
-### Connector Flows
-Pull data from external services (Stripe, Close CRM, PostHog) into your warehouse using [connectors](/connectors/).
-
-### Database-to-Database Flows
-Move data between any two connected databases. Write a SQL extraction query on the source, configure column mappings, and sync to the destination.
-
-### Webhook Flows
-Triggered by external webhooks for real-time or near-real-time sync.
-
-## Configuring a Database Flow
-
-1. **Source** — Select a database connection and write an extraction query
-2. **Destination** — Select where the data goes (e.g., BigQuery dataset + table)
-3. **Type Coercions** — Map source column types to destination types
-4. **Schedule** — Set a cron expression for automatic runs
-
-The [Flow Agent](/ai-agent/) can help configure all of this. Open the chat in the flow editor and describe what you want to sync.
-
-### Template Placeholders
-
-Extraction queries support template placeholders for incremental sync:
-
-```sql
-SELECT * FROM orders
-WHERE updated_at > '{{last_sync_timestamp}}'
-ORDER BY updated_at ASC
-```
-
-The sync engine replaces `{{last_sync_timestamp}}` with the timestamp from the last successful run.
-
-## Scheduling
-
-Flows support cron scheduling via Inngest:
+## How Flows Work
 
 ```
-# Every hour
-0 * * * *
-
-# Every day at 2 AM
-0 2 * * *
-
-# Every Monday at 9 AM
-0 9 * * 1
+Connector → Fetch chunk → Upsert to destination → Save cursor → Next chunk
 ```
 
-Enable scheduling in the flow configuration. Inngest handles retry on failure with exponential backoff.
+Each flow run:
+1. Reads the last saved cursor for the entity
+2. Fetches the next chunk of records from the connector
+3. Upserts records into the destination database
+4. Saves the new cursor position
+5. Repeats until no more records
 
-## Monitoring
+## Job Queue
 
-The flow logs show execution history, row counts, errors, and timing for each run. Access via the **Flows** tab in the sidebar.
+Flows run on [Inngest](https://www.inngest.com/), a job queue that handles:
+- Scheduled execution (cron-based)
+- Automatic retries on failure
+- Concurrency limits per workspace
+- Progress tracking and logging
+
+The Inngest dev server runs locally at `http://localhost:8288` during development.
+
+## CLI
+
+You can trigger syncs from the command line:
+
+```bash
+# Run a specific sync
+pnpm run sync --connector stripe --entity customers
+
+# Run all syncs for a workspace
+pnpm run sync --workspace <workspace-id>
+```
+
+## Error Handling
+
+- Syncs are idempotent — re-running won't create duplicates (upsert-based writes)
+- Cursor is saved after each successful chunk, so failures resume from the last checkpoint
+- Failed syncs are retried automatically by Inngest with exponential backoff
