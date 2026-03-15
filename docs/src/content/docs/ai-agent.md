@@ -1,102 +1,95 @@
 ---
-title: AI Agent
-description: How Mako's AI assistant works — tools, workflow, and multi-database support.
+title: AI-Powered SQL Client
+description: A SQL client where AI is the interface — ask questions in plain English, get working queries in your console.
 ---
 
-Mako's AI agent isn't a chatbot. It's a copilot with real tools — it can inspect your database schemas, write queries, execute them against live data, and place the working result directly in your console.
+Mako is a SQL client. The AI is how you talk to it.
 
-## How It Works
+Instead of manually browsing schemas, writing queries from scratch, and iterating through syntax errors, you describe what you want in plain English. Mako inspects your database, writes the query, tests it against your live data, and places the working result directly in your console editor — ready to run, tweak, or save.
 
-The agent follows a strict workflow:
+The chat is secondary. The console is the product.
 
-1. **Discover** — Lists connections and inspects schemas to understand your data
-2. **Write** — Generates a query based on your question and the actual schema
-3. **Execute** — Runs the query against your real database
-4. **Deliver** — Places the working query in your console editor via `modify_console`
+## The Workflow
 
-The chat response is secondary — the console gets the working query.
+Every interaction follows the same pattern:
 
-## Agent Types
+1. **You ask a question** — "Show me users who signed up last week but haven't made a purchase"
+2. **Mako inspects your schema** — discovers tables, columns, types, relationships
+3. **Writes and tests the query** — executes it against your real database to verify it works
+4. **Delivers to your console** — the working query appears in your editor via `modify_console`
 
-Mako has a multi-agent architecture with specialized agents:
+You get a brief explanation in chat, but the real output is always a working query in your console.
 
-### Console Agent
-The default. Helps write and run database queries. Activated when you're working in a console tab.
+## Console-First Design
 
-- Reads your open consoles and their connections
-- Understands which console is active
-- Preserves existing console content unless asked to overwrite
-- Creates new consoles when needed
+The console is a full SQL editor — not a chat window with code blocks you copy-paste from. Mako treats it as the primary output:
 
-### Flow Agent
-Activated in flow editor tabs. Helps configure database-to-database sync flows.
+- **Preserves your work** — won't overwrite a console with valuable content. Creates a new tab instead.
+- **Reads before writing** — always checks the current console state before modifying
+- **Supports patching** — for small edits (adding a WHERE clause, fixing a column name), it patches specific lines instead of replacing everything
+- **Multiple consoles** — each query gets its own tab, organized by topic
 
-- Inspects source and destination schemas
-- Writes extraction queries with template placeholders
-- Validates queries before applying
-- Configures type coercions and column mappings
+## Multi-Database Support
 
-## Tools
-
-The agent has access to these tool categories:
-
-### Database Discovery
-| Tool | What It Does |
-|---|---|
-| `list_connections` | Lists all database connections in the workspace |
-| `sql_list_databases` / `mongo_list_databases` | Lists databases on a connection |
-| `sql_list_tables` / `mongo_list_collections` | Lists tables/collections |
-| `sql_inspect_table` / `mongo_inspect_collection` | Gets column types, sample data |
-
-### Query Execution
-| Tool | What It Does |
-|---|---|
-| `sql_execute_query` | Runs SQL against PostgreSQL, BigQuery, MySQL, SQLite, D1, Redshift |
-| `mongo_execute_query` | Runs MongoDB aggregation pipelines or find queries |
-
-### Console Management
-| Tool | What It Does |
-|---|---|
-| `read_console` | Gets the current content of a console |
-| `modify_console` | Updates a console with a working query |
-| `create_console` | Creates a new console |
-| `search_consoles` | Finds saved consoles by keyword |
-
-### Self-Directive
-| Tool | What It Does |
-|---|---|
-| `read_self_directive` | Reads the agent's persistent memory for this workspace |
-| `update_self_directive` | Saves schema quirks, user preferences, and learned rules |
-
-The self-directive persists across all conversations in a workspace. When the agent discovers that your `created_at` column is actually stored as a Unix timestamp, it saves that — and remembers it next time.
-
-## Supported Databases
-
-The agent auto-detects the database type from the connection and uses the correct SQL dialect:
+Mako auto-detects the database type from your connection and adapts its SQL dialect:
 
 | Database | Dialect | Notes |
 |---|---|---|
-| PostgreSQL | `postgresql` | Full support including arrays, JSON operators, `ILIKE` |
-| Cloud SQL (Postgres) | `postgresql` | Same as PostgreSQL |
+| PostgreSQL | `postgresql` | Full support — arrays, JSON operators, `ILIKE` |
+| Cloud SQL | `postgresql` | Same as PostgreSQL |
 | BigQuery | `bigquery` | Backtick identifiers, `CAST()`, `REGEXP_CONTAINS()` |
-| MongoDB | — | Aggregation pipelines, `find()`, collection inspection |
+| MongoDB | Aggregation | Pipelines, `find()`, collection inspection |
 | MySQL | `mysql` | Backtick identifiers, `CONVERT()` |
 | ClickHouse | `clickhouse` | Columnar-optimized queries |
 | Redshift | `postgresql` | PostgreSQL wire-compatible |
 | SQLite | `sqlite` | Including Cloudflare D1 |
 
+You don't configure dialects — Mako reads the connection metadata and does the right thing.
+
+## Schema Discovery
+
+Before writing any query, Mako inspects your actual schema. No guessing, no hallucinated column names:
+
+| Tool | What It Does |
+|---|---|
+| `list_connections` | Shows all database connections in the workspace |
+| `sql_list_databases` / `mongo_list_databases` | Lists databases on a connection |
+| `sql_list_tables` / `mongo_list_collections` | Lists tables/collections with row counts |
+| `sql_inspect_table` / `mongo_inspect_collection` | Gets column types, constraints, and sample data |
+
+The agent uses sample data to understand real values — not just types. If your `status` column contains `'active'`, `'churned'`, `'trial'`, it knows what to filter on.
+
+## Persistent Memory (Self-Directive)
+
+Mako learns your database over time. When it discovers that your `created_at` column stores Unix timestamps instead of dates, or that your `users` table uses `uuid` instead of `id` as the primary key, it saves that knowledge:
+
+| Tool | What It Does |
+|---|---|
+| `read_self_directive` | Reads learned rules for this workspace |
+| `update_self_directive` | Saves schema quirks, preferences, conventions |
+
+This persists across all conversations. The more you use Mako, the less explaining you need to do.
+
+## Multi-Agent Architecture
+
+Different contexts activate different specialized agents:
+
+### Console Agent (default)
+Active when you're working in a console tab. This is the core SQL client experience — schema discovery, query writing, execution, and console delivery.
+
+### Flow Agent
+Active in the flow editor. Helps configure database-to-database sync flows — inspects source and destination schemas, writes extraction queries with template placeholders, and validates before applying.
+
 ## AI Models
 
-Mako supports multiple AI providers. Available models depend on which API keys you configure:
+Mako supports multiple providers. Configure API keys in `.env` and users select their preferred model in the UI:
 
-- **OpenAI**: GPT-4o, GPT-5.2, GPT-5.2 Codex
-- **Anthropic**: Claude Sonnet 4, Claude Opus 4 (with extended thinking)
-- **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash
-
-Set the provider API keys in your `.env` file. Users can select their preferred model in the UI.
+- **Anthropic** — Claude Sonnet 4, Claude Opus 4 (with extended thinking)
+- **OpenAI** — GPT-4o, GPT-5.2, GPT-5.2 Codex
+- **Google** — Gemini 2.5 Pro, Gemini 2.5 Flash
 
 ## Safety
 
-- All SELECT queries are auto-limited to 500 rows unless explicitly overridden
-- The agent tests queries before delivering them to the console
+- SELECT queries are auto-limited to 500 rows unless you explicitly override
+- Queries are tested before delivery — you get working SQL, not best-effort guesses
 - Write operations require explicit user intent
