@@ -1,36 +1,41 @@
 ---
-title: Mako Documentation
-description: Documentation for Mako, the AI-powered data platform.
-template: splash
-hero:
-  tagline: The Cursor for Data. Build your data warehouse and analyze with AI.
-  image:
-    file: ../../assets/houston.webp
-  actions:
-    - text: Read the PRD
-      link: /prd/
-      icon: right-arrow
-    - text: View on GitHub
-      link: https://github.com/mako-ai/mono
-      icon: external
-      variant: minimal
+title: Welcome to Mako
+description: The Cursor for Data — connect your databases, sync your data, and analyze everything with AI.
 ---
 
-import { Card, CardGrid } from "@astrojs/starlight/components";
+import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
 
-## Features
+Mako is an open-source, AI-powered data platform. Connect your existing databases and third-party sources, sync them into a unified warehouse, and use AI to write queries and analyze your data — all from one interface.
 
-<CardGrid stagger>
-  <Card title="AI-Powered Analysis" icon="magnifier">
-    Ask questions in plain English and get SQL queries and charts instantly.
+## What Mako Does
+
+<CardGrid>
+  <Card title="Connect Everything" icon="random">
+    Hook up PostgreSQL, MongoDB, BigQuery, Stripe, Close CRM, PostHog, and more. Mako talks to all of them.
   </Card>
-  <Card title="Data Sync" icon="random">
-    Sync data from Stripe, CRM, and databases into a unified warehouse.
+  <Card title="Sync & Unify" icon="rocket">
+    Pull data from scattered sources into one warehouse with resumable, chunked ETL pipelines.
   </Card>
-  <Card title="Open Source" icon="github">
-    Fully open source and self-hostable.
+  <Card title="Ask Questions" icon="magnifier">
+    Talk to your data in plain English. Mako's AI agent inspects schemas, writes SQL/MongoDB queries, and explains results.
   </Card>
-  <Card title="Modern Stack" icon="rocket">
-    Built with modern tools for performance and reliability.
+  <Card title="Collaborate" icon="document">
+    Save queries as consoles, share them with your team, and expose them via API.
   </Card>
 </CardGrid>
+
+## Quick Links
+
+<CardGrid>
+  <LinkCard title="Getting Started" description="Set up Mako locally in 5 minutes" href="/getting-started/" />
+  <LinkCard title="AI Agent" description="How the AI assistant works" href="/ai-agent/" />
+  <LinkCard title="Connectors" description="Sync data from external sources" href="/connectors/" />
+  <LinkCard title="API Reference" description="REST API endpoints" href="/api-reference/" />
+</CardGrid>
+
+## Who Is It For?
+
+- **Founders & CEOs** — get answers to business questions without waiting for a data analyst
+- **Data Analysts** — automate ETL and let AI write the boring SQL
+- **Product Managers** — make data-driven decisions with direct access to product metrics
+- **Engineers** — a modern SQL client with AI superpowers, open source, self-hostable
