@@ -984,9 +984,9 @@ workspaceRoutes.post(
           id: createdKey?._id,
           name: createdKey?.name,
           prefix: createdKey?.prefix,
-          key, // Only return the full key once, during creation
           createdAt: createdKey?.createdAt,
         },
+        key, // Only return the full key once, during creation
         message:
           "API key created successfully. Store this key securely - it won't be shown again.",
       });
