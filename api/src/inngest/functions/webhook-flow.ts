@@ -134,16 +134,24 @@ export const webhookEventProcessFunction = inngest.createFunction(
           _webhookEventId: webhookEvent.eventId,
         };
 
+        // For activity events, resolve sub-type from the data's _type field
+        // so we route to the correct per-sub-type table (e.g. activities:Call → call)
+        let resolvedEntity = mapping.entity;
+        if (mapping.entity === "activities" && data._type) {
+          resolvedEntity = `activities:${data._type}`;
+        }
+
         // ========== SQL/BigQuery destination path ==========
         if (flow.tableDestination?.connectionId) {
           const entityTableName = getEntityTableName(
             flow.tableDestination.tableName,
-            mapping.entity,
+            resolvedEntity,
           );
 
           // Resolve per-entity layout from flow.entityLayouts
           const entityLayout = (flow.entityLayouts || []).find(
-            (l: any) => l.entity === mapping.entity,
+            (l: any) =>
+              l.entity === resolvedEntity || l.entity === mapping.entity,
           );
 
           const entityTableDest = {
@@ -182,7 +190,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
 
           logger.info("Processing webhook event (SQL destination)", {
             eventType,
-            entity: mapping.entity,
+            entity: resolvedEntity,
             operation: mapping.operation,
             id,
             table: entityTableName,
@@ -237,14 +245,14 @@ export const webhookEventProcessFunction = inngest.createFunction(
           logger.info("Webhook event processed (SQL)", {
             eventId: webhookEvent.eventId,
             eventType,
-            entity: mapping.entity,
+            entity: resolvedEntity,
             operation: mapping.operation,
             table: entityTableName,
           });
 
           return {
             processed: true,
-            entity: mapping.entity,
+            entity: resolvedEntity,
             operation: mapping.operation,
           };
         }

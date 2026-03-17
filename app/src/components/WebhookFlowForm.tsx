@@ -72,11 +72,108 @@ const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
     "_dataSourceName",
     "_syncedAt",
   ],
-  activities: [
+  "activities:Call": [
     "id",
     "lead_id",
-    "_type",
     "user_id",
+    "direction",
+    "duration",
+    "phone",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:Email": [
+    "id",
+    "lead_id",
+    "user_id",
+    "subject",
+    "sender",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:EmailThread": [
+    "id",
+    "lead_id",
+    "user_id",
+    "subject",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:SMS": [
+    "id",
+    "lead_id",
+    "user_id",
+    "text",
+    "direction",
+    "phone",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:Meeting": [
+    "id",
+    "lead_id",
+    "user_id",
+    "title",
+    "starts_at",
+    "ends_at",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:Note": [
+    "id",
+    "lead_id",
+    "user_id",
+    "note",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:LeadStatusChange": [
+    "id",
+    "lead_id",
+    "user_id",
+    "old_status_label",
+    "new_status_label",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:OpportunityStatusChange": [
+    "id",
+    "lead_id",
+    "user_id",
+    "old_status_label",
+    "new_status_label",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:TaskCompleted": [
+    "id",
+    "lead_id",
+    "user_id",
+    "text",
     "date_created",
     "date_updated",
     "_dataSourceId",
@@ -225,14 +322,62 @@ export function WebhookFlowForm({
             clusterFields: [] as string[],
           },
           {
-            name: "activities",
-            label: "Activities",
+            name: "contacts",
+            label: "Contacts",
             partitionField: "date_created",
             clusterFields: [] as string[],
           },
           {
-            name: "contacts",
-            label: "Contacts",
+            name: "activities:Call",
+            label: "Calls",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:Email",
+            label: "Emails",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:EmailThread",
+            label: "Email Threads",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:SMS",
+            label: "SMS",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:Meeting",
+            label: "Meetings",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:Note",
+            label: "Notes",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:LeadStatusChange",
+            label: "Lead Status Changes",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:OpportunityStatusChange",
+            label: "Opportunity Status Changes",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities:TaskCompleted",
+            label: "Completed Tasks",
             partitionField: "date_created",
             clusterFields: [] as string[],
           },
@@ -788,9 +933,17 @@ export function WebhookFlowForm({
                                 }}
                               >
                                 <Typography variant="body2">
-                                  {watch("tableDestination.tablePrefix")
-                                    ? `${watch("tableDestination.tablePrefix")}_${layout.entity}`
-                                    : layout.entity}
+                                  {(() => {
+                                    const name = layout.entity.includes(":")
+                                      ? layout.entity
+                                          .split(":")[1]
+                                          .toLowerCase()
+                                      : layout.entity;
+                                    const prefix = watch(
+                                      "tableDestination.tablePrefix",
+                                    );
+                                    return prefix ? `${prefix}_${name}` : name;
+                                  })()}
                                 </Typography>
                                 <Controller
                                   name={`entityLayouts.${idx}.partitionField`}
