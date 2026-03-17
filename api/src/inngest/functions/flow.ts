@@ -981,6 +981,33 @@ export const flowFunction = inngest.createFunction(
                   },
                 };
 
+                // Resolve per-entity layout from entityLayouts
+                const flowTableDest = (flow as any).tableDestination;
+                let resolvedTableDest = flowTableDest;
+                if (flowTableDest && (flow as any).entityLayouts) {
+                  const entityLayout = ((flow as any).entityLayouts || []).find(
+                    (l: any) =>
+                      l.entity === entity || l.entity === entity.split(":")[0],
+                  );
+                  if (entityLayout) {
+                    resolvedTableDest = {
+                      ...flowTableDest,
+                      partitioning: {
+                        enabled: true,
+                        type: "time",
+                        field: entityLayout.partitionField,
+                        granularity: entityLayout.partitionGranularity || "day",
+                      },
+                      clustering: entityLayout.clusterFields?.length
+                        ? {
+                            enabled: true,
+                            fields: entityLayout.clusterFields,
+                          }
+                        : undefined,
+                    };
+                  }
+                }
+
                 const result = await performSyncChunk({
                   dataSourceId: dataSourceId.toString(),
                   destinationId: flow.destinationDatabaseId.toString(),
@@ -988,10 +1015,12 @@ export const flowFunction = inngest.createFunction(
                   entity,
                   isIncremental: flow.syncMode === "incremental",
                   state,
-                  maxIterations: 10, // Run 10 API calls per chunk
+                  maxIterations: 10,
                   logger: syncLogger,
-                  step, // Pass Inngest step for serverless-friendly retries
-                  queries: (flow as any).queries, // Pass flow queries for GraphQL/PostHog
+                  step,
+                  queries: (flow as any).queries,
+                  tableDestination: resolvedTableDest,
+                  deleteMode: (flow as any).deleteMode,
                 });
 
                 // Update heartbeat after chunk completes (not during)

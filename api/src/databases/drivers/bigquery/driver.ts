@@ -7,6 +7,8 @@ import {
   InsertOptions,
   UpsertOptions,
   StreamingQueryOptions,
+  TablePartitioning,
+  TableClustering,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
@@ -26,13 +28,7 @@ function inferBigQueryType(value: unknown): string {
   }
   if (typeof value === "bigint") return "INT64";
   if (value instanceof Date) return "TIMESTAMP";
-  if (Array.isArray(value)) {
-    // Array type - use first element to determine type
-    if (value.length > 0) {
-      return `ARRAY<${inferBigQueryType(value[0])}>`;
-    }
-    return "ARRAY<STRING>";
-  }
+  if (Array.isArray(value)) return "JSON";
   if (typeof value === "object") return "JSON";
   if (typeof value === "string") {
     // Try to detect date strings
@@ -96,19 +92,27 @@ function formatBigQueryValue(
     } else if (value instanceof Date) {
       stringValue = value.toISOString();
     } else if (Array.isArray(value)) {
-      // Arrays need special handling - format each element and wrap in CAST
+      // For JSON target type, serialize as JSON string
+      if (upperType === "JSON") {
+        stringValue = JSON.stringify(value).replace(/'/g, "''");
+        return `JSON '${stringValue}'`;
+      }
       const elements = value
         .map(v => formatBigQueryValue(v, undefined, false))
         .join(", ");
       return `[${elements}]`;
     } else if (typeof value === "object") {
-      stringValue = JSON.stringify(value).replace(/'/g, "\\'");
-      // JSON columns: use JSON literal syntax
+      stringValue = JSON.stringify(value).replace(/'/g, "''");
       if (upperType === "JSON") {
         return `JSON '${stringValue}'`;
       }
     } else {
-      stringValue = String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      stringValue = String(value)
+        .replace(/\\/g, "\\\\")
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\r")
+        .replace(/\t/g, "\\t")
+        .replace(/'/g, "''");
     }
 
     // Use SAFE_CAST for type conversion to handle mismatched data gracefully
@@ -188,6 +192,10 @@ function formatBigQueryValue(
 
   // Handle arrays
   if (Array.isArray(value)) {
+    if (upperType === "JSON") {
+      const jsonStr = JSON.stringify(value).replace(/'/g, "''");
+      return `JSON '${jsonStr}'`;
+    }
     const elements = value
       .map(v => formatBigQueryValue(v, undefined, false))
       .join(", ");
@@ -196,7 +204,7 @@ function formatBigQueryValue(
 
   // Handle objects (JSON)
   if (typeof value === "object") {
-    const jsonStr = JSON.stringify(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const jsonStr = JSON.stringify(value).replace(/'/g, "''");
     if (upperType === "JSON") {
       return `JSON '${jsonStr}'`;
     }
@@ -204,9 +212,14 @@ function formatBigQueryValue(
     return `'${jsonStr}'`;
   }
 
-  // Handle strings
+  // Handle strings — escape backslashes, newlines, and single quotes for BigQuery
   const strVal = String(value);
-  const escapedStr = strVal.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const escapedStr = strVal
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t")
+    .replace(/'/g, "''");
 
   // If target is TIMESTAMP, wrap with TIMESTAMP keyword
   if (upperType === "TIMESTAMP" || upperType === "DATETIME") {
@@ -307,6 +320,39 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Ensure the BigQuery dataset exists, creating it if not.
+   */
+  async ensureSchema(
+    database: IDatabaseConnection,
+    schemaName: string,
+    options?: { location?: string },
+  ): Promise<{ success: boolean; created?: boolean; error?: string }> {
+    const projectId = this.getProjectId(database);
+    const location =
+      options?.location || (database.connection as any).location || "US";
+
+    const checkQuery = `
+      SELECT 1 FROM ${escapeIdentifier(projectId)}.INFORMATION_SCHEMA.SCHEMATA
+      WHERE schema_name = '${schemaName.replace(/'/g, "''")}'
+    `;
+    const checkResult = await this.executeQuery(database, checkQuery);
+    if (
+      checkResult.success &&
+      checkResult.data &&
+      checkResult.data.length > 0
+    ) {
+      return { success: true, created: false };
+    }
+
+    const createQuery = `CREATE SCHEMA IF NOT EXISTS ${escapeIdentifier(projectId)}.${escapeIdentifier(schemaName)} OPTIONS(location='${location}')`;
+    const createResult = await this.executeQuery(database, createQuery);
+    if (!createResult.success) {
+      return { success: false, error: createResult.error };
+    }
+    return { success: true, created: true };
+  }
+
+  /**
    * Get the project ID from the database connection
    */
   private getProjectId(database: IDatabaseConnection): string {
@@ -401,8 +447,39 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Build PARTITION BY clause from config
+   */
+  private buildPartitionClause(partitioning?: TablePartitioning): string {
+    if (!partitioning) return "";
+    if (partitioning.type === "ingestion") {
+      return "\nPARTITION BY _PARTITIONDATE";
+    }
+    const field = partitioning.field || "_syncedAt";
+    const gran = (partitioning.granularity || "day").toUpperCase();
+    return `\nPARTITION BY TIMESTAMP_TRUNC(${escapeIdentifier(field)}, ${gran})`;
+  }
+
+  /**
+   * Build CLUSTER BY clause from config
+   */
+  private buildClusterClause(clustering?: TableClustering): string {
+    if (!clustering || clustering.fields.length === 0) return "";
+    const cols = clustering.fields.slice(0, 4).map(escapeIdentifier).join(", ");
+    return `\nCLUSTER BY ${cols}`;
+  }
+
+  /**
+   * Build OPTIONS clause for partition filter requirement
+   */
+  private buildTableOptions(partitioning?: TablePartitioning): string {
+    if (!partitioning?.requirePartitionFilter) return "";
+    return `\nOPTIONS (require_partition_filter = TRUE)`;
+  }
+
+  /**
    * Create a table with the given schema
    * In BigQuery, schema = dataset
+   * Supports partition/cluster/soft-delete column injection via InsertOptions
    */
   async createTable(
     database: IDatabaseConnection,
@@ -421,13 +498,41 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
 
-    const columnDefs = columns.map(col => {
+    const allColumns = [...columns];
+
+    if (options?.softDeleteColumns) {
+      const existingNames = new Set(allColumns.map(c => c.name.toLowerCase()));
+      if (
+        !existingNames.has(options.softDeleteColumns.isDeleted.toLowerCase())
+      ) {
+        allColumns.push({
+          name: options.softDeleteColumns.isDeleted,
+          type: "BOOL",
+          nullable: true,
+        });
+      }
+      if (
+        !existingNames.has(options.softDeleteColumns.deletedAt.toLowerCase())
+      ) {
+        allColumns.push({
+          name: options.softDeleteColumns.deletedAt,
+          type: "TIMESTAMP",
+          nullable: true,
+        });
+      }
+    }
+
+    const columnDefs = allColumns.map(col => {
       let def = `${escapeIdentifier(col.name)} ${col.type}`;
       if (!col.nullable) def += " NOT NULL";
       return def;
     });
 
-    const query = `CREATE TABLE IF NOT EXISTS ${fullTableName} (\n  ${columnDefs.join(",\n  ")}\n);`;
+    const partitionClause = this.buildPartitionClause(options?.partitioning);
+    const clusterClause = this.buildClusterClause(options?.clustering);
+    const tableOptions = this.buildTableOptions(options?.partitioning);
+
+    const query = `CREATE TABLE IF NOT EXISTS ${fullTableName} (\n  ${columnDefs.join(",\n  ")}\n)${partitionClause}${clusterClause}${tableOptions};`;
 
     const result = await this.executeQuery(database, query);
 
@@ -452,7 +557,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const query = `
       SELECT COUNT(*) as cnt
       FROM ${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.INFORMATION_SCHEMA.TABLES
-      WHERE table_name = '${tableName.replace(/'/g, "\\'")}'
+      WHERE table_name = '${tableName.replace(/'/g, "''")}'
     `;
 
     const result = await this.executeQuery(database, query);
@@ -475,7 +580,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const query = `
       SELECT column_name, data_type
       FROM ${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.INFORMATION_SCHEMA.COLUMNS
-      WHERE table_name = '${tableName.replace(/'/g, "\\'")}'
+      WHERE table_name = '${tableName.replace(/'/g, "''")}'
     `;
 
     const result = await this.executeQuery(database, query);
@@ -489,6 +594,63 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     }
 
     return columnTypes;
+  }
+
+  /**
+   * Add missing columns to an existing table via ALTER TABLE ADD COLUMN.
+   * Compares row keys against INFORMATION_SCHEMA and adds any that don't exist.
+   */
+  private async addMissingColumns(
+    database: IDatabaseConnection,
+    tableName: string,
+    dataset: string,
+    rows: Record<string, unknown>[],
+  ): Promise<void> {
+    const existingColumns = await this.getTableColumnTypes(
+      database,
+      tableName,
+      dataset,
+    );
+    if (existingColumns.size === 0) return;
+
+    const allKeys = new Set<string>();
+    for (const row of rows) {
+      Object.keys(row).forEach(k => allKeys.add(k));
+    }
+
+    const projectId = this.getProjectId(database);
+    const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
+
+    for (const key of allKeys) {
+      if (key.includes(".")) {
+        this.logger.warn(
+          "Skipping column with dot in name — flatten before writing",
+          { table: tableName, column: key },
+        );
+        continue;
+      }
+      if (!existingColumns.has(key.toLowerCase())) {
+        const sampleValue = rows.find(
+          r => r[key] !== null && r[key] !== undefined,
+        )?.[key];
+        const colType = inferBigQueryType(sampleValue);
+        const query = `ALTER TABLE ${fullTableName} ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType}`;
+        const result = await this.executeQuery(database, query);
+        if (result.success) {
+          this.logger.info("Added missing column to BigQuery table", {
+            table: tableName,
+            column: key,
+            type: colType,
+          });
+        } else {
+          this.logger.warn("Failed to add column", {
+            table: tableName,
+            column: key,
+            error: result.error,
+          });
+        }
+      }
+    }
   }
 
   /**
@@ -517,16 +679,16 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
 
-    // ALWAYS get column types from INFORMATION_SCHEMA for existing tables
-    // This is more reliable than passed types which come from source schema mapping
-    // and may not match the actual destination table schema
+    // Add any missing columns before writing
+    await this.addMissingColumns(database, tableName, dataset, rows);
+
+    // Get column types from INFORMATION_SCHEMA (after adding missing columns)
     const columnTypes = await this.getTableColumnTypes(
       database,
       tableName,
       dataset,
     );
 
-    // Get all unique column names from all rows
     const allColumns = new Set<string>();
     for (const row of rows) {
       Object.keys(row).forEach(k => allColumns.add(k));
@@ -534,9 +696,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const columns = Array.from(allColumns);
     const columnList = columns.map(escapeIdentifier).join(", ");
 
-    // Start with a reasonable chunk size, will adapt based on query size
-    // BigQuery has a 1MB (1,024,000 chars) query limit
-    const MAX_QUERY_SIZE = 900_000; // Leave some buffer below 1MB
+    const MAX_QUERY_SIZE = 900_000;
     let chunkSize = 1000; // Start smaller to be safe
     let totalWritten = 0;
 
@@ -665,9 +825,10 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
     const strategy = options?.conflictStrategy || "update";
 
-    // ALWAYS get column types from INFORMATION_SCHEMA for existing tables
-    // This is more reliable than passed types which come from source schema mapping
-    // and may not match the actual destination table schema
+    // Add any missing columns before writing
+    await this.addMissingColumns(database, tableName, dataset, rows);
+
+    // Get column types from INFORMATION_SCHEMA (after adding missing columns)
     const columnTypes = await this.getTableColumnTypes(
       database,
       tableName,
@@ -854,7 +1015,27 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       return { success: false, error: dropResult.error };
     }
 
-    // Create staging table with same schema as original
+    // When partition/cluster options are provided, we need explicit DDL
+    // because CREATE TABLE AS SELECT WHERE FALSE loses layout config.
+    if (options?.partitioning || options?.clustering) {
+      const colTypes = await this.getTableColumnTypes(
+        database,
+        originalTableName,
+        dataset,
+      );
+      if (colTypes.size === 0) {
+        return {
+          success: false,
+          error: "Could not read original table schema for staging",
+        };
+      }
+
+      const columns: ColumnDefinition[] = Array.from(colTypes.entries()).map(
+        ([name, type]) => ({ name, type, nullable: true }),
+      );
+      return this.createTable(database, stagingTableName, columns, options);
+    }
+
     const query = `CREATE TABLE ${fullStaging} AS SELECT * FROM ${fullOriginal} WHERE FALSE;`;
     const result = await this.executeQuery(database, query);
 
@@ -952,6 +1133,58 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const result = await this.executeQuery(database, query);
 
     return { success: result.success, error: result.error };
+  }
+
+  /**
+   * Delete rows matching the given key filters
+   */
+  async deleteBatch(
+    database: IDatabaseConnection,
+    tableName: string,
+    keyFilters: Record<string, unknown>,
+    options?: InsertOptions,
+  ): Promise<BatchWriteResult> {
+    const projectId = this.getProjectId(database);
+    const dataset = options?.schema;
+    if (!dataset) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "Dataset (schema) is required for BigQuery",
+      };
+    }
+
+    const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
+
+    const conditions = Object.entries(keyFilters).map(([col, val]) => {
+      if (val === null || val === undefined) {
+        return `${escapeIdentifier(col)} IS NULL`;
+      }
+      const escaped = String(val)
+        .replace(/\\/g, "\\\\")
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\r")
+        .replace(/\t/g, "\\t")
+        .replace(/'/g, "''");
+      return `${escapeIdentifier(col)} = '${escaped}'`;
+    });
+
+    if (conditions.length === 0) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "No key filters provided for delete",
+      };
+    }
+
+    const query = `DELETE FROM ${fullTableName} WHERE ${conditions.join(" AND ")};`;
+    const result = await this.executeQuery(database, query);
+
+    return {
+      success: result.success,
+      rowsWritten: result.success ? 1 : 0,
+      error: result.error,
+    };
   }
 
   /**

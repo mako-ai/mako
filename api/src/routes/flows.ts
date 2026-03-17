@@ -314,13 +314,6 @@ flowRoutes.post("/", async c => {
         );
       }
 
-      if (!body.tableDestination.tableName) {
-        return c.json(
-          { success: false, error: "tableDestination.tableName is required" },
-          400,
-        );
-      }
-
       // Use the table destination connection as the destinationDatabaseId
       destinationDatabaseId = new Types.ObjectId(
         body.tableDestination.connectionId,
@@ -362,6 +355,7 @@ flowRoutes.post("/", async c => {
           ? body.destinationDatabaseName.trim()
           : undefined,
       syncMode: body.syncMode || "full",
+      enabled: true,
       createdBy: userId,
     };
 
@@ -407,27 +401,29 @@ flowRoutes.post("/", async c => {
       }));
     }
 
-    // Validate: connector sources don't support tableDestination (they always write to MongoDB)
-    if (sourceType === "connector" && body.tableDestination?.connectionId) {
-      return c.json(
-        {
-          success: false,
-          error:
-            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
-        },
-        400,
-      );
-    }
-
     // Add table destination if specified
     if (body.tableDestination?.connectionId) {
-      flowData.tableDestination = {
+      const td: any = {
         connectionId: new Types.ObjectId(body.tableDestination.connectionId),
         database: body.tableDestination.database,
         schema: body.tableDestination.schema,
-        tableName: body.tableDestination.tableName,
+        tableName: body.tableDestination.tableName || "",
         createIfNotExists: body.tableDestination.createIfNotExists !== false,
       };
+      if (body.tableDestination.partitioning) {
+        td.partitioning = body.tableDestination.partitioning;
+      }
+      if (body.tableDestination.clustering) {
+        td.clustering = body.tableDestination.clustering;
+      }
+      flowData.tableDestination = td;
+    }
+
+    if (body.deleteMode) {
+      flowData.deleteMode = body.deleteMode;
+    }
+    if (body.entityLayouts && Array.isArray(body.entityLayouts)) {
+      flowData.entityLayouts = body.entityLayouts;
     }
 
     if (flowType === "scheduled") {
@@ -468,6 +464,37 @@ flowRoutes.post("/", async c => {
     }
 
     await flow.save();
+
+    // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
+    if (
+      sourceType === "connector" &&
+      flowData.tableDestination?.connectionId &&
+      flowData.tableDestination?.schema
+    ) {
+      try {
+        const { createDestinationWriter } = await import(
+          "../services/destination-writer.service"
+        );
+        // createDestinationWriter.initialize() calls ensureSchema which creates the dataset
+        await createDestinationWriter(
+          {
+            destinationDatabaseId: flowData.destinationDatabaseId,
+            tableDestination: flowData.tableDestination,
+          },
+          "pre-check",
+        );
+        logger.info("BigQuery dataset ensured", {
+          dataset: flowData.tableDestination.schema,
+        });
+      } catch (preCreateError) {
+        logger.warn("Failed to ensure BigQuery dataset", {
+          error:
+            preCreateError instanceof Error
+              ? preCreateError.message
+              : String(preCreateError),
+        });
+      }
+    }
 
     // Populate references for response based on source type
     if (sourceType === "connector" && flow.dataSourceId) {
@@ -650,21 +677,6 @@ flowRoutes.put("/:flowId", async c => {
       }
     }
 
-    // Validate: connector sources don't support tableDestination (they always write to MongoDB)
-    if (
-      flow.sourceType === "connector" &&
-      body.tableDestination?.connectionId
-    ) {
-      return c.json(
-        {
-          success: false,
-          error:
-            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
-        },
-        400,
-      );
-    }
-
     // Update table destination - merge entire object to avoid missing fields
     if (body.tableDestination) {
       const newConnectionId = body.tableDestination.connectionId
@@ -696,12 +708,31 @@ flowRoutes.put("/:flowId", async c => {
           true,
       };
 
+      const resolvedPartitioning =
+        body.tableDestination.partitioning ??
+        flow.tableDestination?.partitioning;
+      if (resolvedPartitioning) {
+        flow.tableDestination.partitioning = resolvedPartitioning;
+      }
+      const resolvedClustering =
+        body.tableDestination.clustering ?? flow.tableDestination?.clustering;
+      if (resolvedClustering) {
+        flow.tableDestination.clustering = resolvedClustering;
+      }
+
       // Keep destinationDatabaseId in sync (used for population/lookups)
       if (body.tableDestination.connectionId) {
         flow.destinationDatabaseId = new Types.ObjectId(
           body.tableDestination.connectionId,
         );
       }
+    }
+
+    if (body.deleteMode !== undefined) {
+      flow.deleteMode = body.deleteMode;
+    }
+    if (body.entityLayouts !== undefined) {
+      (flow as any).entityLayouts = body.entityLayouts;
     }
 
     // Update webhook-specific fields

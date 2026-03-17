@@ -101,7 +101,34 @@ const flowSchema = z.object({
       schema: z.string().optional(),
       tableName: z.string(),
       createIfNotExists: z.boolean().optional(),
+      partitioning: z
+        .object({
+          enabled: z.boolean().optional(),
+          type: z.enum(["time", "ingestion"]).optional(),
+          field: z.string().optional(),
+          granularity: z.enum(["day", "hour", "month", "year"]).optional(),
+          requirePartitionFilter: z.boolean().optional(),
+        })
+        .optional(),
+      clustering: z
+        .object({
+          enabled: z.boolean().optional(),
+          fields: z.array(z.string()).optional(),
+        })
+        .optional(),
     })
+    .optional(),
+  deleteMode: z.enum(["hard", "soft"]).optional(),
+  entityLayouts: z
+    .array(
+      z.object({
+        entity: z.string(),
+        label: z.string().optional(),
+        partitionField: z.string(),
+        partitionGranularity: z.enum(["day", "hour", "month", "year"]),
+        clusterFields: z.array(z.string()),
+      }),
+    )
     .optional(),
   incrementalConfig: z
     .object({

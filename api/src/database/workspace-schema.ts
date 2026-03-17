@@ -472,14 +472,46 @@ export interface IDatabaseSource {
 }
 
 /**
+ * BigQuery partitioning configuration for table destination
+ */
+export interface ITablePartitioning {
+  enabled: boolean;
+  type?: "time" | "ingestion";
+  field?: string;
+  granularity?: "day" | "hour" | "month" | "year";
+  requirePartitionFilter?: boolean;
+}
+
+/**
+ * BigQuery clustering configuration for table destination
+ */
+export interface ITableClustering {
+  enabled: boolean;
+  fields?: string[];
+}
+
+/**
+ * Per-entity table layout config for connector -> BigQuery flows
+ */
+export interface IEntityLayout {
+  entity: string;
+  label?: string;
+  partitionField: string;
+  partitionGranularity: "day" | "hour" | "month" | "year";
+  clusterFields: string[];
+}
+
+/**
  * Table destination configuration for writing to SQL tables
  */
 export interface ITableDestination {
   connectionId: Types.ObjectId;
-  database?: string; // Database name within the connection
-  schema?: string; // Schema name (PostgreSQL) or dataset (BigQuery)
-  tableName: string; // Target table name
-  createIfNotExists?: boolean; // Auto-create table if it doesn't exist
+  database?: string;
+  schema?: string;
+  tableName: string;
+  createIfNotExists?: boolean;
+  partitioning?: ITablePartitioning;
+  clustering?: ITableClustering;
 }
 
 /**
@@ -554,6 +586,8 @@ export interface IFlow extends Document {
   entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
+  deleteMode?: "hard" | "soft";
+  entityLayouts?: IEntityLayout[];
 
   // Incremental and conflict config (for database sources)
   incrementalConfig?: IIncrementalConfig;
@@ -1381,6 +1415,17 @@ const FlowSchema = new Schema<IFlow>(
         type: Boolean,
         default: true,
       },
+      partitioning: {
+        enabled: { type: Boolean, default: false },
+        type: { type: String, enum: ["time", "ingestion"] },
+        field: String,
+        granularity: { type: String, enum: ["day", "hour", "month", "year"] },
+        requirePartitionFilter: { type: Boolean, default: false },
+      },
+      clustering: {
+        enabled: { type: Boolean, default: false },
+        fields: [String],
+      },
     },
     schedule: {
       enabled: {
@@ -1451,6 +1496,23 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["full", "incremental"],
       default: "full",
     },
+    deleteMode: {
+      type: String,
+      enum: ["hard", "soft"],
+    },
+    entityLayouts: [
+      {
+        entity: { type: String, required: true },
+        label: String,
+        partitionField: { type: String, required: true },
+        partitionGranularity: {
+          type: String,
+          enum: ["day", "hour", "month", "year"],
+          default: "day",
+        },
+        clusterFields: [String],
+      },
+    ],
     // Incremental config for database sources
     incrementalConfig: {
       trackingColumn: String,

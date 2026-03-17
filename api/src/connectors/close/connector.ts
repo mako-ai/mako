@@ -186,22 +186,40 @@ export class CloseConnector extends BaseConnector {
    * Get entity metadata with sub-entities for activities
    */
   getEntityMetadata(): EntityMetadata[] {
+    const defaultLayout = {
+      partitionField: "date_created",
+      partitionGranularity: "day" as const,
+      clusterFields: ["_dataSourceId", "id"],
+    };
     return [
-      { name: "leads", label: "Leads" },
-      { name: "opportunities", label: "Opportunities" },
+      { name: "leads", label: "Leads", layoutSuggestion: defaultLayout },
+      {
+        name: "opportunities",
+        label: "Opportunities",
+        layoutSuggestion: defaultLayout,
+      },
       {
         name: "activities",
         label: "Activities",
         description: "All activity types from Close.com",
+        layoutSuggestion: {
+          partitionField: "date_created",
+          partitionGranularity: "day",
+          clusterFields: ["_dataSourceId", "id"],
+        },
         subEntities: CLOSE_ACTIVITY_TYPES.map(type => ({
           name: type.name,
           label: type.label,
           description: type.description,
         })),
       },
-      { name: "contacts", label: "Contacts" },
-      { name: "users", label: "Users" },
-      { name: "custom_fields", label: "Custom Fields" },
+      { name: "contacts", label: "Contacts", layoutSuggestion: defaultLayout },
+      { name: "users", label: "Users", layoutSuggestion: defaultLayout },
+      {
+        name: "custom_fields",
+        label: "Custom Fields",
+        layoutSuggestion: defaultLayout,
+      },
     ];
   }
 
@@ -340,7 +358,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment iterations for rate limit retries
         } else {
@@ -417,7 +437,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
         } else {
           throw error;
@@ -598,7 +620,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment iterations for rate limit retries
         } else {
@@ -739,7 +763,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment offset, retry the same page
         } else {
@@ -772,7 +798,10 @@ export class CloseConnector extends BaseConnector {
           totalFields += response.data.total_results || 0;
         } catch (error) {
           // Skip if endpoint doesn't exist or errors
-          logger.warn("Could not fetch count from endpoint", { endpoint, error });
+          logger.warn("Could not fetch count from endpoint", {
+            endpoint,
+            error,
+          });
         }
       }
       onProgress(0, totalFields);
@@ -865,7 +894,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment offset, retry the same page
         } else {
@@ -997,7 +1028,9 @@ export class CloseConnector extends BaseConnector {
             const retryAfter = parseInt(
               error.response.headers["retry-after"] || "60",
             );
-            logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+            logger.warn("Rate limited, waiting", {
+              retryAfterSeconds: retryAfter,
+            });
             await this.sleep(retryAfter * 1000);
           } else {
             throw error;
@@ -1043,7 +1076,10 @@ export class CloseConnector extends BaseConnector {
             totalCount += response.data.total_results || 0;
           } catch (error) {
             // Skip if endpoint doesn't exist
-            logger.warn("Could not fetch count from endpoint", { endpoint, error });
+            logger.warn("Could not fetch count from endpoint", {
+              endpoint,
+              error,
+            });
           }
         }
         return totalCount > 0 ? totalCount : undefined;
@@ -1120,42 +1156,43 @@ export class CloseConnector extends BaseConnector {
   ): Promise<WebhookVerificationResult> {
     const { payload, headers, secret } = options;
 
-    const signature = headers["close-signature"];
-    if (!signature || typeof signature !== "string") {
-      return {
-        valid: false,
-        error: "Missing close-signature header",
-      };
+    const sigHash = headers["close-sig-hash"];
+    const sigTimestamp = headers["close-sig-timestamp"];
+
+    if (!sigHash || typeof sigHash !== "string") {
+      return { valid: false, error: "Missing close-sig-hash header" };
+    }
+
+    if (!sigTimestamp || typeof sigTimestamp !== "string") {
+      return { valid: false, error: "Missing close-sig-timestamp header" };
     }
 
     if (!secret) {
-      return {
-        valid: false,
-        error: "Missing webhook secret",
-      };
+      return { valid: false, error: "Missing webhook secret" };
     }
 
     try {
-      // Close.io uses HMAC-SHA256 signature
+      const body =
+        typeof payload === "string" ? payload : JSON.stringify(payload);
+      // Close: HMAC-SHA256(hex_decoded_key, timestamp + body) — no separator
+      const data = sigTimestamp + body;
+      const keyBytes = Buffer.from(secret, "hex");
       const expectedSignature = crypto
-        .createHmac("sha256", secret)
-        .update(typeof payload === "string" ? payload : JSON.stringify(payload))
+        .createHmac("sha256", keyBytes)
+        .update(data, "utf-8")
         .digest("hex");
 
-      if (signature !== expectedSignature) {
-        return {
-          valid: false,
-          error: "Invalid signature",
-        };
+      if (
+        !crypto.timingSafeEqual(
+          Buffer.from(sigHash),
+          Buffer.from(expectedSignature),
+        )
+      ) {
+        return { valid: false, error: "Invalid signature" };
       }
 
-      // Parse the event from the payload
       const event = typeof payload === "string" ? JSON.parse(payload) : payload;
-
-      return {
-        valid: true,
-        event,
-      };
+      return { valid: true, event };
     } catch (err) {
       return {
         valid: false,
@@ -1173,6 +1210,7 @@ export class CloseConnector extends BaseConnector {
       "lead.created": { entity: "leads", operation: "upsert" },
       "lead.updated": { entity: "leads", operation: "upsert" },
       "lead.deleted": { entity: "leads", operation: "delete" },
+      "lead.merged": { entity: "leads", operation: "upsert" },
 
       // Contacts
       "contact.created": { entity: "contacts", operation: "upsert" },
@@ -1202,6 +1240,7 @@ export class CloseConnector extends BaseConnector {
       "lead.created",
       "lead.updated",
       "lead.deleted",
+      "lead.merged",
       // Contacts
       "contact.created",
       "contact.updated",
@@ -1221,15 +1260,21 @@ export class CloseConnector extends BaseConnector {
    * Extract entity data from webhook event
    */
   extractWebhookData(event: any): { id: string; data: any } | null {
-    if (!event || !event.data) {
-      return null;
+    // Close webhook payload: {subscription_id, event: {object_type, action, data: {...}}}
+    // For delete events, Close sends object_id at event level instead of data.id
+    const innerEvent = event?.event;
+    const data = innerEvent?.data || event?.data;
+
+    if (data) {
+      return { id: data.id, data };
     }
 
-    // Close.io webhook structure has data at the root level
-    const data = event.data || event;
-    return {
-      id: data.id,
-      data: data,
-    };
+    // Delete/merge events: no data payload, just object_id
+    const objectId = innerEvent?.object_id || event?.object_id;
+    if (objectId) {
+      return { id: objectId, data: { id: objectId } };
+    }
+
+    return null;
   }
 }
