@@ -21,7 +21,10 @@ const orchestratorLogger = loggers.sync("orchestrator");
  * When baseName (prefix) is empty, returns just the entity name.
  */
 export function getEntityTableName(baseName: string, entity: string): string {
-  const normalized = entity.includes(":") ? entity.split(":")[0] : entity;
+  // activities:Call → call, activities:Email → email, leads → leads
+  const normalized = entity.includes(":")
+    ? entity.split(":")[1].toLowerCase()
+    : entity;
   return baseName ? `${baseName}_${normalized}` : normalized;
 }
 
