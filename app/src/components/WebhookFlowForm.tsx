@@ -36,10 +36,96 @@ interface WebhookFlowFormProps {
   onCancel?: () => void;
 }
 
+interface EntityLayoutConfig {
+  entity: string;
+  label: string;
+  partitionField: string;
+  partitionGranularity: "day" | "hour" | "month" | "year";
+  clusterFields: string[];
+}
+
+const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
+  leads: [
+    "id",
+    "display_name",
+    "status_id",
+    "status_label",
+    "date_created",
+    "date_updated",
+    "organization_id",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  opportunities: [
+    "id",
+    "lead_id",
+    "status_id",
+    "status_label",
+    "status_type",
+    "value",
+    "date_created",
+    "date_updated",
+    "date_won",
+    "user_id",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  activities: [
+    "id",
+    "lead_id",
+    "_type",
+    "user_id",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  contacts: [
+    "id",
+    "lead_id",
+    "first_name",
+    "last_name",
+    "display_name",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  users: [
+    "id",
+    "email",
+    "first_name",
+    "last_name",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  custom_fields: [
+    "id",
+    "name",
+    "custom_field_type",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+};
+
 interface FormData {
   dataSourceId: string;
   destinationDatabaseId: string;
   webhookSecret?: string;
+  deleteMode?: "hard" | "soft";
+  tableDestination?: {
+    tablePrefix?: string;
+    schema?: string;
+  };
+  entityLayouts?: EntityLayoutConfig[];
 }
 
 export function WebhookFlowForm({
@@ -86,6 +172,7 @@ export function WebhookFlowForm({
     flowId,
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
+  const [entityMetadata, setEntityMetadata] = useState<any[]>([]);
 
   const {
     control,
@@ -93,14 +180,119 @@ export function WebhookFlowForm({
     formState: { errors },
     reset,
     watch,
+    setValue,
   } = useForm<FormData>({
     defaultValues: {
       dataSourceId: "",
       destinationDatabaseId: "",
+      deleteMode: "hard",
+      tableDestination: {
+        tablePrefix: "",
+        schema: "",
+      },
+      entityLayouts: [],
     },
   });
 
   const watchDataSourceId = watch("dataSourceId");
+  const watchDestinationId = watch("destinationDatabaseId");
+  const watchEntityLayouts = watch("entityLayouts") || [];
+
+  const selectedDestination = databases.find(
+    db => db.id === watchDestinationId,
+  );
+  const isBigQueryDest = selectedDestination?.type === "bigquery";
+
+  // Fetch entity metadata from connector and build per-entity layout defaults
+  useEffect(() => {
+    if (isBigQueryDest && watchDataSourceId && connectors.length > 0) {
+      const source = connectors.find(c => c._id === watchDataSourceId);
+      if (!source) return;
+
+      const connectorType = source.type;
+      if (connectorType === "close") {
+        const entities = [
+          {
+            name: "leads",
+            label: "Leads",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "opportunities",
+            label: "Opportunities",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "activities",
+            label: "Activities",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "contacts",
+            label: "Contacts",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "users",
+            label: "Users",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "custom_fields",
+            label: "Custom Fields",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+        ];
+        setEntityMetadata(entities);
+        const currentLayouts = watch("entityLayouts") || [];
+        if (currentLayouts.length === 0) {
+          setValue(
+            "entityLayouts",
+            entities.map(e => ({
+              entity: e.name,
+              label: e.label,
+              partitionField: e.partitionField,
+              partitionGranularity: "day" as const,
+              clusterFields: e.clusterFields || [],
+            })),
+          );
+        }
+      } else if (connectorType === "stripe") {
+        const entities = [
+          { name: "customers", label: "Customers" },
+          { name: "subscriptions", label: "Subscriptions" },
+          { name: "charges", label: "Charges" },
+          { name: "invoices", label: "Invoices" },
+          { name: "products", label: "Products" },
+          { name: "plans", label: "Plans" },
+        ];
+        setEntityMetadata(entities);
+        const currentLayouts = watch("entityLayouts") || [];
+        if (currentLayouts.length === 0) {
+          setValue(
+            "entityLayouts",
+            entities.map(e => ({
+              entity: e.name,
+              label: e.label,
+              partitionField: e.partitionField || "_syncedAt",
+              partitionGranularity: "day" as const,
+              clusterFields: e.clusterFields || [],
+            })),
+          );
+        }
+      }
+    } else {
+      setEntityMetadata([]);
+      setValue("entityLayouts", []);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBigQueryDest, watchDataSourceId, connectors]);
 
   // Fetch connectors
   const fetchDataSources = async (workspaceId: string) => {
@@ -145,9 +337,20 @@ export function WebhookFlowForm({
         const formData: FormData = {
           dataSourceId: dataSourceId || "",
           destinationDatabaseId: destinationDatabaseId || "",
+          deleteMode: flow.deleteMode || "hard",
         };
 
-        // Set webhook-specific data if available
+        if (flow.tableDestination) {
+          formData.tableDestination = {
+            tablePrefix: flow.tableDestination.tableName || "",
+            schema: flow.tableDestination.schema || "",
+          };
+        }
+
+        if (flow.entityLayouts && flow.entityLayouts.length > 0) {
+          formData.entityLayouts = flow.entityLayouts;
+        }
+
         if (flow.webhookConfig) {
           setWebhookUrl(flow.webhookConfig.endpoint || "");
           formData.webhookSecret = flow.webhookConfig.secret || "";
@@ -189,16 +392,28 @@ export function WebhookFlowForm({
       // Auto-generate name as "source → destination"
       const generatedName = `${selectedSource?.name || "Source"} → ${selectedDatabase?.name || "Destination"}`;
 
-      // Create payload compatible with the API
+      const isBq = selectedDestination?.type === "bigquery";
+
       const payload: any = {
         name: generatedName,
         type: "webhook",
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,
-        syncMode: "incremental", // Webhooks are always incremental
-        enabled: true, // Webhooks are always enabled
+        syncMode: "incremental",
+        enabled: true,
         webhookSecret: data.webhookSecret || "",
+        deleteMode: data.deleteMode || "hard",
       };
+
+      if (isBq && data.tableDestination?.schema) {
+        payload.tableDestination = {
+          connectionId: data.destinationDatabaseId,
+          schema: data.tableDestination.schema,
+          tableName: data.tableDestination.tablePrefix || "",
+          createIfNotExists: true,
+        };
+        payload.entityLayouts = data.entityLayouts;
+      }
 
       let newFlow;
       if (isNewMode) {
@@ -347,7 +562,7 @@ export function WebhookFlowForm({
                         startAdornment={
                           <DataIcon sx={{ mr: 1, color: "action.active" }} />
                         }
-                        disabled={isLoadingConnectors}
+                        disabled={isLoadingConnectors || !isNewMode}
                       >
                         {connectors.map(source => (
                           <MenuItem key={source._id} value={source._id}>
@@ -391,6 +606,7 @@ export function WebhookFlowForm({
                       <Select
                         {...field}
                         label="Destination Database"
+                        disabled={!isNewMode}
                         startAdornment={
                           <DatabaseIcon
                             sx={{ mr: 1, color: "action.active" }}
@@ -421,6 +637,248 @@ export function WebhookFlowForm({
                   )}
                 />
               </Stack>
+
+              {/* Delete Mode */}
+              <Controller
+                name="deleteMode"
+                control={control}
+                render={({ field }) => (
+                  <FormControl fullWidth>
+                    <InputLabel>Delete Mode</InputLabel>
+                    <Select
+                      {...field}
+                      label="Delete Mode"
+                      value={field.value || "hard"}
+                      disabled={!isNewMode}
+                    >
+                      <MenuItem value="hard">
+                        Hard delete (remove rows)
+                      </MenuItem>
+                      <MenuItem value="soft">
+                        Soft delete (set is_deleted flag)
+                      </MenuItem>
+                    </Select>
+                    <FormHelperText>
+                      How webhook delete events are handled in the destination
+                    </FormHelperText>
+                  </FormControl>
+                )}
+              />
+
+              {/* BigQuery Destination Config */}
+              {isBigQueryDest && (
+                <Box
+                  sx={{
+                    p: 2,
+                    bgcolor: "background.paper",
+                    borderRadius: 1,
+                    border: 1,
+                    borderColor: "divider",
+                  }}
+                >
+                  <Typography variant="subtitle2" sx={{ mb: 2 }}>
+                    BigQuery Destination
+                  </Typography>
+                  <Stack spacing={3}>
+                    <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                      <Controller
+                        name="tableDestination.schema"
+                        control={control}
+                        rules={{
+                          required: isBigQueryDest
+                            ? "Dataset is required for BigQuery"
+                            : false,
+                        }}
+                        render={({ field }) => (
+                          <TextField
+                            {...field}
+                            label="Dataset"
+                            placeholder="my_dataset"
+                            fullWidth
+                            size="small"
+                            disabled={!isNewMode}
+                            error={!!errors.tableDestination?.schema}
+                            helperText={
+                              errors.tableDestination?.schema?.message ||
+                              "BigQuery dataset name"
+                            }
+                          />
+                        )}
+                      />
+                      <Controller
+                        name="tableDestination.tablePrefix"
+                        control={control}
+                        render={({ field }) => (
+                          <TextField
+                            {...field}
+                            label="Table Prefix (optional)"
+                            placeholder="e.g. crm"
+                            fullWidth
+                            size="small"
+                            disabled={!isNewMode}
+                            helperText={
+                              field.value
+                                ? `Tables: ${field.value}_leads, ${field.value}_contacts, ...`
+                                : "Tables: leads, contacts, ... (no prefix)"
+                            }
+                          />
+                        )}
+                      />
+                    </Stack>
+
+                    {/* Per-entity table layout config */}
+                    {watchEntityLayouts.length > 0 && (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                          Per-Table Partitioning & Clustering
+                        </Typography>
+                        <Box
+                          sx={{
+                            border: 1,
+                            borderColor: "divider",
+                            borderRadius: 1,
+                          }}
+                        >
+                          {/* Header */}
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gridTemplateColumns: "1fr 1fr 100px 1fr",
+                              gap: 1,
+                              p: 1,
+                              bgcolor: "action.hover",
+                            }}
+                          >
+                            <Typography variant="caption" fontWeight="bold">
+                              Entity Table
+                            </Typography>
+                            <Typography variant="caption" fontWeight="bold">
+                              Partition Field
+                            </Typography>
+                            <Typography variant="caption" fontWeight="bold">
+                              Granularity
+                            </Typography>
+                            <Typography variant="caption" fontWeight="bold">
+                              Cluster Fields
+                            </Typography>
+                          </Box>
+                          {/* Rows */}
+                          {watchEntityLayouts.map((layout, idx) => {
+                            const entityFields = CLOSE_ENTITY_FIELDS[
+                              layout.entity
+                            ] || ["_syncedAt", "_dataSourceId", "id"];
+                            const timestampFields = entityFields.filter(
+                              f =>
+                                f.includes("date") ||
+                                f.includes("created") ||
+                                f.includes("updated") ||
+                                f === "_syncedAt",
+                            );
+                            return (
+                              <Box
+                                key={layout.entity}
+                                sx={{
+                                  display: "grid",
+                                  gridTemplateColumns: "1fr 1fr 100px 1fr",
+                                  gap: 1,
+                                  p: 1,
+                                  borderTop: 1,
+                                  borderColor: "divider",
+                                  alignItems: "center",
+                                }}
+                              >
+                                <Typography variant="body2">
+                                  {watch("tableDestination.tablePrefix")
+                                    ? `${watch("tableDestination.tablePrefix")}_${layout.entity}`
+                                    : layout.entity}
+                                </Typography>
+                                <Controller
+                                  name={`entityLayouts.${idx}.partitionField`}
+                                  control={control}
+                                  render={({ field }) => (
+                                    <Select
+                                      {...field}
+                                      size="small"
+                                      value={field.value || "_syncedAt"}
+                                      disabled={!isNewMode}
+                                    >
+                                      {timestampFields.map(f => (
+                                        <MenuItem key={f} value={f}>
+                                          {f}
+                                        </MenuItem>
+                                      ))}
+                                    </Select>
+                                  )}
+                                />
+                                <Controller
+                                  name={`entityLayouts.${idx}.partitionGranularity`}
+                                  control={control}
+                                  render={({ field }) => (
+                                    <Select
+                                      {...field}
+                                      size="small"
+                                      value={field.value || "day"}
+                                      disabled={!isNewMode}
+                                    >
+                                      <MenuItem value="hour">hour</MenuItem>
+                                      <MenuItem value="day">day</MenuItem>
+                                      <MenuItem value="month">month</MenuItem>
+                                      <MenuItem value="year">year</MenuItem>
+                                    </Select>
+                                  )}
+                                />
+                                <Controller
+                                  name={`entityLayouts.${idx}.clusterFields`}
+                                  control={control}
+                                  render={({ field }) => (
+                                    <Select
+                                      multiple
+                                      size="small"
+                                      value={field.value || []}
+                                      disabled={!isNewMode}
+                                      onChange={e =>
+                                        field.onChange(
+                                          typeof e.target.value === "string"
+                                            ? e.target.value.split(",")
+                                            : e.target.value,
+                                        )
+                                      }
+                                      renderValue={selected => (
+                                        <Box
+                                          sx={{
+                                            display: "flex",
+                                            flexWrap: "wrap",
+                                            gap: 0.5,
+                                          }}
+                                        >
+                                          {(selected as string[]).map(val => (
+                                            <Chip
+                                              key={val}
+                                              label={val}
+                                              size="small"
+                                            />
+                                          ))}
+                                        </Box>
+                                      )}
+                                      displayEmpty
+                                    >
+                                      {entityFields.map(f => (
+                                        <MenuItem key={f} value={f}>
+                                          {f}
+                                        </MenuItem>
+                                      ))}
+                                    </Select>
+                                  )}
+                                />
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      </Box>
+                    )}
+                  </Stack>
+                </Box>
+              )}
 
               {/* Webhook Configuration */}
               {/* Webhook URL and Secret (only shown after creation) */}

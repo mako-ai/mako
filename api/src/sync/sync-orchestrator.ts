@@ -6,12 +6,24 @@ import {
   ConnectionConfig,
 } from "../services/database-connection.service";
 import { SyncLogger, FetchState } from "../connectors/base/BaseConnector";
+import { ITableDestination } from "../database/workspace-schema";
+import { createDestinationWriter } from "../services/destination-writer.service";
 import { Db } from "mongodb";
+import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
 
 const orchestratorLogger = loggers.sync("orchestrator");
+
+/**
+ * Get per-entity table name for connector -> SQL destinations.
+ * When baseName (prefix) is empty, returns just the entity name.
+ */
+export function getEntityTableName(baseName: string, entity: string): string {
+  const normalized = entity.includes(":") ? entity.split(":")[0] : entity;
+  return baseName ? `${baseName}_${normalized}` : normalized;
+}
 
 export interface SyncChunkResult {
   state: FetchState;
@@ -29,8 +41,11 @@ export interface SyncChunkOptions {
   state?: FetchState;
   maxIterations?: number;
   logger?: SyncLogger;
-  step?: any; // Inngest step object for serverless-friendly retries
-  queries?: any[]; // GraphQL/PostHog queries from the transfer
+  step?: any;
+  queries?: any[];
+  /** When set, writes to SQL/BigQuery instead of MongoDB */
+  tableDestination?: ITableDestination;
+  deleteMode?: "hard" | "soft";
 }
 
 /**
@@ -271,7 +286,12 @@ export async function performSyncChunk(
       );
     }
 
-    // Get connection from unified pool
+    // ========== SQL/BigQuery destination path ==========
+    if (options.tableDestination?.connectionId) {
+      return performSyncChunkSql(options, dataSource, connector, syncMode);
+    }
+
+    // ========== Legacy MongoDB destination path (unchanged) ==========
     const connectionIdentifier = destinationDatabaseName
       ? `${destinationId}:${destinationDatabaseName}`
       : destinationId;
@@ -299,41 +319,34 @@ export async function performSyncChunk(
     );
     db = connection.db;
 
-    // Collection setup - if entity has sub-entity notation (e.g., activities:Call),
-    // normalize to parent for collection naming so all activity types land together
     const normalizedEntityName = entity.includes(":")
       ? entity.split(":")[0]
       : entity;
     const collectionName = `${dataSource.name}_${normalizedEntityName}`;
     const stagingCollectionName = `${collectionName}_staging`;
-    const useStaging = syncMode === "full"; // Use staging for ALL chunks of full sync
+    const useStaging = syncMode === "full";
 
     const collection = useStaging
       ? db.collection(stagingCollectionName)
       : db.collection(collectionName);
 
-    // Ensure indexes exist for incremental sync on first chunk
     if (!useStaging && !state) {
       await ensureCollectionIndexes(collection, logger);
     }
 
     if (useStaging && !state) {
-      // Drop staging collection if exists (only on first chunk)
       try {
         await db.collection(stagingCollectionName).drop();
       } catch {
         // Ignore if doesn't exist
       }
       await db.createCollection(stagingCollectionName);
-
-      // Create indexes on staging collection for efficient inserts
       const stagingCollection = db.collection(stagingCollectionName);
       await ensureCollectionIndexes(stagingCollection, logger);
     }
 
     let lastSyncDate: Date | undefined;
 
-    // Get last sync date for incremental (only on first chunk)
     if (syncMode === "incremental" && !state) {
       const lastRecord = await db
         .collection(collectionName)
@@ -351,10 +364,8 @@ export async function performSyncChunk(
       }
     }
 
-    // Create progress reporter
     const progressReporter = new ProgressReporter(entity, undefined, logger);
 
-    // Fetch chunk from connector with retry logic
     const maxRetries = dataSource.settings?.max_retries || 3;
     const rateLimitDelay = dataSource.settings?.rate_limit_delay_ms || 200;
     const fetchState = await executeWithRetry(
@@ -367,7 +378,6 @@ export async function performSyncChunk(
           onBatch: async batch => {
             if (batch.length === 0) return;
 
-            // Add metadata to records
             const processedRecords = batch.map(record => ({
               ...record,
               _dataSourceId: dataSource.id,
@@ -375,10 +385,8 @@ export async function performSyncChunk(
               _syncedAt: new Date(),
             }));
 
-            // Write to database with timing
-            const bulkStart = Date.now(); // Declare outside for catch scope
+            const bulkStart = Date.now();
             try {
-              // Always use bulkWrite with upserts to handle duplicates gracefully
               const bulkOps = processedRecords.map(record => ({
                 replaceOne: {
                   filter: {
@@ -418,7 +426,7 @@ export async function performSyncChunk(
         }),
       maxRetries,
       logger,
-      options.step, // Pass through the step from options for Inngest sleep
+      options.step,
       `fetch-chunk-${entity}`,
       rateLimitDelay,
     );
@@ -428,7 +436,6 @@ export async function performSyncChunk(
     if (completed) {
       progressReporter.reportComplete();
 
-      // Hot swap for full sync (only when sync is completed)
       if (syncMode === "full") {
         try {
           await db.collection(collectionName).drop();
@@ -462,7 +469,174 @@ export async function performSyncChunk(
     });
     throw new Error(errorMsg, { cause: error });
   }
-  // Note: We don't close the connection here anymore - it stays in the unified pool
+}
+
+/**
+ * SQL/BigQuery destination path for connector sync chunks.
+ * Uses DestinationWriter with per-entity table naming.
+ */
+async function performSyncChunkSql(
+  options: SyncChunkOptions,
+  dataSource: any,
+  connector: any,
+  syncMode: string,
+): Promise<SyncChunkResult> {
+  const {
+    entity,
+    state,
+    maxIterations = 10,
+    logger,
+    tableDestination,
+  } = options;
+
+  if (!tableDestination) {
+    throw new Error("tableDestination required for SQL sync path");
+  }
+
+  const entityTableName = getEntityTableName(
+    tableDestination.tableName,
+    entity,
+  );
+
+  // Build per-entity tableDestination with the resolved table name
+  const entityTableDest: ITableDestination = {
+    ...tableDestination,
+    tableName: entityTableName,
+  };
+
+  const writer = await createDestinationWriter(
+    {
+      destinationDatabaseId: new Types.ObjectId(options.destinationId),
+      destinationDatabaseName: options.destinationDatabaseName,
+      tableDestination: entityTableDest,
+    },
+    dataSource.name,
+  );
+  (writer as any).config.deleteMode = options.deleteMode;
+
+  // Full sync: prepare staging on first chunk
+  if (syncMode === "full" && !state) {
+    await writer.prepareFullSync();
+  } else if (syncMode === "full" && state) {
+    (writer as any).stagingActive = true;
+  }
+
+  // Incremental: get last sync date from destination table
+  let lastSyncDate: Date | undefined;
+  if (syncMode === "incremental" && !state) {
+    try {
+      const { getMaxTrackingValue } = await import(
+        "../services/destination-writer.service"
+      );
+      const { DatabaseConnection } = await import(
+        "../database/workspace-schema"
+      );
+      const destConn = await DatabaseConnection.findById(
+        tableDestination.connectionId,
+      );
+      if (destConn) {
+        const result = await getMaxTrackingValue(
+          destConn,
+          entityTableName,
+          "_syncedAt",
+          tableDestination.schema,
+          tableDestination.database,
+        );
+        if (result.success && result.maxValue) {
+          lastSyncDate = new Date(result.maxValue);
+          logger?.log(
+            "info",
+            `Incremental from SQL: syncing ${entity} after ${lastSyncDate.toISOString()}`,
+          );
+        }
+      }
+    } catch (err) {
+      logger?.log(
+        "warn",
+        `Could not get incremental anchor from SQL destination: ${err}`,
+      );
+    }
+  }
+
+  const progressReporter = new ProgressReporter(entity, undefined, logger);
+
+  const maxRetries = dataSource.settings?.max_retries || 3;
+  const rateLimitDelay = dataSource.settings?.rate_limit_delay_ms || 200;
+  const fetchState: FetchState = await executeWithRetry<FetchState>(
+    () =>
+      connector.fetchEntityChunk({
+        entity,
+        state,
+        maxIterations,
+        ...(lastSyncDate && { since: lastSyncDate }),
+        onBatch: async (batch: any[]) => {
+          if (batch.length === 0) return;
+
+          const processedRecords = batch.map((record: any) => {
+            const flat: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(record)) {
+              flat[key.replace(/\./g, "_")] = value;
+            }
+            return {
+              ...flat,
+              _dataSourceId: dataSource.id,
+              _dataSourceName: dataSource.name,
+              _syncedAt: new Date(),
+            };
+          });
+
+          const result = await writer.writeBatch(processedRecords, {
+            keyColumns: ["id", "_dataSourceId"],
+            conflictStrategy: "update",
+          });
+
+          if (!result.success) {
+            throw new Error(`SQL write failed: ${result.error}`);
+          }
+
+          orchestratorLogger.info("SQL write succeeded", {
+            rowsWritten: result.rowsWritten,
+            recordCount: batch.length,
+            table: entityTableName,
+          });
+        },
+        onProgress: (current: number, total?: number) => {
+          progressReporter.reportProgress(current, total);
+        },
+      }),
+    maxRetries,
+    logger,
+    options.step,
+    `fetch-chunk-${entity}`,
+    rateLimitDelay,
+  );
+
+  const completed = !fetchState.hasMore;
+
+  if (completed) {
+    progressReporter.reportComplete();
+
+    if (syncMode === "full") {
+      await writer.finalize();
+    }
+
+    logger?.log(
+      "info",
+      `✅ ${entity} SQL sync completed (${fetchState.totalProcessed} records)`,
+    );
+  } else {
+    logger?.log(
+      "info",
+      `📊 ${entity} SQL chunk done (${fetchState.totalProcessed} so far)`,
+    );
+  }
+
+  return {
+    state: fetchState,
+    entity,
+    collectionName: entityTableName,
+    completed,
+  };
 }
 
 /**

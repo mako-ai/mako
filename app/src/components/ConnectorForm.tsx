@@ -318,25 +318,28 @@ function ConnectorForm({
             });
             hasItemErrors = true;
           }
-          items.forEach((item, idx) => {
-            (f.itemFields ?? []).forEach(sub => {
-              if (sub.required) {
-                const v = item?.[sub.name as keyof typeof item];
-                const isEmpty =
-                  v === undefined ||
-                  v === null ||
-                  (typeof v === "string" && v.trim() === "");
-                if (isEmpty) {
-                  const path = `${f.name}.${idx}.${sub.name}`;
-                  form.setError(path, {
-                    type: "required",
-                    message: "This field is required",
-                  });
-                  hasItemErrors = true;
+          // Only validate item fields if items actually exist
+          if (items.length > 0) {
+            items.forEach((item, idx) => {
+              (f.itemFields ?? []).forEach(sub => {
+                if (sub.required) {
+                  const v = item?.[sub.name as keyof typeof item];
+                  const isEmpty =
+                    v === undefined ||
+                    v === null ||
+                    (typeof v === "string" && v.trim() === "");
+                  if (isEmpty) {
+                    const path = `${f.name}.${idx}.${sub.name}`;
+                    form.setError(path, {
+                      type: "required",
+                      message: "This field is required",
+                    });
+                    hasItemErrors = true;
+                  }
                 }
-              }
+              });
             });
-          });
+          }
         }
       });
       if (hasItemErrors) {

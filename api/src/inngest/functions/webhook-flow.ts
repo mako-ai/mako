@@ -7,6 +7,9 @@ import {
 } from "../../database/workspace-schema";
 import { getSyncLogger } from "../logging";
 import { connectorRegistry } from "../../connectors/registry";
+import { createDestinationWriter } from "../../services/destination-writer.service";
+import { getEntityTableName } from "../../sync/sync-orchestrator";
+import { Types } from "mongoose";
 
 /**
  * Process a single webhook event immediately
@@ -115,19 +118,147 @@ export const webhookEventProcessFunction = inngest.createFunction(
         }
 
         const { id, data } = extractedData;
+
+        // Flatten keys with dots (e.g. Close custom fields "custom.cf_xxx")
+        // BigQuery interprets dots as struct field access which breaks queries
+        const flatData: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(data)) {
+          flatData[key.replace(/\./g, "_")] = value;
+        }
+
+        const documentData = {
+          ...flatData,
+          _dataSourceId: dataSource._id,
+          _dataSourceName: dataSource.name,
+          _syncedAt: new Date(),
+          _webhookEventId: webhookEvent.eventId,
+        };
+
+        // ========== SQL/BigQuery destination path ==========
+        if (flow.tableDestination?.connectionId) {
+          const entityTableName = getEntityTableName(
+            flow.tableDestination.tableName,
+            mapping.entity,
+          );
+
+          // Resolve per-entity layout from flow.entityLayouts
+          const entityLayout = (flow.entityLayouts || []).find(
+            (l: any) => l.entity === mapping.entity,
+          );
+
+          const entityTableDest = {
+            ...flow.tableDestination,
+            tableName: entityTableName,
+            connectionId: new Types.ObjectId(
+              flow.tableDestination.connectionId,
+            ),
+            partitioning: entityLayout
+              ? {
+                  enabled: true,
+                  type: "time" as const,
+                  field: entityLayout.partitionField,
+                  granularity: entityLayout.partitionGranularity || "day",
+                }
+              : flow.tableDestination.partitioning,
+            clustering: entityLayout?.clusterFields?.length
+              ? {
+                  enabled: true,
+                  fields: entityLayout.clusterFields,
+                }
+              : flow.tableDestination.clustering,
+          };
+
+          const writer = await createDestinationWriter(
+            {
+              destinationDatabaseId: new Types.ObjectId(
+                flow.destinationDatabaseId,
+              ),
+              destinationDatabaseName: flow.destinationDatabaseName,
+              tableDestination: entityTableDest,
+            },
+            dataSource.name,
+          );
+          (writer as any).config.deleteMode = flow.deleteMode;
+
+          logger.info("Processing webhook event (SQL destination)", {
+            eventType,
+            entity: mapping.entity,
+            operation: mapping.operation,
+            id,
+            table: entityTableName,
+          });
+
+          if (mapping.operation === "upsert") {
+            const result = await writer.writeBatch([documentData], {
+              keyColumns: ["id", "_dataSourceId"],
+              conflictStrategy: "update",
+            });
+            if (!result.success) {
+              throw new Error(`SQL upsert failed: ${result.error}`);
+            }
+          } else if (mapping.operation === "delete") {
+            const deleteMode = flow.deleteMode || "hard";
+            if (deleteMode === "soft") {
+              const softDeleteDoc = {
+                ...documentData,
+                is_deleted: true,
+                deleted_at: new Date(),
+              };
+              const result = await writer.writeBatch([softDeleteDoc], {
+                keyColumns: ["id", "_dataSourceId"],
+                conflictStrategy: "update",
+              });
+              if (!result.success) {
+                throw new Error(`SQL soft delete failed: ${result.error}`);
+              }
+            } else {
+              const result = await writer.deleteByKeys({
+                id,
+                _dataSourceId: dataSource._id,
+              });
+              if (!result.success) {
+                throw new Error(`SQL hard delete failed: ${result.error}`);
+              }
+            }
+          }
+
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                processedAt: new Date(),
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+            },
+          );
+
+          logger.info("Webhook event processed (SQL)", {
+            eventId: webhookEvent.eventId,
+            eventType,
+            entity: mapping.entity,
+            operation: mapping.operation,
+            table: entityTableName,
+          });
+
+          return {
+            processed: true,
+            entity: mapping.entity,
+            operation: mapping.operation,
+          };
+        }
+
+        // ========== Legacy MongoDB destination path (unchanged) ==========
         const collectionName = `${dataSource.name}_${mapping.entity}`;
         const collection = db.collection(collectionName);
 
-        // Check if staging collection exists (for full sync in progress)
         const stagingCollectionName = `${collectionName}_staging`;
         let stagingCollection = null;
 
-        // To avoid creating the collection, we'll check if it already has an index
-        // All MongoDB collections have at least the _id index when they exist
         try {
           const stagingCol = db.collection(stagingCollectionName);
           const indexes = await stagingCol.indexes();
-          // If indexes() succeeds and returns at least the _id index, collection exists
           if (indexes && indexes.length > 0) {
             stagingCollection = stagingCol;
             logger.info("Staging collection found, will write to both", {
@@ -135,7 +266,6 @@ export const webhookEventProcessFunction = inngest.createFunction(
             });
           }
         } catch {
-          // Collection doesn't exist - indexes() throws for non-existent collections
           logger.debug("No staging collection found", {
             stagingCollection: stagingCollectionName,
           });
@@ -150,25 +280,13 @@ export const webhookEventProcessFunction = inngest.createFunction(
           hasStaging: !!stagingCollection,
         });
 
-        // Prepare the document with harmonized metadata (matching scheduled sync format)
-        const documentData = {
-          ...data,
-          _dataSourceId: dataSource._id,
-          _dataSourceName: dataSource.name,
-          _syncedAt: new Date(),
-          _webhookEventId: webhookEvent.eventId, // Additional webhook-specific tracking
-        };
-
-        // Perform the operation
         if (mapping.operation === "upsert") {
-          // Update production collection
           await collection.updateOne(
             { id },
             { $set: documentData },
             { upsert: true },
           );
 
-          // Also update staging if it exists
           if (stagingCollection) {
             await stagingCollection.updateOne(
               { id },
@@ -177,16 +295,13 @@ export const webhookEventProcessFunction = inngest.createFunction(
             );
           }
         } else if (mapping.operation === "delete") {
-          // Delete from production
           await collection.deleteOne({ id });
 
-          // Also delete from staging if it exists
           if (stagingCollection) {
             await stagingCollection.deleteOne({ id });
           }
         }
 
-        // Mark event as completed
         await WebhookEvent.updateOne(
           { _id: webhookEvent._id },
           {
@@ -344,4 +459,3 @@ export const webhookRetryFunction = inngest.createFunction(
     return result;
   },
 );
-

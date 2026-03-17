@@ -73,12 +73,21 @@ export interface WebhookHandlerOptions {
   secret?: string;
 }
 
+// Suggested table layout for BigQuery destinations
+export interface TableLayoutSuggestion {
+  partitionField?: string;
+  partitionGranularity?: "day" | "hour" | "month" | "year";
+  clusterFields?: string[];
+}
+
 // Entity metadata for hierarchical entity structure
 export interface EntityMetadata {
   name: string;
   label?: string;
   description?: string;
   subEntities?: EntityMetadata[];
+  /** Suggested BigQuery table layout for this entity */
+  layoutSuggestion?: TableLayoutSuggestion;
 }
 
 export abstract class BaseConnector {

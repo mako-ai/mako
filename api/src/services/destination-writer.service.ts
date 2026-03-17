@@ -25,6 +25,9 @@ import {
   ColumnDefinition,
   BatchWriteResult,
   DatabaseDriver,
+  InsertOptions,
+  TablePartitioning,
+  TableClustering,
 } from "../databases/driver";
 import {
   databaseConnectionService,
@@ -62,6 +65,9 @@ export interface DestinationConfig {
   // Common
   dataSourceId?: string;
   dataSourceName?: string;
+
+  // Delete mode for connector webhook flows
+  deleteMode?: "hard" | "soft";
 }
 
 export interface WriteOptions {
@@ -143,6 +149,36 @@ export class DestinationWriter {
   }
 
   /**
+   * Build InsertOptions with layout config from tableDestination
+   */
+  private getInsertOptionsWithLayout(): InsertOptions {
+    const td = this.config.tableDestination;
+    const opts: InsertOptions = { schema: td?.schema };
+
+    if (td?.partitioning?.enabled) {
+      opts.partitioning = {
+        type: td.partitioning.type || "time",
+        field: td.partitioning.field,
+        granularity: td.partitioning.granularity,
+        requirePartitionFilter: td.partitioning.requirePartitionFilter,
+      } as TablePartitioning;
+    }
+
+    if (td?.clustering?.enabled && td.clustering.fields?.length) {
+      opts.clustering = { fields: td.clustering.fields } as TableClustering;
+    }
+
+    if (this.config.deleteMode === "soft") {
+      opts.softDeleteColumns = {
+        isDeleted: "is_deleted",
+        deletedAt: "deleted_at",
+      };
+    }
+
+    return opts;
+  }
+
+  /**
    * Initialize the writer (connect to destination if needed)
    */
   async initialize(): Promise<void> {
@@ -169,6 +205,15 @@ export class DestinationWriter {
         throw new Error(
           `Database driver ${conn.type} does not support write operations`,
         );
+      }
+
+      // Auto-create dataset/schema if needed
+      const td = this.config.tableDestination;
+      if (td?.createIfNotExists && td.schema && this.driver.ensureSchema) {
+        const result = await this.driver.ensureSchema(conn, td.schema);
+        if (!result.success) {
+          throw new Error(`Failed to ensure dataset: ${result.error}`);
+        }
       }
     }
   }
@@ -250,6 +295,65 @@ export class DestinationWriter {
       await this.cleanupMongoStaging(options);
     }
     this.stagingActive = false;
+  }
+
+  /**
+   * Delete rows matching key filters from the destination
+   * For SQL: delegates to driver.deleteBatch
+   * For Mongo: uses collection.deleteOne
+   */
+  async deleteByKeys(
+    keyFilters: Record<string, unknown>,
+  ): Promise<WriteResult> {
+    if (this.isTableDestination()) {
+      if (!this.driver || !this.connection || !this.config.tableDestination) {
+        return {
+          success: false,
+          rowsWritten: 0,
+          error: "SQL destination not configured",
+        };
+      }
+      const result = await this.driver.deleteBatch?.(
+        this.connection,
+        this.config.tableDestination.tableName,
+        keyFilters,
+        this.getInsertOptionsWithLayout(),
+      );
+      if (!result) {
+        return {
+          success: false,
+          rowsWritten: 0,
+          error: "Driver does not support deleteBatch",
+        };
+      }
+      return {
+        success: result.success,
+        rowsWritten: result.rowsWritten,
+        error: result.error,
+      };
+    }
+
+    // MongoDB path
+    if (!this.config.mongoDb || !this.config.collectionName) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "MongoDB not configured",
+      };
+    }
+    try {
+      const collection = this.config.mongoDb.collection(
+        this.config.collectionName,
+      );
+      const result = await collection.deleteOne(keyFilters);
+      return { success: true, rowsWritten: result.deletedCount };
+    } catch (error) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   // ============ MongoDB Implementation ============
@@ -456,6 +560,7 @@ export class DestinationWriter {
 
     const { tableName, schema } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
+    const layoutOpts = this.getInsertOptionsWithLayout();
 
     // Check if original table exists
     const tableExists = await this.driver.tableExists?.(
@@ -465,12 +570,11 @@ export class DestinationWriter {
     );
 
     if (tableExists) {
-      // Create staging table based on original structure
       const result = await this.driver.createStagingTable?.(
         this.connection,
         tableName,
         stagingName,
-        { schema },
+        layoutOpts,
       );
 
       if (!result?.success) {
@@ -586,12 +690,12 @@ export class DestinationWriter {
           }
         }
 
-        // Create table
+        // Create table with layout config
         const createResult = await this.driver.createTable?.(
           this.connection,
           targetTable,
           this.inferredColumns,
-          { schema },
+          this.getInsertOptionsWithLayout(),
         );
 
         if (!createResult?.success) {
@@ -649,15 +753,14 @@ export class DestinationWriter {
       throw new Error("SQL destination not configured");
     }
 
-    const { tableName, schema } = this.config.tableDestination;
+    const { tableName } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
 
-    // Swap staging with original
     const result = await this.driver.swapStagingTable?.(
       this.connection,
       tableName,
       stagingName,
-      { schema },
+      this.getInsertOptionsWithLayout(),
     );
 
     if (!result?.success) {
