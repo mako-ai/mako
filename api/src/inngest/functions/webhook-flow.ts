@@ -141,6 +141,31 @@ export const webhookEventProcessFunction = inngest.createFunction(
           resolvedEntity = `activities:${data._type}`;
         }
 
+        // Skip disabled entities (unchecked in flow config)
+        if (flow.entityLayouts?.length) {
+          const layout = flow.entityLayouts.find(
+            (l: any) =>
+              l.entity === resolvedEntity || l.entity === mapping.entity,
+          );
+          if (layout && layout.enabled === false) {
+            await WebhookEvent.updateOne(
+              { _id: webhookEvent._id },
+              {
+                $set: {
+                  status: "completed",
+                  processedAt: new Date(),
+                  processingDurationMs:
+                    Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+                },
+              },
+            );
+            return {
+              processed: false,
+              reason: `Entity ${resolvedEntity} is disabled`,
+            };
+          }
+        }
+
         // ========== SQL/BigQuery destination path ==========
         if (flow.tableDestination?.connectionId) {
           const entityTableName = getEntityTableName(
