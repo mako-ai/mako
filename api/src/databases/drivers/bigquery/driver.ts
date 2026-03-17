@@ -70,9 +70,9 @@ function escapeForBigQueryString(str: string): string {
  * Returns the full `JSON '''...'''` expression.
  */
 function formatBigQueryJsonLiteral(jsonStr: string): string {
-  // Triple-quoted strings: only need to escape triple-quote sequences
-  const escaped = jsonStr.replace(/'''/g, "\\'''");
-  return `JSON '''${escaped}'''`;
+  // Use PARSE_JSON with escaped single-quoted string for maximum safety
+  const escaped = escapeForBigQueryString(jsonStr);
+  return `PARSE_JSON('${escaped}')`;
 }
 
 /**
