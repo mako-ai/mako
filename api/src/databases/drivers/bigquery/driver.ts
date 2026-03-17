@@ -120,10 +120,8 @@ function formatBigQueryValue(
       if (upperType === "JSON") {
         return formatBigQueryJsonLiteral(JSON.stringify(value));
       }
-      const elements = value
-        .map(v => formatBigQueryValue(v, undefined, false))
-        .join(", ");
-      return `[${elements}]`;
+      // For STRING target, serialize array as JSON string
+      stringValue = escapeForBigQueryString(JSON.stringify(value));
     } else if (typeof value === "object") {
       stringValue = escapeForBigQueryString(JSON.stringify(value));
       if (upperType === "JSON") {
@@ -208,15 +206,13 @@ function formatBigQueryValue(
     return `'${value.toISOString()}'`;
   }
 
-  // Handle arrays
+  // Handle arrays — serialize as JSON string so BigQuery creates/matches STRING columns
   if (Array.isArray(value)) {
     if (upperType === "JSON") {
       return formatBigQueryJsonLiteral(JSON.stringify(value));
     }
-    const elements = value
-      .map(v => formatBigQueryValue(v, undefined, false))
-      .join(", ");
-    return `[${elements}]`;
+    const jsonStr = escapeForBigQueryString(JSON.stringify(value));
+    return `'${jsonStr}'`;
   }
 
   // Handle objects (JSON)

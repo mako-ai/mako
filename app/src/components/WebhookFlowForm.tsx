@@ -13,6 +13,7 @@ import {
   Alert,
   Chip,
   Stack,
+  Checkbox,
 } from "@mui/material";
 import {
   Save as SaveIcon,
@@ -42,6 +43,7 @@ interface EntityLayoutConfig {
   partitionField: string;
   partitionGranularity: "day" | "hour" | "month" | "year";
   clusterFields: string[];
+  enabled?: boolean;
 }
 
 const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
@@ -207,6 +209,68 @@ const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
     "id",
     "name",
     "custom_field_type",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  "activities:CustomActivity": [
+    "id",
+    "lead_id",
+    "user_id",
+    "_type",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  custom_activity_types: [
+    "id",
+    "name",
+    "description",
+    "api_create_only",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  custom_object_types: [
+    "id",
+    "name",
+    "description",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  custom_objects: [
+    "id",
+    "custom_object_type",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  lead_statuses: [
+    "id",
+    "label",
+    "organization_id",
+    "date_created",
+    "date_updated",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  opportunity_statuses: [
+    "id",
+    "label",
+    "type",
+    "organization_id",
+    "date_created",
+    "date_updated",
     "_dataSourceId",
     "_dataSourceName",
     "_syncedAt",
@@ -393,21 +457,75 @@ export function WebhookFlowForm({
             partitionField: "_syncedAt",
             clusterFields: [] as string[],
           },
+          {
+            name: "activities:CustomActivity",
+            label: "Custom Activities",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "custom_activity_types",
+            label: "Custom Activity Types",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "custom_object_types",
+            label: "Custom Object Types",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "custom_objects",
+            label: "Custom Objects",
+            partitionField: "date_created",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "lead_statuses",
+            label: "Lead Statuses",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "opportunity_statuses",
+            label: "Opportunity Statuses",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
         ];
         setEntityMetadata(entities);
-        const currentLayouts = watch("entityLayouts") || [];
-        if (currentLayouts.length === 0) {
-          setValue(
-            "entityLayouts",
-            entities.map(e => ({
-              entity: e.name,
-              label: e.label,
-              partitionField: e.partitionField,
-              partitionGranularity: "day" as const,
-              clusterFields: e.clusterFields || [],
-            })),
-          );
-        }
+        // Read saved layouts from the flow object (store), not watch(),
+        // because watch() may return stale state when effects race.
+        const existingFlow =
+          !isNewMode && currentFlowId
+            ? flows.find(j => j._id === currentFlowId)
+            : null;
+        const savedLayouts: EntityLayoutConfig[] =
+          existingFlow?.entityLayouts || watch("entityLayouts") || [];
+        const savedByEntity = new Map(
+          savedLayouts.map((l: any) => [l.entity, l]),
+        );
+        setValue(
+          "entityLayouts",
+          entities.map(e => {
+            const saved = savedByEntity.get(e.name);
+            return saved
+              ? {
+                  ...saved,
+                  label: e.label,
+                  enabled: saved.enabled !== false,
+                }
+              : {
+                  entity: e.name,
+                  label: e.label,
+                  partitionField: e.partitionField,
+                  partitionGranularity: "day" as const,
+                  clusterFields: e.clusterFields || [],
+                  enabled: true,
+                };
+          }),
+        );
       } else if (connectorType === "stripe") {
         const entities = [
           { name: "customers", label: "Customers" },
@@ -418,26 +536,56 @@ export function WebhookFlowForm({
           { name: "plans", label: "Plans" },
         ];
         setEntityMetadata(entities);
-        const currentLayouts = watch("entityLayouts") || [];
-        if (currentLayouts.length === 0) {
-          setValue(
-            "entityLayouts",
-            entities.map(e => ({
-              entity: e.name,
-              label: e.label,
-              partitionField: e.partitionField || "_syncedAt",
-              partitionGranularity: "day" as const,
-              clusterFields: e.clusterFields || [],
-            })),
-          );
-        }
+        const existingFlowStripe =
+          !isNewMode && currentFlowId
+            ? flows.find(j => j._id === currentFlowId)
+            : null;
+        const savedLayoutsStripe: EntityLayoutConfig[] =
+          existingFlowStripe?.entityLayouts || watch("entityLayouts") || [];
+        const savedByEntity = new Map(
+          savedLayoutsStripe.map((l: any) => [l.entity, l]),
+        );
+        setValue(
+          "entityLayouts",
+          entities.map(e => {
+            const saved = savedByEntity.get(e.name);
+            return saved
+              ? {
+                  ...saved,
+                  label: e.label,
+                  enabled: saved.enabled !== false,
+                }
+              : {
+                  entity: e.name,
+                  label: e.label,
+                  partitionField: e.partitionField || "_syncedAt",
+                  partitionGranularity: "day" as const,
+                  clusterFields: e.clusterFields || [],
+                  enabled: true,
+                };
+          }),
+        );
       }
-    } else {
+    } else if (
+      watchDataSourceId &&
+      connectors.length > 0 &&
+      watchDestinationId &&
+      databases.length > 0
+    ) {
       setEntityMetadata([]);
       setValue("entityLayouts", []);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBigQueryDest, watchDataSourceId, connectors]);
+  }, [
+    isBigQueryDest,
+    watchDataSourceId,
+    watchDestinationId,
+    connectors,
+    databases,
+    flows,
+    isNewMode,
+    currentFlowId,
+  ]);
 
   // Fetch connectors
   const fetchDataSources = async (workspaceId: string) => {
@@ -493,7 +641,10 @@ export function WebhookFlowForm({
         }
 
         if (flow.entityLayouts && flow.entityLayouts.length > 0) {
-          formData.entityLayouts = flow.entityLayouts;
+          formData.entityLayouts = flow.entityLayouts.map((l: any) => ({
+            ...l,
+            enabled: l.enabled !== false,
+          }));
         }
 
         if (flow.webhookConfig) {
@@ -558,6 +709,9 @@ export function WebhookFlowForm({
           createIfNotExists: true,
         };
         payload.entityLayouts = data.entityLayouts;
+        payload.entityFilter = (data.entityLayouts || [])
+          .filter(l => l.enabled !== false)
+          .map(l => l.entity);
       }
 
       let newFlow;
@@ -875,157 +1029,217 @@ export function WebhookFlowForm({
                     {watchEntityLayouts.length > 0 && (
                       <Box>
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                          Per-Table Partitioning & Clustering
+                          Entities & Table Configuration
                         </Typography>
                         <Box
                           sx={{
                             border: 1,
                             borderColor: "divider",
                             borderRadius: 1,
+                            overflowX: "auto",
                           }}
                         >
-                          {/* Header */}
-                          <Box
-                            sx={{
-                              display: "grid",
-                              gridTemplateColumns: "1fr 1fr 100px 1fr",
-                              gap: 1,
-                              p: 1,
-                              bgcolor: "action.hover",
-                            }}
-                          >
-                            <Typography variant="caption" fontWeight="bold">
-                              Entity Table
-                            </Typography>
-                            <Typography variant="caption" fontWeight="bold">
-                              Partition Field
-                            </Typography>
-                            <Typography variant="caption" fontWeight="bold">
-                              Granularity
-                            </Typography>
-                            <Typography variant="caption" fontWeight="bold">
-                              Cluster Fields
-                            </Typography>
-                          </Box>
-                          {/* Rows */}
-                          {watchEntityLayouts.map((layout, idx) => {
-                            const entityFields = CLOSE_ENTITY_FIELDS[
-                              layout.entity
-                            ] || ["_syncedAt", "_dataSourceId", "id"];
-                            const timestampFields = entityFields.filter(
-                              f =>
-                                f.includes("date") ||
-                                f.includes("created") ||
-                                f.includes("updated") ||
-                                f === "_syncedAt",
-                            );
-                            return (
-                              <Box
-                                key={layout.entity}
-                                sx={{
-                                  display: "grid",
-                                  gridTemplateColumns: "1fr 1fr 100px 1fr",
-                                  gap: 1,
-                                  p: 1,
-                                  borderTop: 1,
-                                  borderColor: "divider",
-                                  alignItems: "center",
+                          <Box sx={{ minWidth: 640 }}>
+                            {/* Header */}
+                            <Box
+                              sx={{
+                                display: "grid",
+                                gridTemplateColumns:
+                                  "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)",
+                                gap: 1,
+                                px: 1,
+                                py: 0.5,
+                                bgcolor: "action.hover",
+                                alignItems: "center",
+                              }}
+                            >
+                              <Checkbox
+                                size="small"
+                                checked={watchEntityLayouts.every(
+                                  l => l.enabled !== false,
+                                )}
+                                indeterminate={
+                                  watchEntityLayouts.some(
+                                    l => l.enabled !== false,
+                                  ) &&
+                                  !watchEntityLayouts.every(
+                                    l => l.enabled !== false,
+                                  )
+                                }
+                                onChange={e => {
+                                  const layouts = watch("entityLayouts") || [];
+                                  setValue(
+                                    "entityLayouts",
+                                    layouts.map(l => ({
+                                      ...l,
+                                      enabled: e.target.checked,
+                                    })),
+                                  );
                                 }}
-                              >
-                                <Typography variant="body2">
-                                  {(() => {
-                                    const name = layout.entity.includes(":")
-                                      ? layout.entity
-                                          .split(":")[1]
-                                          .toLowerCase()
-                                      : layout.entity;
-                                    const prefix = watch(
-                                      "tableDestination.tablePrefix",
-                                    );
-                                    return prefix ? `${prefix}_${name}` : name;
-                                  })()}
-                                </Typography>
-                                <Controller
-                                  name={`entityLayouts.${idx}.partitionField`}
-                                  control={control}
-                                  render={({ field }) => (
-                                    <Select
-                                      {...field}
-                                      size="small"
-                                      value={field.value || "_syncedAt"}
-                                      disabled={!isNewMode}
-                                    >
-                                      {timestampFields.map(f => (
-                                        <MenuItem key={f} value={f}>
-                                          {f}
-                                        </MenuItem>
-                                      ))}
-                                    </Select>
-                                  )}
-                                />
-                                <Controller
-                                  name={`entityLayouts.${idx}.partitionGranularity`}
-                                  control={control}
-                                  render={({ field }) => (
-                                    <Select
-                                      {...field}
-                                      size="small"
-                                      value={field.value || "day"}
-                                      disabled={!isNewMode}
-                                    >
-                                      <MenuItem value="hour">hour</MenuItem>
-                                      <MenuItem value="day">day</MenuItem>
-                                      <MenuItem value="month">month</MenuItem>
-                                      <MenuItem value="year">year</MenuItem>
-                                    </Select>
-                                  )}
-                                />
-                                <Controller
-                                  name={`entityLayouts.${idx}.clusterFields`}
-                                  control={control}
-                                  render={({ field }) => (
-                                    <Select
-                                      multiple
-                                      size="small"
-                                      value={field.value || []}
-                                      disabled={!isNewMode}
-                                      onChange={e =>
-                                        field.onChange(
-                                          typeof e.target.value === "string"
-                                            ? e.target.value.split(",")
-                                            : e.target.value,
-                                        )
-                                      }
-                                      renderValue={selected => (
-                                        <Box
-                                          sx={{
-                                            display: "flex",
-                                            flexWrap: "wrap",
-                                            gap: 0.5,
-                                          }}
-                                        >
-                                          {(selected as string[]).map(val => (
-                                            <Chip
-                                              key={val}
-                                              label={val}
-                                              size="small"
-                                            />
-                                          ))}
-                                        </Box>
-                                      )}
-                                      displayEmpty
-                                    >
-                                      {entityFields.map(f => (
-                                        <MenuItem key={f} value={f}>
-                                          {f}
-                                        </MenuItem>
-                                      ))}
-                                    </Select>
-                                  )}
-                                />
-                              </Box>
-                            );
-                          })}
+                              />
+                              <Typography variant="caption" fontWeight="bold">
+                                Entity Table
+                              </Typography>
+                              <Typography variant="caption" fontWeight="bold">
+                                Partition Field
+                              </Typography>
+                              <Typography variant="caption" fontWeight="bold">
+                                Granularity
+                              </Typography>
+                              <Typography variant="caption" fontWeight="bold">
+                                Cluster Fields
+                              </Typography>
+                            </Box>
+                            {/* Rows */}
+                            {watchEntityLayouts.map((layout, idx) => {
+                              const entityFields = CLOSE_ENTITY_FIELDS[
+                                layout.entity
+                              ] || ["_syncedAt", "_dataSourceId", "id"];
+                              const timestampFields = entityFields.filter(
+                                f =>
+                                  f.includes("date") ||
+                                  f.includes("created") ||
+                                  f.includes("updated") ||
+                                  f === "_syncedAt",
+                              );
+                              const isEnabled = layout.enabled !== false;
+                              return (
+                                <Box
+                                  key={layout.entity}
+                                  sx={{
+                                    display: "grid",
+                                    gridTemplateColumns:
+                                      "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)",
+                                    gap: 1,
+                                    px: 1,
+                                    py: 0.5,
+                                    borderTop: 1,
+                                    borderColor: "divider",
+                                    alignItems: "center",
+                                    opacity: isEnabled ? 1 : 0.4,
+                                  }}
+                                >
+                                  <Checkbox
+                                    size="small"
+                                    checked={isEnabled}
+                                    onChange={e => {
+                                      const layouts =
+                                        watch("entityLayouts") || [];
+                                      setValue(
+                                        "entityLayouts",
+                                        layouts.map((l, i) =>
+                                          i === idx
+                                            ? {
+                                                ...l,
+                                                enabled: e.target.checked,
+                                              }
+                                            : l,
+                                        ),
+                                      );
+                                    }}
+                                  />
+                                  <Typography variant="body2">
+                                    {(() => {
+                                      const camelToSnake = (s: string) =>
+                                        s
+                                          .replace(
+                                            /([a-z0-9])([A-Z])/g,
+                                            "$1_$2",
+                                          )
+                                          .toLowerCase();
+                                      const name = layout.entity.includes(":")
+                                        ? `${camelToSnake(layout.entity.split(":")[1])}_${layout.entity.split(":")[0]}`
+                                        : layout.entity;
+                                      const prefix = watch(
+                                        "tableDestination.tablePrefix",
+                                      );
+                                      return prefix
+                                        ? `${prefix}_${name}`
+                                        : name;
+                                    })()}
+                                  </Typography>
+                                  <Controller
+                                    name={`entityLayouts.${idx}.partitionField`}
+                                    control={control}
+                                    render={({ field }) => (
+                                      <Select
+                                        {...field}
+                                        size="small"
+                                        value={field.value || "_syncedAt"}
+                                        disabled={!isEnabled || !isNewMode}
+                                      >
+                                        {timestampFields.map(f => (
+                                          <MenuItem key={f} value={f}>
+                                            {f}
+                                          </MenuItem>
+                                        ))}
+                                      </Select>
+                                    )}
+                                  />
+                                  <Controller
+                                    name={`entityLayouts.${idx}.partitionGranularity`}
+                                    control={control}
+                                    render={({ field }) => (
+                                      <Select
+                                        {...field}
+                                        size="small"
+                                        value={field.value || "day"}
+                                        disabled={!isEnabled || !isNewMode}
+                                      >
+                                        <MenuItem value="hour">hour</MenuItem>
+                                        <MenuItem value="day">day</MenuItem>
+                                        <MenuItem value="month">month</MenuItem>
+                                        <MenuItem value="year">year</MenuItem>
+                                      </Select>
+                                    )}
+                                  />
+                                  <Controller
+                                    name={`entityLayouts.${idx}.clusterFields`}
+                                    control={control}
+                                    render={({ field }) => (
+                                      <Select
+                                        multiple
+                                        size="small"
+                                        value={field.value || []}
+                                        disabled={!isEnabled || !isNewMode}
+                                        onChange={e =>
+                                          field.onChange(
+                                            typeof e.target.value === "string"
+                                              ? e.target.value.split(",")
+                                              : e.target.value,
+                                          )
+                                        }
+                                        renderValue={selected => (
+                                          <Box
+                                            sx={{
+                                              display: "flex",
+                                              flexWrap: "wrap",
+                                              gap: 0.5,
+                                            }}
+                                          >
+                                            {(selected as string[]).map(val => (
+                                              <Chip
+                                                key={val}
+                                                label={val}
+                                                size="small"
+                                              />
+                                            ))}
+                                          </Box>
+                                        )}
+                                        displayEmpty
+                                      >
+                                        {entityFields.map(f => (
+                                          <MenuItem key={f} value={f}>
+                                            {f}
+                                          </MenuItem>
+                                        ))}
+                                      </Select>
+                                    )}
+                                  />
+                                </Box>
+                              );
+                            })}
+                          </Box>
                         </Box>
                       </Box>
                     )}

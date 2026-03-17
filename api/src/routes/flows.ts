@@ -179,6 +179,8 @@ flowRoutes.get("/", async c => {
           incrementalConfig: 1,
           conflictConfig: 1,
           batchSize: 1,
+          entityLayouts: 1,
+          deleteMode: 1,
         },
       },
       {
@@ -1163,21 +1165,29 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const eventsToday = recentEvents.filter(
-      e => new Date(e.receivedAt) >= today,
-    ).length;
-    const failedEvents = recentEvents.filter(e => e.status === "failed").length;
+    const [eventsToday, failedToday, totalCount] = await Promise.all([
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        receivedAt: { $gte: today },
+      }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        receivedAt: { $gte: today },
+        status: "failed",
+      }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+      }),
+    ]);
     const successRate =
-      recentEvents.length > 0
-        ? ((recentEvents.length - failedEvents) / recentEvents.length) * 100
-        : 100;
+      eventsToday > 0 ? ((eventsToday - failedToday) / eventsToday) * 100 : 100;
 
     const stats = {
       webhookUrl: flow.webhookConfig?.endpoint,
       lastReceived: flow.webhookConfig?.lastReceivedAt
         ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
         : null,
-      totalReceived: flow.webhookConfig?.totalReceived || 0,
+      totalReceived: totalCount,
       eventsToday,
       successRate: Math.round(successRate),
       recentEvents: recentEvents.slice(0, 10).map(event => ({

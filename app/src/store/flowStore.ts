@@ -913,17 +913,16 @@ export const useFlowStore = create<FlowStore>()(
       },
     })),
     {
-      name: "flow-store-v1", // New storage key for fresh start
+      name: "flow-store-v2",
       storage: createValidatedStorage(
         flowStoreStateSchema,
-        "flow-store-v1",
+        "flow-store-v2",
         initialState,
       ),
       partialize: state => ({
         flows: state.flows,
         selectedFlowId: state.selectedFlowId,
         executionHistory: state.executionHistory,
-        // Don't persist loading or error states
       }),
     },
   ),

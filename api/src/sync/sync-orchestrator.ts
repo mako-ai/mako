@@ -16,14 +16,19 @@ import { loggers } from "../logging";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
+function camelToSnake(str: string): string {
+  return str.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
 /**
  * Get per-entity table name for connector -> SQL destinations.
+ * Sub-types use snake_case: activities:Call → call_activities,
+ * activities:OpportunityStatusChange → opportunity_status_change_activities
  * When baseName (prefix) is empty, returns just the entity name.
  */
 export function getEntityTableName(baseName: string, entity: string): string {
-  // activities:Call → call, activities:Email → email, leads → leads
   const normalized = entity.includes(":")
-    ? entity.split(":")[1].toLowerCase()
+    ? `${camelToSnake(entity.split(":")[1])}_${entity.split(":")[0]}`
     : entity;
   return baseName ? `${baseName}_${normalized}` : normalized;
 }
