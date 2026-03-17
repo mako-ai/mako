@@ -42,6 +42,11 @@ const CLOSE_ACTIVITY_TYPES = [
     label: "Task Completed",
     description: "Completed tasks",
   },
+  {
+    name: "CustomActivity",
+    label: "Custom Activity",
+    description: "Custom activity instances",
+  },
 ];
 
 export class CloseConnector extends BaseConnector {
@@ -172,9 +177,13 @@ export class CloseConnector extends BaseConnector {
       "contacts",
       "users",
       "custom_fields",
+      "custom_activity_types",
+      "custom_object_types",
+      "custom_objects",
+      "lead_statuses",
+      "opportunity_statuses",
     ];
 
-    // Add activity sub-entities for validation
     const activitySubEntities = CLOSE_ACTIVITY_TYPES.map(
       type => `activities:${type.name}`,
     );
@@ -1213,22 +1222,92 @@ export class CloseConnector extends BaseConnector {
       "lead.merged": { entity: "leads", operation: "upsert" },
 
       // Contacts
-      "contact.created": { entity: "contacts", operation: "upsert" },
       "contact.updated": { entity: "contacts", operation: "upsert" },
-      "contact.deleted": { entity: "contacts", operation: "delete" },
 
       // Opportunities
       "opportunity.created": { entity: "opportunities", operation: "upsert" },
       "opportunity.updated": { entity: "opportunities", operation: "upsert" },
       "opportunity.deleted": { entity: "opportunities", operation: "delete" },
-
-      // Activities
-      "activity.created": { entity: "activities", operation: "upsert" },
-      "activity.updated": { entity: "activities", operation: "upsert" },
-      "activity.deleted": { entity: "activities", operation: "delete" },
     };
 
-    return mappings[eventType] || null;
+    if (mappings[eventType]) return mappings[eventType];
+
+    // Activity sub-type events: "activity.note.created" → entity "activities:Note"
+    const activityMatch = eventType.match(
+      /^activity\.(\w+)\.(created|updated|sent|deleted|completed|scheduled|started|canceled)$/,
+    );
+    if (activityMatch) {
+      const subTypeMap: Record<string, string> = {
+        call: "Call",
+        email: "Email",
+        email_thread: "EmailThread",
+        sms: "SMS",
+        note: "Note",
+        meeting: "Meeting",
+        lead_status_change: "LeadStatusChange",
+        opportunity_status_change: "OpportunityStatusChange",
+        task_completed: "TaskCompleted",
+        custom_activity: "CustomActivity",
+      };
+      const subType = subTypeMap[activityMatch[1]];
+      if (subType) {
+        const action = activityMatch[2];
+        return {
+          entity: `activities:${subType}`,
+          operation: action === "deleted" ? "delete" : "upsert",
+        };
+      }
+    }
+
+    // Custom fields events: "custom_fields.lead.created" → entity "custom_fields"
+    const cfMatch = eventType.match(
+      /^custom_fields\.\w+\.(created|updated|deleted)$/,
+    );
+    if (cfMatch) {
+      return {
+        entity: "custom_fields",
+        operation: cfMatch[1] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    // Status events: "status.lead.created" → entity "lead_statuses"
+    const statusMatch = eventType.match(
+      /^status\.(lead|opportunity)\.(created|updated|deleted)$/,
+    );
+    if (statusMatch) {
+      return {
+        entity: `${statusMatch[1]}_statuses`,
+        operation: statusMatch[2] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    // Custom object/activity type events
+    const typeMatch = eventType.match(
+      /^(custom_activity_type|custom_object_type)\.(created|updated|deleted)$/,
+    );
+    if (typeMatch) {
+      const entityMap: Record<string, string> = {
+        custom_activity_type: "custom_activity_types",
+        custom_object_type: "custom_object_types",
+      };
+      return {
+        entity: entityMap[typeMatch[1]],
+        operation: typeMatch[2] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    // Custom object events
+    const coMatch = eventType.match(
+      /^custom_object\.(created|updated|deleted)$/,
+    );
+    if (coMatch) {
+      return {
+        entity: "custom_objects",
+        operation: coMatch[1] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    return null;
   }
 
   /**
@@ -1236,23 +1315,69 @@ export class CloseConnector extends BaseConnector {
    */
   getSupportedWebhookEvents(): string[] {
     return [
-      // Leads
       "lead.created",
       "lead.updated",
       "lead.deleted",
       "lead.merged",
-      // Contacts
-      "contact.created",
       "contact.updated",
-      "contact.deleted",
-      // Opportunities
       "opportunity.created",
       "opportunity.updated",
       "opportunity.deleted",
-      // Activities
-      "activity.created",
-      "activity.updated",
-      "activity.deleted",
+      "activity.call.created",
+      "activity.email.created",
+      "activity.email.sent",
+      "activity.email_thread.created",
+      "activity.email_thread.updated",
+      "activity.sms.created",
+      "activity.sms.sent",
+      "activity.note.created",
+      "activity.note.updated",
+      "activity.note.deleted",
+      "activity.meeting.created",
+      "activity.meeting.updated",
+      "activity.meeting.scheduled",
+      "activity.meeting.started",
+      "activity.meeting.completed",
+      "activity.meeting.canceled",
+      "activity.lead_status_change.created",
+      "activity.opportunity_status_change.created",
+      "activity.task_completed.created",
+      "activity.custom_activity.created",
+      "activity.custom_activity.updated",
+      "activity.custom_activity.deleted",
+      "custom_fields.lead.created",
+      "custom_fields.lead.updated",
+      "custom_fields.lead.deleted",
+      "custom_fields.contact.created",
+      "custom_fields.contact.updated",
+      "custom_fields.contact.deleted",
+      "custom_fields.opportunity.created",
+      "custom_fields.opportunity.updated",
+      "custom_fields.opportunity.deleted",
+      "custom_fields.activity.created",
+      "custom_fields.activity.updated",
+      "custom_fields.activity.deleted",
+      "custom_fields.custom_object.created",
+      "custom_fields.custom_object.updated",
+      "custom_fields.custom_object.deleted",
+      "custom_fields.shared.created",
+      "custom_fields.shared.updated",
+      "custom_fields.shared.deleted",
+      "custom_activity_type.created",
+      "custom_activity_type.updated",
+      "custom_activity_type.deleted",
+      "custom_object_type.created",
+      "custom_object_type.updated",
+      "custom_object_type.deleted",
+      "custom_object.created",
+      "custom_object.updated",
+      "custom_object.deleted",
+      "status.lead.created",
+      "status.lead.updated",
+      "status.lead.deleted",
+      "status.opportunity.created",
+      "status.opportunity.updated",
+      "status.opportunity.deleted",
     ];
   }
 

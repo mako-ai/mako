@@ -499,6 +499,7 @@ export interface IEntityLayout {
   partitionField: string;
   partitionGranularity: "day" | "hour" | "month" | "year";
   clusterFields: string[];
+  enabled?: boolean;
 }
 
 /**
@@ -1511,6 +1512,7 @@ const FlowSchema = new Schema<IFlow>(
           default: "day",
         },
         clusterFields: [String],
+        enabled: { type: Boolean, default: true },
       },
     ],
     // Incremental config for database sources

@@ -19,7 +19,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
     id: "webhook-event-process",
     name: "Process Webhook Event",
     concurrency: {
-      limit: 25, // Handle many events in parallel
+      limit: 5, // Keep low to avoid BigQuery DML concurrency limits
     },
   },
   { event: "webhook/event.process" },
