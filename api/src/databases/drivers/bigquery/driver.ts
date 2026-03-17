@@ -51,6 +51,31 @@ function escapeIdentifier(name: string): string {
 }
 
 /**
+ * Escape a string for safe embedding inside a BigQuery single-quoted literal.
+ * Uses backslash escaping which works in both regular strings and JSON literals.
+ * Order matters: backslashes first, then control chars, then single quotes.
+ */
+function escapeForBigQueryString(str: string): string {
+  return str
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t")
+    .replace(/'/g, "\\'");
+}
+
+/**
+ * Escape a string for safe embedding inside a BigQuery JSON literal.
+ * Uses triple-quoted strings to avoid single-quote escaping issues entirely.
+ * Returns the full `JSON '''...'''` expression.
+ */
+function formatBigQueryJsonLiteral(jsonStr: string): string {
+  // Triple-quoted strings: only need to escape triple-quote sequences
+  const escaped = jsonStr.replace(/'''/g, "\\'''");
+  return `JSON '''${escaped}'''`;
+}
+
+/**
  * Format a value for BigQuery insertion
  * @param value - The value to format
  * @param targetType - Optional target column type to cast to (e.g., "STRING", "INT64")
@@ -92,27 +117,20 @@ function formatBigQueryValue(
     } else if (value instanceof Date) {
       stringValue = value.toISOString();
     } else if (Array.isArray(value)) {
-      // For JSON target type, serialize as JSON string
       if (upperType === "JSON") {
-        stringValue = JSON.stringify(value).replace(/'/g, "''");
-        return `JSON '${stringValue}'`;
+        return formatBigQueryJsonLiteral(JSON.stringify(value));
       }
       const elements = value
         .map(v => formatBigQueryValue(v, undefined, false))
         .join(", ");
       return `[${elements}]`;
     } else if (typeof value === "object") {
-      stringValue = JSON.stringify(value).replace(/'/g, "''");
+      stringValue = escapeForBigQueryString(JSON.stringify(value));
       if (upperType === "JSON") {
-        return `JSON '${stringValue}'`;
+        return formatBigQueryJsonLiteral(JSON.stringify(value));
       }
     } else {
-      stringValue = String(value)
-        .replace(/\\/g, "\\\\")
-        .replace(/\n/g, "\\n")
-        .replace(/\r/g, "\\r")
-        .replace(/\t/g, "\\t")
-        .replace(/'/g, "''");
+      stringValue = escapeForBigQueryString(String(value));
     }
 
     // Use SAFE_CAST for type conversion to handle mismatched data gracefully
@@ -193,8 +211,7 @@ function formatBigQueryValue(
   // Handle arrays
   if (Array.isArray(value)) {
     if (upperType === "JSON") {
-      const jsonStr = JSON.stringify(value).replace(/'/g, "''");
-      return `JSON '${jsonStr}'`;
+      return formatBigQueryJsonLiteral(JSON.stringify(value));
     }
     const elements = value
       .map(v => formatBigQueryValue(v, undefined, false))
@@ -204,22 +221,17 @@ function formatBigQueryValue(
 
   // Handle objects (JSON)
   if (typeof value === "object") {
-    const jsonStr = JSON.stringify(value).replace(/'/g, "''");
+    const jsonStr = escapeForBigQueryString(JSON.stringify(value));
     if (upperType === "JSON") {
-      return `JSON '${jsonStr}'`;
+      return formatBigQueryJsonLiteral(JSON.stringify(value));
     }
     // For STRING or unknown, just quote the JSON string
     return `'${jsonStr}'`;
   }
 
-  // Handle strings — escape backslashes, newlines, and single quotes for BigQuery
+  // Handle strings
   const strVal = String(value);
-  const escapedStr = strVal
-    .replace(/\\/g, "\\\\")
-    .replace(/\n/g, "\\n")
-    .replace(/\r/g, "\\r")
-    .replace(/\t/g, "\\t")
-    .replace(/'/g, "''");
+  const escapedStr = escapeForBigQueryString(strVal);
 
   // If target is TIMESTAMP, wrap with TIMESTAMP keyword
   if (upperType === "TIMESTAMP" || upperType === "DATETIME") {
@@ -1160,12 +1172,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       if (val === null || val === undefined) {
         return `${escapeIdentifier(col)} IS NULL`;
       }
-      const escaped = String(val)
-        .replace(/\\/g, "\\\\")
-        .replace(/\n/g, "\\n")
-        .replace(/\r/g, "\\r")
-        .replace(/\t/g, "\\t")
-        .replace(/'/g, "''");
+      const escaped = escapeForBigQueryString(String(val));
       return `${escapeIdentifier(col)} = '${escaped}'`;
     });
 
