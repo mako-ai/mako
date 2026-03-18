@@ -675,6 +675,61 @@ export interface IWebhookEvent extends Document {
 }
 
 /**
+ * BigQuery CDC change event model interface
+ * Canonical append-only change log for webhook + backfill writes.
+ */
+export interface IBigQueryChangeEvent extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  flowId: Types.ObjectId;
+  runId?: string;
+  sourceKind: "webhook" | "backfill";
+  entity: string;
+  recordId: string;
+  op: "upsert" | "delete";
+  sourceTs: Date;
+  ingestTs: Date;
+  ingestSeq: number;
+  idempotencyKey: string;
+  payload?: any;
+  webhookEventId?: string;
+  stageStatus: "pending" | "staged" | "failed";
+  stageAttemptCount: number;
+  stagedAt?: Date;
+  stageError?: {
+    message: string;
+    code?: string;
+  };
+  materializationStatus: "pending" | "applied" | "failed";
+  materializationAttemptCount: number;
+  appliedAt?: Date;
+  materializationError?: {
+    message: string;
+    code?: string;
+  };
+}
+
+/**
+ * Per-flow/entity CDC state for observability and adaptive cadence
+ */
+export interface IBigQueryCdcState extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  flowId: Types.ObjectId;
+  entity: string;
+  mode: "steady" | "backfill";
+  runId?: string;
+  backfillStartedAt?: Date;
+  backfillCompletedAt?: Date;
+  lastIngestSeq: number;
+  lastMaterializedSeq: number;
+  lastMaterializedAt?: Date;
+  backlogCount: number;
+  lastEnqueuedAt?: Date;
+  mergeIntervalSeconds: number;
+}
+
+/**
  * QueryExecution model interface
  * Tracks all query executions for usage analytics and billing
  */
@@ -1733,6 +1788,121 @@ WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 
 /**
+ * BigQueryChangeEvent Schema
+ */
+const BigQueryChangeEventSchema = new Schema<IBigQueryChangeEvent>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
+    runId: String,
+    sourceKind: {
+      type: String,
+      enum: ["webhook", "backfill"],
+      required: true,
+    },
+    entity: { type: String, required: true },
+    recordId: { type: String, required: true },
+    op: { type: String, enum: ["upsert", "delete"], required: true },
+    sourceTs: { type: Date, required: true },
+    ingestTs: { type: Date, required: true, default: Date.now },
+    ingestSeq: { type: Number, required: true },
+    idempotencyKey: { type: String, required: true },
+    payload: Schema.Types.Mixed,
+    webhookEventId: String,
+    stageStatus: {
+      type: String,
+      enum: ["pending", "staged", "failed"],
+      default: "pending",
+      required: true,
+    },
+    stageAttemptCount: { type: Number, default: 0 },
+    stagedAt: Date,
+    stageError: {
+      message: String,
+      code: String,
+    },
+    materializationStatus: {
+      type: String,
+      enum: ["pending", "applied", "failed"],
+      default: "pending",
+      required: true,
+    },
+    materializationAttemptCount: { type: Number, default: 0 },
+    appliedAt: Date,
+    materializationError: {
+      message: String,
+      code: String,
+    },
+  },
+  {
+    collection: "bigquery_change_events",
+    timestamps: false,
+  },
+);
+
+BigQueryChangeEventSchema.index({ idempotencyKey: 1 }, { unique: true });
+BigQueryChangeEventSchema.index({ flowId: 1, entity: 1, ingestSeq: 1 });
+BigQueryChangeEventSchema.index({
+  flowId: 1,
+  entity: 1,
+  sourceTs: 1,
+  ingestSeq: 1,
+});
+BigQueryChangeEventSchema.index({
+  flowId: 1,
+  entity: 1,
+  materializationStatus: 1,
+  ingestSeq: 1,
+});
+BigQueryChangeEventSchema.index({
+  flowId: 1,
+  entity: 1,
+  stageStatus: 1,
+  ingestSeq: 1,
+});
+
+/**
+ * BigQueryCdcState schema
+ */
+const BigQueryCdcStateSchema = new Schema<IBigQueryCdcState>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
+    entity: { type: String, required: true },
+    mode: {
+      type: String,
+      enum: ["steady", "backfill"],
+      default: "steady",
+      required: true,
+    },
+    runId: String,
+    backfillStartedAt: Date,
+    backfillCompletedAt: Date,
+    lastIngestSeq: { type: Number, default: 0 },
+    lastMaterializedSeq: { type: Number, default: 0 },
+    lastMaterializedAt: Date,
+    backlogCount: { type: Number, default: 0 },
+    lastEnqueuedAt: Date,
+    mergeIntervalSeconds: { type: Number, default: 300 },
+  },
+  {
+    collection: "bigquery_cdc_state",
+    timestamps: false,
+  },
+);
+
+BigQueryCdcStateSchema.index({ flowId: 1, entity: 1 }, { unique: true });
+BigQueryCdcStateSchema.index({ workspaceId: 1, flowId: 1 });
+
+/**
  * QueryExecution Schema
  * Tracks all query executions for usage analytics and billing
  */
@@ -1843,6 +2013,14 @@ export const FlowExecution = mongoose.model<IFlowExecution>(
 export const WebhookEvent = mongoose.model<IWebhookEvent>(
   "WebhookEvent",
   WebhookEventSchema,
+);
+export const BigQueryChangeEvent = mongoose.model<IBigQueryChangeEvent>(
+  "BigQueryChangeEvent",
+  BigQueryChangeEventSchema,
+);
+export const BigQueryCdcState = mongoose.model<IBigQueryCdcState>(
+  "BigQueryCdcState",
+  BigQueryCdcStateSchema,
 );
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",

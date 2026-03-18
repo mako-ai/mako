@@ -10,6 +10,14 @@ import { connectorRegistry } from "../../connectors/registry";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { Types } from "mongoose";
+import {
+  appendBigQueryChangeEvents,
+  isBigQueryCdcEnabledForFlow,
+  materializeBigQueryEntity,
+  mapWebhookEventToChangeInput,
+  recordMaterializationFailure,
+  resolveDestinationTypeForFlow,
+} from "../../services/bigquery-cdc.service";
 
 /**
  * Process a single webhook event immediately
@@ -24,10 +32,18 @@ export const webhookEventProcessFunction = inngest.createFunction(
   },
   { event: "webhook/event.process" },
   async ({ event, step }) => {
-    const { flowId, eventId } = event.data;
+    const {
+      flowId,
+      eventId,
+      isReplay = false,
+    } = event.data as {
+      flowId: string;
+      eventId: string;
+      isReplay?: boolean;
+    };
     const logger = getSyncLogger(`webhook.${flowId}`);
 
-    logger.debug("Processing webhook event", { flowId, eventId });
+    logger.debug("Processing webhook event", { flowId, eventId, isReplay });
 
     // Get the webhook event
     const webhookEvent = (await step.run("fetch-webhook-event", async () => {
@@ -137,6 +153,12 @@ export const webhookEventProcessFunction = inngest.createFunction(
           _webhookEventId: webhookEvent.eventId,
         };
 
+        const destinationType = await resolveDestinationTypeForFlow(flow);
+        const isBigQueryCdcEnabled = isBigQueryCdcEnabledForFlow(
+          flow,
+          destinationType,
+        );
+
         // For activity events, resolve sub-type from the data's _type field
         // so we route to the correct per-sub-type table (e.g. activities:Call → call)
         let resolvedEntity = mapping.entity;
@@ -240,7 +262,61 @@ export const webhookEventProcessFunction = inngest.createFunction(
         }
 
         const shouldDeferApply =
-          !!flow.tableDestination?.connectionId && backfillGate.active;
+          !!flow.tableDestination?.connectionId &&
+          backfillGate.active &&
+          !isReplay;
+
+        if (isBigQueryCdcEnabled && flow.tableDestination?.connectionId) {
+          const change = await mapWebhookEventToChangeInput({
+            entity: resolvedEntity,
+            operation: mapping.operation,
+            recordId: String(id),
+            payload: documentData,
+            webhookEvent: {
+              eventId: webhookEvent.eventId,
+              receivedAt: new Date(webhookEvent.receivedAt),
+            },
+          });
+
+          await appendBigQueryChangeEvents({
+            workspaceId: new Types.ObjectId(String(flow.workspaceId)),
+            flowId: new Types.ObjectId(flowId),
+            changes: [change],
+            enqueue: true,
+          });
+
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                processedAt: new Date(),
+                entity: resolvedEntity,
+                operation: mapping.operation,
+                recordId: String(id),
+                applyStatus: "pending",
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+              $inc: { applyAttempts: 1 },
+              $unset: { applyError: "" },
+            },
+          );
+
+          logger.info("Queued webhook event for BigQuery CDC materialization", {
+            eventId: webhookEvent.eventId,
+            flowId,
+            entity: resolvedEntity,
+            operation: mapping.operation,
+          });
+
+          return {
+            processed: true,
+            reason: "Queued for CDC materialization",
+            entity: resolvedEntity,
+            operation: mapping.operation,
+          };
+        }
 
         // During backfill, queue webhook apply and defer destination writes.
         // We'll replay pending webhook events after swap completes.
@@ -685,5 +761,74 @@ export const webhookRetryFunction = inngest.createFunction(
     });
 
     return result;
+  },
+);
+
+/**
+ * Materialize staged BigQuery CDC events into live tables.
+ */
+export const bigQueryCdcMaterializeFunction = inngest.createFunction(
+  {
+    id: "bigquery-cdc-materialize",
+    name: "BigQuery CDC Materialize",
+    concurrency: {
+      limit: 1,
+      key: "event.data.flowId + ':' + event.data.entity",
+    },
+  },
+  { event: "bigquery/cdc.materialize" },
+  async ({ event, step, logger }) => {
+    const { workspaceId, flowId, entity, force } = event.data as {
+      workspaceId: string;
+      flowId: string;
+      entity: string;
+      force?: boolean;
+    };
+    const maxEvents = Math.max(
+      parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "5000", 10) ||
+        5000,
+      100,
+    );
+
+    try {
+      const result = await step.run(
+        "materialize-bigquery-cdc-entity",
+        async () => {
+          return materializeBigQueryEntity({
+            workspaceId,
+            flowId,
+            entity,
+            maxEvents,
+          });
+        },
+      );
+
+      logger.info("BigQuery CDC materialization completed", {
+        flowId,
+        entity,
+        force: Boolean(force),
+        staged: result.staged,
+        applied: result.applied,
+        lastMaterializedSeq: result.lastMaterializedSeq,
+      });
+
+      if (result.staged >= maxEvents) {
+        await step.sendEvent("continue-materialize", {
+          name: "bigquery/cdc.materialize",
+          data: { workspaceId, flowId, entity, force: true },
+        });
+      }
+
+      return { success: true, ...result };
+    } catch (error) {
+      await step.run("record-materialization-failure", async () => {
+        await recordMaterializationFailure({
+          flowId,
+          entity,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      throw error;
+    }
   },
 );

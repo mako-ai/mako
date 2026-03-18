@@ -10,6 +10,7 @@ import {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  bigQueryCdcMaterializeFunction,
 } from "./functions/webhook-flow";
 import { loggers } from "../logging";
 
@@ -27,6 +28,7 @@ const baseFunctions = [
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  bigQueryCdcMaterializeFunction,
 ];
 
 // Conditionally add schedulers (only in production)
@@ -58,4 +60,5 @@ export {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  bigQueryCdcMaterializeFunction,
 };

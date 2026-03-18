@@ -6,13 +6,21 @@ import {
   ConnectionConfig,
 } from "../services/database-connection.service";
 import { SyncLogger, FetchState } from "../connectors/base/BaseConnector";
-import { ITableDestination } from "../database/workspace-schema";
+import {
+  DatabaseConnection,
+  ITableDestination,
+} from "../database/workspace-schema";
 import { createDestinationWriter } from "../services/destination-writer.service";
 import { Db } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
+import {
+  appendBigQueryChangeEvents,
+  isBigQueryCdcEnabledForFlow,
+  mapBackfillRecordsToChanges,
+} from "../services/bigquery-cdc.service";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
@@ -54,6 +62,9 @@ export interface SyncChunkOptions {
   /** When set, writes to SQL/BigQuery instead of MongoDB */
   tableDestination?: ITableDestination;
   deleteMode?: "hard" | "soft";
+  flowId?: string;
+  workspaceId?: string;
+  backfillRunId?: string;
 }
 
 /**
@@ -517,26 +528,45 @@ async function performSyncChunkSql(
     tableName: entityTableName,
   };
 
-  const writer = await createDestinationWriter(
-    {
-      destinationDatabaseId: new Types.ObjectId(options.destinationId),
-      destinationDatabaseName: options.destinationDatabaseName,
-      tableDestination: entityTableDest,
-    },
-    dataSource.name,
-  );
-  (writer as any).config.deleteMode = options.deleteMode;
+  const destinationConn = await DatabaseConnection.findById(
+    tableDestination.connectionId,
+  )
+    .select({ type: 1 })
+    .lean();
+  const isBigQueryCdcEnabled =
+    Boolean(options.flowId && options.workspaceId) &&
+    isBigQueryCdcEnabledForFlow(
+      {
+        _id: new Types.ObjectId(options.flowId!),
+        tableDestination,
+      } as any,
+      destinationConn?.type,
+    );
+
+  const writer = isBigQueryCdcEnabled
+    ? undefined
+    : await createDestinationWriter(
+        {
+          destinationDatabaseId: new Types.ObjectId(options.destinationId),
+          destinationDatabaseName: options.destinationDatabaseName,
+          tableDestination: entityTableDest,
+        },
+        dataSource.name,
+      );
+  if (writer) {
+    (writer as any).config.deleteMode = options.deleteMode;
+  }
 
   // Full sync: prepare staging on first chunk
-  if (syncMode === "full" && !state) {
+  if (!isBigQueryCdcEnabled && syncMode === "full" && !state && writer) {
     await writer.prepareFullSync();
-  } else if (syncMode === "full" && state) {
+  } else if (!isBigQueryCdcEnabled && syncMode === "full" && state && writer) {
     (writer as any).stagingActive = true;
   }
 
   // Incremental: get last sync date from destination table
   let lastSyncDate: Date | undefined;
-  if (syncMode === "incremental" && !state) {
+  if (!isBigQueryCdcEnabled && syncMode === "incremental" && !state) {
     try {
       const { getMaxTrackingValue } = await import(
         "../services/destination-writer.service"
@@ -590,6 +620,9 @@ async function performSyncChunkSql(
           }
         : {};
 
+    if (!writer) {
+      throw new Error("Destination writer is not initialized");
+    }
     const result = await writer.writeBatch(rowsToWrite, writeOptions);
 
     if (!result.success) {
@@ -670,6 +703,27 @@ async function performSyncChunkSql(
             };
           });
 
+          if (isBigQueryCdcEnabled) {
+            if (!options.flowId || !options.workspaceId) {
+              throw new Error(
+                "BigQuery CDC requires flowId and workspaceId on chunk options",
+              );
+            }
+            const changes = await mapBackfillRecordsToChanges({
+              entity,
+              records: processedRecords,
+              runId: options.backfillRunId,
+            });
+            await appendBigQueryChangeEvents({
+              workspaceId: new Types.ObjectId(options.workspaceId),
+              flowId: new Types.ObjectId(options.flowId),
+              changes,
+              enqueue: true,
+            });
+            runningProcessed += processedRecords.length;
+            return;
+          }
+
           if (syncMode === "full") {
             pendingFullSyncRows.push(...processedRecords);
             if (pendingFullSyncRows.length >= fullSyncWriteBatchSize) {
@@ -691,7 +745,7 @@ async function performSyncChunkSql(
     rateLimitDelay,
   );
 
-  if (syncMode === "full") {
+  if (!isBigQueryCdcEnabled && syncMode === "full") {
     await flushFullSyncRows("chunk-end");
   }
 
@@ -700,7 +754,7 @@ async function performSyncChunkSql(
   if (completed) {
     progressReporter.reportComplete();
 
-    if (syncMode === "full") {
+    if (!isBigQueryCdcEnabled && syncMode === "full" && writer) {
       await writer.finalize();
     }
 

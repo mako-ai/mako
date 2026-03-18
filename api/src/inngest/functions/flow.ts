@@ -25,6 +25,11 @@ import * as os from "os";
 import { CronExpressionParser } from "cron-parser";
 import { getExecutionLogger, getSyncLogger } from "../logging";
 import { loggers } from "../../logging";
+import {
+  forceDrainBigQueryCdcFlow,
+  isBigQueryCdcEnabledForFlow,
+  markBackfillCompletedForFlow,
+} from "../../services/bigquery-cdc.service";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -516,6 +521,23 @@ export const flowFunction = inngest.createFunction(
       })) as IFlow;
       flowRef = flow; // Store for error handler
 
+      const destinationType = (await step.run(
+        "detect-destination-type",
+        async () => {
+          if (!flow.tableDestination?.connectionId) return undefined;
+          const destination = await DatabaseConnection.findById(
+            flow.tableDestination.connectionId,
+          )
+            .select({ type: 1 })
+            .lean();
+          return destination?.type || undefined;
+        },
+      )) as string | undefined;
+      const isBigQueryCdcEnabled = isBigQueryCdcEnabledForFlow(
+        flow,
+        destinationType,
+      );
+
       // Webhook flows should not be executed unless it's a backfill
       if (flow.type === "webhook" && !backfill) {
         logger.error("CRITICAL: Webhook flow reached flow executor!", {
@@ -533,7 +555,7 @@ export const flowFunction = inngest.createFunction(
 
       // Backfill for webhook-triggered flows should run as full sync.
       // This ensures a complete reload instead of incremental upserts.
-      if (backfill && flow.type === "webhook") {
+      if (backfill && flow.type === "webhook" && !isBigQueryCdcEnabled) {
         (flow as any).syncMode = "full";
         logger.info("Backfill mode: using full sync for webhook flow", {
           flowId,
@@ -548,6 +570,16 @@ export const flowFunction = inngest.createFunction(
             },
           });
         });
+      }
+
+      if (backfill && flow.type === "webhook" && isBigQueryCdcEnabled) {
+        (flow as any).syncMode = "full";
+        logger.info(
+          "Backfill mode: BigQuery CDC enabled, no webhook apply gate",
+          {
+            flowId,
+          },
+        );
       }
 
       // Initialize logger and get execution ID
@@ -1228,6 +1260,9 @@ export const flowFunction = inngest.createFunction(
                   dataSourceId: dataSourceId.toString(),
                   destinationId: flow.destinationDatabaseId.toString(),
                   destinationDatabaseName: flow.destinationDatabaseName,
+                  flowId: flowId.toString(),
+                  workspaceId: flow.workspaceId.toString(),
+                  backfillRunId: backfill ? executionId : undefined,
                   entity,
                   isIncremental: flow.syncMode === "incremental",
                   state,
@@ -1437,16 +1472,7 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook") {
-        await step.run("disable-webhook-backfill-gate", async () => {
-          await Flow.findByIdAndUpdate(flowId, {
-            $set: {
-              "backfillState.active": false,
-              "backfillState.completedAt": new Date(),
-            },
-          });
-        });
-
+      if (backfill && flow.type === "webhook" && !isBigQueryCdcEnabled) {
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
@@ -1461,29 +1487,43 @@ export const flowFunction = inngest.createFunction(
               parseInt(process.env.WEBHOOK_REPLAY_MAX_EVENTS || "0", 10) || 0,
               0,
             );
+            const replayCutoff = new Date();
 
             const totalPending = await WebhookEvent.countDocuments({
               flowId: flowObjectId,
               applyStatus: "pending",
+              receivedAt: { $lte: replayCutoff },
             });
 
             let queued = 0;
-            let offset = 0;
             let batches = 0;
+            let lastReceivedAt: Date | null = null;
+            let lastEventId: string | null = null;
 
-            while (
-              offset < totalPending &&
-              (maxReplayEvents === 0 || queued < maxReplayEvents)
-            ) {
-              const pendingBatch = await WebhookEvent.find({
+            while (maxReplayEvents === 0 || queued < maxReplayEvents) {
+              const cursorClause: Record<string, unknown> =
+                lastReceivedAt && lastEventId
+                  ? {
+                      $or: [
+                        { receivedAt: { $gt: lastReceivedAt } },
+                        {
+                          receivedAt: lastReceivedAt,
+                          eventId: { $gt: lastEventId },
+                        },
+                      ],
+                    }
+                  : {};
+
+              const pendingBatch = (await WebhookEvent.find({
                 flowId: flowObjectId,
                 applyStatus: "pending",
+                receivedAt: { $lte: replayCutoff },
+                ...cursorClause,
               })
                 .sort({ receivedAt: 1, eventId: 1 })
-                .skip(offset)
                 .limit(replayBatchSize)
-                .select({ eventId: 1 })
-                .lean();
+                .select({ eventId: 1, receivedAt: 1 })
+                .lean()) as Array<{ eventId: string; receivedAt?: Date }>;
 
               if (pendingBatch.length === 0) {
                 break;
@@ -1496,18 +1536,25 @@ export const flowFunction = inngest.createFunction(
                   data: {
                     flowId,
                     eventId: pendingEvent.eventId,
+                    isReplay: true,
                   },
                 });
                 queued += 1;
               }
 
-              offset += pendingBatch.length;
+              const tail: { eventId: string; receivedAt?: Date } =
+                pendingBatch[pendingBatch.length - 1];
+              lastReceivedAt = tail.receivedAt
+                ? new Date(tail.receivedAt)
+                : lastReceivedAt;
+              lastEventId = tail.eventId || lastEventId;
               batches += 1;
             }
 
             return {
               queued,
               totalPending,
+              replayCutoff: replayCutoff.toISOString(),
               batches,
               capped: maxReplayEvents > 0 ? queued >= maxReplayEvents : false,
               maxReplayEvents: maxReplayEvents > 0 ? maxReplayEvents : null,
@@ -1520,10 +1567,35 @@ export const flowFunction = inngest.createFunction(
           flowId,
           queued: replayResult.queued,
           totalPending: replayResult.totalPending,
+          replayCutoff: replayResult.replayCutoff,
           batches: replayResult.batches,
           capped: replayResult.capped,
           maxReplayEvents: replayResult.maxReplayEvents,
           remainingEstimate: replayResult.remainingEstimate,
+        });
+
+        await step.run("disable-webhook-backfill-gate", async () => {
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": false,
+              "backfillState.completedAt": new Date(),
+            },
+          });
+        });
+      }
+
+      if (backfill && flow.type === "webhook" && isBigQueryCdcEnabled) {
+        await step.run("mark-bigquery-cdc-backfill-complete", async () => {
+          await markBackfillCompletedForFlow({
+            flowId: String(flowId),
+            workspaceId: String(flow.workspaceId),
+          });
+        });
+        await step.run("drain-bigquery-cdc-pending-events", async () => {
+          await forceDrainBigQueryCdcFlow({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flowId),
+          });
         });
       }
 
@@ -1770,6 +1842,29 @@ export const flowFunction = inngest.createFunction(
 
       // Safety: ensure webhook backfill gate is not left active after failures.
       if (backfill && flowRef?.type === "webhook") {
+        const destinationType = flowRef.tableDestination?.connectionId
+          ? (
+              await DatabaseConnection.findById(
+                flowRef.tableDestination.connectionId,
+              )
+                .select({ type: 1 })
+                .lean()
+            )?.type
+          : undefined;
+        const isBigQueryCdcEnabled = isBigQueryCdcEnabledForFlow(
+          flowRef as IFlow,
+          destinationType,
+        );
+        if (isBigQueryCdcEnabled) {
+          const safeFlowRef = flowRef as IFlow;
+          await step.run("drain-bigquery-cdc-on-failure", async () => {
+            await forceDrainBigQueryCdcFlow({
+              workspaceId: String(safeFlowRef.workspaceId),
+              flowId: String(flowId),
+            });
+          });
+          throw error;
+        }
         await step.run("disable-webhook-backfill-gate-on-failure", async () => {
           await Flow.findByIdAndUpdate(flowId, {
             $set: {

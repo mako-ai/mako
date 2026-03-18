@@ -243,6 +243,14 @@ interface WebhookStats {
   totalReceived: number;
   eventsToday: number;
   deferredCount?: number;
+  backfillActive?: boolean;
+  cdc?: {
+    enabled: boolean;
+    mode: "steady" | "backfill";
+    entities: number;
+    backlogCount: number;
+    lagSeconds: number | null;
+  };
   successRate: number;
   recentEvents: WebhookEvent[];
 }
