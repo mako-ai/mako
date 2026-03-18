@@ -789,40 +789,33 @@ export const bigQueryCdcMaterializeFunction = inngest.createFunction(
       100,
     );
 
-    try {
-      const result = await step.run(
-        "materialize-bigquery-cdc-entity",
-        async () => {
-          return cdcMaterializerService.materializeEntity({
-            workspaceId,
-            flowId,
-            entity,
-            maxEvents,
-          });
-        },
-      );
-
-      logger.info("BigQuery CDC materialization completed", {
+    const result = await step.run("materialize-bigquery-cdc-entity", async () => {
+      return cdcMaterializerService.materializeEntity({
+        workspaceId,
         flowId,
         entity,
-        force: Boolean(force),
-        staged: (result as any).staged,
-        applied: (result as any).applied,
-        lastMaterializedSeq: (result as any).lastMaterializedSeq,
-        skipped: (result as any).skipped,
-        reason: (result as any).reason,
+        maxEvents,
       });
+    });
 
-      if ((result as any).staged >= maxEvents) {
-        await step.sendEvent("continue-materialize", {
-          name: "bigquery/cdc.materialize",
-          data: { workspaceId, flowId, entity, force: true },
-        });
-      }
+    logger.info("BigQuery CDC materialization completed", {
+      flowId,
+      entity,
+      force: Boolean(force),
+      staged: (result as any).staged,
+      applied: (result as any).applied,
+      lastMaterializedSeq: (result as any).lastMaterializedSeq,
+      skipped: (result as any).skipped,
+      reason: (result as any).reason,
+    });
 
-      return { success: true, ...result };
-    } catch (error) {
-      throw error;
+    if ((result as any).staged >= maxEvents) {
+      await step.sendEvent("continue-materialize", {
+        name: "bigquery/cdc.materialize",
+        data: { workspaceId, flowId, entity, force: true },
+      });
     }
+
+    return { success: true, ...result };
   },
 );
