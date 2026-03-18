@@ -25,6 +25,9 @@ import {
   ColumnDefinition,
   BatchWriteResult,
   DatabaseDriver,
+  InsertOptions,
+  TablePartitioning,
+  TableClustering,
 } from "../databases/driver";
 import {
   databaseConnectionService,
@@ -62,6 +65,9 @@ export interface DestinationConfig {
   // Common
   dataSourceId?: string;
   dataSourceName?: string;
+
+  // Delete mode for connector webhook flows
+  deleteMode?: "hard" | "soft";
 }
 
 export interface WriteOptions {
@@ -137,9 +143,40 @@ export class DestinationWriter {
   private stagingActive = false;
   private inferredColumns?: ColumnDefinition[];
   private columnTypeMap: Map<string, string> | null = null; // Mapped types for BigQuery writes
+  private existingSqlTables = new Set<string>();
 
   constructor(config: DestinationConfig) {
     this.config = config;
+  }
+
+  /**
+   * Build InsertOptions with layout config from tableDestination
+   */
+  private getInsertOptionsWithLayout(): InsertOptions {
+    const td = this.config.tableDestination;
+    const opts: InsertOptions = { schema: td?.schema };
+
+    if (td?.partitioning?.enabled) {
+      opts.partitioning = {
+        type: td.partitioning.type || "time",
+        field: td.partitioning.field,
+        granularity: td.partitioning.granularity,
+        requirePartitionFilter: td.partitioning.requirePartitionFilter,
+      } as TablePartitioning;
+    }
+
+    if (td?.clustering?.enabled && td.clustering.fields?.length) {
+      opts.clustering = { fields: td.clustering.fields } as TableClustering;
+    }
+
+    if (this.config.deleteMode === "soft") {
+      opts.softDeleteColumns = {
+        isDeleted: "is_deleted",
+        deletedAt: "deleted_at",
+      };
+    }
+
+    return opts;
   }
 
   /**
@@ -169,6 +206,15 @@ export class DestinationWriter {
         throw new Error(
           `Database driver ${conn.type} does not support write operations`,
         );
+      }
+
+      // Auto-create dataset/schema if needed
+      const td = this.config.tableDestination;
+      if (td?.createIfNotExists && td.schema && this.driver.ensureSchema) {
+        const result = await this.driver.ensureSchema(conn, td.schema);
+        if (!result.success) {
+          throw new Error(`Failed to ensure dataset: ${result.error}`);
+        }
       }
     }
   }
@@ -250,6 +296,65 @@ export class DestinationWriter {
       await this.cleanupMongoStaging(options);
     }
     this.stagingActive = false;
+  }
+
+  /**
+   * Delete rows matching key filters from the destination
+   * For SQL: delegates to driver.deleteBatch
+   * For Mongo: uses collection.deleteOne
+   */
+  async deleteByKeys(
+    keyFilters: Record<string, unknown>,
+  ): Promise<WriteResult> {
+    if (this.isTableDestination()) {
+      if (!this.driver || !this.connection || !this.config.tableDestination) {
+        return {
+          success: false,
+          rowsWritten: 0,
+          error: "SQL destination not configured",
+        };
+      }
+      const result = await this.driver.deleteBatch?.(
+        this.connection,
+        this.config.tableDestination.tableName,
+        keyFilters,
+        this.getInsertOptionsWithLayout(),
+      );
+      if (!result) {
+        return {
+          success: false,
+          rowsWritten: 0,
+          error: "Driver does not support deleteBatch",
+        };
+      }
+      return {
+        success: result.success,
+        rowsWritten: result.rowsWritten,
+        error: result.error,
+      };
+    }
+
+    // MongoDB path
+    if (!this.config.mongoDb || !this.config.collectionName) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "MongoDB not configured",
+      };
+    }
+    try {
+      const collection = this.config.mongoDb.collection(
+        this.config.collectionName,
+      );
+      const result = await collection.deleteOne(keyFilters);
+      return { success: true, rowsWritten: result.deletedCount };
+    } catch (error) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   // ============ MongoDB Implementation ============
@@ -456,6 +561,22 @@ export class DestinationWriter {
 
     const { tableName, schema } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
+    const layoutOpts = this.getInsertOptionsWithLayout();
+
+    // Always reset staging at the start of a new full sync run so stale rows
+    // from interrupted previous runs cannot leak into the next swap.
+    if (this.driver.dropTable) {
+      const dropResult = await this.driver.dropTable(
+        this.connection,
+        stagingName,
+        { schema },
+      );
+      if (!dropResult.success) {
+        throw new Error(
+          `Failed to reset staging table: ${dropResult.error || "Unknown error"}`,
+        );
+      }
+    }
 
     // Check if original table exists
     const tableExists = await this.driver.tableExists?.(
@@ -465,12 +586,11 @@ export class DestinationWriter {
     );
 
     if (tableExists) {
-      // Create staging table based on original structure
       const result = await this.driver.createStagingTable?.(
         this.connection,
         tableName,
         stagingName,
-        { schema },
+        layoutOpts,
       );
 
       if (!result?.success) {
@@ -499,14 +619,23 @@ export class DestinationWriter {
     const targetTable = this.stagingActive
       ? options.stagingTableName || `${tableName}_staging`
       : tableName;
+    const tableCacheKey = `${schema || ""}.${targetTable}`;
 
     try {
-      // Check if table exists, create if needed
-      const tableExists = await this.driver.tableExists?.(
-        this.connection,
-        targetTable,
-        { schema },
-      );
+      // Check if table exists, create if needed.
+      // Cache existence per writer instance to avoid expensive INFORMATION_SCHEMA
+      // lookups on every small batch.
+      let tableExists = this.existingSqlTables.has(tableCacheKey);
+      if (!tableExists) {
+        tableExists = !!(await this.driver.tableExists?.(
+          this.connection,
+          targetTable,
+          { schema },
+        ));
+        if (tableExists) {
+          this.existingSqlTables.add(tableCacheKey);
+        }
+      }
 
       if (!tableExists && createIfNotExists) {
         // Get schema for table creation
@@ -568,6 +697,13 @@ export class DestinationWriter {
               throw new Error("Failed to infer schema from data");
             }
 
+            // Defensive default: inferred webhook/CDC schemas can miss nullability
+            // when first batches don't contain null values yet.
+            this.inferredColumns = this.inferredColumns.map(c => ({
+              ...c,
+              nullable: true,
+            }));
+
             // For BigQuery: map source types to BigQuery types and store for writes
             // Use lowercase keys for case-insensitive lookup
             if (this.connection?.type === "bigquery") {
@@ -586,12 +722,12 @@ export class DestinationWriter {
           }
         }
 
-        // Create table
+        // Create table with layout config
         const createResult = await this.driver.createTable?.(
           this.connection,
           targetTable,
           this.inferredColumns,
-          { schema },
+          this.getInsertOptionsWithLayout(),
         );
 
         if (!createResult?.success) {
@@ -599,6 +735,7 @@ export class DestinationWriter {
             `Failed to create table: ${createResult?.error || "Unknown error"}`,
           );
         }
+        this.existingSqlTables.add(tableCacheKey);
       }
 
       // Write data
@@ -652,18 +789,32 @@ export class DestinationWriter {
     const { tableName, schema } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
 
-    // Swap staging with original
     const result = await this.driver.swapStagingTable?.(
       this.connection,
       tableName,
       stagingName,
-      { schema },
+      this.getInsertOptionsWithLayout(),
     );
 
     if (!result?.success) {
       throw new Error(
         `Failed to swap staging table: ${result?.error || "Unknown error"}`,
       );
+    }
+
+    // Post-swap safety: ensure staging table name is cleaned up as well.
+    // Some drivers already consume/drop staging during swap, so this is idempotent.
+    if (this.driver.dropTable) {
+      const dropResult = await this.driver.dropTable(
+        this.connection,
+        stagingName,
+        { schema },
+      );
+      if (!dropResult.success) {
+        throw new Error(
+          `Failed to drop staging table after swap: ${dropResult.error || "Unknown error"}`,
+        );
+      }
     }
   }
 

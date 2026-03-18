@@ -53,6 +53,7 @@
     "sqlite3": "^5.1.7",
     "stripe": "^14.25.0",
     "uuid": "^9.0.0",
+    "xstate": "^5.28.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {

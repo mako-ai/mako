@@ -48,6 +48,7 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt?: string;
   status: "pending" | "processing" | "completed" | "failed";
+  applyStatus?: "pending" | "applied" | "failed";
   attempts: number;
   error?: any;
   processingDurationMs?: number;
@@ -58,6 +59,15 @@ interface WebhookStats {
   lastReceived: string | null;
   totalReceived: number;
   eventsToday: number;
+  deferredCount?: number;
+  backfillActive?: boolean;
+  cdc?: {
+    enabled: boolean;
+    mode: "steady" | "backfill";
+    entities: number;
+    backlogCount: number;
+    lagSeconds: number | null;
+  };
   successRate: number;
   recentEvents: WebhookEvent[];
 }
@@ -156,7 +166,15 @@ export function WebhookStats({
     await fetchEventDetails(event.id);
   };
 
-  const getStatusChip = (status: string) => {
+  const getStatusChip = (
+    status: string,
+    applyStatus?: string,
+    backfillActive?: boolean,
+  ) => {
+    if (backfillActive && status === "pending" && applyStatus === "pending") {
+      return <Chip size="small" color="warning" label="Deferred" />;
+    }
+
     const statusConfig = {
       completed: { color: "success" as const, label: "Completed" },
       failed: { color: "error" as const, label: "Failed" },
@@ -239,7 +257,46 @@ export function WebhookStats({
               </CardContent>
             </Card>
           </Grid>
+          {stats.cdc?.enabled && (
+            <Grid size={{ xs: 12, md: 3 }}>
+              <Card>
+                <CardContent>
+                  <Typography color="text.secondary" gutterBottom>
+                    CDC Backlog
+                  </Typography>
+                  <Typography variant="h4">{stats.cdc.backlogCount}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Mode: {stats.cdc.mode}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+          )}
+          {stats.cdc?.enabled && (
+            <Grid size={{ xs: 12, md: 3 }}>
+              <Card>
+                <CardContent>
+                  <Typography color="text.secondary" gutterBottom>
+                    CDC Lag
+                  </Typography>
+                  <Typography variant="h4">
+                    {stats.cdc.lagSeconds ?? 0}s
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Entities: {stats.cdc.entities}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+          )}
         </Grid>
+      )}
+
+      {stats && stats.backfillActive && (stats.deferredCount ?? 0) > 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {stats.deferredCount} events are currently deferred while backfill is
+          active.
+        </Alert>
       )}
 
       {/* Events Table */}
@@ -287,7 +344,13 @@ export function WebhookStats({
           <TableBody>
             {events.map(event => (
               <TableRow key={event.id}>
-                <TableCell>{getStatusChip(event.status)}</TableCell>
+                <TableCell>
+                  {getStatusChip(
+                    event.status,
+                    event.applyStatus,
+                    stats?.backfillActive,
+                  )}
+                </TableCell>
                 <TableCell>
                   <Typography variant="body2">{event.eventType}</Typography>
                 </TableCell>
@@ -364,7 +427,13 @@ export function WebhookStats({
         <DialogTitle>
           Webhook Event Details
           {selectedEvent && (
-            <Box sx={{ mt: 1 }}>{getStatusChip(selectedEvent.status)}</Box>
+            <Box sx={{ mt: 1 }}>
+              {getStatusChip(
+                selectedEvent.status,
+                selectedEvent.applyStatus,
+                stats?.backfillActive,
+              )}
+            </Box>
           )}
         </DialogTitle>
         <DialogContent>

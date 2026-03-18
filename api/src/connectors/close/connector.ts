@@ -8,6 +8,7 @@ import {
   WebhookHandlerOptions,
   WebhookEventMapping,
   EntityMetadata,
+  NormalizedCdcRecord,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
@@ -42,10 +43,48 @@ const CLOSE_ACTIVITY_TYPES = [
     label: "Task Completed",
     description: "Completed tasks",
   },
+  {
+    name: "CustomActivity",
+    label: "Custom Activity",
+    description: "Custom activity instances",
+  },
 ];
 
 export class CloseConnector extends BaseConnector {
   private closeApi: AxiosInstance | null = null;
+  private activeLogCallback?: (
+    level: "debug" | "info" | "warn" | "error",
+    message: string,
+    metadata?: any,
+  ) => void;
+  private activeEntity?: string;
+  private activeSyncMode: "full" | "incremental" = "full";
+  private requestSeq = 0;
+
+  private setLogContext(options: {
+    entity: string;
+    since?: Date;
+    onLog?: any;
+  }) {
+    this.activeEntity = options.entity;
+    this.activeSyncMode = options.since ? "incremental" : "full";
+    this.activeLogCallback = options.onLog;
+  }
+
+  private emitSyncLog(
+    level: "debug" | "info" | "warn" | "error",
+    message: string,
+    metadata?: Record<string, unknown>,
+  ) {
+    if (this.activeLogCallback) {
+      this.activeLogCallback(level, message, {
+        connector: "close",
+        entity: this.activeEntity,
+        syncMode: this.activeSyncMode,
+        ...metadata,
+      });
+    }
+  }
 
   /**
    * Resolve Close API endpoint for a given activities sub-type.
@@ -63,6 +102,7 @@ export class CloseConnector extends BaseConnector {
       SMS: "/activity/sms/",
       Note: "/activity/note/",
       TaskCompleted: "/activity/task/",
+      CustomActivity: "/activity/custom/",
     };
     return map[subType] || "/activity/";
   }
@@ -131,6 +171,51 @@ export class CloseConnector extends BaseConnector {
           "Content-Type": "application/json",
         },
       });
+
+      this.closeApi.interceptors.request.use(config => {
+        const requestId = `close_req_${Date.now()}_${++this.requestSeq}`;
+        (config as any).__makoMeta = {
+          requestId,
+          startedAt: Date.now(),
+        };
+        this.emitSyncLog("info", "Close API request sent", {
+          requestId,
+          method: (config.method || "get").toUpperCase(),
+          endpoint: config.url || "",
+        });
+        return config;
+      });
+
+      this.closeApi.interceptors.response.use(
+        response => {
+          const meta = (response.config as any).__makoMeta;
+          this.emitSyncLog("info", "Close API response received", {
+            requestId: meta?.requestId,
+            method: (response.config.method || "get").toUpperCase(),
+            endpoint: response.config.url || "",
+            status: response.status,
+            durationMs: meta?.startedAt
+              ? Date.now() - Number(meta.startedAt)
+              : undefined,
+          });
+          return response;
+        },
+        error => {
+          const config = error?.config || {};
+          const meta = (config as any).__makoMeta;
+          this.emitSyncLog("warn", "Close API request failed", {
+            requestId: meta?.requestId,
+            method: (config.method || "get").toUpperCase(),
+            endpoint: config.url || "",
+            status: error?.response?.status,
+            durationMs: meta?.startedAt
+              ? Date.now() - Number(meta.startedAt)
+              : undefined,
+            error: axios.isAxiosError(error) ? error.message : String(error),
+          });
+          return Promise.reject(error);
+        },
+      );
     }
     return this.closeApi;
   }
@@ -172,9 +257,13 @@ export class CloseConnector extends BaseConnector {
       "contacts",
       "users",
       "custom_fields",
+      "custom_activity_types",
+      "custom_object_types",
+      "custom_objects",
+      "lead_statuses",
+      "opportunity_statuses",
     ];
 
-    // Add activity sub-entities for validation
     const activitySubEntities = CLOSE_ACTIVITY_TYPES.map(
       type => `activities:${type.name}`,
     );
@@ -186,22 +275,40 @@ export class CloseConnector extends BaseConnector {
    * Get entity metadata with sub-entities for activities
    */
   getEntityMetadata(): EntityMetadata[] {
+    const defaultLayout = {
+      partitionField: "date_created",
+      partitionGranularity: "day" as const,
+      clusterFields: ["_dataSourceId", "id"],
+    };
     return [
-      { name: "leads", label: "Leads" },
-      { name: "opportunities", label: "Opportunities" },
+      { name: "leads", label: "Leads", layoutSuggestion: defaultLayout },
+      {
+        name: "opportunities",
+        label: "Opportunities",
+        layoutSuggestion: defaultLayout,
+      },
       {
         name: "activities",
         label: "Activities",
         description: "All activity types from Close.com",
+        layoutSuggestion: {
+          partitionField: "date_created",
+          partitionGranularity: "day",
+          clusterFields: ["_dataSourceId", "id"],
+        },
         subEntities: CLOSE_ACTIVITY_TYPES.map(type => ({
           name: type.name,
           label: type.label,
           description: type.description,
         })),
       },
-      { name: "contacts", label: "Contacts" },
-      { name: "users", label: "Users" },
-      { name: "custom_fields", label: "Custom Fields" },
+      { name: "contacts", label: "Contacts", layoutSuggestion: defaultLayout },
+      { name: "users", label: "Users", layoutSuggestion: defaultLayout },
+      {
+        name: "custom_fields",
+        label: "Custom Fields",
+        layoutSuggestion: defaultLayout,
+      },
     ];
   }
 
@@ -216,6 +323,7 @@ export class CloseConnector extends BaseConnector {
    * Fetch a chunk of data with resumable state
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
+    this.setLogContext(options);
     const { entity, onBatch, onProgress, since, state } = options;
     const maxIterations = options.maxIterations || 10;
 
@@ -238,6 +346,18 @@ export class CloseConnector extends BaseConnector {
 
     if (entity === "users") {
       return await this.fetchUsersChunk(options);
+    }
+
+    if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
+      return await this.fetchSimpleEntityChunk(entity, options);
+    }
+
+    // Custom objects require lead_id — backfill not supported, webhook-only
+    if (entity === "custom_objects") {
+      logger.warn(
+        "Skipping custom_objects: backfill requires lead_id, use webhooks instead",
+      );
+      return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
     // Handle activities and activity sub-entities (e.g., "activities:Call")
@@ -340,7 +460,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment iterations for rate limit retries
         } else {
@@ -417,7 +539,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
         } else {
           throw error;
@@ -598,7 +722,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment iterations for rate limit retries
         } else {
@@ -622,6 +748,7 @@ export class CloseConnector extends BaseConnector {
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
+    this.setLogContext(options);
     const { entity, onBatch, onProgress, since } = options;
 
     // Special handling for custom_fields
@@ -633,6 +760,12 @@ export class CloseConnector extends BaseConnector {
     // Special handling for users - always do full sync
     if (entity === "users") {
       await this.fetchAllUsers(options);
+      return;
+    }
+
+    // Simple entities (statuses, types) — fetch all via pagination
+    if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
+      await this.fetchSimpleEntityChunk(entity, options as any);
       return;
     }
 
@@ -739,7 +872,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment offset, retry the same page
         } else {
@@ -772,7 +907,10 @@ export class CloseConnector extends BaseConnector {
           totalFields += response.data.total_results || 0;
         } catch (error) {
           // Skip if endpoint doesn't exist or errors
-          logger.warn("Could not fetch count from endpoint", { endpoint, error });
+          logger.warn("Could not fetch count from endpoint", {
+            endpoint,
+            error,
+          });
         }
       }
       onProgress(0, totalFields);
@@ -865,7 +1003,9 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
           await this.sleep(retryAfter * 1000);
           // Don't increment offset, retry the same page
         } else {
@@ -997,7 +1137,9 @@ export class CloseConnector extends BaseConnector {
             const retryAfter = parseInt(
               error.response.headers["retry-after"] || "60",
             );
-            logger.warn("Rate limited, waiting", { retryAfterSeconds: retryAfter });
+            logger.warn("Rate limited, waiting", {
+              retryAfterSeconds: retryAfter,
+            });
             await this.sleep(retryAfter * 1000);
           } else {
             throw error;
@@ -1018,6 +1160,82 @@ export class CloseConnector extends BaseConnector {
         await this.sleep(rateLimitDelay);
       }
     }
+  }
+
+  private static readonly SIMPLE_ENTITY_ENDPOINTS: Record<string, string> = {
+    lead_statuses: "/status/lead/",
+    opportunity_statuses: "/status/opportunity/",
+    custom_activity_types: "/custom_activity/",
+    custom_object_types: "/custom_object_type/",
+  };
+
+  private async fetchSimpleEntityChunk(
+    entity: string,
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, state } = options;
+
+    if (state && !state.hasMore) {
+      return {
+        totalProcessed: state.totalProcessed,
+        hasMore: false,
+        iterationsInChunk: 0,
+      };
+    }
+
+    const api = this.getCloseClient();
+    const endpoint = CloseConnector.SIMPLE_ENTITY_ENDPOINTS[entity];
+    if (!endpoint) throw new Error(`No endpoint for entity: ${entity}`);
+
+    const batchSize = options.batchSize || this.getBatchSize();
+    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
+    const maxIterations = options.maxIterations || 10;
+
+    let offset = state?.offset || 0;
+    let recordCount = state?.totalProcessed || 0;
+    let hasMore = true;
+    let iterations = 0;
+
+    while (hasMore && iterations < maxIterations) {
+      try {
+        const response = await api.get(endpoint, {
+          params: { _limit: batchSize, _skip: offset },
+        });
+        const data = response.data.data || [];
+
+        if (data.length > 0) {
+          await onBatch(data);
+          recordCount += data.length;
+          if (onProgress) onProgress(recordCount, undefined);
+        }
+
+        hasMore = response.data.has_more || false;
+        if (hasMore) {
+          offset += batchSize;
+          iterations++;
+          await this.sleep(rateLimitDelay);
+        }
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return {
+      offset,
+      totalProcessed: recordCount,
+      hasMore,
+      iterationsInChunk: iterations,
+    };
   }
 
   private async fetchTotalCount(
@@ -1043,7 +1261,10 @@ export class CloseConnector extends BaseConnector {
             totalCount += response.data.total_results || 0;
           } catch (error) {
             // Skip if endpoint doesn't exist
-            logger.warn("Could not fetch count from endpoint", { endpoint, error });
+            logger.warn("Could not fetch count from endpoint", {
+              endpoint,
+              error,
+            });
           }
         }
         return totalCount > 0 ? totalCount : undefined;
@@ -1120,42 +1341,43 @@ export class CloseConnector extends BaseConnector {
   ): Promise<WebhookVerificationResult> {
     const { payload, headers, secret } = options;
 
-    const signature = headers["close-signature"];
-    if (!signature || typeof signature !== "string") {
-      return {
-        valid: false,
-        error: "Missing close-signature header",
-      };
+    const sigHash = headers["close-sig-hash"];
+    const sigTimestamp = headers["close-sig-timestamp"];
+
+    if (!sigHash || typeof sigHash !== "string") {
+      return { valid: false, error: "Missing close-sig-hash header" };
+    }
+
+    if (!sigTimestamp || typeof sigTimestamp !== "string") {
+      return { valid: false, error: "Missing close-sig-timestamp header" };
     }
 
     if (!secret) {
-      return {
-        valid: false,
-        error: "Missing webhook secret",
-      };
+      return { valid: false, error: "Missing webhook secret" };
     }
 
     try {
-      // Close.io uses HMAC-SHA256 signature
+      const body =
+        typeof payload === "string" ? payload : JSON.stringify(payload);
+      // Close: HMAC-SHA256(hex_decoded_key, timestamp + body) — no separator
+      const data = sigTimestamp + body;
+      const keyBytes = Buffer.from(secret, "hex");
       const expectedSignature = crypto
-        .createHmac("sha256", secret)
-        .update(typeof payload === "string" ? payload : JSON.stringify(payload))
+        .createHmac("sha256", keyBytes)
+        .update(data, "utf-8")
         .digest("hex");
 
-      if (signature !== expectedSignature) {
-        return {
-          valid: false,
-          error: "Invalid signature",
-        };
+      if (
+        !crypto.timingSafeEqual(
+          Buffer.from(sigHash),
+          Buffer.from(expectedSignature),
+        )
+      ) {
+        return { valid: false, error: "Invalid signature" };
       }
 
-      // Parse the event from the payload
       const event = typeof payload === "string" ? JSON.parse(payload) : payload;
-
-      return {
-        valid: true,
-        event,
-      };
+      return { valid: true, event };
     } catch (err) {
       return {
         valid: false,
@@ -1173,24 +1395,95 @@ export class CloseConnector extends BaseConnector {
       "lead.created": { entity: "leads", operation: "upsert" },
       "lead.updated": { entity: "leads", operation: "upsert" },
       "lead.deleted": { entity: "leads", operation: "delete" },
+      "lead.merged": { entity: "leads", operation: "upsert" },
 
       // Contacts
-      "contact.created": { entity: "contacts", operation: "upsert" },
       "contact.updated": { entity: "contacts", operation: "upsert" },
-      "contact.deleted": { entity: "contacts", operation: "delete" },
 
       // Opportunities
       "opportunity.created": { entity: "opportunities", operation: "upsert" },
       "opportunity.updated": { entity: "opportunities", operation: "upsert" },
       "opportunity.deleted": { entity: "opportunities", operation: "delete" },
-
-      // Activities
-      "activity.created": { entity: "activities", operation: "upsert" },
-      "activity.updated": { entity: "activities", operation: "upsert" },
-      "activity.deleted": { entity: "activities", operation: "delete" },
     };
 
-    return mappings[eventType] || null;
+    if (mappings[eventType]) return mappings[eventType];
+
+    // Activity sub-type events: "activity.note.created" → entity "activities:Note"
+    const activityMatch = eventType.match(
+      /^activity\.(\w+)\.(created|updated|sent|deleted|completed|scheduled|started|canceled)$/,
+    );
+    if (activityMatch) {
+      const subTypeMap: Record<string, string> = {
+        call: "Call",
+        email: "Email",
+        email_thread: "EmailThread",
+        sms: "SMS",
+        note: "Note",
+        meeting: "Meeting",
+        lead_status_change: "LeadStatusChange",
+        opportunity_status_change: "OpportunityStatusChange",
+        task_completed: "TaskCompleted",
+        custom_activity: "CustomActivity",
+      };
+      const subType = subTypeMap[activityMatch[1]];
+      if (subType) {
+        const action = activityMatch[2];
+        return {
+          entity: `activities:${subType}`,
+          operation: action === "deleted" ? "delete" : "upsert",
+        };
+      }
+    }
+
+    // Custom fields events: "custom_fields.lead.created" → entity "custom_fields"
+    const cfMatch = eventType.match(
+      /^custom_fields\.\w+\.(created|updated|deleted)$/,
+    );
+    if (cfMatch) {
+      return {
+        entity: "custom_fields",
+        operation: cfMatch[1] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    // Status events: "status.lead.created" → entity "lead_statuses"
+    const statusMatch = eventType.match(
+      /^status\.(lead|opportunity)\.(created|updated|deleted)$/,
+    );
+    if (statusMatch) {
+      return {
+        entity: `${statusMatch[1]}_statuses`,
+        operation: statusMatch[2] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    // Custom object/activity type events
+    const typeMatch = eventType.match(
+      /^(custom_activity_type|custom_object_type)\.(created|updated|deleted)$/,
+    );
+    if (typeMatch) {
+      const entityMap: Record<string, string> = {
+        custom_activity_type: "custom_activity_types",
+        custom_object_type: "custom_object_types",
+      };
+      return {
+        entity: entityMap[typeMatch[1]],
+        operation: typeMatch[2] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    // Custom object events
+    const coMatch = eventType.match(
+      /^custom_object\.(created|updated|deleted)$/,
+    );
+    if (coMatch) {
+      return {
+        entity: "custom_objects",
+        operation: coMatch[1] === "deleted" ? "delete" : "upsert",
+      };
+    }
+
+    return null;
   }
 
   /**
@@ -1198,22 +1491,69 @@ export class CloseConnector extends BaseConnector {
    */
   getSupportedWebhookEvents(): string[] {
     return [
-      // Leads
       "lead.created",
       "lead.updated",
       "lead.deleted",
-      // Contacts
-      "contact.created",
+      "lead.merged",
       "contact.updated",
-      "contact.deleted",
-      // Opportunities
       "opportunity.created",
       "opportunity.updated",
       "opportunity.deleted",
-      // Activities
-      "activity.created",
-      "activity.updated",
-      "activity.deleted",
+      "activity.call.created",
+      "activity.email.created",
+      "activity.email.sent",
+      "activity.email_thread.created",
+      "activity.email_thread.updated",
+      "activity.sms.created",
+      "activity.sms.sent",
+      "activity.note.created",
+      "activity.note.updated",
+      "activity.note.deleted",
+      "activity.meeting.created",
+      "activity.meeting.updated",
+      "activity.meeting.scheduled",
+      "activity.meeting.started",
+      "activity.meeting.completed",
+      "activity.meeting.canceled",
+      "activity.lead_status_change.created",
+      "activity.opportunity_status_change.created",
+      "activity.task_completed.created",
+      "activity.custom_activity.created",
+      "activity.custom_activity.updated",
+      "activity.custom_activity.deleted",
+      "custom_fields.lead.created",
+      "custom_fields.lead.updated",
+      "custom_fields.lead.deleted",
+      "custom_fields.contact.created",
+      "custom_fields.contact.updated",
+      "custom_fields.contact.deleted",
+      "custom_fields.opportunity.created",
+      "custom_fields.opportunity.updated",
+      "custom_fields.opportunity.deleted",
+      "custom_fields.activity.created",
+      "custom_fields.activity.updated",
+      "custom_fields.activity.deleted",
+      "custom_fields.custom_object.created",
+      "custom_fields.custom_object.updated",
+      "custom_fields.custom_object.deleted",
+      "custom_fields.shared.created",
+      "custom_fields.shared.updated",
+      "custom_fields.shared.deleted",
+      "custom_activity_type.created",
+      "custom_activity_type.updated",
+      "custom_activity_type.deleted",
+      "custom_object_type.created",
+      "custom_object_type.updated",
+      "custom_object_type.deleted",
+      "custom_object.created",
+      "custom_object.updated",
+      "custom_object.deleted",
+      "status.lead.created",
+      "status.lead.updated",
+      "status.lead.deleted",
+      "status.opportunity.created",
+      "status.opportunity.updated",
+      "status.opportunity.deleted",
     ];
   }
 
@@ -1221,15 +1561,69 @@ export class CloseConnector extends BaseConnector {
    * Extract entity data from webhook event
    */
   extractWebhookData(event: any): { id: string; data: any } | null {
-    if (!event || !event.data) {
+    // Close webhook payload: {subscription_id, event: {object_type, action, data: {...}}}
+    // For delete events, Close sends object_id at event level instead of data.id
+    const innerEvent = event?.event;
+    const data = innerEvent?.data || event?.data;
+
+    if (data) {
+      return { id: data.id, data };
+    }
+
+    // Delete/merge events: no data payload, just object_id
+    const objectId = innerEvent?.object_id || event?.object_id;
+    if (objectId) {
+      return { id: objectId, data: { id: objectId } };
+    }
+
+    return null;
+  }
+
+  extractWebhookCdcRecords(
+    event: any,
+    eventType?: string,
+  ): NormalizedCdcRecord[] {
+    const records = super.extractWebhookCdcRecords(event, eventType);
+    const innerEvent = event?.event;
+    const candidateTs =
+      innerEvent?.date_updated ||
+      innerEvent?.date_created ||
+      event?.date_updated ||
+      event?.date_created ||
+      event?.timestamp;
+
+    if (!candidateTs) {
+      return records;
+    }
+
+    const sourceTs = new Date(String(candidateTs));
+    if (Number.isNaN(sourceTs.getTime())) {
+      return records;
+    }
+
+    return records.map(record => ({
+      ...record,
+      sourceTs,
+      changeId:
+        record.changeId ||
+        event?.id ||
+        event?.event?.id ||
+        `${eventType || "close.event"}:${record.entity}:${record.recordId}`,
+    }));
+  }
+
+  normalizeBackfillRecord(
+    entity: string,
+    record: Record<string, unknown>,
+  ): NormalizedCdcRecord | null {
+    const normalized = super.normalizeBackfillRecord(entity, record);
+    if (!normalized) {
       return null;
     }
 
-    // Close.io webhook structure has data at the root level
-    const data = event.data || event;
     return {
-      id: data.id,
-      data: data,
+      ...normalized,
+      sourceTs: this.resolveRecordTimestamp(record),
     };
   }
 }
