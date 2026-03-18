@@ -1212,10 +1212,21 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [eventsToday, failedToday, totalCount] = await Promise.all([
+    const [
+      eventsToday,
+      completedToday,
+      failedToday,
+      totalCount,
+      deferredCount,
+    ] = await Promise.all([
       WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
         receivedAt: { $gte: today },
+      }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        receivedAt: { $gte: today },
+        status: "completed",
       }),
       WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
@@ -1225,9 +1236,16 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
       }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        applyStatus: "pending",
+      }),
     ]);
+    // Only use terminal events for success-rate math.
+    // Pending/processing events should not be counted as successful.
+    const terminalToday = completedToday + failedToday;
     const successRate =
-      eventsToday > 0 ? ((eventsToday - failedToday) / eventsToday) * 100 : 100;
+      terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
 
     const stats = {
       webhookUrl: flow.webhookConfig?.endpoint,
@@ -1236,12 +1254,14 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
         : null,
       totalReceived: totalCount,
       eventsToday,
+      deferredCount,
       successRate: Math.round(successRate),
       recentEvents: recentEvents.slice(0, 10).map(event => ({
         eventId: event.eventId,
         eventType: event.eventType,
         receivedAt: event.receivedAt,
         status: event.status,
+        applyStatus: event.applyStatus,
         processingDurationMs: event.processingDurationMs,
       })),
     };
@@ -1302,6 +1322,7 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
           receivedAt: event.receivedAt,
           processedAt: event.processedAt,
           status: event.status,
+          applyStatus: event.applyStatus,
           attempts: event.attempts,
           error: event.error,
           processingDurationMs: event.processingDurationMs,

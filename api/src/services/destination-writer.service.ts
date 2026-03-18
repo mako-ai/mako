@@ -563,6 +563,21 @@ export class DestinationWriter {
     const stagingName = options.stagingTableName || `${tableName}_staging`;
     const layoutOpts = this.getInsertOptionsWithLayout();
 
+    // Always reset staging at the start of a new full sync run so stale rows
+    // from interrupted previous runs cannot leak into the next swap.
+    if (this.driver.dropTable) {
+      const dropResult = await this.driver.dropTable(
+        this.connection,
+        stagingName,
+        { schema },
+      );
+      if (!dropResult.success) {
+        throw new Error(
+          `Failed to reset staging table: ${dropResult.error || "Unknown error"}`,
+        );
+      }
+    }
+
     // Check if original table exists
     const tableExists = await this.driver.tableExists?.(
       this.connection,
@@ -682,6 +697,13 @@ export class DestinationWriter {
               throw new Error("Failed to infer schema from data");
             }
 
+            // Defensive default: inferred webhook/CDC schemas can miss nullability
+            // when first batches don't contain null values yet.
+            this.inferredColumns = this.inferredColumns.map(c => ({
+              ...c,
+              nullable: true,
+            }));
+
             // For BigQuery: map source types to BigQuery types and store for writes
             // Use lowercase keys for case-insensitive lookup
             if (this.connection?.type === "bigquery") {
@@ -764,7 +786,7 @@ export class DestinationWriter {
       throw new Error("SQL destination not configured");
     }
 
-    const { tableName } = this.config.tableDestination;
+    const { tableName, schema } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
 
     const result = await this.driver.swapStagingTable?.(
@@ -778,6 +800,21 @@ export class DestinationWriter {
       throw new Error(
         `Failed to swap staging table: ${result?.error || "Unknown error"}`,
       );
+    }
+
+    // Post-swap safety: ensure staging table name is cleaned up as well.
+    // Some drivers already consume/drop staging during swap, so this is idempotent.
+    if (this.driver.dropTable) {
+      const dropResult = await this.driver.dropTable(
+        this.connection,
+        stagingName,
+        { schema },
+      );
+      if (!dropResult.success) {
+        throw new Error(
+          `Failed to drop staging table after swap: ${dropResult.error || "Unknown error"}`,
+        );
+      }
     }
   }
 

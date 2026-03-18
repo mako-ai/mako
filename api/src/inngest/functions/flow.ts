@@ -810,7 +810,7 @@ export const flowFunction = inngest.createFunction(
                       $slice: -200,
                     },
                   },
-                },
+                } as any,
               );
             });
           }
@@ -1139,7 +1139,7 @@ export const flowFunction = inngest.createFunction(
                         $slice: -200,
                       },
                     },
-                  },
+                  } as any,
                 );
               },
             );
@@ -1294,7 +1294,7 @@ export const flowFunction = inngest.createFunction(
                             $slice: -200,
                           },
                         },
-                      },
+                      } as any,
                     );
                   } catch (error) {
                     logger.warn("Failed to update heartbeat", {
@@ -1450,31 +1450,80 @@ export const flowFunction = inngest.createFunction(
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
-            const pendingEvents = await WebhookEvent.find({
-              flowId: new Types.ObjectId(flowId),
-              applyStatus: "pending",
-            })
-              .sort({ receivedAt: 1, eventId: 1 })
-              .limit(2000)
-              .lean();
+            const flowObjectId = new Types.ObjectId(flowId);
+            const replayBatchSize = Math.max(
+              parseInt(process.env.WEBHOOK_REPLAY_BATCH_SIZE || "1000", 10) ||
+                1000,
+              100,
+            );
+            // 0 (default) means unbounded replay in this completion pass.
+            const maxReplayEvents = Math.max(
+              parseInt(process.env.WEBHOOK_REPLAY_MAX_EVENTS || "0", 10) || 0,
+              0,
+            );
 
-            for (const pendingEvent of pendingEvents) {
-              await inngest.send({
-                name: "webhook/event.process",
-                data: {
-                  flowId,
-                  eventId: pendingEvent.eventId,
-                },
-              });
+            const totalPending = await WebhookEvent.countDocuments({
+              flowId: flowObjectId,
+              applyStatus: "pending",
+            });
+
+            let queued = 0;
+            let offset = 0;
+            let batches = 0;
+
+            while (
+              offset < totalPending &&
+              (maxReplayEvents === 0 || queued < maxReplayEvents)
+            ) {
+              const pendingBatch = await WebhookEvent.find({
+                flowId: flowObjectId,
+                applyStatus: "pending",
+              })
+                .sort({ receivedAt: 1, eventId: 1 })
+                .skip(offset)
+                .limit(replayBatchSize)
+                .select({ eventId: 1 })
+                .lean();
+
+              if (pendingBatch.length === 0) {
+                break;
+              }
+
+              for (const pendingEvent of pendingBatch) {
+                if (maxReplayEvents > 0 && queued >= maxReplayEvents) break;
+                await inngest.send({
+                  name: "webhook/event.process",
+                  data: {
+                    flowId,
+                    eventId: pendingEvent.eventId,
+                  },
+                });
+                queued += 1;
+              }
+
+              offset += pendingBatch.length;
+              batches += 1;
             }
 
-            return { queued: pendingEvents.length };
+            return {
+              queued,
+              totalPending,
+              batches,
+              capped: maxReplayEvents > 0 ? queued >= maxReplayEvents : false,
+              maxReplayEvents: maxReplayEvents > 0 ? maxReplayEvents : null,
+              remainingEstimate: Math.max(totalPending - queued, 0),
+            };
           },
         );
 
         logger.info("Triggered deferred webhook replay", {
           flowId,
           queued: replayResult.queued,
+          totalPending: replayResult.totalPending,
+          batches: replayResult.batches,
+          capped: replayResult.capped,
+          maxReplayEvents: replayResult.maxReplayEvents,
+          remainingEstimate: replayResult.remainingEstimate,
         });
       }
 
@@ -2077,6 +2126,60 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           count: abandonedCount,
           executionIds: abandonedExecutions.map(e => e._id.toString()),
         });
+
+        // If a webhook backfill execution is abandoned, do not leave
+        // backfillState.active stuck forever. Clear the gate for flows that
+        // no longer have any running execution.
+        const abandonedFlowIds = Array.from(
+          new Set(
+            abandonedExecutions
+              .map(e =>
+                e.flowId instanceof Types.ObjectId
+                  ? e.flowId
+                  : new Types.ObjectId(String(e.flowId)),
+              )
+              .filter(Boolean),
+          ),
+        );
+
+        if (abandonedFlowIds.length > 0) {
+          const stillRunningFlowIds = (await executionsCollection.distinct(
+            "flowId",
+            {
+              flowId: { $in: abandonedFlowIds },
+              status: "running",
+            },
+          )) as Types.ObjectId[];
+
+          const runningSet = new Set(
+            stillRunningFlowIds.map(id => id.toString()),
+          );
+          const staleGateFlowIds = abandonedFlowIds.filter(
+            id => !runningSet.has(id.toString()),
+          );
+
+          if (staleGateFlowIds.length > 0) {
+            const gateResetResult = await Flow.updateMany(
+              {
+                _id: { $in: staleGateFlowIds },
+                type: "webhook",
+                "backfillState.active": true,
+              },
+              {
+                $set: {
+                  "backfillState.active": false,
+                  "backfillState.completedAt": now,
+                },
+              },
+            );
+
+            logger.warn("Reset stale webhook backfill gates", {
+              matched: gateResetResult.matchedCount,
+              modified: gateResetResult.modifiedCount,
+              flowIds: staleGateFlowIds.map(id => id.toString()),
+            });
+          }
+        }
       }
 
       // 2. Clean up stale flow locks

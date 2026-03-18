@@ -144,8 +144,103 @@ export const webhookEventProcessFunction = inngest.createFunction(
           resolvedEntity = `activities:${data._type}`;
         }
 
+        // IMPORTANT: keep this logic inside the same step block.
+        // Inngest does not support nesting step.run calls.
+        let backfillGate: { active: boolean; staleCleared: boolean } = {
+          active: false,
+          staleCleared: false,
+        };
+        if (flow.tableDestination?.connectionId) {
+          const executionsCollection = Flow.db.collection("flow_executions");
+          const activeBackfillExecution = await executionsCollection.findOne({
+            flowId: new Types.ObjectId(flowId),
+            status: "running",
+            "context.syncMode": "full",
+          });
+
+          // Source of truth: a running full-sync execution means webhook apply
+          // must be deferred, even if backfillState.active drifted to false.
+          if (activeBackfillExecution) {
+            backfillGate = { active: true, staleCleared: false };
+          }
+
+          const latestFlow = await Flow.findById(flowId)
+            .select({ backfillState: 1 })
+            .lean();
+          if (latestFlow?.backfillState?.active) {
+            const activeExecution = activeBackfillExecution;
+
+            // If no running execution exists, the gate may be stale (e.g. abandoned run).
+            // But we need a grace window right after backfill starts, before the
+            // flow execution document is fully initialized.
+            if (!activeExecution) {
+              const startedAt = latestFlow.backfillState.startedAt
+                ? new Date(latestFlow.backfillState.startedAt)
+                : null;
+              const gateAgeMs = startedAt
+                ? Date.now() - startedAt.getTime()
+                : Number.POSITIVE_INFINITY;
+              const withinStartupGrace = gateAgeMs < 5 * 60 * 1000; // 5 minutes
+
+              if (withinStartupGrace) {
+                backfillGate = { active: true, staleCleared: false };
+                logger.info(
+                  "Backfill gate active during startup grace window",
+                  {
+                    flowId,
+                    eventId: webhookEvent.eventId,
+                    gateAgeMs,
+                  },
+                );
+              } else {
+                await Flow.updateOne(
+                  { _id: new Types.ObjectId(flowId) },
+                  {
+                    $set: {
+                      "backfillState.active": false,
+                      "backfillState.completedAt": new Date(),
+                    },
+                  },
+                );
+                backfillGate = { active: false, staleCleared: true };
+              }
+            } else {
+              backfillGate = { active: true, staleCleared: false };
+            }
+          } else if (activeBackfillExecution) {
+            // Self-heal drift: keep flag aligned so UI and downstream checks
+            // reflect the actual running backfill.
+            await Flow.updateOne(
+              { _id: new Types.ObjectId(flowId) },
+              {
+                $set: {
+                  "backfillState.active": true,
+                  "backfillState.startedAt":
+                    activeBackfillExecution.startedAt || new Date(),
+                  "backfillState.completedAt": null,
+                },
+              },
+            );
+
+            logger.warn(
+              "Backfill gate flag drift detected; restored active=true from running execution",
+              {
+                flowId,
+                eventId: webhookEvent.eventId,
+              },
+            );
+          }
+        }
+
+        if (backfillGate.staleCleared) {
+          logger.warn("Cleared stale backfill gate before webhook apply", {
+            flowId,
+            eventId: webhookEvent.eventId,
+          });
+        }
+
         const shouldDeferApply =
-          !!flow.tableDestination?.connectionId && !!flow.backfillState?.active;
+          !!flow.tableDestination?.connectionId && backfillGate.active;
 
         // During backfill, queue webhook apply and defer destination writes.
         // We'll replay pending webhook events after swap completes.
@@ -517,16 +612,49 @@ export const webhookRetryFunction = inngest.createFunction(
         attempts: { $lt: 5 },
       }).limit(100);
 
-      if (failedEvents.length === 0) {
-        return { retried: 0 };
+      const stalePendingCutoff = new Date(Date.now() - 2 * 60 * 1000); // 2 minutes
+      const staleProcessingCutoff = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes
+
+      // Safety net: pending rows can happen if event publish succeeded in DB but
+      // runner delivery failed (e.g. local dev runner restart).
+      const stalePendingEvents = await WebhookEvent.find({
+        status: "pending",
+        attempts: { $lt: 5 },
+        receivedAt: { $lt: stalePendingCutoff },
+      }).limit(100);
+
+      // Safety net: processing rows can be left behind when a worker crashes
+      // mid-flight before status is finalized.
+      const staleProcessingEvents = await WebhookEvent.find({
+        status: "processing",
+        attempts: { $lt: 5 },
+        receivedAt: { $lt: staleProcessingCutoff },
+      }).limit(100);
+
+      const allEvents = [
+        ...failedEvents,
+        ...stalePendingEvents,
+        ...staleProcessingEvents,
+      ];
+      const uniqueEvents = Array.from(
+        new Map(allEvents.map(event => [event._id.toString(), event])).values(),
+      );
+
+      if (uniqueEvents.length === 0) {
+        return { retried: 0, failed: 0, stalePending: 0, staleProcessing: 0 };
       }
 
       // Reset events to pending and trigger reprocessing
       let totalRetried = 0;
-      for (const event of failedEvents) {
+      for (const event of uniqueEvents) {
+        // Ensure state is pending before re-drive.
+        // For pending rows this is idempotent.
         await WebhookEvent.updateOne(
           { _id: event._id },
-          { $set: { status: "pending" } },
+          {
+            $set: { status: "pending", applyStatus: "pending" },
+            $unset: { applyError: "", error: "", processedAt: "" },
+          },
         );
 
         // Trigger processing
@@ -543,9 +671,17 @@ export const webhookRetryFunction = inngest.createFunction(
 
       logger.info("Retried failed webhook events", {
         total: totalRetried,
+        failed: failedEvents.length,
+        stalePending: stalePendingEvents.length,
+        staleProcessing: staleProcessingEvents.length,
       });
 
-      return { retried: totalRetried };
+      return {
+        retried: totalRetried,
+        failed: failedEvents.length,
+        stalePending: stalePendingEvents.length,
+        staleProcessing: staleProcessingEvents.length,
+      };
     });
 
     return result;
