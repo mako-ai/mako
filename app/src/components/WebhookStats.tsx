@@ -48,6 +48,7 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt?: string;
   status: "pending" | "processing" | "completed" | "failed";
+  applyStatus?: "pending" | "applied" | "failed";
   attempts: number;
   error?: any;
   processingDurationMs?: number;
@@ -58,6 +59,7 @@ interface WebhookStats {
   lastReceived: string | null;
   totalReceived: number;
   eventsToday: number;
+  deferredCount?: number;
   successRate: number;
   recentEvents: WebhookEvent[];
 }
@@ -156,7 +158,11 @@ export function WebhookStats({
     await fetchEventDetails(event.id);
   };
 
-  const getStatusChip = (status: string) => {
+  const getStatusChip = (status: string, applyStatus?: string) => {
+    if (status === "pending" && applyStatus === "pending") {
+      return <Chip size="small" color="warning" label="Deferred" />;
+    }
+
     const statusConfig = {
       completed: { color: "success" as const, label: "Completed" },
       failed: { color: "error" as const, label: "Failed" },
@@ -242,6 +248,13 @@ export function WebhookStats({
         </Grid>
       )}
 
+      {stats && (stats.deferredCount ?? 0) > 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {stats.deferredCount} events are currently deferred while backfill is
+          active.
+        </Alert>
+      )}
+
       {/* Events Table */}
       <Box
         sx={{
@@ -287,7 +300,9 @@ export function WebhookStats({
           <TableBody>
             {events.map(event => (
               <TableRow key={event.id}>
-                <TableCell>{getStatusChip(event.status)}</TableCell>
+                <TableCell>
+                  {getStatusChip(event.status, event.applyStatus)}
+                </TableCell>
                 <TableCell>
                   <Typography variant="body2">{event.eventType}</Typography>
                 </TableCell>
@@ -364,7 +379,9 @@ export function WebhookStats({
         <DialogTitle>
           Webhook Event Details
           {selectedEvent && (
-            <Box sx={{ mt: 1 }}>{getStatusChip(selectedEvent.status)}</Box>
+            <Box sx={{ mt: 1 }}>
+              {getStatusChip(selectedEvent.status, selectedEvent.applyStatus)}
+            </Box>
           )}
         </DialogTitle>
         <DialogContent>

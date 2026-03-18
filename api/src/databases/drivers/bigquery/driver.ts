@@ -707,6 +707,26 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     }
   }
 
+  private extractRequiredNullField(error?: string): string | undefined {
+    if (!error) return undefined;
+    // BigQuery pattern: "Required field in_reply_to_id cannot be null"
+    const match = error.match(/Required field ([A-Za-z0-9_]+) cannot be null/i);
+    return match?.[1];
+  }
+
+  private async relaxRequiredColumn(
+    database: IDatabaseConnection,
+    tableName: string,
+    dataset: string,
+    columnName: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const projectId = this.getProjectId(database);
+    const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
+    const query = `ALTER TABLE ${fullTableName} ALTER COLUMN ${escapeIdentifier(columnName)} DROP NOT NULL;`;
+    const result = await this.executeQuery(database, query);
+    return { success: result.success, error: result.error };
+  }
+
   /**
    * Insert a batch of rows into a table using INSERT statement
    * BigQuery has a 1MB query size limit, so we chunk adaptively based on query size
@@ -791,13 +811,43 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       let retryCount = 0;
       while (
         !result.success &&
-        retryCount < 2 &&
-        typeof result.error === "string" &&
-        result.error.includes("is not present in table")
+        retryCount < 3 &&
+        typeof result.error === "string"
       ) {
-        // BigQuery schema propagation can lag right after ALTER TABLE.
-        // Re-add missing columns from this chunk and retry the insert.
-        await this.addMissingColumns(database, tableName, dataset, chunk);
+        const missingColumnError = result.error.includes(
+          "is not present in table",
+        );
+        const requiredNullColumn = this.extractRequiredNullField(result.error);
+        if (!missingColumnError && !requiredNullColumn) {
+          break;
+        }
+
+        if (missingColumnError) {
+          // BigQuery schema propagation can lag right after ALTER TABLE.
+          // Re-add missing columns from this chunk and retry the insert.
+          await this.addMissingColumns(database, tableName, dataset, chunk);
+        }
+
+        if (requiredNullColumn) {
+          // Existing table can have required columns from earlier inference.
+          // Relax to nullable so webhook/CDC rows with nulls do not fail writes.
+          const relax = await this.relaxRequiredColumn(
+            database,
+            tableName,
+            dataset,
+            requiredNullColumn,
+          );
+          if (!relax.success) {
+            this.logger.warn("Failed to relax required column", {
+              table: tableName,
+              dataset,
+              column: requiredNullColumn,
+              error: relax.error,
+            });
+            break;
+          }
+        }
+
         await new Promise(resolve =>
           setTimeout(resolve, 500 * (retryCount + 1)),
         );
@@ -953,7 +1003,49 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
         };
       }
 
-      const result = await this.executeQuery(database, query);
+      let result = await this.executeQuery(database, query);
+      let retryCount = 0;
+      while (
+        !result.success &&
+        retryCount < 3 &&
+        typeof result.error === "string"
+      ) {
+        const missingColumnError = result.error.includes(
+          "is not present in table",
+        );
+        const requiredNullColumn = this.extractRequiredNullField(result.error);
+        if (!missingColumnError && !requiredNullColumn) {
+          break;
+        }
+
+        if (missingColumnError) {
+          await this.addMissingColumns(database, tableName, dataset, chunk);
+        }
+
+        if (requiredNullColumn) {
+          const relax = await this.relaxRequiredColumn(
+            database,
+            tableName,
+            dataset,
+            requiredNullColumn,
+          );
+          if (!relax.success) {
+            this.logger.warn("Failed to relax required column for merge", {
+              table: tableName,
+              dataset,
+              column: requiredNullColumn,
+              error: relax.error,
+            });
+            break;
+          }
+        }
+
+        await new Promise(resolve =>
+          setTimeout(resolve, 500 * (retryCount + 1)),
+        );
+        result = await this.executeQuery(database, query);
+        retryCount += 1;
+      }
 
       if (!result.success) {
         const preview =

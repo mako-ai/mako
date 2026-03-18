@@ -231,6 +231,7 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt?: string;
   status: "pending" | "processing" | "completed" | "failed";
+  applyStatus?: "pending" | "applied" | "failed";
   attempts: number;
   error?: unknown;
   processingDurationMs?: number;
@@ -241,6 +242,7 @@ interface WebhookStats {
   lastReceived: string | null;
   totalReceived: number;
   eventsToday: number;
+  deferredCount?: number;
   successRate: number;
   recentEvents: WebhookEvent[];
 }
@@ -303,6 +305,15 @@ interface ExecutionDetails {
     message: string;
     metadata?: unknown;
   }>;
+  stats?: {
+    recordsProcessed?: number;
+    entityStats?: Record<string, unknown>;
+    entityStatus?: Record<string, unknown>;
+    plannedEntities?: string[];
+    completedEntities?: string[];
+    failedEntities?: string[];
+    [key: string]: unknown;
+  };
 }
 
 // Store state schema for validation
