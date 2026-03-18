@@ -42,6 +42,7 @@ export interface FetchOptions {
   batchSize?: number;
   onBatch: DataBatchCallback;
   onProgress?: ProgressCallback;
+  onLog?: SyncLogger["log"];
   since?: Date; // For incremental syncs
   rateLimitDelay?: number;
   maxRetries?: number;

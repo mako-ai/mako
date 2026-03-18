@@ -4,6 +4,7 @@ import {
   IFlow,
   Connector as DataSource,
   DatabaseConnection,
+  WebhookEvent,
 } from "../../database/workspace-schema";
 import {
   performSync,
@@ -129,6 +130,7 @@ class FlowExecutionLogger implements SyncLogger {
   private logger;
   private totalRecordsProcessed = 0;
   private syncedEntities: Set<string> = new Set();
+  private entityStats: Map<string, number> = new Map();
 
   constructor(
     private flowId: Types.ObjectId,
@@ -227,10 +229,17 @@ class FlowExecutionLogger implements SyncLogger {
   // Track sync progress
   trackProgress(entity: string, recordsProcessed: number): void {
     this.syncedEntities.add(entity);
-    // Only add positive record counts (handle -1 case from custom_fields)
     if (recordsProcessed > 0) {
       this.totalRecordsProcessed += recordsProcessed;
+      this.entityStats.set(
+        entity,
+        (this.entityStats.get(entity) || 0) + recordsProcessed,
+      );
     }
+  }
+
+  getEntityStats(): Record<string, number> {
+    return Object.fromEntries(this.entityStats);
   }
 
   async complete(
@@ -241,14 +250,14 @@ class FlowExecutionLogger implements SyncLogger {
     const completedAt = new Date();
     const duration = completedAt.getTime() - this.startTime.getTime();
 
-    // Use tracked stats if not provided
     const finalStats = stats || {
       recordsProcessed: this.totalRecordsProcessed,
-      recordsCreated: this.totalRecordsProcessed, // Approximate for now
+      recordsCreated: this.totalRecordsProcessed,
       recordsUpdated: 0,
       recordsDeleted: 0,
       recordsFailed: 0,
       syncedEntities: Array.from(this.syncedEntities),
+      entityStats: Object.fromEntries(this.entityStats),
     };
 
     const updates: Partial<FlowExecutionData> = {
@@ -376,7 +385,7 @@ export const flowFunction = inngest.createFunction(
   },
   { event: "flow.execute" },
   async ({ event, step, logger }) => {
-    const { flowId, noJitter } = event.data;
+    const { flowId, noJitter, backfill } = event.data;
 
     logger.info("Flow function started", {
       flowId,
@@ -404,6 +413,73 @@ export const flowFunction = inngest.createFunction(
         },
       );
       return execLogger;
+    };
+
+    // Persist log lines to the execution document so the UI can show live activity.
+    // This complements terminal logs from Inngest logger.
+    const appendExecutionLog = (
+      level: "debug" | "info" | "warn" | "error",
+      message: string,
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (!executionId) return;
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
+      const entity =
+        metadata && typeof metadata.entity === "string"
+          ? metadata.entity
+          : undefined;
+      const totalProcessed =
+        metadata && typeof metadata.totalProcessed === "number"
+          ? metadata.totalProcessed
+          : undefined;
+
+      const updateDoc: Record<string, unknown> = {
+        $set: { lastHeartbeat: new Date() },
+        $push: {
+          logs: {
+            $each: [
+              {
+                timestamp: new Date(),
+                level,
+                message,
+                metadata: {
+                  flowId,
+                  executionId,
+                  ...metadata,
+                },
+              },
+            ],
+            $slice: -200,
+          },
+        },
+      };
+
+      if (entity) {
+        (updateDoc.$set as Record<string, unknown>)["stats.currentEntity"] =
+          entity;
+      }
+
+      // Persist per-batch progress immediately so UI counters move while chunk is running.
+      if (entity && totalProcessed !== undefined) {
+        updateDoc.$max = {
+          [`stats.entityStats.${entity}`]: totalProcessed,
+          "stats.recordsProcessed": totalProcessed,
+        };
+        (updateDoc.$set as Record<string, unknown>)[
+          `stats.entityStatus.${entity}`
+        ] = "syncing";
+      }
+
+      void collection
+        .updateOne({ _id: new Types.ObjectId(executionId) }, updateDoc)
+        .catch(error => {
+          logger.warn("Failed to append execution log", {
+            flowId,
+            executionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
     };
 
     try {
@@ -440,8 +516,8 @@ export const flowFunction = inngest.createFunction(
       })) as IFlow;
       flowRef = flow; // Store for error handler
 
-      // Webhook flows should not be executed by the flow function
-      if (flow.type === "webhook") {
+      // Webhook flows should not be executed unless it's a backfill
+      if (flow.type === "webhook" && !backfill) {
         logger.error("CRITICAL: Webhook flow reached flow executor!", {
           flowId,
           flowType: flow.type,
@@ -453,6 +529,25 @@ export const flowFunction = inngest.createFunction(
           success: false,
           message: "Webhook flows cannot be executed as scheduled flows",
         };
+      }
+
+      // Backfill for webhook-triggered flows should run as full sync.
+      // This ensures a complete reload instead of incremental upserts.
+      if (backfill && flow.type === "webhook") {
+        (flow as any).syncMode = "full";
+        logger.info("Backfill mode: using full sync for webhook flow", {
+          flowId,
+        });
+
+        await step.run("enable-webhook-backfill-gate", async () => {
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": true,
+              "backfillState.startedAt": new Date(),
+              "backfillState.completedAt": null,
+            },
+          });
+        });
       }
 
       // Initialize logger and get execution ID
@@ -513,6 +608,7 @@ export const flowFunction = inngest.createFunction(
 
       // Variable to track entities synced
       let syncedEntities: string[] = [];
+      const entityStatsMap: Record<string, number> = {};
 
       // ============ DATABASE SOURCE EXECUTION ============
       // For database-to-database flows, use chunked execution for resumability
@@ -670,6 +766,54 @@ export const flowFunction = inngest.createFunction(
             estimatedTotal: chunkState.estimatedTotal,
             completed,
           });
+
+          // Persist heartbeat and progress for live UI updates while running.
+          if (executionId) {
+            await step.run(`update-db-progress-${chunkIndex - 1}`, async () => {
+              const db = Flow.db;
+              const collection = db.collection("flow_executions");
+              await collection.updateOne(
+                { _id: new Types.ObjectId(executionId) },
+                {
+                  $set: {
+                    lastHeartbeat: new Date(),
+                    "stats.recordsProcessed": totalRowsProcessed,
+                    "stats.entityStats.database_query": totalRowsProcessed,
+                    "stats.entityStatus.database_query": completed
+                      ? "completed"
+                      : "syncing",
+                  },
+                  ...(completed
+                    ? {
+                        $addToSet: {
+                          "stats.syncedEntities": "database_query",
+                        },
+                      }
+                    : {}),
+                  $push: {
+                    logs: {
+                      $each: [
+                        {
+                          timestamp: new Date(),
+                          level: "info",
+                          message: `Database chunk ${chunkIndex - 1} processed (${totalRowsProcessed} total rows)`,
+                          metadata: {
+                            flowId,
+                            executionId,
+                            entity: "database_query",
+                            chunkIndex: chunkIndex - 1,
+                            rowsProcessed: chunkResult.rowsProcessed,
+                            totalProcessed: totalRowsProcessed,
+                          },
+                        },
+                      ],
+                      $slice: -200,
+                    },
+                  },
+                },
+              );
+            });
+          }
         }
 
         // Finalize staging table swap for full sync
@@ -927,12 +1071,79 @@ export const flowFunction = inngest.createFunction(
         // Track the entities we're syncing
         syncedEntities = entitiesToSync;
 
+        // Initialize entity progress so UI can render all entities immediately
+        // with "pending" before each entity actually starts.
+        if (executionId) {
+          await step.run("initialize-entity-progress", async () => {
+            const db = Flow.db;
+            const collection = db.collection("flow_executions");
+            const pendingEntityStatus = Object.fromEntries(
+              entitiesToSync.map(entity => [entity, "pending"]),
+            );
+            const initialEntityStats = Object.fromEntries(
+              entitiesToSync.map(entity => [entity, 0]),
+            );
+
+            await collection.updateOne(
+              { _id: new Types.ObjectId(executionId) },
+              {
+                $set: {
+                  lastHeartbeat: new Date(),
+                  "stats.plannedEntities": entitiesToSync,
+                  "stats.entityStatus": pendingEntityStatus,
+                  "stats.entityStats": initialEntityStats,
+                  "stats.recordsProcessed": 0,
+                },
+              },
+            );
+          });
+        }
+
         // Process each entity with chunked execution
         for (const entity of entitiesToSync) {
           logger.info("Starting chunked sync for entity", {
             flowId,
             entity,
           });
+
+          if (executionId) {
+            const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
+            await step.run(
+              `mark-entity-started-${safeEntityStepId}`,
+              async () => {
+                const db = Flow.db;
+                const collection = db.collection("flow_executions");
+                await collection.updateOne(
+                  { _id: new Types.ObjectId(executionId) },
+                  {
+                    $set: {
+                      lastHeartbeat: new Date(),
+                      "stats.currentEntity": entity,
+                      [`stats.entityStatus.${entity}`]: "syncing",
+                      [`stats.entityStats.${entity}`]: 0,
+                    },
+                    $push: {
+                      logs: {
+                        $each: [
+                          {
+                            timestamp: new Date(),
+                            level: "info",
+                            message: `Starting sync for ${entity}`,
+                            metadata: {
+                              flowId,
+                              executionId,
+                              entity,
+                            },
+                          },
+                        ],
+                        $slice: -200,
+                      },
+                    },
+                  },
+                );
+              },
+            );
+          }
 
           let state: FetchState | undefined;
           let chunkIndex = 0;
@@ -962,18 +1173,23 @@ export const flowFunction = inngest.createFunction(
                     switch (level) {
                       case "debug":
                         logger.debug(message, logData);
+                        appendExecutionLog("debug", message, logData);
                         break;
                       case "info":
                         logger.info(message, logData);
+                        appendExecutionLog("info", message, logData);
                         break;
                       case "warn":
                         logger.warn(message, logData);
+                        appendExecutionLog("warn", message, logData);
                         break;
                       case "error":
                         logger.error(message, logData);
+                        appendExecutionLog("error", message, logData);
                         break;
                       default:
                         logger.info(message, logData);
+                        appendExecutionLog("info", message, logData);
                         break;
                     }
                     // Log to execution logger is handled by LogTape database sink
@@ -1023,14 +1239,62 @@ export const flowFunction = inngest.createFunction(
                   deleteMode: (flow as any).deleteMode,
                 });
 
-                // Update heartbeat after chunk completes (not during)
+                // Track per-entity progress — use $set with dot-path so
+                // each entity writes independently (survives Inngest step replay)
+                // Keep in-memory aggregate so we can expose global recordsProcessed in UI.
+                entityStatsMap[entity] = result.state.totalProcessed;
+
                 if (executionId) {
                   try {
                     const db = Flow.db;
                     const collection = db.collection("flow_executions");
+                    const totalProcessedAcrossEntities = Object.values(
+                      entityStatsMap,
+                    ).reduce((sum, value) => sum + value, 0);
                     await collection.updateOne(
                       { _id: new Types.ObjectId(executionId) },
-                      { $set: { lastHeartbeat: new Date() } },
+                      {
+                        $set: {
+                          lastHeartbeat: new Date(),
+                          "stats.recordsProcessed":
+                            totalProcessedAcrossEntities,
+                          "stats.currentEntity": entity,
+                          [`stats.entityStatus.${entity}`]: result.completed
+                            ? "completed"
+                            : "syncing",
+                          [`stats.entityStats.${entity}`]:
+                            result.state.totalProcessed,
+                        },
+                        ...(result.completed
+                          ? {
+                              $addToSet: {
+                                "stats.syncedEntities": entity,
+                              },
+                            }
+                          : {}),
+                        $push: {
+                          logs: {
+                            $each: [
+                              {
+                                timestamp: new Date(),
+                                level: "info",
+                                message: result.completed
+                                  ? `${entity} sync completed (${result.state.totalProcessed} records)`
+                                  : `${entity} sync in progress (${result.state.totalProcessed} records)`,
+                                metadata: {
+                                  flowId,
+                                  executionId,
+                                  entity,
+                                  chunkIndex,
+                                  totalProcessed: result.state.totalProcessed,
+                                  hasMore: !result.completed,
+                                },
+                              },
+                            ],
+                            $slice: -200,
+                          },
+                        },
+                      },
                     );
                   } catch (error) {
                     logger.warn("Failed to update heartbeat", {
@@ -1173,6 +1437,47 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
+      if (backfill && flow.type === "webhook") {
+        await step.run("disable-webhook-backfill-gate", async () => {
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": false,
+              "backfillState.completedAt": new Date(),
+            },
+          });
+        });
+
+        const replayResult = await step.run(
+          "trigger-webhook-replay",
+          async () => {
+            const pendingEvents = await WebhookEvent.find({
+              flowId: new Types.ObjectId(flowId),
+              applyStatus: "pending",
+            })
+              .sort({ receivedAt: 1, eventId: 1 })
+              .limit(2000)
+              .lean();
+
+            for (const pendingEvent of pendingEvents) {
+              await inngest.send({
+                name: "webhook/event.process",
+                data: {
+                  flowId,
+                  eventId: pendingEvent.eventId,
+                },
+              });
+            }
+
+            return { queued: pendingEvents.length };
+          },
+        );
+
+        logger.info("Triggered deferred webhook replay", {
+          flowId,
+          queued: replayResult.queued,
+        });
+      }
+
       // Update flow success status
       await step.run("update-success-status", async () => {
         logger.info("Updating flow success status", { flowId });
@@ -1204,12 +1509,22 @@ export const flowFunction = inngest.createFunction(
                   status: "completed",
                   success: true,
                   stats: {
-                    recordsProcessed: 0, // This would need to be calculated from chunks
+                    recordsProcessed: Object.values(entityStatsMap).reduce(
+                      (sum, value) => sum + value,
+                      0,
+                    ),
                     recordsCreated: 0,
                     recordsUpdated: 0,
                     recordsDeleted: 0,
                     recordsFailed: 0,
                     syncedEntities: syncedEntities || [],
+                    entityStats: entityStatsMap,
+                    entityStatus: Object.fromEntries(
+                      Object.keys(entityStatsMap).map(entity => [
+                        entity,
+                        "completed",
+                      ]),
+                    ),
                   },
                 },
               },
@@ -1256,6 +1571,13 @@ export const flowFunction = inngest.createFunction(
 
       return { success: true, message: "Sync completed successfully" };
     } catch (error: any) {
+      appendExecutionLog("error", "Flow execution failed", {
+        flowId,
+        error: error?.message || String(error),
+        errorName: error?.name,
+        errorCode: error?.code,
+      });
+
       logger.error("Flow failed", {
         flowId,
         error: error.message,
@@ -1394,6 +1716,18 @@ export const flowFunction = inngest.createFunction(
       if (!isCancelled) {
         await Flow.findByIdAndUpdate(flowId, {
           lastError: error.message || "Unknown error",
+        });
+      }
+
+      // Safety: ensure webhook backfill gate is not left active after failures.
+      if (backfill && flowRef?.type === "webhook") {
+        await step.run("disable-webhook-backfill-gate-on-failure", async () => {
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": false,
+              "backfillState.completedAt": new Date(),
+            },
+          });
         });
       }
 

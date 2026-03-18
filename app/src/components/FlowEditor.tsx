@@ -1,10 +1,11 @@
 import { useState, type RefObject } from "react";
-import { Box } from "@mui/material";
+import { Box, Tabs, Tab } from "@mui/material";
 import { ScheduledFlowForm } from "./ScheduledFlowForm";
 import { WebhookFlowForm } from "./WebhookFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
 import { FlowLogs } from "./FlowLogs";
 import { WebhookStats } from "./WebhookStats";
+import { BackfillPanel } from "./BackfillPanel";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 
@@ -29,6 +30,7 @@ export function FlowEditor({
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );
+  const [webhookTab, setWebhookTab] = useState(0);
   const { currentWorkspace } = useWorkspace();
   const { flows: flowsMap, runFlow } = useFlowStore();
 
@@ -122,11 +124,33 @@ export function FlowEditor({
             />
           )}
           {currentFlowId && isWebhookFlow && currentWorkspace && (
-            <WebhookStats
-              workspaceId={currentWorkspace.id}
-              flowId={currentFlowId}
-              onEdit={handleEditClick}
-            />
+            <Box
+              sx={{ height: "100%", display: "flex", flexDirection: "column" }}
+            >
+              <Tabs
+                value={webhookTab}
+                onChange={(_, v) => setWebhookTab(v)}
+                sx={{ borderBottom: 1, borderColor: "divider", minHeight: 36 }}
+              >
+                <Tab label="Webhook Events" sx={{ minHeight: 36, py: 0.5 }} />
+                <Tab label="Backfill" sx={{ minHeight: 36, py: 0.5 }} />
+              </Tabs>
+              <Box sx={{ flex: 1, overflow: "hidden" }}>
+                {webhookTab === 0 && (
+                  <WebhookStats
+                    workspaceId={currentWorkspace.id}
+                    flowId={currentFlowId}
+                    onEdit={handleEditClick}
+                  />
+                )}
+                {webhookTab === 1 && (
+                  <BackfillPanel
+                    workspaceId={currentWorkspace.id}
+                    flowId={currentFlowId}
+                  />
+                )}
+              </Box>
+            </Box>
           )}
         </>
       )}

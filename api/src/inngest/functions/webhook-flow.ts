@@ -99,10 +99,13 @@ export const webhookEventProcessFunction = inngest.createFunction(
             {
               $set: {
                 status: "completed",
+                applyStatus: "applied",
+                appliedAt: new Date(),
                 processedAt: new Date(),
                 processingDurationMs:
                   Date.now() - new Date(webhookEvent.receivedAt).getTime(),
               },
+              $unset: { applyError: "" },
             },
           );
 
@@ -141,6 +144,39 @@ export const webhookEventProcessFunction = inngest.createFunction(
           resolvedEntity = `activities:${data._type}`;
         }
 
+        const shouldDeferApply =
+          !!flow.tableDestination?.connectionId && !!flow.backfillState?.active;
+
+        // During backfill, queue webhook apply and defer destination writes.
+        // We'll replay pending webhook events after swap completes.
+        if (shouldDeferApply) {
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "pending",
+                entity: resolvedEntity,
+                operation: mapping.operation,
+                recordId: String(id),
+                applyStatus: "pending",
+              },
+            },
+          );
+
+          logger.info("Deferred webhook apply due to active backfill", {
+            eventId: webhookEvent.eventId,
+            entity: resolvedEntity,
+            operation: mapping.operation,
+          });
+
+          return {
+            processed: false,
+            reason: "Deferred until backfill replay",
+            entity: resolvedEntity,
+            operation: mapping.operation,
+          };
+        }
+
         // Skip disabled entities (unchecked in flow config)
         if (flow.entityLayouts?.length) {
           const layout = flow.entityLayouts.find(
@@ -153,10 +189,13 @@ export const webhookEventProcessFunction = inngest.createFunction(
               {
                 $set: {
                   status: "completed",
+                  applyStatus: "applied",
+                  appliedAt: new Date(),
                   processedAt: new Date(),
                   processingDurationMs:
                     Date.now() - new Date(webhookEvent.receivedAt).getTime(),
                 },
+                $unset: { applyError: "" },
               },
             );
             return {
@@ -261,9 +300,16 @@ export const webhookEventProcessFunction = inngest.createFunction(
               $set: {
                 status: "completed",
                 processedAt: new Date(),
+                entity: resolvedEntity,
+                operation: mapping.operation,
+                recordId: String(id),
+                applyStatus: "applied",
+                appliedAt: new Date(),
                 processingDurationMs:
                   Date.now() - new Date(webhookEvent.receivedAt).getTime(),
               },
+              $inc: { applyAttempts: 1 },
+              $unset: { applyError: "" },
             },
           );
 
@@ -341,9 +387,16 @@ export const webhookEventProcessFunction = inngest.createFunction(
             $set: {
               status: "completed",
               processedAt: new Date(),
+              entity: resolvedEntity,
+              operation: mapping.operation,
+              recordId: String(id),
+              applyStatus: "applied",
+              appliedAt: new Date(),
               processingDurationMs:
                 Date.now() - new Date(webhookEvent.receivedAt).getTime(),
             },
+            $inc: { applyAttempts: 1 },
+            $unset: { applyError: "" },
           },
         );
 
@@ -368,11 +421,17 @@ export const webhookEventProcessFunction = inngest.createFunction(
           {
             $set: {
               status: "failed",
+              applyStatus: "failed",
+              applyError: {
+                message: error instanceof Error ? error.message : String(error),
+                code: "APPLY_FAILED",
+              },
               error: {
                 message: error instanceof Error ? error.message : String(error),
                 stack: error instanceof Error ? error.stack : undefined,
               },
             },
+            $inc: { applyAttempts: 1 },
           },
         );
 

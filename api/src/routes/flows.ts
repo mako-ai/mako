@@ -907,6 +907,53 @@ flowRoutes.post("/:flowId/run", async c => {
   }
 });
 
+// POST /api/workspaces/:workspaceId/flows/:flowId/backfill - Trigger a full backfill
+flowRoutes.post("/:flowId/backfill", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+
+    const eventId = await inngest.send({
+      name: "flow.execute",
+      data: {
+        flowId: flow._id.toString(),
+        noJitter: true,
+        backfill: true,
+      },
+    });
+
+    logger.info("Backfill triggered", { flowId, eventId });
+
+    return c.json({
+      success: true,
+      message: "Backfill started",
+      data: {
+        flowId: flow._id,
+        eventId,
+        startedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    logger.error("Error triggering backfill", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
 // GET /api/workspaces/:workspaceId/flows/:flowId/status - Check if flow is running
 flowRoutes.get("/:flowId/status", async c => {
   try {
