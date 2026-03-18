@@ -1,8 +1,5 @@
 import { Types } from "mongoose";
 import { CdcEntityLock } from "../database/workspace-schema";
-import { loggers } from "../logging";
-
-const log = loggers.sync("cdc.lock");
 
 export interface CdcLease {
   workspaceId: string;

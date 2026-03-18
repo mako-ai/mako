@@ -28,7 +28,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   async applyChanges(
     layout: CdcEntityLayout,
     batch: CdcApplyChange[],
-    ordering: CdcApplyOrderingKey,
+    _ordering: CdcApplyOrderingKey,
     _fencingToken: number,
   ): Promise<CdcApplyResult> {
     const sorted = [...batch].sort((a, b) => {
