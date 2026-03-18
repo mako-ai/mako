@@ -1,6 +1,6 @@
 ---
-title: Connectors
-description: Sync data from external services into your databases.
+title: SaaS Sync (Connectors)
+description: Pull data from SaaS tools like Stripe, PostHog, and Close CRM into your data warehouse.
 ---
 
 :::caution[Experimental]
