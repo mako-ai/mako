@@ -809,7 +809,7 @@ export const flowFunction = inngest.createFunction(
                       ],
                       $slice: -200,
                     },
-                  },
+                  } as any,
                 },
               );
             });
@@ -1138,7 +1138,7 @@ export const flowFunction = inngest.createFunction(
                         ],
                         $slice: -200,
                       },
-                    },
+                    } as any,
                   },
                 );
               },
@@ -1293,7 +1293,7 @@ export const flowFunction = inngest.createFunction(
                             ],
                             $slice: -200,
                           },
-                        },
+                        } as any,
                       },
                     );
                   } catch (error) {
