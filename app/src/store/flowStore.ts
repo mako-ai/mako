@@ -297,6 +297,18 @@ interface ExecutionDetails {
     syncMode: string;
     entityFilter?: string[];
   };
+  stats?: {
+    recordsProcessed?: number;
+    recordsCreated?: number;
+    recordsUpdated?: number;
+    recordsDeleted?: number;
+    recordsFailed?: number;
+    syncedEntities?: string[];
+    plannedEntities?: string[];
+    entityStats?: Record<string, number>;
+    entityStatus?: Record<string, string>;
+    currentEntity?: string;
+  };
   logs?: Array<{
     timestamp: string;
     level: string;
