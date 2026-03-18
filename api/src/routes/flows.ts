@@ -299,6 +299,7 @@ flowRoutes.post("/", async c => {
 
     // Validate destination - either destinationDatabaseId or tableDestination
     let destinationDatabaseId: Types.ObjectId | undefined;
+    let destinationType: string | undefined;
 
     if (body.tableDestination?.connectionId) {
       // Table destination validation
@@ -321,6 +322,7 @@ flowRoutes.post("/", async c => {
       destinationDatabaseId = new Types.ObjectId(
         body.tableDestination.connectionId,
       );
+      destinationType = destDb.type;
     } else if (body.destinationDatabaseId) {
       // MongoDB destination validation
       const database = await DatabaseConnection.findOne({
@@ -336,6 +338,7 @@ flowRoutes.post("/", async c => {
       }
 
       destinationDatabaseId = new Types.ObjectId(body.destinationDatabaseId);
+      destinationType = database.type;
     } else {
       return c.json(
         {
@@ -422,7 +425,10 @@ flowRoutes.post("/", async c => {
       flowData.tableDestination = td;
     }
 
-    if (body.deleteMode) {
+    if (flowType === "webhook" && destinationType === "bigquery") {
+      // BigQuery CDC path relies on tombstones for correctness.
+      flowData.deleteMode = "soft";
+    } else if (body.deleteMode) {
       flowData.deleteMode = body.deleteMode;
     }
     if (body.entityLayouts && Array.isArray(body.entityLayouts)) {
@@ -731,7 +737,21 @@ flowRoutes.put("/:flowId", async c => {
       }
     }
 
-    if (body.deleteMode !== undefined) {
+    if (flow.type === "webhook") {
+      const effectiveDestConnectionId =
+        flow.tableDestination?.connectionId || flow.destinationDatabaseId;
+      const destination = await DatabaseConnection.findById(
+        effectiveDestConnectionId,
+      )
+        .select({ type: 1 })
+        .lean();
+      if (destination?.type === "bigquery") {
+        // Force soft delete for BigQuery webhook flows.
+        flow.deleteMode = "soft";
+      } else if (body.deleteMode !== undefined) {
+        flow.deleteMode = body.deleteMode;
+      }
+    } else if (body.deleteMode !== undefined) {
       flow.deleteMode = body.deleteMode;
     }
     if (body.entityLayouts !== undefined) {
