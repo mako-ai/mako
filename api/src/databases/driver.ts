@@ -36,6 +36,24 @@ export interface BatchWriteResult {
 }
 
 /**
+ * BigQuery table partitioning configuration
+ */
+export interface TablePartitioning {
+  type: "time" | "ingestion";
+  /** Column to partition on (required for type: "time", ignored for "ingestion") */
+  field?: string;
+  granularity?: "day" | "hour" | "month" | "year";
+  requirePartitionFilter?: boolean;
+}
+
+/**
+ * BigQuery table clustering configuration
+ */
+export interface TableClustering {
+  fields: string[];
+}
+
+/**
  * Options for insert operations
  */
 export interface InsertOptions {
@@ -43,6 +61,12 @@ export interface InsertOptions {
   schema?: string;
   /** Pre-mapped column types for write operations (avoids re-querying INFORMATION_SCHEMA) */
   columnTypes?: Map<string, string>;
+  /** Table partitioning config (BigQuery) */
+  partitioning?: TablePartitioning;
+  /** Table clustering config (BigQuery) */
+  clustering?: TableClustering;
+  /** Soft-delete column names to inject during table creation */
+  softDeleteColumns?: { isDeleted: string; deletedAt: string };
 }
 
 /**
@@ -103,6 +127,16 @@ export interface DatabaseDriver {
    * Check if this driver supports write operations
    */
   supportsWrites?(): boolean;
+
+  /**
+   * Ensure the target schema/dataset exists, creating it if needed.
+   * Only applicable to databases where schema must exist before tables (e.g. BigQuery datasets).
+   */
+  ensureSchema?(
+    database: IDatabaseConnection,
+    schemaName: string,
+    options?: { location?: string },
+  ): Promise<{ success: boolean; created?: boolean; error?: string }>;
 
   /**
    * Get the schema (column definitions) for a query without fully executing it.
@@ -216,6 +250,20 @@ export interface DatabaseDriver {
     tableName: string,
     options?: InsertOptions,
   ): Promise<{ success: boolean; error?: string }>;
+
+  /**
+   * Delete rows by key column values
+   * @param database - Database connection
+   * @param tableName - Name of the table
+   * @param keyFilters - Object mapping column names to values for the WHERE clause (AND'd together)
+   * @param options - Options (schema/dataset)
+   */
+  deleteBatch?(
+    database: IDatabaseConnection,
+    tableName: string,
+    keyFilters: Record<string, unknown>,
+    options?: InsertOptions,
+  ): Promise<BatchWriteResult>;
 
   /**
    * Execute a streaming query, calling onBatch for each batch of rows

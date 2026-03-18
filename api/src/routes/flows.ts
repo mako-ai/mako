@@ -18,6 +18,10 @@ import {
   checkQuerySafety,
   dryRunDbSync,
 } from "../services/destination-writer.service";
+import { getBigQueryCdcFlowStats } from "../services/bigquery-cdc.service";
+import { cdcBackfillService } from "../sync-cdc/backfill.service";
+import { cdcObservabilityService } from "../sync-cdc/observability.service";
+import { syncMachineService } from "../sync-cdc/state/sync-machine.service";
 
 const logger = loggers.inngest("flow");
 
@@ -71,6 +75,30 @@ flowRoutes.use("*", async (c: AuthenticatedContext, next) => {
   }
   await next();
 });
+
+async function assertOwnerOrAdmin(c: AuthenticatedContext, workspaceId: string) {
+  const user = c.get("user");
+  if (!user) {
+    return c.json(
+      { success: false, error: "Owner/admin access requires user session" },
+      403,
+    );
+  }
+
+  const isOwnerOrAdmin = await workspaceService.hasRole(
+    workspaceId,
+    user.id,
+    ["owner", "admin"],
+  );
+  if (!isOwnerOrAdmin) {
+    return c.json(
+      { success: false, error: "Owner/admin role required" },
+      403,
+    );
+  }
+
+  return null;
+}
 
 // GET /api/workspaces/:workspaceId/flows - List all flows
 flowRoutes.get("/", async c => {
@@ -151,6 +179,10 @@ flowRoutes.get("/", async c => {
           entityFilter: 1,
           queries: 1,
           syncMode: 1,
+          syncEngine: 1,
+          syncState: 1,
+          syncStateUpdatedAt: 1,
+          syncStateMeta: 1,
           lastRunAt: 1,
           lastSuccessAt: 1,
           lastError: 1,
@@ -179,6 +211,8 @@ flowRoutes.get("/", async c => {
           incrementalConfig: 1,
           conflictConfig: 1,
           batchSize: 1,
+          entityLayouts: 1,
+          deleteMode: 1,
         },
       },
       {
@@ -296,6 +330,7 @@ flowRoutes.post("/", async c => {
 
     // Validate destination - either destinationDatabaseId or tableDestination
     let destinationDatabaseId: Types.ObjectId | undefined;
+    let destinationType: string | undefined;
 
     if (body.tableDestination?.connectionId) {
       // Table destination validation
@@ -314,17 +349,11 @@ flowRoutes.post("/", async c => {
         );
       }
 
-      if (!body.tableDestination.tableName) {
-        return c.json(
-          { success: false, error: "tableDestination.tableName is required" },
-          400,
-        );
-      }
-
       // Use the table destination connection as the destinationDatabaseId
       destinationDatabaseId = new Types.ObjectId(
         body.tableDestination.connectionId,
       );
+      destinationType = destDb.type;
     } else if (body.destinationDatabaseId) {
       // MongoDB destination validation
       const database = await DatabaseConnection.findOne({
@@ -340,6 +369,7 @@ flowRoutes.post("/", async c => {
       }
 
       destinationDatabaseId = new Types.ObjectId(body.destinationDatabaseId);
+      destinationType = database.type;
     } else {
       return c.json(
         {
@@ -362,6 +392,10 @@ flowRoutes.post("/", async c => {
           ? body.destinationDatabaseName.trim()
           : undefined,
       syncMode: body.syncMode || "full",
+      syncEngine: "legacy",
+      syncState: "idle",
+      syncStateUpdatedAt: new Date(),
+      enabled: true,
       createdBy: userId,
     };
 
@@ -407,27 +441,32 @@ flowRoutes.post("/", async c => {
       }));
     }
 
-    // Validate: connector sources don't support tableDestination (they always write to MongoDB)
-    if (sourceType === "connector" && body.tableDestination?.connectionId) {
-      return c.json(
-        {
-          success: false,
-          error:
-            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
-        },
-        400,
-      );
-    }
-
     // Add table destination if specified
     if (body.tableDestination?.connectionId) {
-      flowData.tableDestination = {
+      const td: any = {
         connectionId: new Types.ObjectId(body.tableDestination.connectionId),
         database: body.tableDestination.database,
         schema: body.tableDestination.schema,
-        tableName: body.tableDestination.tableName,
+        tableName: body.tableDestination.tableName || "",
         createIfNotExists: body.tableDestination.createIfNotExists !== false,
       };
+      if (body.tableDestination.partitioning) {
+        td.partitioning = body.tableDestination.partitioning;
+      }
+      if (body.tableDestination.clustering) {
+        td.clustering = body.tableDestination.clustering;
+      }
+      flowData.tableDestination = td;
+    }
+
+    if (flowType === "webhook" && destinationType === "bigquery") {
+      // BigQuery CDC path relies on tombstones for correctness.
+      flowData.deleteMode = "soft";
+    } else if (body.deleteMode) {
+      flowData.deleteMode = body.deleteMode;
+    }
+    if (body.entityLayouts && Array.isArray(body.entityLayouts)) {
+      flowData.entityLayouts = body.entityLayouts;
     }
 
     if (flowType === "scheduled") {
@@ -468,6 +507,37 @@ flowRoutes.post("/", async c => {
     }
 
     await flow.save();
+
+    // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
+    if (
+      sourceType === "connector" &&
+      flowData.tableDestination?.connectionId &&
+      flowData.tableDestination?.schema
+    ) {
+      try {
+        const { createDestinationWriter } = await import(
+          "../services/destination-writer.service"
+        );
+        // createDestinationWriter.initialize() calls ensureSchema which creates the dataset
+        await createDestinationWriter(
+          {
+            destinationDatabaseId: flowData.destinationDatabaseId,
+            tableDestination: flowData.tableDestination,
+          },
+          "pre-check",
+        );
+        logger.info("BigQuery dataset ensured", {
+          dataset: flowData.tableDestination.schema,
+        });
+      } catch (preCreateError) {
+        logger.warn("Failed to ensure BigQuery dataset", {
+          error:
+            preCreateError instanceof Error
+              ? preCreateError.message
+              : String(preCreateError),
+        });
+      }
+    }
 
     // Populate references for response based on source type
     if (sourceType === "connector" && flow.dataSourceId) {
@@ -650,21 +720,6 @@ flowRoutes.put("/:flowId", async c => {
       }
     }
 
-    // Validate: connector sources don't support tableDestination (they always write to MongoDB)
-    if (
-      flow.sourceType === "connector" &&
-      body.tableDestination?.connectionId
-    ) {
-      return c.json(
-        {
-          success: false,
-          error:
-            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
-        },
-        400,
-      );
-    }
-
     // Update table destination - merge entire object to avoid missing fields
     if (body.tableDestination) {
       const newConnectionId = body.tableDestination.connectionId
@@ -696,12 +751,45 @@ flowRoutes.put("/:flowId", async c => {
           true,
       };
 
+      const resolvedPartitioning =
+        body.tableDestination.partitioning ??
+        flow.tableDestination?.partitioning;
+      if (resolvedPartitioning) {
+        flow.tableDestination.partitioning = resolvedPartitioning;
+      }
+      const resolvedClustering =
+        body.tableDestination.clustering ?? flow.tableDestination?.clustering;
+      if (resolvedClustering) {
+        flow.tableDestination.clustering = resolvedClustering;
+      }
+
       // Keep destinationDatabaseId in sync (used for population/lookups)
       if (body.tableDestination.connectionId) {
         flow.destinationDatabaseId = new Types.ObjectId(
           body.tableDestination.connectionId,
         );
       }
+    }
+
+    if (flow.type === "webhook") {
+      const effectiveDestConnectionId =
+        flow.tableDestination?.connectionId || flow.destinationDatabaseId;
+      const destination = await DatabaseConnection.findById(
+        effectiveDestConnectionId,
+      )
+        .select({ type: 1 })
+        .lean();
+      if (destination?.type === "bigquery") {
+        // Force soft delete for BigQuery webhook flows.
+        flow.deleteMode = "soft";
+      } else if (body.deleteMode !== undefined) {
+        flow.deleteMode = body.deleteMode;
+      }
+    } else if (body.deleteMode !== undefined) {
+      flow.deleteMode = body.deleteMode;
+    }
+    if (body.entityLayouts !== undefined) {
+      (flow as any).entityLayouts = body.entityLayouts;
     }
 
     // Update webhook-specific fields
@@ -870,6 +958,279 @@ flowRoutes.post("/:flowId/run", async c => {
         error: error instanceof Error ? error.message : "Unknown error",
       },
       500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/backfill - Trigger a full backfill
+flowRoutes.post("/:flowId/backfill", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+
+    if (flow.syncEngine === "cdc") {
+      await cdcBackfillService.startBackfill(workspaceId, flowId);
+      return c.json({
+        success: true,
+        message: "CDC backfill started",
+        data: {
+          flowId: flow._id,
+          startedAt: new Date(),
+        },
+      });
+    }
+
+    const eventId = await inngest.send({
+      name: "flow.execute",
+      data: {
+        flowId: flow._id.toString(),
+        noJitter: true,
+        backfill: true,
+      },
+    });
+
+    logger.info("Backfill triggered", { flowId, eventId });
+
+    return c.json({
+      success: true,
+      message: "Backfill started",
+      data: {
+        flowId: flow._id,
+        eventId,
+        startedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    logger.error("Error triggering backfill", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-engine
+flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+    const authorizationError = await assertOwnerOrAdmin(c, workspaceId);
+    if (authorizationError) return authorizationError;
+
+    const body = await c.req.json();
+    const syncEngine = body?.syncEngine;
+    if (syncEngine !== "legacy" && syncEngine !== "cdc") {
+      return c.json(
+        { success: false, error: "syncEngine must be 'legacy' or 'cdc'" },
+        400,
+      );
+    }
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+
+    flow.syncEngine = syncEngine;
+    if (syncEngine === "legacy") {
+      flow.syncState = "idle";
+      flow.syncStateUpdatedAt = new Date();
+      flow.syncStateMeta = {
+        lastEvent: "ENGINE_SWITCH",
+        lastReason: "Switched to legacy engine",
+      };
+    } else {
+      flow.syncState = flow.syncState || "idle";
+      flow.syncStateUpdatedAt = new Date();
+      flow.syncStateMeta = {
+        lastEvent: "ENGINE_SWITCH",
+        lastReason: "Switched to cdc engine",
+      };
+    }
+    await flow.save();
+
+    return c.json({
+      success: true,
+      data: {
+        flowId: flow._id,
+        syncEngine: flow.syncEngine,
+        syncState: flow.syncState,
+      },
+    });
+  } catch (error) {
+    logger.error("Error updating sync engine", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/backfill/start
+flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+    await cdcBackfillService.startBackfill(workspaceId, flowId);
+    return c.json({
+      success: true,
+      message: "CDC backfill started",
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/resync
+flowRoutes.post("/:flowId/sync-cdc/resync", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+    const body = await c.req.json().catch(() => ({}));
+    await cdcBackfillService.resyncFlow({
+      workspaceId,
+      flowId,
+      deleteDestination: Boolean(body.deleteDestination),
+      clearWebhookEvents: Boolean(body.clearWebhookEvents),
+    });
+    return c.json({
+      success: true,
+      message: "CDC resync started",
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/pause
+flowRoutes.post("/:flowId/sync-cdc/pause", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+    await syncMachineService.applyTransition({
+      workspaceId,
+      flowId,
+      event: { type: "PAUSE", reason: "Paused via API" },
+    });
+    return c.json({ success: true, message: "CDC flow paused" });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/resume
+flowRoutes.post("/:flowId/sync-cdc/resume", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+    await syncMachineService.applyTransition({
+      workspaceId,
+      flowId,
+      event: { type: "RESUME", reason: "Resumed via API" },
+    });
+    return c.json({ success: true, message: "CDC flow resumed" });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// GET /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/summary
+flowRoutes.get("/:flowId/sync-cdc/summary", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+    const summary = await cdcObservabilityService.getSummary(workspaceId, flowId);
+    return c.json({ success: true, data: summary });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// GET /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/diagnostics
+flowRoutes.get("/:flowId/sync-cdc/diagnostics", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+    const diagnostics = await cdcObservabilityService.getDiagnostics(
+      workspaceId,
+      flowId,
+    );
+    return c.json({ success: true, data: diagnostics });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
     );
   }
 });
@@ -1132,28 +1493,71 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const eventsToday = recentEvents.filter(
-      e => new Date(e.receivedAt) >= today,
-    ).length;
-    const failedEvents = recentEvents.filter(e => e.status === "failed").length;
+    const [
+      eventsToday,
+      completedToday,
+      failedToday,
+      totalCount,
+      deferredCount,
+      runningFullSyncExecution,
+      cdcStats,
+    ] = await Promise.all([
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        receivedAt: { $gte: today },
+      }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        receivedAt: { $gte: today },
+        status: "completed",
+      }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        receivedAt: { $gte: today },
+        status: "failed",
+      }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+      }),
+      WebhookEvent.countDocuments({
+        flowId: new Types.ObjectId(flowId),
+        applyStatus: "pending",
+      }),
+      FlowExecution.findOne({
+        flowId: new Types.ObjectId(flowId),
+        status: "running",
+        "context.syncMode": "full",
+      })
+        .select({ _id: 1 })
+        .lean(),
+      getBigQueryCdcFlowStats({ flowId }),
+    ]);
+    // Only use terminal events for success-rate math.
+    // Pending/processing events should not be counted as successful.
+    const terminalToday = completedToday + failedToday;
     const successRate =
-      recentEvents.length > 0
-        ? ((recentEvents.length - failedEvents) / recentEvents.length) * 100
-        : 100;
+      terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
+    const backfillActive = Boolean(
+      flow.backfillState?.active || runningFullSyncExecution,
+    );
 
     const stats = {
       webhookUrl: flow.webhookConfig?.endpoint,
       lastReceived: flow.webhookConfig?.lastReceivedAt
         ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
         : null,
-      totalReceived: flow.webhookConfig?.totalReceived || 0,
+      totalReceived: totalCount,
       eventsToday,
+      deferredCount,
+      backfillActive,
+      cdc: cdcStats,
       successRate: Math.round(successRate),
       recentEvents: recentEvents.slice(0, 10).map(event => ({
         eventId: event.eventId,
         eventType: event.eventType,
         receivedAt: event.receivedAt,
         status: event.status,
+        applyStatus: event.applyStatus,
         processingDurationMs: event.processingDurationMs,
       })),
     };
@@ -1214,6 +1618,7 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
           receivedAt: event.receivedAt,
           processedAt: event.processedAt,
           status: event.status,
+          applyStatus: event.applyStatus,
           attempts: event.attempts,
           error: event.error,
           processingDurationMs: event.processingDurationMs,

@@ -111,7 +111,13 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       flowId,
       workspaceId,
       eventId: event.id || uuidv4(),
-      eventType: event.type || event.event_type || event.action || "unknown",
+      eventType:
+        event.type ||
+        event.event_type ||
+        event.action ||
+        (event.event?.object_type && event.event?.action
+          ? `${event.event.object_type}.${event.event.action}`
+          : "unknown"),
       receivedAt: new Date(),
       status: "pending",
       attempts: 0,
@@ -141,7 +147,9 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     });
 
     // 8. Return success immediately
-    logger.info("Webhook processed successfully", { eventId: webhookEvent.eventId });
+    logger.info("Webhook processed successfully", {
+      eventId: webhookEvent.eventId,
+    });
     return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
   } catch (error) {
     logger.error("Webhook handler error", { error });

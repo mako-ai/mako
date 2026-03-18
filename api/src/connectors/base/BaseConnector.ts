@@ -42,6 +42,7 @@ export interface FetchOptions {
   batchSize?: number;
   onBatch: DataBatchCallback;
   onProgress?: ProgressCallback;
+  onLog?: SyncLogger["log"];
   since?: Date; // For incremental syncs
   rateLimitDelay?: number;
   maxRetries?: number;
@@ -73,12 +74,31 @@ export interface WebhookHandlerOptions {
   secret?: string;
 }
 
+export interface NormalizedCdcRecord {
+  entity: string;
+  recordId: string;
+  operation: "upsert" | "delete";
+  payload?: Record<string, unknown>;
+  sourceTs: Date;
+  source: "webhook" | "backfill";
+  changeId?: string;
+}
+
+// Suggested table layout for BigQuery destinations
+export interface TableLayoutSuggestion {
+  partitionField?: string;
+  partitionGranularity?: "day" | "hour" | "month" | "year";
+  clusterFields?: string[];
+}
+
 // Entity metadata for hierarchical entity structure
 export interface EntityMetadata {
   name: string;
   label?: string;
   description?: string;
   subEntities?: EntityMetadata[];
+  /** Suggested BigQuery table layout for this entity */
+  layoutSuggestion?: TableLayoutSuggestion;
 }
 
 export abstract class BaseConnector {
@@ -244,6 +264,91 @@ export abstract class BaseConnector {
   extractWebhookData(_event: any): { id: string; data: any } | null {
     // Default implementation - connectors should override
     return null;
+  }
+
+  /**
+   * Convert webhook event payload into canonical CDC records.
+   * Default implementation uses existing webhook mapping + extractWebhookData.
+   */
+  extractWebhookCdcRecords(
+    event: any,
+    eventType?: string,
+  ): NormalizedCdcRecord[] {
+    const resolvedEventType =
+      eventType || event?.type || event?.event_type || event?.action;
+    if (!resolvedEventType) {
+      return [];
+    }
+
+    const mapping = this.getWebhookEventMapping(resolvedEventType);
+    if (!mapping) {
+      return [];
+    }
+
+    const extracted = this.extractWebhookData(event);
+    if (!extracted) {
+      return [];
+    }
+
+    return [
+      {
+        entity: mapping.entity,
+        recordId: extracted.id,
+        operation: mapping.operation,
+        payload: extracted.data,
+        sourceTs: this.resolveRecordTimestamp(extracted.data),
+        source: "webhook",
+        changeId:
+          event?.id ||
+          event?.event_id ||
+          event?.eventId ||
+          `${resolvedEventType}:${extracted.id}`,
+      },
+    ];
+  }
+
+  /**
+   * Normalize backfill records into the same canonical CDC shape as webhooks.
+   */
+  normalizeBackfillRecord(
+    entity: string,
+    record: Record<string, unknown>,
+  ): NormalizedCdcRecord | null {
+    const recordId = String(record.id || record._id || "");
+    if (!recordId) {
+      return null;
+    }
+
+    return {
+      entity,
+      recordId,
+      operation: "upsert",
+      payload: record,
+      sourceTs: this.resolveRecordTimestamp(record),
+      source: "backfill",
+    };
+  }
+
+  protected resolveRecordTimestamp(payload?: Record<string, unknown>): Date {
+    const candidates = [
+      payload?.date_updated,
+      payload?.updated_at,
+      payload?.date_created,
+      payload?.created_at,
+      payload?.timestamp,
+      payload?._syncedAt,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const date =
+        candidate instanceof Date ? candidate : new Date(String(candidate));
+      if (!Number.isNaN(date.getTime())) {
+        return date;
+      }
+    }
+
+    return new Date();
   }
 }
 
