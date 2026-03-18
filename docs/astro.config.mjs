@@ -54,13 +54,21 @@ export default defineConfig({
         },
         {
           label: "Reference",
-          items: [{ label: "API Reference", slug: "api-reference" }],
+          items: [
+            { label: "API Reference", slug: "api-reference" },
+          ],
+        },
+        {
+          label: "Roadmap",
+          items: [
+            { label: "Roadmap", slug: "roadmap" },
+          ],
         },
         {
           label: "Experimental",
           collapsed: true,
           items: [
-            { label: "Connectors", slug: "connectors" },
+            { label: "SaaS Sync (Connectors)", slug: "connectors" },
             { label: "Data Sync & Flows", slug: "data-sync" },
             {
               label: "Building Connectors",
