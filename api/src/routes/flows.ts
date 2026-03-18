@@ -18,6 +18,7 @@ import {
   checkQuerySafety,
   dryRunDbSync,
 } from "../services/destination-writer.service";
+import { getBigQueryCdcFlowStats } from "../services/bigquery-cdc.service";
 
 const logger = loggers.inngest("flow");
 
@@ -1218,6 +1219,8 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       failedToday,
       totalCount,
       deferredCount,
+      runningFullSyncExecution,
+      cdcStats,
     ] = await Promise.all([
       WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
@@ -1240,12 +1243,23 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
         flowId: new Types.ObjectId(flowId),
         applyStatus: "pending",
       }),
+      FlowExecution.findOne({
+        flowId: new Types.ObjectId(flowId),
+        status: "running",
+        "context.syncMode": "full",
+      })
+        .select({ _id: 1 })
+        .lean(),
+      getBigQueryCdcFlowStats({ flowId }),
     ]);
     // Only use terminal events for success-rate math.
     // Pending/processing events should not be counted as successful.
     const terminalToday = completedToday + failedToday;
     const successRate =
       terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
+    const backfillActive = Boolean(
+      flow.backfillState?.active || runningFullSyncExecution,
+    );
 
     const stats = {
       webhookUrl: flow.webhookConfig?.endpoint,
@@ -1255,6 +1269,8 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       totalReceived: totalCount,
       eventsToday,
       deferredCount,
+      backfillActive,
+      cdc: cdcStats,
       successRate: Math.round(successRate),
       recentEvents: recentEvents.slice(0, 10).map(event => ({
         eventId: event.eventId,
