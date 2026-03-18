@@ -383,6 +383,11 @@ export async function performSyncChunk(
           state,
           maxIterations,
           ...(lastSyncDate && { since: lastSyncDate }),
+          onLog: (
+            level: "debug" | "info" | "warn" | "error",
+            message: string,
+            metadata?: unknown,
+          ) => logger?.log(level, message, metadata),
           onBatch: async batch => {
             if (batch.length === 0) return;
 
@@ -567,6 +572,67 @@ async function performSyncChunkSql(
   }
 
   const progressReporter = new ProgressReporter(entity, undefined, logger);
+  let runningProcessed = state?.totalProcessed || 0;
+  const fullSyncWriteBatchSize = 1000;
+  let pendingFullSyncRows: Record<string, unknown>[] = [];
+
+  const writeRows = async (
+    rowsToWrite: Record<string, unknown>[],
+    fetchedCountForLog: number,
+  ) => {
+    if (rowsToWrite.length === 0) return;
+
+    const writeOptions =
+      syncMode === "incremental"
+        ? {
+            keyColumns: ["id", "_dataSourceId"],
+            conflictStrategy: "update" as const,
+          }
+        : {};
+
+    const result = await writer.writeBatch(rowsToWrite, writeOptions);
+
+    if (!result.success) {
+      logger?.log("error", "SQL batch write failed", {
+        entity,
+        fetchedCount: fetchedCountForLog,
+        syncMode,
+        error: result.error,
+      });
+      throw new Error(`SQL write failed: ${result.error}`);
+    }
+
+    runningProcessed += result.rowsWritten;
+
+    logger?.log("info", "SQL batch write succeeded", {
+      entity,
+      fetchedCount: fetchedCountForLog,
+      rowsWritten: result.rowsWritten,
+      totalProcessed: runningProcessed,
+      syncMode,
+    });
+
+    orchestratorLogger.info("SQL write succeeded", {
+      rowsWritten: result.rowsWritten,
+      recordCount: fetchedCountForLog,
+      table: entityTableName,
+    });
+  };
+
+  const flushFullSyncRows = async (reason: "threshold" | "chunk-end") => {
+    if (pendingFullSyncRows.length === 0) return;
+
+    const rowsToWrite = pendingFullSyncRows;
+    pendingFullSyncRows = [];
+
+    logger?.log("info", "Flushing buffered full-sync rows", {
+      entity,
+      reason,
+      bufferedRows: rowsToWrite.length,
+    });
+
+    await writeRows(rowsToWrite, rowsToWrite.length);
+  };
 
   const maxRetries = dataSource.settings?.max_retries || 3;
   const rateLimitDelay = dataSource.settings?.rate_limit_delay_ms || 200;
@@ -577,8 +643,19 @@ async function performSyncChunkSql(
         state,
         maxIterations,
         ...(lastSyncDate && { since: lastSyncDate }),
+        onLog: (
+          level: "debug" | "info" | "warn" | "error",
+          message: string,
+          metadata?: unknown,
+        ) => logger?.log(level, message, metadata),
         onBatch: async (batch: any[]) => {
           if (batch.length === 0) return;
+
+          logger?.log("info", "SQL batch received from source", {
+            entity,
+            fetchedCount: batch.length,
+            syncMode,
+          });
 
           const processedRecords = batch.map((record: any) => {
             const flat: Record<string, unknown> = {};
@@ -593,20 +670,15 @@ async function performSyncChunkSql(
             };
           });
 
-          const result = await writer.writeBatch(processedRecords, {
-            keyColumns: ["id", "_dataSourceId"],
-            conflictStrategy: "update",
-          });
-
-          if (!result.success) {
-            throw new Error(`SQL write failed: ${result.error}`);
+          if (syncMode === "full") {
+            pendingFullSyncRows.push(...processedRecords);
+            if (pendingFullSyncRows.length >= fullSyncWriteBatchSize) {
+              await flushFullSyncRows("threshold");
+            }
+            return;
           }
 
-          orchestratorLogger.info("SQL write succeeded", {
-            rowsWritten: result.rowsWritten,
-            recordCount: batch.length,
-            table: entityTableName,
-          });
+          await writeRows(processedRecords, batch.length);
         },
         onProgress: (current: number, total?: number) => {
           progressReporter.reportProgress(current, total);
@@ -618,6 +690,10 @@ async function performSyncChunkSql(
     `fetch-chunk-${entity}`,
     rateLimitDelay,
   );
+
+  if (syncMode === "full") {
+    await flushFullSyncRows("chunk-end");
+  }
 
   const completed = !fetchState.hasMore;
 
@@ -889,6 +965,11 @@ export async function performSync(
           connector.fetchEntity({
             entity: entityName,
             ...(lastSyncDate && { since: lastSyncDate }),
+            onLog: (
+              level: "debug" | "info" | "warn" | "error",
+              message: string,
+              metadata?: unknown,
+            ) => logger?.log(level, message, metadata),
             onBatch: async batch => {
               if (batch.length === 0) return;
 

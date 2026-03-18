@@ -330,6 +330,7 @@ interface FlowStore extends FlowStoreState {
   deleteFlow: (workspaceId: string, flowId: string) => Promise<void>;
   toggleFlow: (workspaceId: string, flowId: string) => Promise<void>;
   runFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  backfillFlow: (workspaceId: string, flowId: string) => Promise<void>;
   fetchFlowHistory: (
     workspaceId: string,
     flowId: string,
@@ -656,6 +657,35 @@ export const useFlowStore = create<FlowStore>()(
             await get().refresh(workspaceId);
           } else {
             throw new Error(response.error || "Failed to run flow");
+          }
+        } catch (error: any) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+        } finally {
+          set(state => {
+            delete state.loading[workspaceId];
+          });
+        }
+      },
+
+      backfillFlow: async (workspaceId: string, flowId: string) => {
+        set(state => {
+          state.loading[workspaceId] = true;
+          state.error[workspaceId] = null;
+        });
+
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            message?: string;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/backfill`);
+
+          if (response.success) {
+            await get().refresh(workspaceId);
+          } else {
+            throw new Error(response.error || "Failed to start backfill");
           }
         } catch (error: any) {
           set(state => {

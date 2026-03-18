@@ -51,6 +51,39 @@ const CLOSE_ACTIVITY_TYPES = [
 
 export class CloseConnector extends BaseConnector {
   private closeApi: AxiosInstance | null = null;
+  private activeLogCallback?: (
+    level: "debug" | "info" | "warn" | "error",
+    message: string,
+    metadata?: any,
+  ) => void;
+  private activeEntity?: string;
+  private activeSyncMode: "full" | "incremental" = "full";
+  private requestSeq = 0;
+
+  private setLogContext(options: {
+    entity: string;
+    since?: Date;
+    onLog?: any;
+  }) {
+    this.activeEntity = options.entity;
+    this.activeSyncMode = options.since ? "incremental" : "full";
+    this.activeLogCallback = options.onLog;
+  }
+
+  private emitSyncLog(
+    level: "debug" | "info" | "warn" | "error",
+    message: string,
+    metadata?: Record<string, unknown>,
+  ) {
+    if (this.activeLogCallback) {
+      this.activeLogCallback(level, message, {
+        connector: "close",
+        entity: this.activeEntity,
+        syncMode: this.activeSyncMode,
+        ...metadata,
+      });
+    }
+  }
 
   /**
    * Resolve Close API endpoint for a given activities sub-type.
@@ -68,6 +101,7 @@ export class CloseConnector extends BaseConnector {
       SMS: "/activity/sms/",
       Note: "/activity/note/",
       TaskCompleted: "/activity/task/",
+      CustomActivity: "/activity/custom/",
     };
     return map[subType] || "/activity/";
   }
@@ -136,6 +170,51 @@ export class CloseConnector extends BaseConnector {
           "Content-Type": "application/json",
         },
       });
+
+      this.closeApi.interceptors.request.use(config => {
+        const requestId = `close_req_${Date.now()}_${++this.requestSeq}`;
+        (config as any).__makoMeta = {
+          requestId,
+          startedAt: Date.now(),
+        };
+        this.emitSyncLog("info", "Close API request sent", {
+          requestId,
+          method: (config.method || "get").toUpperCase(),
+          endpoint: config.url || "",
+        });
+        return config;
+      });
+
+      this.closeApi.interceptors.response.use(
+        response => {
+          const meta = (response.config as any).__makoMeta;
+          this.emitSyncLog("info", "Close API response received", {
+            requestId: meta?.requestId,
+            method: (response.config.method || "get").toUpperCase(),
+            endpoint: response.config.url || "",
+            status: response.status,
+            durationMs: meta?.startedAt
+              ? Date.now() - Number(meta.startedAt)
+              : undefined,
+          });
+          return response;
+        },
+        error => {
+          const config = error?.config || {};
+          const meta = (config as any).__makoMeta;
+          this.emitSyncLog("warn", "Close API request failed", {
+            requestId: meta?.requestId,
+            method: (config.method || "get").toUpperCase(),
+            endpoint: config.url || "",
+            status: error?.response?.status,
+            durationMs: meta?.startedAt
+              ? Date.now() - Number(meta.startedAt)
+              : undefined,
+            error: axios.isAxiosError(error) ? error.message : String(error),
+          });
+          return Promise.reject(error);
+        },
+      );
     }
     return this.closeApi;
   }
@@ -243,6 +322,7 @@ export class CloseConnector extends BaseConnector {
    * Fetch a chunk of data with resumable state
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
+    this.setLogContext(options);
     const { entity, onBatch, onProgress, since, state } = options;
     const maxIterations = options.maxIterations || 10;
 
@@ -265,6 +345,18 @@ export class CloseConnector extends BaseConnector {
 
     if (entity === "users") {
       return await this.fetchUsersChunk(options);
+    }
+
+    if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
+      return await this.fetchSimpleEntityChunk(entity, options);
+    }
+
+    // Custom objects require lead_id — backfill not supported, webhook-only
+    if (entity === "custom_objects") {
+      logger.warn(
+        "Skipping custom_objects: backfill requires lead_id, use webhooks instead",
+      );
+      return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
     // Handle activities and activity sub-entities (e.g., "activities:Call")
@@ -655,6 +747,7 @@ export class CloseConnector extends BaseConnector {
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
+    this.setLogContext(options);
     const { entity, onBatch, onProgress, since } = options;
 
     // Special handling for custom_fields
@@ -666,6 +759,12 @@ export class CloseConnector extends BaseConnector {
     // Special handling for users - always do full sync
     if (entity === "users") {
       await this.fetchAllUsers(options);
+      return;
+    }
+
+    // Simple entities (statuses, types) — fetch all via pagination
+    if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
+      await this.fetchSimpleEntityChunk(entity, options as any);
       return;
     }
 
@@ -1060,6 +1159,82 @@ export class CloseConnector extends BaseConnector {
         await this.sleep(rateLimitDelay);
       }
     }
+  }
+
+  private static readonly SIMPLE_ENTITY_ENDPOINTS: Record<string, string> = {
+    lead_statuses: "/status/lead/",
+    opportunity_statuses: "/status/opportunity/",
+    custom_activity_types: "/custom_activity/",
+    custom_object_types: "/custom_object_type/",
+  };
+
+  private async fetchSimpleEntityChunk(
+    entity: string,
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, state } = options;
+
+    if (state && !state.hasMore) {
+      return {
+        totalProcessed: state.totalProcessed,
+        hasMore: false,
+        iterationsInChunk: 0,
+      };
+    }
+
+    const api = this.getCloseClient();
+    const endpoint = CloseConnector.SIMPLE_ENTITY_ENDPOINTS[entity];
+    if (!endpoint) throw new Error(`No endpoint for entity: ${entity}`);
+
+    const batchSize = options.batchSize || this.getBatchSize();
+    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
+    const maxIterations = options.maxIterations || 10;
+
+    let offset = state?.offset || 0;
+    let recordCount = state?.totalProcessed || 0;
+    let hasMore = true;
+    let iterations = 0;
+
+    while (hasMore && iterations < maxIterations) {
+      try {
+        const response = await api.get(endpoint, {
+          params: { _limit: batchSize, _skip: offset },
+        });
+        const data = response.data.data || [];
+
+        if (data.length > 0) {
+          await onBatch(data);
+          recordCount += data.length;
+          if (onProgress) onProgress(recordCount, undefined);
+        }
+
+        hasMore = response.data.has_more || false;
+        if (hasMore) {
+          offset += batchSize;
+          iterations++;
+          await this.sleep(rateLimitDelay);
+        }
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return {
+      offset,
+      totalProcessed: recordCount,
+      hasMore,
+      iterationsInChunk: iterations,
+    };
   }
 
   private async fetchTotalCount(

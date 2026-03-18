@@ -596,6 +596,11 @@ export interface IFlow extends Document {
   paginationConfig?: IPaginationConfig; // Pagination mode for database syncs
   typeCoercions?: ITypeCoercion[]; // Type coercion rules for column mapping
   batchSize?: number; // Batch size for processing (default: 2000)
+  backfillState?: {
+    active: boolean;
+    startedAt?: Date;
+    completedAt?: Date;
+  };
 
   lastRunAt?: Date;
   lastSuccessAt?: Date;
@@ -657,6 +662,16 @@ export interface IWebhookEvent extends Document {
   rawPayload: any;
   signature?: string; // For verification
   processingDurationMs?: number;
+  entity?: string;
+  operation?: "upsert" | "delete";
+  recordId?: string;
+  applyStatus?: "pending" | "applied" | "failed";
+  appliedAt?: Date;
+  applyAttempts?: number;
+  applyError?: {
+    message: string;
+    code?: string;
+  };
 }
 
 /**
@@ -1574,6 +1589,11 @@ const FlowSchema = new Schema<IFlow>(
       min: 100,
       max: 50000,
     },
+    backfillState: {
+      active: { type: Boolean, default: false },
+      startedAt: Date,
+      completedAt: Date,
+    },
     lastRunAt: Date,
     lastSuccessAt: Date,
     lastError: String,
@@ -1682,6 +1702,24 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     rawPayload: { type: Schema.Types.Mixed, required: true },
     signature: String,
     processingDurationMs: Number,
+    entity: String,
+    operation: {
+      type: String,
+      enum: ["upsert", "delete"],
+    },
+    recordId: String,
+    applyStatus: {
+      type: String,
+      enum: ["pending", "applied", "failed"],
+      default: "pending",
+      required: true,
+    },
+    appliedAt: Date,
+    applyAttempts: { type: Number, default: 0 },
+    applyError: {
+      message: String,
+      code: String,
+    },
   },
   {
     timestamps: false,
@@ -1691,6 +1729,7 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
 // Indexes
 WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
+WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 
 /**

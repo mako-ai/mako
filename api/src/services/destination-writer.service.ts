@@ -143,6 +143,7 @@ export class DestinationWriter {
   private stagingActive = false;
   private inferredColumns?: ColumnDefinition[];
   private columnTypeMap: Map<string, string> | null = null; // Mapped types for BigQuery writes
+  private existingSqlTables = new Set<string>();
 
   constructor(config: DestinationConfig) {
     this.config = config;
@@ -603,14 +604,23 @@ export class DestinationWriter {
     const targetTable = this.stagingActive
       ? options.stagingTableName || `${tableName}_staging`
       : tableName;
+    const tableCacheKey = `${schema || ""}.${targetTable}`;
 
     try {
-      // Check if table exists, create if needed
-      const tableExists = await this.driver.tableExists?.(
-        this.connection,
-        targetTable,
-        { schema },
-      );
+      // Check if table exists, create if needed.
+      // Cache existence per writer instance to avoid expensive INFORMATION_SCHEMA
+      // lookups on every small batch.
+      let tableExists = this.existingSqlTables.has(tableCacheKey);
+      if (!tableExists) {
+        tableExists = !!(await this.driver.tableExists?.(
+          this.connection,
+          targetTable,
+          { schema },
+        ));
+        if (tableExists) {
+          this.existingSqlTables.add(tableCacheKey);
+        }
+      }
 
       if (!tableExists && createIfNotExists) {
         // Get schema for table creation
@@ -703,6 +713,7 @@ export class DestinationWriter {
             `Failed to create table: ${createResult?.error || "Unknown error"}`,
           );
         }
+        this.existingSqlTables.add(tableCacheKey);
       }
 
       // Write data

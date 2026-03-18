@@ -258,6 +258,45 @@ function formatBigQueryValue(
 
 export class BigQueryDatabaseDriver implements DatabaseDriver {
   private logger = loggers.db("bigquery");
+  private tableColumnTypeCache = new Map<string, Map<string, string>>();
+
+  private getTableCacheKey(
+    database: IDatabaseConnection,
+    dataset: string,
+    tableName: string,
+  ): string {
+    const projectId = this.getProjectId(database);
+    return `${projectId}.${dataset}.${tableName}`;
+  }
+
+  private async getCachedTableColumnTypes(
+    database: IDatabaseConnection,
+    tableName: string,
+    dataset: string,
+    forceRefresh = false,
+  ): Promise<Map<string, string>> {
+    const cacheKey = this.getTableCacheKey(database, dataset, tableName);
+    if (!forceRefresh) {
+      const cached = this.tableColumnTypeCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    const fetched = await this.getTableColumnTypes(
+      database,
+      tableName,
+      dataset,
+    );
+    if (fetched.size > 0) {
+      this.tableColumnTypeCache.set(cacheKey, fetched);
+      return fetched;
+    }
+
+    // Avoid caching empty results so transient metadata lookup failures can recover.
+    return this.tableColumnTypeCache.get(cacheKey) || fetched;
+  }
+
   getMetadata(): DatabaseDriverMetadata {
     return {
       type: "bigquery",
@@ -614,12 +653,11 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     dataset: string,
     rows: Record<string, unknown>[],
   ): Promise<void> {
-    const existingColumns = await this.getTableColumnTypes(
+    const existingColumns = await this.getCachedTableColumnTypes(
       database,
       tableName,
       dataset,
     );
-    if (existingColumns.size === 0) return;
 
     const allKeys = new Set<string>();
     for (const row of rows) {
@@ -628,6 +666,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
     const projectId = this.getProjectId(database);
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
+    let cacheChanged = false;
 
     for (const key of allKeys) {
       if (key.includes(".")) {
@@ -645,6 +684,8 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
         const query = `ALTER TABLE ${fullTableName} ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType}`;
         const result = await this.executeQuery(database, query);
         if (result.success) {
+          existingColumns.set(key.toLowerCase(), colType);
+          cacheChanged = true;
           this.logger.info("Added missing column to BigQuery table", {
             table: tableName,
             column: key,
@@ -658,6 +699,11 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
           });
         }
       }
+    }
+
+    if (cacheChanged) {
+      const cacheKey = this.getTableCacheKey(database, dataset, tableName);
+      this.tableColumnTypeCache.set(cacheKey, existingColumns);
     }
   }
 
@@ -691,7 +737,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     await this.addMissingColumns(database, tableName, dataset, rows);
 
     // Get column types from INFORMATION_SCHEMA (after adding missing columns)
-    const columnTypes = await this.getTableColumnTypes(
+    const columnTypes = await this.getCachedTableColumnTypes(
       database,
       tableName,
       dataset,
@@ -741,7 +787,23 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
         };
       }
 
-      const result = await this.executeQuery(database, query);
+      let result = await this.executeQuery(database, query);
+      let retryCount = 0;
+      while (
+        !result.success &&
+        retryCount < 2 &&
+        typeof result.error === "string" &&
+        result.error.includes("is not present in table")
+      ) {
+        // BigQuery schema propagation can lag right after ALTER TABLE.
+        // Re-add missing columns from this chunk and retry the insert.
+        await this.addMissingColumns(database, tableName, dataset, chunk);
+        await new Promise(resolve =>
+          setTimeout(resolve, 500 * (retryCount + 1)),
+        );
+        result = await this.executeQuery(database, query);
+        retryCount += 1;
+      }
 
       if (!result.success) {
         const preview =
@@ -750,6 +812,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
           table: tableName,
           dataset,
           error: result.error,
+          retryCount,
           queryPreview: query.slice(0, 2000),
           firstRowPreview: preview,
           columnTypes: Object.fromEntries(columnTypes.entries()),
@@ -837,7 +900,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     await this.addMissingColumns(database, tableName, dataset, rows);
 
     // Get column types from INFORMATION_SCHEMA (after adding missing columns)
-    const columnTypes = await this.getTableColumnTypes(
+    const columnTypes = await this.getCachedTableColumnTypes(
       database,
       tableName,
       dataset,
@@ -1072,6 +1135,27 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const fullOriginal = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(originalTableName)}`;
     const fullStaging = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(stagingTableName)}`;
     const fullBackup = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(`${originalTableName}_backup_${Date.now()}`)}`;
+
+    // First-time full sync path: original table may not exist yet.
+    // In that case, promote staging directly without backup/swap steps.
+    const originalExists = await this.tableExists(database, originalTableName, {
+      schema: dataset,
+    });
+    if (!originalExists) {
+      const createResult = await this.executeQuery(
+        database,
+        `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullStaging};`,
+      );
+      if (!createResult.success) {
+        return {
+          success: false,
+          error: `Failed to create original from staging: ${createResult.error}`,
+        };
+      }
+
+      await this.executeQuery(database, `DROP TABLE IF EXISTS ${fullStaging};`);
+      return { success: true };
+    }
 
     // Step 1: Rename original to backup (using CREATE ... AS SELECT and DROP)
     let result = await this.executeQuery(
