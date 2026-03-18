@@ -358,11 +358,18 @@ export function WebhookFlowForm({
   const watchDataSourceId = watch("dataSourceId");
   const watchDestinationId = watch("destinationDatabaseId");
   const watchEntityLayouts = watch("entityLayouts") || [];
+  const watchDeleteMode = watch("deleteMode");
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
   );
   const isBigQueryDest = selectedDestination?.type === "bigquery";
+
+  useEffect(() => {
+    if (isBigQueryDest && watchDeleteMode !== "soft") {
+      setValue("deleteMode", "soft");
+    }
+  }, [isBigQueryDest, setValue, watchDeleteMode]);
 
   // Fetch entity metadata from connector and build per-entity layout defaults
   useEffect(() => {
@@ -728,7 +735,7 @@ export function WebhookFlowForm({
         syncMode: "incremental",
         enabled: true,
         webhookSecret: data.webhookSecret || "",
-        deleteMode: data.deleteMode || "hard",
+        deleteMode: isBq ? "soft" : data.deleteMode || "hard",
       };
 
       if (isBq && data.tableDestination?.schema) {
@@ -977,18 +984,22 @@ export function WebhookFlowForm({
                     <Select
                       {...field}
                       label="Delete Mode"
-                      value={field.value || "hard"}
-                      disabled={!isNewMode}
+                      value={isBigQueryDest ? "soft" : field.value || "hard"}
+                      disabled={!isNewMode || isBigQueryDest}
                     >
-                      <MenuItem value="hard">
-                        Hard delete (remove rows)
-                      </MenuItem>
+                      {!isBigQueryDest && (
+                        <MenuItem value="hard">
+                          Hard delete (remove rows)
+                        </MenuItem>
+                      )}
                       <MenuItem value="soft">
                         Soft delete (set is_deleted flag)
                       </MenuItem>
                     </Select>
                     <FormHelperText>
-                      How webhook delete events are handled in the destination
+                      {isBigQueryDest
+                        ? "BigQuery webhook flows always use soft delete (CDC tombstones)."
+                        : "How webhook delete events are handled in the destination"}
                     </FormHelperText>
                   </FormControl>
                 )}
