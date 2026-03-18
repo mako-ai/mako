@@ -528,12 +528,42 @@ export function WebhookFlowForm({
         );
       } else if (connectorType === "stripe") {
         const entities = [
-          { name: "customers", label: "Customers", partitionField: "_syncedAt", clusterFields: [] as string[] },
-          { name: "subscriptions", label: "Subscriptions", partitionField: "_syncedAt", clusterFields: [] as string[] },
-          { name: "charges", label: "Charges", partitionField: "_syncedAt", clusterFields: [] as string[] },
-          { name: "invoices", label: "Invoices", partitionField: "_syncedAt", clusterFields: [] as string[] },
-          { name: "products", label: "Products", partitionField: "_syncedAt", clusterFields: [] as string[] },
-          { name: "plans", label: "Plans", partitionField: "_syncedAt", clusterFields: [] as string[] },
+          {
+            name: "customers",
+            label: "Customers",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "subscriptions",
+            label: "Subscriptions",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "charges",
+            label: "Charges",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "invoices",
+            label: "Invoices",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "products",
+            label: "Products",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "plans",
+            label: "Plans",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
         ];
         setEntityMetadata(entities);
         const existingFlowStripe =

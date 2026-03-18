@@ -675,7 +675,11 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
                       </TableCell>
                       <TableCell align="right">
                         <Typography variant="body2">
-                          {(run.stats as { recordsProcessed?: number } | undefined)?.recordsProcessed?.toLocaleString() || "—"}
+                          {(
+                            run.stats as
+                              | { recordsProcessed?: number }
+                              | undefined
+                          )?.recordsProcessed?.toLocaleString() || "—"}
                         </Typography>
                       </TableCell>
                     </TableRow>
