@@ -23,6 +23,10 @@ import {
 import { getBigQueryCdcFlowStats } from "../services/bigquery-cdc.service";
 import { getEntityTableName } from "../sync/sync-orchestrator";
 import { BigQuery } from "@google-cloud/bigquery";
+import type {
+  ExternalAccountClientOptions,
+  JWTInput,
+} from "google-auth-library";
 
 const logger = loggers.inngest("flow");
 
@@ -33,16 +37,25 @@ function isSafeBigQueryIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
-function parseServiceAccountJsonForWipe(value: unknown): unknown {
+function parseServiceAccountJsonForWipe(
+  value: unknown,
+): JWTInput | ExternalAccountClientOptions | undefined {
   if (typeof value !== "string") {
-    return value;
+    if (value && typeof value === "object") {
+      return value as JWTInput | ExternalAccountClientOptions;
+    }
+    return undefined;
   }
   const trimmed = value.trim();
   if (!trimmed) {
-    return value;
+    return undefined;
   }
   try {
-    return JSON.parse(trimmed);
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object") {
+      return parsed as JWTInput | ExternalAccountClientOptions;
+    }
+    return undefined;
   } catch (error) {
     throw new Error(
       `Invalid BigQuery service_account_json on destination connection: ${
@@ -50,6 +63,37 @@ function parseServiceAccountJsonForWipe(value: unknown): unknown {
       }`,
     );
   }
+}
+
+function resolveConfiguredEntitiesForFlow(flow: {
+  entityLayouts?: Array<{ entity?: unknown; enabled?: boolean }>;
+  entityFilter?: unknown;
+}): string[] {
+  if (Array.isArray(flow.entityLayouts) && flow.entityLayouts.length > 0) {
+    return Array.from(
+      new Set(
+        flow.entityLayouts
+          .filter(layout => layout && layout.enabled !== false)
+          .map(layout => layout.entity)
+          .filter((entity): entity is string => typeof entity === "string")
+          .map(entity => entity.trim())
+          .filter(entity => entity.length > 0),
+      ),
+    );
+  }
+
+  if (Array.isArray(flow.entityFilter)) {
+    return Array.from(
+      new Set(
+        flow.entityFilter
+          .filter((entity): entity is string => typeof entity === "string")
+          .map(entity => entity.trim())
+          .filter(entity => entity.length > 0),
+      ),
+    );
+  }
+
+  return [];
 }
 
 function getExecutionLastActivity(execution: {
@@ -168,16 +212,7 @@ async function wipeBigQueryDestinationTablesForFlow(flow: any): Promise<{
   const tablePrefix = flow.tableDestination?.tableName || "";
 
   // Prefer explicitly enabled entity layouts; fall back to entityFilter.
-  const entities =
-    flow.entityLayouts?.length > 0
-      ? flow.entityLayouts
-          .filter((l: any) => l && l.enabled !== false && l.entity)
-          .map((l: any) => String(l.entity))
-      : Array.isArray(flow.entityFilter)
-        ? flow.entityFilter.map((e: string) => String(e))
-        : [];
-
-  const uniqueEntities = Array.from(new Set(entities));
+  const uniqueEntities = resolveConfiguredEntitiesForFlow(flow);
   const tableNames = uniqueEntities.map(entity =>
     getEntityTableName(tablePrefix, entity),
   );
@@ -1663,14 +1698,7 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       flow.backfillState?.active || runningFullSyncExecution,
     );
 
-    const configuredEntities =
-      flow.entityLayouts?.length > 0
-        ? flow.entityLayouts
-            .filter((l: any) => l && l.enabled !== false && l.entity)
-            .map((l: any) => String(l.entity))
-        : Array.isArray(flow.entityFilter)
-          ? flow.entityFilter.map((e: string) => String(e))
-          : [];
+    const configuredEntities = resolveConfiguredEntitiesForFlow(flow);
 
     const entityCountMap = new Map<
       string,

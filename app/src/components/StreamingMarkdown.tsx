@@ -15,10 +15,14 @@ interface StreamingMarkdownProps {
 export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = ({
   children,
 }) => {
+  // streamdown and @streamdown/code currently resolve different shiki versions
+  // in CI, which makes their exported plugin types incompatible at compile time.
+  // The runtime plugin contract is identical, so we bridge via a narrow cast.
+  const codePlugin = code as unknown as CodeHighlighterPlugin;
+
   return (
     <Streamdown
-      // streamdown and @streamdown/code currently expose mismatched shiki typings.
-      plugins={{ code: code as unknown as CodeHighlighterPlugin }}
+      plugins={{ code: codePlugin }}
       shikiTheme={["github-light", "github-dark"]}
       controls={false}
     >
