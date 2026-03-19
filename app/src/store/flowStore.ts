@@ -289,10 +289,12 @@ export interface CdcSummary {
   lastWebhookAt: string | null;
   lastMaterializedAt: string | null;
   backlogCount: number;
+  failedCount: number;
   lagSeconds: number | null;
   entityCounts: Array<{
     entity: string;
     backlogCount: number;
+    failedCount: number;
     lagSeconds: number | null;
     lastMaterializedAt: string | null;
   }>;
@@ -427,6 +429,20 @@ interface FlowStore extends FlowStoreState {
       deleteDestination?: boolean;
       clearWebhookEvents?: boolean;
     },
+  ) => Promise<boolean>;
+  recoverCdcFlow: (
+    workspaceId: string,
+    flowId: string,
+    options?: {
+      retryFailedMaterialization?: boolean;
+      resumeBackfill?: boolean;
+      entity?: string;
+    },
+  ) => Promise<boolean>;
+  retryFailedCdcMaterialization: (
+    workspaceId: string,
+    flowId: string,
+    entity?: string,
   ) => Promise<boolean>;
   fetchCdcSummary: (
     workspaceId: string,
@@ -897,6 +913,56 @@ export const useFlowStore = create<FlowStore>()(
           });
           if (!response.success) {
             throw new Error(response.error || "Failed to resync CDC flow");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      recoverCdcFlow: async (workspaceId, flowId, options) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover`, {
+            retryFailedMaterialization:
+              options?.retryFailedMaterialization !== false,
+            resumeBackfill: options?.resumeBackfill !== false,
+            entity: options?.entity,
+          });
+          if (!response.success) {
+            throw new Error(response.error || "Failed to recover CDC flow");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      retryFailedCdcMaterialization: async (workspaceId, flowId, entity) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/materialize/retry-failed`,
+            {
+              entity,
+            },
+          );
+          if (!response.success) {
+            throw new Error(
+              response.error || "Failed to retry failed CDC materialization",
+            );
           }
           await get().refresh(workspaceId);
           return true;

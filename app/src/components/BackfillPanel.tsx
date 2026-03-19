@@ -189,6 +189,8 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
     pauseCdcFlow,
     resumeCdcFlow,
     resyncCdcFlow,
+    recoverCdcFlow,
+    retryFailedCdcMaterialization,
   } = useFlowStore();
 
   const [isTriggering, setIsTriggering] = useState(false);
@@ -489,6 +491,29 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
     await pollCdcOverview();
   };
 
+  const handleCdcRecover = async () => {
+    if (!isCdcFlow) return;
+    const success = await recoverCdcFlow(workspaceId, flowId, {
+      retryFailedMaterialization: true,
+      resumeBackfill: true,
+    });
+    if (!success) {
+      setError("Failed to recover CDC flow");
+      return;
+    }
+    await pollCdcOverview();
+  };
+
+  const handleRetryFailedMaterialization = async () => {
+    if (!isCdcFlow) return;
+    const success = await retryFailedCdcMaterialization(workspaceId, flowId);
+    if (!success) {
+      setError("Failed to queue failed CDC rows for retry");
+      return;
+    }
+    await pollCdcOverview();
+  };
+
   if (isCdcFlow) {
     const summary = cdcSummary;
     return (
@@ -523,11 +548,25 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
           <Button
             size="small"
             onClick={handleCdcPauseResume}
-            disabled={!summary}
+            disabled={!summary || summary.syncState === "degraded"}
             startIcon={summary?.syncState === "paused" ? <SyncIcon /> : <CancelIcon />}
           >
             {summary?.syncState === "paused" ? "Resume" : "Pause"}
           </Button>
+          {summary?.syncState === "degraded" && (
+            <Button size="small" color="secondary" onClick={handleCdcRecover}>
+              Recover
+            </Button>
+          )}
+          {summary?.failedCount > 0 && (
+            <Button
+              size="small"
+              color="warning"
+              onClick={handleRetryFailedMaterialization}
+            >
+              Retry failed rows
+            </Button>
+          )}
           <Button size="small" color="warning" onClick={() => setResyncDialogOpen(true)}>
             Resync from scratch
           </Button>
@@ -543,6 +582,7 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
               <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
                 <Chip label={`State: ${summary.syncState.toUpperCase()}`} />
                 <Chip label={`Backlog: ${summary.backlogCount}`} />
+                <Chip label={`Failed: ${summary.failedCount}`} color="warning" />
                 <Chip
                   label={`Lag: ${summary.lagSeconds === null ? "n/a" : `${summary.lagSeconds}s`}`}
                 />
@@ -566,6 +606,7 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
                     <TableRow>
                       <TableCell>Entity</TableCell>
                       <TableCell align="right">Queued</TableCell>
+                      <TableCell align="right">Failed</TableCell>
                       <TableCell align="right">Lag</TableCell>
                     </TableRow>
                   </TableHead>
@@ -574,6 +615,7 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
                       <TableRow key={entity.entity}>
                         <TableCell>{formatEntityAsTableName(entity.entity)}</TableCell>
                         <TableCell align="right">{entity.backlogCount}</TableCell>
+                        <TableCell align="right">{entity.failedCount}</TableCell>
                         <TableCell align="right">
                           {entity.lagSeconds === null ? "n/a" : `${entity.lagSeconds}s`}
                         </TableCell>
