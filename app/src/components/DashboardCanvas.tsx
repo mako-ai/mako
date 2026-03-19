@@ -445,9 +445,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [workspaceId]);
 
   const handleLayoutChange = useCallback(
-    (layout: readonly any[]) => {
+    (layout: readonly any[], allLayouts?: Record<string, readonly any[]>) => {
       if (!activeDashboard) return;
-      for (const item of layout) {
+
+      // Persist only the canonical desktop layout.
+      // Responsive breakpoints can compact/reflow items; saving those coordinates
+      // would overwrite the original positions and prevent restoration on expand.
+      const layoutToPersist =
+        allLayouts?.lg ?? (gridWidth >= 1200 ? layout : undefined);
+      if (!layoutToPersist) return;
+
+      for (const item of layoutToPersist) {
         const widget = activeDashboard.widgets.find(w => w.id === item.i);
         if (widget) {
           const newLayout = { x: item.x, y: item.y, w: item.w, h: item.h };
@@ -462,7 +470,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         }
       }
     },
-    [activeDashboard, modifyWidget],
+    [activeDashboard, gridWidth, modifyWidget],
   );
 
   const handleCodeSave = useCallback(() => {
