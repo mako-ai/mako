@@ -126,8 +126,7 @@ export class CdcMaterializerService {
     await recordMaterializationFailure({
       flowId: params.flowId,
       entity: params.entity,
-      message,
-      code: "MATERIALIZATION_FAILED",
+      error: message,
     });
 
     await syncMachineService.applyTransition({

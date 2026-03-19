@@ -68,6 +68,8 @@ export async function performSync(
   } catch (error) {
     const errorMsg = `Sync process failed: ${error instanceof Error ? error.message : String(error)}`;
     logger?.log("error", errorMsg);
-    throw new Error(errorMsg, { cause: error });
+    const wrappedError = new Error(errorMsg);
+    (wrappedError as Error & { cause?: unknown }).cause = error;
+    throw wrappedError;
   }
 }

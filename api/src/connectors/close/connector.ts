@@ -11,7 +11,7 @@ import {
   NormalizedCdcRecord,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
-import crypto from "crypto";
+import * as crypto from "crypto";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector("close");

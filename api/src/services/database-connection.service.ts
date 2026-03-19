@@ -5,7 +5,7 @@ import * as mysql from "mysql2/promise";
 import { ConnectionPool } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
-import crypto from "crypto";
+import * as crypto from "crypto";
 import { DatabaseDriver } from "../databases/driver";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";

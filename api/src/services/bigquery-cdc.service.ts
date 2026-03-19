@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import * as crypto from "crypto";
 import { Types } from "mongoose";
 import {
   BigQueryCdcState,
@@ -32,6 +32,17 @@ type ChangeInput = {
   webhookEventId?: string;
 };
 
+const VOLATILE_BACKFILL_IDEMPOTENCY_FIELDS = new Set([
+  "_syncedAt",
+  "_mako_source_ts",
+  "_mako_ingest_seq",
+  "_mako_ingest_ts",
+  "_mako_source_kind",
+  "_mako_run_id",
+  "_mako_entity",
+  "_mako_webhook_event_id",
+]);
+
 export function isBigQueryCdcEnabledForFlow(
   flow: Pick<IFlow, "_id" | "tableDestination" | "syncEngine">,
   destinationType?: string,
@@ -49,6 +60,59 @@ function normalizePayload(
     normalized[key.replace(/\./g, "_")] = value;
   }
   return normalized;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(item => stableStringify(item)).join(",")}]`;
+  }
+  if (value instanceof Date) {
+    return JSON.stringify(value.toISOString());
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function sanitizeBackfillPayloadForIdempotency(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (
+      VOLATILE_BACKFILL_IDEMPOTENCY_FIELDS.has(key) ||
+      key.startsWith("_mako_")
+    ) {
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      sanitized[key] = value.map(item =>
+        typeof item === "object" && item !== null
+          ? sanitizeBackfillPayloadForIdempotency(item as Record<string, unknown>)
+          : item,
+      );
+      continue;
+    }
+
+    if (typeof value === "object" && value !== null) {
+      sanitized[key] = sanitizeBackfillPayloadForIdempotency(
+        value as Record<string, unknown>,
+      );
+      continue;
+    }
+
+    sanitized[key] = value;
+  }
+  return sanitized;
 }
 
 function resolveSourceTs(
@@ -73,9 +137,13 @@ function resolveSourceTs(
 
 function buildIdempotencyKey(input: ChangeInput): string {
   if (input.idempotencyKey) return input.idempotencyKey;
+  const payloadForHash =
+    input.sourceKind === "backfill"
+      ? sanitizeBackfillPayloadForIdempotency(input.payload || {})
+      : input.payload || {};
   const payloadHash = crypto
     .createHash("sha1")
-    .update(JSON.stringify(input.payload || {}))
+    .update(stableStringify(payloadForHash))
     .digest("hex");
   return [
     input.sourceKind,
@@ -631,11 +699,18 @@ export async function mapBackfillRecordsToChanges(params: {
 }): Promise<ChangeInput[]> {
   return params.records.map(record => {
     const payload = normalizePayload(record);
-    const recordId = String(payload.id || payload._id || crypto.randomUUID());
-    const sourceTs = resolveSourceTs(payload, new Date());
+    const payloadForId = sanitizeBackfillPayloadForIdempotency(payload);
+    const stableRecordHash = crypto
+      .createHash("sha1")
+      .update(stableStringify(payloadForId))
+      .digest("hex");
+    const recordId = String(
+      payload.id || payload._id || `missing-id:${stableRecordHash.slice(0, 24)}`,
+    );
+    const sourceTs = resolveSourceTs(payloadForId, new Date(0));
     const hash = crypto
       .createHash("sha1")
-      .update(JSON.stringify(payload))
+      .update(stableStringify(payloadForId))
       .digest("hex");
     return {
       entity: params.entity,
@@ -686,6 +761,89 @@ export async function forceDrainBigQueryCdcFlow(params: {
       force: true,
     });
   }
+}
+
+export async function retryFailedMaterializationForFlow(params: {
+  workspaceId: string;
+  flowId: string;
+  entity?: string;
+}) {
+  const workspaceObjectId = new Types.ObjectId(params.workspaceId);
+  const flowObjectId = new Types.ObjectId(params.flowId);
+  const match: Record<string, unknown> = {
+    workspaceId: workspaceObjectId,
+    flowId: flowObjectId,
+    materializationStatus: "failed",
+  };
+  if (params.entity) {
+    match.entity = params.entity;
+  }
+
+  const failedDocs = await BigQueryChangeEvent.find(match)
+    .select({ entity: 1, webhookEventId: 1 })
+    .lean();
+  if (failedDocs.length === 0) {
+    return { resetCount: 0, entities: [] as string[] };
+  }
+
+  const entities = Array.from(new Set(failedDocs.map(doc => doc.entity)));
+  const webhookEventIds = Array.from(
+    new Set(
+      failedDocs
+        .map(doc => doc.webhookEventId)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const resetResult = await BigQueryChangeEvent.updateMany(match, {
+    $set: {
+      materializationStatus: "pending",
+      stageStatus: "pending",
+    },
+    $unset: {
+      materializationError: "",
+      stageError: "",
+      appliedAt: "",
+      stagedAt: "",
+    },
+  });
+
+  if (webhookEventIds.length > 0) {
+    await (
+      await import("../database/workspace-schema")
+    ).WebhookEvent.updateMany(
+      {
+        workspaceId: workspaceObjectId,
+        flowId: flowObjectId,
+        eventId: { $in: webhookEventIds },
+      },
+      {
+        $set: { applyStatus: "pending", status: "pending" },
+        $unset: { applyError: "", error: "", processedAt: "" },
+      },
+    );
+  }
+
+  for (const entity of entities) {
+    await maybeEnqueueMaterialization({
+      workspaceId: workspaceObjectId,
+      flowId: flowObjectId,
+      entity,
+      force: true,
+    });
+  }
+
+  log.info("Retried failed CDC materialization rows", {
+    flowId: params.flowId,
+    entity: params.entity || null,
+    resetCount: resetResult.modifiedCount,
+    entityCount: entities.length,
+  });
+
+  return {
+    resetCount: resetResult.modifiedCount || 0,
+    entities,
+  };
 }
 
 export async function recordMaterializationFailure(params: {

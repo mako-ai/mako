@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import * as crypto from "crypto";
 import { z } from "zod";
 
 export const cdcOperationSchema = z.enum(["upsert", "delete"]);

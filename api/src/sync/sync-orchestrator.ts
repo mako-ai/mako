@@ -491,7 +491,9 @@ export async function performSyncChunk(
     logger?.log("error", errorMsg, {
       stack: error instanceof Error ? error.stack : undefined,
     });
-    throw new Error(errorMsg, { cause: error });
+    const wrappedError = new Error(errorMsg);
+    (wrappedError as Error & { cause?: unknown }).cause = error;
+    throw wrappedError;
   }
 }
 
@@ -1091,7 +1093,9 @@ export async function performSync(
     logger?.log("error", errorMsg, {
       stack: error instanceof Error ? error.stack : undefined,
     });
-    throw new Error(errorMsg, { cause: error });
+    const wrappedError = new Error(errorMsg);
+    (wrappedError as Error & { cause?: unknown }).cause = error;
+    throw wrappedError;
   }
   // Note: We don't close the connection here anymore - it stays in the unified pool
 }

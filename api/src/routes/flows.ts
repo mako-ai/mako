@@ -564,8 +564,8 @@ flowRoutes.post("/", async c => {
 // GET /api/workspaces/:workspaceId/flows/:flowId - Get flow details
 flowRoutes.get("/:flowId", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
 
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -965,8 +965,8 @@ flowRoutes.post("/:flowId/run", async c => {
 // POST /api/workspaces/:workspaceId/flows/:flowId/backfill - Trigger a full backfill
 flowRoutes.post("/:flowId/backfill", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
 
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -978,13 +978,15 @@ flowRoutes.post("/:flowId/backfill", async c => {
     }
 
     if (flow.syncEngine === "cdc") {
-      await cdcBackfillService.startBackfill(workspaceId, flowId);
+      const backfill = await cdcBackfillService.startBackfill(workspaceId, flowId);
       return c.json({
         success: true,
         message: "CDC backfill started",
         data: {
           flowId: flow._id,
           startedAt: new Date(),
+          runId: backfill.runId,
+          resumed: backfill.reusedRunId,
         },
       });
     }
@@ -1024,8 +1026,8 @@ flowRoutes.post("/:flowId/backfill", async c => {
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-engine
 flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
     const authorizationError = await assertOwnerOrAdmin(c, workspaceId);
     if (authorizationError) return authorizationError;
 
@@ -1087,17 +1089,89 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/backfill/start
 flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
     const authorizationError = await assertOwnerOrAdmin(
       c as AuthenticatedContext,
       workspaceId,
     );
     if (authorizationError) return authorizationError;
-    await cdcBackfillService.startBackfill(workspaceId, flowId);
+    const backfill = await cdcBackfillService.startBackfill(workspaceId, flowId);
     return c.json({
       success: true,
       message: "CDC backfill started",
+      data: {
+        runId: backfill.runId,
+        resumed: backfill.reusedRunId,
+      },
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/recover
+flowRoutes.post("/:flowId/sync-cdc/recover", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const body = await c.req.json().catch(() => ({}));
+    const result = await cdcBackfillService.recoverFlow({
+      workspaceId,
+      flowId,
+      retryFailedMaterialization: body.retryFailedMaterialization !== false,
+      resumeBackfill: body.resumeBackfill !== false,
+      entity: typeof body.entity === "string" ? body.entity : undefined,
+    });
+    return c.json({
+      success: true,
+      message: "CDC flow recovered",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/materialize/retry-failed
+flowRoutes.post("/:flowId/sync-cdc/materialize/retry-failed", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const body = await c.req.json().catch(() => ({}));
+    const result = await cdcBackfillService.retryFailedMaterialization({
+      workspaceId,
+      flowId,
+      entity: typeof body.entity === "string" ? body.entity : undefined,
+    });
+    return c.json({
+      success: true,
+      message: "Queued failed CDC rows for materialization retry",
+      data: result,
     });
   } catch (error) {
     return c.json(
@@ -1113,8 +1187,8 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/resync
 flowRoutes.post("/:flowId/sync-cdc/resync", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
     const authorizationError = await assertOwnerOrAdmin(
       c as AuthenticatedContext,
       workspaceId,
@@ -1145,8 +1219,8 @@ flowRoutes.post("/:flowId/sync-cdc/resync", async c => {
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/pause
 flowRoutes.post("/:flowId/sync-cdc/pause", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
     const authorizationError = await assertOwnerOrAdmin(
       c as AuthenticatedContext,
       workspaceId,
@@ -1172,8 +1246,8 @@ flowRoutes.post("/:flowId/sync-cdc/pause", async c => {
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/resume
 flowRoutes.post("/:flowId/sync-cdc/resume", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
     const authorizationError = await assertOwnerOrAdmin(
       c as AuthenticatedContext,
       workspaceId,
@@ -1199,8 +1273,8 @@ flowRoutes.post("/:flowId/sync-cdc/resume", async c => {
 // GET /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/summary
 flowRoutes.get("/:flowId/sync-cdc/summary", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
     const summary = await cdcObservabilityService.getSummary(workspaceId, flowId);
     return c.json({ success: true, data: summary });
   } catch (error) {
@@ -1217,8 +1291,8 @@ flowRoutes.get("/:flowId/sync-cdc/summary", async c => {
 // GET /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/diagnostics
 flowRoutes.get("/:flowId/sync-cdc/diagnostics", async c => {
   try {
-    const workspaceId = c.req.param("workspaceId");
-    const flowId = c.req.param("flowId");
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
     const diagnostics = await cdcObservabilityService.getDiagnostics(
       workspaceId,
       flowId,

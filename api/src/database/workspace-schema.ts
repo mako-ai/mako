@@ -618,6 +618,7 @@ export interface IFlow extends Document {
   batchSize?: number; // Batch size for processing (default: 2000)
   backfillState?: {
     active: boolean;
+    runId?: string;
     startedAt?: Date;
     completedAt?: Date;
   };
@@ -773,6 +774,17 @@ export interface ICdcEntityLock extends Document {
   heartbeatAt: Date;
   fencingToken: number;
   acquiredAt: Date;
+}
+
+export interface ICdcBackfillCheckpoint extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  flowId: Types.ObjectId;
+  runId: string;
+  entity: string;
+  fetchState: Record<string, unknown>;
+  updatedAt: Date;
+  completedAt?: Date;
 }
 
 /**
@@ -1713,6 +1725,7 @@ const FlowSchema = new Schema<IFlow>(
     },
     backfillState: {
       active: { type: Boolean, default: false },
+      runId: String,
       startedAt: Date,
       completedAt: Date,
     },
@@ -2029,6 +2042,32 @@ const CdcEntityLockSchema = new Schema<ICdcEntityLock>(
 CdcEntityLockSchema.index({ flowId: 1, entity: 1 }, { unique: true });
 CdcEntityLockSchema.index({ workspaceId: 1, flowId: 1 });
 
+const CdcBackfillCheckpointSchema = new Schema<ICdcBackfillCheckpoint>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
+    runId: { type: String, required: true },
+    entity: { type: String, required: true },
+    fetchState: { type: Schema.Types.Mixed, required: true, default: {} },
+    updatedAt: { type: Date, required: true, default: Date.now },
+    completedAt: Date,
+  },
+  {
+    collection: "cdc_backfill_checkpoints",
+    timestamps: false,
+  },
+);
+
+CdcBackfillCheckpointSchema.index(
+  { flowId: 1, runId: 1, entity: 1 },
+  { unique: true },
+);
+CdcBackfillCheckpointSchema.index({ workspaceId: 1, flowId: 1, runId: 1 });
+
 /**
  * QueryExecution Schema
  * Tracks all query executions for usage analytics and billing
@@ -2156,6 +2195,10 @@ export const CdcStateTransition = mongoose.model<ICdcStateTransition>(
 export const CdcEntityLock = mongoose.model<ICdcEntityLock>(
   "CdcEntityLock",
   CdcEntityLockSchema,
+);
+export const CdcBackfillCheckpoint = mongoose.model<ICdcBackfillCheckpoint>(
+  "CdcBackfillCheckpoint",
+  CdcBackfillCheckpointSchema,
 );
 // Generic CDC aliases (phase-1 storage remains backed by existing collections)
 export const CdcChangeEvent = BigQueryChangeEvent;
