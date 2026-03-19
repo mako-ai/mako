@@ -473,7 +473,6 @@ export const flowFunction = inngest.createFunction(
       if (entity && totalProcessed !== undefined) {
         updateDoc.$max = {
           [`stats.entityStats.${entity}`]: totalProcessed,
-          "stats.recordsProcessed": totalProcessed,
         };
         (updateDoc.$set as Record<string, unknown>)[
           `stats.entityStatus.${entity}`

@@ -27,6 +27,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
     name: "Process Webhook Event",
     concurrency: {
       limit: 5, // Keep low to avoid BigQuery DML concurrency limits
+      key: "event.data.flowId", // Avoid global throttling across all flows
     },
   },
   { event: "webhook/event.process" },
