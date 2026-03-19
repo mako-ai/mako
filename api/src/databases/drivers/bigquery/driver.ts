@@ -647,13 +647,13 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
    * Add missing columns to an existing table via ALTER TABLE ADD COLUMN.
    * Compares row keys against INFORMATION_SCHEMA and adds any that don't exist.
    */
-  private async addMissingColumns(
+  async addMissingColumns(
     database: IDatabaseConnection,
     tableName: string,
     dataset: string,
     rows: Record<string, unknown>[],
   ): Promise<void> {
-    const existingColumns = await this.getCachedTableColumnTypes(
+    const existingColumns = await this.getTableColumnTypes(
       database,
       tableName,
       dataset,
@@ -664,47 +664,46 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       Object.keys(row).forEach(k => allKeys.add(k));
     }
 
-    const projectId = this.getProjectId(database);
-    const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
-    let cacheChanged = false;
-
+    const missing: Array<{ key: string; colType: string }> = [];
     for (const key of allKeys) {
-      if (key.includes(".")) {
-        this.logger.warn(
-          "Skipping column with dot in name — flatten before writing",
-          { table: tableName, column: key },
-        );
-        continue;
-      }
+      if (key.includes(".")) continue;
       if (!existingColumns.has(key.toLowerCase())) {
         const sampleValue = rows.find(
           r => r[key] !== null && r[key] !== undefined,
         )?.[key];
-        const colType = inferBigQueryType(sampleValue);
-        const query = `ALTER TABLE ${fullTableName} ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType}`;
-        const result = await this.executeQuery(database, query);
-        if (result.success) {
-          existingColumns.set(key.toLowerCase(), colType);
-          cacheChanged = true;
-          this.logger.info("Added missing column to BigQuery table", {
-            table: tableName,
-            column: key,
-            type: colType,
-          });
-        } else {
-          this.logger.warn("Failed to add column", {
-            table: tableName,
-            column: key,
-            error: result.error,
-          });
-        }
+        missing.push({ key, colType: inferBigQueryType(sampleValue) });
       }
     }
 
-    if (cacheChanged) {
-      const cacheKey = this.getTableCacheKey(database, dataset, tableName);
-      this.tableColumnTypeCache.set(cacheKey, existingColumns);
+    if (missing.length === 0) return;
+
+    const projectId = this.getProjectId(database);
+    const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
+
+    for (const { key, colType } of missing) {
+      const query = `ALTER TABLE ${fullTableName} ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType}`;
+      const result = await this.executeQuery(database, query);
+      if (result.success) {
+        existingColumns.set(key.toLowerCase(), colType);
+      } else {
+        this.logger.warn("Failed to add column", {
+          table: tableName,
+          column: key,
+          error: result.error,
+        });
+      }
     }
+
+    if (missing.length > 0) {
+      this.logger.info("Schema evolution: added columns", {
+        table: tableName,
+        columns: missing.map(m => m.key),
+        count: missing.length,
+      });
+    }
+
+    const cacheKey = this.getTableCacheKey(database, dataset, tableName);
+    this.tableColumnTypeCache.set(cacheKey, existingColumns);
   }
 
   private extractRequiredNullField(error?: string): string | undefined {
@@ -757,7 +756,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     await this.addMissingColumns(database, tableName, dataset, rows);
 
     // Get column types from INFORMATION_SCHEMA (after adding missing columns)
-    const columnTypes = await this.getCachedTableColumnTypes(
+    let columnTypes = await this.getCachedTableColumnTypes(
       database,
       tableName,
       dataset,
@@ -814,23 +813,34 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
         retryCount < 3 &&
         typeof result.error === "string"
       ) {
-        const missingColumnError = result.error.includes(
-          "is not present in table",
-        );
+        const missingColumnError =
+          result.error.includes("is not present in table") ||
+          result.error.includes("Unrecognized name:");
         const requiredNullColumn = this.extractRequiredNullField(result.error);
         if (!missingColumnError && !requiredNullColumn) {
           break;
         }
 
         if (missingColumnError) {
-          // BigQuery schema propagation can lag right after ALTER TABLE.
-          // Re-add missing columns from this chunk and retry the insert.
           await this.addMissingColumns(database, tableName, dataset, chunk);
+          columnTypes = await this.getCachedTableColumnTypes(
+            database,
+            tableName,
+            dataset,
+            true,
+          );
+          const retryColumns = Array.from(allColumns);
+          const retryColumnList = retryColumns.map(escapeIdentifier).join(", ");
+          query = this.buildInsertQuery(
+            fullTableName,
+            retryColumnList,
+            retryColumns,
+            chunk,
+            columnTypes,
+          );
         }
 
         if (requiredNullColumn) {
-          // Existing table can have required columns from earlier inference.
-          // Relax to nullable so webhook/CDC rows with nulls do not fail writes.
           const relax = await this.relaxRequiredColumn(
             database,
             tableName,
@@ -950,7 +960,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     await this.addMissingColumns(database, tableName, dataset, rows);
 
     // Get column types from INFORMATION_SCHEMA (after adding missing columns)
-    const columnTypes = await this.getCachedTableColumnTypes(
+    let columnTypes = await this.getCachedTableColumnTypes(
       database,
       tableName,
       dataset,
@@ -961,7 +971,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     for (const row of rows) {
       Object.keys(row).forEach(k => allColumns.add(k));
     }
-    const columns = Array.from(allColumns);
+    let columns = Array.from(allColumns);
 
     // BigQuery has a 1MB (1,024,000 chars) query limit
     const MAX_QUERY_SIZE = 900_000; // Leave some buffer below 1MB
@@ -1010,9 +1020,9 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
         retryCount < 3 &&
         typeof result.error === "string"
       ) {
-        const missingColumnError = result.error.includes(
-          "is not present in table",
-        );
+        const missingColumnError =
+          result.error.includes("is not present in table") ||
+          result.error.includes("Unrecognized name:");
         const requiredNullColumn = this.extractRequiredNullField(result.error);
         if (!missingColumnError && !requiredNullColumn) {
           break;
@@ -1020,6 +1030,21 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
         if (missingColumnError) {
           await this.addMissingColumns(database, tableName, dataset, chunk);
+          columnTypes = await this.getCachedTableColumnTypes(
+            database,
+            tableName,
+            dataset,
+            true,
+          );
+          columns = Array.from(allColumns);
+          query = this.buildMergeQuery(
+            fullTableName,
+            columns,
+            chunk,
+            keyColumns,
+            strategy,
+            columnTypes,
+          );
         }
 
         if (requiredNullColumn) {

@@ -33,6 +33,7 @@ import {
 } from "../../services/bigquery-cdc.service";
 import { cdcBackfillCheckpointService } from "../../sync-cdc/backfill-checkpoint.service";
 import { syncMachineService } from "../../sync-cdc/state/sync-machine.service";
+import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -416,7 +417,7 @@ export const flowFunction = inngest.createFunction(
           destinationDatabaseId: new Types.ObjectId(flow.destinationDatabaseId),
           destinationDatabaseName: flow.destinationDatabaseName,
           syncMode: flow.syncMode === "incremental" ? "incremental" : "full",
-          entityFilter: flow.entityFilter,
+          entityFilter: resolveConfiguredEntities(flow).entities,
           cronExpression: flow.schedule?.cron || "N/A",
           timezone: flow.schedule?.timezone || "UTC",
         },
@@ -514,8 +515,14 @@ export const flowFunction = inngest.createFunction(
         return jitter;
       });
 
+      // Use a unique step ID when backfilling to prevent Inngest from replaying
+      // stale flow data cached by earlier (possibly pre-CDC) runs.
+      const fetchStepSuffix = backfillRunId
+        ? `:${backfillRunId.slice(-12)}`
+        : "";
+
       // Get flow details
-      const flow = (await step.run("fetch-flow", async () => {
+      const flow = (await step.run(`fetch-flow${fetchStepSuffix}`, async () => {
         const found = await Flow.findById(flowId);
         if (!found) {
           throw new Error(`Flow ${flowId} not found`);
@@ -525,7 +532,7 @@ export const flowFunction = inngest.createFunction(
       flowRef = flow; // Store for error handler
 
       const destinationType = (await step.run(
-        "detect-destination-type",
+        `detect-destination-type${fetchStepSuffix}`,
         async () => {
           if (!flow.tableDestination?.connectionId) return undefined;
           const destination = await DatabaseConnection.findById(
@@ -671,7 +678,7 @@ export const flowFunction = inngest.createFunction(
             flow.databaseSource?.connectionId?.toString(),
           destinationDatabaseId: flow.destinationDatabaseId.toString(),
           tableDestination: flow.tableDestination?.tableName,
-          entityFilter: flow.entityFilter,
+          entityFilter: resolveConfiguredEntities(flow).entities,
         });
         return true;
       });
@@ -1142,10 +1149,12 @@ export const flowFunction = inngest.createFunction(
             const availableEntities = connector
               .getAvailableEntities()
               .filter(e => typeof e === "string" && e.trim().length > 0);
+            const { entities: configuredEntities, hasExplicitSelection } =
+              resolveConfiguredEntities(flow);
 
-            if (flow.entityFilter && flow.entityFilter.length > 0) {
+            if (hasExplicitSelection) {
               // Validate requested entities
-              const invalidEntities = flow.entityFilter.filter(
+              const invalidEntities = configuredEntities.filter(
                 e => !availableEntities.includes(e),
               );
               if (invalidEntities.length > 0) {
@@ -1153,13 +1162,9 @@ export const flowFunction = inngest.createFunction(
                   `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
                 );
               }
-              // Also filter requested list against non-empty names
-              return flow.entityFilter.filter(
-                e => typeof e === "string" && e.trim().length > 0,
-              );
-            } else {
-              return availableEntities;
+              return configuredEntities;
             }
+            return availableEntities;
           },
         );
 
@@ -1198,30 +1203,36 @@ export const flowFunction = inngest.createFunction(
         for (const entity of entitiesToSync) {
           const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
           if (checkpointEnabled && checkpointCompletedEntities.has(entity)) {
-            logger.info("Skipping entity already completed in checkpointed run", {
-              flowId,
-              entity,
-              runId: cdcBackfillRunId,
-            });
+            logger.info(
+              "Skipping entity already completed in checkpointed run",
+              {
+                flowId,
+                entity,
+                runId: cdcBackfillRunId,
+              },
+            );
             entityStatsMap[entity] = Math.max(entityStatsMap[entity] || 0, 1);
             if (executionId) {
-              await step.run(`mark-entity-skipped-${safeEntityStepId}`, async () => {
-                const db = Flow.db;
-                const collection = db.collection("flow_executions");
-                await collection.updateOne(
-                  { _id: new Types.ObjectId(executionId) },
-                  {
-                    $set: {
-                      lastHeartbeat: new Date(),
-                      "stats.currentEntity": entity,
-                      [`stats.entityStatus.${entity}`]: "completed",
-                    },
-                    $addToSet: {
-                      "stats.syncedEntities": entity,
-                    },
-                  } as any,
-                );
-              });
+              await step.run(
+                `mark-entity-skipped-${safeEntityStepId}`,
+                async () => {
+                  const db = Flow.db;
+                  const collection = db.collection("flow_executions");
+                  await collection.updateOne(
+                    { _id: new Types.ObjectId(executionId) },
+                    {
+                      $set: {
+                        lastHeartbeat: new Date(),
+                        "stats.currentEntity": entity,
+                        [`stats.entityStatus.${entity}`]: "completed",
+                      },
+                      $addToSet: {
+                        "stats.syncedEntities": entity,
+                      },
+                    } as any,
+                  );
+                },
+              );
             }
             continue;
           }
@@ -1377,6 +1388,7 @@ export const flowFunction = inngest.createFunction(
                   destinationDatabaseName: flow.destinationDatabaseName,
                   flowId: flowId.toString(),
                   workspaceId: flow.workspaceId.toString(),
+                  syncEngine: (flow as any).syncEngine,
                   backfillRunId: backfill
                     ? cdcBackfillRunId || executionId
                     : undefined,
@@ -1552,16 +1564,43 @@ export const flowFunction = inngest.createFunction(
             const connector =
               await syncConnectorRegistry.getConnector(dataSource);
             if (connector) {
-              syncedEntities =
-                flow.entityFilter && flow.entityFilter.length > 0
-                  ? flow.entityFilter
-                  : connector.getAvailableEntities();
+              const availableEntities = connector
+                .getAvailableEntities()
+                .filter(e => typeof e === "string" && e.trim().length > 0);
+              const { entities: configuredEntities, hasExplicitSelection } =
+                resolveConfiguredEntities(flow);
+
+              if (hasExplicitSelection) {
+                const invalidEntities = configuredEntities.filter(
+                  e => !availableEntities.includes(e),
+                );
+                if (invalidEntities.length > 0) {
+                  throw new Error(
+                    `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
+                  );
+                }
+              }
+
+              syncedEntities = hasExplicitSelection
+                ? configuredEntities
+                : availableEntities;
             }
           }
           logger.info("Starting non-chunked sync operation", {
             flowId,
             syncMode: flow.syncMode,
+            entitiesToSync: syncedEntities,
           });
+
+          if (syncedEntities.length === 0) {
+            logger.info(
+              "No enabled entities selected; skipping sync execution",
+              {
+                flowId,
+              },
+            );
+            return { success: true, skipped: true };
+          }
 
           try {
             // Create a sync logger that wraps Inngest's logger
@@ -1600,7 +1639,7 @@ export const flowFunction = inngest.createFunction(
               dataSourceId.toString(),
               flow.destinationDatabaseId.toString(),
               flow.destinationDatabaseName,
-              flow.entityFilter,
+              syncedEntities,
               flow.syncMode === "incremental",
               syncLogger,
               step, // Pass Inngest step for serverless-friendly retries

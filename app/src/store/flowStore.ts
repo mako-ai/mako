@@ -288,13 +288,17 @@ export interface CdcSummary {
   } | null;
   lastWebhookAt: string | null;
   lastMaterializedAt: string | null;
+  appliedCount: number;
   backlogCount: number;
   failedCount: number;
+  droppedCount: number;
   lagSeconds: number | null;
   entityCounts: Array<{
     entity: string;
+    appliedCount: number;
     backlogCount: number;
     failedCount: number;
+    droppedCount: number;
     lagSeconds: number | null;
     lastMaterializedAt: string | null;
   }>;
@@ -324,7 +328,7 @@ export interface CdcDiagnostics {
     sourceTs: string;
     ingestSeq: number;
     source: "webhook" | "backfill";
-    materializationStatus: "pending" | "applied" | "failed";
+    materializationStatus: "pending" | "applied" | "failed" | "dropped";
   }>;
 }
 
@@ -850,7 +854,9 @@ export const useFlowStore = create<FlowStore>()(
           const response = await apiClient.post<{
             success: boolean;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`);
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`,
+          );
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC backfill");
           }

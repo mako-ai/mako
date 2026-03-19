@@ -124,20 +124,31 @@ export function FlowEditor({
               onEdit={handleEditClick}
             />
           )}
-          {currentFlowId && isWebhookFlow && currentWorkspace && (
-            isCdcFlow ? (
+          {currentFlowId &&
+            isWebhookFlow &&
+            currentWorkspace &&
+            (isCdcFlow ? (
               <BackfillPanel
                 workspaceId={currentWorkspace.id}
                 flowId={currentFlowId}
+                onEdit={handleEditClick}
               />
             ) : (
               <Box
-                sx={{ height: "100%", display: "flex", flexDirection: "column" }}
+                sx={{
+                  height: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
               >
                 <Tabs
                   value={webhookTab}
                   onChange={(_, v) => setWebhookTab(v)}
-                  sx={{ borderBottom: 1, borderColor: "divider", minHeight: 36 }}
+                  sx={{
+                    borderBottom: 1,
+                    borderColor: "divider",
+                    minHeight: 36,
+                  }}
                 >
                   <Tab label="Webhook Events" sx={{ minHeight: 36, py: 0.5 }} />
                   <Tab label="Backfill" sx={{ minHeight: 36, py: 0.5 }} />
@@ -158,8 +169,7 @@ export function FlowEditor({
                   )}
                 </Box>
               </Box>
-            )
-          )}
+            ))}
         </>
       )}
     </Box>

@@ -14,6 +14,7 @@ import { loggers } from "../logging";
 import { createDestinationWriter } from "./destination-writer.service";
 import { inngest } from "../inngest/client";
 import { getEntityTableName } from "../sync/sync-orchestrator";
+import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 
 const log = loggers.sync("bigquery-cdc");
 
@@ -76,7 +77,10 @@ function stableStringify(value: unknown): string {
     const entries = Object.entries(value as Record<string, unknown>)
       .filter(([, entryValue]) => entryValue !== undefined)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`);
+      .map(
+        ([key, entryValue]) =>
+          `${JSON.stringify(key)}:${stableStringify(entryValue)}`,
+      );
     return `{${entries.join(",")}}`;
   }
   return JSON.stringify(value);
@@ -97,7 +101,9 @@ export function sanitizeBackfillPayloadForIdempotency(
     if (Array.isArray(value)) {
       sanitized[key] = value.map(item =>
         typeof item === "object" && item !== null
-          ? sanitizeBackfillPayloadForIdempotency(item as Record<string, unknown>)
+          ? sanitizeBackfillPayloadForIdempotency(
+              item as Record<string, unknown>,
+            )
           : item,
       );
       continue;
@@ -244,6 +250,78 @@ async function maybeEnqueueMaterialization(params: {
   });
 }
 
+function toWriteErrors(raw: unknown): any[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (raw instanceof Map) return Array.from(raw.values());
+  if (typeof raw === "object") {
+    return Object.values(raw as Record<string, unknown>);
+  }
+  return [];
+}
+
+function isDuplicateKeyErrorLike(error: unknown): boolean {
+  if (!error) return false;
+  if (typeof error === "string") {
+    return /E11000 duplicate key/i.test(error);
+  }
+  if (typeof error !== "object") return false;
+
+  const obj = error as Record<string, unknown>;
+  const code = obj.code;
+  if (typeof code === "number" && code === 11000) return true;
+
+  const messageCandidates = [
+    obj.message,
+    obj.errmsg,
+    (obj.err as Record<string, unknown> | undefined)?.message,
+    (obj.err as Record<string, unknown> | undefined)?.errmsg,
+  ].filter((value): value is string => typeof value === "string");
+
+  return messageCandidates.some(message =>
+    /E11000 duplicate key/i.test(message),
+  );
+}
+
+function extractDuplicateErrorInfo(error: unknown): {
+  duplicateCount: number;
+  writeErrorCount: number;
+  duplicateOnly: boolean;
+} {
+  const err = error as Record<string, unknown> | undefined;
+  const writeErrors = toWriteErrors(
+    err?.writeErrors ||
+      (err?.result as Record<string, unknown> | undefined)?.writeErrors ||
+      (
+        (err?.result as Record<string, unknown> | undefined)?.result as
+          | Record<string, unknown>
+          | undefined
+      )?.writeErrors ||
+      (err?.errorResponse as Record<string, unknown> | undefined)
+        ?.writeErrors ||
+      (err?.cause as Record<string, unknown> | undefined)?.writeErrors,
+  );
+
+  if (writeErrors.length > 0) {
+    const duplicateCount = writeErrors.filter(isDuplicateKeyErrorLike).length;
+    return {
+      duplicateCount,
+      writeErrorCount: writeErrors.length,
+      duplicateOnly: duplicateCount === writeErrors.length,
+    };
+  }
+
+  const topLevelDuplicate =
+    isDuplicateKeyErrorLike(error) ||
+    isDuplicateKeyErrorLike((err?.cause as unknown) || undefined);
+
+  return {
+    duplicateCount: topLevelDuplicate ? 1 : 0,
+    writeErrorCount: topLevelDuplicate ? 1 : 0,
+    duplicateOnly: topLevelDuplicate,
+  };
+}
+
 export async function appendBigQueryChangeEvents(params: {
   workspaceId: Types.ObjectId;
   flowId: Types.ObjectId;
@@ -310,11 +388,21 @@ export async function appendBigQueryChangeEvents(params: {
     });
     inserted = result.length;
   } catch (error: any) {
-    const writeErrors = error?.writeErrors || [];
-    deduped = writeErrors.filter((e: any) => e?.code === 11000).length;
-    inserted = docs.length - deduped;
-    if (deduped !== writeErrors.length) {
+    const duplicateInfo = extractDuplicateErrorInfo(error);
+    deduped = duplicateInfo.duplicateCount;
+    inserted = Math.max(docs.length - deduped, 0);
+
+    if (!duplicateInfo.duplicateOnly) {
       throw error;
+    }
+
+    if (deduped > 0) {
+      log.warn("Deduped CDC change events due to duplicate idempotency keys", {
+        flowId: String(params.flowId),
+        workspaceId: String(params.workspaceId),
+        deduped,
+        attempted: docs.length,
+      });
     }
   }
 
@@ -451,6 +539,11 @@ export async function materializeBigQueryEntity(params: {
     return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
   }
 
+  const { entities: configuredEntities, hasExplicitSelection } =
+    resolveConfiguredEntities(flow);
+  const isEntityEnabled =
+    !hasExplicitSelection || configuredEntities.includes(params.entity);
+
   const pending = await BigQueryChangeEvent.find({
     flowId: new Types.ObjectId(params.flowId),
     entity: params.entity,
@@ -462,6 +555,84 @@ export async function materializeBigQueryEntity(params: {
 
   if (pending.length === 0) {
     return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
+  }
+
+  if (!isEntityEnabled) {
+    await BigQueryChangeEvent.updateMany(
+      { _id: { $in: pending.map(event => event._id) } },
+      {
+        $set: {
+          materializationStatus: "dropped",
+          appliedAt: new Date(),
+          materializationError: {
+            code: "ENTITY_DISABLED",
+            message: `Entity ${params.entity} is disabled or not selected in flow configuration`,
+          },
+        },
+        $inc: { materializationAttemptCount: 1 },
+      },
+    );
+
+    const webhookEventIds = pending
+      .map(event => event.webhookEventId)
+      .filter((id): id is string => Boolean(id));
+    if (webhookEventIds.length > 0) {
+      await (
+        await import("../database/workspace-schema")
+      ).WebhookEvent.updateMany(
+        {
+          flowId: new Types.ObjectId(params.flowId),
+          eventId: { $in: webhookEventIds },
+        },
+        {
+          $set: {
+            applyStatus: "applied",
+            appliedAt: new Date(),
+            status: "completed",
+            applyError: {
+              code: "ENTITY_DISABLED",
+              message: `Entity ${params.entity} is disabled or not selected in flow configuration`,
+            },
+          },
+        },
+      );
+    }
+
+    const lastMaterializedSeq = Number(
+      pending[pending.length - 1]?.ingestSeq || 0,
+    );
+    const backlogCount = await BigQueryChangeEvent.countDocuments({
+      flowId: new Types.ObjectId(params.flowId),
+      entity: params.entity,
+      materializationStatus: "pending",
+    });
+    await BigQueryCdcState.updateOne(
+      { flowId: new Types.ObjectId(params.flowId), entity: params.entity },
+      {
+        $set: {
+          workspaceId: new Types.ObjectId(params.workspaceId),
+          flowId: new Types.ObjectId(params.flowId),
+          entity: params.entity,
+          lastMaterializedSeq,
+          lastMaterializedAt: new Date(),
+          backlogCount,
+        },
+      },
+      { upsert: true },
+    );
+
+    log.warn("Discarded CDC events for disabled/unselected entity", {
+      flowId: params.flowId,
+      entity: params.entity,
+      discarded: pending.length,
+      backlogCount,
+    });
+
+    return {
+      staged: pending.length,
+      applied: 0,
+      lastMaterializedSeq,
+    };
   }
 
   await stageChangeEventsToBigQuery({
@@ -720,7 +891,9 @@ export async function mapBackfillRecordsToChanges(params: {
       .update(stableStringify(payloadForId))
       .digest("hex");
     const recordId = String(
-      payload.id || payload._id || `missing-id:${stableRecordHash.slice(0, 24)}`,
+      payload.id ||
+        payload._id ||
+        `missing-id:${stableRecordHash.slice(0, 24)}`,
     );
     const sourceTs = resolveSourceTs(payloadForId, new Date(0));
     const hash = crypto
@@ -776,6 +949,112 @@ export async function forceDrainBigQueryCdcFlow(params: {
       force: true,
     });
   }
+}
+
+export async function sweepStaleBigQueryCdcPending(params?: {
+  staleSeconds?: number;
+  maxEntities?: number;
+}) {
+  const staleSeconds = Math.max(params?.staleSeconds || 180, 30);
+  const maxEntities = Math.max(params?.maxEntities || 25, 1);
+  const staleThreshold = new Date(Date.now() - staleSeconds * 1000);
+
+  // Pull candidates that haven't been enqueued recently.
+  const candidates = await BigQueryCdcState.find({
+    $or: [
+      { lastEnqueuedAt: { $exists: false } },
+      { lastEnqueuedAt: null },
+      { lastEnqueuedAt: { $lt: staleThreshold } },
+    ],
+  })
+    .sort({ lastEnqueuedAt: 1 })
+    .limit(maxEntities * 5)
+    .lean();
+
+  if (candidates.length === 0) {
+    return {
+      staleSeconds,
+      scannedEntities: 0,
+      reenqueuedEntities: 0,
+      details: [] as Array<{
+        flowId: string;
+        entity: string;
+        pendingCount: number;
+      }>,
+    };
+  }
+
+  const flowIds = Array.from(
+    new Set(candidates.map(state => String(state.flowId))),
+  ).map(id => new Types.ObjectId(id));
+
+  const flows = await Flow.find({ _id: { $in: flowIds } })
+    .select({ _id: 1, syncEngine: 1, tableDestination: 1 })
+    .lean();
+  const flowMap = new Map(flows.map(flow => [String(flow._id), flow]));
+
+  let scannedEntities = 0;
+  let reenqueuedEntities = 0;
+  const details: Array<{
+    flowId: string;
+    entity: string;
+    pendingCount: number;
+  }> = [];
+
+  for (const state of candidates) {
+    if (reenqueuedEntities >= maxEntities) break;
+    scannedEntities += 1;
+
+    const flowId = String(state.flowId);
+    const flow = flowMap.get(flowId);
+    if (!flow || flow.syncEngine !== "cdc") continue;
+    if (!flow.tableDestination?.connectionId) continue;
+
+    const pendingCount = await BigQueryChangeEvent.countDocuments({
+      flowId: state.flowId,
+      entity: state.entity,
+      materializationStatus: "pending",
+    });
+
+    // Keep state backlog in sync even when no requeue is needed.
+    if ((state as any).backlogCount !== pendingCount) {
+      await BigQueryCdcState.updateOne(
+        { _id: state._id },
+        { $set: { backlogCount: pendingCount } },
+      );
+    }
+
+    if (pendingCount === 0) continue;
+
+    await maybeEnqueueMaterialization({
+      workspaceId: state.workspaceId,
+      flowId: state.flowId,
+      entity: state.entity,
+      force: true,
+    });
+    reenqueuedEntities += 1;
+    details.push({
+      flowId,
+      entity: state.entity,
+      pendingCount,
+    });
+  }
+
+  if (reenqueuedEntities > 0) {
+    log.warn("Auto-reenqueued stale BigQuery CDC entities", {
+      staleSeconds,
+      scannedEntities,
+      reenqueuedEntities,
+      details,
+    });
+  }
+
+  return {
+    staleSeconds,
+    scannedEntities,
+    reenqueuedEntities,
+    details,
+  };
 }
 
 export async function retryFailedMaterializationForFlow(params: {

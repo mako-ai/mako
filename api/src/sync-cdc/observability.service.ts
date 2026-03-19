@@ -7,24 +7,8 @@ import {
   SyncState,
   WebhookEvent,
 } from "../database/workspace-schema";
-import {
-  CdcSyncDiagnostics,
-  CdcSyncSummary,
-} from "./contracts/sync-summary";
-
-function getEnabledEntities(flow: any, stateEntities: string[]): string[] {
-  if (Array.isArray(flow?.entityLayouts) && flow.entityLayouts.length > 0) {
-    return flow.entityLayouts
-      .filter((layout: any) => layout.enabled !== false)
-      .map((layout: any) => layout.entity);
-  }
-
-  if (Array.isArray(flow?.entityFilter) && flow.entityFilter.length > 0) {
-    return flow.entityFilter;
-  }
-
-  return stateEntities;
-}
+import { CdcSyncDiagnostics, CdcSyncSummary } from "./contracts/sync-summary";
+import { resolveConfiguredEntities } from "./entity-selection";
 
 function toLagSeconds(value: Date | null): number | null {
   if (!value) return null;
@@ -32,7 +16,10 @@ function toLagSeconds(value: Date | null): number | null {
 }
 
 export class CdcObservabilityService {
-  async getSummary(workspaceId: string, flowId: string): Promise<CdcSyncSummary> {
+  async getSummary(
+    workspaceId: string,
+    flowId: string,
+  ): Promise<CdcSyncSummary> {
     const workspaceObjectId = new Types.ObjectId(workspaceId);
     const flowObjectId = new Types.ObjectId(flowId);
 
@@ -66,10 +53,27 @@ export class CdcObservabilityService {
     ]);
 
     const stateEntities = states.map(state => state.entity);
-    const enabledEntities = getEnabledEntities(flow, stateEntities);
+    const { entities: configuredEntities, hasExplicitSelection } =
+      resolveConfiguredEntities(flow);
+    const enabledEntities = hasExplicitSelection
+      ? configuredEntities
+      : stateEntities;
 
-    const [backlogCount, failedCount, perEntityBacklog, perEntityFailed] =
-      await Promise.all([
+    const [
+      appliedCount,
+      backlogCount,
+      failedCount,
+      droppedCount,
+      perEntityApplied,
+      perEntityBacklog,
+      perEntityFailed,
+      perEntityDropped,
+    ] = await Promise.all([
+      CdcChangeEvent.countDocuments({
+        workspaceId: workspaceObjectId,
+        flowId: flowObjectId,
+        materializationStatus: "applied",
+      }),
       CdcChangeEvent.countDocuments({
         workspaceId: workspaceObjectId,
         flowId: flowObjectId,
@@ -80,6 +84,26 @@ export class CdcObservabilityService {
         flowId: flowObjectId,
         materializationStatus: "failed",
       }),
+      CdcChangeEvent.countDocuments({
+        workspaceId: workspaceObjectId,
+        flowId: flowObjectId,
+        materializationStatus: "dropped",
+      }),
+      CdcChangeEvent.aggregate([
+        {
+          $match: {
+            workspaceId: workspaceObjectId,
+            flowId: flowObjectId,
+            materializationStatus: "applied",
+          },
+        },
+        {
+          $group: {
+            _id: "$entity",
+            count: { $sum: 1 },
+          },
+        },
+      ]),
       CdcChangeEvent.aggregate([
         {
           $match: {
@@ -110,13 +134,46 @@ export class CdcObservabilityService {
           },
         },
       ]),
-      ]);
+      CdcChangeEvent.aggregate([
+        {
+          $match: {
+            workspaceId: workspaceObjectId,
+            flowId: flowObjectId,
+            materializationStatus: "dropped",
+          },
+        },
+        {
+          $group: {
+            _id: "$entity",
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
 
+    const appliedByEntity = new Map<string, number>(
+      perEntityApplied.map(entry => [
+        entry._id as string,
+        entry.count as number,
+      ]),
+    );
     const backlogByEntity = new Map<string, number>(
-      perEntityBacklog.map(entry => [entry._id as string, entry.count as number]),
+      perEntityBacklog.map(entry => [
+        entry._id as string,
+        entry.count as number,
+      ]),
     );
     const failedByEntity = new Map<string, number>(
-      perEntityFailed.map(entry => [entry._id as string, entry.count as number]),
+      perEntityFailed.map(entry => [
+        entry._id as string,
+        entry.count as number,
+      ]),
+    );
+    const droppedByEntity = new Map<string, number>(
+      perEntityDropped.map(entry => [
+        entry._id as string,
+        entry.count as number,
+      ]),
     );
     const stateByEntity = new Map(states.map(state => [state.entity, state]));
 
@@ -127,8 +184,10 @@ export class CdcObservabilityService {
         : null;
       return {
         entity,
+        appliedCount: appliedByEntity.get(entity) || 0,
         backlogCount: backlogByEntity.get(entity) || 0,
         failedCount: failedByEntity.get(entity) || 0,
+        droppedCount: droppedByEntity.get(entity) || 0,
         lagSeconds: toLagSeconds(lastMaterializedAt),
         lastMaterializedAt,
       };
@@ -159,8 +218,10 @@ export class CdcObservabilityService {
         : null,
       lastWebhookAt: lastWebhook?.receivedAt || null,
       lastMaterializedAt,
+      appliedCount,
       backlogCount,
       failedCount,
+      droppedCount,
       lagSeconds: toLagSeconds(minMaterializedAt),
       entityCounts,
     };
@@ -219,7 +280,9 @@ export class CdcObservabilityService {
         lastMaterializedSeq: cursor.lastMaterializedSeq || 0,
         backlogCount: cursor.backlogCount || 0,
         lagSeconds: toLagSeconds(
-          cursor.lastMaterializedAt ? new Date(cursor.lastMaterializedAt) : null,
+          cursor.lastMaterializedAt
+            ? new Date(cursor.lastMaterializedAt)
+            : null,
         ),
         lastMaterializedAt: cursor.lastMaterializedAt
           ? new Date(cursor.lastMaterializedAt)
