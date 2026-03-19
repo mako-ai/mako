@@ -74,11 +74,31 @@ export function createDashboardServerTools(workspaceId: string) {
               };
             }
 
+            if (!savedConsole.connectionId) {
+              return {
+                success: false,
+                error: `Console ${savedConsole.name} is missing a database connection`,
+              };
+            }
+
             resolvedSources.push({
               id: nanoid(),
               name: ds.name,
-              consoleId: savedConsole._id,
-              connectionId: savedConsole.connectionId,
+              tableRef: `ds_${nanoid()}`,
+              query: {
+                connectionId: savedConsole.connectionId,
+                language: savedConsole.language,
+                code: savedConsole.code,
+                databaseId: savedConsole.databaseId,
+                databaseName: savedConsole.databaseName,
+                mongoOptions: savedConsole.mongoOptions,
+              },
+              origin: {
+                type: "saved_console",
+                consoleId: savedConsole._id,
+                consoleName: savedConsole.name,
+                importedAt: new Date(),
+              },
               timeDimension: ds.timeDimension,
               cache: { ttlSeconds: 3600 },
             });
@@ -107,7 +127,7 @@ export function createDashboardServerTools(workspaceId: string) {
             dataSources: resolvedSources.map(ds => ({
               id: ds.id,
               name: ds.name,
-              consoleId: ds.consoleId.toString(),
+              tableRef: ds.tableRef,
             })),
           };
         } catch (error) {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -10,6 +10,7 @@ import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import { initDuckDB, loadArrowTable } from "../lib/duckdb";
+import { createDuckDBQueryExecutor } from "../dashboard-runtime/query-executor";
 import WidgetContainer from "./widgets/WidgetContainer";
 import ChartWidget from "./widgets/ChartWidget";
 import KpiCard from "./widgets/KpiCard";
@@ -137,6 +138,15 @@ const EmbeddableDashboard: React.FC = () => {
     h: w.layout.h,
     static: true,
   }));
+  const queryExecutor = useMemo(
+    () =>
+      db
+        ? createDuckDBQueryExecutor(db)
+        : async () => {
+            throw new Error("Embedded DuckDB session is not ready");
+          },
+    [db],
+  );
 
   return (
     <ThemeProvider theme={theme}>
@@ -175,19 +185,22 @@ const EmbeddableDashboard: React.FC = () => {
                   <WidgetContainer title={widget.title}>
                     {widget.type === "chart" ? (
                       <ChartWidget
-                        db={db}
+                        queryExecutor={queryExecutor}
+                        dataSourceId={widget.dataSourceId}
                         localSql={widget.localSql}
                         vegaLiteSpec={widget.vegaLiteSpec}
                       />
                     ) : widget.type === "kpi" && widget.kpiConfig ? (
                       <KpiCard
-                        db={db}
+                        queryExecutor={queryExecutor}
+                        dataSourceId={widget.dataSourceId}
                         localSql={widget.localSql}
                         kpiConfig={widget.kpiConfig}
                       />
                     ) : widget.type === "table" ? (
                       <DataTableWidget
-                        db={db}
+                        queryExecutor={queryExecutor}
+                        dataSourceId={widget.dataSourceId}
                         localSql={widget.localSql}
                         tableConfig={widget.tableConfig}
                       />

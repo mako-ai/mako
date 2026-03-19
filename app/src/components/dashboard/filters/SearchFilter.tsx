@@ -2,11 +2,11 @@ import React, { useState } from "react";
 import { Box, TextField, Typography, IconButton, Tooltip } from "@mui/material";
 import { X } from "lucide-react";
 import type { GlobalFilter } from "../../../store/dashboardStore";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import type { DashboardQueryExecutor } from "../../../dashboard-runtime/types";
 
 interface SearchFilterProps {
   filter: GlobalFilter;
-  db: AsyncDuckDB;
+  queryExecutor: DashboardQueryExecutor;
   onChange: (value: unknown) => void;
   onRemove: () => void;
 }

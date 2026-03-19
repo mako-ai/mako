@@ -69,7 +69,12 @@ export interface AgentContext {
     dataSources: Array<{
       id: string;
       name: string;
+      tableRef?: string;
+      status?: "idle" | "loading" | "ready" | "error" | null;
+      rowsLoaded?: number;
+      error?: string | null;
       columns: Array<{ name: string; type: string }>;
+      sampleRows?: Record<string, unknown>[];
     }>;
     widgets: Array<{
       id: string;

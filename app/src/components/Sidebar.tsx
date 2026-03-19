@@ -76,7 +76,10 @@ const bottomNavigationItems: {
 }[] = [{ view: "settings", icon: SettingsIcon, label: "Settings" }];
 
 function Sidebar() {
-  const { leftPane: activeView, setLeftPane } = useUIStore();
+  const activeView = useUIStore(state => state.leftPane);
+  const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const setLeftPane = useUIStore(state => state.setLeftPane);
+  const openLeftPane = useUIStore(state => state.openLeftPane);
   const { user, logout } = useAuth();
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(
     null,
@@ -138,6 +141,10 @@ function Sidebar() {
           | "flows"
           | "dashboards",
       );
+
+      if (!leftPaneOpen) {
+        openLeftPane();
+      }
     }
 
     // Only certain views should automatically open (or focus) a tab in the editor.

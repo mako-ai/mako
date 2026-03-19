@@ -2,96 +2,32 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import type {
+  Dashboard,
+  DashboardDataSource,
+  DashboardWidget,
+  GlobalFilter,
+  TableRelationship,
+} from "../dashboard-runtime/types";
 
-export interface DashboardDataSource {
-  id: string;
-  name: string;
-  consoleId: string;
-  connectionId: string;
-  timeDimension?: string;
-  rowLimit?: number;
-  cache?: {
-    ttlSeconds?: number;
-    lastRefreshedAt?: string;
-    rowCount?: number;
-    byteSize?: number;
-  };
-}
-
-export interface DashboardWidget {
-  id: string;
-  title?: string;
-  type: "chart" | "kpi" | "table";
-  dataSourceId: string;
-  localSql: string;
-  vegaLiteSpec?: Record<string, unknown>;
-  kpiConfig?: {
-    valueField: string;
-    format?: string;
-    comparisonField?: string;
-    comparisonLabel?: string;
-  };
-  tableConfig?: { columns?: string[]; pageSize?: number };
-  crossFilter: { enabled: boolean; fields?: string[] };
-  layout: {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-    minW?: number;
-    minH?: number;
-  };
-}
-
-export interface TableRelationship {
-  id: string;
-  from: { dataSourceId: string; column: string };
-  to: { dataSourceId: string; column: string };
-  type: "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many";
-}
-
-export interface GlobalFilter {
-  id: string;
-  type: "date-range" | "select" | "multi-select" | "search";
-  label: string;
-  dataSourceId: string;
-  column: string;
-  config: Record<string, unknown>;
-  layout: { order: number; width?: number };
-}
-
-export interface Dashboard {
-  _id: string;
-  workspaceId: string;
-  title: string;
-  description?: string;
-  dataSources: DashboardDataSource[];
-  relationships: TableRelationship[];
-  widgets: DashboardWidget[];
-  globalFilters: GlobalFilter[];
-  crossFilter: { enabled: boolean; resolution: "intersect" | "union" };
-  layout: { columns: number; rowHeight: number };
-  cache: { ttlSeconds: number; lastRefreshedAt?: string };
-  access: "private" | "workspace";
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
+export type {
+  Dashboard,
+  DashboardDataSource,
+  DashboardDataSourceOrigin,
+  DashboardQueryDefinition,
+  DashboardQueryLanguage,
+  DashboardWidget,
+  GlobalFilter,
+  TableRelationship,
+} from "../dashboard-runtime/types";
 
 interface DashboardStoreState {
   dashboards: Record<string, Dashboard[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
-
   activeDashboardId: string | null;
   activeDashboard: Dashboard | null;
-
-  db: AsyncDuckDB | null;
-  dataSourceStatus: Record<string, "loading" | "ready" | "error">;
-
   autoRefreshInterval: number | null;
-
   history: Dashboard[];
   historyIndex: number;
 
@@ -110,34 +46,23 @@ interface DashboardStoreState {
     workspaceId: string,
     id: string,
   ) => Promise<Dashboard | null>;
-
   openDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
   closeDashboard: () => void;
   saveDashboard: (workspaceId: string) => Promise<void>;
-
+  addDataSource: (dataSource: DashboardDataSource) => void;
+  updateDataSource: (
+    dataSourceId: string,
+    changes: Partial<DashboardDataSource>,
+  ) => void;
+  removeDataSource: (dataSourceId: string) => void;
   addWidget: (widget: DashboardWidget) => void;
   modifyWidget: (widgetId: string, changes: Partial<DashboardWidget>) => void;
   removeWidget: (widgetId: string) => void;
-
   addRelationship: (rel: TableRelationship) => void;
   removeRelationship: (relId: string) => void;
-
   addGlobalFilter: (filter: GlobalFilter) => void;
   removeGlobalFilter: (filterId: string) => void;
-
-  setDataSourceStatus: (
-    dataSourceId: string,
-    status: "loading" | "ready" | "error",
-  ) => void;
-  setDb: (db: AsyncDuckDB | null) => void;
   setAutoRefreshInterval: (interval: number | null) => void;
-
-  loadDataSource: (
-    dataSource: DashboardDataSource,
-    workspaceId: string,
-  ) => Promise<void>;
-  refreshAllDataSources: (workspaceId: string) => Promise<void>;
-
   pushHistory: () => void;
   undo: () => void;
   redo: () => void;
@@ -160,8 +85,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
       error: {},
       activeDashboardId: null,
       activeDashboard: null,
-      db: null,
-      dataSourceStatus: {},
       autoRefreshInterval: null,
       history: [],
       historyIndex: -1,
@@ -296,7 +219,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
             set(state => {
               state.activeDashboardId = dashboardId;
               state.activeDashboard = response.data;
-              state.dataSourceStatus = {};
               state.history = [];
               state.historyIndex = -1;
             });
@@ -310,8 +232,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
         set(state => {
           state.activeDashboardId = null;
           state.activeDashboard = null;
-          state.dataSourceStatus = {};
-          state.db = null;
           state.history = [];
           state.historyIndex = -1;
         });
@@ -332,17 +252,93 @@ export const useDashboardStore = create<DashboardStoreState>()(
             title: activeDashboard.title,
             description: activeDashboard.description,
           };
-          console.log("[Dashboard] Auto-saving", {
-            widgets: payload.widgets.length,
-            dataSources: payload.dataSources.length,
-          });
           await apiClient.patch(
             `/workspaces/${workspaceId}/dashboards/${activeDashboard._id}`,
             payload,
           );
-        } catch (err) {
-          console.error("[Dashboard] Auto-save failed:", err);
+        } catch {
+          // best-effort save
         }
+      },
+
+      addDataSource: (dataSource: DashboardDataSource) => {
+        const workspaceId = get().activeDashboard?.workspaceId;
+        get().pushHistory();
+        set(state => {
+          if (state.activeDashboard) {
+            state.activeDashboard.dataSources.push(dataSource);
+          }
+        });
+        if (workspaceId) debouncedSave(get, workspaceId);
+      },
+
+      updateDataSource: (
+        dataSourceId: string,
+        changes: Partial<DashboardDataSource>,
+      ) => {
+        const workspaceId = get().activeDashboard?.workspaceId;
+        get().pushHistory();
+        set(state => {
+          if (state.activeDashboard) {
+            const idx = state.activeDashboard.dataSources.findIndex(
+              ds => ds.id === dataSourceId,
+            );
+            if (idx !== -1) {
+              const current = state.activeDashboard.dataSources[idx];
+              state.activeDashboard.dataSources[idx] = {
+                ...current,
+                ...changes,
+                query: changes.query
+                  ? {
+                      ...current.query,
+                      ...changes.query,
+                    }
+                  : current.query,
+                cache: changes.cache
+                  ? {
+                      ...current.cache,
+                      ...changes.cache,
+                    }
+                  : current.cache,
+                origin: changes.origin
+                  ? {
+                      ...current.origin,
+                      ...changes.origin,
+                    }
+                  : current.origin,
+              };
+            }
+          }
+        });
+        if (workspaceId) debouncedSave(get, workspaceId);
+      },
+
+      removeDataSource: dataSourceId => {
+        const workspaceId = get().activeDashboard?.workspaceId;
+        get().pushHistory();
+        set(state => {
+          if (state.activeDashboard) {
+            state.activeDashboard.dataSources =
+              state.activeDashboard.dataSources.filter(
+                ds => ds.id !== dataSourceId,
+              );
+            state.activeDashboard.widgets =
+              state.activeDashboard.widgets.filter(
+                widget => widget.dataSourceId !== dataSourceId,
+              );
+            state.activeDashboard.relationships =
+              state.activeDashboard.relationships.filter(
+                rel =>
+                  rel.from.dataSourceId !== dataSourceId &&
+                  rel.to.dataSourceId !== dataSourceId,
+              );
+            state.activeDashboard.globalFilters =
+              state.activeDashboard.globalFilters.filter(
+                filter => filter.dataSourceId !== dataSourceId,
+              );
+          }
+        });
+        if (workspaceId) debouncedSave(get, workspaceId);
       },
 
       addWidget: (widget: DashboardWidget) => {
@@ -432,79 +428,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
         if (workspaceId) debouncedSave(get, workspaceId);
       },
 
-      setDataSourceStatus: (
-        dataSourceId: string,
-        status: "loading" | "ready" | "error",
-      ) => {
-        set(state => {
-          state.dataSourceStatus[dataSourceId] = status;
-        });
-      },
-
-      setDb: (db: AsyncDuckDB | null) => {
-        set(state => {
-          state.db = db as any;
-        });
-      },
-
       setAutoRefreshInterval: (interval: number | null) => {
         set(state => {
           state.autoRefreshInterval = interval;
         });
-      },
-
-      loadDataSource: async (
-        dataSource: DashboardDataSource,
-        workspaceId: string,
-      ) => {
-        const { db, setDataSourceStatus } = get();
-        if (!db) return;
-
-        setDataSourceStatus(dataSource.id, "loading");
-        try {
-          const response = await fetch(
-            `/api/workspaces/${workspaceId}/consoles/${dataSource.consoleId}/export?format=json&limit=${dataSource.rowLimit || 500000}`,
-            { credentials: "include" },
-          );
-
-          if (!response.ok) {
-            throw new Error(`Export failed: ${response.statusText}`);
-          }
-
-          const json = await response.json();
-          const rows = json.data || [];
-          const { loadJsonTable } = await import("../lib/duckdb");
-          await loadJsonTable(db, dataSource.name, rows);
-
-          setDataSourceStatus(dataSource.id, "ready");
-
-          set(state => {
-            if (state.activeDashboard) {
-              const ds = state.activeDashboard.dataSources.find(
-                d => d.id === dataSource.id,
-              );
-              if (ds && ds.cache) {
-                ds.cache.lastRefreshedAt = new Date().toISOString();
-                ds.cache.rowCount = parseInt(
-                  response.headers.get("X-Row-Count") || "0",
-                  10,
-                );
-              }
-            }
-          });
-        } catch {
-          setDataSourceStatus(dataSource.id, "error");
-        }
-      },
-
-      refreshAllDataSources: async (workspaceId: string) => {
-        const { activeDashboard, loadDataSource } = get();
-        if (!activeDashboard) return;
-        await Promise.all(
-          activeDashboard.dataSources.map(ds =>
-            loadDataSource(ds, workspaceId),
-          ),
-        );
       },
 
       pushHistory: () => {

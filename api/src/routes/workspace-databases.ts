@@ -19,8 +19,102 @@ import {
 } from "../services/query-execution.service";
 import { Types } from "mongoose";
 import { loggers } from "../logging";
+import { checkPreviewQuerySafety } from "../services/query-pagination.service";
+import { createStreamingExportResponse } from "../utils/query-export-stream";
 
 const logger = loggers.db();
+
+function sanitizeDownloadFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
+}
+
+type QueryDefinitionInput = {
+  connectionId?: string;
+  language?: "sql" | "javascript" | "mongodb";
+  code?: string;
+  databaseId?: string;
+  databaseName?: string;
+  mongoOptions?: {
+    collection?: string;
+    operation?:
+      | "find"
+      | "aggregate"
+      | "insertMany"
+      | "updateMany"
+      | "deleteMany"
+      | "findOne"
+      | "updateOne"
+      | "deleteOne";
+  };
+};
+
+function resolveQueryDefinition(
+  body: Record<string, any>,
+): QueryDefinitionInput | null {
+  if (body.queryDefinition && typeof body.queryDefinition === "object") {
+    return body.queryDefinition as QueryDefinitionInput;
+  }
+
+  if (typeof body.query === "string") {
+    return {
+      connectionId:
+        typeof body.connectionId === "string" ? body.connectionId : undefined,
+      language:
+        typeof body.language === "string"
+          ? (body.language as QueryDefinitionInput["language"])
+          : undefined,
+      code: body.query,
+      databaseId:
+        typeof body.databaseId === "string" ? body.databaseId : undefined,
+      databaseName:
+        typeof body.databaseName === "string" ? body.databaseName : undefined,
+      mongoOptions:
+        body.mongoOptions && typeof body.mongoOptions === "object"
+          ? body.mongoOptions
+          : undefined,
+    };
+  }
+
+  return null;
+}
+
+function buildExecutableQuery(
+  queryDefinition: QueryDefinitionInput,
+  databaseType: string,
+) {
+  const code = queryDefinition.code;
+  if (typeof code !== "string" || !code.trim()) {
+    return null;
+  }
+
+  if (
+    databaseType === "mongodb" &&
+    queryDefinition.language === "mongodb" &&
+    queryDefinition.mongoOptions?.collection
+  ) {
+    return {
+      collection: queryDefinition.mongoOptions.collection,
+      operation: queryDefinition.mongoOptions.operation || "find",
+      query: code,
+    };
+  }
+
+  return code;
+}
+
+async function parseRequestBody(
+  c: AuthenticatedContext,
+): Promise<Record<string, any>> {
+  const contentType = c.req.header("content-type") || "";
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
+    return (await c.req.parseBody()) as Record<string, any>;
+  }
+
+  return await c.req.json();
+}
 
 /**
  * Determine query language from database type
@@ -917,31 +1011,40 @@ workspaceExecuteRoutes.post(
       const workspace = c.get("workspace");
       const user = c.get("user");
       const apiKey = c.get("apiKey");
-      const body = await c.req.json();
+      const body = await parseRequestBody(c);
 
+      const queryDefinition = resolveQueryDefinition(body);
       const {
         connectionId,
         databaseId,
         databaseName,
-        query,
         executionId,
         consoleId,
         source,
+        mode,
+        pageSize,
+        cursor,
       } = body;
+      const effectiveConnectionId =
+        queryDefinition?.connectionId || connectionId;
 
       // Validate required fields
-      if (!connectionId) {
+      if (!effectiveConnectionId) {
         return c.json(
           { success: false, error: "connectionId is required" },
           400,
         );
       }
 
-      if (!query) {
-        return c.json({ success: false, error: "query is required" }, 400);
+      const effectiveQueryDefinition = queryDefinition || null;
+      if (!effectiveQueryDefinition) {
+        return c.json(
+          { success: false, error: "query or queryDefinition is required" },
+          400,
+        );
       }
 
-      if (!Types.ObjectId.isValid(connectionId)) {
+      if (!Types.ObjectId.isValid(effectiveConnectionId)) {
         return c.json(
           { success: false, error: "Invalid connectionId format" },
           400,
@@ -950,7 +1053,7 @@ workspaceExecuteRoutes.post(
 
       // Find the database connection
       database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(connectionId),
+        _id: new Types.ObjectId(effectiveConnectionId),
         workspaceId: workspace._id,
       });
 
@@ -961,25 +1064,55 @@ workspaceExecuteRoutes.post(
         );
       }
 
+      const executableQuery = buildExecutableQuery(
+        effectiveQueryDefinition,
+        database.type,
+      );
+      if (!executableQuery) {
+        return c.json(
+          { success: false, error: "queryDefinition.code is required" },
+          400,
+        );
+      }
+
       // Build options for query execution
       const options = {
-        databaseId,
-        databaseName,
+        databaseId: effectiveQueryDefinition.databaseId || databaseId,
+        databaseName: effectiveQueryDefinition.databaseName || databaseName,
         executionId,
       };
 
-      const result = await databaseConnectionService.executeQuery(
-        database,
-        query,
-        options,
-      );
+      const isPreviewMode = mode === "preview";
+      const result = isPreviewMode
+        ? await databaseConnectionService.executePreviewQuery(
+            database,
+            executableQuery,
+            {
+              ...options,
+              pageSize:
+                typeof pageSize === "string"
+                  ? parseInt(pageSize, 10)
+                  : pageSize,
+              cursor: typeof cursor === "string" ? cursor : null,
+            },
+          )
+        : await databaseConnectionService.executeQuery(
+            database,
+            executableQuery,
+            options,
+          );
 
       // Determine execution status and extract row count
       if (result.success) {
         executionStatus = "success";
+        const resultData = "data" in result ? result.data : undefined;
         rowCount =
           result.rowCount ??
-          (Array.isArray(result.data) ? result.data.length : undefined);
+          ("rows" in result && Array.isArray(result.rows)
+            ? result.rows.length
+            : Array.isArray(resultData)
+              ? resultData.length
+              : undefined);
       } else {
         executionStatus = "error";
         // Categorize error type
@@ -1049,6 +1182,18 @@ workspaceExecuteRoutes.post(
           rowCount,
           errorType,
         });
+
+        if (isPreviewMode && "pageInfo" in result && result.pageInfo) {
+          logger.debug("Executed preview query page", {
+            connectionId: database._id.toString(),
+            databaseType: database.type,
+            pageSize: result.pageInfo.pageSize,
+            returnedRows: result.pageInfo.returnedRows,
+            hasMore: result.pageInfo.hasMore,
+            capApplied: result.pageInfo.capApplied,
+            cursorProvided: Boolean(cursor),
+          });
+        }
       }
 
       return c.json(result);
@@ -1082,6 +1227,144 @@ workspaceExecuteRoutes.post(
           success: false,
           error:
             error instanceof Error ? error.message : "Failed to execute query",
+        },
+        500,
+      );
+    }
+  },
+);
+
+workspaceExecuteRoutes.post(
+  "/export",
+  authMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const body = await parseRequestBody(c);
+      const queryDefinition = resolveQueryDefinition(body);
+      const {
+        connectionId,
+        databaseId,
+        databaseName,
+        format,
+        batchSize,
+        executionId,
+        filename,
+      } = body;
+      const effectiveConnectionId =
+        queryDefinition?.connectionId || connectionId;
+
+      if (!effectiveConnectionId) {
+        return c.json(
+          { success: false, error: "connectionId is required" },
+          400,
+        );
+      }
+
+      if (!queryDefinition) {
+        return c.json(
+          { success: false, error: "query or queryDefinition is required" },
+          400,
+        );
+      }
+
+      if (!Types.ObjectId.isValid(String(effectiveConnectionId))) {
+        return c.json(
+          { success: false, error: "Invalid connectionId format" },
+          400,
+        );
+      }
+
+      const normalizedFormat =
+        format === "ndjson" || format === "csv" ? format : null;
+      if (!normalizedFormat) {
+        return c.json(
+          { success: false, error: "format must be either 'ndjson' or 'csv'" },
+          400,
+        );
+      }
+
+      const database = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(String(effectiveConnectionId)),
+        workspaceId: workspace._id,
+      });
+
+      if (!database) {
+        return c.json(
+          { success: false, error: "Database connection not found" },
+          404,
+        );
+      }
+
+      const executableQuery = buildExecutableQuery(
+        queryDefinition,
+        database.type,
+      );
+      if (!executableQuery) {
+        return c.json(
+          { success: false, error: "queryDefinition.code is required" },
+          400,
+        );
+      }
+
+      if (
+        typeof executableQuery === "string" &&
+        database.type !== "mongodb" &&
+        database.type !== "cloudflare-kv"
+      ) {
+        const safety = checkPreviewQuerySafety(executableQuery);
+        if (!safety.safe) {
+          return c.json(
+            {
+              success: false,
+              error: safety.errors.join(" "),
+            },
+            400,
+          );
+        }
+      }
+
+      const safeBaseName = sanitizeDownloadFilename(
+        typeof filename === "string" && filename.trim()
+          ? filename
+          : `query-results-${Date.now()}`,
+      );
+
+      return createStreamingExportResponse({
+        format: normalizedFormat,
+        filename: `${safeBaseName}.${normalizedFormat === "csv" ? "csv" : "ndjson"}`,
+        streamRows: emitRows =>
+          databaseConnectionService.executeStreamingQuery(
+            database,
+            executableQuery,
+            {
+              databaseId:
+                queryDefinition.databaseId ||
+                (typeof databaseId === "string" ? databaseId : undefined),
+              databaseName:
+                queryDefinition.databaseName ||
+                (typeof databaseName === "string" ? databaseName : undefined),
+              batchSize:
+                typeof batchSize === "string"
+                  ? parseInt(batchSize, 10)
+                  : typeof batchSize === "number"
+                    ? batchSize
+                    : 1000,
+              executionId:
+                typeof executionId === "string" ? executionId : undefined,
+              signal: c.req.raw.signal,
+              onBatch: emitRows,
+            },
+          ),
+      });
+    } catch (error) {
+      logger.error("Error exporting query", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to export query",
         },
         500,
       );

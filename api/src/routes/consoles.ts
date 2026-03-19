@@ -25,6 +25,11 @@ import {
   isDescriptionGenAvailable,
   generateDescriptionAndEmbedding,
 } from "../services/console-description.service";
+import {
+  applySqlRowLimit,
+  checkPreviewQuerySafety,
+} from "../services/query-pagination.service";
+import { createStreamingExportResponse } from "../utils/query-export-stream";
 
 /**
  * Map console language to query language for tracking
@@ -38,6 +43,10 @@ function mapConsoleLanguageToQueryLanguage(
 }
 
 const logger = loggers.api("consoles");
+
+function sanitizeDownloadFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
+}
 
 export const consoleRoutes = new Hono();
 const consoleManager = new ConsoleManager();
@@ -1389,6 +1398,9 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
     const user = c.get("user");
     const apiKey = c.get("apiKey");
     const consoleId = c.req.param("id");
+    const mode = c.req.query("mode");
+    const pageSizeParam = c.req.query("pageSize");
+    const cursorParam = c.req.query("cursor");
 
     // Validate console ID
     if (!Types.ObjectId.isValid(consoleId)) {
@@ -1448,6 +1460,7 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       databaseId: savedConsole.databaseId,
       databaseName: savedConsole.databaseName,
     };
+    const isPreviewMode = mode === "preview";
 
     if (savedConsole.language === "mongodb") {
       if (
@@ -1462,26 +1475,60 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
           query: savedConsole.code,
         };
 
-        result = await databaseConnectionService.executeQuery(
-          database,
-          mongoQuery,
-          { ...savedConsole.mongoOptions, ...executionOptions },
-        );
+        result = isPreviewMode
+          ? await databaseConnectionService.executePreviewQuery(
+              database,
+              mongoQuery,
+              {
+                ...savedConsole.mongoOptions,
+                ...executionOptions,
+                pageSize: pageSizeParam
+                  ? parseInt(pageSizeParam, 10)
+                  : undefined,
+                cursor: cursorParam || null,
+              },
+            )
+          : await databaseConnectionService.executeQuery(database, mongoQuery, {
+              ...savedConsole.mongoOptions,
+              ...executionOptions,
+            });
       } else {
         // For JavaScript-style MongoDB queries (db.collection.find(), etc.)
-        result = await databaseConnectionService.executeQuery(
-          database,
-          savedConsole.code,
-          executionOptions,
-        );
+        result = isPreviewMode
+          ? await databaseConnectionService.executePreviewQuery(
+              database,
+              savedConsole.code,
+              {
+                ...executionOptions,
+                pageSize: pageSizeParam
+                  ? parseInt(pageSizeParam, 10)
+                  : undefined,
+                cursor: cursorParam || null,
+              },
+            )
+          : await databaseConnectionService.executeQuery(
+              database,
+              savedConsole.code,
+              executionOptions,
+            );
       }
     } else {
       // For SQL and other languages, execute the code directly
-      result = await databaseConnectionService.executeQuery(
-        database,
-        savedConsole.code,
-        executionOptions,
-      );
+      result = isPreviewMode
+        ? await databaseConnectionService.executePreviewQuery(
+            database,
+            savedConsole.code,
+            {
+              ...executionOptions,
+              pageSize: pageSizeParam ? parseInt(pageSizeParam, 10) : undefined,
+              cursor: cursorParam || null,
+            },
+          )
+        : await databaseConnectionService.executeQuery(
+            database,
+            savedConsole.code,
+            executionOptions,
+          );
     }
 
     // Update execution stats
@@ -1494,8 +1541,16 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
     );
 
     // Return the result
-    const data = result.data || [];
-    rowCount = result.rowCount || (Array.isArray(data) ? data.length : 0);
+    const previewRows =
+      "rows" in result && Array.isArray(result.rows) ? result.rows : undefined;
+    const data = "data" in result ? result.data || [] : [];
+    rowCount =
+      result.rowCount ||
+      (Array.isArray(previewRows)
+        ? previewRows.length
+        : Array.isArray(data)
+          ? data.length
+          : 0);
 
     // Determine execution status
     if (result.success) {
@@ -1549,18 +1604,34 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       });
     }
 
-    return c.json({
-      success: true,
-      data: data,
-      rowCount: rowCount,
-      fields: result.fields || null,
-      console: {
-        id: savedConsole._id,
-        name: savedConsole.name,
-        language: savedConsole.language,
-        executedAt: new Date().toISOString(),
-      },
-    });
+    return c.json(
+      isPreviewMode
+        ? {
+            success: true,
+            rows: previewRows || [],
+            rowCount,
+            fields: result.fields || null,
+            pageInfo: "pageInfo" in result ? result.pageInfo || null : null,
+            console: {
+              id: savedConsole._id,
+              name: savedConsole.name,
+              language: savedConsole.language,
+              executedAt: new Date().toISOString(),
+            },
+          }
+        : {
+            success: true,
+            data: data,
+            rowCount: rowCount,
+            fields: result.fields || null,
+            console: {
+              id: savedConsole._id,
+              name: savedConsole.name,
+              language: savedConsole.language,
+              executedAt: new Date().toISOString(),
+            },
+          },
+    );
   } catch (error) {
     logger.error("Error executing console", { error });
 
@@ -1604,7 +1675,11 @@ consoleRoutes.get("/:id/export", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const consoleId = c.req.param("id");
-    const format = (c.req.query("format") || "arrow") as "arrow" | "json";
+    const format = (c.req.query("format") || "arrow") as
+      | "arrow"
+      | "json"
+      | "ndjson"
+      | "csv";
     const limit = parseInt(c.req.query("limit") || "500000", 10);
 
     if (!Types.ObjectId.isValid(consoleId)) {
@@ -1651,6 +1726,56 @@ consoleRoutes.get("/:id/export", async (c: AuthenticatedContext) => {
         operation: (savedConsole as any).mongoOptions.operation || "find",
         query: savedConsole.code,
       };
+    }
+
+    if (
+      (format === "ndjson" || format === "csv") &&
+      typeof query === "string" &&
+      database.type !== "cloudflare-kv"
+    ) {
+      const safety = checkPreviewQuerySafety(query);
+      if (!safety.safe) {
+        return c.json(
+          {
+            success: false,
+            error: safety.errors.join(" "),
+          },
+          400,
+        );
+      }
+    }
+
+    if (format === "ndjson" || format === "csv") {
+      const safeFileBase = sanitizeDownloadFilename(
+        savedConsole.name || `console-${savedConsole._id.toString()}`,
+      );
+      const streamQuery =
+        typeof query === "string" &&
+        database.type !== "cloudflare-kv" &&
+        database.type !== "mongodb"
+          ? applySqlRowLimit({
+              query,
+              databaseType: database.type,
+              limit,
+            })
+          : query;
+
+      return createStreamingExportResponse({
+        format,
+        filename: `${safeFileBase}.${format === "csv" ? "csv" : "ndjson"}`,
+        streamRows: emitRows =>
+          databaseConnectionService.executeStreamingQuery(
+            database,
+            streamQuery,
+            {
+              databaseId: savedConsole.databaseId,
+              databaseName: savedConsole.databaseName,
+              batchSize: Math.max(1, Math.min(10000, limit)),
+              signal: c.req.raw.signal,
+              onBatch: emitRows,
+            },
+          ),
+      });
     }
 
     const result = await databaseConnectionService.executeQuery(

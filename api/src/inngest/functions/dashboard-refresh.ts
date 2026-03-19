@@ -1,9 +1,5 @@
 import { inngest } from "../client";
-import {
-  Dashboard,
-  SavedConsole,
-  DatabaseConnection,
-} from "../../database/workspace-schema";
+import { Dashboard, DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { serializeToArrowIPC } from "../../utils/arrow-serializer";
 import { loggers } from "../../logging";
@@ -45,16 +41,9 @@ export const dashboardRefreshFunction = inngest.createFunction(
     for (const ds of dashboard.dataSources) {
       const result = await step.run(`export-${ds.id}`, async () => {
         try {
-          const savedConsole = await SavedConsole.findById(ds.consoleId);
-          if (!savedConsole) {
-            return {
-              dataSourceId: ds.id,
-              success: false,
-              error: "Console not found",
-            };
-          }
-
-          const database = await DatabaseConnection.findById(ds.connectionId);
+          const database = await DatabaseConnection.findById(
+            ds.query?.connectionId,
+          );
           if (!database) {
             return {
               dataSourceId: ds.id,
@@ -63,12 +52,31 @@ export const dashboardRefreshFunction = inngest.createFunction(
             };
           }
 
+          const executableQuery =
+            database.type === "mongodb" &&
+            ds.query?.language === "mongodb" &&
+            ds.query?.mongoOptions?.collection
+              ? {
+                  collection: ds.query.mongoOptions.collection,
+                  operation: ds.query.mongoOptions.operation || "find",
+                  query: ds.query.code,
+                }
+              : ds.query?.code;
+
+          if (!executableQuery) {
+            return {
+              dataSourceId: ds.id,
+              success: false,
+              error: "Dashboard data source query is missing",
+            };
+          }
+
           const queryResult = await databaseConnectionService.executeQuery(
             database,
-            savedConsole.code,
+            executableQuery,
             {
-              databaseId: savedConsole.databaseId,
-              databaseName: savedConsole.databaseName,
+              databaseId: ds.query?.databaseId,
+              databaseName: ds.query?.databaseName,
             },
           );
 

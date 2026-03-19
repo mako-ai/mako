@@ -13,7 +13,7 @@ export const DASHBOARD_SYSTEM_PROMPT = `You are a dashboard builder for Mako. Yo
 ## Core Capabilities
 
 You can create, modify, and manage dashboards using structured tool calls. Dashboards consist of:
-- **Data sources** — references to saved consoles whose query results are loaded into an in-browser DuckDB instance
+- **Data sources** — dashboard-local query definitions materialized into an in-browser DuckDB instance
 - **Widgets** — charts (Vega-Lite), KPI cards, and data tables that query the local DuckDB data
 - **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
 - **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
@@ -22,9 +22,10 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 
 **Dashboard Management:**
 * \`create_dashboard\` — Create a brand new dashboard from saved consoles (server-side). Only use this when the user explicitly asks to create a NEW dashboard. Do NOT use this if a dashboard is already open.
-* \`add_data_source\` — Add a saved console as a data source to the CURRENT dashboard. This loads the data into DuckDB so widgets can query it. Always use this (not create_dashboard) when the user wants to add data to an existing dashboard.
+* \`create_data_source\` — Create a dashboard-local data source directly from a connection and query definition
+* \`import_console_as_data_source\` — Import a saved console by value into the CURRENT dashboard
 * \`get_dashboard_state\` — Read the current dashboard spec and data source schemas
-* \`get_data_preview\` — Run a SQL query against local DuckDB data to understand the data
+* \`preview_data_source\` — Run a SQL query against local DuckDB data to understand the data
 * \`suggest_charts\` — Analyze data and suggest 3-5 chart configurations without adding them
 
 **Console Discovery:**
@@ -67,8 +68,8 @@ Stack widgets vertically by incrementing the y value. Avoid overlapping layouts.
 
 **Adding data to an existing dashboard (most common):**
 1. Use \`search_consoles\` to find the saved console by name
-2. Use \`add_data_source\` to add it to the current dashboard (this loads data into DuckDB)
-3. Use \`get_data_preview\` to understand the columns and data shape
+2. Use \`import_console_as_data_source\` to copy it into the current dashboard, OR use \`create_data_source\` to define a dashboard-local query from scratch
+3. Use \`preview_data_source\` or \`get_dashboard_state\` to understand the columns and data shape
 4. Use \`add_widget\` to create charts, KPIs, or tables
 
 **Creating a brand new dashboard (only when explicitly asked):**
@@ -79,7 +80,9 @@ Stack widgets vertically by incrementing the y value. Avoid overlapping layouts.
 - Enable cross-filtering by default on all charts
 - Set time dimensions when datetime columns are present
 - When modifying, call \`get_dashboard_state\` first to understand current state
-- IMPORTANT: The user is always viewing an existing dashboard. Use \`add_data_source\` to add data, not \`create_dashboard\`.
+- Prefer dashboard-local data sources over live references to saved consoles
+- Use datasource \`tableRef\` values in local DuckDB SQL, not display names
+- IMPORTANT: The user is always viewing an existing dashboard. Use datasource tools to add data, not \`create_dashboard\`.
 `;
 
 /**
@@ -128,6 +131,18 @@ export function buildDashboardRuntimeContext(context: AgentContext): string {
     parts.push("### Data Sources");
     for (const ds of dc.dataSources) {
       parts.push(`- **${ds.name}** (id: ${ds.id})`);
+      if ((ds as any).tableRef) {
+        parts.push(`  - tableRef: \`${(ds as any).tableRef}\``);
+      }
+      if ((ds as any).status) {
+        const rowsLoaded = (ds as any).rowsLoaded || 0;
+        parts.push(
+          `  - status: ${(ds as any).status}${rowsLoaded ? ` (${rowsLoaded.toLocaleString()} rows loaded)` : ""}`,
+        );
+      }
+      if ((ds as any).error) {
+        parts.push(`  - last error: ${(ds as any).error}`);
+      }
       if (ds.columns && ds.columns.length > 0) {
         for (const col of ds.columns) {
           let colDesc = `  - \`${col.name}\` (${col.type})`;
@@ -142,6 +157,14 @@ export function buildDashboardRuntimeContext(context: AgentContext): string {
           }
           parts.push(colDesc);
         }
+      }
+      if ((ds as any).sampleRows && (ds as any).sampleRows.length > 0) {
+        parts.push(
+          `  - sample rows: ${(ds as any).sampleRows
+            .slice(0, 2)
+            .map((row: unknown) => JSON.stringify(row))
+            .join(" | ")}`,
+        );
       }
     }
     parts.push("");

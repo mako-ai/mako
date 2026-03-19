@@ -1,22 +1,22 @@
 import React from "react";
 import { Box } from "@mui/material";
 import type { GlobalFilter } from "../../store/dashboardStore";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 import DateRangeFilter from "./filters/DateRangeFilter";
 import SelectFilter from "./filters/SelectFilter";
 import MultiSelectFilter from "./filters/MultiSelectFilter";
 import SearchFilter from "./filters/SearchFilter";
+import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 
 interface GlobalFilterBarProps {
   filters: GlobalFilter[];
-  db: AsyncDuckDB;
+  queryExecutor: DashboardQueryExecutor;
   onFilterChange: (filterId: string, value: unknown) => void;
   onRemoveFilter: (filterId: string) => void;
 }
 
 const GlobalFilterBar: React.FC<GlobalFilterBarProps> = ({
   filters,
-  db,
+  queryExecutor,
   onFilterChange,
   onRemoveFilter,
 }) => {
@@ -43,7 +43,7 @@ const GlobalFilterBar: React.FC<GlobalFilterBarProps> = ({
         const commonProps = {
           key: filter.id,
           filter,
-          db,
+          queryExecutor,
           onChange: (value: unknown) => onFilterChange(filter.id, value),
           onRemove: () => onRemoveFilter(filter.id),
         };

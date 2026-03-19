@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { Dashboard, SavedConsole } from "../database/workspace-schema";
+import { Dashboard, DatabaseConnection } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -10,6 +10,141 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 const logger = loggers.api("dashboards");
 
 const app = new Hono();
+
+const DASHBOARD_QUERY_LANGUAGES = new Set(["sql", "javascript", "mongodb"]);
+
+function sanitizeTableRef(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+/, "") || "ds_table";
+}
+
+async function normalizeDashboardDataSources(
+  workspaceId: string,
+  inputDataSources: unknown,
+) {
+  if (inputDataSources === undefined) {
+    return { success: true as const, dataSources: undefined };
+  }
+
+  if (!Array.isArray(inputDataSources)) {
+    return {
+      success: false as const,
+      error: "dataSources must be an array",
+    };
+  }
+
+  const dataSources = inputDataSources as Array<Record<string, any>>;
+  const connectionIds = dataSources
+    .map(ds => ds?.query?.connectionId)
+    .filter(Boolean);
+
+  for (const connectionId of connectionIds) {
+    if (!Types.ObjectId.isValid(String(connectionId))) {
+      return {
+        success: false as const,
+        error: `Invalid connectionId in dashboard data source: ${connectionId}`,
+      };
+    }
+  }
+
+  if (connectionIds.length > 0) {
+    const validConnections = await DatabaseConnection.countDocuments({
+      _id: {
+        $in: connectionIds.map((id: string) => new Types.ObjectId(id)),
+      },
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (validConnections !== connectionIds.length) {
+      return {
+        success: false as const,
+        error: "One or more dashboard data source connections are invalid",
+      };
+    }
+  }
+
+  try {
+    return {
+      success: true as const,
+      dataSources: dataSources.map(ds => {
+        if (!ds?.name || typeof ds.name !== "string" || !ds.name.trim()) {
+          throw new Error("Each dashboard data source must have a name");
+        }
+
+        if (!ds?.query || typeof ds.query !== "object") {
+          throw new Error(
+            `Dashboard data source "${ds.name}" must include an embedded query definition`,
+          );
+        }
+
+        if (
+          !ds.query.language ||
+          !DASHBOARD_QUERY_LANGUAGES.has(String(ds.query.language))
+        ) {
+          throw new Error(
+            `Dashboard data source "${ds.name}" has an invalid query language`,
+          );
+        }
+
+        if (!ds.query.code || typeof ds.query.code !== "string") {
+          throw new Error(
+            `Dashboard data source "${ds.name}" must include query code`,
+          );
+        }
+
+        if (!ds.query.connectionId) {
+          throw new Error(
+            `Dashboard data source "${ds.name}" must include a connectionId`,
+          );
+        }
+
+        const id = ds.id || nanoid();
+        return {
+          id,
+          name: ds.name.trim(),
+          tableRef: sanitizeTableRef(
+            typeof ds.tableRef === "string" && ds.tableRef.trim()
+              ? ds.tableRef.trim()
+              : `ds_${nanoid()}`,
+          ),
+          query: {
+            connectionId: new Types.ObjectId(String(ds.query.connectionId)),
+            language: ds.query.language,
+            code: ds.query.code,
+            databaseId: ds.query.databaseId,
+            databaseName: ds.query.databaseName,
+            mongoOptions: ds.query.mongoOptions,
+          },
+          origin: ds.origin
+            ? {
+                type: ds.origin.type,
+                consoleId:
+                  ds.origin.consoleId &&
+                  Types.ObjectId.isValid(ds.origin.consoleId)
+                    ? new Types.ObjectId(String(ds.origin.consoleId))
+                    : undefined,
+                consoleName: ds.origin.consoleName,
+                importedAt: ds.origin.importedAt
+                  ? new Date(ds.origin.importedAt)
+                  : undefined,
+              }
+            : undefined,
+          timeDimension: ds.timeDimension,
+          rowLimit: ds.rowLimit,
+          computedColumns: ds.computedColumns || [],
+          cache: ds.cache,
+        };
+      }),
+    };
+  } catch (error) {
+    return {
+      success: false as const,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Invalid dashboard data source definition",
+    };
+  }
+}
 
 app.use("*", unifiedAuthMiddleware);
 
@@ -101,30 +236,20 @@ app.post("/", async (c: AuthenticatedContext) => {
       );
     }
 
-    // Validate console references exist in this workspace
-    const dataSources = body.dataSources || [];
-    const consoleIds = dataSources
-      .filter((ds: any) => ds.consoleId)
-      .map((ds: any) => ds.consoleId);
-
-    if (consoleIds.length > 0) {
-      const validConsoles = await SavedConsole.countDocuments({
-        _id: { $in: consoleIds.map((id: string) => new Types.ObjectId(id)) },
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (validConsoles !== consoleIds.length) {
-        return c.json(
-          {
-            success: false,
-            error: "One or more console references are invalid",
-          },
-          400,
-        );
-      }
+    const normalizedDataSources = await normalizeDashboardDataSources(
+      workspaceId,
+      body.dataSources,
+    );
+    if (!normalizedDataSources.success) {
+      return c.json(
+        { success: false, error: normalizedDataSources.error },
+        400,
+      );
     }
 
     const dashboard = new Dashboard({
       ...body,
+      dataSources: normalizedDataSources.dataSources || [],
       workspaceId: new Types.ObjectId(workspaceId),
       createdBy: userId,
     });
@@ -210,21 +335,46 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       }
     }
 
-    if (body.title !== undefined) dashboard.title = body.title;
-    if (body.description !== undefined)
+    if (body.title !== undefined) {
+      dashboard.title = body.title;
+    }
+    if (body.description !== undefined) {
       dashboard.description = body.description;
-    if (body.dataSources !== undefined)
-      dashboard.dataSources = body.dataSources;
-    if (body.widgets !== undefined) dashboard.widgets = body.widgets;
-    if (body.relationships !== undefined)
+    }
+    if (body.dataSources !== undefined) {
+      const normalizedDataSources = await normalizeDashboardDataSources(
+        workspaceId,
+        body.dataSources,
+      );
+      if (!normalizedDataSources.success) {
+        return c.json(
+          { success: false, error: normalizedDataSources.error },
+          400,
+        );
+      }
+      dashboard.dataSources = normalizedDataSources.dataSources || [];
+    }
+    if (body.widgets !== undefined) {
+      dashboard.widgets = body.widgets;
+    }
+    if (body.relationships !== undefined) {
       dashboard.relationships = body.relationships;
-    if (body.globalFilters !== undefined)
+    }
+    if (body.globalFilters !== undefined) {
       dashboard.globalFilters = body.globalFilters;
-    if (body.layout !== undefined) dashboard.layout = body.layout;
-    if (body.crossFilter !== undefined)
+    }
+    if (body.layout !== undefined) {
+      dashboard.layout = body.layout;
+    }
+    if (body.crossFilter !== undefined) {
       dashboard.crossFilter = body.crossFilter;
-    if (body.cache !== undefined) dashboard.cache = body.cache;
-    if (body.access !== undefined) dashboard.access = body.access;
+    }
+    if (body.cache !== undefined) {
+      dashboard.cache = body.cache;
+    }
+    if (body.access !== undefined) {
+      dashboard.access = body.access;
+    }
 
     await dashboard.save();
 
@@ -272,6 +422,20 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
           403,
         );
       }
+    }
+
+    if (body.dataSources !== undefined) {
+      const normalizedDataSources = await normalizeDashboardDataSources(
+        workspaceId,
+        body.dataSources,
+      );
+      if (!normalizedDataSources.success) {
+        return c.json(
+          { success: false, error: normalizedDataSources.error },
+          400,
+        );
+      }
+      body.dataSources = normalizedDataSources.dataSources;
     }
 
     const dashboard = await Dashboard.findOneAndUpdate(

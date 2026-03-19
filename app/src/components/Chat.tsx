@@ -54,7 +54,8 @@ import {
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
-import { useDashboardStore as useDashboardStoreImport } from "../store/dashboardStore";
+import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
+import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -67,6 +68,7 @@ import {
 import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
+import { safeStringify, toJsonSafe } from "../lib/json-safe";
 
 interface ChatSessionMeta {
   _id: string;
@@ -698,47 +700,58 @@ const Chat: React.FC<ChatProps> = ({
               }
             : undefined;
 
-          return {
-            body: {
-              messages,
-              workspaceId: workspaceIdRef.current,
-              modelId: modelIdRef.current,
-              chatId: chatIdRef.current,
-              openConsoles,
-              consoleId: activeConsoleIdRef.current,
-              activeConsoleResults,
-              // Agent mode selection
-              agentId: agentModeRef.current,
-              tabKind: activeTab?.kind,
-              flowType: activeTab?.metadata?.flowType,
-              flowFormState,
-              // Dashboard context
-              ...(agentModeRef.current === "dashboard"
-                ? (() => {
-                    const dash =
-                      useDashboardStoreImport.getState().activeDashboard;
-                    if (!dash) return {};
+          const requestBody = {
+            messages,
+            workspaceId: workspaceIdRef.current,
+            modelId: modelIdRef.current,
+            chatId: chatIdRef.current,
+            openConsoles,
+            consoleId: activeConsoleIdRef.current,
+            activeConsoleResults,
+            // Agent mode selection
+            agentId: agentModeRef.current,
+            tabKind: activeTab?.kind,
+            flowType: activeTab?.metadata?.flowType,
+            flowFormState,
+            // Dashboard context
+            ...(agentModeRef.current === "dashboard"
+              ? (() => {
+                  try {
+                    const snapshot = getDashboardStateSnapshot();
+                    if (!snapshot) return {};
                     return {
                       activeDashboardContext: {
-                        dashboardId: dash._id,
-                        title: dash.title,
-                        dataSources: dash.dataSources.map((ds: any) => ({
+                        dashboardId: snapshot._id,
+                        title: snapshot.title,
+                        dataSources: snapshot.dataSources.map((ds: any) => ({
                           id: ds.id,
                           name: ds.name,
-                          columns: [],
+                          tableRef: ds.tableRef,
+                          status: ds.status || null,
+                          rowsLoaded: ds.rowsLoaded || 0,
+                          error: ds.error || null,
+                          columns: ds.columns || [],
+                          sampleRows: ds.sampleRows || [],
                         })),
-                        widgets: dash.widgets.map((w: any) => ({
+                        widgets: snapshot.widgets.map((w: any) => ({
                           id: w.id,
                           title: w.title,
                           type: w.type,
                           dataSourceId: w.dataSourceId,
                         })),
-                        crossFilterEnabled: dash.crossFilter?.enabled ?? true,
+                        crossFilterEnabled:
+                          snapshot.crossFilter?.enabled ?? true,
                       },
                     };
-                  })()
-                : {}),
-            },
+                  } catch {
+                    return {};
+                  }
+                })()
+              : {}),
+          };
+
+          return {
+            body: toJsonSafe(requestBody) as Record<string, unknown>,
           };
         },
       }),
@@ -1306,390 +1319,20 @@ const Chat: React.FC<ChatProps> = ({
       }
 
       // --- Dashboard tools (client-side) ---
+      if (agentModeRef.current === "dashboard") {
+        const dashboardToolOutput = await executeDashboardAgentTool(
+          toolName,
+          input,
+        );
 
-      if (toolName === "add_data_source") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          const dashboard = store.activeDashboard;
-          if (!dashboard) {
-            addToolOutput({
-              tool: "add_data_source",
-              toolCallId: toolCall.toolCallId,
-              output: { success: false, error: "No active dashboard" },
-            });
-            return;
-          }
-
-          const { nanoid } = await import("nanoid");
-          const consoleId = input.consoleId as string;
-          const name = input.name as string;
-          const workspaceId = dashboard.workspaceId;
-
-          const dsId = nanoid();
-          const newDs: any = {
-            id: dsId,
-            name,
-            consoleId,
-            timeDimension: input.timeDimension as string | undefined,
-            cache: { ttlSeconds: 3600 },
-          };
-
-          // Update store (same as DataSourcePanel does)
-          useDashboardStoreImport.setState(prev => ({
-            ...prev,
-            activeDashboard: prev.activeDashboard
-              ? {
-                  ...prev.activeDashboard,
-                  dataSources: [...prev.activeDashboard.dataSources, newDs],
-                }
-              : prev.activeDashboard,
-          }));
-
-          // Trigger save + data load through the store
-          store.saveDashboard(workspaceId);
-          store.loadDataSource(newDs, workspaceId);
-
+        if (dashboardToolOutput !== null) {
           addToolOutput({
-            tool: "add_data_source",
+            tool: toolName,
             toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              dataSourceId: dsId,
-              tableName: name,
-              message: `Data source "${name}" added. It will be loaded shortly. Use get_data_preview to query it.`,
-            },
+            output: dashboardToolOutput,
           });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "add_data_source",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to add data source",
-            },
-          });
+          return;
         }
-        return;
-      }
-
-      if (toolName === "add_widget") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          const { nanoid } = await import("nanoid");
-          const widget = {
-            id: nanoid(),
-            title: input.title as string | undefined,
-            type: input.type as "chart" | "kpi" | "table",
-            dataSourceId: input.dataSourceId as string,
-            localSql: input.localSql as string,
-            vegaLiteSpec: input.vegaLiteSpec as
-              | Record<string, unknown>
-              | undefined,
-            kpiConfig: input.kpiConfig as any,
-            tableConfig: input.tableConfig as any,
-            crossFilter: { enabled: true },
-            layout: input.layout as {
-              x: number;
-              y: number;
-              w: number;
-              h: number;
-            },
-          };
-          store.addWidget(widget);
-          addToolOutput({
-            tool: "add_widget",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true, widgetId: widget.id },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "add_widget",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to add widget",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "modify_widget") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          const widgetId = input.widgetId as string;
-          const changes: Record<string, unknown> = {};
-          if (input.title !== undefined) changes.title = input.title;
-          if (input.localSql !== undefined) changes.localSql = input.localSql;
-          if (input.vegaLiteSpec !== undefined) {
-            changes.vegaLiteSpec = input.vegaLiteSpec;
-          }
-          if (input.kpiConfig !== undefined) {
-            changes.kpiConfig = input.kpiConfig;
-          }
-          if (input.tableConfig !== undefined) {
-            changes.tableConfig = input.tableConfig;
-          }
-          if (input.layout !== undefined) changes.layout = input.layout;
-          store.modifyWidget(widgetId, changes as any);
-          addToolOutput({
-            tool: "modify_widget",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true, widgetId },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "modify_widget",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to modify widget",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "remove_widget") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          store.removeWidget(input.widgetId as string);
-          addToolOutput({
-            tool: "remove_widget",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "remove_widget",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to remove widget",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "get_dashboard_state") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          const dashboard = store.activeDashboard;
-          if (!dashboard) {
-            addToolOutput({
-              tool: "get_dashboard_state",
-              toolCallId: toolCall.toolCallId,
-              output: { success: false, error: "No active dashboard" },
-            });
-            return;
-          }
-          addToolOutput({
-            tool: "get_dashboard_state",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              dashboard: {
-                id: dashboard._id,
-                title: dashboard.title,
-                dataSources: dashboard.dataSources,
-                widgets: dashboard.widgets.map(w => ({
-                  id: w.id,
-                  title: w.title,
-                  type: w.type,
-                  dataSourceId: w.dataSourceId,
-                  localSql: w.localSql,
-                })),
-                relationships: dashboard.relationships,
-                globalFilters: dashboard.globalFilters,
-                crossFilter: dashboard.crossFilter,
-                layout: dashboard.layout,
-              },
-            },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "get_dashboard_state",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to get dashboard state",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "get_data_preview") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          const { db } = store;
-          if (!db) {
-            addToolOutput({
-              tool: "get_data_preview",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "DuckDB not initialized. Open the Data Sources panel and add a data source first.",
-              },
-            });
-            return;
-          }
-          const dataSourceId = input.dataSourceId as string;
-          const ds = store.activeDashboard?.dataSources.find(
-            d => d.id === dataSourceId,
-          );
-          const tableName = ds?.name || dataSourceId;
-          const sql =
-            (input.sql as string) || `SELECT * FROM "${tableName}" LIMIT 10`;
-          const { queryDuckDB } = await import("../lib/duckdb");
-          const result = await queryDuckDB(db, sql);
-          addToolOutput({
-            tool: "get_data_preview",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              columns: result.fields,
-              rows: result.rows.slice(0, 50),
-              rowCount: result.rowCount,
-            },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "get_data_preview",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Preview query failed",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "add_global_filter") {
-        try {
-          const { nanoid } = await import("nanoid");
-          const store = useDashboardStoreImport.getState();
-          const filter = {
-            id: nanoid(),
-            type: input.type as any,
-            label: input.label as string,
-            dataSourceId: input.dataSourceId as string,
-            column: input.column as string,
-            config: input.defaultValue
-              ? { defaultValue: input.defaultValue }
-              : {},
-            layout: { order: store.activeDashboard?.globalFilters.length || 0 },
-          };
-          store.addGlobalFilter(filter);
-          addToolOutput({
-            tool: "add_global_filter",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true, filterId: filter.id },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "add_global_filter",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to add filter",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "remove_global_filter") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          store.removeGlobalFilter(input.filterId as string);
-          addToolOutput({
-            tool: "remove_global_filter",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "remove_global_filter",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to remove filter",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "link_tables") {
-        try {
-          const { nanoid } = await import("nanoid");
-          const store = useDashboardStoreImport.getState();
-          const rel = {
-            id: nanoid(),
-            from: input.from as { dataSourceId: string; column: string },
-            to: input.to as { dataSourceId: string; column: string },
-            type: input.type as any,
-          };
-          store.addRelationship(rel);
-          addToolOutput({
-            tool: "link_tables",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true, relationshipId: rel.id },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "link_tables",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to link tables",
-            },
-          });
-        }
-        return;
-      }
-
-      if (toolName === "set_time_dimension") {
-        try {
-          const store = useDashboardStoreImport.getState();
-          const dashboard = store.activeDashboard;
-          if (dashboard) {
-            const dsIdx = dashboard.dataSources.findIndex(
-              d => d.id === (input.dataSourceId as string),
-            );
-            if (dsIdx !== -1) {
-              const workspaceId = dashboard.workspaceId;
-              const updated = { ...dashboard };
-              updated.dataSources = [...updated.dataSources];
-              updated.dataSources[dsIdx] = {
-                ...updated.dataSources[dsIdx],
-                timeDimension: input.column as string,
-              };
-              store.updateDashboard(workspaceId, dashboard._id, {
-                dataSources: updated.dataSources,
-              } as any);
-            }
-          }
-          addToolOutput({
-            tool: "set_time_dimension",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true },
-          });
-        } catch (e: any) {
-          addToolOutput({
-            tool: "set_time_dimension",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: e?.message || "Failed to set time dimension",
-            },
-          });
-        }
-        return;
       }
 
       // Handle flow agent client-side tools
@@ -2125,7 +1768,7 @@ const Chat: React.FC<ChatProps> = ({
       };
     });
     try {
-      await navigator.clipboard.writeText(JSON.stringify(history, null, 2));
+      await navigator.clipboard.writeText(safeStringify(history, 2));
       setCopiedChat(true);
       setTimeout(() => setCopiedChat(false), 2000);
     } catch {
@@ -2917,7 +2560,7 @@ const Chat: React.FC<ChatProps> = ({
               {selectedTool && selectedTool.input !== undefined
                 ? typeof selectedTool.input === "string"
                   ? selectedTool.input
-                  : JSON.stringify(selectedTool.input, null, 2)
+                  : safeStringify(selectedTool.input, 2)
                 : "No input captured"}
             </CodeBlock>
           </Box>
@@ -2929,7 +2572,7 @@ const Chat: React.FC<ChatProps> = ({
               {selectedTool && selectedTool.output !== undefined
                 ? typeof selectedTool.output === "string"
                   ? selectedTool.output
-                  : JSON.stringify(selectedTool.output, null, 2)
+                  : safeStringify(selectedTool.output, 2)
                 : "No output captured"}
             </CodeBlock>
           </Box>

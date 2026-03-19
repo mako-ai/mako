@@ -10,9 +10,14 @@ import {
 } from "react-router-dom";
 import { trackPageView } from "./lib/analytics";
 import Sidebar from "./components/Sidebar";
-import { useUIStore } from "./store/uiStore";
+import { DEFAULT_LEFT_PANE_SIZE, useUIStore } from "./store/uiStore";
 import { useConsoleStore } from "./store/consoleStore";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+  type ImperativePanelHandle,
+} from "react-resizable-panels";
 import Chat from "./components/Chat";
 import DatabaseExplorer from "./components/DatabaseExplorer";
 import ConsoleExplorer from "./components/ConsoleExplorer";
@@ -66,9 +71,16 @@ function InvitePage() {
 import { UrlSync } from "./components/UrlSync";
 
 // Main application component (extracted from original App)
+const LEFT_PANE_MIN_SIZE = 0;
+const LEFT_PANE_CLOSE_THRESHOLD = 4;
+
 function MainApp() {
-  const activeView = useUIStore(s => s.leftPane);
+  const activeView = useUIStore(state => state.leftPane);
+  const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const setLeftPaneOpen = useUIStore(state => state.setLeftPaneOpen);
   // Avoid re-rendering MainApp on console state changes; use getState on demand
+  const leftPaneRef = useRef<ImperativePanelHandle | null>(null);
+  const previousLeftPaneOpenRef = useRef(leftPaneOpen);
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
   const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
@@ -306,6 +318,43 @@ function MainApp() {
     }
   };
 
+  const handleLeftPaneResize = (size: number) => {
+    if (size <= LEFT_PANE_CLOSE_THRESHOLD) {
+      if (!leftPaneRef.current?.isCollapsed()) {
+        leftPaneRef.current?.collapse();
+      }
+    }
+  };
+
+  useEffect(() => {
+    const panel = leftPaneRef.current;
+    if (!panel) {
+      return;
+    }
+
+    const previousLeftPaneOpen = previousLeftPaneOpenRef.current;
+    previousLeftPaneOpenRef.current = leftPaneOpen;
+
+    if (previousLeftPaneOpen === leftPaneOpen) {
+      return;
+    }
+
+    if (!leftPaneOpen) {
+      if (!panel.isCollapsed()) {
+        panel.collapse();
+      }
+      return;
+    }
+
+    if (panel.isCollapsed()) {
+      panel.expand();
+    }
+
+    if (Math.abs(panel.getSize() - DEFAULT_LEFT_PANE_SIZE) > 0.1) {
+      panel.resize(DEFAULT_LEFT_PANE_SIZE);
+    }
+  }, [leftPaneOpen]);
+
   return (
     <AuthWrapper>
       <UrlSync />
@@ -325,13 +374,33 @@ function MainApp() {
           direction="horizontal"
           style={{ height: "100%", width: "100%" }}
         >
-          <Panel defaultSize={15} minSize={10}>
+          <Panel
+            ref={leftPaneRef}
+            collapsible
+            collapsedSize={0}
+            defaultSize={leftPaneOpen ? DEFAULT_LEFT_PANE_SIZE : 0}
+            minSize={LEFT_PANE_MIN_SIZE}
+            onCollapse={() => setLeftPaneOpen(false)}
+            onExpand={() => setLeftPaneOpen(true)}
+            onResize={handleLeftPaneResize}
+          >
             <Box sx={{ height: "100%", overflow: "hidden" }}>
               {renderLeftPane()}
             </Box>
           </Panel>
 
-          <StyledHorizontalResizeHandle />
+          <StyledHorizontalResizeHandle
+            style={
+              leftPaneOpen
+                ? undefined
+                : {
+                    width: 0,
+                    minWidth: 0,
+                    opacity: 0,
+                    pointerEvents: "none",
+                  }
+            }
+          />
 
           {/* Editor + Results vertical layout inside Editor component */}
           <Panel defaultSize={30} minSize={30}>

@@ -8,6 +8,9 @@ import {
   useDashboardStore,
   type DashboardWidget,
 } from "../../store/dashboardStore";
+import { executeDashboardSql } from "../../dashboard-runtime/commands";
+import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
+import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 import WidgetContainer from "../widgets/WidgetContainer";
 import ChartWidget from "../widgets/ChartWidget";
 import KpiCard from "../widgets/KpiCard";
@@ -18,9 +21,20 @@ interface PresentationModeProps {
 }
 
 const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
-  const { activeDashboard, db, dataSourceStatus } = useDashboardStore();
+  const activeDashboard = useDashboardStore(state => state.activeDashboard);
+  const runtimeSession = useDashboardRuntimeStore(state =>
+    activeDashboard ? state.sessions[activeDashboard._id] || null : null,
+  );
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();
+  const queryExecutor = useCallback<DashboardQueryExecutor>(
+    (sql, options) =>
+      executeDashboardSql({
+        sql,
+        dataSourceId: options?.dataSourceId,
+      }),
+    [],
+  );
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -34,10 +48,10 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  if (!activeDashboard || !db) return null;
+  if (!activeDashboard) return null;
 
   const allSourcesReady = activeDashboard.dataSources.every(
-    ds => dataSourceStatus[ds.id] === "ready",
+    ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
   );
 
   const gridLayout = activeDashboard.widgets.map(w => ({
@@ -55,7 +69,8 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
       case "chart":
         return (
           <ChartWidget
-            db={db}
+            queryExecutor={queryExecutor}
+            dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             vegaLiteSpec={widget.vegaLiteSpec}
           />
@@ -63,7 +78,8 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
       case "kpi":
         return widget.kpiConfig ? (
           <KpiCard
-            db={db}
+            queryExecutor={queryExecutor}
+            dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             kpiConfig={widget.kpiConfig}
           />
@@ -71,7 +87,8 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
       case "table":
         return (
           <DataTableWidget
-            db={db}
+            queryExecutor={queryExecutor}
+            dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             tableConfig={widget.tableConfig}
           />

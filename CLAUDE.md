@@ -499,29 +499,6 @@ enrichContextWithWorkspace(workspaceId);
 - **Comments**: Only add comments where logic is non-obvious
 - **Type safety**: Prefer interfaces over types for object shapes
 
-## Testing Strategy
-
-Currently uses manual testing with comprehensive checklists. Jest is configured but automated tests are not yet comprehensive.
-
-**Manual testing checklist:**
-
-- Authentication flow testing across OAuth providers (Google, GitHub)
-- Email/password authentication
-- Multi-tenant isolation verification (workspace data scoping)
-- Data source connection testing (all supported connectors)
-- Query execution and result handling across database types
-- AI agent functionality with different LLM providers
-- Data sync flow execution (Inngest workflows)
-- Permission checks (owner, admin, member, viewer roles)
-- API key authentication
-- Rate limiting functionality
-
-**Automated testing:**
-
-- Jest 29.7.0 with ts-jest configured
-- Pre-commit hooks enforce linting (ESLint + Prettier)
-- TypeScript strict mode catches type errors at compile time
-
 ## Deployment
 
 ### Docker

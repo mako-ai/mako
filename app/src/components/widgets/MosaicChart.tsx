@@ -7,13 +7,12 @@ import React, {
 } from "react";
 import { Box, CircularProgress } from "@mui/material";
 import ResultsChart from "../ResultsChart";
-import { queryDuckDB } from "../../lib/duckdb";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 import type { MakoChartSpec } from "../../lib/chart-spec";
 import type { MosaicInstance } from "../../lib/mosaic";
 
 interface MosaicChartProps {
-  db: AsyncDuckDB;
+  queryExecutor?: DashboardQueryExecutor;
   widgetId: string;
   tableName: string;
   localSql: string;
@@ -24,7 +23,7 @@ interface MosaicChartProps {
 }
 
 const MosaicChart: React.FC<MosaicChartProps> = ({
-  db,
+  queryExecutor,
   widgetId,
   tableName: _tableName,
   localSql,
@@ -61,7 +60,10 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
               sql.slice(insertIdx);
           }
         }
-        const result = await queryDuckDB(db, sql);
+        if (!queryExecutor) {
+          throw new Error("Query executor is not available");
+        }
+        const result = await queryExecutor(sql);
         setData(result.rows);
         setFields(result.fields);
       } catch (e: any) {
@@ -70,7 +72,7 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
         setLoading(false);
       }
     },
-    [db, localSql, onError],
+    [localSql, onError, queryExecutor],
   );
 
   useEffect(() => {

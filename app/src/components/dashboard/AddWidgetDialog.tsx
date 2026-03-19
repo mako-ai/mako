@@ -21,7 +21,7 @@ import {
   useDashboardStore,
   type DashboardWidget,
 } from "../../store/dashboardStore";
-import { queryDuckDB } from "../../lib/duckdb";
+import { executeDashboardSql } from "../../dashboard-runtime/commands";
 
 interface AddWidgetDialogProps {
   open: boolean;
@@ -69,10 +69,12 @@ export default function AddWidgetDialog({
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const handlePreview = async () => {
-    const db = useDashboardStore.getState().db;
-    if (!db || !localSql.trim()) return;
+    if (!localSql.trim()) return;
     try {
-      const result = await queryDuckDB(db, localSql);
+      const result = await executeDashboardSql({
+        sql: localSql,
+        dataSourceId: dataSourceId || undefined,
+      });
       setPreviewRows(result.rows.slice(0, 3));
       setPreviewError(null);
     } catch (e: unknown) {

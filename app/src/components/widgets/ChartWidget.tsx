@@ -1,45 +1,37 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React from "react";
 import { Box, CircularProgress } from "@mui/material";
 import ResultsChart from "../ResultsChart";
-import { queryDuckDB } from "../../lib/duckdb";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 import type { MakoChartSpec } from "../../lib/chart-spec";
+import { useDashboardQuery } from "../../dashboard-runtime/useDashboardQuery";
+import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 
 interface ChartWidgetProps {
-  db: AsyncDuckDB;
+  queryExecutor?: DashboardQueryExecutor;
+  dataSourceId?: string;
   localSql: string;
   vegaLiteSpec?: Record<string, unknown>;
   onError?: (error: string) => void;
 }
 
-const ChartWidget: React.FC<ChartWidgetProps> = ({
-  db,
+const ChartWidgetComponent: React.FC<ChartWidgetProps> = ({
+  queryExecutor,
+  dataSourceId,
   localSql,
   vegaLiteSpec,
   onError,
 }) => {
-  const [data, setData] = useState<any[]>([]);
-  const [fields, setFields] = useState<Array<{ name: string; type: string }>>(
-    [],
-  );
-  const [loading, setLoading] = useState(true);
+  const { result, loading, error } = useDashboardQuery({
+    sql: localSql,
+    dataSourceId,
+    queryExecutor,
+    enabled: Boolean(localSql.trim()),
+  });
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await queryDuckDB(db, localSql);
-      setData(result.rows);
-      setFields(result.fields);
-    } catch (e: any) {
-      onError?.(e?.message || "Query failed");
-    } finally {
-      setLoading(false);
+  React.useEffect(() => {
+    if (error) {
+      onError?.(error);
     }
-  }, [db, localSql, onError]);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  }, [error, onError]);
 
   if (loading) {
     return (
@@ -58,11 +50,14 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({
 
   return (
     <ResultsChart
-      data={data}
-      fields={fields}
+      data={result?.rows || []}
+      fields={result?.fields || []}
       spec={vegaLiteSpec as MakoChartSpec | undefined}
     />
   );
 };
+
+const ChartWidget = React.memo(ChartWidgetComponent);
+ChartWidget.displayName = "ChartWidget";
 
 export default ChartWidget;

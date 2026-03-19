@@ -3,6 +3,27 @@ import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 let dbInstance: AsyncDuckDB | null = null;
 let initPromise: Promise<AsyncDuckDB> | null = null;
 
+export async function createDuckDBInstance(): Promise<AsyncDuckDB> {
+  const duckdb = await import("@duckdb/duckdb-wasm");
+  const bundles = duckdb.getJsDelivrBundles();
+  const bundle = await duckdb.selectBundle(bundles);
+
+  const workerUrl = bundle.mainWorker!;
+  let worker: Worker;
+  try {
+    worker = new Worker(workerUrl);
+  } catch {
+    const resp = await fetch(workerUrl);
+    const blob = new Blob([await resp.text()], { type: "text/javascript" });
+    worker = new Worker(URL.createObjectURL(blob));
+  }
+
+  const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
+  const db = new duckdb.AsyncDuckDB(logger, worker);
+  await db.instantiate(bundle.mainModule);
+  return db;
+}
+
 /**
  * Lazily initialize DuckDB-WASM in single-threaded mode.
  * Returns a singleton instance shared across all dashboards.
@@ -12,24 +33,7 @@ export async function initDuckDB(): Promise<AsyncDuckDB> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    const duckdb = await import("@duckdb/duckdb-wasm");
-    const bundles = duckdb.getJsDelivrBundles();
-    const bundle = await duckdb.selectBundle(bundles);
-
-    const workerUrl = bundle.mainWorker!;
-    let worker: Worker;
-    try {
-      worker = new Worker(workerUrl);
-    } catch {
-      const resp = await fetch(workerUrl);
-      const blob = new Blob([await resp.text()], { type: "text/javascript" });
-      worker = new Worker(URL.createObjectURL(blob));
-    }
-
-    const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
-    const db = new duckdb.AsyncDuckDB(logger, worker);
-    await db.instantiate(bundle.mainModule);
-
+    const db = await createDuckDBInstance();
     dbInstance = db;
     return db;
   })();
@@ -91,10 +95,162 @@ export async function loadJsonTable(
   }
 }
 
+/**
+ * Load newline-delimited JSON from a ReadableStream into DuckDB in bounded batches.
+ * This avoids materializing a single giant JSON array in browser memory.
+ */
+export async function loadNdjsonStreamTable(
+  db: AsyncDuckDB,
+  tableName: string,
+  stream: ReadableStream<Uint8Array>,
+  options?: {
+    batchLineCount?: number;
+    onProgress?: (rowsLoaded: number) => void;
+  },
+): Promise<number> {
+  const batchLineCount = Math.max(1, options?.batchLineCount || 2000);
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const tempPath = `__mako_stream_${tableName}.jsonl`;
+  const conn = await db.connect();
+
+  let pendingText = "";
+  let pendingLines: string[] = [];
+  let insertedRows = 0;
+  let tableCreated = false;
+
+  const normalizeNestedValue = (value: unknown): unknown => {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (Array.isArray(value)) {
+      return JSON.stringify(value);
+    }
+
+    if (typeof value === "object") {
+      return JSON.stringify(value);
+    }
+
+    return value;
+  };
+
+  const normalizeJsonLine = (line: string): string => {
+    const parsed = JSON.parse(line) as unknown;
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return line;
+    }
+
+    const normalized = Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [
+        key,
+        normalizeNestedValue(value),
+      ]),
+    );
+
+    return JSON.stringify(normalized);
+  };
+
+  const flushBatch = async () => {
+    if (pendingLines.length === 0) {
+      return;
+    }
+
+    const batchText = pendingLines.map(normalizeJsonLine).join("\n");
+    insertedRows += pendingLines.length;
+    pendingLines = [];
+
+    await db.registerFileText(tempPath, batchText);
+
+    if (!tableCreated) {
+      await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
+      await conn.query(
+        `CREATE TABLE "${tableName}" AS SELECT * FROM read_json_auto('${tempPath}', format = 'newline_delimited')`,
+      );
+      tableCreated = true;
+      options?.onProgress?.(insertedRows);
+      return;
+    }
+
+    await conn.query(
+      `INSERT INTO "${tableName}" SELECT * FROM read_json_auto('${tempPath}', format = 'newline_delimited')`,
+    );
+
+    options?.onProgress?.(insertedRows);
+  };
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      pendingText += decoder.decode(value, { stream: true });
+      const lines = pendingText.split(/\r?\n/);
+      pendingText = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        pendingLines.push(trimmed);
+        if (pendingLines.length >= batchLineCount) {
+          await flushBatch();
+        }
+      }
+    }
+
+    pendingText += decoder.decode();
+    if (pendingText.trim()) {
+      pendingLines.push(pendingText.trim());
+    }
+
+    await flushBatch();
+
+    if (!tableCreated) {
+      await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
+    }
+
+    return insertedRows;
+  } finally {
+    reader.releaseLock();
+    await conn.close();
+  }
+}
+
 export interface DuckDBQueryResult {
   rows: Record<string, unknown>[];
   fields: Array<{ name: string; type: string }>;
   rowCount: number;
+}
+
+function normalizeDuckDBValue(value: unknown): unknown {
+  if (typeof value === "bigint") {
+    const max = BigInt(Number.MAX_SAFE_INTEGER);
+    const min = BigInt(Number.MIN_SAFE_INTEGER);
+    if (value <= max && value >= min) {
+      return Number(value);
+    }
+    return value.toString();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(normalizeDuckDBValue);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [
+        key,
+        normalizeDuckDBValue(nested),
+      ]),
+    );
+  }
+
+  return value;
 }
 
 /**
@@ -119,7 +275,7 @@ export async function queryDuckDB(
       const row: Record<string, unknown> = {};
       for (const field of fields) {
         const col = result.getChild(field.name);
-        row[field.name] = col?.get(i);
+        row[field.name] = normalizeDuckDBValue(col?.get(i));
       }
       rows.push(row);
     }
@@ -285,7 +441,7 @@ export async function setCachedArrow(
       const store = tx.objectStore(CACHE_STORE_NAME);
       const entry: CacheEntry = {
         key: cacheKey,
-        buffer: buffer.buffer,
+        buffer: buffer.slice().buffer as ArrayBuffer,
         timestamp: Date.now(),
         rowCount,
         byteSize: buffer.byteLength,

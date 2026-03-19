@@ -1,41 +1,38 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect } from "react";
 import { Box, CircularProgress, Typography } from "@mui/material";
-import { queryDuckDB } from "../../lib/duckdb";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import { useDashboardQuery } from "../../dashboard-runtime/useDashboardQuery";
+import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 
 interface CodeWidgetProps {
-  db: AsyncDuckDB;
+  queryExecutor?: DashboardQueryExecutor;
+  dataSourceId?: string;
   localSql: string;
   code: string;
   onError?: (error: string) => void;
 }
 
 const CodeWidget: React.FC<CodeWidgetProps> = ({
-  db,
+  queryExecutor,
+  dataSourceId,
   localSql,
   code,
   onError,
 }) => {
-  const [data, setData] = useState<Record<string, unknown>[]>([]);
-  const [loading, setLoading] = useState(true);
   const [renderError, setRenderError] = useState<string | null>(null);
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
-
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await queryDuckDB(db, localSql);
-      setData(result.rows);
-    } catch (e: unknown) {
-      onError?.(e instanceof Error ? e.message : "Query failed");
-    } finally {
-      setLoading(false);
-    }
-  }, [db, localSql, onError]);
+  const { result, loading, error } = useDashboardQuery({
+    sql: localSql,
+    dataSourceId,
+    queryExecutor,
+    enabled: Boolean(localSql.trim()),
+  });
+  const data = result?.rows || [];
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (error) {
+      onError?.(error);
+    }
+  }, [error, onError]);
 
   useEffect(() => {
     if (loading || !iframeRef.current) return;

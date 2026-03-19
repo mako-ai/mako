@@ -1709,25 +1709,7 @@ export interface IDashboard extends Document {
   title: string;
   description?: string;
 
-  dataSources: Array<{
-    id: string;
-    name: string;
-    consoleId: Types.ObjectId;
-    connectionId?: Types.ObjectId;
-    timeDimension?: string;
-    rowLimit?: number;
-    computedColumns?: Array<{
-      name: string;
-      expression: string;
-      type: "quantitative" | "temporal" | "nominal" | "ordinal";
-    }>;
-    cache?: {
-      ttlSeconds?: number;
-      lastRefreshedAt?: Date;
-      rowCount?: number;
-      byteSize?: number;
-    };
-  }>;
+  dataSources: IDashboardDataSource[];
 
   relationships: Array<{
     id: string;
@@ -1801,6 +1783,54 @@ export interface IDashboard extends Document {
   updatedAt: Date;
 }
 
+export interface IDashboardQueryDefinition {
+  connectionId: Types.ObjectId;
+  language: "sql" | "javascript" | "mongodb";
+  code: string;
+  databaseId?: string;
+  databaseName?: string;
+  mongoOptions?: {
+    collection?: string;
+    operation?:
+      | "find"
+      | "aggregate"
+      | "insertMany"
+      | "updateMany"
+      | "deleteMany"
+      | "findOne"
+      | "updateOne"
+      | "deleteOne";
+  };
+}
+
+export interface IDashboardDataSourceOrigin {
+  type: "saved_console" | "local";
+  consoleId?: Types.ObjectId;
+  consoleName?: string;
+  importedAt?: Date;
+}
+
+export interface IDashboardDataSource {
+  id: string;
+  name: string;
+  tableRef: string;
+  query: IDashboardQueryDefinition;
+  origin?: IDashboardDataSourceOrigin;
+  timeDimension?: string;
+  rowLimit?: number;
+  computedColumns?: Array<{
+    name: string;
+    expression: string;
+    type: "quantitative" | "temporal" | "nominal" | "ordinal";
+  }>;
+  cache?: {
+    ttlSeconds?: number;
+    lastRefreshedAt?: Date;
+    rowCount?: number;
+    byteSize?: number;
+  };
+}
+
 /**
  * Dashboard Schema
  */
@@ -1818,14 +1848,49 @@ const DashboardSchema = new Schema<IDashboard>(
       {
         id: { type: String, required: true },
         name: { type: String, required: true },
-        consoleId: {
-          type: Schema.Types.ObjectId,
-          ref: "SavedConsole",
-          required: true,
+        tableRef: { type: String, required: true },
+        query: {
+          connectionId: {
+            type: Schema.Types.ObjectId,
+            ref: "DatabaseConnection",
+            required: true,
+          },
+          language: {
+            type: String,
+            enum: ["sql", "javascript", "mongodb"],
+            required: true,
+          },
+          code: { type: String, required: true },
+          databaseId: { type: String },
+          databaseName: { type: String },
+          mongoOptions: {
+            collection: { type: String },
+            operation: {
+              type: String,
+              enum: [
+                "find",
+                "aggregate",
+                "insertMany",
+                "updateMany",
+                "deleteMany",
+                "findOne",
+                "updateOne",
+                "deleteOne",
+              ],
+            },
+          },
         },
-        connectionId: {
-          type: Schema.Types.ObjectId,
-          ref: "DatabaseConnection",
+        origin: {
+          type: {
+            type: String,
+            enum: ["saved_console", "local"],
+          },
+          consoleId: {
+            type: Schema.Types.ObjectId,
+            ref: "SavedConsole",
+          },
+          consoleName: { type: String },
+          importedAt: { type: Date },
         },
         timeDimension: { type: String },
         rowLimit: { type: Number },

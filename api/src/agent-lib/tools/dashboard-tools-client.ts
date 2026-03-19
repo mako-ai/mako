@@ -140,34 +140,96 @@ const suggestChartsSchema = z.object({
   dataSourceId: z.string().describe("Data source to analyze"),
 });
 
-const addDataSourceSchema = z.object({
+const importConsoleAsDataSourceSchema = z.object({
   consoleId: z
     .string()
-    .describe("ID of the saved console to use as data source"),
+    .describe("ID of the saved console to import into the dashboard"),
   name: z
     .string()
-    .describe(
-      "Table alias in the dashboard (e.g. 'weekly_enquiries', 'orders')",
-    ),
+    .optional()
+    .describe("Optional dashboard-local name for the imported data source"),
   timeDimension: z
     .string()
     .optional()
     .describe("Default time column for this data source"),
+  rowLimit: z
+    .number()
+    .optional()
+    .describe("Optional row limit for materialization"),
+});
+
+const createDataSourceSchema = z.object({
+  name: z.string().describe("Dashboard-local data source name"),
+  connectionId: z
+    .string()
+    .describe("Connection ID to execute the query against"),
+  language: z
+    .enum(["sql", "javascript", "mongodb"])
+    .default("sql")
+    .describe("Query language"),
+  code: z.string().describe("Query text/code to materialize into DuckDB"),
+  databaseId: z.string().optional().describe("Optional sub-database ID"),
+  databaseName: z.string().optional().describe("Optional database name"),
+  timeDimension: z.string().optional().describe("Default time column"),
+  rowLimit: z
+    .number()
+    .optional()
+    .describe("Optional row limit for materialization"),
+});
+
+const updateDataSourceQuerySchema = z.object({
+  dashboardId: z.string().describe("Dashboard ID"),
+  dataSourceId: z.string().describe("Dashboard data source ID"),
+  name: z.string().optional().describe("Updated display name"),
+  connectionId: z.string().optional().describe("Updated connection ID"),
+  language: z
+    .enum(["sql", "javascript", "mongodb"])
+    .optional()
+    .describe("Updated query language"),
+  code: z.string().optional().describe("Updated query text/code"),
+  databaseId: z.string().optional().describe("Updated sub-database ID"),
+  databaseName: z.string().optional().describe("Updated database name"),
+  timeDimension: z.string().optional().describe("Updated default time column"),
+  rowLimit: z.number().optional().describe("Updated row limit"),
+});
+
+const previewDataSourceSchema = z.object({
+  dashboardId: z.string().describe("Dashboard ID"),
+  dataSourceId: z.string().describe("Dashboard data source ID"),
+  sql: z
+    .string()
+    .optional()
+    .describe("Optional SQL to run against the local DuckDB table"),
 });
 
 export const clientDashboardTools = {
+  import_console_as_data_source: {
+    description:
+      "Import a saved console into the current dashboard by value. " +
+      "This duplicates the console's query definition into a dashboard-local data source and materializes it into DuckDB. " +
+      "Use search_consoles first to find the console ID.",
+    inputSchema: importConsoleAsDataSourceSchema,
+  },
   add_data_source: {
     description:
-      "Add a saved console as a data source to the current dashboard. " +
-      "This fetches the console's query results and loads them into the local DuckDB instance. " +
-      "Use search_consoles first to find the console ID. " +
-      "After adding, the data source's table name can be used in widget localSql queries.",
-    inputSchema: addDataSourceSchema,
+      "Legacy alias for importing a saved console into the dashboard. Prefer import_console_as_data_source.",
+    inputSchema: importConsoleAsDataSourceSchema,
+  },
+  create_data_source: {
+    description:
+      "Create a dashboard-local data source directly from a connection and query definition. " +
+      "Use this when the user wants to add data without saving a console first.",
+    inputSchema: createDataSourceSchema,
+  },
+  update_data_source_query: {
+    description:
+      "Modify an existing dashboard-local data source query definition and re-materialize it.",
+    inputSchema: updateDataSourceQuerySchema,
   },
   add_widget: {
     description:
       "Add a chart, KPI card, or data table widget to the dashboard. " +
-      "The localSql runs against the local DuckDB table. " +
+      "The localSql runs against the dashboard-local DuckDB tableRef. " +
       "For chart type, provide a vegaLiteSpec without a data property.",
     inputSchema: addWidgetSchema,
   },
@@ -185,10 +247,15 @@ export const clientDashboardTools = {
       "Get the full dashboard specification including all widgets, data sources, and their column schemas.",
     inputSchema: getDashboardStateSchema,
   },
+  preview_data_source: {
+    description:
+      "Run a SQL query against a dashboard-local data source in DuckDB. " +
+      "Useful for understanding the loaded data before creating charts.",
+    inputSchema: previewDataSourceSchema,
+  },
   get_data_preview: {
     description:
-      "Run a SQL query against a dashboard data source in local DuckDB. " +
-      "Useful for understanding the data before creating charts.",
+      "Legacy alias for preview_data_source. Runs SQL against the loaded DuckDB table.",
     inputSchema: getDataPreviewSchema,
   },
   suggest_charts: {

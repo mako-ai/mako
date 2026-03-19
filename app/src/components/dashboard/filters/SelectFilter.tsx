@@ -9,20 +9,19 @@ import {
   Tooltip,
 } from "@mui/material";
 import { X } from "lucide-react";
-import { queryDuckDB } from "../../../lib/duckdb";
 import type { GlobalFilter } from "../../../store/dashboardStore";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import type { DashboardQueryExecutor } from "../../../dashboard-runtime/types";
 
 interface SelectFilterProps {
   filter: GlobalFilter;
-  db: AsyncDuckDB;
+  queryExecutor: DashboardQueryExecutor;
   onChange: (value: unknown) => void;
   onRemove: () => void;
 }
 
 const SelectFilter: React.FC<SelectFilterProps> = ({
   filter,
-  db,
+  queryExecutor,
   onChange,
   onRemove,
 }) => {
@@ -37,16 +36,16 @@ const SelectFilter: React.FC<SelectFilterProps> = ({
     if (options.length > 0) return;
     (async () => {
       try {
-        const result = await queryDuckDB(
-          db,
-          `SELECT DISTINCT "${filter.column}" AS val FROM "${filter.dataSourceId}" WHERE "${filter.column}" IS NOT NULL ORDER BY val LIMIT 200`,
+        const result = await queryExecutor(
+          `SELECT DISTINCT "${filter.column}" AS val FROM {{source}} WHERE "${filter.column}" IS NOT NULL ORDER BY val LIMIT 200`,
+          { dataSourceId: filter.dataSourceId },
         );
         setOptions(result.rows.map(r => String(r.val)));
       } catch {
         // Silent — options remain empty
       }
     })();
-  }, [db, filter.column, filter.dataSourceId, options.length]);
+  }, [filter.column, filter.dataSourceId, options.length, queryExecutor]);
 
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>

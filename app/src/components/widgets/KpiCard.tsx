@@ -1,11 +1,12 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React from "react";
 import { Box, Typography, CircularProgress } from "@mui/material";
 import { TrendingUp, TrendingDown } from "lucide-react";
-import { queryDuckDB } from "../../lib/duckdb";
-import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import { useDashboardQuery } from "../../dashboard-runtime/useDashboardQuery";
+import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 
 interface KpiCardProps {
-  db: AsyncDuckDB;
+  queryExecutor?: DashboardQueryExecutor;
+  dataSourceId?: string;
   localSql: string;
   kpiConfig: {
     valueField: string;
@@ -40,39 +41,43 @@ function formatValue(value: number | null, format?: string): string {
   }
 }
 
-const KpiCard: React.FC<KpiCardProps> = ({
-  db,
+const KpiCardComponent: React.FC<KpiCardProps> = ({
+  queryExecutor,
+  dataSourceId,
   localSql,
   kpiConfig,
   onError,
 }) => {
-  const [mainValue, setMainValue] = useState<number | null>(null);
-  const [comparisonValue, setComparisonValue] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { result, loading, error } = useDashboardQuery({
+    sql: localSql,
+    dataSourceId,
+    queryExecutor,
+    enabled: Boolean(localSql.trim()),
+  });
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await queryDuckDB(db, localSql);
-      if (result.rows.length > 0) {
-        const row = result.rows[0];
-        const val = row[kpiConfig.valueField];
-        setMainValue(typeof val === "number" ? val : Number(val));
-        if (kpiConfig.comparisonField) {
-          const comp = row[kpiConfig.comparisonField];
-          setComparisonValue(typeof comp === "number" ? comp : Number(comp));
-        }
-      }
-    } catch (e: any) {
-      onError?.(e?.message || "KPI query failed");
-    } finally {
-      setLoading(false);
+  React.useEffect(() => {
+    if (error) {
+      onError?.(error);
     }
-  }, [db, localSql, kpiConfig, onError]);
+  }, [error, onError]);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const row = result?.rows[0];
+  const mainRaw = row?.[kpiConfig.valueField];
+  const mainValue =
+    typeof mainRaw === "number"
+      ? mainRaw
+      : mainRaw != null
+        ? Number(mainRaw)
+        : null;
+  const comparisonRaw = kpiConfig.comparisonField
+    ? row?.[kpiConfig.comparisonField]
+    : null;
+  const comparisonValue =
+    typeof comparisonRaw === "number"
+      ? comparisonRaw
+      : comparisonRaw != null
+        ? Number(comparisonRaw)
+        : null;
 
   if (loading) {
     return (
@@ -139,5 +144,8 @@ const KpiCard: React.FC<KpiCardProps> = ({
     </Box>
   );
 };
+
+const KpiCard = React.memo(KpiCardComponent);
+KpiCard.displayName = "KpiCard";
 
 export default KpiCard;

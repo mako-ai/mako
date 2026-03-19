@@ -1,4 +1,10 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import {
   Box,
   Typography,
@@ -34,7 +40,16 @@ import {
 } from "../store/dashboardStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useTheme } from "../contexts/ThemeContext";
-import { initDuckDB } from "../lib/duckdb";
+import {
+  activateDashboardSession,
+  executeDashboardSql,
+  refreshAllDashboardDataSourcesCommand,
+} from "../dashboard-runtime/commands";
+import { useDashboardRuntimeStore } from "../dashboard-runtime/store";
+import type {
+  DashboardQueryExecutor,
+  DashboardRuntimeStatus,
+} from "../dashboard-runtime/types";
 import WidgetContainer from "./widgets/WidgetContainer";
 import ChartWidget from "./widgets/ChartWidget";
 import KpiCard from "./widgets/KpiCard";
@@ -52,6 +67,25 @@ interface DashboardCanvasProps {
   onCreated?: (dashboardId: string) => void;
 }
 
+function shouldClearTransientWidgetError(
+  error: string,
+  runtimeStatus: DashboardRuntimeStatus | undefined,
+  hasRuntimeSession: boolean,
+): boolean {
+  if (error === "Dashboard runtime session is not initialized") {
+    return hasRuntimeSession;
+  }
+
+  if (
+    error.includes("is not materialized yet") ||
+    error.includes("is still loading")
+  ) {
+    return runtimeStatus === "loading" || runtimeStatus === "ready";
+  }
+
+  return false;
+}
+
 const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   dashboardId,
   isNew,
@@ -59,21 +93,21 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 }) => {
   const { currentWorkspace } = useWorkspace();
   const { effectiveMode } = useTheme();
-  const {
-    activeDashboard,
-    openDashboard,
-    saveDashboard,
-    addWidget,
-    modifyWidget,
-    removeWidget,
-    undo,
-    redo,
-    db,
-    setDb,
-    dataSourceStatus,
-    loadDataSource,
-    refreshAllDataSources,
-  } = useDashboardStore();
+  const activeDashboard = useDashboardStore(state => state.activeDashboard);
+  const openDashboard = useDashboardStore(state => state.openDashboard);
+  const saveDashboard = useDashboardStore(state => state.saveDashboard);
+  const createDashboard = useDashboardStore(state => state.createDashboard);
+  const updateDashboard = useDashboardStore(state => state.updateDashboard);
+  const addWidget = useDashboardStore(state => state.addWidget);
+  const modifyWidget = useDashboardStore(state => state.modifyWidget);
+  const removeWidget = useDashboardStore(state => state.removeWidget);
+  const undo = useDashboardStore(state => state.undo);
+  const redo = useDashboardStore(state => state.redo);
+  const historyIndex = useDashboardStore(state => state.historyIndex);
+  const historyLength = useDashboardStore(state => state.history.length);
+  const runtimeSession = useDashboardRuntimeStore(state =>
+    activeDashboard ? state.sessions[activeDashboard._id] || null : null,
+  );
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState("");
@@ -91,7 +125,82 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     useContainerWidth();
 
   const workspaceId = currentWorkspace?.id;
-  const { createDashboard } = useDashboardStore();
+  const widgetErrorHandlersRef = useRef<
+    Record<string, (error: string) => void>
+  >({});
+  const queryExecutor = useCallback<DashboardQueryExecutor>(
+    (sql, options) =>
+      executeDashboardSql({
+        sql,
+        dataSourceId: options?.dataSourceId,
+      }),
+    [],
+  );
+
+  const getWidgetErrorHandler = useCallback((widgetId: string) => {
+    const existing = widgetErrorHandlersRef.current[widgetId];
+    if (existing) {
+      return existing;
+    }
+
+    const handler = (error: string) => {
+      setWidgetErrors(prev =>
+        prev[widgetId] === error ? prev : { ...prev, [widgetId]: error },
+      );
+    };
+    widgetErrorHandlersRef.current[widgetId] = handler;
+    return handler;
+  }, []);
+
+  useEffect(() => {
+    if (!activeDashboard) {
+      widgetErrorHandlersRef.current = {};
+      setWidgetErrors({});
+      return;
+    }
+
+    const widgetById = new Map(
+      activeDashboard.widgets.map(widget => [widget.id, widget]),
+    );
+    const activeWidgetIds = new Set(widgetById.keys());
+    const hasRuntimeSession = Boolean(runtimeSession);
+
+    setWidgetErrors(prev => {
+      let changed = false;
+      const next: Record<string, string> = {};
+
+      for (const [widgetId, error] of Object.entries(prev)) {
+        const widget = widgetById.get(widgetId);
+        if (!widget) {
+          changed = true;
+          continue;
+        }
+
+        const runtimeStatus =
+          runtimeSession?.dataSources[widget.dataSourceId]?.status;
+        if (
+          shouldClearTransientWidgetError(
+            error,
+            runtimeStatus,
+            hasRuntimeSession,
+          )
+        ) {
+          changed = true;
+          continue;
+        }
+
+        next[widgetId] = error;
+      }
+
+      return changed ? next : prev;
+    });
+
+    for (const widgetId of Object.keys(widgetErrorHandlersRef.current)) {
+      if (!activeWidgetIds.has(widgetId)) {
+        delete widgetErrorHandlersRef.current[widgetId];
+      }
+    }
+  }, [activeDashboard, runtimeSession]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -113,7 +222,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           useDashboardStore.setState({
             activeDashboardId: created._id,
             activeDashboard: created,
-            dataSourceStatus: {},
             history: [],
             historyIndex: -1,
           });
@@ -136,23 +244,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   useEffect(() => {
     if (!activeDashboard || !workspaceId) return;
-    let cancelled = false;
-
-    (async () => {
-      const duckdb = await initDuckDB();
-      if (cancelled) return;
-      setDb(duckdb);
-
-      for (const ds of activeDashboard.dataSources) {
-        if (!cancelled) {
-          await loadDataSource(ds, workspaceId);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    void activateDashboardSession(workspaceId);
   }, [activeDashboard?._id, workspaceId]);
 
   // Sync code view when switching to code mode
@@ -170,19 +262,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       workspaceId &&
       titleValue !== activeDashboard.title
     ) {
-      useDashboardStore
-        .getState()
-        .updateDashboard(workspaceId, activeDashboard._id, {
-          title: titleValue,
-        });
-      useDashboardStore.setState(prev => ({
-        ...prev,
-        activeDashboard: prev.activeDashboard
-          ? { ...prev.activeDashboard, title: titleValue }
-          : prev.activeDashboard,
-      }));
+      void updateDashboard(workspaceId, activeDashboard._id, {
+        title: titleValue,
+      });
     }
-  }, [activeDashboard, workspaceId, titleValue]);
+  }, [activeDashboard, workspaceId, titleValue, updateDashboard]);
 
   const handleExportPng = useCallback(async () => {
     const gridEl = document.querySelector(".layout") as HTMLElement;
@@ -204,9 +288,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const handleRefresh = useCallback(() => {
     if (workspaceId) {
-      refreshAllDataSources(workspaceId);
+      void refreshAllDashboardDataSourcesCommand(workspaceId);
     }
-  }, [workspaceId, refreshAllDataSources]);
+  }, [workspaceId]);
 
   const handleLayoutChange = useCallback(
     (layout: readonly any[]) => {
@@ -233,16 +317,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (!workspaceId || !activeDashboard) return;
     try {
       const parsed = JSON.parse(codeValue);
-      useDashboardStore.setState(prev => ({
-        ...prev,
-        activeDashboard: { ...prev.activeDashboard!, ...parsed },
+      useDashboardStore.setState(state => ({
+        activeDashboard: state.activeDashboard
+          ? { ...state.activeDashboard, ...parsed }
+          : state.activeDashboard,
       }));
-      useDashboardStore.getState().saveDashboard(workspaceId);
+      void saveDashboard(workspaceId);
       setCodeError(null);
     } catch (e: any) {
       setCodeError(e?.message || "Invalid JSON");
     }
-  }, [codeValue, workspaceId, activeDashboard]);
+  }, [activeDashboard, codeValue, saveDashboard, workspaceId]);
 
   const handleDuplicateWidget = useCallback(
     async (widget: DashboardWidget) => {
@@ -265,13 +350,82 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (!activeDashboard) return false;
     if (activeDashboard.dataSources.length === 0) return true;
     return activeDashboard.dataSources.every(
-      ds => dataSourceStatus[ds.id] === "ready",
+      ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
     );
-  }, [activeDashboard, dataSourceStatus]);
+  }, [activeDashboard, runtimeSession]);
+
+  const isRuntimeInitializing = useMemo(() => {
+    if (!activeDashboard) {
+      return false;
+    }
+
+    return activeDashboard.dataSources.length > 0 && !runtimeSession;
+  }, [activeDashboard, runtimeSession]);
 
   const someSourcesLoading = useMemo(() => {
-    return Object.values(dataSourceStatus).some(s => s === "loading");
-  }, [dataSourceStatus]);
+    if (isRuntimeInitializing) {
+      return true;
+    }
+
+    return Object.values(runtimeSession?.dataSources || {}).some(
+      s => s.status === "loading",
+    );
+  }, [isRuntimeInitializing, runtimeSession]);
+
+  const loadingSummary = useMemo(() => {
+    if (!activeDashboard) {
+      return null;
+    }
+
+    if (isRuntimeInitializing) {
+      return {
+        label: "Initializing dashboard runtime",
+        rowsLoaded: 0,
+      };
+    }
+
+    const loadingSources = activeDashboard.dataSources.filter(
+      ds => runtimeSession?.dataSources[ds.id]?.status === "loading",
+    );
+
+    if (loadingSources.length === 0) {
+      return null;
+    }
+
+    return {
+      label:
+        loadingSources.length === 1
+          ? `Loading ${loadingSources[0].name}`
+          : `Loading ${loadingSources.length} data sources`,
+      rowsLoaded: loadingSources.reduce(
+        (sum, ds) =>
+          sum + (runtimeSession?.dataSources[ds.id]?.rowsLoaded || 0),
+        0,
+      ),
+    };
+  }, [activeDashboard, isRuntimeInitializing, runtimeSession]);
+
+  const errorSummary = useMemo(() => {
+    if (!activeDashboard) {
+      return null;
+    }
+
+    const failingSources = activeDashboard.dataSources.filter(
+      ds => runtimeSession?.dataSources[ds.id]?.status === "error",
+    );
+
+    if (failingSources.length === 0) {
+      return null;
+    }
+
+    const first = failingSources[0];
+    return {
+      count: failingSources.length,
+      message:
+        runtimeSession?.dataSources[first.id]?.error ||
+        "Failed to load one or more data sources",
+    };
+  }, [activeDashboard, runtimeSession]);
 
   const gridLayout = useMemo(() => {
     if (!activeDashboard) return [];
@@ -303,40 +457,44 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }
 
   const renderWidget = (widget: DashboardWidget) => {
-    if (!db || !allSourcesReady) return null;
+    if (!runtimeSession) {
+      return null;
+    }
+
+    const dataSourceRuntime = runtimeSession?.dataSources[widget.dataSourceId];
+    if (!dataSourceRuntime || dataSourceRuntime.status !== "ready") {
+      return null;
+    }
 
     switch (widget.type) {
       case "chart":
         return (
           <ChartWidget
-            db={db}
+            queryExecutor={queryExecutor}
+            dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             vegaLiteSpec={widget.vegaLiteSpec}
-            onError={err =>
-              setWidgetErrors(prev => ({ ...prev, [widget.id]: err }))
-            }
+            onError={getWidgetErrorHandler(widget.id)}
           />
         );
       case "kpi":
         return widget.kpiConfig ? (
           <KpiCard
-            db={db}
+            queryExecutor={queryExecutor}
+            dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             kpiConfig={widget.kpiConfig}
-            onError={err =>
-              setWidgetErrors(prev => ({ ...prev, [widget.id]: err }))
-            }
+            onError={getWidgetErrorHandler(widget.id)}
           />
         ) : null;
       case "table":
         return (
           <DataTableWidget
-            db={db}
+            queryExecutor={queryExecutor}
+            dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             tableConfig={widget.tableConfig}
-            onError={err =>
-              setWidgetErrors(prev => ({ ...prev, [widget.id]: err }))
-            }
+            onError={getWidgetErrorHandler(widget.id)}
           />
         );
       default:
@@ -441,7 +599,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             <IconButton
               size="small"
               onClick={undo}
-              disabled={useDashboardStore.getState().historyIndex <= 0}
+              disabled={historyIndex <= 0}
             >
               <Undo2 size={16} />
             </IconButton>
@@ -452,10 +610,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             <IconButton
               size="small"
               onClick={redo}
-              disabled={
-                useDashboardStore.getState().historyIndex >=
-                useDashboardStore.getState().history.length - 1
-              }
+              disabled={historyIndex >= historyLength - 1}
             >
               <Redo2 size={16} />
             </IconButton>
@@ -528,7 +683,41 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       </Box>
 
       {/* Loading bar */}
-      {someSourcesLoading && <LinearProgress />}
+      {someSourcesLoading && (
+        <Box sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
+          <LinearProgress />
+          {loadingSummary && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", px: 1.5, py: 0.5 }}
+            >
+              {loadingSummary.label}
+              {loadingSummary.rowsLoaded > 0 &&
+                ` · ${loadingSummary.rowsLoaded.toLocaleString()} rows loaded`}
+            </Typography>
+          )}
+        </Box>
+      )}
+      {errorSummary && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            backgroundColor: "error.light",
+            color: "error.contrastText",
+          }}
+        >
+          <Typography variant="caption" sx={{ display: "block" }}>
+            {errorSummary.count > 1
+              ? `${errorSummary.count} data sources failed.`
+              : "Data source failed."}{" "}
+            {errorSummary.message}
+          </Typography>
+        </Box>
+      )}
 
       {/* Content area */}
       <Box

@@ -10,6 +10,8 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import type { LeftPaneView } from "./lib/types";
 
+export const DEFAULT_LEFT_PANE_SIZE = 15;
+
 interface ActiveEditorContent {
   content: string;
   fileName?: string;
@@ -20,6 +22,7 @@ interface UIState {
   // Navigation
   leftPane: LeftPaneView;
   activeView: LeftPaneView; // Legacy alias for leftPane
+  leftPaneOpen: boolean;
 
   // Loading indicators (keyed by operation name)
   loading: Record<string, boolean>;
@@ -35,6 +38,9 @@ interface UIActions {
   // Navigation
   setLeftPane: (pane: LeftPaneView) => void;
   navigateToView: (view: LeftPaneView) => void;
+  setLeftPaneOpen: (open: boolean) => void;
+  openLeftPane: () => void;
+  closeLeftPane: () => void;
 
   // Loading state
   setLoading: (key: string, value: boolean) => void;
@@ -55,6 +61,7 @@ type UIStore = UIState & UIActions;
 const initialState: UIState = {
   leftPane: "databases",
   activeView: "databases",
+  leftPaneOpen: true,
   loading: {},
   activeEditorContent: undefined,
   currentWorkspaceId: null,
@@ -76,6 +83,21 @@ export const useUIStore = create<UIStore>()(
         set(state => {
           state.leftPane = view;
           state.activeView = view;
+        }),
+
+      setLeftPaneOpen: open =>
+        set(state => {
+          state.leftPaneOpen = open;
+        }),
+
+      openLeftPane: () =>
+        set(state => {
+          state.leftPaneOpen = true;
+        }),
+
+      closeLeftPane: () =>
+        set(state => {
+          state.leftPaneOpen = false;
         }),
 
       // Loading state
@@ -111,6 +133,7 @@ export const useUIStore = create<UIStore>()(
       partialize: state => ({
         leftPane: state.leftPane,
         activeView: state.activeView,
+        leftPaneOpen: state.leftPaneOpen,
         currentWorkspaceId: state.currentWorkspaceId,
       }),
     },

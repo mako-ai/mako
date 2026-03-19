@@ -1,9 +1,13 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Drawer,
   Box,
   Typography,
   TextField,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
   List,
   ListItem,
   ListItemText,
@@ -14,11 +18,28 @@ import {
   CircularProgress,
   Divider,
 } from "@mui/material";
-import { Plus, Trash2, RefreshCw, Database, Search, X } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  RefreshCw,
+  Database,
+  Search,
+  X,
+  Pencil,
+} from "lucide-react";
 import { useDashboardStore } from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { apiClient } from "../../lib/api-client";
-import { initDuckDB, loadArrowTable, dropTable } from "../../lib/duckdb";
+import {
+  createDashboardDataSource,
+  importConsoleAsDashboardDataSource,
+  refreshAllDashboardDataSourcesCommand,
+  refreshDashboardDataSourceCommand,
+  removeDashboardDataSource,
+  updateDashboardDataSourceQuery,
+} from "../../dashboard-runtime/commands";
+import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
+import { useSchemaStore } from "../../store/schemaStore";
 
 interface ConsoleResult {
   id: string;
@@ -33,9 +54,10 @@ interface DataSourcePanelProps {
 }
 
 const STATUS_CHIP_PROPS: Record<
-  "loading" | "ready" | "error",
+  "idle" | "loading" | "ready" | "error",
   { label: string; color: "warning" | "success" | "error" }
 > = {
+  idle: { label: "Idle", color: "warning" },
   loading: { label: "Loading", color: "warning" },
   ready: { label: "Ready", color: "success" },
   error: { label: "Error", color: "error" },
@@ -46,16 +68,30 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
   const workspaceId = currentWorkspace?.id;
 
   const activeDashboard = useDashboardStore(s => s.activeDashboard);
-  const dataSourceStatus = useDashboardStore(s => s.dataSourceStatus);
-  const loadDataSource = useDashboardStore(s => s.loadDataSource);
+  const runtimeSession = useDashboardRuntimeStore(state =>
+    activeDashboard ? state.sessions[activeDashboard._id] || null : null,
+  );
+  const ensureConnections = useSchemaStore(state => state.ensureConnections);
+  const availableConnections = useSchemaStore(state =>
+    workspaceId ? state.connections[workspaceId] || [] : [],
+  );
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<ConsoleResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [addingId, setAddingId] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
-
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [directName, setDirectName] = useState("");
+  const [directConnectionId, setDirectConnectionId] = useState("");
+  const [directDatabaseName, setDirectDatabaseName] = useState("");
+  const [directLanguage, setDirectLanguage] = useState<
+    "sql" | "javascript" | "mongodb"
+  >("sql");
+  const [directQuery, setDirectQuery] = useState("");
+  const [creatingDirect, setCreatingDirect] = useState(false);
+  const [editingDataSourceId, setEditingDataSourceId] = useState<string | null>(
+    null,
+  );
 
   const loadAllConsoles = useCallback(async () => {
     if (!workspaceId) return;
@@ -86,35 +122,16 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
     }
   }, [workspaceId]);
 
-  const searchConsolesApi = useCallback(
-    async (query: string) => {
-      if (!workspaceId) return;
-      setSearching(true);
-      try {
-        const res = await apiClient.get<{
-          results: ConsoleResult[];
-        }>(
-          `/workspaces/${workspaceId}/consoles/search?q=${encodeURIComponent(query)}`,
-        );
-        setSearchResults(res.results ?? []);
-      } catch {
-        setSearchResults([]);
-      } finally {
-        setSearching(false);
-      }
-    },
-    [workspaceId],
-  );
-
   const [allConsoles, setAllConsoles] = useState<ConsoleResult[]>([]);
 
   // Load all consoles when panel opens
   useEffect(() => {
     if (!open || !workspaceId) return;
+    void ensureConnections(workspaceId);
     loadAllConsoles().then(() => {
       // allConsoles will be set by the next effect
     });
-  }, [open, workspaceId, loadAllConsoles]);
+  }, [open, workspaceId, loadAllConsoles, ensureConnections]);
 
   // Keep a copy of the full list for client-side filtering
   useEffect(() => {
@@ -140,137 +157,116 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
   }, [searchQuery, allConsoles]);
 
   const handleAddDataSource = async (console_: ConsoleResult) => {
-    const { nanoid } = await import("nanoid");
-    const store = useDashboardStore.getState();
-    const dashboard = store.activeDashboard;
-    if (!dashboard || !workspaceId) return;
+    if (!activeDashboard || !workspaceId) return;
 
     setAddingId(console_.id);
 
-    const dsId = nanoid();
-    const newDs: any = {
-      id: dsId,
-      name: console_.title.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase(),
-      consoleId: console_.id,
-      cache: { ttlSeconds: 3600 },
-    };
-
-    const updatedSources = [...dashboard.dataSources, newDs];
-    useDashboardStore.setState(prev => ({
-      ...prev,
-      activeDashboard: prev.activeDashboard
-        ? { ...prev.activeDashboard, dataSources: updatedSources }
-        : prev.activeDashboard,
-    }));
-
     try {
-      await apiClient.patch(
-        `/workspaces/${workspaceId}/dashboards/${dashboard._id}`,
-        { dataSources: updatedSources },
-      );
-    } catch {
-      /* non-critical */
-    }
-
-    let db = useDashboardStore.getState().db;
-    if (!db) {
-      db = await initDuckDB();
-      useDashboardStore.setState({ db: db as any });
-    }
-
-    useDashboardStore.setState(prev => ({
-      ...prev,
-      dataSourceStatus: {
-        ...prev.dataSourceStatus,
-        [dsId]: "loading" as const,
-      },
-    }));
-
-    try {
-      const response = await fetch(
-        `/api/workspaces/${workspaceId}/consoles/${console_.id}/export?format=json&limit=500000`,
-        { credentials: "include" },
-      );
-      if (!response.ok) {
-        throw new Error(
-          `Export failed: ${response.status} ${response.statusText}`,
-        );
-      }
-      const json = await response.json();
-      const rows = json.data || [];
-      console.log(
-        `[Dashboard] Loading JSON data for "${newDs.name}": ${rows.length} rows`,
-      );
-      const { loadJsonTable } = await import("../../lib/duckdb");
-      await loadJsonTable(db, newDs.name, rows);
-      console.log(`[Dashboard] Table "${newDs.name}" loaded successfully`);
-      useDashboardStore.setState(prev => ({
-        ...prev,
-        dataSourceStatus: {
-          ...prev.dataSourceStatus,
-          [dsId]: "ready" as const,
-        },
-      }));
-    } catch (err) {
-      console.error(
-        `[Dashboard] Failed to load data source "${newDs.name}":`,
-        err,
-      );
-      useDashboardStore.setState(prev => ({
-        ...prev,
-        dataSourceStatus: {
-          ...prev.dataSourceStatus,
-          [dsId]: "error" as const,
-        },
-      }));
+      await importConsoleAsDashboardDataSource({
+        workspaceId,
+        consoleId: console_.id,
+        name: console_.title.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase(),
+      });
+    } finally {
+      setAddingId(null);
     }
 
     setSearchQuery("");
     setSearchResults([]);
-    setAddingId(null);
   };
 
   const handleRemoveDataSource = async (dsId: string) => {
-    const store = useDashboardStore.getState();
-    const dashboard = store.activeDashboard;
-    if (!dashboard || !workspaceId) return;
+    if (!workspaceId) return;
 
     setRemovingId(dsId);
 
-    const removed = dashboard.dataSources.find(d => d.id === dsId);
-    const updatedSources = dashboard.dataSources.filter(d => d.id !== dsId);
-
-    useDashboardStore.setState(prev => ({
-      ...prev,
-      activeDashboard: prev.activeDashboard
-        ? { ...prev.activeDashboard, dataSources: updatedSources }
-        : prev.activeDashboard,
-    }));
-
     try {
-      await apiClient.patch(
-        `/workspaces/${workspaceId}/dashboards/${dashboard._id}`,
-        { dataSources: updatedSources },
-      );
-    } catch {
-      /* non-critical */
+      await removeDashboardDataSource({ workspaceId, dataSourceId: dsId });
+    } finally {
+      setRemovingId(null);
     }
-
-    if (removed && store.db) {
-      try {
-        await dropTable(store.db, removed.name);
-      } catch {
-        /* non-critical */
-      }
-    }
-
-    setRemovingId(null);
   };
 
   const handleRefreshDataSource = async (dsId: string) => {
     if (!workspaceId) return;
-    const ds = activeDashboard?.dataSources.find(d => d.id === dsId);
-    if (ds) await loadDataSource(ds, workspaceId);
+    await refreshDashboardDataSourceCommand({
+      workspaceId,
+      dataSourceId: dsId,
+    });
+  };
+
+  const handleCreateDirectDataSource = async () => {
+    if (
+      !workspaceId ||
+      !directName.trim() ||
+      !directConnectionId ||
+      !directQuery.trim()
+    ) {
+      return;
+    }
+
+    setCreatingDirect(true);
+    try {
+      if (editingDataSourceId) {
+        await updateDashboardDataSourceQuery({
+          workspaceId,
+          dataSourceId: editingDataSourceId,
+          changes: {
+            name: directName.trim(),
+            query: {
+              connectionId: directConnectionId,
+              language: directLanguage,
+              code: directQuery,
+              databaseName: directDatabaseName || undefined,
+            },
+          },
+        });
+      } else {
+        await createDashboardDataSource({
+          workspaceId,
+          name: directName.trim(),
+          query: {
+            connectionId: directConnectionId,
+            language: directLanguage,
+            code: directQuery,
+            databaseName: directDatabaseName || undefined,
+          },
+        });
+      }
+      setDirectName("");
+      setDirectConnectionId("");
+      setDirectDatabaseName("");
+      setDirectLanguage("sql");
+      setDirectQuery("");
+      setEditingDataSourceId(null);
+    } finally {
+      setCreatingDirect(false);
+    }
+  };
+
+  const handleEditDataSource = (dataSourceId: string) => {
+    const ds = activeDashboard?.dataSources.find(
+      source => source.id === dataSourceId,
+    );
+    if (!ds) {
+      return;
+    }
+
+    setEditingDataSourceId(ds.id);
+    setDirectName(ds.name);
+    setDirectConnectionId(ds.query.connectionId);
+    setDirectDatabaseName(ds.query.databaseName || "");
+    setDirectLanguage(ds.query.language);
+    setDirectQuery(ds.query.code);
+  };
+
+  const resetDirectForm = () => {
+    setEditingDataSourceId(null);
+    setDirectName("");
+    setDirectConnectionId("");
+    setDirectDatabaseName("");
+    setDirectLanguage("sql");
+    setDirectQuery("");
   };
 
   const dataSources = activeDashboard?.dataSources ?? [];
@@ -311,7 +307,111 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
           color="text.secondary"
           sx={{ mb: 0.5, display: "block" }}
         >
-          Add Data Source
+          {editingDataSourceId ? "Edit Data Source" : "New Data Source"}
+        </Typography>
+        <TextField
+          size="small"
+          fullWidth
+          label="Name"
+          value={directName}
+          onChange={e => setDirectName(e.target.value)}
+          sx={{ mb: 1 }}
+        />
+        <FormControl size="small" fullWidth sx={{ mb: 1 }}>
+          <InputLabel>Connection</InputLabel>
+          <Select
+            value={directConnectionId}
+            label="Connection"
+            onChange={e => setDirectConnectionId(e.target.value)}
+          >
+            {availableConnections.map(connection => (
+              <MenuItem key={connection.id} value={connection.id}>
+                {connection.name}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <Box sx={{ display: "flex", gap: 1, mb: 1 }}>
+          <FormControl size="small" sx={{ minWidth: 130 }}>
+            <InputLabel>Language</InputLabel>
+            <Select
+              value={directLanguage}
+              label="Language"
+              onChange={e =>
+                setDirectLanguage(
+                  e.target.value as "sql" | "javascript" | "mongodb",
+                )
+              }
+            >
+              <MenuItem value="sql">SQL</MenuItem>
+              <MenuItem value="javascript">JavaScript</MenuItem>
+              <MenuItem value="mongodb">MongoDB</MenuItem>
+            </Select>
+          </FormControl>
+          <TextField
+            size="small"
+            fullWidth
+            label="Database Name (optional)"
+            value={directDatabaseName}
+            onChange={e => setDirectDatabaseName(e.target.value)}
+          />
+        </Box>
+        <TextField
+          size="small"
+          fullWidth
+          multiline
+          minRows={4}
+          maxRows={10}
+          label="Query"
+          value={directQuery}
+          onChange={e => setDirectQuery(e.target.value)}
+          sx={{ mb: 1 }}
+          slotProps={{
+            input: { sx: { fontFamily: "monospace", fontSize: 13 } },
+          }}
+        />
+        <Button
+          size="small"
+          variant="contained"
+          fullWidth
+          disabled={
+            creatingDirect ||
+            !directName.trim() ||
+            !directConnectionId ||
+            !directQuery.trim()
+          }
+          onClick={handleCreateDirectDataSource}
+        >
+          {creatingDirect
+            ? editingDataSourceId
+              ? "Saving..."
+              : "Creating..."
+            : editingDataSourceId
+              ? "Save data source"
+              : "Create data source"}
+        </Button>
+        {editingDataSourceId && (
+          <Button
+            size="small"
+            fullWidth
+            variant="text"
+            sx={{ mt: 1 }}
+            onClick={resetDirectForm}
+          >
+            Cancel edit
+          </Button>
+        )}
+      </Box>
+
+      <Divider />
+
+      <Box sx={{ px: 2, py: 1.5 }}>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ mb: 0.5, display: "block" }}
+        >
+          Import Saved Console
         </Typography>
         <TextField
           size="small"
@@ -419,7 +519,13 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
         ) : (
           <List dense disablePadding>
             {dataSources.map(ds => {
-              const status = dataSourceStatus[ds.id];
+              const status = runtimeSession?.dataSources[ds.id]?.status;
+              const loadedRows =
+                runtimeSession?.dataSources[ds.id]?.rowsLoaded ||
+                runtimeSession?.dataSources[ds.id]?.rowCount ||
+                ds.cache?.rowCount ||
+                0;
+              const errorMessage = runtimeSession?.dataSources[ds.id]?.error;
               const chipProps = status ? STATUS_CHIP_PROPS[status] : null;
 
               return (
@@ -437,6 +543,34 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
                       variant: "body2",
                       fontFamily: "monospace",
                     }}
+                    secondary={
+                      status === "loading" ? (
+                        <Box sx={{ mt: 0.25 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            {loadedRows > 0
+                              ? `${loadedRows.toLocaleString()} rows loaded...`
+                              : "Starting stream..."}
+                          </Typography>
+                        </Box>
+                      ) : status === "ready" && loadedRows > 0 ? (
+                        <Box sx={{ mt: 0.25 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            {loadedRows.toLocaleString()} rows loaded
+                          </Typography>
+                        </Box>
+                      ) : status === "error" ? (
+                        <Box sx={{ mt: 0.25 }}>
+                          <Typography
+                            variant="caption"
+                            color="error.main"
+                            sx={{ display: "block", maxWidth: 220 }}
+                          >
+                            {errorMessage || "Failed to load data source"}
+                          </Typography>
+                        </Box>
+                      ) : undefined
+                    }
+                    secondaryTypographyProps={{ component: "div" }}
                   />
                   <ListItemSecondaryAction
                     sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
@@ -460,6 +594,12 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
                       ) : (
                         <RefreshCw size={15} />
                       )}
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => handleEditDataSource(ds.id)}
+                    >
+                      <Pencil size={15} />
                     </IconButton>
                     <IconButton
                       size="small"
@@ -493,9 +633,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
               startIcon={<RefreshCw size={14} />}
               onClick={() => {
                 if (workspaceId) {
-                  useDashboardStore
-                    .getState()
-                    .refreshAllDataSources(workspaceId);
+                  void refreshAllDashboardDataSourcesCommand(workspaceId);
                 }
               }}
             >
