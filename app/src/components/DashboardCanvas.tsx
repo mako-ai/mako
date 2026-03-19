@@ -50,6 +50,7 @@ import type {
   DashboardQueryExecutor,
   DashboardRuntimeStatus,
 } from "../dashboard-runtime/types";
+import type { CrossFilterSelection } from "./ResultsChart";
 import WidgetContainer from "./widgets/WidgetContainer";
 import ChartWidget from "./widgets/ChartWidget";
 import KpiCard from "./widgets/KpiCard";
@@ -58,6 +59,32 @@ import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
 import WidgetInspector from "./dashboard/WidgetInspector";
+
+interface ActiveCrossFilter extends CrossFilterSelection {
+  dataSourceId: string;
+}
+
+function buildSqlClause(sel: CrossFilterSelection): string {
+  const esc = (v: unknown) => {
+    if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
+    if (v instanceof Date) return `'${v.toISOString()}'`;
+    return String(v);
+  };
+
+  if (sel.type === "point") {
+    if (sel.values.length === 0) return "";
+    if (sel.values.length === 1) {
+      return `"${sel.field}" = ${esc(sel.values[0])}`;
+    }
+    return `"${sel.field}" IN (${sel.values.map(esc).join(", ")})`;
+  }
+
+  if (sel.type === "interval" && sel.values.length === 2) {
+    return `"${sel.field}" >= ${esc(sel.values[0])} AND "${sel.field}" <= ${esc(sel.values[1])}`;
+  }
+
+  return "";
+}
 
 type ViewMode = "canvas" | "code";
 
@@ -120,6 +147,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
+  const [crossFilterMap, setCrossFilterMap] = useState<
+    Record<string, ActiveCrossFilter>
+  >({});
 
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();
@@ -127,6 +157,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const workspaceId = currentWorkspace?.id;
   const widgetErrorHandlersRef = useRef<
     Record<string, (error: string) => void>
+  >({});
+  const selectionHandlersRef = useRef<
+    Record<string, (sel: CrossFilterSelection | null) => void>
   >({});
   const queryExecutor = useCallback<DashboardQueryExecutor>(
     (sql, options) =>
@@ -152,10 +185,64 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     return handler;
   }, []);
 
+  const getWidgetSelectionHandler = useCallback(
+    (widgetId: string, dataSourceId: string) => {
+      const key = `${widgetId}:${dataSourceId}`;
+      const existing = selectionHandlersRef.current[key];
+      if (existing) return existing;
+
+      const handler = (selection: CrossFilterSelection | null) => {
+        setCrossFilterMap(
+          (
+            prev: Record<string, ActiveCrossFilter>,
+          ): Record<string, ActiveCrossFilter> => {
+            if (!selection) {
+              if (!(widgetId in prev)) return prev;
+              const next = { ...prev };
+              delete next[widgetId];
+              return next;
+            }
+            return { ...prev, [widgetId]: { ...selection, dataSourceId } };
+          },
+        );
+      };
+      selectionHandlersRef.current[key] = handler;
+      return handler;
+    },
+    [],
+  );
+
+  const widgetFilterClauses = useMemo(() => {
+    if (!activeDashboard?.crossFilter?.enabled) return {};
+
+    const result: Record<string, string> = {};
+    for (const widget of activeDashboard.widgets) {
+      if (widget.crossFilter && !widget.crossFilter.enabled) continue;
+
+      const clauses: string[] = [];
+      for (const [sourceId, filter] of Object.entries(crossFilterMap)) {
+        if (sourceId === widget.id) continue;
+        if (filter.dataSourceId !== widget.dataSourceId) continue;
+        const clause = buildSqlClause(filter);
+        if (clause) clauses.push(clause);
+      }
+      if (clauses.length > 0) {
+        result[widget.id] = clauses.join(" AND ");
+      }
+    }
+    return result;
+  }, [
+    activeDashboard?.crossFilter?.enabled,
+    activeDashboard?.widgets,
+    crossFilterMap,
+  ]);
+
   useEffect(() => {
     if (!activeDashboard) {
       widgetErrorHandlersRef.current = {};
+      selectionHandlersRef.current = {};
       setWidgetErrors({});
+      setCrossFilterMap({});
       return;
     }
 
@@ -200,6 +287,21 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         delete widgetErrorHandlersRef.current[widgetId];
       }
     }
+
+    for (const key of Object.keys(selectionHandlersRef.current)) {
+      const wId = key.split(":")[0];
+      if (!activeWidgetIds.has(wId)) {
+        delete selectionHandlersRef.current[key];
+      }
+    }
+
+    setCrossFilterMap(prev => {
+      const stale = Object.keys(prev).filter(id => !activeWidgetIds.has(id));
+      if (stale.length === 0) return prev;
+      const next = { ...prev };
+      for (const id of stale) delete next[id];
+      return next;
+    });
   }, [activeDashboard, runtimeSession]);
 
   useEffect(() => {
@@ -456,6 +558,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     );
   }
 
+  const isCrossFilterEnabled = activeDashboard.crossFilter?.enabled ?? false;
+
   const renderWidget = (widget: DashboardWidget) => {
     if (!runtimeSession) {
       return null;
@@ -466,6 +570,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       return null;
     }
 
+    const widgetCrossFilterEnabled =
+      isCrossFilterEnabled && (widget.crossFilter?.enabled ?? true);
+    const filterClause = widgetFilterClauses[widget.id];
+
     switch (widget.type) {
       case "chart":
         return (
@@ -475,6 +583,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             localSql={widget.localSql}
             vegaLiteSpec={widget.vegaLiteSpec}
             onError={getWidgetErrorHandler(widget.id)}
+            layoutSignature={`${widget.layout.x}:${widget.layout.y}:${widget.layout.w}:${widget.layout.h}`}
+            enableCrossFilter={widgetCrossFilterEnabled}
+            filterClause={filterClause}
+            onSelectionChange={
+              widgetCrossFilterEnabled
+                ? getWidgetSelectionHandler(widget.id, widget.dataSourceId)
+                : undefined
+            }
           />
         );
       case "kpi":
@@ -485,6 +601,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             localSql={widget.localSql}
             kpiConfig={widget.kpiConfig}
             onError={getWidgetErrorHandler(widget.id)}
+            filterClause={filterClause}
           />
         ) : null;
       case "table":
@@ -495,6 +612,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             localSql={widget.localSql}
             tableConfig={widget.tableConfig}
             onError={getWidgetErrorHandler(widget.id)}
+            filterClause={filterClause}
           />
         );
       default:

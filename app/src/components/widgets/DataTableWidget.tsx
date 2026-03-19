@@ -13,6 +13,7 @@ interface DataTableWidgetProps {
     pageSize?: number;
   };
   onError?: (error: string) => void;
+  filterClause?: string;
 }
 
 const DataTableWidgetComponent: React.FC<DataTableWidgetProps> = ({
@@ -21,11 +22,13 @@ const DataTableWidgetComponent: React.FC<DataTableWidgetProps> = ({
   localSql,
   tableConfig,
   onError,
+  filterClause,
 }) => {
   const { result, loading, error } = useDashboardQuery({
     sql: localSql,
     dataSourceId,
     queryExecutor,
+    filterClause,
     enabled: Boolean(localSql.trim()),
   });
 

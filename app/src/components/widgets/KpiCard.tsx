@@ -15,6 +15,7 @@ interface KpiCardProps {
     comparisonLabel?: string;
   };
   onError?: (error: string) => void;
+  filterClause?: string;
 }
 
 function formatValue(value: number | null, format?: string): string {
@@ -47,11 +48,13 @@ const KpiCardComponent: React.FC<KpiCardProps> = ({
   localSql,
   kpiConfig,
   onError,
+  filterClause,
 }) => {
   const { result, loading, error } = useDashboardQuery({
     sql: localSql,
     dataSourceId,
     queryExecutor,
+    filterClause,
     enabled: Boolean(localSql.trim()),
   });
 

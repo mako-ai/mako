@@ -73,6 +73,7 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             vegaLiteSpec={widget.vegaLiteSpec}
+            layoutSignature={`${widget.layout.x}:${widget.layout.y}:${widget.layout.w}:${widget.layout.h}`}
           />
         );
       case "kpi":

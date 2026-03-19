@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, CircularProgress } from "@mui/material";
-import ResultsChart from "../ResultsChart";
+import ResultsChart, { type CrossFilterSelection } from "../ResultsChart";
 import type { MakoChartSpec } from "../../lib/chart-spec";
 import { useDashboardQuery } from "../../dashboard-runtime/useDashboardQuery";
 import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
@@ -11,6 +11,10 @@ interface ChartWidgetProps {
   localSql: string;
   vegaLiteSpec?: Record<string, unknown>;
   onError?: (error: string) => void;
+  layoutSignature?: string;
+  enableCrossFilter?: boolean;
+  filterClause?: string;
+  onSelectionChange?: (selection: CrossFilterSelection | null) => void;
 }
 
 const ChartWidgetComponent: React.FC<ChartWidgetProps> = ({
@@ -19,11 +23,16 @@ const ChartWidgetComponent: React.FC<ChartWidgetProps> = ({
   localSql,
   vegaLiteSpec,
   onError,
+  layoutSignature,
+  enableCrossFilter,
+  filterClause,
+  onSelectionChange,
 }) => {
   const { result, loading, error } = useDashboardQuery({
     sql: localSql,
     dataSourceId,
     queryExecutor,
+    filterClause,
     enabled: Boolean(localSql.trim()),
   });
 
@@ -50,9 +59,12 @@ const ChartWidgetComponent: React.FC<ChartWidgetProps> = ({
 
   return (
     <ResultsChart
+      key={layoutSignature ?? "chart"}
       data={result?.rows || []}
       fields={result?.fields || []}
       spec={vegaLiteSpec as MakoChartSpec | undefined}
+      enableSelection={enableCrossFilter}
+      onSelectionChange={onSelectionChange}
     />
   );
 };

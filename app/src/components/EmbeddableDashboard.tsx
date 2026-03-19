@@ -189,6 +189,7 @@ const EmbeddableDashboard: React.FC = () => {
                         dataSourceId={widget.dataSourceId}
                         localSql={widget.localSql}
                         vegaLiteSpec={widget.vegaLiteSpec}
+                        layoutSignature={`${widget.layout.x}:${widget.layout.y}:${widget.layout.w}:${widget.layout.h}`}
                       />
                     ) : widget.type === "kpi" && widget.kpiConfig ? (
                       <KpiCard
