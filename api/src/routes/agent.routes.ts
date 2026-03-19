@@ -147,6 +147,15 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     lineCount: number;
   }
 
+  interface ActiveConsoleResults {
+    viewMode: "table" | "json" | "chart";
+    hasResults: boolean;
+    rowCount: number;
+    columns: string[];
+    sampleRows: Record<string, unknown>[];
+    chartSpec: Record<string, unknown> | null;
+  }
+
   const {
     messages,
     chatId,
@@ -154,6 +163,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     openConsoles,
     consoleId,
     modelId,
+    activeConsoleResults,
     // Agent mode selection (new)
     agentId,
     tabKind,
@@ -161,12 +171,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     flowFormState,
   } = body as {
     messages?: UIMessage[];
-    chatId?: string; // Frontend-owned chat ID (AI SDK best practice)
+    chatId?: string;
     workspaceId?: string;
     openConsoles?: OpenConsoleContext[];
     consoleId?: string;
     modelId?: string;
-    // Agent mode selection
+    activeConsoleResults?: ActiveConsoleResults;
     agentId?: string;
     tabKind?: string;
     flowType?: string;
@@ -361,6 +371,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     workspaceCustomPrompt,
     selfDirective,
     consoleHints,
+    activeConsoleResults,
   };
 
   // Create agent configuration

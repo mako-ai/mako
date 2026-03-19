@@ -476,6 +476,12 @@ StreamingIndicator.displayName = "StreamingIndicator";
 interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
   dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
+  onChartSpecChangeRef?: React.MutableRefObject<
+    ((payload: import("./Editor").ChartSpecChangePayload) => void) | undefined
+  >;
+  resultsContextRef?: React.MutableRefObject<
+    import("./Editor").ConsoleResultsContext | null
+  >;
 }
 
 // Suggestion prompts for the demo Chinook database
@@ -504,6 +510,8 @@ const DB_FLOW_SUGGESTIONS = [
 const Chat: React.FC<ChatProps> = ({
   onConsoleModification,
   dbFlowFormRef,
+  onChartSpecChangeRef,
+  resultsContextRef,
 }) => {
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
@@ -658,6 +666,19 @@ const Chat: React.FC<ChatProps> = ({
               ? dbFlowFormRefCurrent.current.current.getFormState()
               : undefined;
 
+          // Read results context from Editor at request time
+          const resultsCtx = resultsContextRef?.current ?? null;
+          const activeConsoleResults = resultsCtx
+            ? {
+                viewMode: resultsCtx.viewMode,
+                hasResults: resultsCtx.hasResults,
+                rowCount: resultsCtx.rowCount,
+                columns: resultsCtx.columns,
+                sampleRows: resultsCtx.sampleRows,
+                chartSpec: resultsCtx.chartSpec,
+              }
+            : undefined;
+
           return {
             body: {
               messages,
@@ -666,6 +687,7 @@ const Chat: React.FC<ChatProps> = ({
               chatId: chatIdRef.current,
               openConsoles,
               consoleId: activeConsoleIdRef.current,
+              activeConsoleResults,
               // Agent mode selection
               agentId: agentModeRef.current,
               tabKind: activeTab?.kind,
@@ -1145,6 +1167,93 @@ const Chat: React.FC<ChatProps> = ({
             output: {
               success: false,
               error: `Failed to open console: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          });
+        }
+        return;
+      }
+
+      // Handle modify_chart_spec - set chart visualization for current results
+      if (toolName === "modify_chart_spec") {
+        const vegaLiteSpec = input.vegaLiteSpec as
+          | Record<string, unknown>
+          | undefined;
+        if (!vegaLiteSpec) {
+          addToolOutput({
+            tool: "modify_chart_spec",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: "vegaLiteSpec is required.",
+            },
+          });
+          return;
+        }
+
+        // Validate the spec structure with Zod before sending to the renderer
+        const { MakoChartSpec: MakoChartSpecSchema } = await import(
+          "../lib/chart-spec"
+        );
+        const parsed = MakoChartSpecSchema.safeParse(vegaLiteSpec);
+        if (!parsed.success) {
+          const issues = parsed.error.issues
+            .slice(0, 5)
+            .map((i: any) => `${i.path.join(".")}: ${i.message}`)
+            .join("; ");
+          addToolOutput({
+            tool: "modify_chart_spec",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: `Invalid Vega-Lite spec: ${issues}. Fix the spec and try again.`,
+            },
+          });
+          return;
+        }
+
+        if (!onChartSpecChangeRef?.current) {
+          addToolOutput({
+            tool: "modify_chart_spec",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: "No active console tab to display the chart in.",
+            },
+          });
+          return;
+        }
+
+        // Send the spec to the renderer and wait for render result
+        const renderResult = await new Promise<{
+          success: boolean;
+          error?: string;
+        }>(resolve => {
+          const timeout = setTimeout(() => resolve({ success: true }), 5000);
+          onChartSpecChangeRef.current!({
+            spec: parsed.data,
+            onRenderResult: result => {
+              clearTimeout(timeout);
+              resolve(result);
+            },
+          });
+        });
+
+        if (renderResult.success) {
+          addToolOutput({
+            tool: "modify_chart_spec",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              message: "Chart rendered successfully in the results panel.",
+            },
+          });
+        } else {
+          addToolOutput({
+            tool: "modify_chart_spec",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
             },
           });
         }
