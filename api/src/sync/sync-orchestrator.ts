@@ -64,6 +64,7 @@ export interface SyncChunkOptions {
   deleteMode?: "hard" | "soft";
   flowId?: string;
   workspaceId?: string;
+  syncEngine?: string;
   backfillRunId?: string;
 }
 
@@ -539,6 +540,7 @@ async function performSyncChunkSql(
       {
         _id: new Types.ObjectId(options.flowId!),
         tableDestination,
+        syncEngine: options.syncEngine,
       } as any,
       destinationConn?.type,
     );

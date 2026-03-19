@@ -239,6 +239,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
     );
     const [isNewMode, setIsNewMode] = useState(isNew);
 
+    useEffect(() => {
+      setCurrentFlowId(flowId);
+      setIsNewMode(isNew);
+    }, [flowId, isNew]);
+
     // Wizard step state - allow multiple steps open
     const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
 

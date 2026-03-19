@@ -17,6 +17,7 @@ import {
   mapWebhookEventToChangeInput,
   recordMaterializationFailure,
   resolveDestinationTypeForFlow,
+  sweepStaleBigQueryCdcPending,
 } from "../../services/bigquery-cdc.service";
 
 /**
@@ -266,6 +267,42 @@ export const webhookEventProcessFunction = inngest.createFunction(
           backfillGate.active &&
           !isReplay;
 
+        const entityLayout = (flow.entityLayouts || []).find(
+          (l: any) =>
+            l.entity === resolvedEntity || l.entity === mapping.entity,
+        );
+        const hasEntityLayouts =
+          Array.isArray(flow.entityLayouts) && flow.entityLayouts.length > 0;
+        const isEntityEnabled = hasEntityLayouts
+          ? Boolean(entityLayout && entityLayout.enabled !== false)
+          : true;
+
+        // Skip disabled/not-selected entities before CDC enqueue/defer logic so
+        // they never create CDC rows or destination tables.
+        if (!isEntityEnabled) {
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                applyStatus: "applied",
+                appliedAt: new Date(),
+                applyError: {
+                  code: "ENTITY_DISABLED",
+                  message: `Entity ${resolvedEntity} is disabled or not selected in flow configuration`,
+                },
+                processedAt: new Date(),
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+            },
+          );
+          return {
+            processed: false,
+            reason: `Entity ${resolvedEntity} is disabled`,
+          };
+        }
+
         if (isBigQueryCdcEnabled && flow.tableDestination?.connectionId) {
           const change = await mapWebhookEventToChangeInput({
             entity: resolvedEntity,
@@ -348,45 +385,11 @@ export const webhookEventProcessFunction = inngest.createFunction(
           };
         }
 
-        // Skip disabled entities (unchecked in flow config)
-        if (flow.entityLayouts?.length) {
-          const layout = flow.entityLayouts.find(
-            (l: any) =>
-              l.entity === resolvedEntity || l.entity === mapping.entity,
-          );
-          if (layout && layout.enabled === false) {
-            await WebhookEvent.updateOne(
-              { _id: webhookEvent._id },
-              {
-                $set: {
-                  status: "completed",
-                  applyStatus: "applied",
-                  appliedAt: new Date(),
-                  processedAt: new Date(),
-                  processingDurationMs:
-                    Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-                },
-                $unset: { applyError: "" },
-              },
-            );
-            return {
-              processed: false,
-              reason: `Entity ${resolvedEntity} is disabled`,
-            };
-          }
-        }
-
         // ========== SQL/BigQuery destination path ==========
         if (flow.tableDestination?.connectionId) {
           const entityTableName = getEntityTableName(
             flow.tableDestination.tableName,
             resolvedEntity,
-          );
-
-          // Resolve per-entity layout from flow.entityLayouts
-          const entityLayout = (flow.entityLayouts || []).find(
-            (l: any) =>
-              l.entity === resolvedEntity || l.entity === mapping.entity,
           );
 
           const entityTableDest = {
@@ -830,5 +833,47 @@ export const bigQueryCdcMaterializeFunction = inngest.createFunction(
       });
       throw error;
     }
+  },
+);
+
+/**
+ * Auto-heal stale CDC pending queues by re-enqueueing entities
+ * that have pending rows but have not been materialized recently.
+ */
+export const bigQueryCdcStaleSweepFunction = inngest.createFunction(
+  {
+    id: "bigquery-cdc-stale-sweep",
+    name: "BigQuery CDC Stale Sweep",
+  },
+  { cron: "*/2 * * * *" },
+  async ({ step, logger }) => {
+    const staleSeconds = Math.max(
+      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_SECONDS || "180", 10) ||
+        180,
+      30,
+    );
+    const maxEntities = Math.max(
+      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_MAX_ENTITIES || "25", 10) ||
+        25,
+      1,
+    );
+
+    const result = await step.run("sweep-stale-bigquery-cdc", async () => {
+      return sweepStaleBigQueryCdcPending({
+        staleSeconds,
+        maxEntities,
+      });
+    });
+
+    if ((result as any).reenqueuedEntities > 0) {
+      logger.warn("Re-enqueued stale BigQuery CDC entities", {
+        staleSeconds,
+        maxEntities,
+        reenqueuedEntities: (result as any).reenqueuedEntities,
+        scannedEntities: (result as any).scannedEntities,
+      });
+    }
+
+    return result;
   },
 );

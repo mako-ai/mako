@@ -49,6 +49,10 @@ interface WebhookEvent {
   processedAt?: string;
   status: "pending" | "processing" | "completed" | "failed";
   applyStatus?: "pending" | "applied" | "failed";
+  applyError?: {
+    message: string;
+    code?: string;
+  };
   attempts: number;
   error?: any;
   processingDurationMs?: number;
@@ -170,9 +174,17 @@ export function WebhookStats({
     status: string,
     applyStatus?: string,
     backfillActive?: boolean,
+    cdcEnabled?: boolean,
+    applyError?: { message: string; code?: string },
   ) => {
+    if (applyError?.code === "ENTITY_DISABLED") {
+      return <Chip size="small" color="default" label="Ignored" />;
+    }
     if (backfillActive && status === "pending" && applyStatus === "pending") {
       return <Chip size="small" color="warning" label="Deferred" />;
+    }
+    if (cdcEnabled && status === "completed" && applyStatus === "pending") {
+      return <Chip size="small" color="info" label="Queued (CDC)" />;
     }
 
     const statusConfig = {
@@ -292,12 +304,15 @@ export function WebhookStats({
         </Grid>
       )}
 
-      {stats && stats.backfillActive && (stats.deferredCount ?? 0) > 0 && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          {stats.deferredCount} events are currently deferred while backfill is
-          active.
-        </Alert>
-      )}
+      {stats &&
+        !stats.cdc?.enabled &&
+        stats.backfillActive &&
+        (stats.deferredCount ?? 0) > 0 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            {stats.deferredCount} events are currently deferred while backfill
+            is active.
+          </Alert>
+        )}
 
       {/* Events Table */}
       <Box
@@ -349,6 +364,8 @@ export function WebhookStats({
                     event.status,
                     event.applyStatus,
                     stats?.backfillActive,
+                    stats?.cdc?.enabled,
+                    event.applyError,
                   )}
                 </TableCell>
                 <TableCell>
@@ -432,6 +449,8 @@ export function WebhookStats({
                 selectedEvent.status,
                 selectedEvent.applyStatus,
                 stats?.backfillActive,
+                stats?.cdc?.enabled,
+                selectedEvent.applyError,
               )}
             </Box>
           )}

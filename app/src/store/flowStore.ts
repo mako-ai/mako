@@ -242,6 +242,12 @@ interface WebhookStats {
   lastReceived: string | null;
   totalReceived: number;
   eventsToday: number;
+  entityCounts?: Array<{
+    entity: string;
+    total: number;
+    today: number;
+    pendingApply: number;
+  }>;
   deferredCount?: number;
   backfillActive?: boolean;
   cdc?: {
@@ -350,6 +356,11 @@ interface FlowStore extends FlowStoreState {
   toggleFlow: (workspaceId: string, flowId: string) => Promise<void>;
   runFlow: (workspaceId: string, flowId: string) => Promise<void>;
   backfillFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  wipeAndRestartBackfill: (
+    workspaceId: string,
+    flowId: string,
+    options?: { deleteDestination?: boolean },
+  ) => Promise<void>;
   fetchFlowHistory: (
     workspaceId: string,
     flowId: string,
@@ -569,10 +580,37 @@ export const useFlowStore = create<FlowStore>()(
             throw new Error(response.error || "Failed to update flow");
           }
         } catch (error: any) {
+          const status = error?.response?.status;
+          let handledError: unknown = error;
+          if (status === 404) {
+            try {
+              await get().refresh(workspaceId);
+              const retry = await apiClient.put<{
+                success: boolean;
+                data: Flow;
+                error?: string;
+              }>(`/workspaces/${workspaceId}/flows/${flowId}`, data);
+              if (retry.success) {
+                set(state => {
+                  const flows = state.flows[workspaceId] || [];
+                  const index = flows.findIndex(flow => flow._id === flowId);
+                  if (index !== -1) {
+                    flows[index] = retry.data;
+                  }
+                });
+                return;
+              }
+            } catch {
+              // Fall through to explicit error below.
+            }
+            handledError = new Error(
+              `Flow not found (workspace=${workspaceId}, flow=${flowId})`,
+            );
+          }
           set(state => {
-            state.error[workspaceId] = normalizeError(error);
+            state.error[workspaceId] = normalizeError(handledError);
           });
-          throw error;
+          throw handledError;
         } finally {
           set(state => {
             delete state.loading[workspaceId];
@@ -710,6 +748,47 @@ export const useFlowStore = create<FlowStore>()(
           set(state => {
             state.error[workspaceId] = normalizeError(error);
           });
+        } finally {
+          set(state => {
+            delete state.loading[workspaceId];
+          });
+        }
+      },
+
+      wipeAndRestartBackfill: async (
+        workspaceId: string,
+        flowId: string,
+        options?: { deleteDestination?: boolean },
+      ) => {
+        set(state => {
+          state.loading[workspaceId] = true;
+          state.error[workspaceId] = null;
+        });
+
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            message?: string;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/backfill/wipe-restart`,
+            {
+              deleteDestination: options?.deleteDestination ?? false,
+            },
+          );
+
+          if (response.success) {
+            await get().refresh(workspaceId);
+          } else {
+            throw new Error(
+              response.error || "Failed to wipe and restart backfill",
+            );
+          }
+        } catch (error: any) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          throw error;
         } finally {
           set(state => {
             delete state.loading[workspaceId];

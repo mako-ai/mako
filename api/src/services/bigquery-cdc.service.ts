@@ -32,6 +32,47 @@ type ChangeInput = {
   webhookEventId?: string;
 };
 
+function getConfiguredEntities(
+  flow: Pick<IFlow, "entityFilter" | "entityLayouts">,
+): {
+  entities: string[];
+  hasExplicitSelection: boolean;
+} {
+  if (Array.isArray(flow.entityLayouts) && flow.entityLayouts.length > 0) {
+    const entities = flow.entityLayouts
+      .filter(
+        (layout: any) =>
+          layout &&
+          layout.enabled !== false &&
+          typeof layout.entity === "string" &&
+          layout.entity.trim().length > 0,
+      )
+      .map((layout: any) => String(layout.entity).trim());
+    return {
+      entities: Array.from(new Set(entities)),
+      hasExplicitSelection: true,
+    };
+  }
+
+  if (Array.isArray(flow.entityFilter) && flow.entityFilter.length > 0) {
+    const entities = flow.entityFilter
+      .filter(
+        (entity: string) =>
+          typeof entity === "string" && entity.trim().length > 0,
+      )
+      .map(entity => entity.trim());
+    return {
+      entities: Array.from(new Set(entities)),
+      hasExplicitSelection: true,
+    };
+  }
+
+  return {
+    entities: [],
+    hasExplicitSelection: false,
+  };
+}
+
 export function isBigQueryCdcEnabledForFlow(
   flow: Pick<IFlow, "_id" | "tableDestination">,
   destinationType?: string,
@@ -175,6 +216,78 @@ async function maybeEnqueueMaterialization(params: {
   });
 }
 
+function toWriteErrors(raw: unknown): any[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (raw instanceof Map) return Array.from(raw.values());
+  if (typeof raw === "object") {
+    return Object.values(raw as Record<string, unknown>);
+  }
+  return [];
+}
+
+function isDuplicateKeyErrorLike(error: unknown): boolean {
+  if (!error) return false;
+  if (typeof error === "string") {
+    return /E11000 duplicate key/i.test(error);
+  }
+  if (typeof error !== "object") return false;
+
+  const obj = error as Record<string, unknown>;
+  const code = obj.code;
+  if (typeof code === "number" && code === 11000) return true;
+
+  const messageCandidates = [
+    obj.message,
+    obj.errmsg,
+    (obj.err as Record<string, unknown> | undefined)?.message,
+    (obj.err as Record<string, unknown> | undefined)?.errmsg,
+  ].filter((value): value is string => typeof value === "string");
+
+  return messageCandidates.some(message =>
+    /E11000 duplicate key/i.test(message),
+  );
+}
+
+function extractDuplicateErrorInfo(error: unknown): {
+  duplicateCount: number;
+  writeErrorCount: number;
+  duplicateOnly: boolean;
+} {
+  const err = error as Record<string, unknown> | undefined;
+  const writeErrors = toWriteErrors(
+    err?.writeErrors ||
+      (err?.result as Record<string, unknown> | undefined)?.writeErrors ||
+      (
+        (err?.result as Record<string, unknown> | undefined)?.result as
+          | Record<string, unknown>
+          | undefined
+      )?.writeErrors ||
+      (err?.errorResponse as Record<string, unknown> | undefined)
+        ?.writeErrors ||
+      (err?.cause as Record<string, unknown> | undefined)?.writeErrors,
+  );
+
+  if (writeErrors.length > 0) {
+    const duplicateCount = writeErrors.filter(isDuplicateKeyErrorLike).length;
+    return {
+      duplicateCount,
+      writeErrorCount: writeErrors.length,
+      duplicateOnly: duplicateCount === writeErrors.length,
+    };
+  }
+
+  const topLevelDuplicate =
+    isDuplicateKeyErrorLike(error) ||
+    isDuplicateKeyErrorLike((err?.cause as unknown) || undefined);
+
+  return {
+    duplicateCount: topLevelDuplicate ? 1 : 0,
+    writeErrorCount: topLevelDuplicate ? 1 : 0,
+    duplicateOnly: topLevelDuplicate,
+  };
+}
+
 export async function appendBigQueryChangeEvents(params: {
   workspaceId: Types.ObjectId;
   flowId: Types.ObjectId;
@@ -233,11 +346,21 @@ export async function appendBigQueryChangeEvents(params: {
     });
     inserted = result.length;
   } catch (error: any) {
-    const writeErrors = error?.writeErrors || [];
-    deduped = writeErrors.filter((e: any) => e?.code === 11000).length;
-    inserted = docs.length - deduped;
-    if (deduped !== writeErrors.length) {
+    const duplicateInfo = extractDuplicateErrorInfo(error);
+    deduped = duplicateInfo.duplicateCount;
+    inserted = Math.max(docs.length - deduped, 0);
+
+    if (!duplicateInfo.duplicateOnly) {
       throw error;
+    }
+
+    if (deduped > 0) {
+      log.warn("Deduped CDC change events due to duplicate idempotency keys", {
+        flowId: String(params.flowId),
+        workspaceId: String(params.workspaceId),
+        deduped,
+        attempted: docs.length,
+      });
     }
   }
 
@@ -367,6 +490,11 @@ export async function materializeBigQueryEntity(params: {
     return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
   }
 
+  const { entities: configuredEntities, hasExplicitSelection } =
+    getConfiguredEntities(flow);
+  const isEntityEnabled =
+    !hasExplicitSelection || configuredEntities.includes(params.entity);
+
   const pending = await BigQueryChangeEvent.find({
     flowId: new Types.ObjectId(params.flowId),
     entity: params.entity,
@@ -378,6 +506,81 @@ export async function materializeBigQueryEntity(params: {
 
   if (pending.length === 0) {
     return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
+  }
+
+  if (!isEntityEnabled) {
+    await BigQueryChangeEvent.updateMany(
+      { _id: { $in: pending.map(event => event._id) } },
+      {
+        $set: {
+          materializationStatus: "applied",
+          appliedAt: new Date(),
+        },
+        $inc: { materializationAttemptCount: 1 },
+        $unset: { materializationError: "" },
+      },
+    );
+
+    const webhookEventIds = pending
+      .map(event => event.webhookEventId)
+      .filter((id): id is string => Boolean(id));
+    if (webhookEventIds.length > 0) {
+      await (
+        await import("../database/workspace-schema")
+      ).WebhookEvent.updateMany(
+        {
+          flowId: new Types.ObjectId(params.flowId),
+          eventId: { $in: webhookEventIds },
+        },
+        {
+          $set: {
+            applyStatus: "applied",
+            appliedAt: new Date(),
+            status: "completed",
+            applyError: {
+              code: "ENTITY_DISABLED",
+              message: `Entity ${params.entity} is disabled or not selected in flow configuration`,
+            },
+          },
+        },
+      );
+    }
+
+    const lastMaterializedSeq = Number(
+      pending[pending.length - 1]?.ingestSeq || 0,
+    );
+    const backlogCount = await BigQueryChangeEvent.countDocuments({
+      flowId: new Types.ObjectId(params.flowId),
+      entity: params.entity,
+      materializationStatus: "pending",
+    });
+    await BigQueryCdcState.updateOne(
+      { flowId: new Types.ObjectId(params.flowId), entity: params.entity },
+      {
+        $set: {
+          workspaceId: new Types.ObjectId(params.workspaceId),
+          flowId: new Types.ObjectId(params.flowId),
+          entity: params.entity,
+          lastMaterializedSeq,
+          lastMaterializedAt: new Date(),
+          backlogCount,
+        },
+      },
+      { upsert: true },
+    );
+
+    log.warn("Discarded CDC events for disabled/unselected entity", {
+      flowId: params.flowId,
+      entity: params.entity,
+      discarded: pending.length,
+      backlogCount,
+    });
+
+    return {
+      staged: pending.length,
+      applied: pending.length,
+      lastMaterializedSeq,
+    };
   }
 
   await stageChangeEventsToBigQuery({
@@ -685,6 +888,110 @@ export async function forceDrainBigQueryCdcFlow(params: {
       force: true,
     });
   }
+}
+
+export async function sweepStaleBigQueryCdcPending(params?: {
+  staleSeconds?: number;
+  maxEntities?: number;
+}) {
+  const staleSeconds = Math.max(params?.staleSeconds || 180, 30);
+  const maxEntities = Math.max(params?.maxEntities || 25, 1);
+  const staleThreshold = new Date(Date.now() - staleSeconds * 1000);
+
+  const candidates = await BigQueryCdcState.find({
+    $or: [
+      { lastEnqueuedAt: { $exists: false } },
+      { lastEnqueuedAt: null },
+      { lastEnqueuedAt: { $lt: staleThreshold } },
+    ],
+  })
+    .sort({ lastEnqueuedAt: 1 })
+    .limit(maxEntities * 5)
+    .lean();
+
+  if (candidates.length === 0) {
+    return {
+      staleSeconds,
+      scannedEntities: 0,
+      reenqueuedEntities: 0,
+      details: [] as Array<{
+        flowId: string;
+        entity: string;
+        pendingCount: number;
+      }>,
+    };
+  }
+
+  const flowIds = Array.from(
+    new Set(candidates.map(state => String(state.flowId))),
+  ).map(id => new Types.ObjectId(id));
+
+  const flows = await Flow.find({ _id: { $in: flowIds } })
+    .select({ _id: 1, syncEngine: 1, tableDestination: 1 })
+    .lean();
+  const flowMap = new Map(flows.map(flow => [String(flow._id), flow]));
+
+  let scannedEntities = 0;
+  let reenqueuedEntities = 0;
+  const details: Array<{
+    flowId: string;
+    entity: string;
+    pendingCount: number;
+  }> = [];
+
+  for (const state of candidates) {
+    if (reenqueuedEntities >= maxEntities) break;
+    scannedEntities += 1;
+
+    const flowId = String(state.flowId);
+    const flow = flowMap.get(flowId);
+    if (!flow || (flow as any).syncEngine !== "cdc") continue;
+    if (!flow.tableDestination?.connectionId) continue;
+
+    const pendingCount = await BigQueryChangeEvent.countDocuments({
+      flowId: state.flowId,
+      entity: state.entity,
+      materializationStatus: "pending",
+    });
+
+    if ((state as any).backlogCount !== pendingCount) {
+      await BigQueryCdcState.updateOne(
+        { _id: state._id },
+        { $set: { backlogCount: pendingCount } },
+      );
+    }
+
+    if (pendingCount === 0) continue;
+
+    await maybeEnqueueMaterialization({
+      workspaceId: state.workspaceId,
+      flowId: state.flowId,
+      entity: state.entity,
+      force: true,
+    });
+    reenqueuedEntities += 1;
+    details.push({
+      flowId,
+      entity: state.entity,
+      pendingCount,
+    });
+  }
+
+  if (reenqueuedEntities > 0) {
+    log.warn("Auto-reenqueued stale BigQuery CDC entities", {
+      staleSeconds,
+      scannedEntities,
+      reenqueuedEntities,
+      details,
+    });
+  }
+
+  return {
+    staleSeconds,
+    scannedEntities,
+    reenqueuedEntities,
+    details,
+  };
 }
 
 export async function recordMaterializationFailure(params: {

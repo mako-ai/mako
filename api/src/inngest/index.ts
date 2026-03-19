@@ -11,6 +11,7 @@ import {
   webhookCleanupFunction,
   webhookRetryFunction,
   bigQueryCdcMaterializeFunction,
+  bigQueryCdcStaleSweepFunction,
 } from "./functions/webhook-flow";
 import {
   dashboardRefreshFunction,
@@ -34,6 +35,7 @@ const baseFunctions = [
   webhookRetryFunction,
   dashboardRefreshFunction,
   bigQueryCdcMaterializeFunction,
+  bigQueryCdcStaleSweepFunction,
 ];
 
 // Conditionally add schedulers (only in production)
@@ -68,4 +70,5 @@ export {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   bigQueryCdcMaterializeFunction,
+  bigQueryCdcStaleSweepFunction,
 };

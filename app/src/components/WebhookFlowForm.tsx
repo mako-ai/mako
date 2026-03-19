@@ -360,6 +360,11 @@ export function WebhookFlowForm({
   const watchEntityLayouts = watch("entityLayouts") || [];
   const watchDeleteMode = watch("deleteMode");
 
+  useEffect(() => {
+    setCurrentFlowId(flowId);
+    setIsNewMode(isNew);
+  }, [flowId, isNew]);
+
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
   );

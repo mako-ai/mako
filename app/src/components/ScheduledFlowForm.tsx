@@ -171,6 +171,11 @@ export function ScheduledFlowForm({
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
 
+  useEffect(() => {
+    setCurrentFlowId(flowId);
+    setIsNewMode(isNew);
+  }, [flowId, isNew]);
+
   // Entity selection state
   const [availableEntities, setAvailableEntities] = useState<EntityMetadata[]>(
     [],

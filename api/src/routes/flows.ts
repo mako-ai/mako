@@ -5,6 +5,8 @@ import {
   DatabaseConnection,
   FlowExecution,
   WebhookEvent,
+  BigQueryChangeEvent,
+  BigQueryCdcState,
 } from "../database/workspace-schema";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
@@ -19,10 +21,195 @@ import {
   dryRunDbSync,
 } from "../services/destination-writer.service";
 import { getBigQueryCdcFlowStats } from "../services/bigquery-cdc.service";
+import { getEntityTableName } from "../sync/sync-orchestrator";
+import { BigQuery } from "@google-cloud/bigquery";
 
 const logger = loggers.inngest("flow");
 
 export const flowRoutes = new Hono();
+const RUNNING_EXECUTION_STALE_MS = 2 * 60 * 1000;
+
+function isSafeBigQueryIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function parseServiceAccountJsonForWipe(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return value;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    throw new Error(
+      `Invalid BigQuery service_account_json on destination connection: ${
+        error instanceof Error ? error.message : "failed to parse JSON"
+      }`,
+    );
+  }
+}
+
+function getExecutionLastActivity(execution: {
+  lastHeartbeat?: Date | string;
+  startedAt?: Date | string;
+}): Date | null {
+  const candidate = execution.lastHeartbeat || execution.startedAt;
+  if (!candidate) {
+    return null;
+  }
+  const dt = candidate instanceof Date ? candidate : new Date(candidate);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function isExecutionStale(
+  execution: { lastHeartbeat?: Date | string; startedAt?: Date | string },
+  now = new Date(),
+): boolean {
+  const lastActivity = getExecutionLastActivity(execution);
+  if (!lastActivity) {
+    return true;
+  }
+  return now.getTime() - lastActivity.getTime() > RUNNING_EXECUTION_STALE_MS;
+}
+
+async function getActiveRunningExecution(filter: {
+  flowId: Types.ObjectId;
+  workspaceId?: Types.ObjectId;
+  syncMode?: "full";
+}) {
+  const query: Record<string, unknown> = {
+    flowId: filter.flowId,
+    status: "running",
+  };
+  if (filter.workspaceId) {
+    query.workspaceId = filter.workspaceId;
+  }
+  if (filter.syncMode) {
+    query["context.syncMode"] = filter.syncMode;
+  }
+
+  const runningExecution = await FlowExecution.findOne(query)
+    .sort({ lastHeartbeat: -1, startedAt: -1 })
+    .lean();
+  if (!runningExecution) {
+    return null;
+  }
+
+  if (!isExecutionStale(runningExecution)) {
+    return runningExecution;
+  }
+
+  const now = new Date();
+  await FlowExecution.updateOne(
+    { _id: runningExecution._id, status: "running" },
+    {
+      $set: {
+        status: "abandoned",
+        completedAt: now,
+        error: {
+          message:
+            "Flow execution abandoned due to stale heartbeat during status check",
+          code: "WORKER_TIMEOUT",
+        },
+      },
+    },
+  );
+
+  logger.warn("Auto-marked stale running flow execution as abandoned", {
+    flowId: runningExecution.flowId?.toString(),
+    workspaceId: runningExecution.workspaceId?.toString(),
+    executionId: runningExecution._id?.toString(),
+  });
+
+  return null;
+}
+
+async function wipeBigQueryDestinationTablesForFlow(flow: any): Promise<{
+  attempted: boolean;
+  deletedTables: string[];
+  skippedTables: string[];
+}> {
+  const destinationConnectionId = flow.tableDestination?.connectionId;
+  if (!destinationConnectionId) {
+    return { attempted: false, deletedTables: [], skippedTables: [] };
+  }
+
+  const destinationDoc = await DatabaseConnection.findById(
+    destinationConnectionId,
+  ).select({ type: 1, connection: 1 });
+  if (!destinationDoc) {
+    return { attempted: false, deletedTables: [], skippedTables: [] };
+  }
+  const destination = destinationDoc.toObject({ getters: true }) as {
+    type?: string;
+    connection?: Record<string, unknown>;
+  };
+  if (destination.type !== "bigquery") {
+    return { attempted: false, deletedTables: [], skippedTables: [] };
+  }
+
+  const connection: any = destination.connection || {};
+  const projectId = connection.project_id;
+  const dataset =
+    flow.tableDestination?.schema || connection.dataset || connection.database;
+  if (!projectId || !dataset) {
+    throw new Error(
+      "Missing BigQuery project_id or dataset for destination wipe",
+    );
+  }
+
+  const credentials = parseServiceAccountJsonForWipe(
+    connection.service_account_json,
+  );
+  const location = connection.location || "EU";
+  const tablePrefix = flow.tableDestination?.tableName || "";
+
+  // Prefer explicitly enabled entity layouts; fall back to entityFilter.
+  const entities =
+    flow.entityLayouts?.length > 0
+      ? flow.entityLayouts
+          .filter((l: any) => l && l.enabled !== false && l.entity)
+          .map((l: any) => String(l.entity))
+      : Array.isArray(flow.entityFilter)
+        ? flow.entityFilter.map((e: string) => String(e))
+        : [];
+
+  const uniqueEntities = Array.from(new Set(entities));
+  const tableNames = uniqueEntities.map(entity =>
+    getEntityTableName(tablePrefix, entity),
+  );
+  const allTargets = Array.from(
+    new Set(
+      tableNames.flatMap(name => [
+        name,
+        `${name}__stage_changes`,
+        `${name}__stage_raw`,
+      ]),
+    ),
+  );
+
+  const deletedTables: string[] = [];
+  const skippedTables: string[] = [];
+  const bq = new BigQuery({ projectId, credentials });
+
+  for (const tableName of allTargets) {
+    if (!isSafeBigQueryIdentifier(String(tableName))) {
+      skippedTables.push(String(tableName));
+      continue;
+    }
+    const qualified = `\`${projectId}.${dataset}.${tableName}\``;
+    await bq.query({
+      query: `DROP TABLE IF EXISTS ${qualified}`,
+      location,
+    });
+    deletedTables.push(tableName);
+  }
+
+  return { attempted: true, deletedTables, skippedTables };
+}
 
 // Apply unified auth middleware to all flow routes
 flowRoutes.use("*", unifiedAuthMiddleware);
@@ -975,6 +1162,151 @@ flowRoutes.post("/:flowId/backfill", async c => {
   }
 });
 
+// POST /api/workspaces/:workspaceId/flows/:flowId/backfill/wipe-restart
+// Clears webhook/CDC state for a flow, then starts a fresh full backfill.
+flowRoutes.post("/:flowId/backfill/wipe-restart", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+
+    const flowObjectId = new Types.ObjectId(flowId);
+    const workspaceObjectId = new Types.ObjectId(workspaceId);
+
+    const body = await c.req.json().catch(() => ({}));
+    const deleteDestination =
+      Boolean((body as { deleteDestination?: boolean })?.deleteDestination) ||
+      false;
+
+    const flow = await Flow.findOne({
+      _id: flowObjectId,
+      workspaceId: workspaceObjectId,
+      type: "webhook",
+    });
+
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+
+    const runningExecution = await getActiveRunningExecution({
+      flowId: flowObjectId,
+      workspaceId: workspaceObjectId,
+    });
+
+    if (runningExecution) {
+      const lastActivity = getExecutionLastActivity(runningExecution);
+      const ageSeconds = lastActivity
+        ? Math.floor((Date.now() - lastActivity.getTime()) / 1000)
+        : null;
+      return c.json(
+        {
+          success: false,
+          error:
+            "Cannot wipe while flow is running. Cancel current execution first.",
+          data: {
+            executionId: runningExecution._id,
+            startedAt: runningExecution.startedAt,
+            lastHeartbeat: runningExecution.lastHeartbeat,
+            ageSeconds,
+          },
+        },
+        409,
+      );
+    }
+
+    let wipeDestinationResult: {
+      attempted: boolean;
+      deletedTables: string[];
+      skippedTables: string[];
+    } = { attempted: false, deletedTables: [], skippedTables: [] };
+    if (deleteDestination) {
+      wipeDestinationResult = await wipeBigQueryDestinationTablesForFlow(flow);
+    }
+
+    const [webhookDeleteRes, cdcChangeDeleteRes, cdcStateDeleteRes] =
+      await Promise.all([
+        WebhookEvent.deleteMany({
+          flowId: flowObjectId,
+          workspaceId: workspaceObjectId,
+        }),
+        BigQueryChangeEvent.deleteMany({
+          flowId: flowObjectId,
+          workspaceId: workspaceObjectId,
+        }),
+        BigQueryCdcState.deleteMany({
+          flowId: flowObjectId,
+          workspaceId: workspaceObjectId,
+        }),
+      ]);
+
+    await Flow.updateOne(
+      { _id: flowObjectId, workspaceId: workspaceObjectId },
+      {
+        $set: {
+          enabled: true,
+          "webhookConfig.enabled": true,
+          "webhookConfig.totalReceived": 0,
+          "webhookConfig.lastReceivedAt": null,
+          "backfillState.active": false,
+          "backfillState.startedAt": null,
+          "backfillState.completedAt": null,
+          updatedAt: new Date(),
+        },
+        $unset: {
+          lastError: "",
+          lastSuccessAt: "",
+        },
+      },
+    );
+
+    const eventId = await inngest.send({
+      name: "flow.execute",
+      data: {
+        flowId: flow._id.toString(),
+        noJitter: true,
+        backfill: true,
+      },
+    });
+
+    logger.info("Flow wipe + restart backfill triggered", {
+      flowId,
+      workspaceId,
+      eventId,
+      deletedWebhookEvents: webhookDeleteRes.deletedCount,
+      deletedCdcChanges: cdcChangeDeleteRes.deletedCount,
+      deletedCdcStateDocs: cdcStateDeleteRes.deletedCount,
+      deleteDestination,
+      deletedDestinationTables: wipeDestinationResult.deletedTables.length,
+    });
+
+    return c.json({
+      success: true,
+      message: "Flow state wiped and backfill restarted",
+      data: {
+        flowId,
+        eventId,
+        deleted: {
+          webhookEvents: webhookDeleteRes.deletedCount,
+          cdcChanges: cdcChangeDeleteRes.deletedCount,
+          cdcState: cdcStateDeleteRes.deletedCount,
+          destinationTables: wipeDestinationResult.deletedTables.length,
+          destinationTablesList: wipeDestinationResult.deletedTables,
+          skippedDestinationTables: wipeDestinationResult.skippedTables,
+        },
+        restartedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    logger.error("Error wiping and restarting flow backfill", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
 // GET /api/workspaces/:workspaceId/flows/:flowId/status - Check if flow is running
 flowRoutes.get("/:flowId/status", async c => {
   try {
@@ -992,13 +1324,10 @@ flowRoutes.get("/:flowId/status", async c => {
     }
 
     // Check for running executions
-    const runningExecution = await FlowExecution.findOne({
+    const runningExecution = await getActiveRunningExecution({
       flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
-      status: "running",
-    })
-      .sort({ startedAt: -1 })
-      .lean();
+    });
 
     return c.json({
       success: true,
@@ -1047,22 +1376,19 @@ flowRoutes.post("/:flowId/cancel", async c => {
 
     // If no executionId provided, find the running execution
     if (!executionIdToCancel) {
-      const runningExecution = await FlowExecution.findOne({
+      const activeRunningExecution = await getActiveRunningExecution({
         flowId: new Types.ObjectId(flowId),
         workspaceId: new Types.ObjectId(workspaceId),
-        status: "running",
-      })
-        .sort({ startedAt: -1 })
-        .lean();
+      });
 
-      if (!runningExecution) {
+      if (!activeRunningExecution) {
         return c.json(
           { success: false, error: "No running execution found" },
           404,
         );
       }
 
-      executionIdToCancel = runningExecution._id.toString();
+      executionIdToCancel = activeRunningExecution._id.toString();
     }
 
     // Trigger cancellation via Inngest
@@ -1241,6 +1567,7 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       deferredCount,
       runningFullSyncExecution,
       cdcStats,
+      entityCountsAgg,
     ] = await Promise.all([
       WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
@@ -1261,16 +1588,71 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       }),
       WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
+        status: "pending",
         applyStatus: "pending",
       }),
       FlowExecution.findOne({
         flowId: new Types.ObjectId(flowId),
         status: "running",
         "context.syncMode": "full",
+        $or: [
+          {
+            lastHeartbeat: {
+              $gte: new Date(Date.now() - RUNNING_EXECUTION_STALE_MS),
+            },
+          },
+          {
+            lastHeartbeat: { $exists: false },
+            startedAt: {
+              $gte: new Date(Date.now() - RUNNING_EXECUTION_STALE_MS),
+            },
+          },
+        ],
       })
         .select({ _id: 1 })
         .lean(),
       getBigQueryCdcFlowStats({ flowId }),
+      WebhookEvent.aggregate([
+        {
+          $match: {
+            flowId: new Types.ObjectId(flowId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          },
+        },
+        {
+          $project: {
+            entity: { $ifNull: ["$entity", "__unresolved__"] },
+            receivedAt: 1,
+            applyStatus: 1,
+          },
+        },
+        {
+          $facet: {
+            totals: [
+              {
+                $group: {
+                  _id: "$entity",
+                  total: { $sum: 1 },
+                  pendingApply: {
+                    $sum: {
+                      $cond: [{ $eq: ["$applyStatus", "pending"] }, 1, 0],
+                    },
+                  },
+                },
+              },
+            ],
+            today: [
+              { $match: { receivedAt: { $gte: today } } },
+              {
+                $group: {
+                  _id: "$entity",
+                  today: { $sum: 1 },
+                },
+              },
+            ],
+          },
+        },
+      ]),
     ]);
     // Only use terminal events for success-rate math.
     // Pending/processing events should not be counted as successful.
@@ -1280,6 +1662,61 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const backfillActive = Boolean(
       flow.backfillState?.active || runningFullSyncExecution,
     );
+
+    const configuredEntities =
+      flow.entityLayouts?.length > 0
+        ? flow.entityLayouts
+            .filter((l: any) => l && l.enabled !== false && l.entity)
+            .map((l: any) => String(l.entity))
+        : Array.isArray(flow.entityFilter)
+          ? flow.entityFilter.map((e: string) => String(e))
+          : [];
+
+    const entityCountMap = new Map<
+      string,
+      { entity: string; total: number; today: number; pendingApply: number }
+    >();
+    for (const entity of configuredEntities) {
+      entityCountMap.set(entity, {
+        entity,
+        total: 0,
+        today: 0,
+        pendingApply: 0,
+      });
+    }
+
+    const totals =
+      (entityCountsAgg?.[0]?.totals as
+        | Array<{ _id: string; total: number; pendingApply: number }>
+        | undefined) || [];
+    for (const row of totals) {
+      entityCountMap.set(row._id, {
+        entity: row._id,
+        total: row.total || 0,
+        today: entityCountMap.get(row._id)?.today || 0,
+        pendingApply: row.pendingApply || 0,
+      });
+    }
+
+    const todayByEntity =
+      (entityCountsAgg?.[0]?.today as Array<{ _id: string; today: number }>) ||
+      [];
+    for (const row of todayByEntity) {
+      const existing = entityCountMap.get(row._id) || {
+        entity: row._id,
+        total: 0,
+        today: 0,
+        pendingApply: 0,
+      };
+      entityCountMap.set(row._id, {
+        ...existing,
+        today: row.today || 0,
+      });
+    }
+
+    const entityCounts = Array.from(entityCountMap.values())
+      .filter(entity => entity.entity !== "__unresolved__")
+      .sort((a, b) => b.total - a.total);
 
     const stats = {
       webhookUrl: flow.webhookConfig?.endpoint,
@@ -1291,6 +1728,7 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       deferredCount,
       backfillActive,
       cdc: cdcStats,
+      entityCounts,
       successRate: Math.round(successRate),
       recentEvents: recentEvents.slice(0, 10).map(event => ({
         eventId: event.eventId,
@@ -1359,6 +1797,7 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
           processedAt: event.processedAt,
           status: event.status,
           applyStatus: event.applyStatus,
+          applyError: event.applyError,
           attempts: event.attempts,
           error: event.error,
           processingDurationMs: event.processingDurationMs,

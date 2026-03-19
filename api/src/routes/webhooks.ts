@@ -40,7 +40,6 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       _id: flowId,
       workspaceId: workspaceId,
       type: "webhook",
-      enabled: true,
     });
 
     if (!flow) {
@@ -48,7 +47,7 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       return c.json({ error: "Invalid webhook endpoint" }, 404);
     }
 
-    if (!flow.webhookConfig?.enabled) {
+    if (flow.enabled === false || !flow.webhookConfig?.enabled) {
       logger.warn("Webhook received for disabled flow", { flowId });
       return c.json({ error: "Webhook endpoint disabled" }, 403);
     }

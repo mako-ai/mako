@@ -1,5 +1,5 @@
-import { useState, type RefObject } from "react";
-import { Box, Tabs, Tab } from "@mui/material";
+import { useEffect, useState, type RefObject } from "react";
+import { Box, Button } from "@mui/material";
 import { ScheduledFlowForm } from "./ScheduledFlowForm";
 import { WebhookFlowForm } from "./WebhookFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
@@ -30,15 +30,28 @@ export function FlowEditor({
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );
-  const [webhookTab, setWebhookTab] = useState(0);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const { currentWorkspace } = useWorkspace();
-  const { flows: flowsMap, runFlow } = useFlowStore();
+  const { flows: flowsMap, runFlow, refresh } = useFlowStore();
+
+  useEffect(() => {
+    setCurrentFlowId(flowId);
+    setIsEditing(isNew);
+    setShowDiagnostics(false);
+  }, [flowId, isNew]);
 
   // Get flow details and derive webhook status
   const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
   const currentFlow = currentFlowId
     ? flows.find(f => f._id === currentFlowId)
     : null;
+
+  useEffect(() => {
+    if (!currentWorkspace?.id || !currentFlowId) return;
+    if (flows.length > 0 && !currentFlow) {
+      void refresh(currentWorkspace.id);
+    }
+  }, [currentWorkspace?.id, currentFlowId, currentFlow, flows.length, refresh]);
 
   // Determine flow type - for new flows, use the prop; for existing, check the flow
   const isWebhookFlow = isNew
@@ -127,23 +140,36 @@ export function FlowEditor({
             <Box
               sx={{ height: "100%", display: "flex", flexDirection: "column" }}
             >
-              <Tabs
-                value={webhookTab}
-                onChange={(_, v) => setWebhookTab(v)}
-                sx={{ borderBottom: 1, borderColor: "divider", minHeight: 36 }}
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  px: 2,
+                  py: 1,
+                  borderBottom: 1,
+                  borderColor: "divider",
+                }}
               >
-                <Tab label="Webhook Events" sx={{ minHeight: 36, py: 0.5 }} />
-                <Tab label="Backfill" sx={{ minHeight: 36, py: 0.5 }} />
-              </Tabs>
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => setShowDiagnostics(v => !v)}
+                >
+                  {showDiagnostics ? "Hide diagnostics" : "View diagnostics"}
+                </Button>
+                <Button size="small" onClick={handleEditClick}>
+                  Edit flow
+                </Button>
+              </Box>
               <Box sx={{ flex: 1, overflow: "hidden" }}>
-                {webhookTab === 0 && (
+                {showDiagnostics ? (
                   <WebhookStats
                     workspaceId={currentWorkspace.id}
                     flowId={currentFlowId}
                     onEdit={handleEditClick}
                   />
-                )}
-                {webhookTab === 1 && (
+                ) : (
                   <BackfillPanel
                     workspaceId={currentWorkspace.id}
                     flowId={currentFlowId}

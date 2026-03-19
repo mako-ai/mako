@@ -1,4 +1,10 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import {
+  useEffect,
+  useState,
+  useRef,
+  useCallback,
+  type MouseEvent,
+} from "react";
 import {
   Box,
   Button,
@@ -12,6 +18,9 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  IconButton,
+  Menu,
+  MenuItem,
 } from "@mui/material";
 import {
   Sync as SyncIcon,
@@ -19,6 +28,7 @@ import {
   CheckCircle as CheckIcon,
   Error as ErrorIcon,
   HourglassEmpty as PendingIcon,
+  MoreVert as MoreVertIcon,
 } from "@mui/icons-material";
 import { useFlowStore, type FlowExecutionHistory } from "../store/flowStore";
 
@@ -171,10 +181,12 @@ function deriveProgressFromLogs(logs: ExecutionLog[]): {
 export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
   const {
     backfillFlow,
+    wipeAndRestartBackfill,
     fetchFlowStatus,
     fetchFlowHistory,
     fetchExecutionDetails,
     cancelFlowExecution,
+    fetchWebhookStats,
   } = useFlowStore();
 
   const [isTriggering, setIsTriggering] = useState(false);
@@ -192,6 +204,20 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
   const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
   const [recentLogs, setRecentLogs] = useState<ExecutionLog[]>([]);
   const [wasCancelled, setWasCancelled] = useState(false);
+  const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
+  const [webhookLastReceived, setWebhookLastReceived] = useState<string | null>(
+    null,
+  );
+  const [webhookEventsToday, setWebhookEventsToday] = useState(0);
+  const [webhookTotalReceived, setWebhookTotalReceived] = useState(0);
+  const [webhookEntityCounts, setWebhookEntityCounts] = useState<
+    Array<{
+      entity: string;
+      total: number;
+      today: number;
+      pendingApply: number;
+    }>
+  >([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -206,6 +232,15 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
     if (runs) setHistory(runs);
     if (runs?.[0]) setLastRun(runs[0]);
   }, [workspaceId, flowId, fetchFlowHistory]);
+
+  const loadWebhookHealth = useCallback(async () => {
+    const stats = await fetchWebhookStats(workspaceId, flowId);
+    if (!stats) return;
+    setWebhookLastReceived(stats.lastReceived);
+    setWebhookEventsToday(stats.eventsToday);
+    setWebhookTotalReceived(stats.totalReceived);
+    setWebhookEntityCounts(stats.entityCounts || []);
+  }, [workspaceId, flowId, fetchWebhookStats]);
 
   const pollExecution = useCallback(async () => {
     if (!executionId) return;
@@ -311,11 +346,19 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
         setStartedAt(statusResp.runningExecution.startedAt);
       }
       await loadHistory();
+      await loadWebhookHealth();
     };
     init();
     return stopPolling;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, flowId]);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      void loadWebhookHealth();
+    }, 20000);
+    return () => clearInterval(intervalId);
+  }, [loadWebhookHealth]);
 
   // Start polling when executionId is set and status is running
   useEffect(() => {
@@ -326,14 +369,6 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
   }, [status, executionId, startPolling, stopPolling]);
 
   const handleBackfill = async () => {
-    if (
-      !confirm(
-        "Run a full backfill? This will sync all historical data for the enabled entities.",
-      )
-    ) {
-      return;
-    }
-
     setIsTriggering(true);
     setError(null);
     setEntityStats({});
@@ -378,6 +413,52 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
     }
   };
 
+  const handleWipeAndRestart = async () => {
+    if (
+      !confirm(
+        "Wipe webhook/CDC state, delete destination tables, and restart backfill?\n\nThis will clear queued webhook events, CDC staging state, and BigQuery destination tables for enabled entities before running a fresh backfill.",
+      )
+    ) {
+      return;
+    }
+
+    setIsTriggering(true);
+    setError(null);
+    setEntityStats({});
+    setEntityStatus({});
+    setPlannedEntities([]);
+    setRecentLogs([]);
+    setWasCancelled(false);
+    try {
+      await wipeAndRestartBackfill(workspaceId, flowId, {
+        deleteDestination: true,
+      });
+      setStatus("running");
+      setTimeout(async () => {
+        const statusResp = await fetchFlowStatus(workspaceId, flowId);
+        if (statusResp?.runningExecution) {
+          setExecutionId(statusResp.runningExecution.executionId);
+          setStartedAt(statusResp.runningExecution.startedAt);
+        }
+        setIsTriggering(false);
+      }, 3000);
+    } catch (err) {
+      setStatus("failed");
+      setError(
+        err instanceof Error ? err.message : "Wipe and restart backfill failed",
+      );
+      setIsTriggering(false);
+    }
+  };
+
+  const handleMenuOpen = (event: MouseEvent<HTMLElement>) => {
+    setMenuAnchorEl(event.currentTarget);
+  };
+
+  const handleMenuClose = () => {
+    setMenuAnchorEl(null);
+  };
+
   const entityEntries = Array.from(
     new Set([
       ...plannedEntities,
@@ -387,6 +468,26 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
   )
     .map(entity => [entity, entityStats[entity] || 0] as const)
     .sort(([, a], [, b]) => b - a);
+
+  const webhookHealth = (() => {
+    if (!webhookLastReceived) {
+      return {
+        label: webhookTotalReceived > 0 ? "Quiet now" : "No events yet",
+        color:
+          webhookTotalReceived > 0
+            ? ("warning" as const)
+            : ("default" as const),
+      };
+    }
+    const ageMs = Date.now() - new Date(webhookLastReceived).getTime();
+    if (ageMs <= 5 * 60 * 1000) {
+      return { label: "Healthy", color: "success" as const };
+    }
+    if (ageMs <= 30 * 60 * 1000) {
+      return { label: "Quiet now", color: "warning" as const };
+    }
+    return { label: "No recent events", color: "error" as const };
+  })();
 
   return (
     <Box
@@ -416,8 +517,29 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
           onClick={handleBackfill}
           disabled={isTriggering || status === "running"}
         >
-          {status === "running" ? "Backfill running..." : "Run Backfill"}
+          {status === "running" ? "Sync running..." : "Sync now"}
         </Button>
+        <IconButton
+          size="small"
+          onClick={handleMenuOpen}
+          disabled={isTriggering || status === "running"}
+        >
+          <MoreVertIcon fontSize="small" />
+        </IconButton>
+        <Menu
+          anchorEl={menuAnchorEl}
+          open={Boolean(menuAnchorEl)}
+          onClose={handleMenuClose}
+        >
+          <MenuItem
+            onClick={async () => {
+              handleMenuClose();
+              await handleWipeAndRestart();
+            }}
+          >
+            Resync from scratch
+          </MenuItem>
+        </Menu>
         {status === "running" && (
           <Button
             size="small"
@@ -453,7 +575,7 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
             sx={{ mb: 2 }}
             onClose={() => setStatus(null)}
           >
-            Backfill completed
+            Sync completed
             {lastRun?.duration != null &&
               ` in ${Math.round(lastRun.duration / 1000)}s`}
           </Alert>
@@ -468,15 +590,98 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
               setError(null);
             }}
           >
-            Backfill failed: {error}
+            Sync failed: {error}
           </Alert>
         )}
 
         {status === "cancelled" && (
           <Alert severity="info" sx={{ mb: 2 }} onClose={() => setStatus(null)}>
-            Backfill cancelled
+            Sync cancelled
           </Alert>
         )}
+
+        <Box
+          sx={{
+            mb: 2,
+            border: 1,
+            borderColor: "divider",
+            borderRadius: 1,
+            p: 1.5,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 2,
+            flexWrap: "wrap",
+          }}
+        >
+          <Box>
+            <Typography variant="subtitle2">Webhook health</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Last received{" "}
+              {webhookLastReceived
+                ? new Date(webhookLastReceived).toLocaleString()
+                : "never"}
+              {" · "}Today {webhookEventsToday} {" · "}Total{" "}
+              {webhookTotalReceived}
+            </Typography>
+          </Box>
+          <Chip
+            size="small"
+            color={webhookHealth.color}
+            variant="outlined"
+            label={webhookHealth.label}
+          />
+        </Box>
+
+        <Box
+          sx={{
+            mb: 2,
+            border: 1,
+            borderColor: "divider",
+            borderRadius: 1,
+            p: 1.5,
+          }}
+        >
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Entity webhook counts
+          </Typography>
+          {webhookEntityCounts.length === 0 ? (
+            <Typography variant="caption" color="text.secondary">
+              No entity counts yet.
+            </Typography>
+          ) : (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Entity</TableCell>
+                  <TableCell align="right">Today</TableCell>
+                  <TableCell align="right">Total</TableCell>
+                  <TableCell align="right">Queued</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {webhookEntityCounts.slice(0, 12).map(row => (
+                  <TableRow key={row.entity}>
+                    <TableCell>
+                      <Typography variant="body2">
+                        {formatEntityAsTableName(row.entity)}
+                      </Typography>
+                    </TableCell>
+                    <TableCell align="right">
+                      {row.today.toLocaleString()}
+                    </TableCell>
+                    <TableCell align="right">
+                      {row.total.toLocaleString()}
+                    </TableCell>
+                    <TableCell align="right">
+                      {row.pendingApply.toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </Box>
 
         {status === "running" && recentLogs.length > 0 && (
           <Box sx={{ mb: 3 }}>
@@ -527,7 +732,7 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
                 <TableHead>
                   <TableRow>
                     <TableCell>Entity</TableCell>
-                    <TableCell align="right">Records</TableCell>
+                    <TableCell align="right">Processed</TableCell>
                     <TableCell align="center">Status</TableCell>
                   </TableRow>
                 </TableHead>
@@ -614,6 +819,10 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
                 </TableBody>
               </Table>
             </TableContainer>
+            <Typography variant="caption" color="text.secondary">
+              Processed counts come from live sync progress logs and can exceed
+              final destination row counts (retries/updates are included).
+            </Typography>
           </Box>
         )}
 
@@ -630,7 +839,7 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
                     <TableCell>Date</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell align="right">Duration</TableCell>
-                    <TableCell align="right">Records</TableCell>
+                    <TableCell align="right">Processed</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -702,8 +911,7 @@ export function BackfillPanel({ workspaceId, flowId }: BackfillPanelProps) {
             <SyncIcon sx={{ fontSize: 48, mb: 1, opacity: 0.3 }} />
             <Typography variant="body1">No backfill runs yet</Typography>
             <Typography variant="body2">
-              Click "Run Backfill" to sync historical data from Close to
-              BigQuery
+              Click Sync now to sync historical data from Close to BigQuery
             </Typography>
           </Box>
         )}

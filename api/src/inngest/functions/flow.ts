@@ -79,6 +79,47 @@ async function getFlowDisplayName(flow: IFlow): Promise<string> {
   }
 }
 
+function getConfiguredEntities(
+  flow: Pick<IFlow, "entityFilter" | "entityLayouts">,
+): {
+  entities: string[];
+  hasExplicitSelection: boolean;
+} {
+  if (Array.isArray(flow.entityLayouts) && flow.entityLayouts.length > 0) {
+    const entities = flow.entityLayouts
+      .filter(
+        (layout: any) =>
+          layout &&
+          layout.enabled !== false &&
+          typeof layout.entity === "string" &&
+          layout.entity.trim().length > 0,
+      )
+      .map((layout: any) => String(layout.entity).trim());
+    return {
+      entities: Array.from(new Set(entities)),
+      hasExplicitSelection: true,
+    };
+  }
+
+  if (Array.isArray(flow.entityFilter) && flow.entityFilter.length > 0) {
+    const entities = flow.entityFilter
+      .filter(
+        (entity: string) =>
+          typeof entity === "string" && entity.trim().length > 0,
+      )
+      .map(entity => entity.trim());
+    return {
+      entities: Array.from(new Set(entities)),
+      hasExplicitSelection: true,
+    };
+  }
+
+  return {
+    entities: [],
+    hasExplicitSelection: false,
+  };
+}
+
 // Flow execution logging interface
 interface FlowExecutionLog {
   timestamp: Date;
@@ -412,7 +453,7 @@ export const flowFunction = inngest.createFunction(
           destinationDatabaseId: new Types.ObjectId(flow.destinationDatabaseId),
           destinationDatabaseName: flow.destinationDatabaseName,
           syncMode: flow.syncMode === "incremental" ? "incremental" : "full",
-          entityFilter: flow.entityFilter,
+          entityFilter: getConfiguredEntities(flow).entities,
           cronExpression: flow.schedule?.cron || "N/A",
           timezone: flow.schedule?.timezone || "UTC",
         },
@@ -633,7 +674,7 @@ export const flowFunction = inngest.createFunction(
             flow.databaseSource?.connectionId?.toString(),
           destinationDatabaseId: flow.destinationDatabaseId.toString(),
           tableDestination: flow.tableDestination?.tableName,
-          entityFilter: flow.entityFilter,
+          entityFilter: getConfiguredEntities(flow).entities,
         });
         return true;
       });
@@ -1079,10 +1120,12 @@ export const flowFunction = inngest.createFunction(
             const availableEntities = connector
               .getAvailableEntities()
               .filter(e => typeof e === "string" && e.trim().length > 0);
+            const { entities: configuredEntities, hasExplicitSelection } =
+              getConfiguredEntities(flow);
 
-            if (flow.entityFilter && flow.entityFilter.length > 0) {
+            if (hasExplicitSelection) {
               // Validate requested entities
-              const invalidEntities = flow.entityFilter.filter(
+              const invalidEntities = configuredEntities.filter(
                 e => !availableEntities.includes(e),
               );
               if (invalidEntities.length > 0) {
@@ -1090,13 +1133,9 @@ export const flowFunction = inngest.createFunction(
                   `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
                 );
               }
-              // Also filter requested list against non-empty names
-              return flow.entityFilter.filter(
-                e => typeof e === "string" && e.trim().length > 0,
-              );
-            } else {
-              return availableEntities;
+              return configuredEntities;
             }
+            return availableEntities;
           },
         );
 
@@ -1262,6 +1301,7 @@ export const flowFunction = inngest.createFunction(
                   destinationDatabaseName: flow.destinationDatabaseName,
                   flowId: flowId.toString(),
                   workspaceId: flow.workspaceId.toString(),
+                  syncEngine: (flow as any).syncEngine,
                   backfillRunId: backfill ? executionId : undefined,
                   entity,
                   isIncremental: flow.syncMode === "incremental",
@@ -1404,16 +1444,43 @@ export const flowFunction = inngest.createFunction(
             const connector =
               await syncConnectorRegistry.getConnector(dataSource);
             if (connector) {
-              syncedEntities =
-                flow.entityFilter && flow.entityFilter.length > 0
-                  ? flow.entityFilter
-                  : connector.getAvailableEntities();
+              const availableEntities = connector
+                .getAvailableEntities()
+                .filter(e => typeof e === "string" && e.trim().length > 0);
+              const { entities: configuredEntities, hasExplicitSelection } =
+                getConfiguredEntities(flow);
+
+              if (hasExplicitSelection) {
+                const invalidEntities = configuredEntities.filter(
+                  e => !availableEntities.includes(e),
+                );
+                if (invalidEntities.length > 0) {
+                  throw new Error(
+                    `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
+                  );
+                }
+              }
+
+              syncedEntities = hasExplicitSelection
+                ? configuredEntities
+                : availableEntities;
             }
           }
           logger.info("Starting non-chunked sync operation", {
             flowId,
             syncMode: flow.syncMode,
+            entitiesToSync: syncedEntities,
           });
+
+          if (syncedEntities.length === 0) {
+            logger.info(
+              "No enabled entities selected; skipping sync execution",
+              {
+                flowId,
+              },
+            );
+            return { success: true, skipped: true };
+          }
 
           try {
             // Create a sync logger that wraps Inngest's logger
@@ -1452,7 +1519,7 @@ export const flowFunction = inngest.createFunction(
               dataSourceId.toString(),
               flow.destinationDatabaseId.toString(),
               flow.destinationDatabaseName,
-              flow.entityFilter,
+              syncedEntities,
               flow.syncMode === "incremental",
               syncLogger,
               step, // Pass Inngest step for serverless-friendly retries
