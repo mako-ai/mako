@@ -8,6 +8,9 @@ import {
   ToggleButton,
   Tooltip,
   IconButton,
+  Button,
+  Menu,
+  MenuItem,
 } from "@mui/material";
 import {
   DataGridPremium,
@@ -19,6 +22,7 @@ import {
   Braces as JsonIcon,
   BarChart3 as ChartIcon,
   ClipboardCopy as CopyIcon,
+  Download as DownloadIcon,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
@@ -31,6 +35,14 @@ interface QueryResult {
   resultCount: number;
   executionTime?: number; // Execution time in milliseconds
   fields?: Array<{ name?: string; originalName?: string } | string>;
+  pageInfo?: {
+    pageSize: number;
+    hasMore: boolean;
+    nextCursor: string | null;
+    returnedRows: number;
+    capApplied: boolean;
+  } | null;
+  currentPage?: number;
 }
 
 type ViewMode = "table" | "json" | "chart";
@@ -43,6 +55,9 @@ interface ResultsTableProps {
   onViewModeChange?: (mode: ViewMode) => void;
   onChartRenderError?: (error: string) => void;
   onChartRenderSuccess?: () => void;
+  onNextPage?: () => void;
+  onPreviousPage?: () => void;
+  onDownload?: (format: "csv" | "ndjson") => void;
 }
 
 const ResultsTable: React.FC<ResultsTableProps> = ({
@@ -53,14 +68,22 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   onViewModeChange,
   onChartRenderError,
   onChartRenderSuccess,
+  onNextPage,
+  onPreviousPage,
+  onDownload,
 }) => {
   const [snackbarOpen, setSnackbarOpen] = React.useState(false);
   const [internalViewMode, setInternalViewMode] =
     React.useState<ViewMode>("table");
+  const [downloadAnchorEl, setDownloadAnchorEl] =
+    React.useState<HTMLElement | null>(null);
   const { effectiveMode } = useTheme();
 
   const viewMode = controlledViewMode ?? internalViewMode;
   const setViewMode = onViewModeChange ?? setInternalViewMode;
+  const currentPage = results?.currentPage ?? 1;
+  const canGoBack = currentPage > 1 && Boolean(onPreviousPage);
+  const canGoForward = Boolean(results?.pageInfo?.hasMore && onNextPage);
 
   // Reset to table view whenever new results are received
   const executedAt = results?.executedAt;
@@ -426,6 +449,25 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     [setViewMode],
   );
 
+  const handleDownloadMenuOpen = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      setDownloadAnchorEl(event.currentTarget);
+    },
+    [],
+  );
+
+  const handleDownloadMenuClose = useCallback(() => {
+    setDownloadAnchorEl(null);
+  }, []);
+
+  const handleDownloadSelection = useCallback(
+    (format: "csv" | "ndjson") => {
+      handleDownloadMenuClose();
+      onDownload?.(format);
+    },
+    [handleDownloadMenuClose, onDownload],
+  );
+
   const jsonContent = JSON.stringify(results, null, 2);
 
   if (!results) {
@@ -523,6 +565,31 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
             <CopyIcon strokeWidth={1.5} size={22} />
           </IconButton>
         </Tooltip>
+        {onDownload && (
+          <>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={handleDownloadMenuOpen}
+              startIcon={<DownloadIcon strokeWidth={1.5} size={16} />}
+              sx={{ ml: 0.5 }}
+            >
+              Download
+            </Button>
+            <Menu
+              anchorEl={downloadAnchorEl}
+              open={Boolean(downloadAnchorEl)}
+              onClose={handleDownloadMenuClose}
+            >
+              <MenuItem onClick={() => handleDownloadSelection("csv")}>
+                Download CSV
+              </MenuItem>
+              <MenuItem onClick={() => handleDownloadSelection("ndjson")}>
+                Download NDJSON
+              </MenuItem>
+            </Menu>
+          </>
+        )}
       </Box>
 
       {/* Results content */}
@@ -633,10 +700,11 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
         sx={{
           p: 1,
           display: "flex",
-          justifyContent: "flex-start",
+          justifyContent: "space-between",
           alignItems: "center",
           borderTop: "1px solid",
           borderColor: "divider",
+          gap: 2,
         }}
       >
         <Typography variant="body2" color="text.secondary">
@@ -645,7 +713,29 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
             `executed in ${results.executionTime} ms at `}
           {results.executionTime === undefined && "Executed at "}
           {new Date(results.executedAt).toLocaleString()}
+          {results.pageInfo && ` • Page ${currentPage}`}
+          {results.pageInfo?.capApplied && " • capped at 500 rows/page"}
         </Typography>
+        {results.pageInfo && (
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={onPreviousPage}
+              disabled={!canGoBack}
+            >
+              Previous
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={onNextPage}
+              disabled={!canGoForward}
+            >
+              Next
+            </Button>
+          </Box>
+        )}
       </Box>
       <Snackbar
         open={snackbarOpen}

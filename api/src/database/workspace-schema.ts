@@ -1700,6 +1700,341 @@ QueryExecutionSchema.index({ apiKeyId: 1, executedAt: -1 }, { sparse: true }); /
 QueryExecutionSchema.index({ workspaceId: 1, status: 1 }); // Error rate monitoring
 QueryExecutionSchema.index({ executedAt: 1 }, { expireAfterSeconds: 7776000 }); // TTL: 90 days
 
+/**
+ * Dashboard model interface (AI-native dashboard engine)
+ */
+export interface IDashboard extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  title: string;
+  description?: string;
+
+  dataSources: IDashboardDataSource[];
+
+  relationships: Array<{
+    id: string;
+    from: { dataSourceId: string; column: string };
+    to: { dataSourceId: string; column: string };
+    type: "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many";
+  }>;
+
+  widgets: Array<{
+    id: string;
+    title?: string;
+    type: "chart" | "kpi" | "table";
+    dataSourceId: string;
+    localSql: string;
+    vegaLiteSpec?: Record<string, unknown>;
+    kpiConfig?: {
+      valueField: string;
+      format?: string;
+      comparisonField?: string;
+      comparisonLabel?: string;
+    };
+    tableConfig?: { columns?: string[]; pageSize?: number };
+    crossFilter: { enabled: boolean; fields?: string[] };
+    layout: {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      minW?: number;
+      minH?: number;
+    };
+  }>;
+
+  globalFilters: Array<{
+    id: string;
+    type: "date-range" | "select" | "multi-select" | "search";
+    label: string;
+    dataSourceId: string;
+    column: string;
+    config: Record<string, unknown>;
+    layout: { order: number; width?: number };
+  }>;
+
+  crossFilter: {
+    enabled: boolean;
+    resolution: "intersect" | "union";
+  };
+
+  layout: {
+    columns: number;
+    rowHeight: number;
+  };
+
+  cache: {
+    ttlSeconds: number;
+    lastRefreshedAt?: Date;
+  };
+
+  version: number;
+  versionHistory: Array<{
+    version: number;
+    snapshot: Record<string, unknown>;
+    createdAt: Date;
+    createdBy: string;
+    message?: string;
+  }>;
+
+  access: "private" | "workspace";
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IDashboardQueryDefinition {
+  connectionId: Types.ObjectId;
+  language: "sql" | "javascript" | "mongodb";
+  code: string;
+  databaseId?: string;
+  databaseName?: string;
+  mongoOptions?: {
+    collection?: string;
+    operation?:
+      | "find"
+      | "aggregate"
+      | "insertMany"
+      | "updateMany"
+      | "deleteMany"
+      | "findOne"
+      | "updateOne"
+      | "deleteOne";
+  };
+}
+
+export interface IDashboardDataSourceOrigin {
+  type: "saved_console" | "local";
+  consoleId?: Types.ObjectId;
+  consoleName?: string;
+  importedAt?: Date;
+}
+
+export interface IDashboardDataSource {
+  id: string;
+  name: string;
+  tableRef: string;
+  query: IDashboardQueryDefinition;
+  origin?: IDashboardDataSourceOrigin;
+  timeDimension?: string;
+  rowLimit?: number;
+  computedColumns?: Array<{
+    name: string;
+    expression: string;
+    type: "quantitative" | "temporal" | "nominal" | "ordinal";
+  }>;
+  cache?: {
+    ttlSeconds?: number;
+    lastRefreshedAt?: Date;
+    rowCount?: number;
+    byteSize?: number;
+  };
+}
+
+/**
+ * Dashboard Schema
+ */
+const DashboardSchema = new Schema<IDashboard>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    title: { type: String, required: true },
+    description: { type: String },
+
+    dataSources: [
+      {
+        id: { type: String, required: true },
+        name: { type: String, required: true },
+        tableRef: { type: String, required: true },
+        query: {
+          connectionId: {
+            type: Schema.Types.ObjectId,
+            ref: "DatabaseConnection",
+            required: true,
+          },
+          language: {
+            type: String,
+            enum: ["sql", "javascript", "mongodb"],
+            required: true,
+          },
+          code: { type: String, required: true },
+          databaseId: { type: String },
+          databaseName: { type: String },
+          mongoOptions: {
+            collection: { type: String },
+            operation: {
+              type: String,
+              enum: [
+                "find",
+                "aggregate",
+                "insertMany",
+                "updateMany",
+                "deleteMany",
+                "findOne",
+                "updateOne",
+                "deleteOne",
+              ],
+            },
+          },
+        },
+        origin: {
+          type: {
+            type: String,
+            enum: ["saved_console", "local"],
+          },
+          consoleId: {
+            type: Schema.Types.ObjectId,
+            ref: "SavedConsole",
+          },
+          consoleName: { type: String },
+          importedAt: { type: Date },
+        },
+        timeDimension: { type: String },
+        rowLimit: { type: Number },
+        computedColumns: [
+          {
+            name: { type: String, required: true },
+            expression: { type: String, required: true },
+            type: {
+              type: String,
+              enum: ["quantitative", "temporal", "nominal", "ordinal"],
+              required: true,
+            },
+          },
+        ],
+        cache: {
+          ttlSeconds: { type: Number },
+          lastRefreshedAt: { type: Date },
+          rowCount: { type: Number },
+          byteSize: { type: Number },
+        },
+      },
+    ],
+
+    relationships: [
+      {
+        id: { type: String, required: true },
+        from: {
+          dataSourceId: { type: String, required: true },
+          column: { type: String, required: true },
+        },
+        to: {
+          dataSourceId: { type: String, required: true },
+          column: { type: String, required: true },
+        },
+        type: {
+          type: String,
+          enum: ["one-to-one", "one-to-many", "many-to-one", "many-to-many"],
+          required: true,
+        },
+      },
+    ],
+
+    widgets: [
+      {
+        id: { type: String, required: true },
+        title: { type: String },
+        type: {
+          type: String,
+          enum: ["chart", "kpi", "table"],
+          required: true,
+        },
+        dataSourceId: { type: String, required: true },
+        localSql: { type: String, required: true },
+        vegaLiteSpec: { type: Schema.Types.Mixed },
+        kpiConfig: {
+          valueField: { type: String },
+          format: { type: String },
+          comparisonField: { type: String },
+          comparisonLabel: { type: String },
+        },
+        tableConfig: {
+          columns: [{ type: String }],
+          pageSize: { type: Number },
+        },
+        crossFilter: {
+          enabled: { type: Boolean, default: true },
+          fields: [{ type: String }],
+        },
+        layout: {
+          x: { type: Number, required: true },
+          y: { type: Number, required: true },
+          w: { type: Number, required: true },
+          h: { type: Number, required: true },
+          minW: { type: Number },
+          minH: { type: Number },
+        },
+      },
+    ],
+
+    globalFilters: [
+      {
+        id: { type: String, required: true },
+        type: {
+          type: String,
+          enum: ["date-range", "select", "multi-select", "search"],
+          required: true,
+        },
+        label: { type: String, required: true },
+        dataSourceId: { type: String, required: true },
+        column: { type: String, required: true },
+        config: { type: Schema.Types.Mixed, default: {} },
+        layout: {
+          order: { type: Number, default: 0 },
+          width: { type: Number },
+        },
+      },
+    ],
+
+    crossFilter: {
+      enabled: { type: Boolean, default: true },
+      resolution: {
+        type: String,
+        enum: ["intersect", "union"],
+        default: "intersect",
+      },
+    },
+
+    layout: {
+      columns: { type: Number, default: 12 },
+      rowHeight: { type: Number, default: 80 },
+    },
+
+    cache: {
+      ttlSeconds: { type: Number, default: 3600 },
+      lastRefreshedAt: { type: Date },
+    },
+
+    version: { type: Number, default: 1 },
+    versionHistory: [
+      {
+        version: { type: Number, required: true },
+        snapshot: { type: Schema.Types.Mixed, required: true },
+        createdAt: { type: Date, default: Date.now },
+        createdBy: { type: String, required: true },
+        message: { type: String },
+      },
+    ],
+
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+    createdBy: { type: String, required: true },
+  },
+  {
+    collection: "dashboards",
+    timestamps: true,
+  },
+);
+
+DashboardSchema.index({ workspaceId: 1 });
+DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
+
 // Models
 export const Workspace = mongoose.model<IWorkspace>(
   "Workspace",
@@ -1744,4 +2079,8 @@ export const WebhookEvent = mongoose.model<IWebhookEvent>(
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,
+);
+export const Dashboard = mongoose.model<IDashboard>(
+  "Dashboard",
+  DashboardSchema,
 );

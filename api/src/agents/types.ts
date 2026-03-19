@@ -62,6 +62,28 @@ export interface AgentContext {
     sampleRows: Record<string, unknown>[];
     chartSpec: Record<string, unknown> | null;
   };
+  /** Active dashboard context (for dashboard agent) */
+  activeDashboardContext?: {
+    dashboardId: string;
+    title: string;
+    dataSources: Array<{
+      id: string;
+      name: string;
+      tableRef?: string;
+      status?: "idle" | "loading" | "ready" | "error" | null;
+      rowsLoaded?: number;
+      error?: string | null;
+      columns: Array<{ name: string; type: string }>;
+      sampleRows?: Record<string, unknown>[];
+    }>;
+    widgets: Array<{
+      id: string;
+      title?: string;
+      type: string;
+      dataSourceId: string;
+    }>;
+    crossFilterEnabled: boolean;
+  };
 }
 
 /**

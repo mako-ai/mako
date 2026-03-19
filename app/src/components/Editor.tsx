@@ -22,6 +22,7 @@ import {
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
+  LayoutDashboard,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -31,19 +32,30 @@ import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
+import DashboardCanvas from "./DashboardCanvas";
 import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
 import FileExplorerDialog from "./FileExplorerDialog";
 import { useConsoleStore } from "../store/consoleStore";
+import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
+import { getApiBasePath } from "../lib/api-base-path";
 import { computeConsoleStateHash } from "../utils/stateHash";
+
+interface QueryPageInfo {
+  pageSize: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  returnedRows: number;
+  capApplied: boolean;
+}
 
 interface QueryResult {
   results: any[];
@@ -51,6 +63,17 @@ interface QueryResult {
   resultCount: number;
   executionTime?: number;
   fields?: Array<{ name?: string; originalName?: string } | string>;
+  pageInfo?: QueryPageInfo | null;
+  currentPage?: number;
+}
+
+interface TabPaginationState {
+  currentPage: number;
+  cursorHistory: Array<string | null>;
+  nextCursor: string | null;
+  hasMore: boolean;
+  pageSize: number;
+  capApplied: boolean;
 }
 
 // Styled PanelResizeHandle components
@@ -96,6 +119,9 @@ function Editor({
   const { currentWorkspace } = useWorkspace();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
+  >({});
+  const [tabPagination, setTabPagination] = useState<
+    Record<string, TabPaginationState | null>
   >({});
   const [tabChartSpecs, setTabChartSpecs] = useState<
     Record<string, import("../lib/chart-spec").MakoChartSpec | null>
@@ -391,8 +417,28 @@ function Editor({
   };
 
   const closeConsole = (id: string) => {
+    const closingTab = tabs[id];
+    if (closingTab?.kind === "dashboard") {
+      const dashStore = useDashboardStore.getState();
+      if (
+        dashStore.activeDashboardId &&
+        closingTab.metadata?.dashboardId === dashStore.activeDashboardId
+      ) {
+        dashStore.closeDashboard();
+      }
+    }
     closeTab(id);
     delete consoleRefs.current[id];
+    setTabResults(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setTabPagination(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const handleAddTab = () => {
@@ -409,6 +455,10 @@ function Editor({
     options?: {
       databaseId?: string;
       databaseName?: string;
+      cursor?: string | null;
+      currentPage?: number;
+      cursorHistory?: Array<string | null>;
+      pageSize?: number;
     },
   ) => {
     if (!contentToExecute.trim()) return;
@@ -443,6 +493,8 @@ function Editor({
           ...options,
           executionId,
           signal: abortController.signal,
+          pageSize: options?.pageSize ?? 500,
+          cursor: options?.cursor ?? null,
         },
       );
       const executionTime = Date.now() - startTime;
@@ -467,23 +519,38 @@ function Editor({
         setTabResults(prev => ({
           ...prev,
           [tabId]: {
-            results: (result.data as any[]) || [],
+            results: result.rows || [],
             executedAt: new Date().toISOString(),
-            resultCount: Array.isArray(result.data) ? result.data.length : 1,
+            resultCount: Array.isArray(result.rows) ? result.rows.length : 0,
             executionTime,
             fields,
+            pageInfo: result.pageInfo || null,
+            currentPage: options?.currentPage ?? 1,
+          },
+        }));
+        setTabPagination(prev => ({
+          ...prev,
+          [tabId]: {
+            currentPage: options?.currentPage ?? 1,
+            cursorHistory: options?.cursorHistory ?? [null],
+            nextCursor: result.pageInfo?.nextCursor ?? null,
+            hasMore: result.pageInfo?.hasMore ?? false,
+            pageSize: result.pageInfo?.pageSize ?? options?.pageSize ?? 500,
+            capApplied: result.pageInfo?.capApplied ?? false,
           },
         }));
       } else if (result.error !== "Query cancelled") {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
         setTabResults(prev => ({ ...prev, [tabId]: null }));
+        setTabPagination(prev => ({ ...prev, [tabId]: null }));
       }
     } catch (e: any) {
       if (e?.name !== "AbortError") {
         setErrorMessage(JSON.stringify(e, null, 2));
         setErrorModalOpen(true);
         setTabResults(prev => ({ ...prev, [tabId]: null }));
+        setTabPagination(prev => ({ ...prev, [tabId]: null }));
       }
     } finally {
       setExecutingTabs(prev => ({ ...prev, [tabId]: false }));
@@ -492,6 +559,104 @@ function Editor({
       delete executionIdsRef.current[tabId];
     }
   };
+
+  const handleNextResultsPage = async (tabId: string) => {
+    const pagination = tabPagination[tabId];
+    const tab = tabs[tabId];
+    if (!pagination?.nextCursor || !tab?.connectionId) {
+      return;
+    }
+
+    await handleConsoleExecute(tabId, tab.content, tab.connectionId, {
+      databaseId: tab.databaseId,
+      databaseName: tab.databaseName,
+      cursor: pagination.nextCursor,
+      currentPage: pagination.currentPage + 1,
+      cursorHistory: [...pagination.cursorHistory, pagination.nextCursor],
+      pageSize: pagination.pageSize,
+    });
+  };
+
+  const handlePreviousResultsPage = async (tabId: string) => {
+    const pagination = tabPagination[tabId];
+    const tab = tabs[tabId];
+    if (!pagination || pagination.currentPage <= 1 || !tab?.connectionId) {
+      return;
+    }
+
+    const previousHistory = pagination.cursorHistory.slice(0, -1);
+    const previousCursor = previousHistory[previousHistory.length - 1] ?? null;
+
+    await handleConsoleExecute(tabId, tab.content, tab.connectionId, {
+      databaseId: tab.databaseId,
+      databaseName: tab.databaseName,
+      cursor: previousCursor,
+      currentPage: pagination.currentPage - 1,
+      cursorHistory: previousHistory.length > 0 ? previousHistory : [null],
+      pageSize: pagination.pageSize,
+    });
+  };
+
+  const handleDownloadResults = useCallback(
+    (tabId: string, format: "csv" | "ndjson") => {
+      const tab = tabs[tabId];
+      if (!currentWorkspace) {
+        setErrorMessage("No workspace selected");
+        setErrorModalOpen(true);
+        return;
+      }
+
+      if (!tab?.connectionId) {
+        setErrorMessage("No database connection selected");
+        setErrorModalOpen(true);
+        return;
+      }
+
+      const action = `${getApiBasePath(import.meta.env.VITE_API_URL)}/workspaces/${currentWorkspace.id}/execute/export`;
+      const iframe = document.createElement("iframe");
+      iframe.name = `download-frame-${Date.now()}`;
+      iframe.style.display = "none";
+      document.body.appendChild(iframe);
+
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = action;
+      form.target = iframe.name;
+      form.style.display = "none";
+
+      const appendField = (name: string, value?: string) => {
+        if (value === undefined || value === null) {
+          return;
+        }
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+      };
+
+      appendField("connectionId", tab.connectionId);
+      appendField("databaseId", tab.databaseId);
+      appendField("databaseName", tab.databaseName);
+      appendField("query", tab.content);
+      appendField("format", format);
+      appendField("filename", tab.title || "query-results");
+
+      document.body.appendChild(form);
+      form.submit();
+
+      setSnackbarMessage(
+        format === "csv" ? "CSV download started" : "NDJSON download started",
+      );
+      setSnackbarOpen(true);
+
+      window.setTimeout(() => {
+        form.remove();
+        iframe.remove();
+      }, 60000);
+    },
+    [currentWorkspace, tabs],
+  );
 
   const handleConsoleCancel = async (tabId: string) => {
     const executionId = executionIdsRef.current[tabId];
@@ -892,6 +1057,8 @@ function Editor({
                         ) : (
                           <ScheduleIcon size={20} strokeWidth={1.5} />
                         )
+                      ) : tab.kind === "dashboard" ? (
+                        <LayoutDashboard size={20} strokeWidth={1.5} />
                       ) : (
                         <ConsoleIcon size={20} strokeWidth={1.5} />
                       )}
@@ -975,6 +1142,24 @@ function Editor({
                       closeConsole(tab.id);
                     }}
                     dbFlowFormRef={dbFlowFormRef}
+                  />
+                ) : tab.kind === "dashboard" ? (
+                  <DashboardCanvas
+                    dashboardId={tab.metadata?.dashboardId as string}
+                    isNew={tab.metadata?.isNew as boolean}
+                    onCreated={(newId: string) => {
+                      useConsoleStore.setState(state => {
+                        const existingTab = state.tabs[tab.id];
+                        if (existingTab) {
+                          existingTab.metadata = {
+                            ...existingTab.metadata,
+                            dashboardId: newId,
+                            isNew: false,
+                          };
+                          existingTab.title = "Untitled Dashboard";
+                        }
+                      });
+                    }}
                   />
                 ) : (
                   /* Console tab: editor + results split */
@@ -1061,6 +1246,13 @@ function Editor({
                               delete pendingRenderCallbackRef.current[tab.id];
                             }
                           }}
+                          onPreviousPage={() =>
+                            handlePreviousResultsPage(tab.id)
+                          }
+                          onNextPage={() => handleNextResultsPage(tab.id)}
+                          onDownload={format =>
+                            handleDownloadResults(tab.id, format)
+                          }
                         />
                       </Box>
                     </Panel>

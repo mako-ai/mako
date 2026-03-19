@@ -44,6 +44,7 @@ import {
   Trash2,
   SquareChevronRight as ConsoleIcon,
   ArrowLeftRight as FlowIcon,
+  LayoutDashboard as DashboardIcon,
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
@@ -53,6 +54,8 @@ import {
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
+import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -65,6 +68,7 @@ import {
 import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
+import { safeStringify, toJsonSafe } from "../lib/json-safe";
 
 interface ChatSessionMeta {
   _id: string;
@@ -520,10 +524,27 @@ const Chat: React.FC<ChatProps> = ({
   const consoleTabs = useMemo(() => Object.values(tabs), [tabs]);
   const activeConsoleId = activeTabId;
 
-  // Agent mode state - manually selected via the mode switcher
-  const [agentMode, setAgentMode] = useState<"console" | "flow">("console");
+  // Agent mode state - manually selected via the mode switcher, or auto-detected from tab kind
+  const [agentMode, setAgentMode] = useState<"console" | "flow" | "dashboard">(
+    "console",
+  );
   const agentModeRef = useRef(agentMode);
   agentModeRef.current = agentMode;
+
+  // Auto-detect dashboard mode when active tab is a dashboard
+  const activeTab = tabs[activeTabId || ""];
+  useEffect(() => {
+    if (activeTab?.kind === "dashboard" && agentMode !== "dashboard") {
+      setAgentMode("dashboard");
+    } else if (activeTab?.kind === "flow-editor" && agentMode !== "flow") {
+      setAgentMode("flow");
+    } else if (
+      (!activeTab?.kind || activeTab?.kind === "console") &&
+      agentMode === "dashboard"
+    ) {
+      setAgentMode("console");
+    }
+  }, [activeTab?.kind]);
 
   // Ref for dbFlowFormRef to avoid stale closure in onToolCall
   const dbFlowFormRefCurrent = useRef(dbFlowFormRef);
@@ -679,21 +700,58 @@ const Chat: React.FC<ChatProps> = ({
               }
             : undefined;
 
+          const requestBody = {
+            messages,
+            workspaceId: workspaceIdRef.current,
+            modelId: modelIdRef.current,
+            chatId: chatIdRef.current,
+            openConsoles,
+            consoleId: activeConsoleIdRef.current,
+            activeConsoleResults,
+            // Agent mode selection
+            agentId: agentModeRef.current,
+            tabKind: activeTab?.kind,
+            flowType: activeTab?.metadata?.flowType,
+            flowFormState,
+            // Dashboard context
+            ...(agentModeRef.current === "dashboard"
+              ? (() => {
+                  try {
+                    const snapshot = getDashboardStateSnapshot();
+                    if (!snapshot) return {};
+                    return {
+                      activeDashboardContext: {
+                        dashboardId: snapshot._id,
+                        title: snapshot.title,
+                        dataSources: snapshot.dataSources.map((ds: any) => ({
+                          id: ds.id,
+                          name: ds.name,
+                          tableRef: ds.tableRef,
+                          status: ds.status || null,
+                          rowsLoaded: ds.rowsLoaded || 0,
+                          error: ds.error || null,
+                          columns: ds.columns || [],
+                          sampleRows: ds.sampleRows || [],
+                        })),
+                        widgets: snapshot.widgets.map((w: any) => ({
+                          id: w.id,
+                          title: w.title,
+                          type: w.type,
+                          dataSourceId: w.dataSourceId,
+                        })),
+                        crossFilterEnabled:
+                          snapshot.crossFilter?.enabled ?? true,
+                      },
+                    };
+                  } catch {
+                    return {};
+                  }
+                })()
+              : {}),
+          };
+
           return {
-            body: {
-              messages,
-              workspaceId: workspaceIdRef.current,
-              modelId: modelIdRef.current,
-              chatId: chatIdRef.current,
-              openConsoles,
-              consoleId: activeConsoleIdRef.current,
-              activeConsoleResults,
-              // Agent mode selection
-              agentId: agentModeRef.current,
-              tabKind: activeTab?.kind,
-              flowType: activeTab?.metadata?.flowType,
-              flowFormState,
-            },
+            body: toJsonSafe(requestBody) as Record<string, unknown>,
           };
         },
       }),
@@ -1260,6 +1318,23 @@ const Chat: React.FC<ChatProps> = ({
         return;
       }
 
+      // --- Dashboard tools (client-side) ---
+      if (agentModeRef.current === "dashboard") {
+        const dashboardToolOutput = await executeDashboardAgentTool(
+          toolName,
+          input,
+        );
+
+        if (dashboardToolOutput !== null) {
+          addToolOutput({
+            tool: toolName,
+            toolCallId: toolCall.toolCallId,
+            output: dashboardToolOutput,
+          });
+          return;
+        }
+      }
+
       // Handle flow agent client-side tools
       if (agentModeRef.current === "flow") {
         // get_form_state - Return current form configuration
@@ -1693,7 +1768,7 @@ const Chat: React.FC<ChatProps> = ({
       };
     });
     try {
-      await navigator.clipboard.writeText(JSON.stringify(history, null, 2));
+      await navigator.clipboard.writeText(safeStringify(history, 2));
       setCopiedChat(true);
       setTimeout(() => setCopiedChat(false), 2000);
     } catch {
@@ -2280,7 +2355,9 @@ const Chat: React.FC<ChatProps> = ({
                 size="small"
                 onClick={e => setModeSelectorAnchor(e.currentTarget)}
                 startIcon={
-                  agentMode === "console" ? (
+                  agentMode === "dashboard" ? (
+                    <DashboardIcon size={14} />
+                  ) : agentMode === "console" ? (
                     <ConsoleIcon size={14} />
                   ) : (
                     <FlowIcon size={14} />
@@ -2303,7 +2380,11 @@ const Chat: React.FC<ChatProps> = ({
                   },
                 }}
               >
-                {agentMode === "console" ? "Console" : "Flow"}
+                {agentMode === "console"
+                  ? "Console"
+                  : agentMode === "dashboard"
+                    ? "Dashboard"
+                    : "Flow"}
               </Button>
               <Menu
                 anchorEl={modeSelectorAnchor}
@@ -2368,6 +2449,28 @@ const Chat: React.FC<ChatProps> = ({
                     <Typography variant="body2">Flow</Typography>
                     <Typography variant="caption" color="text.secondary">
                       Database sync configuration
+                    </Typography>
+                  </Box>
+                </MenuItem>
+                <MenuItem
+                  selected={agentMode === "dashboard"}
+                  onClick={() => {
+                    if (agentMode !== "dashboard") {
+                      setChatId(generateObjectId());
+                      setMessages([]);
+                      setIsExistingChat(false);
+                      setAgentMode("dashboard");
+                    }
+                    setModeSelectorAnchor(null);
+                  }}
+                >
+                  <ListItemIcon>
+                    <DashboardIcon size={16} />
+                  </ListItemIcon>
+                  <Box>
+                    <Typography variant="body2">Dashboard</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Build interactive dashboards
                     </Typography>
                   </Box>
                 </MenuItem>
@@ -2457,7 +2560,7 @@ const Chat: React.FC<ChatProps> = ({
               {selectedTool && selectedTool.input !== undefined
                 ? typeof selectedTool.input === "string"
                   ? selectedTool.input
-                  : JSON.stringify(selectedTool.input, null, 2)
+                  : safeStringify(selectedTool.input, 2)
                 : "No input captured"}
             </CodeBlock>
           </Box>
@@ -2469,7 +2572,7 @@ const Chat: React.FC<ChatProps> = ({
               {selectedTool && selectedTool.output !== undefined
                 ? typeof selectedTool.output === "string"
                   ? selectedTool.output
-                  : JSON.stringify(selectedTool.output, null, 2)
+                  : safeStringify(selectedTool.output, 2)
                 : "No output captured"}
             </CodeBlock>
           </Box>

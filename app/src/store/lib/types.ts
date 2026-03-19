@@ -13,7 +13,8 @@ export type TabKind =
   | "settings"
   | "connectors"
   | "members"
-  | "flow-editor";
+  | "flow-editor"
+  | "dashboard";
 
 /**
  * Console access level (visibility scope)
@@ -88,6 +89,7 @@ export type LeftPaneView =
   | "consoles"
   | "connectors"
   | "flows"
+  | "dashboards"
   | "settings";
 
 /**

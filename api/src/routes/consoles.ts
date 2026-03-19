@@ -21,6 +21,15 @@ import {
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import {
+  isDescriptionGenAvailable,
+  generateDescriptionAndEmbedding,
+} from "../services/console-description.service";
+import {
+  applySqlRowLimit,
+  checkPreviewQuerySafety,
+} from "../services/query-pagination.service";
+import { createStreamingExportResponse } from "../utils/query-export-stream";
 
 /**
  * Map console language to query language for tracking
@@ -34,6 +43,10 @@ function mapConsoleLanguageToQueryLanguage(
 }
 
 const logger = loggers.api("consoles");
+
+function sanitizeDownloadFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
+}
 
 export const consoleRoutes = new Hono();
 const consoleManager = new ConsoleManager();
@@ -380,6 +393,44 @@ consoleRoutes.post("/", async (c: Context) => {
       },
     );
 
+    // Fire-and-forget: generate description + embedding for searchability
+    if (isDescriptionGenAvailable() && content.trim()) {
+      void (async () => {
+        try {
+          const connDoc = targetConnectionId
+            ? await DatabaseConnection.findById(targetConnectionId)
+            : null;
+          const {
+            description: genDesc,
+            embedding,
+            embeddingModel,
+          } = await generateDescriptionAndEmbedding({
+            code: content,
+            title: consolePath.split("/").pop() || consolePath,
+            connectionName: connDoc?.name,
+            databaseType: connDoc?.type,
+            databaseName,
+            language: savedConsole.language,
+          });
+          if (genDesc || embedding) {
+            const update: Record<string, unknown> = {};
+            if (genDesc && !description) update.description = genDesc;
+            if (embedding) {
+              update.descriptionEmbedding = embedding;
+              update.embeddingModel = embeddingModel;
+            }
+            if (Object.keys(update).length > 0) {
+              await SavedConsole.findByIdAndUpdate(savedConsole._id, {
+                $set: update,
+              });
+            }
+          }
+        } catch (err) {
+          logger.debug("Console description generation failed", { error: err });
+        }
+      })();
+    }
+
     return c.json(
       {
         success: true,
@@ -593,6 +644,46 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           { upsert: true, new: true },
         );
 
+        // Fire-and-forget: generate description + embedding on explicit save
+        if (isDescriptionGenAvailable() && body.content?.trim()) {
+          void (async () => {
+            try {
+              const connDoc = body.connectionId
+                ? await DatabaseConnection.findById(body.connectionId)
+                : null;
+              const {
+                description: genDesc,
+                embedding,
+                embeddingModel,
+              } = await generateDescriptionAndEmbedding({
+                code: body.content,
+                title: result.name,
+                connectionName: connDoc?.name,
+                databaseType: connDoc?.type,
+                databaseName: body.databaseName,
+                language: result.language,
+              });
+              if (genDesc || embedding) {
+                const descUpdate: Record<string, unknown> = {};
+                if (genDesc) descUpdate.description = genDesc;
+                if (embedding) {
+                  descUpdate.descriptionEmbedding = embedding;
+                  descUpdate.embeddingModel = embeddingModel;
+                }
+                if (Object.keys(descUpdate).length > 0) {
+                  await SavedConsole.findByIdAndUpdate(result._id, {
+                    $set: descUpdate,
+                  });
+                }
+              }
+            } catch (err) {
+              logger.debug("Console description generation failed", {
+                error: err,
+              });
+            }
+          })();
+        }
+
         return c.json({
           success: true,
           message: "Console saved",
@@ -670,6 +761,44 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         isPrivate: body.isPrivate,
       },
     );
+
+    // Fire-and-forget: regenerate description + embedding when content changes
+    if (isDescriptionGenAvailable() && body.content.trim()) {
+      void (async () => {
+        try {
+          const connDoc = targetConnectionId
+            ? await DatabaseConnection.findById(targetConnectionId)
+            : null;
+          const {
+            description: genDesc,
+            embedding,
+            embeddingModel,
+          } = await generateDescriptionAndEmbedding({
+            code: body.content,
+            title: consolePath.split("/").pop() || consolePath,
+            connectionName: connDoc?.name,
+            databaseType: connDoc?.type,
+            databaseName: body.databaseName,
+            language: savedConsole.language,
+          });
+          if (genDesc || embedding) {
+            const update: Record<string, unknown> = {};
+            if (genDesc) update.description = genDesc;
+            if (embedding) {
+              update.descriptionEmbedding = embedding;
+              update.embeddingModel = embeddingModel;
+            }
+            if (Object.keys(update).length > 0) {
+              await SavedConsole.findByIdAndUpdate(savedConsole._id, {
+                $set: update,
+              });
+            }
+          }
+        } catch (err) {
+          logger.debug("Console description generation failed", { error: err });
+        }
+      })();
+    }
 
     return c.json({
       success: true,
@@ -1269,6 +1398,9 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
     const user = c.get("user");
     const apiKey = c.get("apiKey");
     const consoleId = c.req.param("id");
+    const mode = c.req.query("mode");
+    const pageSizeParam = c.req.query("pageSize");
+    const cursorParam = c.req.query("cursor");
 
     // Validate console ID
     if (!Types.ObjectId.isValid(consoleId)) {
@@ -1328,6 +1460,7 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       databaseId: savedConsole.databaseId,
       databaseName: savedConsole.databaseName,
     };
+    const isPreviewMode = mode === "preview";
 
     if (savedConsole.language === "mongodb") {
       if (
@@ -1342,26 +1475,60 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
           query: savedConsole.code,
         };
 
-        result = await databaseConnectionService.executeQuery(
-          database,
-          mongoQuery,
-          { ...savedConsole.mongoOptions, ...executionOptions },
-        );
+        result = isPreviewMode
+          ? await databaseConnectionService.executePreviewQuery(
+              database,
+              mongoQuery,
+              {
+                ...savedConsole.mongoOptions,
+                ...executionOptions,
+                pageSize: pageSizeParam
+                  ? parseInt(pageSizeParam, 10)
+                  : undefined,
+                cursor: cursorParam || null,
+              },
+            )
+          : await databaseConnectionService.executeQuery(database, mongoQuery, {
+              ...savedConsole.mongoOptions,
+              ...executionOptions,
+            });
       } else {
         // For JavaScript-style MongoDB queries (db.collection.find(), etc.)
-        result = await databaseConnectionService.executeQuery(
-          database,
-          savedConsole.code,
-          executionOptions,
-        );
+        result = isPreviewMode
+          ? await databaseConnectionService.executePreviewQuery(
+              database,
+              savedConsole.code,
+              {
+                ...executionOptions,
+                pageSize: pageSizeParam
+                  ? parseInt(pageSizeParam, 10)
+                  : undefined,
+                cursor: cursorParam || null,
+              },
+            )
+          : await databaseConnectionService.executeQuery(
+              database,
+              savedConsole.code,
+              executionOptions,
+            );
       }
     } else {
       // For SQL and other languages, execute the code directly
-      result = await databaseConnectionService.executeQuery(
-        database,
-        savedConsole.code,
-        executionOptions,
-      );
+      result = isPreviewMode
+        ? await databaseConnectionService.executePreviewQuery(
+            database,
+            savedConsole.code,
+            {
+              ...executionOptions,
+              pageSize: pageSizeParam ? parseInt(pageSizeParam, 10) : undefined,
+              cursor: cursorParam || null,
+            },
+          )
+        : await databaseConnectionService.executeQuery(
+            database,
+            savedConsole.code,
+            executionOptions,
+          );
     }
 
     // Update execution stats
@@ -1374,8 +1541,16 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
     );
 
     // Return the result
-    const data = result.data || [];
-    rowCount = result.rowCount || (Array.isArray(data) ? data.length : 0);
+    const previewRows =
+      "rows" in result && Array.isArray(result.rows) ? result.rows : undefined;
+    const data = "data" in result ? result.data || [] : [];
+    rowCount =
+      result.rowCount ||
+      (Array.isArray(previewRows)
+        ? previewRows.length
+        : Array.isArray(data)
+          ? data.length
+          : 0);
 
     // Determine execution status
     if (result.success) {
@@ -1429,18 +1604,34 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
       });
     }
 
-    return c.json({
-      success: true,
-      data: data,
-      rowCount: rowCount,
-      fields: result.fields || null,
-      console: {
-        id: savedConsole._id,
-        name: savedConsole.name,
-        language: savedConsole.language,
-        executedAt: new Date().toISOString(),
-      },
-    });
+    return c.json(
+      isPreviewMode
+        ? {
+            success: true,
+            rows: previewRows || [],
+            rowCount,
+            fields: result.fields || null,
+            pageInfo: "pageInfo" in result ? result.pageInfo || null : null,
+            console: {
+              id: savedConsole._id,
+              name: savedConsole.name,
+              language: savedConsole.language,
+              executedAt: new Date().toISOString(),
+            },
+          }
+        : {
+            success: true,
+            data: data,
+            rowCount: rowCount,
+            fields: result.fields || null,
+            console: {
+              id: savedConsole._id,
+              name: savedConsole.name,
+              language: savedConsole.language,
+              executedAt: new Date().toISOString(),
+            },
+          },
+    );
   } catch (error) {
     logger.error("Error executing console", { error });
 
@@ -1473,6 +1664,177 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
         success: false,
         error:
           error instanceof Error ? error.message : "Failed to execute console",
+      },
+      500,
+    );
+  }
+});
+
+// GET /api/workspaces/:workspaceId/consoles/:id/export - Export console query results as Arrow IPC or JSON
+consoleRoutes.get("/:id/export", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const format = (c.req.query("format") || "arrow") as
+      | "arrow"
+      | "json"
+      | "ndjson"
+      | "csv";
+    const limit = parseInt(c.req.query("limit") || "500000", 10);
+
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console ID" }, 400);
+    }
+
+    const savedConsole = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!savedConsole) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    if (!savedConsole.connectionId) {
+      return c.json(
+        { success: false, error: "Console has no database connection" },
+        400,
+      );
+    }
+
+    const database = await DatabaseConnection.findOne({
+      _id: savedConsole.connectionId,
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!database) {
+      return c.json(
+        { success: false, error: "Database connection not found" },
+        404,
+      );
+    }
+
+    const startTime = Date.now();
+
+    let query: any = savedConsole.code;
+    if (
+      savedConsole.language === "mongodb" &&
+      (savedConsole as any).mongoOptions?.collection
+    ) {
+      query = {
+        collection: (savedConsole as any).mongoOptions.collection,
+        operation: (savedConsole as any).mongoOptions.operation || "find",
+        query: savedConsole.code,
+      };
+    }
+
+    if (
+      (format === "ndjson" || format === "csv") &&
+      typeof query === "string" &&
+      database.type !== "cloudflare-kv"
+    ) {
+      const safety = checkPreviewQuerySafety(query);
+      if (!safety.safe) {
+        return c.json(
+          {
+            success: false,
+            error: safety.errors.join(" "),
+          },
+          400,
+        );
+      }
+    }
+
+    if (format === "ndjson" || format === "csv") {
+      const safeFileBase = sanitizeDownloadFilename(
+        savedConsole.name || `console-${savedConsole._id.toString()}`,
+      );
+      const streamQuery =
+        typeof query === "string" &&
+        database.type !== "cloudflare-kv" &&
+        database.type !== "mongodb"
+          ? applySqlRowLimit({
+              query,
+              databaseType: database.type,
+              limit,
+            })
+          : query;
+
+      return createStreamingExportResponse({
+        format,
+        filename: `${safeFileBase}.${format === "csv" ? "csv" : "ndjson"}`,
+        streamRows: emitRows =>
+          databaseConnectionService.executeStreamingQuery(
+            database,
+            streamQuery,
+            {
+              databaseId: savedConsole.databaseId,
+              databaseName: savedConsole.databaseName,
+              batchSize: Math.max(1, Math.min(10000, limit)),
+              signal: c.req.raw.signal,
+              onBatch: emitRows,
+            },
+          ),
+      });
+    }
+
+    const result = await databaseConnectionService.executeQuery(
+      database,
+      query,
+      {
+        databaseId: savedConsole.databaseId,
+        databaseName: savedConsole.databaseName,
+      },
+    );
+
+    if (!result.success || !result.data) {
+      return c.json(
+        { success: false, error: result.error || "Query execution failed" },
+        500,
+      );
+    }
+
+    const rows = Array.isArray(result.data) ? result.data : [];
+    const limitedRows = rows.slice(0, limit);
+    const fields = (result.fields || []).map((f: any) => ({
+      name: f.name || f.columnName || String(f),
+      type: f.type || f.dataType,
+    }));
+
+    if (fields.length === 0 && limitedRows.length > 0) {
+      for (const key of Object.keys(limitedRows[0])) {
+        fields.push({ name: key, type: undefined });
+      }
+    }
+
+    const duration = Date.now() - startTime;
+
+    if (format === "json") {
+      return c.json({
+        success: true,
+        data: limitedRows,
+        fields,
+        rowCount: limitedRows.length,
+        durationMs: duration,
+      });
+    }
+
+    const { serializeToArrowIPC } = await import("../utils/arrow-serializer");
+    const arrowBuffer = serializeToArrowIPC(limitedRows, fields, { limit });
+
+    return new Response(arrowBuffer, {
+      headers: {
+        "Content-Type": "application/vnd.apache.arrow.stream",
+        "X-Row-Count": String(limitedRows.length),
+        "X-Export-Duration-Ms": String(duration),
+      },
+    });
+  } catch (error) {
+    logger.error("Error exporting console data", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Export failed",
       },
       500,
     );

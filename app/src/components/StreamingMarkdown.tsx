@@ -17,6 +17,7 @@ export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = ({
 }) => {
   return (
     <Streamdown
+      // streamdown and @streamdown/code currently expose mismatched shiki typings.
       plugins={{ code: code as unknown as CodeHighlighterPlugin }}
       shikiTheme={["github-light", "github-dark"]}
       controls={false}

@@ -29,6 +29,143 @@ function loadVegaEmbed(): Promise<VegaEmbedModule> {
   return vegaEmbedPromise;
 }
 
+export interface CrossFilterSelection {
+  field: string;
+  values: unknown[];
+  type: "point" | "interval";
+}
+
+function getMarkType(spec: Record<string, any>): string {
+  if (!spec?.mark) return "";
+  return typeof spec.mark === "string" ? spec.mark : spec.mark?.type || "";
+}
+
+/**
+ * Inject a Vega-Lite selection param into the spec so that clicking
+ * chart elements (pie slices, bars, etc.) produces a selection signal.
+ */
+function injectSelectionParams(spec: Record<string, any>): Record<string, any> {
+  if (!spec) return spec;
+  if (spec.layer) return spec;
+  const existingParams = Array.isArray(spec.params) ? spec.params : [];
+  const hasCrossfilterParam = existingParams.some(
+    (param: any) => param?.name === "crossfilter",
+  );
+  if (hasCrossfilterParam) return spec;
+
+  const mark = getMarkType(spec);
+  const enc = spec.encoding || {};
+  let selectionConfig: Record<string, any> | null = null;
+
+  if (mark === "arc") {
+    if (enc.color?.field) {
+      selectionConfig = {
+        name: "crossfilter",
+        select: { type: "point", encodings: ["color"] },
+      };
+    }
+  } else if (mark === "bar") {
+    if (
+      enc.x?.field &&
+      (enc.x.type === "nominal" || enc.x.type === "ordinal")
+    ) {
+      selectionConfig = {
+        name: "crossfilter",
+        select: { type: "point", encodings: ["x"] },
+      };
+    } else if (enc.color?.field) {
+      selectionConfig = {
+        name: "crossfilter",
+        select: { type: "point", encodings: ["color"] },
+      };
+    }
+  } else if (mark === "line" || mark === "area") {
+    if (enc.x?.field) {
+      selectionConfig = {
+        name: "crossfilter",
+        select: { type: "interval", encodings: ["x"] },
+      };
+    }
+  } else if (mark === "point" || mark === "circle" || mark === "square") {
+    selectionConfig = {
+      name: "crossfilter",
+      select: { type: "interval" },
+    };
+  }
+
+  if (!selectionConfig) return spec;
+
+  const enhanced: Record<string, any> = { ...spec };
+  enhanced.params = [...existingParams, selectionConfig];
+
+  if (enhanced.encoding && !enhanced.encoding.opacity) {
+    enhanced.encoding = {
+      ...enhanced.encoding,
+      opacity: {
+        condition: { param: "crossfilter", value: 1 },
+        value: 0.3,
+      },
+    };
+  }
+
+  return enhanced;
+}
+
+function parseSelectionSignal(value: any): CrossFilterSelection | null {
+  if (!value || !Array.isArray(value) || value.length === 0) return null;
+
+  const entry = value.find((item: any) => item?.fields?.[0]);
+  if (!entry) return null;
+  const fieldMeta = entry.fields[0];
+  const field: string | undefined = fieldMeta?.field;
+  if (!field) return null;
+
+  if (fieldMeta.type === "E") {
+    const projectedValues = value
+      .flatMap((item: any) => {
+        const values = Array.isArray(item?.values) ? item.values : [];
+        if (values.length === 0) return [];
+        const first = values[0];
+
+        if (first && typeof first === "object" && !Array.isArray(first)) {
+          return values
+            .map((v: any) =>
+              v && typeof v === "object" ? v[field] : undefined,
+            )
+            .filter((v: unknown) => v !== undefined);
+        }
+
+        if (Array.isArray(first)) {
+          return values
+            .map((v: any[]) => v[0])
+            .filter((v: unknown) => v !== undefined);
+        }
+
+        return values;
+      })
+      .filter((v: unknown) => v !== undefined);
+
+    const uniqueValues = Array.from(
+      new Set(projectedValues.map(v => JSON.stringify(v))),
+    ).map(v => JSON.parse(v));
+
+    if (uniqueValues.length === 0) return null;
+    return { field, values: uniqueValues, type: "point" };
+  }
+
+  if (fieldMeta.type === "R") {
+    const lastRangeEntry = [...value]
+      .reverse()
+      .find((item: any) => Array.isArray(item?.values?.[0]));
+    const range = lastRangeEntry?.values?.[0];
+    if (Array.isArray(range) && range.length === 2) {
+      return { field, values: range, type: "interval" };
+    }
+  }
+
+  return null;
+}
+
 interface ResultsChartProps {
   data: any[];
   fields?: Array<{ name?: string; originalName?: string } | string>;
@@ -36,6 +173,8 @@ interface ResultsChartProps {
   onSpecChange?: (spec: MakoChartSpec) => void;
   onRenderError?: (error: string) => void;
   onRenderSuccess?: () => void;
+  enableSelection?: boolean;
+  onSelectionChange?: (selection: CrossFilterSelection | null) => void;
 }
 
 const ResultsChart: React.FC<ResultsChartProps> = ({
@@ -45,9 +184,14 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
   onSpecChange,
   onRenderError,
   onRenderSuccess,
+  enableSelection,
+  onSelectionChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<any>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const selectionEmitFrameRef = useRef<number | null>(null);
+  const lastSelectionRef = useRef<string>("__init__");
   const { effectiveMode } = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -82,6 +226,18 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
     }
   }, []);
 
+  const dispatchContainerResize = useCallback(() => {
+    if (resizeFrameRef.current !== null) {
+      cancelAnimationFrame(resizeFrameRef.current);
+    }
+
+    resizeFrameRef.current = requestAnimationFrame(() => {
+      resizeFrameRef.current = null;
+      if (!viewRef.current) return;
+      window.dispatchEvent(new Event("resize"));
+    });
+  }, []);
+
   useEffect(() => {
     if (!containerRef.current || !activeSpec || data.length === 0) {
       setLoading(false);
@@ -89,6 +245,12 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
     }
 
     let cancelled = false;
+    const containerEl = containerRef.current;
+    const resizeObserver = new ResizeObserver(() => {
+      if (cancelled) return;
+      dispatchContainerResize();
+    });
+    resizeObserver.observe(containerEl);
 
     async function render() {
       setLoading(true);
@@ -102,8 +264,12 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         const themeConfig = getVegaThemeConfig(effectiveMode);
 
+        const baseSpec = enableSelection
+          ? injectSelectionParams(activeSpec as Record<string, any>)
+          : activeSpec;
+
         const fullSpec: any = {
-          ...activeSpec,
+          ...baseSpec,
           $schema: "https://vega.github.io/schema/vega-lite/v5.json",
           width: "container",
           height: "container",
@@ -128,6 +294,64 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
         }
 
         viewRef.current = result.view;
+
+        if (enableSelection && onSelectionChange) {
+          const scheduleEmitSelection = () => {
+            if (selectionEmitFrameRef.current !== null) {
+              cancelAnimationFrame(selectionEmitFrameRef.current);
+            }
+            selectionEmitFrameRef.current = requestAnimationFrame(() => {
+              selectionEmitFrameRef.current = null;
+              if (cancelled) return;
+              try {
+                const store = result.view.data("crossfilter_store");
+                const next = parseSelectionSignal(store);
+                const signature = JSON.stringify(next);
+                if (signature !== lastSelectionRef.current) {
+                  lastSelectionRef.current = signature;
+                  onSelectionChange(next);
+                }
+              } catch {
+                if (lastSelectionRef.current !== "null") {
+                  lastSelectionRef.current = "null";
+                  onSelectionChange(null);
+                }
+              }
+            });
+          };
+
+          try {
+            let attached = false;
+            for (const signalName of [
+              "crossfilter_modify",
+              "crossfilter",
+              "crossfilter_tuple",
+            ]) {
+              try {
+                result.view.addSignalListener(
+                  signalName,
+                  (_name: string, _value: unknown) => {
+                    if (cancelled) return;
+                    scheduleEmitSelection();
+                  },
+                );
+                attached = true;
+              } catch {
+                // Try next candidate signal
+              }
+            }
+            if (attached) {
+              scheduleEmitSelection();
+            } else if (lastSelectionRef.current !== "null") {
+              lastSelectionRef.current = "null";
+              onSelectionChange(null);
+            }
+          } catch {
+            // Signal may not exist for this spec — ignore
+          }
+        }
+
+        dispatchContainerResize();
         setLoading(false);
         onRenderSuccess?.();
       } catch (e: any) {
@@ -144,12 +368,31 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
     return () => {
       cancelled = true;
+      resizeObserver.disconnect();
+      if (resizeFrameRef.current !== null) {
+        cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      if (selectionEmitFrameRef.current !== null) {
+        cancelAnimationFrame(selectionEmitFrameRef.current);
+        selectionEmitFrameRef.current = null;
+      }
+      lastSelectionRef.current = "__init__";
       if (viewRef.current) {
         viewRef.current.finalize();
         viewRef.current = null;
       }
     };
-  }, [activeSpec, data, effectiveMode, onRenderError, onRenderSuccess]);
+  }, [
+    activeSpec,
+    data,
+    dispatchContainerResize,
+    effectiveMode,
+    enableSelection,
+    onRenderError,
+    onRenderSuccess,
+    onSelectionChange,
+  ]);
 
   if (data.length === 0) {
     return (

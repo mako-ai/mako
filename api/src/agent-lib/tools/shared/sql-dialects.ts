@@ -15,7 +15,8 @@ export type SqlDialect =
   | "mysql"
   | "bigquery"
   | "sqlite"
-  | "clickhouse";
+  | "clickhouse"
+  | "mssql";
 
 /**
  * Database type to dialect mapping
@@ -26,6 +27,7 @@ export const SQL_TYPES = {
   bigquery: new Set(["bigquery"]),
   sqlite: new Set(["sqlite", "cloudflare-d1"]),
   clickhouse: new Set(["clickhouse"]),
+  mssql: new Set(["mssql"]),
 } as const;
 
 /**
@@ -37,6 +39,7 @@ export const ALL_SQL_TYPES = new Set([
   ...SQL_TYPES.bigquery,
   ...SQL_TYPES.sqlite,
   ...SQL_TYPES.clickhouse,
+  ...SQL_TYPES.mssql,
 ]);
 
 /**
@@ -54,6 +57,7 @@ export function getDialect(type: string): SqlDialect {
   if (SQL_TYPES.bigquery.has(type)) return "bigquery";
   if (SQL_TYPES.sqlite.has(type)) return "sqlite";
   if (SQL_TYPES.clickhouse.has(type)) return "clickhouse";
+  if (SQL_TYPES.mssql.has(type)) return "mssql";
   throw new Error(`Unknown SQL type: ${type}`);
 }
 
@@ -66,6 +70,7 @@ export function getSqlDialectOrNull(type: string): SqlDialect | null {
   if (SQL_TYPES.bigquery.has(type)) return "bigquery";
   if (SQL_TYPES.sqlite.has(type)) return "sqlite";
   if (SQL_TYPES.clickhouse.has(type)) return "clickhouse";
+  if (SQL_TYPES.mssql.has(type)) return "mssql";
   return null;
 }
 

@@ -300,52 +300,52 @@ const LayerSpec = z.object({
 
 // --- Top-level chart spec ---
 
-export const MakoChartSpec = z
-  .object({
-    $schema: z
-      .string()
-      .optional()
-      .describe("Vega-Lite schema URL. Omit — injected at render time."),
-    description: z.string().optional(),
-    title: z
-      .union([
-        z.string(),
-        z.object({
-          text: z.string(),
-          subtitle: z.string().optional(),
-          anchor: z.enum(["start", "middle", "end"]).optional(),
-        }),
-      ])
-      .optional(),
-    width: z.union([z.number(), z.literal("container")]).optional(),
-    height: z.union([z.number(), z.literal("container")]).optional(),
-    autosize: z
-      .union([
-        z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
-        z.object({
-          type: z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
-          contains: z.enum(["padding", "content"]).optional(),
-          resize: z.boolean().optional(),
-        }),
-      ])
-      .optional(),
-    transform: z.array(Transform).optional(),
+export const MakoChartSpecBase = z.object({
+  $schema: z
+    .string()
+    .optional()
+    .describe("Vega-Lite schema URL. Omit — injected at render time."),
+  description: z.string().optional(),
+  title: z
+    .union([
+      z.string(),
+      z.object({
+        text: z.string(),
+        subtitle: z.string().optional(),
+        anchor: z.enum(["start", "middle", "end"]).optional(),
+      }),
+    ])
+    .optional(),
+  width: z.union([z.number(), z.literal("container")]).optional(),
+  height: z.union([z.number(), z.literal("container")]).optional(),
+  autosize: z
+    .union([
+      z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
+      z.object({
+        type: z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
+        contains: z.enum(["padding", "content"]).optional(),
+        resize: z.boolean().optional(),
+      }),
+    ])
+    .optional(),
+  transform: z.array(Transform).optional(),
 
-    // Single-mark chart
-    mark: MarkDef.optional(),
-    encoding: Encoding.optional(),
+  // Single-mark chart
+  mark: MarkDef.optional(),
+  encoding: Encoding.optional(),
 
-    // Multi-mark chart (layers)
-    layer: z.array(LayerSpec).optional(),
-  })
-  .refine(
-    spec =>
-      spec.mark !== undefined ||
-      (spec.layer !== undefined && spec.layer.length > 0),
-    {
-      message:
-        "Spec must have either 'mark' (single chart) or 'layer' (multi-mark chart)",
-    },
-  );
+  // Multi-mark chart (layers)
+  layer: z.array(LayerSpec).optional(),
+});
+
+export const MakoChartSpec = MakoChartSpecBase.refine(
+  spec =>
+    spec.mark !== undefined ||
+    (spec.layer !== undefined && spec.layer.length > 0),
+  {
+    message:
+      "Spec must have either 'mark' (single chart) or 'layer' (multi-mark chart)",
+  },
+);
 
 export type MakoChartSpec = z.infer<typeof MakoChartSpec>;

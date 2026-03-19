@@ -169,6 +169,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     tabKind,
     flowType,
     flowFormState,
+    activeDashboardContext,
   } = body as {
     messages?: UIMessage[];
     chatId?: string;
@@ -181,6 +182,27 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     tabKind?: string;
     flowType?: string;
     flowFormState?: Record<string, unknown>;
+    activeDashboardContext?: {
+      dashboardId: string;
+      title: string;
+      dataSources: Array<{
+        id: string;
+        name: string;
+        tableRef?: string;
+        status?: "idle" | "loading" | "ready" | "error" | null;
+        rowsLoaded?: number;
+        error?: string | null;
+        columns: Array<{ name: string; type: string }>;
+        sampleRows?: Record<string, unknown>[];
+      }>;
+      widgets: Array<{
+        id: string;
+        title?: string;
+        type: string;
+        dataSourceId: string;
+      }>;
+      crossFilterEnabled: boolean;
+    };
   };
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -372,6 +394,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     selfDirective,
     consoleHints,
     activeConsoleResults,
+    activeDashboardContext,
   };
 
   // Create agent configuration

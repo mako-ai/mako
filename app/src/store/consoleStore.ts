@@ -82,6 +82,8 @@ interface ConsoleActions {
       databaseId?: string;
       executionId?: string;
       signal?: AbortSignal;
+      pageSize?: number;
+      cursor?: string | null;
     },
   ) => Promise<QueryExecuteResponse>;
   cancelQuery: (
@@ -444,6 +446,10 @@ export const useConsoleStore = create<ConsoleStore>()(
               databaseId: options?.databaseId,
               databaseName: options?.databaseName,
               executionId: options?.executionId,
+              pageSize: options?.pageSize,
+              cursor: options?.cursor,
+              mode: "preview",
+              source: "console_ui",
             },
             { signal: options?.signal },
           );

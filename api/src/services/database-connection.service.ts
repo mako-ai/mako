@@ -6,12 +6,25 @@ import { ConnectionPool } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
-import { DatabaseDriver } from "../databases/driver";
+import { DatabaseDriver, StreamingQueryOptions } from "../databases/driver";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 import { loggers } from "../logging";
+import { databaseRegistry } from "../databases/registry";
+import {
+  type PreviewPageInfo,
+  buildBigQueryCursor,
+  buildPreviewPage,
+  checkPreviewQuerySafety,
+  decodePreviewCursor,
+  hashPreviewQuery,
+  inferFieldsFromRows,
+  prepareSqlBatchQuery,
+  prepareSqlPreviewQuery,
+  resolvePreviewPageSize,
+} from "./query-pagination.service";
 
 const logger = loggers.db();
 
@@ -21,6 +34,16 @@ export interface QueryResult {
   error?: string;
   rowCount?: number;
   fields?: any[];
+}
+
+export interface QueryPreviewResult {
+  success: boolean;
+  rows?: Record<string, unknown>[];
+  error?: string;
+  rowCount?: number;
+  fields?: Array<{ name: string; type?: string }>;
+  pageInfo?: PreviewPageInfo;
+  warnings?: string[];
 }
 
 // Types for different connection contexts
@@ -52,6 +75,11 @@ export interface QueryExecuteOptions {
   signal?: AbortSignal;
   /** Execution ID for job tracking (enables cancellation) */
   executionId?: string;
+}
+
+export interface QueryPreviewOptions extends QueryExecuteOptions {
+  pageSize?: number;
+  cursor?: string | null;
 }
 
 interface PooledConnection {
@@ -429,6 +457,197 @@ export class DatabaseConnectionService {
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  async executePreviewQuery(
+    database: IDatabaseConnection,
+    query: any,
+    options?: QueryPreviewOptions,
+  ): Promise<QueryPreviewResult> {
+    try {
+      if (database.type === "bigquery" && typeof query === "string") {
+        return await this.executeBigQueryPreviewQuery(database, query, options);
+      }
+
+      if (
+        typeof query !== "string" ||
+        database.type === "mongodb" ||
+        database.type === "cloudflare-kv"
+      ) {
+        const result = await this.executeQuery(database, query, options);
+        if (!result.success) {
+          return {
+            success: false,
+            error: result.error,
+          };
+        }
+
+        const { pageSize, capApplied } = resolvePreviewPageSize(
+          options?.pageSize,
+        );
+        const rows = Array.isArray(result.data)
+          ? (result.data as Record<string, unknown>[])
+          : result.data == null
+            ? []
+            : [result.data as Record<string, unknown>];
+        const page = buildPreviewPage({
+          rows,
+          pageSize,
+          capApplied,
+          query: typeof query === "string" ? query : JSON.stringify(query),
+        });
+
+        return {
+          success: true,
+          rows: page.rows,
+          rowCount: page.pageInfo.returnedRows,
+          fields: this.normalizeQueryFields(result.fields, page.rows),
+          pageInfo: page.pageInfo,
+          warnings: page.warnings,
+        };
+      }
+
+      const prepared = prepareSqlPreviewQuery({
+        query,
+        databaseType: database.type,
+        pageSize: options?.pageSize,
+        cursor: options?.cursor,
+      });
+
+      const result = await this.executeQuery(
+        database,
+        prepared.paginatedQuery,
+        {
+          databaseName: options?.databaseName,
+          databaseId: options?.databaseId,
+          executionId: options?.executionId,
+          signal: options?.signal,
+        },
+      );
+
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error,
+        };
+      }
+
+      const rows = Array.isArray(result.data)
+        ? (result.data as Record<string, unknown>[])
+        : [];
+      const page = buildPreviewPage({
+        rows,
+        pageSize: prepared.pageSize,
+        capApplied: prepared.capApplied,
+        query,
+        offset: prepared.offset,
+        warnings: prepared.warnings,
+      });
+
+      return {
+        success: true,
+        rows: page.rows,
+        rowCount: page.pageInfo.returnedRows,
+        fields: this.normalizeQueryFields(result.fields, page.rows),
+        pageInfo: page.pageInfo,
+        warnings: page.warnings,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Preview query failed",
+      };
+    }
+  }
+
+  async executeStreamingQuery(
+    database: IDatabaseConnection,
+    query: any,
+    options: StreamingQueryOptions & QueryExecuteOptions,
+  ): Promise<{ success: boolean; totalRows: number; error?: string }> {
+    if (database.type === "bigquery" && typeof query === "string") {
+      return await this.executeBigQueryStreamingQuery(database, query, options);
+    }
+
+    const driver = databaseRegistry.getDriver(database.type);
+    if (typeof query === "string" && driver?.executeStreamingQuery) {
+      return await driver.executeStreamingQuery(database, query, options);
+    }
+
+    if (
+      database.type === "mongodb" ||
+      database.type === "cloudflare-kv" ||
+      typeof query !== "string"
+    ) {
+      const result = await this.executeQuery(database, query, options);
+      if (!result.success) {
+        return { success: false, totalRows: 0, error: result.error };
+      }
+      const rows = Array.isArray(result.data)
+        ? (result.data as Record<string, unknown>[])
+        : result.data == null
+          ? []
+          : [result.data as Record<string, unknown>];
+      if (rows.length > 0) {
+        await options.onBatch(rows);
+      }
+      return { success: true, totalRows: rows.length };
+    }
+
+    const batchSize = Math.max(1, Math.floor(options.batchSize || 1000));
+    let totalRows = 0;
+    let offset = 0;
+
+    try {
+      for (;;) {
+        if (options.signal?.aborted) {
+          return { success: false, totalRows, error: "Query cancelled" };
+        }
+
+        const prepared = prepareSqlBatchQuery({
+          query: String(query),
+          databaseType: database.type,
+          batchSize,
+          offset,
+        });
+
+        const result = await this.executeQuery(database, prepared.query, {
+          databaseName: options.databaseName,
+          databaseId: options.databaseId,
+          executionId: options.executionId,
+          signal: options.signal,
+        });
+
+        if (!result.success) {
+          return { success: false, totalRows, error: result.error };
+        }
+
+        const rows = Array.isArray(result.data)
+          ? (result.data as Record<string, unknown>[])
+          : [];
+
+        if (rows.length === 0) {
+          break;
+        }
+
+        await options.onBatch(rows);
+        totalRows += rows.length;
+        offset += rows.length;
+
+        if (rows.length < batchSize) {
+          break;
+        }
+      }
+
+      return { success: true, totalRows };
+    } catch (error) {
+      return {
+        success: false,
+        totalRows,
+        error:
+          error instanceof Error ? error.message : "Streaming query failed",
       };
     }
   }
@@ -1174,6 +1393,372 @@ export class DatabaseConnectionService {
     }
   }
 
+  private async executeBigQueryPreviewQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options?: QueryPreviewOptions,
+  ): Promise<QueryPreviewResult> {
+    const baseQuery = query.trim().replace(/;\s*$/, "");
+    const safety = checkPreviewQuerySafety(baseQuery);
+    if (!safety.safe) {
+      return { success: false, error: safety.errors.join(" ") };
+    }
+
+    const decodedCursor = decodePreviewCursor(options?.cursor);
+    const queryHash = hashPreviewQuery(baseQuery);
+    if (decodedCursor && decodedCursor.queryHash !== queryHash) {
+      return {
+        success: false,
+        error: "The provided preview cursor does not match the current query",
+      };
+    }
+    if (decodedCursor && decodedCursor.kind !== "bigquery") {
+      return {
+        success: false,
+        error: "The provided preview cursor is invalid for this BigQuery query",
+      };
+    }
+
+    const {
+      project_id,
+      service_account_json,
+      location: dbLocation,
+      api_base_url,
+    } = (database.connection as any) || {};
+    if (!project_id || !service_account_json) {
+      return {
+        success: false,
+        error:
+          "BigQuery requires 'project_id' and 'service_account_json' in connection",
+      };
+    }
+
+    const { pageSize, capApplied } = resolvePreviewPageSize(options?.pageSize);
+    const client = await this.getBigQueryHttpClient(
+      service_account_json,
+      api_base_url,
+    );
+    const configuredLocation =
+      decodedCursor?.kind === "bigquery"
+        ? decodedCursor.location || options?.location || dbLocation
+        : options?.location || dbLocation;
+    const executionId = options?.executionId;
+    const signal = options?.signal;
+
+    const checkAborted = () => {
+      if (signal?.aborted) throw new Error("Query cancelled");
+    };
+
+    try {
+      checkAborted();
+
+      let response;
+      let data: any = {};
+      let jobId: string | undefined =
+        decodedCursor?.kind === "bigquery" ? decodedCursor.jobId : undefined;
+      let jobLocation: string | undefined = configuredLocation;
+
+      if (decodedCursor?.kind === "bigquery") {
+        const params: any = {
+          maxResults: pageSize,
+          pageToken: decodedCursor.pageToken,
+        };
+        if (jobLocation) {
+          params.location = jobLocation;
+        }
+        response = await client.get(
+          `/projects/${project_id}/queries/${jobId}`,
+          {
+            params,
+          },
+        );
+        data = response.data || {};
+      } else {
+        const startBody: any = {
+          query: baseQuery,
+          useLegacySql: false,
+          maxResults: pageSize,
+        };
+        if (configuredLocation) {
+          startBody.location = configuredLocation;
+        }
+
+        response = await client.post(
+          `/projects/${project_id}/queries`,
+          startBody,
+        );
+        data = response.data || {};
+        jobId = data.jobReference?.jobId;
+        jobLocation = data.jobReference?.location || configuredLocation;
+      }
+
+      if (executionId && jobId) {
+        this.runningBigQueryJobs.set(executionId, {
+          projectId: project_id,
+          jobId,
+          location: jobLocation,
+          client,
+        });
+      }
+
+      const maxWaitMs = 5 * 60 * 1000;
+      const pollIntervalMs = 1000;
+      let waitedMs = 0;
+
+      while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+        checkAborted();
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        waitedMs += pollIntervalMs;
+        checkAborted();
+
+        const params: any = { maxResults: pageSize };
+        if (jobLocation) {
+          params.location = jobLocation;
+        }
+        if (decodedCursor?.kind === "bigquery" && decodedCursor.pageToken) {
+          params.pageToken = decodedCursor.pageToken;
+        }
+
+        response = await client.get(
+          `/projects/${project_id}/queries/${jobId}`,
+          {
+            params,
+          },
+        );
+        data = response.data || {};
+      }
+
+      checkAborted();
+      if (data.jobComplete === false) {
+        return {
+          success: false,
+          error: `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
+        };
+      }
+
+      const schema = data.schema;
+      const rows =
+        Array.isArray(data.rows) && schema
+          ? (this.bqMapRowsToObjects(data.rows, schema) as Array<
+              Record<string, unknown>
+            >)
+          : [];
+      const fields = this.bqSchemaToFields(schema, rows);
+      const nextPageToken =
+        typeof data.pageToken === "string" && data.pageToken.length > 0
+          ? data.pageToken
+          : undefined;
+
+      return {
+        success: true,
+        rows,
+        rowCount: rows.length,
+        fields,
+        warnings: safety.warnings,
+        pageInfo: {
+          pageSize,
+          hasMore: Boolean(nextPageToken),
+          nextCursor:
+            nextPageToken && jobId
+              ? buildBigQueryCursor({
+                  jobId,
+                  pageToken: nextPageToken,
+                  query: baseQuery,
+                  location: jobLocation,
+                })
+              : null,
+          returnedRows: rows.length,
+          capApplied,
+        },
+      };
+    } catch (error: any) {
+      if (error?.message === "Query cancelled") {
+        return { success: false, error: "Query cancelled" };
+      }
+      return {
+        success: false,
+        error:
+          (error?.response?.data?.error?.message as string) ||
+          (error?.message as string) ||
+          "BigQuery preview query failed",
+      };
+    } finally {
+      if (executionId) {
+        this.runningBigQueryJobs.delete(executionId);
+      }
+    }
+  }
+
+  private async executeBigQueryStreamingQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options: StreamingQueryOptions & QueryExecuteOptions,
+  ): Promise<{ success: boolean; totalRows: number; error?: string }> {
+    const executionId = options.executionId;
+    const signal = options.signal;
+
+    const checkAborted = () => {
+      if (signal?.aborted) throw new Error("Query cancelled");
+    };
+
+    let totalRows = 0;
+
+    try {
+      checkAborted();
+      if (typeof query !== "string" || !query.trim()) {
+        return {
+          success: false,
+          totalRows,
+          error: "Query must be a non-empty string",
+        };
+      }
+
+      const {
+        project_id,
+        service_account_json,
+        location: dbLocation,
+        api_base_url,
+      } = (database.connection as any) || {};
+      if (!project_id || !service_account_json) {
+        return {
+          success: false,
+          totalRows,
+          error:
+            "BigQuery requires 'project_id' and 'service_account_json' in connection",
+        };
+      }
+
+      const client = await this.getBigQueryHttpClient(
+        service_account_json,
+        api_base_url,
+      );
+      const configuredLocation = options.location || dbLocation;
+      const batchSize = Math.max(1, Math.min(10000, options.batchSize || 1000));
+
+      const startBody: any = {
+        query,
+        useLegacySql: false,
+        maxResults: batchSize,
+      };
+      if (configuredLocation) {
+        startBody.location = configuredLocation;
+      }
+
+      checkAborted();
+      let response = await client.post(
+        `/projects/${project_id}/queries`,
+        startBody,
+      );
+      let data = response.data || {};
+      const jobId: string | undefined = data.jobReference?.jobId;
+      const jobLocation: string | undefined =
+        data.jobReference?.location || configuredLocation;
+      let schema: any = data.schema;
+      let pageToken: string | undefined = data.pageToken;
+
+      if (executionId && jobId) {
+        this.runningBigQueryJobs.set(executionId, {
+          projectId: project_id,
+          jobId,
+          location: jobLocation,
+          client,
+        });
+      }
+
+      const maxWaitMs = 5 * 60 * 1000;
+      const pollIntervalMs = 1000;
+      let waitedMs = 0;
+
+      while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+        checkAborted();
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        waitedMs += pollIntervalMs;
+        checkAborted();
+
+        const params: any = { maxResults: batchSize };
+        if (jobLocation) {
+          params.location = jobLocation;
+        }
+        response = await client.get(
+          `/projects/${project_id}/queries/${jobId}`,
+          {
+            params,
+          },
+        );
+        data = response.data || {};
+        schema = data.schema || schema;
+      }
+
+      checkAborted();
+      if (data.jobComplete === false) {
+        return {
+          success: false,
+          totalRows,
+          error: `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
+        };
+      }
+
+      if (Array.isArray(data.rows) && schema) {
+        const rows = this.bqMapRowsToObjects(data.rows, schema) as Array<
+          Record<string, unknown>
+        >;
+        if (rows.length > 0) {
+          await options.onBatch(rows);
+          totalRows += rows.length;
+        }
+      }
+
+      pageToken = data.pageToken;
+
+      while (pageToken && jobId) {
+        checkAborted();
+        const params: any = { maxResults: batchSize, pageToken };
+        if (jobLocation) {
+          params.location = jobLocation;
+        }
+        response = await client.get(
+          `/projects/${project_id}/queries/${jobId}`,
+          {
+            params,
+          },
+        );
+        data = response.data || {};
+        schema = data.schema || schema;
+
+        const rows =
+          Array.isArray(data.rows) && schema
+            ? (this.bqMapRowsToObjects(data.rows, schema) as Array<
+                Record<string, unknown>
+              >)
+            : [];
+        if (rows.length > 0) {
+          await options.onBatch(rows);
+          totalRows += rows.length;
+        }
+
+        pageToken = data.pageToken;
+      }
+
+      return { success: true, totalRows };
+    } catch (error: any) {
+      if (error?.message === "Query cancelled") {
+        return { success: false, totalRows, error: "Query cancelled" };
+      }
+      return {
+        success: false,
+        totalRows,
+        error:
+          (error?.response?.data?.error?.message as string) ||
+          (error?.message as string) ||
+          "BigQuery streaming query failed",
+      };
+    } finally {
+      if (executionId) {
+        this.runningBigQueryJobs.delete(executionId);
+      }
+    }
+  }
+
   /**
    * Cancel a running BigQuery job
    */
@@ -1646,6 +2231,64 @@ export class DatabaseConnectionService {
     return { token, expiresAtMs };
   }
 
+  private normalizeQueryFields(
+    fields: any[] | undefined,
+    rows: Array<Record<string, unknown>>,
+  ): Array<{ name: string; type?: string }> {
+    if (Array.isArray(fields) && fields.length > 0) {
+      return fields
+        .map(field => {
+          if (typeof field === "string") {
+            return { name: field };
+          }
+
+          const name =
+            field?.name || field?.columnName || field?.originalName || "";
+          if (!name) {
+            return null;
+          }
+
+          const type = field?.type || field?.dataType || field?.columnType;
+          return {
+            name: String(name),
+            type: type ? String(type) : undefined,
+          };
+        })
+        .filter(
+          (field): field is { name: string; type?: string } => field !== null,
+        );
+    }
+
+    return inferFieldsFromRows(rows);
+  }
+
+  private bqSchemaToFields(
+    schema: any,
+    rows: Array<Record<string, unknown>>,
+  ): Array<{ name: string; type?: string }> {
+    const schemaFields = Array.isArray(schema?.fields) ? schema.fields : [];
+    if (schemaFields.length === 0) {
+      return inferFieldsFromRows(rows);
+    }
+
+    return schemaFields
+      .map((field: any) => {
+        const name = field?.name ? String(field.name) : "";
+        if (!name) {
+          return null;
+        }
+        return {
+          name,
+          type: field?.type ? String(field.type) : undefined,
+        };
+      })
+      .filter(
+        (
+          field: { name: string; type?: string } | null,
+        ): field is { name: string; type?: string } => field !== null,
+      );
+  }
+
   private bqMapRowsToObjects(rows: any[], schema: any): any[] {
     const fields = (schema?.fields || []) as Array<any>;
     return (rows || []).map(r => this.bqMapRow(r, fields));
@@ -1691,7 +2334,10 @@ export class DatabaseConnectionService {
         // Convert to ISO 8601 string for human-readable display.
         const num = Number(value);
         if (!isNaN(num)) {
-          return new Date(num * 1000).toISOString().replace("T", " ").replace("Z", " UTC");
+          return new Date(num * 1000)
+            .toISOString()
+            .replace("T", " ")
+            .replace("Z", " UTC");
         }
         return value;
       }

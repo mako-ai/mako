@@ -15,6 +15,7 @@ import {
   Database as DatabaseIcon,
   Plug as DataSourceIcon,
   ArrowLeftRight as FlowsIcon,
+  LayoutDashboard as DashboardIcon,
   CircleUserRound as UserIcon,
 } from "lucide-react";
 import { useUIStore } from "../store/uiStore";
@@ -55,6 +56,7 @@ type NavigationView =
   | "consoles"
   | "connectors"
   | "flows"
+  | "dashboards"
   | "settings"
   | "views";
 
@@ -64,6 +66,7 @@ const topNavigationItems: { view: NavigationView; icon: any; label: string }[] =
     { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
     { view: "flows", icon: FlowsIcon, label: "Flows" },
     { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
+    { view: "dashboards", icon: DashboardIcon, label: "Dashboards" },
   ];
 
 const bottomNavigationItems: {
@@ -73,7 +76,10 @@ const bottomNavigationItems: {
 }[] = [{ view: "settings", icon: SettingsIcon, label: "Settings" }];
 
 function Sidebar() {
-  const { leftPane: activeView, setLeftPane } = useUIStore();
+  const activeView = useUIStore(state => state.leftPane);
+  const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const setLeftPane = useUIStore(state => state.setLeftPane);
+  const openLeftPane = useUIStore(state => state.openLeftPane);
   const { user, logout } = useAuth();
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(
     null,
@@ -124,9 +130,21 @@ function Sidebar() {
       view === "databases" ||
       view === "consoles" ||
       view === "connectors" ||
-      view === "flows"
+      view === "flows" ||
+      view === "dashboards"
     ) {
-      setLeftPane(view as "databases" | "consoles" | "connectors" | "flows");
+      setLeftPane(
+        view as
+          | "databases"
+          | "consoles"
+          | "connectors"
+          | "flows"
+          | "dashboards",
+      );
+
+      if (!leftPaneOpen) {
+        openLeftPane();
+      }
     }
 
     // Only certain views should automatically open (or focus) a tab in the editor.
