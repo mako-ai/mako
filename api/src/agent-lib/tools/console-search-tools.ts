@@ -179,8 +179,13 @@ async function enrichWithConnectionNames(
   ];
   if (connectionIds.length === 0) return;
 
+  const validConnectionIds = connectionIds.filter(id =>
+    Types.ObjectId.isValid(id),
+  );
+  if (validConnectionIds.length === 0) return;
+
   const connections = await DatabaseConnection.find({
-    _id: { $in: connectionIds.map(id => new Types.ObjectId(id)) },
+    _id: { $in: validConnectionIds.map(id => new Types.ObjectId(id)) },
   })
     .select("name")
     .lean();

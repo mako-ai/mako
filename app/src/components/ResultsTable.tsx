@@ -17,10 +17,13 @@ import {
 import {
   Sheet as TableIcon,
   Braces as JsonIcon,
+  BarChart3 as ChartIcon,
   ClipboardCopy as CopyIcon,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
+import type { MakoChartSpec } from "../lib/chart-spec";
+import ResultsChart from "./ResultsChart";
 
 interface QueryResult {
   results?: any; // Can be anything: array, object, primitive, etc.
@@ -30,14 +33,34 @@ interface QueryResult {
   fields?: Array<{ name?: string; originalName?: string } | string>;
 }
 
+type ViewMode = "table" | "json" | "chart";
+
 interface ResultsTableProps {
   results?: QueryResult | null;
+  chartSpec?: MakoChartSpec | null;
+  onChartSpecChange?: (spec: MakoChartSpec | null) => void;
+  viewMode?: ViewMode;
+  onViewModeChange?: (mode: ViewMode) => void;
+  onChartRenderError?: (error: string) => void;
+  onChartRenderSuccess?: () => void;
 }
 
-const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
+const ResultsTable: React.FC<ResultsTableProps> = ({
+  results,
+  chartSpec,
+  onChartSpecChange,
+  viewMode: controlledViewMode,
+  onViewModeChange,
+  onChartRenderError,
+  onChartRenderSuccess,
+}) => {
   const [snackbarOpen, setSnackbarOpen] = React.useState(false);
-  const [viewMode, setViewMode] = React.useState<"table" | "json">("table");
+  const [internalViewMode, setInternalViewMode] =
+    React.useState<ViewMode>("table");
   const { effectiveMode } = useTheme();
+
+  const viewMode = controlledViewMode ?? internalViewMode;
+  const setViewMode = onViewModeChange ?? setInternalViewMode;
 
   // Reset to table view whenever new results are received
   const executedAt = results?.executedAt;
@@ -395,12 +418,12 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
   }, [results, columns]);
 
   const handleViewModeChange = useCallback(
-    (_event: React.MouseEvent<HTMLElement>, newViewMode: "table" | "json") => {
+    (_event: React.MouseEvent<HTMLElement>, newViewMode: ViewMode) => {
       if (newViewMode !== null) {
         setViewMode(newViewMode);
       }
     },
-    [],
+    [setViewMode],
   );
 
   const jsonContent = JSON.stringify(results, null, 2);
@@ -480,6 +503,11 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
               <JsonIcon strokeWidth={1.5} size={22} />
             </ToggleButton>
           </Tooltip>
+          <Tooltip title="Chart view">
+            <ToggleButton value="chart" aria-label="chart view">
+              <ChartIcon strokeWidth={1.5} size={22} />
+            </ToggleButton>
+          </Tooltip>
         </ToggleButtonGroup>
         <Tooltip title="Copy to clipboard">
           <IconButton
@@ -506,7 +534,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
           maxWidth: "100%",
         }}
       >
-        {viewMode === "table" ? (
+        {viewMode === "table" && (
           <DataGridPremium
             key={results.executedAt}
             rows={rows}
@@ -562,7 +590,8 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
               border: "none",
             }}
           />
-        ) : (
+        )}
+        {viewMode === "json" && (
           <Box
             sx={{
               height: "100%",
@@ -586,6 +615,16 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results }) => {
               }}
             />
           </Box>
+        )}
+        {viewMode === "chart" && (
+          <ResultsChart
+            data={normalizeToArray(results.results)}
+            fields={results.fields}
+            spec={chartSpec}
+            onSpecChange={onChartSpecChange}
+            onRenderError={onChartRenderError}
+            onRenderSuccess={onChartRenderSuccess}
+          />
         )}
       </Box>
 

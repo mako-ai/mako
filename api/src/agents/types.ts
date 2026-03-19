@@ -53,6 +53,15 @@ export interface AgentContext {
   selfDirective?: string;
   /** Auto-discovered relevant consoles (injected via embedding search) */
   consoleHints?: string;
+  /** Active console's query results and chart state */
+  activeConsoleResults?: {
+    viewMode: "table" | "json" | "chart";
+    hasResults: boolean;
+    rowCount: number;
+    columns: string[];
+    sampleRows: Record<string, unknown>[];
+    chartSpec: Record<string, unknown> | null;
+  };
 }
 
 /**

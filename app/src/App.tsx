@@ -70,6 +70,17 @@ function MainApp() {
   // Ref for DbFlowForm - allows AI agent to manipulate form state
   const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
 
+  // Ref for chart spec changes - allows AI agent to set chart specs on the active console tab
+  const onChartSpecChangeRef = useRef<
+    | ((payload: import("./components/Editor").ChartSpecChangePayload) => void)
+    | undefined
+  >(undefined);
+
+  // Ref for results context - allows Chat to read current results/chart state at request time
+  const resultsContextRef = useRef<
+    import("./components/Editor").ConsoleResultsContext | null
+  >(null);
+
   // Handle console modification from AI
   const handleConsoleModification = async (
     modification: ConsoleModificationPayload,
@@ -320,7 +331,11 @@ function MainApp() {
 
           {/* Editor + Results vertical layout inside Editor component */}
           <Panel defaultSize={30} minSize={30}>
-            <Editor dbFlowFormRef={dbFlowFormRef} />
+            <Editor
+              dbFlowFormRef={dbFlowFormRef}
+              onChartSpecChangeRef={onChartSpecChangeRef}
+              resultsContextRef={resultsContextRef}
+            />
           </Panel>
 
           <StyledHorizontalResizeHandle />
@@ -337,6 +352,8 @@ function MainApp() {
               <Chat
                 onConsoleModification={handleConsoleModification}
                 dbFlowFormRef={dbFlowFormRef}
+                onChartSpecChangeRef={onChartSpecChangeRef}
+                resultsContextRef={resultsContextRef}
               />
             </Box>
           </Panel>

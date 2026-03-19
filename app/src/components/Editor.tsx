@@ -64,14 +64,50 @@ const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   },
 }));
 
-interface EditorProps {
-  dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
+type ResultsViewMode = "table" | "json" | "chart";
+
+export interface ChartSpecChangePayload {
+  spec: import("../lib/chart-spec").MakoChartSpec;
+  onRenderResult?: (result: { success: boolean; error?: string }) => void;
 }
 
-function Editor({ dbFlowFormRef }: EditorProps = {}) {
+export interface ConsoleResultsContext {
+  viewMode: ResultsViewMode;
+  chartSpec: import("../lib/chart-spec").MakoChartSpec | null;
+  hasResults: boolean;
+  rowCount: number;
+  columns: string[];
+  sampleRows: Record<string, unknown>[];
+}
+
+interface EditorProps {
+  dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
+  onChartSpecChangeRef?: React.MutableRefObject<
+    ((payload: ChartSpecChangePayload) => void) | undefined
+  >;
+  resultsContextRef?: React.MutableRefObject<ConsoleResultsContext | null>;
+}
+
+function Editor({
+  dbFlowFormRef,
+  onChartSpecChangeRef,
+  resultsContextRef,
+}: EditorProps = {}) {
   const { currentWorkspace } = useWorkspace();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
+  >({});
+  const [tabChartSpecs, setTabChartSpecs] = useState<
+    Record<string, import("../lib/chart-spec").MakoChartSpec | null>
+  >({});
+  const [tabViewModes, setTabViewModes] = useState<
+    Record<string, ResultsViewMode>
+  >({});
+  const pendingRenderCallbackRef = useRef<
+    Record<
+      string,
+      ((result: { success: boolean; error?: string }) => void) | undefined
+    >
   >({});
   // Per-tab execution state to allow parallel queries across tabs
   const [executingTabs, setExecutingTabs] = useState<Record<string, boolean>>(
@@ -171,6 +207,79 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
       setActiveEditorContent(undefined);
     }
   }, [activeConsoleId, consoleTabs.length, setActiveEditorContent]);
+
+  // Expose chart spec change handler so Chat can set the spec for the active tab
+  useEffect(() => {
+    if (onChartSpecChangeRef) {
+      onChartSpecChangeRef.current = (payload: ChartSpecChangePayload) => {
+        const tabId = activeTabId;
+        if (!tabId) return;
+        if (payload.onRenderResult) {
+          pendingRenderCallbackRef.current[tabId] = payload.onRenderResult;
+        }
+        setTabChartSpecs(prev => ({ ...prev, [tabId]: payload.spec }));
+        setTabViewModes(prev => ({ ...prev, [tabId]: "chart" }));
+      };
+    }
+    return () => {
+      if (onChartSpecChangeRef) {
+        onChartSpecChangeRef.current = undefined;
+      }
+    };
+  }, [activeTabId, onChartSpecChangeRef]);
+
+  // Keep resultsContextRef up to date so Chat can read results state at request time
+  useEffect(() => {
+    if (!resultsContextRef) return;
+    const tabId = activeTabId;
+    if (!tabId) {
+      resultsContextRef.current = null;
+      return;
+    }
+    const result = tabResults[tabId];
+    const viewMode = tabViewModes[tabId] ?? "table";
+    const chartSpec = tabChartSpecs[tabId] ?? null;
+
+    if (!result || !result.results) {
+      resultsContextRef.current = {
+        viewMode,
+        chartSpec,
+        hasResults: false,
+        rowCount: 0,
+        columns: [],
+        sampleRows: [],
+      };
+      return;
+    }
+
+    const rows = Array.isArray(result.results)
+      ? result.results
+      : [result.results];
+    const columns: string[] = [];
+    if (result.fields && Array.isArray(result.fields)) {
+      for (const f of result.fields) {
+        const name = typeof f === "string" ? f : f?.name;
+        if (name) columns.push(name);
+      }
+    }
+    if (
+      columns.length === 0 &&
+      rows.length > 0 &&
+      typeof rows[0] === "object" &&
+      rows[0]
+    ) {
+      columns.push(...Object.keys(rows[0]));
+    }
+
+    resultsContextRef.current = {
+      viewMode,
+      chartSpec,
+      hasResults: true,
+      rowCount: rows.length,
+      columns,
+      sampleRows: rows.slice(0, 5),
+    };
+  }, [activeTabId, tabResults, tabViewModes, tabChartSpecs, resultsContextRef]);
 
   // Update the page title based on the active tab
   useEffect(() => {
@@ -922,7 +1031,37 @@ function Editor({ dbFlowFormRef }: EditorProps = {}) {
 
                     <Panel defaultSize={40} minSize={1}>
                       <Box sx={{ height: "100%", overflow: "hidden" }}>
-                        <ResultsTable results={tabResults[tab.id] || null} />
+                        <ResultsTable
+                          results={tabResults[tab.id] || null}
+                          chartSpec={tabChartSpecs[tab.id] ?? null}
+                          onChartSpecChange={spec =>
+                            setTabChartSpecs(prev => ({
+                              ...prev,
+                              [tab.id]: spec,
+                            }))
+                          }
+                          viewMode={tabViewModes[tab.id] ?? "table"}
+                          onViewModeChange={mode =>
+                            setTabViewModes(prev => ({
+                              ...prev,
+                              [tab.id]: mode,
+                            }))
+                          }
+                          onChartRenderError={error => {
+                            const cb = pendingRenderCallbackRef.current[tab.id];
+                            if (cb) {
+                              cb({ success: false, error });
+                              delete pendingRenderCallbackRef.current[tab.id];
+                            }
+                          }}
+                          onChartRenderSuccess={() => {
+                            const cb = pendingRenderCallbackRef.current[tab.id];
+                            if (cb) {
+                              cb({ success: true });
+                              delete pendingRenderCallbackRef.current[tab.id];
+                            }
+                          }}
+                        />
                       </Box>
                     </Panel>
                   </PanelGroup>

@@ -11,6 +11,7 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
+import { clientChartTools } from "./chart-tools-client";
 import { createMongoToolsV2 } from "./mongodb-tools";
 import { createSqlToolsV2 } from "./sql-tools";
 
@@ -173,6 +174,9 @@ export const createUniversalTools = (
   return {
     // Client-side console tools (no execute function - handled by frontend)
     ...clientConsoleTools,
+
+    // Client-side chart tools (no execute function - handled by frontend)
+    ...clientChartTools,
 
     // Cross-database connection discovery (server-side)
     list_connections: {
