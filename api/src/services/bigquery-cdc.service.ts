@@ -294,6 +294,14 @@ export async function appendBigQueryChangeEvents(params: {
     } as Omit<IBigQueryChangeEvent, "_id">);
   }
 
+  const lastIngestSeqByEntity = new Map<string, number>();
+  for (const doc of docs) {
+    const current = lastIngestSeqByEntity.get(doc.entity) || 0;
+    if (doc.ingestSeq > current) {
+      lastIngestSeqByEntity.set(doc.entity, doc.ingestSeq);
+    }
+  }
+
   let inserted = 0;
   let deduped = 0;
   try {
@@ -311,7 +319,8 @@ export async function appendBigQueryChangeEvents(params: {
   }
 
   for (const [entity, changes] of byEntity.entries()) {
-    const lastIngestSeq = seqStart + changes.length - 1;
+    const lastIngestSeq =
+      lastIngestSeqByEntity.get(entity) || seqStart + changes.length - 1;
     const sourceKind = changes.some(c => c.sourceKind === "backfill")
       ? "backfill"
       : "webhook";

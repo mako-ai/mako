@@ -108,39 +108,21 @@ export class SyncMachineService {
     event: CdcMachineEvent,
     context?: Partial<CdcMachineContext>,
   ) {
-    if (!passesTransitionGuard(event, context)) {
-      if (event.type === "START_BACKFILL") {
-        throw new Error(
-          "Cannot start backfill while an active run lock exists",
-        );
-      }
-      if (event.type === "BACKFILL_COMPLETE") {
-        throw new Error("Cannot complete backfill before cursor exhaustion");
-      }
-      if (event.type === "LAG_CLEARED") {
-        throw new Error("LAG_CLEARED guard failed: backlog/lag threshold");
-      }
+    if (passesTransitionGuard(event, context)) {
+      return;
     }
 
-    // Specific messages retained for backwards-compatible API errors.
-    if (event.type === "START_BACKFILL" && context?.hasActiveRunLock) {
+    if (event.type === "START_BACKFILL") {
       throw new Error("Cannot start backfill while an active run lock exists");
     }
-
-    if (event.type === "BACKFILL_COMPLETE" && !context?.backfillCursorExhausted) {
+    if (event.type === "BACKFILL_COMPLETE") {
       throw new Error("Cannot complete backfill before cursor exhaustion");
     }
-
     if (event.type === "LAG_CLEARED") {
-      const backlogCount = context?.backlogCount ?? 0;
-      const lagSeconds = context?.lagSeconds ?? null;
-      const lagThreshold = context?.lagThresholdSeconds ?? 60;
-      const lagWithinThreshold =
-        lagSeconds === null || lagSeconds <= lagThreshold;
-      if (backlogCount > 0 || !lagWithinThreshold) {
-        throw new Error("LAG_CLEARED guard failed: backlog/lag threshold");
-      }
+      throw new Error("LAG_CLEARED guard failed: backlog/lag threshold");
     }
+
+    throw new Error(`Guard failed for CDC event ${event.type}`);
   }
 }
 
