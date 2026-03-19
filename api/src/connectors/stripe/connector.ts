@@ -43,6 +43,7 @@ export class StripeConnector extends BaseConnector {
       name: "Stripe",
       version: "1.0.0",
       description: "Connector for Stripe payment platform",
+      supportsCdc: true,
       supportedEntities: [
         "customers",
         "subscriptions",

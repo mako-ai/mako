@@ -222,6 +222,7 @@ interface ConnectorInfo {
   name: string;
   type: string;
   workspaceId?: string;
+  supportsCdc?: boolean;
 }
 
 interface WebhookEvent {

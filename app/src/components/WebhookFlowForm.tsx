@@ -28,6 +28,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { trackEvent } from "../lib/analytics";
+import { apiClient } from "../lib/api-client";
 
 interface WebhookFlowFormProps {
   flowId?: string;
@@ -46,235 +47,75 @@ interface EntityLayoutConfig {
   enabled?: boolean;
 }
 
-const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
-  leads: [
-    "id",
-    "display_name",
-    "status_id",
-    "status_label",
-    "date_created",
-    "date_updated",
-    "organization_id",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  opportunities: [
-    "id",
-    "lead_id",
-    "status_id",
-    "status_label",
-    "status_type",
-    "value",
-    "date_created",
-    "date_updated",
-    "date_won",
-    "user_id",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Call": [
-    "id",
-    "lead_id",
-    "user_id",
-    "direction",
-    "duration",
-    "phone",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Email": [
-    "id",
-    "lead_id",
-    "user_id",
-    "subject",
-    "sender",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:EmailThread": [
-    "id",
-    "lead_id",
-    "user_id",
-    "subject",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:SMS": [
-    "id",
-    "lead_id",
-    "user_id",
-    "text",
-    "direction",
-    "phone",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Meeting": [
-    "id",
-    "lead_id",
-    "user_id",
-    "title",
-    "starts_at",
-    "ends_at",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Note": [
-    "id",
-    "lead_id",
-    "user_id",
-    "note",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:LeadStatusChange": [
-    "id",
-    "lead_id",
-    "user_id",
-    "old_status_label",
-    "new_status_label",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:OpportunityStatusChange": [
-    "id",
-    "lead_id",
-    "user_id",
-    "old_status_label",
-    "new_status_label",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:TaskCompleted": [
-    "id",
-    "lead_id",
-    "user_id",
-    "text",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  contacts: [
-    "id",
-    "lead_id",
-    "first_name",
-    "last_name",
-    "display_name",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  users: [
-    "id",
-    "email",
-    "first_name",
-    "last_name",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_fields: [
-    "id",
-    "name",
-    "custom_field_type",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:CustomActivity": [
-    "id",
-    "lead_id",
-    "user_id",
-    "_type",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_activity_types: [
-    "id",
-    "name",
-    "description",
-    "api_create_only",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_object_types: [
-    "id",
-    "name",
-    "description",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_objects: [
-    "id",
-    "custom_object_type",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  lead_statuses: [
-    "id",
-    "label",
-    "organization_id",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  opportunity_statuses: [
-    "id",
-    "label",
-    "type",
-    "organization_id",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
+interface ConnectorLayoutSuggestion {
+  partitionField?: string;
+  partitionGranularity?: "day" | "hour" | "month" | "year";
+  clusterFields?: string[];
+}
+
+interface ConnectorEntityMetadata {
+  name: string;
+  label?: string;
+  subEntities?: ConnectorEntityMetadata[];
+  layoutSuggestion?: ConnectorLayoutSuggestion;
+  fieldHints?: string[];
+}
+
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+}
+
+const DEFAULT_PARTITION_FIELD = "_syncedAt";
+
+const uniq = (values: string[]): string[] => Array.from(new Set(values));
+
+const expandEntityMetadata = (items: ConnectorEntityMetadata[]) => {
+  const expanded: Array<{
+    entity: string;
+    label: string;
+    partitionField: string;
+    partitionGranularity: "day" | "hour" | "month" | "year";
+    clusterFields: string[];
+    fieldHints: string[];
+  }> = [];
+
+  for (const entity of items || []) {
+    const baseLayout = entity.layoutSuggestion || {};
+    const baseFieldHints = entity.fieldHints || [];
+    if (Array.isArray(entity.subEntities) && entity.subEntities.length > 0) {
+      for (const subEntity of entity.subEntities) {
+        const layout = subEntity.layoutSuggestion || baseLayout;
+        expanded.push({
+          entity: `${entity.name}:${subEntity.name}`,
+          label: subEntity.label || subEntity.name,
+          partitionField: layout.partitionField || DEFAULT_PARTITION_FIELD,
+          partitionGranularity: layout.partitionGranularity || "day",
+          clusterFields: layout.clusterFields || [],
+          fieldHints: subEntity.fieldHints || baseFieldHints,
+        });
+      }
+      continue;
+    }
+
+    expanded.push({
+      entity: entity.name,
+      label: entity.label || entity.name,
+      partitionField: baseLayout.partitionField || DEFAULT_PARTITION_FIELD,
+      partitionGranularity: baseLayout.partitionGranularity || "day",
+      clusterFields: baseLayout.clusterFields || [],
+      fieldHints: baseFieldHints,
+    });
+  }
+
+  const deduped = new Map<string, (typeof expanded)[number]>();
+  for (const item of expanded) {
+    if (!deduped.has(item.entity)) {
+      deduped.set(item.entity, item);
+    }
+  }
+  return Array.from(deduped.values());
 };
 
 interface FormData {
@@ -333,7 +174,9 @@ export function WebhookFlowForm({
     flowId,
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
-  const [_entityMetadata, setEntityMetadata] = useState<any[]>([]);
+  const [entityFieldHintsByEntity, setEntityFieldHintsByEntity] = useState<
+    Record<string, string[]>
+  >({});
 
   const {
     control,
@@ -376,139 +219,56 @@ export function WebhookFlowForm({
     }
   }, [isBigQueryDest, setValue, watchDeleteMode]);
 
-  // Fetch entity metadata from connector and build per-entity layout defaults
+  // Fetch entity metadata from selected connector and derive per-entity layout defaults
   useEffect(() => {
-    if (isBigQueryDest && watchDataSourceId && connectors.length > 0) {
+    let cancelled = false;
+
+    const loadEntityLayouts = async () => {
+      if (!currentWorkspace?.id || !watchDataSourceId) {
+        if (!cancelled) {
+          setEntityFieldHintsByEntity({});
+        }
+        return;
+      }
+
+      if (!isBigQueryDest) {
+        if (!cancelled) {
+          setEntityFieldHintsByEntity({});
+          setValue("entityLayouts", []);
+        }
+        return;
+      }
+
       const source = connectors.find(c => c._id === watchDataSourceId);
       if (!source) return;
 
-      const connectorType = source.type;
-      if (connectorType === "close") {
-        const entities = [
-          {
-            name: "leads",
-            label: "Leads",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "opportunities",
-            label: "Opportunities",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "contacts",
-            label: "Contacts",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Call",
-            label: "Calls",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Email",
-            label: "Emails",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:EmailThread",
-            label: "Email Threads",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:SMS",
-            label: "SMS",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Meeting",
-            label: "Meetings",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Note",
-            label: "Notes",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:LeadStatusChange",
-            label: "Lead Status Changes",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:OpportunityStatusChange",
-            label: "Opportunity Status Changes",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:TaskCompleted",
-            label: "Completed Tasks",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "users",
-            label: "Users",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_fields",
-            label: "Custom Fields",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:CustomActivity",
-            label: "Custom Activities",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_activity_types",
-            label: "Custom Activity Types",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_object_types",
-            label: "Custom Object Types",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_objects",
-            label: "Custom Objects",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "lead_statuses",
-            label: "Lead Statuses",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "opportunity_statuses",
-            label: "Opportunity Statuses",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-        ];
-        setEntityMetadata(entities);
-        // Read saved layouts from the flow object (store), not watch(),
-        // because watch() may return stale state when effects race.
+      try {
+        const response = await apiClient.get<
+          ApiResponse<ConnectorEntityMetadata[]>
+        >(
+          `/workspaces/${currentWorkspace.id}/connectors/${watchDataSourceId}/entities`,
+        );
+        if (!response.success) {
+          throw new Error(
+            response.error || "Failed to fetch connector entities",
+          );
+        }
+
+        const expanded = expandEntityMetadata(response.data || []);
+        if (cancelled) return;
+
+        setError(null);
+
+        setEntityFieldHintsByEntity(
+          expanded.reduce(
+            (acc, entity) => {
+              acc[entity.entity] = entity.fieldHints || [];
+              return acc;
+            },
+            {} as Record<string, string[]>,
+          ),
+        );
+
         const existingFlow =
           !isNewMode && currentFlowId
             ? flows.find(j => j._id === currentFlowId)
@@ -516,117 +276,59 @@ export function WebhookFlowForm({
         const savedLayouts: EntityLayoutConfig[] =
           existingFlow?.entityLayouts || watch("entityLayouts") || [];
         const savedByEntity = new Map(
-          savedLayouts.map((l: any) => [l.entity, l]),
+          savedLayouts.map((layout: EntityLayoutConfig) => [
+            layout.entity,
+            layout,
+          ]),
         );
+
         setValue(
           "entityLayouts",
-          entities.map(e => {
-            const saved = savedByEntity.get(e.name);
+          expanded.map(entity => {
+            const saved = savedByEntity.get(entity.entity);
             return saved
               ? {
                   ...saved,
-                  label: e.label,
+                  label: entity.label,
                   enabled: saved.enabled !== false,
                 }
               : {
-                  entity: e.name,
-                  label: e.label,
-                  partitionField: e.partitionField,
-                  partitionGranularity: "day" as const,
-                  clusterFields: e.clusterFields || [],
+                  entity: entity.entity,
+                  label: entity.label,
+                  partitionField: entity.partitionField,
+                  partitionGranularity: entity.partitionGranularity,
+                  clusterFields: entity.clusterFields || [],
                   enabled: true,
                 };
           }),
         );
-      } else if (connectorType === "stripe") {
-        const entities = [
-          {
-            name: "customers",
-            label: "Customers",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "subscriptions",
-            label: "Subscriptions",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "charges",
-            label: "Charges",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "invoices",
-            label: "Invoices",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "products",
-            label: "Products",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "plans",
-            label: "Plans",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-        ];
-        setEntityMetadata(entities);
-        const existingFlowStripe =
-          !isNewMode && currentFlowId
-            ? flows.find(j => j._id === currentFlowId)
-            : null;
-        const savedLayoutsStripe: EntityLayoutConfig[] =
-          existingFlowStripe?.entityLayouts || watch("entityLayouts") || [];
-        const savedByEntity = new Map(
-          savedLayoutsStripe.map((l: any) => [l.entity, l]),
-        );
-        setValue(
-          "entityLayouts",
-          entities.map(e => {
-            const saved = savedByEntity.get(e.name);
-            return saved
-              ? {
-                  ...saved,
-                  label: e.label,
-                  enabled: saved.enabled !== false,
-                }
-              : {
-                  entity: e.name,
-                  label: e.label,
-                  partitionField: e.partitionField || "_syncedAt",
-                  partitionGranularity: "day" as const,
-                  clusterFields: e.clusterFields || [],
-                  enabled: true,
-                };
-          }),
-        );
+      } catch (fetchError) {
+        if (!cancelled) {
+          setEntityFieldHintsByEntity({});
+          setValue("entityLayouts", []);
+          setError(
+            fetchError instanceof Error
+              ? fetchError.message
+              : "Failed to load connector entities",
+          );
+        }
       }
-    } else if (
-      watchDataSourceId &&
-      connectors.length > 0 &&
-      watchDestinationId &&
-      databases.length > 0
-    ) {
-      setEntityMetadata([]);
-      setValue("entityLayouts", []);
-    }
+    };
+
+    loadEntityLayouts();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    currentWorkspace?.id,
     isBigQueryDest,
     watchDataSourceId,
-    watchDestinationId,
     connectors,
-    databases,
     flows,
     isNewMode,
     currentFlowId,
+    setValue,
   ]);
 
   // Fetch connectors
@@ -634,10 +336,10 @@ export function WebhookFlowForm({
     setIsLoadingConnectors(true);
     try {
       const sources = await fetchConnectors(workspaceId);
-      const webhookCapable = (sources || []).filter(
-        source => source.type === "stripe" || source.type === "close",
+      const cdcCompatible = (sources || []).filter(source =>
+        Boolean(source.supportsCdc),
       );
-      setConnectors(webhookCapable);
+      setConnectors(cdcCompatible);
     } catch (error) {
       console.error("Failed to fetch connectors:", error);
       setError("Failed to load connectors");
@@ -927,7 +629,7 @@ export function WebhookFlowForm({
                       )}
                       {connectors.length === 0 && !isLoadingConnectors && (
                         <FormHelperText>
-                          Only Stripe and Close connectors support webhooks
+                          No CDC-compatible connectors found in this workspace
                         </FormHelperText>
                       )}
                     </FormControl>
@@ -1138,15 +840,34 @@ export function WebhookFlowForm({
                             </Box>
                             {/* Rows */}
                             {watchEntityLayouts.map((layout, idx) => {
-                              const entityFields = CLOSE_ENTITY_FIELDS[
-                                layout.entity
-                              ] || ["_syncedAt", "_dataSourceId", "id"];
-                              const timestampFields = entityFields.filter(
-                                f =>
-                                  f.includes("date") ||
-                                  f.includes("created") ||
-                                  f.includes("updated") ||
-                                  f === "_syncedAt",
+                              const hintedFields =
+                                entityFieldHintsByEntity[layout.entity] || [];
+                              const entityFields = uniq(
+                                [
+                                  ...hintedFields,
+                                  ...(layout.clusterFields || []),
+                                  layout.partitionField,
+                                  "_syncedAt",
+                                  "_dataSourceId",
+                                  "id",
+                                  "date_created",
+                                  "date_updated",
+                                  "created_at",
+                                  "updated_at",
+                                ].filter((value): value is string =>
+                                  Boolean(value),
+                                ),
+                              );
+                              const timestampFields = uniq(
+                                entityFields.filter(
+                                  field =>
+                                    field.includes("date") ||
+                                    field.includes("created") ||
+                                    field.includes("updated") ||
+                                    field.endsWith("_at") ||
+                                    field === "_syncedAt" ||
+                                    field === layout.partitionField,
+                                ),
                               );
                               const isEnabled = layout.enabled !== false;
                               return (

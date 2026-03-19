@@ -19,6 +19,7 @@ interface ConnectorRegistryMetadata {
     description: string;
     author?: string;
     supportedEntities: string[];
+    supportsCdc?: boolean;
   };
 }
 
@@ -146,6 +147,7 @@ class ConnectorRegistry {
           version: "1.0.0",
           description: `${dirName} connector`,
           supportedEntities: [],
+          supportsCdc: false,
         };
       }
 

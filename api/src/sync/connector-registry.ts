@@ -14,6 +14,7 @@ interface ConnectorRegistryEntry {
     version: string;
     description: string;
     supportedEntities: string[];
+    supportsCdc?: boolean;
   };
 }
 
@@ -49,6 +50,7 @@ class SyncConnectorRegistry {
             version: "1.0.0",
             description: `${type} connector`,
             supportedEntities: [],
+            supportsCdc: false,
           },
         };
         this.register(entry);
@@ -106,6 +108,7 @@ class SyncConnectorRegistry {
             version: "1.0.0",
             description: `${dirName} connector`,
             supportedEntities: [],
+            supportsCdc: false,
           };
           try {
             const temp = new connectorClass({ config: {} } as any);
@@ -154,6 +157,7 @@ class SyncConnectorRegistry {
             version: "1.0.0",
             description: `${dataSource.type} connector`,
             supportedEntities: [],
+            supportsCdc: false,
           };
           try {
             const temp = new connectorClass({ config: {} } as any);
@@ -188,6 +192,7 @@ class SyncConnectorRegistry {
                 version: "1.0.0",
                 description: `${dataSource.type} connector`,
                 supportedEntities: [],
+                supportsCdc: false,
               },
             };
             this.register(entry);

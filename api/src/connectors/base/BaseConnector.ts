@@ -89,6 +89,8 @@ export interface EntityMetadata {
   subEntities?: EntityMetadata[];
   /** Suggested BigQuery table layout for this entity */
   layoutSuggestion?: TableLayoutSuggestion;
+  /** Optional field hints (used by UI for partition/cluster selectors) */
+  fieldHints?: string[];
 }
 
 export abstract class BaseConnector {
@@ -167,6 +169,7 @@ export abstract class BaseConnector {
     description: string;
     author?: string;
     supportedEntities: string[];
+    supportsCdc?: boolean;
   };
 
   /**
@@ -269,5 +272,6 @@ export interface ConnectorMetadata {
     description: string;
     author?: string;
     supportedEntities: string[];
+    supportsCdc?: boolean;
   };
 }

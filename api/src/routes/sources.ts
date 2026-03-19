@@ -152,7 +152,15 @@ dataSourceRoutes.get("/", async c => {
       .sort({ createdAt: -1 })
       .lean();
 
-    return c.json({ success: true, data: dataSources });
+    const dataWithCapabilities = dataSources.map(dataSource => {
+      const metadata = connectorRegistry.getMetadata(dataSource.type);
+      return {
+        ...dataSource,
+        supportsCdc: Boolean(metadata?.metadata?.supportsCdc),
+      };
+    });
+
+    return c.json({ success: true, data: dataWithCapabilities });
   } catch (error) {
     return c.json(
       {
@@ -180,7 +188,14 @@ dataSourceRoutes.get("/:id", async c => {
       return c.json({ success: false, error: "Connector not found" }, 404);
     }
 
-    return c.json({ success: true, data: dataSource });
+    const metadata = connectorRegistry.getMetadata(dataSource.type);
+    return c.json({
+      success: true,
+      data: {
+        ...dataSource,
+        supportsCdc: Boolean(metadata?.metadata?.supportsCdc),
+      },
+    });
   } catch (error) {
     return c.json(
       {

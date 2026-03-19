@@ -77,7 +77,7 @@ export function FlowsExplorer() {
       flowType === "scheduled"
         ? "New Scheduled Flow"
         : flowType === "webhook"
-          ? "New Webhook Flow"
+          ? "New Real-time Sync"
           : "New Database Sync";
     const id = openTab({
       title,
@@ -422,7 +422,7 @@ export function FlowsExplorer() {
           <ListItemIcon>
             <WebhookIcon fontSize="small" />
           </ListItemIcon>
-          <ListItemText>Webhook Sync</ListItemText>
+          <ListItemText>Real-time Sync</ListItemText>
         </MenuItem>
       </Menu>
     </Box>
