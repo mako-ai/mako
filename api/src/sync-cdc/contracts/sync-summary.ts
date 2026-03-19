@@ -11,6 +11,7 @@ export interface CdcLastTransition {
 export interface CdcEntitySummary {
   entity: string;
   backlogCount: number;
+  failedCount: number;
   lagSeconds: number | null;
   lastMaterializedAt: Date | null;
 }
@@ -21,6 +22,7 @@ export interface CdcSyncSummary {
   lastWebhookAt: Date | null;
   lastMaterializedAt: Date | null;
   backlogCount: number;
+  failedCount: number;
   lagSeconds: number | null;
   entityCounts: CdcEntitySummary[];
 }

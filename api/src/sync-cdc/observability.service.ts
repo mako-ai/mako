@@ -68,11 +68,17 @@ export class CdcObservabilityService {
     const stateEntities = states.map(state => state.entity);
     const enabledEntities = getEnabledEntities(flow, stateEntities);
 
-    const [backlogCount, perEntityBacklog] = await Promise.all([
+    const [backlogCount, failedCount, perEntityBacklog, perEntityFailed] =
+      await Promise.all([
       CdcChangeEvent.countDocuments({
         workspaceId: workspaceObjectId,
         flowId: flowObjectId,
         materializationStatus: "pending",
+      }),
+      CdcChangeEvent.countDocuments({
+        workspaceId: workspaceObjectId,
+        flowId: flowObjectId,
+        materializationStatus: "failed",
       }),
       CdcChangeEvent.aggregate([
         {
@@ -89,10 +95,28 @@ export class CdcObservabilityService {
           },
         },
       ]),
-    ]);
+      CdcChangeEvent.aggregate([
+        {
+          $match: {
+            workspaceId: workspaceObjectId,
+            flowId: flowObjectId,
+            materializationStatus: "failed",
+          },
+        },
+        {
+          $group: {
+            _id: "$entity",
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      ]);
 
     const backlogByEntity = new Map<string, number>(
       perEntityBacklog.map(entry => [entry._id as string, entry.count as number]),
+    );
+    const failedByEntity = new Map<string, number>(
+      perEntityFailed.map(entry => [entry._id as string, entry.count as number]),
     );
     const stateByEntity = new Map(states.map(state => [state.entity, state]));
 
@@ -104,6 +128,7 @@ export class CdcObservabilityService {
       return {
         entity,
         backlogCount: backlogByEntity.get(entity) || 0,
+        failedCount: failedByEntity.get(entity) || 0,
         lagSeconds: toLagSeconds(lastMaterializedAt),
         lastMaterializedAt,
       };
@@ -135,6 +160,7 @@ export class CdcObservabilityService {
       lastWebhookAt: lastWebhook?.receivedAt || null,
       lastMaterializedAt,
       backlogCount,
+      failedCount,
       lagSeconds: toLagSeconds(minMaterializedAt),
       entityCounts,
     };

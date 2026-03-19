@@ -1,18 +1,20 @@
+import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
 import {
   CdcChangeEvent,
+  CdcBackfillCheckpoint,
   CdcEntityState,
   CdcStateTransition,
   DatabaseConnection,
   Flow,
   FlowExecution,
-  IWebhookEvent,
   WebhookEvent,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { databaseRegistry } from "../databases/registry";
 import { getEntityTableName } from "../sync/sync-orchestrator";
+import { retryFailedMaterializationForFlow } from "../services/bigquery-cdc.service";
 import { syncMachineService } from "./state/sync-machine.service";
 
 const log = loggers.sync("cdc.backfill");
@@ -40,8 +42,15 @@ async function hasActiveExecution(workspaceId: string, flowId: string) {
   });
 }
 
+function createBackfillRunId(flowId: string): string {
+  return `backfill:${flowId}:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
+}
+
 export class CdcBackfillService {
-  async startBackfill(workspaceId: string, flowId: string) {
+  async startBackfill(
+    workspaceId: string,
+    flowId: string,
+  ): Promise<{ runId: string; reusedRunId: boolean }> {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -53,6 +62,17 @@ export class CdcBackfillService {
     if (flow.syncEngine !== "cdc") {
       throw new Error("Backfill start requires syncEngine=cdc");
     }
+
+    const runId = flow.backfillState?.runId || createBackfillRunId(flowId);
+    const reusedRunId = Boolean(flow.backfillState?.runId);
+    const now = new Date();
+    flow.backfillState = {
+      active: true,
+      runId,
+      startedAt: flow.backfillState?.startedAt || now,
+      completedAt: undefined,
+    };
+    await flow.save();
 
     const running = await hasActiveExecution(workspaceId, flowId);
     await syncMachineService.applyTransition({
@@ -70,8 +90,11 @@ export class CdcBackfillService {
         flowId,
         noJitter: true,
         backfill: true,
+        backfillRunId: runId,
       },
     });
+
+    return { runId, reusedRunId };
   }
 
   async resyncFlow(params: {
@@ -113,12 +136,16 @@ export class CdcBackfillService {
       workspaceId: workspaceObjectId,
       flowId: flowObjectId,
     });
+    await CdcBackfillCheckpoint.deleteMany({
+      workspaceId: workspaceObjectId,
+      flowId: flowObjectId,
+    });
 
     if (clearWebhookEvents) {
       await WebhookEvent.deleteMany({
         workspaceId: workspaceObjectId,
         flowId: flowObjectId,
-      } as Partial<IWebhookEvent>);
+      });
     }
 
     if (deleteDestination) {
@@ -133,12 +160,100 @@ export class CdcBackfillService {
     };
     flow.backfillState = {
       active: false,
+      runId: undefined,
       startedAt: undefined,
       completedAt: undefined,
     };
     await flow.save();
 
     await this.startBackfill(workspaceId, flowId);
+  }
+
+  async retryFailedMaterialization(params: {
+    workspaceId: string;
+    flowId: string;
+    entity?: string;
+  }) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(params.flowId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Retry failed materialization requires syncEngine=cdc");
+    }
+
+    return retryFailedMaterializationForFlow({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      entity: params.entity,
+    });
+  }
+
+  async recoverFlow(params: {
+    workspaceId: string;
+    flowId: string;
+    retryFailedMaterialization?: boolean;
+    resumeBackfill?: boolean;
+    entity?: string;
+  }) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(params.flowId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Recover requires syncEngine=cdc");
+    }
+
+    const running = await hasActiveExecution(params.workspaceId, params.flowId);
+    if (running) {
+      throw new Error("Cannot recover while a CDC execution is active");
+    }
+
+    await syncMachineService.applyTransition({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      event: { type: "RECOVER", reason: "Recovered via API" },
+    });
+
+    let retried = { resetCount: 0, entities: [] as string[] };
+    if (params.retryFailedMaterialization) {
+      retried = await this.retryFailedMaterialization({
+        workspaceId: params.workspaceId,
+        flowId: params.flowId,
+        entity: params.entity,
+      });
+    }
+
+    let resumedRun:
+      | {
+          runId: string;
+          reusedRunId: boolean;
+        }
+      | undefined;
+    if (params.resumeBackfill !== false) {
+      resumedRun = await this.startBackfill(params.workspaceId, params.flowId);
+    }
+
+    log.info("CDC flow recovered", {
+      flowId: params.flowId,
+      retriedFailed: retried.resetCount,
+      resumedRunId: resumedRun?.runId,
+      resumedBackfill: Boolean(resumedRun),
+    });
+
+    return {
+      retriedFailedRows: retried.resetCount,
+      retriedEntities: retried.entities,
+      resumedRunId: resumedRun?.runId || null,
+      resumedBackfill: Boolean(resumedRun),
+      reusedRunId: resumedRun?.reusedRunId || false,
+    };
   }
 
   private async deleteDestinationTables(flow: any) {

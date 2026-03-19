@@ -31,6 +31,7 @@ import {
   isBigQueryCdcEnabledForFlow,
   markBackfillCompletedForFlow,
 } from "../../services/bigquery-cdc.service";
+import { cdcBackfillCheckpointService } from "../../sync-cdc/backfill-checkpoint.service";
 import { syncMachineService } from "../../sync-cdc/state/sync-machine.service";
 
 const flowLogger = loggers.inngest("flow");
@@ -392,7 +393,7 @@ export const flowFunction = inngest.createFunction(
   },
   { event: "flow.execute" },
   async ({ event, step, logger }) => {
-    const { flowId, noJitter, backfill } = event.data;
+    const { flowId, noJitter, backfill, backfillRunId } = event.data;
 
     logger.info("Flow function started", {
       flowId,
@@ -403,6 +404,7 @@ export const flowFunction = inngest.createFunction(
     let executionId: string | undefined;
     // Store flow ref for use in error handler
     let flowRef: IFlow | undefined;
+    let cdcBackfillRunId: string | undefined;
 
     // Helper to create the execution logger
     const createExecutionLogger = (flow: IFlow): FlowExecutionLogger => {
@@ -539,6 +541,14 @@ export const flowFunction = inngest.createFunction(
         flow,
         destinationType,
       );
+      const requestedBackfillRunId =
+        typeof backfillRunId === "string" && backfillRunId.length > 0
+          ? backfillRunId
+          : undefined;
+      cdcBackfillRunId =
+        backfill && flow.type === "webhook" && isBigQueryCdcEnabled
+          ? requestedBackfillRunId || flow.backfillState?.runId
+          : undefined;
 
       // Webhook flows should not be executed unless it's a backfill
       if (flow.type === "webhook" && !backfill) {
@@ -593,6 +603,20 @@ export const flowFunction = inngest.createFunction(
             context: {
               hasActiveRunLock: false,
             },
+          });
+        });
+        await step.run("mark-cdc-backfill-active", async () => {
+          const now = new Date();
+          const update: Record<string, unknown> = {
+            "backfillState.active": true,
+            "backfillState.startedAt": flow.backfillState?.startedAt || now,
+            "backfillState.completedAt": null,
+          };
+          if (cdcBackfillRunId) {
+            update["backfillState.runId"] = cdcBackfillRunId;
+          }
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: update,
           });
         });
       }
@@ -1061,6 +1085,31 @@ export const flowFunction = inngest.createFunction(
       );
 
       if (supportsChunking) {
+        const checkpointEnabled =
+          Boolean(backfill) &&
+          flow.type === "webhook" &&
+          isBigQueryCdcEnabled &&
+          Boolean(cdcBackfillRunId);
+        let checkpointCompletedEntities = new Set<string>();
+        if (checkpointEnabled) {
+          const completedEntities = (await step.run(
+            "load-cdc-backfill-completed-entities",
+            async () => {
+              return cdcBackfillCheckpointService.listCompletedEntities({
+                workspaceId: String(flow.workspaceId),
+                flowId: String(flow._id),
+                runId: cdcBackfillRunId!,
+              });
+            },
+          )) as string[];
+          checkpointCompletedEntities = new Set(completedEntities);
+          logger.info("Loaded CDC backfill checkpoints", {
+            flowId,
+            runId: cdcBackfillRunId,
+            completedEntities: completedEntities.length,
+          });
+        }
+
         // Get entities to sync
         const entitiesToSync = await step.run(
           "get-entities-to-sync",
@@ -1148,13 +1197,42 @@ export const flowFunction = inngest.createFunction(
 
         // Process each entity with chunked execution
         for (const entity of entitiesToSync) {
+          const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
+          if (checkpointEnabled && checkpointCompletedEntities.has(entity)) {
+            logger.info("Skipping entity already completed in checkpointed run", {
+              flowId,
+              entity,
+              runId: cdcBackfillRunId,
+            });
+            entityStatsMap[entity] = Math.max(entityStatsMap[entity] || 0, 1);
+            if (executionId) {
+              await step.run(`mark-entity-skipped-${safeEntityStepId}`, async () => {
+                const db = Flow.db;
+                const collection = db.collection("flow_executions");
+                await collection.updateOne(
+                  { _id: new Types.ObjectId(executionId) },
+                  {
+                    $set: {
+                      lastHeartbeat: new Date(),
+                      "stats.currentEntity": entity,
+                      [`stats.entityStatus.${entity}`]: "completed",
+                    },
+                    $addToSet: {
+                      "stats.syncedEntities": entity,
+                    },
+                  } as any,
+                );
+              });
+            }
+            continue;
+          }
+
           logger.info("Starting chunked sync for entity", {
             flowId,
             entity,
           });
 
           if (executionId) {
-            const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
             await step.run(
               `mark-entity-started-${safeEntityStepId}`,
               async () => {
@@ -1193,6 +1271,29 @@ export const flowFunction = inngest.createFunction(
           }
 
           let state: FetchState | undefined;
+          if (checkpointEnabled) {
+            const checkpointState = (await step.run(
+              `load-cdc-backfill-checkpoint-${safeEntityStepId}`,
+              async () => {
+                return cdcBackfillCheckpointService.loadEntityCheckpoint({
+                  workspaceId: String(flow.workspaceId),
+                  flowId: String(flow._id),
+                  runId: cdcBackfillRunId!,
+                  entity,
+                });
+              },
+            )) as FetchState | undefined;
+            if (checkpointState) {
+              state = checkpointState;
+              logger.info("Resuming entity from checkpoint", {
+                flowId,
+                entity,
+                runId: cdcBackfillRunId,
+                totalProcessed: checkpointState.totalProcessed,
+                hasMore: checkpointState.hasMore,
+              });
+            }
+          }
           let chunkIndex = 0;
           let completed = false;
 
@@ -1277,7 +1378,9 @@ export const flowFunction = inngest.createFunction(
                   destinationDatabaseName: flow.destinationDatabaseName,
                   flowId: flowId.toString(),
                   workspaceId: flow.workspaceId.toString(),
-                  backfillRunId: backfill ? executionId : undefined,
+                  backfillRunId: backfill
+                    ? cdcBackfillRunId || executionId
+                    : undefined,
                   entity,
                   isIncremental: flow.syncMode === "incremental",
                   state,
@@ -1382,6 +1485,21 @@ export const flowFunction = inngest.createFunction(
 
             state = chunkResult.state;
             completed = chunkResult.completed;
+
+            if (checkpointEnabled) {
+              await step.run(
+                `save-cdc-backfill-checkpoint-${safeEntityStepId}-${chunkIndex}`,
+                async () => {
+                  await cdcBackfillCheckpointService.saveEntityCheckpoint({
+                    workspaceId: String(flow.workspaceId),
+                    flowId: String(flow._id),
+                    runId: cdcBackfillRunId!,
+                    entity,
+                    fetchState: chunkResult.state,
+                  });
+                },
+              );
+            }
             chunkIndex++;
 
             if (chunkIndex > 1000) {
@@ -1397,6 +1515,22 @@ export const flowFunction = inngest.createFunction(
             entity,
             totalChunks: chunkIndex,
           });
+
+          if (checkpointEnabled && state) {
+            await step.run(
+              `complete-cdc-backfill-checkpoint-${safeEntityStepId}`,
+              async () => {
+                await cdcBackfillCheckpointService.markEntityCompleted({
+                  workspaceId: String(flow.workspaceId),
+                  flowId: String(flow._id),
+                  runId: cdcBackfillRunId!,
+                  entity,
+                  fetchState: state,
+                });
+              },
+            );
+            checkpointCompletedEntities.add(entity);
+          }
         }
       } else {
         // Fall back to non-chunked execution for connectors that don't support it
@@ -1643,6 +1777,25 @@ export const flowFunction = inngest.createFunction(
                 lagSeconds: 0,
                 lagThresholdSeconds: 60,
               },
+            });
+          }
+        });
+        await step.run("finalize-cdc-backfill-run", async () => {
+          const now = new Date();
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": false,
+              "backfillState.completedAt": now,
+            },
+            $unset: {
+              "backfillState.runId": "",
+            },
+          });
+          if (cdcBackfillRunId) {
+            await cdcBackfillCheckpointService.clearRun({
+              workspaceId: String(flow.workspaceId),
+              flowId: String(flow._id),
+              runId: cdcBackfillRunId,
             });
           }
         });
@@ -1918,6 +2071,18 @@ export const flowFunction = inngest.createFunction(
                   : "FLOW_EXECUTION_FAILED",
                 errorMessage: error.message,
               },
+            });
+          });
+          await step.run("mark-cdc-backfill-interrupted", async () => {
+            const update: Record<string, unknown> = {
+              "backfillState.active": false,
+              "backfillState.completedAt": null,
+            };
+            if (cdcBackfillRunId) {
+              update["backfillState.runId"] = cdcBackfillRunId;
+            }
+            await Flow.findByIdAndUpdate(flowId, {
+              $set: update,
             });
           });
           await step.run("drain-bigquery-cdc-on-failure", async () => {
