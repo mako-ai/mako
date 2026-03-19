@@ -64,7 +64,50 @@ interface ActiveCrossFilter extends CrossFilterSelection {
   dataSourceId: string;
 }
 
-function buildSqlClause(sel: CrossFilterSelection): string {
+function resolveFilterField(
+  selectedField: string,
+  availableFields: string[],
+): string | null {
+  if (!selectedField) return null;
+  if (availableFields.length === 0) return selectedField;
+
+  const lowerSelected = selectedField.toLowerCase();
+  const lowerFields = availableFields.map(f => f.toLowerCase());
+
+  // 1) Exact match
+  const exactIdx = lowerFields.indexOf(lowerSelected);
+  if (exactIdx >= 0) return availableFields[exactIdx];
+
+  // 2) Common convention matches: *_field, field_*, field_code, *_field_code
+  const conventionMatches = availableFields.filter(field => {
+    const lf = field.toLowerCase();
+    return (
+      lf.endsWith(`_${lowerSelected}`) ||
+      lf.startsWith(`${lowerSelected}_`) ||
+      lf === `${lowerSelected}_code` ||
+      lf.endsWith(`_${lowerSelected}_code`)
+    );
+  });
+  if (conventionMatches.length === 1) return conventionMatches[0];
+
+  // 3) Token match fallback (shortest candidate wins)
+  const tokenMatches = availableFields.filter(field =>
+    field
+      .toLowerCase()
+      .split("_")
+      .some(token => token === lowerSelected),
+  );
+  if (tokenMatches.length > 0) {
+    return [...tokenMatches].sort((a, b) => a.length - b.length)[0];
+  }
+
+  return null;
+}
+
+function buildSqlClause(
+  sel: CrossFilterSelection,
+  targetField: string,
+): string {
   const esc = (v: unknown) => {
     if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
     if (v instanceof Date) return `'${v.toISOString()}'`;
@@ -74,13 +117,13 @@ function buildSqlClause(sel: CrossFilterSelection): string {
   if (sel.type === "point") {
     if (sel.values.length === 0) return "";
     if (sel.values.length === 1) {
-      return `"${sel.field}" = ${esc(sel.values[0])}`;
+      return `"${targetField}" = ${esc(sel.values[0])}`;
     }
-    return `"${sel.field}" IN (${sel.values.map(esc).join(", ")})`;
+    return `"${targetField}" IN (${sel.values.map(esc).join(", ")})`;
   }
 
   if (sel.type === "interval" && sel.values.length === 2) {
-    return `"${sel.field}" >= ${esc(sel.values[0])} AND "${sel.field}" <= ${esc(sel.values[1])}`;
+    return `"${targetField}" >= ${esc(sel.values[0])} AND "${targetField}" <= ${esc(sel.values[1])}`;
   }
 
   return "";
@@ -220,10 +263,16 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       if (widget.crossFilter && !widget.crossFilter.enabled) continue;
 
       const clauses: string[] = [];
+      const schemaFields =
+        runtimeSession?.dataSources[widget.dataSourceId]?.schema?.map(
+          col => col.name,
+        ) ?? [];
       for (const [sourceId, filter] of Object.entries(crossFilterMap)) {
         if (sourceId === widget.id) continue;
         if (filter.dataSourceId !== widget.dataSourceId) continue;
-        const clause = buildSqlClause(filter);
+        const resolvedField = resolveFilterField(filter.field, schemaFields);
+        if (!resolvedField) continue;
+        const clause = buildSqlClause(filter, resolvedField);
         if (clause) clauses.push(clause);
       }
       if (clauses.length > 0) {
@@ -235,6 +284,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     activeDashboard?.crossFilter?.enabled,
     activeDashboard?.widgets,
     crossFilterMap,
+    runtimeSession?.dataSources,
   ]);
 
   useEffect(() => {
