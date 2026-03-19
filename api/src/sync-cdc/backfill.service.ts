@@ -16,23 +16,9 @@ import { databaseRegistry } from "../databases/registry";
 import { getEntityTableName } from "../sync/sync-orchestrator";
 import { retryFailedMaterializationForFlow } from "../services/bigquery-cdc.service";
 import { syncMachineService } from "./state/sync-machine.service";
+import { resolveConfiguredEntities } from "./entity-selection";
 
 const log = loggers.sync("cdc.backfill");
-
-function getEnabledEntities(flow: any): string[] {
-  if (Array.isArray(flow.entityLayouts) && flow.entityLayouts.length > 0) {
-    return flow.entityLayouts
-      .filter((layout: any) => layout.enabled !== false)
-      .map((layout: any) => layout.entity)
-      .filter((entity: any) => typeof entity === "string" && entity.length > 0);
-  }
-
-  if (Array.isArray(flow.entityFilter) && flow.entityFilter.length > 0) {
-    return flow.entityFilter;
-  }
-
-  return [];
-}
 
 async function hasActiveExecution(workspaceId: string, flowId: string) {
   return FlowExecution.exists({
@@ -46,10 +32,15 @@ function createBackfillRunId(flowId: string): string {
   return `backfill:${flowId}:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function createBackfillTriggerEventId(flowId: string, runId: string): string {
+  return `cdc-backfill:${flowId}:${runId}:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
+}
+
 export class CdcBackfillService {
   async startBackfill(
     workspaceId: string,
     flowId: string,
+    options?: { reuseExistingRunId?: boolean },
   ): Promise<{ runId: string; reusedRunId: boolean }> {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -63,13 +54,17 @@ export class CdcBackfillService {
       throw new Error("Backfill start requires syncEngine=cdc");
     }
 
-    const runId = flow.backfillState?.runId || createBackfillRunId(flowId);
-    const reusedRunId = Boolean(flow.backfillState?.runId);
+    const shouldReuseRunId = options?.reuseExistingRunId === true;
+    const runId =
+      shouldReuseRunId && flow.backfillState?.runId
+        ? flow.backfillState.runId
+        : createBackfillRunId(flowId);
+    const reusedRunId = Boolean(shouldReuseRunId && flow.backfillState?.runId);
     const now = new Date();
     flow.backfillState = {
       active: true,
       runId,
-      startedAt: flow.backfillState?.startedAt || now,
+      startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
       completedAt: undefined,
     };
     await flow.save();
@@ -85,6 +80,9 @@ export class CdcBackfillService {
     });
 
     await inngest.send({
+      // Keep runId stable for checkpoint resume semantics, but use a unique
+      // event id for each trigger so recover can re-dispatch the same runId.
+      id: createBackfillTriggerEventId(flowId, runId),
       name: "flow.execute",
       data: {
         flowId,
@@ -103,7 +101,8 @@ export class CdcBackfillService {
     deleteDestination?: boolean;
     clearWebhookEvents?: boolean;
   }) {
-    const { workspaceId, flowId, deleteDestination, clearWebhookEvents } = params;
+    const { workspaceId, flowId, deleteDestination, clearWebhookEvents } =
+      params;
     const workspaceObjectId = new Types.ObjectId(workspaceId);
     const flowObjectId = new Types.ObjectId(flowId);
 
@@ -237,7 +236,9 @@ export class CdcBackfillService {
         }
       | undefined;
     if (params.resumeBackfill !== false) {
-      resumedRun = await this.startBackfill(params.workspaceId, params.flowId);
+      resumedRun = await this.startBackfill(params.workspaceId, params.flowId, {
+        reuseExistingRunId: true,
+      });
     }
 
     log.info("CDC flow recovered", {
@@ -257,7 +258,10 @@ export class CdcBackfillService {
   }
 
   private async deleteDestinationTables(flow: any) {
-    if (!flow.tableDestination?.connectionId || !flow.tableDestination?.schema) {
+    if (
+      !flow.tableDestination?.connectionId ||
+      !flow.tableDestination?.schema
+    ) {
       return;
     }
 
@@ -273,16 +277,20 @@ export class CdcBackfillService {
       return;
     }
 
-    const enabledEntities = getEnabledEntities(flow);
+    const enabledEntities = resolveConfiguredEntities(flow).entities;
     const tablePrefix = flow.tableDestination.tableName || "sync";
     const schema = flow.tableDestination.schema;
 
     for (const entity of enabledEntities) {
       const liveTable = getEntityTableName(tablePrefix, entity);
       await driver.dropTable(destination as any, liveTable, { schema });
-      await driver.dropTable(destination as any, `${liveTable}__stage_changes`, {
-        schema,
-      });
+      await driver.dropTable(
+        destination as any,
+        `${liveTable}__stage_changes`,
+        {
+          schema,
+        },
+      );
     }
 
     log.info("CDC destination tables dropped during resync", {

@@ -11,6 +11,7 @@ import {
   webhookCleanupFunction,
   webhookRetryFunction,
   bigQueryCdcMaterializeFunction,
+  bigQueryCdcStaleSweepFunction,
 } from "./functions/webhook-flow";
 import { loggers } from "../logging";
 
@@ -29,6 +30,7 @@ const baseFunctions = [
   webhookCleanupFunction,
   webhookRetryFunction,
   bigQueryCdcMaterializeFunction,
+  bigQueryCdcStaleSweepFunction,
 ];
 
 // Conditionally add schedulers (only in production)
@@ -61,4 +63,5 @@ export {
   webhookCleanupFunction,
   webhookRetryFunction,
   bigQueryCdcMaterializeFunction,
+  bigQueryCdcStaleSweepFunction,
 };

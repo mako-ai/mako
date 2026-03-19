@@ -721,7 +721,7 @@ export interface IBigQueryChangeEvent extends Document {
     message: string;
     code?: string;
   };
-  materializationStatus: "pending" | "applied" | "failed";
+  materializationStatus: "pending" | "applied" | "failed" | "dropped";
   materializationAttemptCount: number;
   appliedAt?: Date;
   materializationError?: {
@@ -1908,7 +1908,7 @@ const BigQueryChangeEventSchema = new Schema<IBigQueryChangeEvent>(
     },
     materializationStatus: {
       type: String,
-      enum: ["pending", "applied", "failed"],
+      enum: ["pending", "applied", "failed", "dropped"],
       default: "pending",
       required: true,
     },

@@ -40,7 +40,6 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       _id: flowId,
       workspaceId: workspaceId,
       type: "webhook",
-      enabled: true,
     });
 
     if (!flow) {

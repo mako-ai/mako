@@ -10,8 +10,10 @@ export interface CdcLastTransition {
 
 export interface CdcEntitySummary {
   entity: string;
+  appliedCount: number;
   backlogCount: number;
   failedCount: number;
+  droppedCount: number;
   lagSeconds: number | null;
   lastMaterializedAt: Date | null;
 }
@@ -21,8 +23,10 @@ export interface CdcSyncSummary {
   lastTransition: CdcLastTransition | null;
   lastWebhookAt: Date | null;
   lastMaterializedAt: Date | null;
+  appliedCount: number;
   backlogCount: number;
   failedCount: number;
+  droppedCount: number;
   lagSeconds: number | null;
   entityCounts: CdcEntitySummary[];
 }
@@ -45,6 +49,6 @@ export interface CdcSyncDiagnostics {
     sourceTs: Date;
     ingestSeq: number;
     source: "webhook" | "backfill";
-    materializationStatus: "pending" | "applied" | "failed";
+    materializationStatus: "pending" | "applied" | "failed" | "dropped";
   }>;
 }
