@@ -14,10 +14,10 @@
  */
 
 import { z } from "zod";
-import { MakoChartSpec } from "./chart-spec-schema";
+import { MakoChartSpecBase } from "./chart-spec-schema";
 
 export const modifyChartSpecSchema = z.object({
-  vegaLiteSpec: MakoChartSpec.describe("Vega-Lite chart specification"),
+  vegaLiteSpec: MakoChartSpecBase.describe("Vega-Lite chart specification"),
   reasoning: z
     .string()
     .describe("Brief explanation of the chart choice and why it fits the data"),

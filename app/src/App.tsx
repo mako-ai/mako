@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, lazy } from "react";
 import { Box, CircularProgress, styled } from "@mui/material";
 import {
   Routes,
@@ -19,6 +19,9 @@ import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
 import { FlowsExplorer } from "./components/FlowsExplorer";
+const DashboardsExplorer = lazy(
+  () => import("./components/DashboardsExplorer"),
+);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -296,7 +299,8 @@ function MainApp() {
         return <DataSourceExplorer />;
       case "flows":
         return <FlowsExplorer />;
-      // Add others as needed
+      case "dashboards":
+        return <DashboardsExplorer />;
       default:
         return null;
     }

@@ -22,6 +22,7 @@ import {
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
+  LayoutDashboard,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -31,12 +32,14 @@ import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
+import DashboardCanvas from "./DashboardCanvas";
 import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
 import FileExplorerDialog from "./FileExplorerDialog";
 import { useConsoleStore } from "../store/consoleStore";
+import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -391,6 +394,16 @@ function Editor({
   };
 
   const closeConsole = (id: string) => {
+    const closingTab = tabs[id];
+    if (closingTab?.kind === "dashboard") {
+      const dashStore = useDashboardStore.getState();
+      if (
+        dashStore.activeDashboardId &&
+        closingTab.metadata?.dashboardId === dashStore.activeDashboardId
+      ) {
+        dashStore.closeDashboard();
+      }
+    }
     closeTab(id);
     delete consoleRefs.current[id];
   };
@@ -892,6 +905,8 @@ function Editor({
                         ) : (
                           <ScheduleIcon size={20} strokeWidth={1.5} />
                         )
+                      ) : tab.kind === "dashboard" ? (
+                        <LayoutDashboard size={20} strokeWidth={1.5} />
                       ) : (
                         <ConsoleIcon size={20} strokeWidth={1.5} />
                       )}
@@ -975,6 +990,24 @@ function Editor({
                       closeConsole(tab.id);
                     }}
                     dbFlowFormRef={dbFlowFormRef}
+                  />
+                ) : tab.kind === "dashboard" ? (
+                  <DashboardCanvas
+                    dashboardId={tab.metadata?.dashboardId as string}
+                    isNew={tab.metadata?.isNew as boolean}
+                    onCreated={(newId: string) => {
+                      useConsoleStore.setState(state => {
+                        const existingTab = state.tabs[tab.id];
+                        if (existingTab) {
+                          existingTab.metadata = {
+                            ...existingTab.metadata,
+                            dashboardId: newId,
+                            isNew: false,
+                          };
+                          existingTab.title = "Untitled Dashboard";
+                        }
+                      });
+                    }}
                   />
                 ) : (
                   /* Console tab: editor + results split */
