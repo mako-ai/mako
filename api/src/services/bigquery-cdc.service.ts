@@ -319,8 +319,14 @@ export async function appendBigQueryChangeEvents(params: {
   }
 
   for (const [entity, changes] of byEntity.entries()) {
-    const lastIngestSeq =
-      lastIngestSeqByEntity.get(entity) || seqStart + changes.length - 1;
+    const lastIngestSeq = lastIngestSeqByEntity.get(entity);
+    if (lastIngestSeq === undefined) {
+      log.warn("Skipping CDC state update: missing last ingest seq", {
+        flowId: String(params.flowId),
+        entity,
+      });
+      continue;
+    }
     const sourceKind = changes.some(c => c.sourceKind === "backfill")
       ? "backfill"
       : "webhook";
