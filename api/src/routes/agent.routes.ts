@@ -20,7 +20,12 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import type { ConsoleDataV2 } from "../agent-lib/types";
-import { getModelById, getAvailableModels } from "../agent-lib/ai-models";
+import {
+  getModelById,
+  getAvailableModels,
+  getDefaultModel,
+  isTierSufficient,
+} from "../agent-lib/ai-models";
 import {
   Workspace,
   DatabaseConnection,
@@ -57,10 +62,35 @@ agentRoutes.use("*", unifiedAuthMiddleware);
 
 /**
  * GET /models - List available AI models based on configured API keys
+ * Includes a `locked` flag per model based on workspace billing tier
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   const models = getAvailableModels();
-  return c.json({ models });
+
+  // Resolve billing tier: API key auth sets workspace in context; session auth does not,
+  // so fall back to a DB lookup using the x-workspace-id header sent by the frontend.
+  let billingTier: string = "free";
+  const workspace = c.get("workspace");
+  if (workspace) {
+    billingTier = workspace.settings?.billingTier ?? "free";
+  } else {
+    const user = c.get("user");
+    const workspaceId = c.req.header("x-workspace-id");
+    if (workspaceId && user) {
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (hasAccess) {
+        const ws = await Workspace.findById(workspaceId).select({ settings: 1 });
+        billingTier = ws?.settings?.billingTier ?? "free";
+      }
+    }
+  }
+
+  const modelsWithLock = models.map(m => ({
+    ...m,
+    locked: !isTierSufficient(billingTier, m.requiredTier),
+  }));
+
+  return c.json({ models: modelsWithLock });
 });
 
 /**
@@ -222,6 +252,30 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       { error: "'chatId' is required and must be a valid ObjectId" },
       400,
     );
+  }
+
+  // Tier-gate: reject if free workspace requests a premium model
+  {
+    const effectiveModelId = modelId ?? getDefaultModel().id;
+    const requestedModel = getModelById(effectiveModelId);
+    const billingTier =
+      (
+        workspace ??
+        (await Workspace.findById(workspaceId).select({ settings: 1 }))
+      )?.settings?.billingTier ?? "free";
+    if (
+      requestedModel &&
+      !isTierSufficient(billingTier, requestedModel.requiredTier)
+    ) {
+      return c.json(
+        {
+          error: "MODEL_TIER_REQUIRED",
+          requiredTier: requestedModel.requiredTier,
+          message: `Upgrade to ${requestedModel.requiredTier === "enterprise" ? "Enterprise" : "Pro"} to use this model`,
+        },
+        403,
+      );
+    }
   }
 
   // Check if this is a new chat (first message)

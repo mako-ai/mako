@@ -22,6 +22,31 @@ export interface AIModel {
    *   claude-opus-4-*  (fallback):        32 000
    */
   thinkingBudgetTokens?: number;
+  /** Minimum billing tier required to use this model. Unset means free-tier. */
+  requiredTier?: "pro" | "enterprise";
+}
+
+export type BillingTier = "free" | "pro" | "enterprise";
+
+const TIER_RANK: Record<BillingTier, number> = {
+  free: 0,
+  pro: 1,
+  enterprise: 2,
+};
+
+/**
+ * Check whether a workspace tier is sufficient for a model's required tier.
+ * Returns true when no tier is required (free models) or the workspace tier
+ * meets/exceeds the model requirement.
+ */
+export function isTierSufficient(
+  workspaceTier: string,
+  requiredTier?: string,
+): boolean {
+  if (!requiredTier) return true;
+  const userRank = TIER_RANK[workspaceTier as BillingTier] ?? 0;
+  const requiredRank = TIER_RANK[requiredTier as BillingTier] ?? Infinity;
+  return userRank >= requiredRank;
 }
 
 /**
@@ -35,6 +60,7 @@ export const ALL_MODELS: AIModel[] = [
     provider: "openai",
     name: "GPT-5.2 Codex",
     description: "Previous flagship model with enhanced intelligence",
+    requiredTier: "pro",
   },
   // OpenAI - GPT-5.2 (released Dec 11, 2025)
   {
@@ -42,6 +68,7 @@ export const ALL_MODELS: AIModel[] = [
     provider: "openai",
     name: "GPT-5.2",
     description: "Previous flagship model with enhanced intelligence",
+    requiredTier: "pro",
   },
   {
     id: "gpt-4o",
@@ -57,6 +84,7 @@ export const ALL_MODELS: AIModel[] = [
     description: "Most capable, latest flagship with enhanced reasoning",
     supportsThinking: true,
     thinkingBudgetTokens: 30000, // SDK caps opus-4-* at 32K total output
+    requiredTier: "pro",
   },
   {
     id: "claude-opus-4-5",
@@ -65,6 +93,7 @@ export const ALL_MODELS: AIModel[] = [
     description: "Previous flagship, autonomous coding for 30+ hours",
     supportsThinking: true,
     thinkingBudgetTokens: 60000, // SDK caps opus-4-5/sonnet-4-5 at 64K total output
+    requiredTier: "pro",
   },
   {
     id: "claude-sonnet-4-5",
@@ -73,6 +102,7 @@ export const ALL_MODELS: AIModel[] = [
     description: "Best balance of speed and intelligence",
     supportsThinking: true,
     thinkingBudgetTokens: 60000, // SDK caps opus-4-5/sonnet-4-5 at 64K total output
+    requiredTier: "pro",
   },
   {
     id: "claude-3-5-haiku-latest",
@@ -137,10 +167,15 @@ export function getModelById(modelId: string): AIModel | undefined {
 }
 
 /**
- * Get the default model (Claude Opus 4.6 if available, otherwise first available)
+ * Get the default model (Gemini 2.5 Flash if available, otherwise first available free model)
  */
 export function getDefaultModel(): AIModel {
   const available = getAvailableModels();
-  const opus = available.find(m => m.id === "claude-opus-4-6");
-  return opus || available[0] || ALL_MODELS[0];
+  const flash = available.find(m => m.id === "gemini-2.5-flash");
+  return (
+    flash ||
+    available.find(m => !m.requiredTier) ||
+    available[0] ||
+    ALL_MODELS[0]
+  );
 }
