@@ -18,6 +18,7 @@ import {
   ChartPie as DashboardIcon,
   CircleUserRound as UserIcon,
   MessageCircleMore as ChatIcon,
+  Blocks as ConnectorBuilderIcon,
 } from "lucide-react";
 import { useUIStore } from "../store/uiStore";
 import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
@@ -27,6 +28,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
+import { useConnectorBuilderStore } from "../store/connectorBuilderStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { trackEvent, resetIdentity } from "../lib/analytics";
@@ -58,6 +60,7 @@ type NavigationView =
   | "connectors"
   | "flows"
   | "dashboards"
+  | "user-connectors"
   | "settings"
   | "views";
 
@@ -67,6 +70,11 @@ const topNavigationItems: { view: NavigationView; icon: any; label: string }[] =
     { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
     { view: "flows", icon: FlowsIcon, label: "Flows" },
     { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
+    {
+      view: "user-connectors",
+      icon: ConnectorBuilderIcon,
+      label: "Connector Builder",
+    },
     { view: "dashboards", icon: DashboardIcon, label: "Dashboards" },
   ];
 
@@ -121,6 +129,7 @@ function Sidebar() {
       useExplorerStore.getState().reset();
       useChatStore.getState().reset();
       useFlowStore.getState().reset();
+      useConnectorBuilderStore.getState().reset();
 
       await logout();
 
@@ -138,7 +147,8 @@ function Sidebar() {
       view === "consoles" ||
       view === "connectors" ||
       view === "flows" ||
-      view === "dashboards"
+      view === "dashboards" ||
+      view === "user-connectors"
     ) {
       startTransition(() => {
         setLeftPane(
@@ -147,7 +157,8 @@ function Sidebar() {
             | "consoles"
             | "connectors"
             | "flows"
-            | "dashboards",
+            | "dashboards"
+            | "user-connectors",
         );
 
         if (!leftPaneOpen) {

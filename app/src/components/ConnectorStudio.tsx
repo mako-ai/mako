@@ -1,0 +1,737 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Box,
+  Button,
+  Typography,
+  Tabs,
+  Tab,
+  Chip,
+  CircularProgress,
+  Alert,
+  IconButton,
+  Tooltip,
+} from "@mui/material";
+import {
+  Play as RunIcon,
+  Hammer as BuildIcon,
+  RotateCw as RefreshIcon,
+  Check as SuccessIcon,
+  X as ErrorIcon,
+  Clock as TimeIcon,
+} from "lucide-react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import Editor from "@monaco-editor/react";
+import { DataGrid, type GridColDef } from "@mui/x-data-grid";
+import {
+  useConnectorBuilderStore,
+  type DevRunOutput,
+} from "../store/connectorBuilderStore";
+import { useConsoleStore } from "../store/consoleStore";
+
+interface ConnectorStudioProps {
+  connectorId: string;
+  workspaceId: string;
+}
+
+type BottomTab = "output" | "logs" | "schema";
+
+export function ConnectorStudio({
+  connectorId,
+  workspaceId,
+}: ConnectorStudioProps) {
+  const {
+    getConnector,
+    updateConnector,
+    buildConnector,
+    devRun,
+    buildState: buildStateMap,
+    devRunState: devRunStateMap,
+    fetchConnectors,
+  } = useConnectorBuilderStore();
+
+  const connector = useConnectorBuilderStore(state =>
+    (state.connectors[workspaceId] || []).find(c => c._id === connectorId),
+  );
+
+  const buildState = buildStateMap[connectorId];
+  const devRunState = devRunStateMap[connectorId];
+
+  const [bottomTab, setBottomTab] = useState<BottomTab>("output");
+  const [selectedEntity, setSelectedEntity] = useState<string | null>(null);
+  const editorRef = useRef<any>(null);
+  const saveTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!connector && workspaceId) {
+      fetchConnectors(workspaceId);
+    }
+  }, [connector, workspaceId, fetchConnectors]);
+
+  const handleEditorChange = useCallback(
+    (value: string | undefined) => {
+      if (!value || !connector) return;
+
+      // Debounced auto-save to backend
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+      saveTimeoutRef.current = window.setTimeout(() => {
+        updateConnector(workspaceId, connectorId, { code: value });
+        // Also update the tab content
+        useConsoleStore
+          .getState()
+          .updateContent(
+            Object.values(useConsoleStore.getState().tabs).find(
+              t =>
+                t.kind === "connector-studio" &&
+                t.metadata?.connectorId === connectorId,
+            )?.id || "",
+            value,
+          );
+      }, 1500);
+    },
+    [connector, workspaceId, connectorId, updateConnector],
+  );
+
+  const handleRun = useCallback(async () => {
+    if (!connector) return;
+
+    // Save current code before running
+    const currentCode = editorRef.current?.getValue();
+    if (currentCode && currentCode !== connector.source.code) {
+      await updateConnector(workspaceId, connectorId, { code: currentCode });
+    }
+
+    await devRun(workspaceId, connectorId);
+  }, [connector, workspaceId, connectorId, updateConnector, devRun]);
+
+  const handleBuild = useCallback(async () => {
+    if (!connector) return;
+
+    const currentCode = editorRef.current?.getValue();
+    if (currentCode && currentCode !== connector.source.code) {
+      await updateConnector(workspaceId, connectorId, { code: currentCode });
+    }
+
+    await buildConnector(workspaceId, connectorId);
+  }, [connector, workspaceId, connectorId, updateConnector, buildConnector]);
+
+  const handleEditorMount = useCallback(
+    (editor: any) => {
+      editorRef.current = editor;
+
+      editor.addCommand(
+        // Cmd/Ctrl + Enter to run
+        editor.KeyMod.CtrlCmd | editor.KeyCode.Enter,
+        () => {
+          handleRun();
+        },
+      );
+    },
+    [handleRun],
+  );
+
+  // Set Monaco markers for build errors
+  useEffect(() => {
+    if (!editorRef.current || !buildState?.errors) return;
+
+    const monaco = (window as any).monaco;
+    if (!monaco) return;
+
+    const model = editorRef.current.getModel();
+    if (!model) return;
+
+    const markers = buildState.errors
+      .filter(e => e.line !== undefined)
+      .map(e => ({
+        severity:
+          e.severity === "error"
+            ? monaco.MarkerSeverity.Error
+            : monaco.MarkerSeverity.Warning,
+        startLineNumber: e.line || 1,
+        startColumn: e.column || 1,
+        endLineNumber: e.line || 1,
+        endColumn: (e.column || 1) + 100,
+        message: e.message,
+        source: "connector-builder",
+      }));
+
+    monaco.editor.setModelMarkers(model, "connector-builder", markers);
+  }, [buildState?.errors]);
+
+  if (!connector) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+        }}
+      >
+        <CircularProgress size={24} />
+      </Box>
+    );
+  }
+
+  // Derive output grid data
+  const batches = devRunState?.output?.batches || [];
+  const entityNames = batches.map(b => b.entity);
+  const currentEntity = selectedEntity || entityNames[0] || null;
+  const currentBatch = batches.find(b => b.entity === currentEntity);
+  const gridRows = currentBatch?.records || [];
+  const gridColumns: GridColDef[] = currentBatch
+    ? Object.keys(gridRows[0] || {}).map(key => ({
+        field: key,
+        headerName: key,
+        flex: 1,
+        minWidth: 120,
+        renderCell: params => {
+          const val = params.value;
+          if (val === null || val === undefined) return "";
+          if (typeof val === "object") return JSON.stringify(val);
+          return String(val);
+        },
+      }))
+    : [];
+
+  const outputLogs = devRunState?.output?.logs || [];
+  const schemaEntries = batches.filter(b => b.schema).map(b => b.schema!);
+
+  return (
+    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      {/* Action Bar */}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1.5,
+          py: 0.75,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          minHeight: 40,
+        }}
+      >
+        <Button
+          size="small"
+          variant="contained"
+          startIcon={
+            devRunState?.running ? (
+              <CircularProgress size={14} color="inherit" />
+            ) : (
+              <RunIcon size={14} />
+            )
+          }
+          onClick={handleRun}
+          disabled={devRunState?.running || buildState?.building}
+          sx={{ textTransform: "none", fontSize: "0.8rem" }}
+        >
+          {devRunState?.running ? "Running..." : "Run"}
+        </Button>
+
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={
+            buildState?.building ? (
+              <CircularProgress size={14} />
+            ) : (
+              <BuildIcon size={14} />
+            )
+          }
+          onClick={handleBuild}
+          disabled={buildState?.building || devRunState?.running}
+          sx={{ textTransform: "none", fontSize: "0.8rem" }}
+        >
+          {buildState?.building ? "Building..." : "Build"}
+        </Button>
+
+        <Box sx={{ flex: 1 }} />
+
+        {/* Status indicators */}
+        {devRunState?.durationMs !== undefined && !devRunState.running && (
+          <Chip
+            icon={<TimeIcon size={12} />}
+            label={`${devRunState.durationMs}ms`}
+            size="small"
+            variant="outlined"
+            sx={{ fontSize: "0.7rem" }}
+          />
+        )}
+
+        {devRunState?.rowCount !== undefined && !devRunState.running && (
+          <Chip
+            label={`${devRunState.rowCount} rows`}
+            size="small"
+            color={devRunState.rowCount > 0 ? "success" : "default"}
+            variant="outlined"
+            sx={{ fontSize: "0.7rem" }}
+          />
+        )}
+
+        {devRunState?.error && !devRunState.running && (
+          <Chip
+            icon={<ErrorIcon size={12} />}
+            label="Error"
+            size="small"
+            color="error"
+            variant="outlined"
+            sx={{ fontSize: "0.7rem" }}
+          />
+        )}
+
+        {buildState?.errors &&
+          buildState.errors.length > 0 &&
+          !buildState.building && (
+            <Chip
+              label={`${buildState.errors.filter(e => e.severity === "error").length} errors`}
+              size="small"
+              color="error"
+              variant="outlined"
+              sx={{ fontSize: "0.7rem" }}
+            />
+          )}
+
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ fontStyle: "italic" }}
+        >
+          v{connector.version}
+        </Typography>
+      </Box>
+
+      {/* Main Layout */}
+      <PanelGroup direction="horizontal" style={{ flex: 1 }}>
+        {/* Left: Editor + Output */}
+        <Panel defaultSize={65} minSize={30}>
+          <PanelGroup direction="vertical">
+            {/* Code Editor */}
+            <Panel defaultSize={60} minSize={20}>
+              <Editor
+                height="100%"
+                language="typescript"
+                theme="vs-dark"
+                value={connector.source.code}
+                onChange={handleEditorChange}
+                onMount={handleEditorMount}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  lineNumbers: "on",
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                  wordWrap: "on",
+                  folding: true,
+                  suggestOnTriggerCharacters: true,
+                }}
+              />
+            </Panel>
+
+            {/* Resize Handle */}
+            <PanelResizeHandle
+              style={{
+                height: 4,
+                cursor: "row-resize",
+                transition: "background-color 0.2s ease",
+              }}
+            />
+
+            {/* Bottom Panel: Output/Logs/Schema */}
+            <Panel defaultSize={40} minSize={15}>
+              <Box
+                sx={{
+                  height: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                }}
+              >
+                {/* Tab Headers */}
+                <Box
+                  sx={{
+                    borderBottom: "1px solid",
+                    borderColor: "divider",
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                >
+                  <Tabs
+                    value={bottomTab}
+                    onChange={(_, v) => setBottomTab(v)}
+                    sx={{
+                      minHeight: 32,
+                      "& .MuiTab-root": {
+                        minHeight: 32,
+                        py: 0,
+                        fontSize: "0.75rem",
+                        textTransform: "none",
+                      },
+                    }}
+                  >
+                    <Tab
+                      label={`Output${devRunState?.rowCount ? ` (${devRunState.rowCount})` : ""}`}
+                      value="output"
+                    />
+                    <Tab
+                      label={`Logs${outputLogs.length ? ` (${outputLogs.length})` : ""}`}
+                      value="logs"
+                    />
+                    <Tab label="Schema" value="schema" />
+                  </Tabs>
+
+                  {/* Entity selector for multi-entity output */}
+                  {entityNames.length > 1 && bottomTab === "output" && (
+                    <Box sx={{ ml: 1, display: "flex", gap: 0.5 }}>
+                      {entityNames.map(name => (
+                        <Chip
+                          key={name}
+                          label={name}
+                          size="small"
+                          variant={
+                            currentEntity === name ? "filled" : "outlined"
+                          }
+                          onClick={() => setSelectedEntity(name)}
+                          sx={{ fontSize: "0.7rem" }}
+                        />
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+
+                {/* Tab Content */}
+                <Box sx={{ flex: 1, overflow: "auto" }}>
+                  {bottomTab === "output" && (
+                    <OutputPanel
+                      rows={gridRows}
+                      columns={gridColumns}
+                      error={devRunState?.error}
+                      running={devRunState?.running || false}
+                    />
+                  )}
+                  {bottomTab === "logs" && (
+                    <LogsPanel
+                      logs={outputLogs}
+                      stderrLogs={devRunState?.logs}
+                      buildLog={buildState?.buildLog}
+                    />
+                  )}
+                  {bottomTab === "schema" && (
+                    <SchemaPanel schemas={schemaEntries} />
+                  )}
+                </Box>
+              </Box>
+            </Panel>
+          </PanelGroup>
+        </Panel>
+
+        {/* Resize Handle */}
+        <PanelResizeHandle
+          style={{
+            width: 4,
+            cursor: "col-resize",
+            transition: "background-color 0.2s ease",
+          }}
+        />
+
+        {/* Right: Placeholder for Phase 4 AI chat */}
+        <Panel defaultSize={35} minSize={15}>
+          <Box
+            sx={{
+              height: "100%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              p: 3,
+              textAlign: "center",
+              bgcolor: "background.default",
+            }}
+          >
+            <Typography variant="h6" color="text.secondary" gutterBottom>
+              AI Assistant
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              AI-powered connector development coming in a future update. The
+              assistant will help you write connector code, debug errors, and
+              optimize data fetching.
+            </Typography>
+          </Box>
+        </Panel>
+      </PanelGroup>
+    </Box>
+  );
+}
+
+// ── Sub-components ──
+
+function OutputPanel({
+  rows,
+  columns,
+  error,
+  running,
+}: {
+  rows: Record<string, unknown>[];
+  columns: GridColDef[];
+  error?: string;
+  running: boolean;
+}) {
+  if (running) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+          gap: 1,
+        }}
+      >
+        <CircularProgress size={20} />
+        <Typography variant="body2" color="text.secondary">
+          Executing connector...
+        </Typography>
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box sx={{ p: 1 }}>
+        <Alert severity="error" sx={{ fontSize: "0.8rem" }}>
+          {error}
+        </Alert>
+      </Box>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+        }}
+      >
+        <Typography variant="body2" color="text.secondary">
+          No output yet. Click "Run" to execute the connector.
+        </Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <DataGrid
+      rows={rows.map((r, i) => ({ ...r, __rowId: i }))}
+      columns={columns}
+      getRowId={row => row.__rowId}
+      density="compact"
+      disableRowSelectionOnClick
+      hideFooterSelectedRowCount
+      sx={{
+        border: "none",
+        fontSize: "0.8rem",
+        "& .MuiDataGrid-cell": { py: 0.25 },
+        "& .MuiDataGrid-columnHeader": { fontSize: "0.75rem" },
+      }}
+    />
+  );
+}
+
+function LogsPanel({
+  logs,
+  stderrLogs,
+  buildLog,
+}: {
+  logs: Array<{
+    level: string;
+    message: string;
+    timestamp?: string;
+    data?: unknown;
+  }>;
+  stderrLogs?: string;
+  buildLog?: string;
+}) {
+  const allLogs = [
+    ...(buildLog
+      ? [
+          {
+            level: "info" as const,
+            message: `[Build Log]\n${buildLog}`,
+            timestamp: undefined as string | undefined,
+          },
+        ]
+      : []),
+    ...logs,
+  ];
+
+  if (allLogs.length === 0 && !stderrLogs) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+        }}
+      >
+        <Typography variant="body2" color="text.secondary">
+          No logs yet.
+        </Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      sx={{
+        p: 1,
+        fontFamily: "monospace",
+        fontSize: "0.75rem",
+        lineHeight: 1.6,
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-all",
+      }}
+    >
+      {allLogs.map((log, i) => (
+        <Box
+          key={i}
+          sx={{
+            display: "flex",
+            gap: 1,
+            py: 0.25,
+            color:
+              log.level === "error"
+                ? "error.main"
+                : log.level === "warn"
+                  ? "warning.main"
+                  : log.level === "debug"
+                    ? "text.disabled"
+                    : "text.primary",
+          }}
+        >
+          {log.timestamp && (
+            <Typography
+              variant="caption"
+              sx={{
+                fontFamily: "monospace",
+                color: "text.disabled",
+                flexShrink: 0,
+              }}
+            >
+              {new Date(log.timestamp).toLocaleTimeString()}
+            </Typography>
+          )}
+          <Chip
+            label={log.level.toUpperCase()}
+            size="small"
+            sx={{
+              height: 18,
+              fontSize: "0.6rem",
+              fontFamily: "monospace",
+              flexShrink: 0,
+            }}
+          />
+          <span>{log.message}</span>
+        </Box>
+      ))}
+      {stderrLogs && (
+        <Box sx={{ mt: 1, color: "text.secondary" }}>
+          <Typography
+            variant="caption"
+            sx={{ fontFamily: "monospace", fontWeight: 600 }}
+          >
+            stderr:
+          </Typography>
+          <pre style={{ margin: 0 }}>{stderrLogs}</pre>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function SchemaPanel({
+  schemas,
+}: {
+  schemas: Array<{
+    name: string;
+    columns: Array<{
+      name: string;
+      type: string;
+      nullable?: boolean;
+      primaryKey?: boolean;
+    }>;
+  }>;
+}) {
+  if (schemas.length === 0) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+        }}
+      >
+        <Typography variant="body2" color="text.secondary">
+          Run the connector to see schema information.
+        </Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ p: 1.5 }}>
+      {schemas.map(schema => (
+        <Box key={schema.name} sx={{ mb: 2 }}>
+          <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 0.5 }}>
+            {schema.name}
+          </Typography>
+          <Box
+            component="table"
+            sx={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: "0.75rem",
+              fontFamily: "monospace",
+              "& td, & th": {
+                px: 1,
+                py: 0.5,
+                borderBottom: "1px solid",
+                borderColor: "divider",
+                textAlign: "left",
+              },
+              "& th": {
+                fontWeight: 600,
+                color: "text.secondary",
+              },
+            }}
+          >
+            <thead>
+              <tr>
+                <th>Column</th>
+                <th>Type</th>
+                <th>Nullable</th>
+                <th>PK</th>
+              </tr>
+            </thead>
+            <tbody>
+              {schema.columns.map(col => (
+                <tr key={col.name}>
+                  <td>{col.name}</td>
+                  <td>{col.type}</td>
+                  <td>{col.nullable !== false ? "yes" : "no"}</td>
+                  <td>{col.primaryKey ? "yes" : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  );
+}

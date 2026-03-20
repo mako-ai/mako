@@ -38,6 +38,7 @@ import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
 import { FlowsExplorer } from "./components/FlowsExplorer";
+import { ConnectorBuilderExplorer } from "./components/ConnectorBuilderExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -450,6 +451,8 @@ function MainApp() {
         return <DataSourceExplorer />;
       case "flows":
         return <FlowsExplorer />;
+      case "user-connectors":
+        return <ConnectorBuilderExplorer />;
       case "dashboards":
         return <DashboardsExplorer />;
       default:

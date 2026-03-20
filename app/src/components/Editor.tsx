@@ -23,6 +23,7 @@ import {
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
   ChartPie as DashboardIcon,
+  Blocks as ConnectorBuilderIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -33,6 +34,7 @@ import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
+import { ConnectorStudio } from "./ConnectorStudio";
 import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
@@ -1059,6 +1061,8 @@ function Editor({
                         )
                       ) : tab.kind === "dashboard" ? (
                         <DashboardIcon size={20} strokeWidth={1.5} />
+                      ) : tab.kind === "connector-studio" ? (
+                        <ConnectorBuilderIcon size={20} strokeWidth={1.5} />
                       ) : (
                         <ConsoleIcon size={20} strokeWidth={1.5} />
                       )}
@@ -1160,6 +1164,11 @@ function Editor({
                         }
                       });
                     }}
+                  />
+                ) : tab.kind === "connector-studio" ? (
+                  <ConnectorStudio
+                    connectorId={tab.metadata?.connectorId as string}
+                    workspaceId={tab.metadata?.workspaceId as string}
                   />
                 ) : (
                   /* Console tab: editor + results split */
