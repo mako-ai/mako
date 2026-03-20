@@ -8,6 +8,7 @@ export const connectorRoutes = new Hono();
 // GET /api/connectors/types - list all available connector types
 connectorRoutes.get("/types", async c => {
   try {
+    await connectorRegistry.ensureInitialized();
     const connectors = connectorRegistry.getAllMetadata();
 
     return c.json({
@@ -35,6 +36,7 @@ connectorRoutes.get("/:type/schema", async c => {
     return c.json({ success: false, error: "Connector type is required" }, 400);
   }
 
+  await connectorRegistry.ensureInitialized();
   const metadata = connectorRegistry.getMetadata(type);
   if (!metadata) {
     return c.json({ success: false, error: "Connector not found" }, 404);

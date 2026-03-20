@@ -30,9 +30,10 @@ interface ConnectorRegistryMetadata {
 class ConnectorRegistry {
   private connectors: Map<string, ConnectorRegistryMetadata> = new Map();
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
-    void this.initializeConnectors();
+    void this.ensureInitialized();
   }
 
   /**
@@ -46,8 +47,11 @@ class ConnectorRegistry {
     try {
       // Get all subdirectories (potential connector folders)
       const entries = fs.readdirSync(connectorsDir, { withFileTypes: true });
+      const excludedDirectories = new Set(["base", "template"]);
       const connectorDirs = entries
-        .filter(entry => entry.isDirectory() && entry.name !== "base")
+        .filter(
+          entry => entry.isDirectory() && !excludedDirectories.has(entry.name),
+        )
         .map(entry => entry.name);
 
       logger.info("Discovering connectors", { directory: connectorsDir });
@@ -70,6 +74,21 @@ class ConnectorRegistry {
     } catch (error) {
       logger.error("Failed to initialize connector registry", { error });
     }
+  }
+
+  /**
+   * Ensure connector discovery has completed before reading metadata.
+   * This avoids cold-start races where routes read an empty registry and
+   * incorrectly mark all connectors as non-CDC.
+   */
+  async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
+    if (!this.initPromise) {
+      this.initPromise = this.initializeConnectors().finally(() => {
+        this.initPromise = null;
+      });
+    }
+    await this.initPromise;
   }
 
   /**
@@ -218,7 +237,8 @@ class ConnectorRegistry {
   async reinitialize() {
     this.connectors.clear();
     this.initialized = false;
-    await this.initializeConnectors();
+    this.initPromise = null;
+    await this.ensureInitialized();
   }
 }
 

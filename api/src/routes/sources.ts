@@ -145,6 +145,8 @@ dataSourceRoutes.get("/", async c => {
       return c.json({ success: false, error: "Workspace ID is required" }, 400);
     }
 
+    await connectorRegistry.ensureInitialized();
+
     const dataSources = await DataSource.find({
       workspaceId: _workspaceId,
       // TODO: Add permission check
@@ -178,6 +180,8 @@ dataSourceRoutes.get("/:id", async c => {
     const _workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
     // TODO: Add authentication and permission check
+
+    await connectorRegistry.ensureInitialized();
 
     const dataSource = await DataSource.findOne({
       _id: id,
