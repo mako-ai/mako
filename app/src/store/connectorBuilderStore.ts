@@ -1,7 +1,9 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { z } from "zod";
 import { apiClient } from "../lib/api-client";
+import { createValidatedStorage, errorSchema } from "./store-validation";
 
 const connectorBuildErrorSchema = z.object({
   message: z.string(),
@@ -47,7 +49,7 @@ const connectorSchema = z.object({
   }),
   version: z.number(),
   versions: z.array(connectorVersionSchema).default([]),
-  visibility: z.enum(["workspace", "public"]),
+  visibility: z.enum(["private", "workspace", "public"]),
   createdBy: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -108,6 +110,7 @@ const connectorInstanceTriggerSchema = z.object({
   enabled: z.boolean(),
   cron: z.string().optional(),
   path: z.string().optional(),
+  timezone: z.string().optional(),
 });
 
 const connectorInstanceSchema = z.object({
@@ -227,7 +230,7 @@ interface ConnectorBuilderStore {
       name: string;
       description?: string;
       code?: string;
-      visibility?: "workspace" | "public";
+      visibility?: "private" | "workspace" | "public";
     },
   ) => Promise<UserConnector>;
   createConnectorFromTemplate: (
@@ -235,7 +238,7 @@ interface ConnectorBuilderStore {
     input: {
       templateId: string;
       name?: string;
-      visibility?: "workspace" | "public";
+      visibility?: "private" | "workspace" | "public";
     },
   ) => Promise<UserConnector>;
   updateConnector: (
@@ -245,7 +248,7 @@ interface ConnectorBuilderStore {
       name: string;
       description: string;
       code: string;
-      visibility: "workspace" | "public";
+      visibility: "private" | "workspace" | "public";
     }>,
   ) => Promise<UserConnector>;
   deleteConnector: (workspaceId: string, connectorId: string) => Promise<void>;
@@ -253,6 +256,11 @@ interface ConnectorBuilderStore {
     workspaceId: string,
     connectorId: string,
   ) => Promise<z.infer<typeof buildResponseSchema>>;
+  rollbackConnector: (
+    workspaceId: string,
+    connectorId: string,
+    version: number,
+  ) => Promise<UserConnector>;
   devRun: (
     workspaceId: string,
     connectorId: string,
@@ -288,6 +296,7 @@ interface ConnectorBuilderStore {
         enabled?: boolean;
         cron?: string;
         path?: string;
+        timezone?: string;
       }>;
       state?: Record<string, unknown>;
       status?: "idle" | "active" | "running" | "error" | "disabled";
@@ -312,6 +321,7 @@ interface ConnectorBuilderStore {
         enabled?: boolean;
         cron?: string;
         path?: string;
+        timezone?: string;
       }>;
       state: Record<string, unknown>;
       status: "idle" | "active" | "running" | "error" | "disabled";
@@ -339,6 +349,8 @@ interface ConnectorBuilderStore {
     workspaceId: string,
     instanceId: string,
   ) => Promise<ConnectorExecution[]>;
+  clearError: (key: string) => void;
+  reset: () => void;
   selectConnector: (connectorId: string | null) => void;
 }
 
@@ -422,182 +434,219 @@ const connectorExecutionSchema = z.object({
   updatedAt: z.string(),
 });
 
+const persistedConnectorBuilderStateSchema = z.object({
+  connectors: z.record(z.array(connectorSchema)),
+  instances: z.record(z.array(connectorInstanceSchema)),
+  executionHistory: z.record(z.array(connectorExecutionSchema)),
+  selectedConnectorId: z.string().nullable(),
+  error: z.record(errorSchema.nullable()).optional().default({}),
+});
+
+type PersistedConnectorBuilderState = z.infer<
+  typeof persistedConnectorBuilderStateSchema
+>;
+
+const persistedInitialState: PersistedConnectorBuilderState = {
+  connectors: {},
+  instances: {},
+  executionHistory: {},
+  selectedConnectorId: null,
+  error: {},
+};
+
 export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
-  immer(set => ({
-    connectors: {},
-    instances: {},
-    executionHistory: {},
-    loading: {},
-    error: {},
-    selectedConnectorId: null,
-    buildState: {},
-    devRunState: {},
+  persist(
+    immer(set => ({
+      connectors: {},
+      instances: {},
+      executionHistory: {},
+      loading: {},
+      error: {},
+      selectedConnectorId: null,
+      buildState: {},
+      devRunState: {},
 
-    fetchConnectors: async workspaceId => {
-      set(state => {
-        state.loading[workspaceId] = true;
-        state.error[workspaceId] = null;
-      });
+      fetchConnectors: async workspaceId => {
+        set(state => {
+          state.loading[workspaceId] = true;
+          state.error[workspaceId] = null;
+        });
 
-      try {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: unknown[];
+            error?: string;
+          }>(`/workspaces/${workspaceId}/connector-builder/connectors`);
+
+          if (!response.success) {
+            throw new Error(response.error || "Failed to fetch connectors");
+          }
+
+          const connectors = z
+            .array(connectorSchema)
+            .parse(response.data ?? []);
+          set(state => {
+            state.connectors[workspaceId] = connectors;
+          });
+
+          return connectors;
+        } catch (error) {
+          const message = normalizeError(error);
+          set(state => {
+            state.error[workspaceId] = message;
+          });
+          throw error;
+        } finally {
+          set(state => {
+            delete state.loading[workspaceId];
+          });
+        }
+      },
+
+      fetchTemplates: async workspaceId => {
         const response = await apiClient.get<{
           success: boolean;
-          data: unknown[];
+          data: ConnectorTemplateSummary[];
           error?: string;
-        }>(`/workspaces/${workspaceId}/connector-builder/connectors`);
+        }>(`/workspaces/${workspaceId}/connector-builder/templates`);
 
         if (!response.success) {
-          throw new Error(response.error || "Failed to fetch connectors");
+          throw new Error(response.error || "Failed to fetch templates");
         }
 
-        const connectors = z.array(connectorSchema).parse(response.data ?? []);
-        set(state => {
-          state.connectors[workspaceId] = connectors;
-        });
+        return response.data || [];
+      },
 
-        return connectors;
-      } catch (error) {
-        const message = normalizeError(error);
-        set(state => {
-          state.error[workspaceId] = message;
-        });
-        throw error;
-      } finally {
-        set(state => {
-          delete state.loading[workspaceId];
-        });
-      }
-    },
+      createConnector: async (workspaceId, input) => {
+        const response = await apiClient.post<{
+          success: boolean;
+          data: unknown;
+          error?: string;
+        }>(`/workspaces/${workspaceId}/connector-builder/connectors`, input);
 
-    fetchTemplates: async workspaceId => {
-      const response = await apiClient.get<{
-        success: boolean;
-        data: ConnectorTemplateSummary[];
-        error?: string;
-      }>(`/workspaces/${workspaceId}/connector-builder/templates`);
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to fetch templates");
-      }
-
-      return response.data || [];
-    },
-
-    createConnector: async (workspaceId, input) => {
-      const response = await apiClient.post<{
-        success: boolean;
-        data: unknown;
-        error?: string;
-      }>(`/workspaces/${workspaceId}/connector-builder/connectors`, input);
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to create connector");
-      }
-
-      const connector = connectorSchema.parse(response.data);
-      set(state => {
-        state.connectors[workspaceId] = upsertConnector(
-          state.connectors[workspaceId] || [],
-          connector,
-        );
-        state.selectedConnectorId = connector._id;
-      });
-
-      return connector;
-    },
-
-    createConnectorFromTemplate: async (workspaceId, input) => {
-      const response = await apiClient.post<{
-        success: boolean;
-        data: unknown;
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/connectors/from-template`,
-        input,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to create connector");
-      }
-
-      const connector = connectorSchema.parse(response.data);
-      set(state => {
-        state.connectors[workspaceId] = upsertConnector(
-          state.connectors[workspaceId] || [],
-          connector,
-        );
-        state.selectedConnectorId = connector._id;
-      });
-      return connector;
-    },
-
-    updateConnector: async (workspaceId, connectorId, input) => {
-      const response = await apiClient.put<{
-        success: boolean;
-        data: unknown;
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}`,
-        input,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to update connector");
-      }
-
-      const connector = connectorSchema.parse(response.data);
-      set(state => {
-        state.connectors[workspaceId] = upsertConnector(
-          state.connectors[workspaceId] || [],
-          connector,
-        );
-      });
-
-      return connector;
-    },
-
-    deleteConnector: async (workspaceId, connectorId) => {
-      const response = await apiClient.delete<{
-        success: boolean;
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}`,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to delete connector");
-      }
-
-      set(state => {
-        state.connectors[workspaceId] = (
-          state.connectors[workspaceId] || []
-        ).filter(connector => connector._id !== connectorId);
-        delete state.instances[makeInstancesKey(workspaceId, connectorId)];
-        if (state.selectedConnectorId === connectorId) {
-          state.selectedConnectorId = null;
+        if (!response.success) {
+          throw new Error(response.error || "Failed to create connector");
         }
-      });
-    },
 
-    buildConnector: async (workspaceId, connectorId) => {
-      set(state => {
-        state.buildState[connectorId] = {
-          ...state.buildState[connectorId],
-          building: true,
-        };
-      });
+        const connector = connectorSchema.parse(response.data);
+        set(state => {
+          state.connectors[workspaceId] = upsertConnector(
+            state.connectors[workspaceId] || [],
+            connector,
+          );
+          state.selectedConnectorId = connector._id;
+        });
 
-      try {
+        return connector;
+      },
+
+      createConnectorFromTemplate: async (workspaceId, input) => {
         const response = await apiClient.post<{
           success: boolean;
           data: unknown;
           error?: string;
         }>(
-          `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/build`,
+          `/workspaces/${workspaceId}/connector-builder/connectors/from-template`,
+          input,
         );
 
-        const parsed = buildResponseSchema.parse(response.data);
         if (!response.success) {
+          throw new Error(response.error || "Failed to create connector");
+        }
+
+        const connector = connectorSchema.parse(response.data);
+        set(state => {
+          state.connectors[workspaceId] = upsertConnector(
+            state.connectors[workspaceId] || [],
+            connector,
+          );
+          state.selectedConnectorId = connector._id;
+        });
+        return connector;
+      },
+
+      updateConnector: async (workspaceId, connectorId, input) => {
+        const response = await apiClient.put<{
+          success: boolean;
+          data: unknown;
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}`,
+          input,
+        );
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to update connector");
+        }
+
+        const connector = connectorSchema.parse(response.data);
+        set(state => {
+          state.connectors[workspaceId] = upsertConnector(
+            state.connectors[workspaceId] || [],
+            connector,
+          );
+        });
+
+        return connector;
+      },
+
+      deleteConnector: async (workspaceId, connectorId) => {
+        const response = await apiClient.delete<{
+          success: boolean;
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}`,
+        );
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to delete connector");
+        }
+
+        set(state => {
+          state.connectors[workspaceId] = (
+            state.connectors[workspaceId] || []
+          ).filter(connector => connector._id !== connectorId);
+          delete state.instances[makeInstancesKey(workspaceId, connectorId)];
+          if (state.selectedConnectorId === connectorId) {
+            state.selectedConnectorId = null;
+          }
+        });
+      },
+
+      buildConnector: async (workspaceId, connectorId) => {
+        set(state => {
+          state.buildState[connectorId] = {
+            ...state.buildState[connectorId],
+            building: true,
+          };
+        });
+
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: unknown;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/build`,
+          );
+
+          const parsed = buildResponseSchema.parse(response.data);
+          if (!response.success) {
+            set(state => {
+              state.connectors[workspaceId] = upsertConnector(
+                state.connectors[workspaceId] || [],
+                parsed.connector,
+              );
+              state.buildState[connectorId] = {
+                building: false,
+                buildLog: parsed.build.buildLog,
+                errors: parsed.build.errors,
+              };
+            });
+            throw new Error(response.error || "Failed to build connector");
+          }
+
           set(state => {
             state.connectors[workspaceId] = upsertConnector(
               state.connectors[workspaceId] || [],
@@ -609,63 +658,94 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
               errors: parsed.build.errors,
             };
           });
-          throw new Error(response.error || "Failed to build connector");
+
+          return parsed;
+        } catch (error: any) {
+          const buildLog =
+            error?.data?.build?.buildLog ||
+            error?.message ||
+            "Failed to build connector";
+          const buildErrors = error?.data?.build?.errors;
+
+          set(state => {
+            state.buildState[connectorId] = {
+              building: false,
+              buildLog,
+              errors: buildErrors,
+            };
+          });
+
+          throw error;
         }
+      },
 
-        set(state => {
-          state.connectors[workspaceId] = upsertConnector(
-            state.connectors[workspaceId] || [],
-            parsed.connector,
-          );
-          state.buildState[connectorId] = {
-            building: false,
-            buildLog: parsed.build.buildLog,
-            errors: parsed.build.errors,
-          };
-        });
-
-        return parsed;
-      } catch (error: any) {
-        const buildLog =
-          error?.data?.build?.buildLog ||
-          error?.message ||
-          "Failed to build connector";
-        const buildErrors = error?.data?.build?.errors;
-
-        set(state => {
-          state.buildState[connectorId] = {
-            building: false,
-            buildLog,
-            errors: buildErrors,
-          };
-        });
-
-        throw error;
-      }
-    },
-
-    devRun: async (workspaceId, connectorId, input) => {
-      set(state => {
-        state.devRunState[connectorId] = {
-          ...state.devRunState[connectorId],
-          running: true,
-          error: null,
-          runtimeError: undefined,
-        };
-      });
-
-      try {
+      rollbackConnector: async (workspaceId, connectorId, version) => {
         const response = await apiClient.post<{
           success: boolean;
           data: unknown;
           error?: string;
         }>(
-          `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/dev-run`,
-          input,
+          `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/rollback`,
+          { version },
         );
 
-        const parsed = devRunResponseSchema.parse(response.data);
         if (!response.success) {
+          throw new Error(response.error || "Failed to rollback connector");
+        }
+
+        const connector = connectorSchema.parse(response.data);
+        set(state => {
+          state.connectors[workspaceId] = upsertConnector(
+            state.connectors[workspaceId] || [],
+            connector,
+          );
+        });
+
+        return connector;
+      },
+
+      devRun: async (workspaceId, connectorId, input) => {
+        set(state => {
+          state.devRunState[connectorId] = {
+            ...state.devRunState[connectorId],
+            running: true,
+            error: null,
+            runtimeError: undefined,
+          };
+        });
+
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: unknown;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/dev-run`,
+            input,
+          );
+
+          const parsed = devRunResponseSchema.parse(response.data);
+          if (!response.success) {
+            set(state => {
+              state.connectors[workspaceId] = upsertConnector(
+                state.connectors[workspaceId] || [],
+                parsed.connector,
+              );
+              state.buildState[connectorId] = {
+                building: false,
+                buildLog: parsed.build.buildLog,
+                errors: parsed.build.errors,
+              };
+              state.devRunState[connectorId] = {
+                ...state.devRunState[connectorId],
+                running: false,
+                error: response.error || "Failed to run connector",
+                runtimeError: parsed.runtimeError,
+              };
+            });
+            throw new Error(response.error || "Failed to run connector");
+          }
+
           set(state => {
             state.connectors[workspaceId] = upsertConnector(
               state.connectors[workspaceId] || [],
@@ -677,269 +757,284 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
               errors: parsed.build.errors,
             };
             state.devRunState[connectorId] = {
-              ...state.devRunState[connectorId],
               running: false,
-              error: response.error || "Failed to run connector",
+              output: parsed.output,
+              logs: parsed.logs,
+              error: null,
+              duration: parsed.durationMs,
+              runtime: parsed.runtime,
               runtimeError: parsed.runtimeError,
             };
           });
-          throw new Error(response.error || "Failed to run connector");
+
+          return parsed;
+        } catch (error) {
+          set(state => {
+            state.devRunState[connectorId] = {
+              ...state.devRunState[connectorId],
+              running: false,
+              error: normalizeError(error),
+            };
+          });
+          throw error;
+        }
+      },
+
+      fetchInstances: async (workspaceId, connectorId) => {
+        const key = makeInstancesKey(workspaceId, connectorId);
+        set(state => {
+          state.loading[key] = true;
+          state.error[key] = null;
+        });
+
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: unknown[];
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/connector-builder/instances`,
+            connectorId ? { connectorId } : undefined,
+          );
+
+          if (!response.success) {
+            throw new Error(response.error || "Failed to fetch instances");
+          }
+
+          const instances = z
+            .array(connectorInstanceSchema)
+            .parse(response.data ?? []);
+          set(state => {
+            state.instances[key] = instances;
+          });
+          return instances;
+        } catch (error) {
+          set(state => {
+            state.error[key] = normalizeError(error);
+          });
+          throw error;
+        } finally {
+          set(state => {
+            delete state.loading[key];
+          });
+        }
+      },
+
+      createInstance: async (workspaceId, input) => {
+        const response = await apiClient.post<{
+          success: boolean;
+          data: unknown;
+          error?: string;
+        }>(`/workspaces/${workspaceId}/connector-builder/instances`, input);
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to create instance");
         }
 
+        const instance = connectorInstanceSchema.parse(response.data);
         set(state => {
-          state.connectors[workspaceId] = upsertConnector(
-            state.connectors[workspaceId] || [],
-            parsed.connector,
+          const key = makeInstancesKey(workspaceId, instance.connectorId);
+          state.instances[key] = upsertInstance(
+            state.instances[key] || [],
+            instance,
           );
-          state.buildState[connectorId] = {
-            building: false,
-            buildLog: parsed.build.buildLog,
-            errors: parsed.build.errors,
-          };
-          state.devRunState[connectorId] = {
-            running: false,
-            output: parsed.output,
-            logs: parsed.logs,
-            error: null,
-            duration: parsed.durationMs,
-            runtime: parsed.runtime,
-            runtimeError: parsed.runtimeError,
-          };
         });
+        return instance;
+      },
 
-        return parsed;
-      } catch (error) {
-        set(state => {
-          state.devRunState[connectorId] = {
-            ...state.devRunState[connectorId],
-            running: false,
-            error: normalizeError(error),
-          };
-        });
-        throw error;
-      }
-    },
-
-    fetchInstances: async (workspaceId, connectorId) => {
-      const key = makeInstancesKey(workspaceId, connectorId);
-      set(state => {
-        state.loading[key] = true;
-        state.error[key] = null;
-      });
-
-      try {
-        const response = await apiClient.get<{
+      updateInstance: async (workspaceId, instanceId, input) => {
+        const response = await apiClient.put<{
           success: boolean;
-          data: unknown[];
+          data: unknown;
           error?: string;
         }>(
-          `/workspaces/${workspaceId}/connector-builder/instances`,
-          connectorId ? { connectorId } : undefined,
+          `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}`,
+          input,
         );
 
         if (!response.success) {
-          throw new Error(response.error || "Failed to fetch instances");
+          throw new Error(response.error || "Failed to update instance");
         }
 
-        const instances = z
-          .array(connectorInstanceSchema)
-          .parse(response.data ?? []);
+        const instance = connectorInstanceSchema.parse(response.data);
         set(state => {
-          state.instances[key] = instances;
-        });
-        return instances;
-      } catch (error) {
-        set(state => {
-          state.error[key] = normalizeError(error);
-        });
-        throw error;
-      } finally {
-        set(state => {
-          delete state.loading[key];
-        });
-      }
-    },
-
-    createInstance: async (workspaceId, input) => {
-      const response = await apiClient.post<{
-        success: boolean;
-        data: unknown;
-        error?: string;
-      }>(`/workspaces/${workspaceId}/connector-builder/instances`, input);
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to create instance");
-      }
-
-      const instance = connectorInstanceSchema.parse(response.data);
-      set(state => {
-        const key = makeInstancesKey(workspaceId, instance.connectorId);
-        state.instances[key] = upsertInstance(
-          state.instances[key] || [],
-          instance,
-        );
-      });
-      return instance;
-    },
-
-    updateInstance: async (workspaceId, instanceId, input) => {
-      const response = await apiClient.put<{
-        success: boolean;
-        data: unknown;
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}`,
-        input,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to update instance");
-      }
-
-      const instance = connectorInstanceSchema.parse(response.data);
-      set(state => {
-        const key = makeInstancesKey(workspaceId, instance.connectorId);
-        state.instances[key] = upsertInstance(
-          state.instances[key] || [],
-          instance,
-        );
-      });
-      return instance;
-    },
-
-    deleteInstance: async (workspaceId, instanceId, connectorId) => {
-      const response = await apiClient.delete<{
-        success: boolean;
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}`,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to delete instance");
-      }
-
-      set(state => {
-        if (connectorId) {
-          const key = makeInstancesKey(workspaceId, connectorId);
-          state.instances[key] = (state.instances[key] || []).filter(
-            instance => instance._id !== instanceId,
-          );
-          return;
-        }
-
-        Object.keys(state.instances).forEach(key => {
-          state.instances[key] = (state.instances[key] || []).filter(
-            instance => instance._id !== instanceId,
+          const key = makeInstancesKey(workspaceId, instance.connectorId);
+          state.instances[key] = upsertInstance(
+            state.instances[key] || [],
+            instance,
           );
         });
-      });
-    },
+        return instance;
+      },
 
-    toggleInstance: async (workspaceId, instanceId, connectorId) => {
-      const response = await apiClient.post<{
-        success: boolean;
-        data: unknown;
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/toggle`,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to toggle instance");
-      }
-
-      const instance = connectorInstanceSchema.parse(response.data);
-      set(state => {
-        const key = makeInstancesKey(
-          workspaceId,
-          connectorId || instance.connectorId,
-        );
-        state.instances[key] = upsertInstance(
-          state.instances[key] || [],
-          instance,
-        );
-      });
-      return instance;
-    },
-
-    runInstance: async (workspaceId, instanceId) => {
-      const response = await apiClient.post<{
-        success: boolean;
-        data: { instanceId: string; eventId?: string; startedAt?: string };
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/run`,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to run instance");
-      }
-
-      return response.data;
-    },
-
-    cancelInstanceRun: async (workspaceId, instanceId) => {
-      const response = await apiClient.post<{
-        success: boolean;
-        data: { instanceId: string; eventId?: string };
-        error?: string;
-      }>(
-        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/cancel`,
-      );
-
-      if (!response.success) {
-        throw new Error(response.error || "Failed to cancel instance run");
-      }
-
-      return response.data;
-    },
-
-    fetchInstanceHistory: async (workspaceId, instanceId) => {
-      const key = `${workspaceId}:${instanceId}:history`;
-      set(state => {
-        state.loading[key] = true;
-        state.error[key] = null;
-      });
-
-      try {
-        const response = await apiClient.get<{
+      deleteInstance: async (workspaceId, instanceId, connectorId) => {
+        const response = await apiClient.delete<{
           success: boolean;
-          data: unknown[];
           error?: string;
         }>(
-          `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/history`,
+          `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}`,
         );
 
         if (!response.success) {
-          throw new Error(
-            response.error || "Failed to fetch execution history",
-          );
+          throw new Error(response.error || "Failed to delete instance");
         }
 
-        const history = z
-          .array(connectorExecutionSchema)
-          .parse(response.data ?? []);
         set(state => {
-          state.executionHistory[key] = history;
-        });
-        return history;
-      } catch (error) {
-        set(state => {
-          state.error[key] = normalizeError(error);
-        });
-        throw error;
-      } finally {
-        set(state => {
-          delete state.loading[key];
-        });
-      }
-    },
+          if (connectorId) {
+            const key = makeInstancesKey(workspaceId, connectorId);
+            state.instances[key] = (state.instances[key] || []).filter(
+              instance => instance._id !== instanceId,
+            );
+            return;
+          }
 
-    selectConnector: connectorId => {
-      set(state => {
-        state.selectedConnectorId = connectorId;
-      });
+          Object.keys(state.instances).forEach(key => {
+            state.instances[key] = (state.instances[key] || []).filter(
+              instance => instance._id !== instanceId,
+            );
+          });
+        });
+      },
+
+      toggleInstance: async (workspaceId, instanceId, connectorId) => {
+        const response = await apiClient.post<{
+          success: boolean;
+          data: unknown;
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/toggle`,
+        );
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to toggle instance");
+        }
+
+        const instance = connectorInstanceSchema.parse(response.data);
+        set(state => {
+          const key = makeInstancesKey(
+            workspaceId,
+            connectorId || instance.connectorId,
+          );
+          state.instances[key] = upsertInstance(
+            state.instances[key] || [],
+            instance,
+          );
+        });
+        return instance;
+      },
+
+      runInstance: async (workspaceId, instanceId) => {
+        const response = await apiClient.post<{
+          success: boolean;
+          data: { instanceId: string; eventId?: string; startedAt?: string };
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/run`,
+        );
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to run instance");
+        }
+
+        return response.data;
+      },
+
+      cancelInstanceRun: async (workspaceId, instanceId) => {
+        const response = await apiClient.post<{
+          success: boolean;
+          data: { instanceId: string; eventId?: string };
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/cancel`,
+        );
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to cancel instance run");
+        }
+
+        return response.data;
+      },
+
+      fetchInstanceHistory: async (workspaceId, instanceId) => {
+        const key = `${workspaceId}:${instanceId}:history`;
+        set(state => {
+          state.loading[key] = true;
+          state.error[key] = null;
+        });
+
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: unknown[];
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/history`,
+          );
+
+          if (!response.success) {
+            throw new Error(
+              response.error || "Failed to fetch execution history",
+            );
+          }
+
+          const history = z
+            .array(connectorExecutionSchema)
+            .parse(response.data ?? []);
+          set(state => {
+            state.executionHistory[key] = history;
+          });
+          return history;
+        } catch (error) {
+          set(state => {
+            state.error[key] = normalizeError(error);
+          });
+          throw error;
+        } finally {
+          set(state => {
+            delete state.loading[key];
+          });
+        }
+      },
+
+      clearError: key => {
+        set(state => {
+          state.error[key] = null;
+        });
+      },
+
+      reset: () => {
+        set(state => {
+          state.connectors = {};
+          state.instances = {};
+          state.executionHistory = {};
+          state.loading = {};
+          state.error = {};
+          state.selectedConnectorId = null;
+          state.buildState = {};
+          state.devRunState = {};
+        });
+      },
+
+      selectConnector: connectorId => {
+        set(state => {
+          state.selectedConnectorId = connectorId;
+        });
+      },
+    })),
+    {
+      name: "connector-builder-store-v1",
+      storage: createValidatedStorage(
+        persistedConnectorBuilderStateSchema,
+        "connector-builder-store-v1",
+        persistedInitialState,
+      ),
+      partialize: state => ({
+        connectors: state.connectors,
+        instances: state.instances,
+        executionHistory: state.executionHistory,
+        selectedConnectorId: state.selectedConnectorId,
+        error: state.error,
+      }),
     },
-  })),
+  ),
 );

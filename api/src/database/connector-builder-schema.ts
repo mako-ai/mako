@@ -101,6 +101,8 @@ function decryptMixedObject(value: unknown): unknown {
 export interface IUserConnectorVersionSnapshot {
   version: number;
   code: string;
+  bundleJs?: string;
+  bundleSourceMap?: string;
   buildHash?: string;
   builtAt?: Date;
   createdAt: Date;
@@ -142,7 +144,7 @@ export interface IUserConnector extends Document {
   };
   version: number;
   versions: IUserConnectorVersionSnapshot[];
-  visibility: "workspace" | "public";
+  visibility: "private" | "workspace" | "public";
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -166,6 +168,7 @@ export interface IConnectorInstance extends Document {
     enabled: boolean;
     cron?: string;
     path?: string;
+    timezone?: string;
   }>;
   state: Record<string, unknown>;
   status: "idle" | "active" | "running" | "error" | "disabled";
@@ -173,6 +176,19 @@ export interface IConnectorInstance extends Document {
   lastSuccessAt?: Date;
   lastError?: string;
   createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IUserConnectorWebhookEvent extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  instanceId: Types.ObjectId;
+  eventId: string;
+  eventType: string;
+  receivedAt: Date;
+  status: "pending" | "processed" | "failed";
+  rawPayload: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -222,6 +238,8 @@ const UserConnectorVersionSchema = new Schema<IUserConnectorVersionSnapshot>(
   {
     version: { type: Number, required: true },
     code: { type: String, required: true },
+    bundleJs: { type: String },
+    bundleSourceMap: { type: String },
     buildHash: { type: String },
     builtAt: { type: Date },
     createdAt: { type: Date, default: Date.now, required: true },
@@ -274,8 +292,8 @@ const UserConnectorSchema = new Schema<IUserConnector>(
     versions: { type: [UserConnectorVersionSchema], default: [] },
     visibility: {
       type: String,
-      enum: ["workspace", "public"],
-      default: "workspace",
+      enum: ["private", "workspace", "public"],
+      default: "private",
     },
     createdBy: { type: String, required: true },
   },
@@ -338,6 +356,7 @@ const ConnectorInstanceSchema = new Schema<IConnectorInstance>(
             enabled: { type: Boolean, default: true },
             cron: { type: String },
             path: { type: String },
+            timezone: { type: String, default: "UTC" },
           },
           { _id: false },
         ),
@@ -442,6 +461,46 @@ ConnectorExecutionSchema.index({
   startedAt: -1,
 });
 
+const UserConnectorWebhookEventSchema = new Schema<IUserConnectorWebhookEvent>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    instanceId: {
+      type: Schema.Types.ObjectId,
+      ref: "ConnectorInstance",
+      required: true,
+    },
+    eventId: { type: String, required: true },
+    eventType: { type: String, required: true },
+    receivedAt: { type: Date, required: true, default: Date.now },
+    status: {
+      type: String,
+      enum: ["pending", "processed", "failed"],
+      default: "pending",
+    },
+    rawPayload: {
+      type: Schema.Types.Mixed,
+      required: true,
+      default: {},
+    },
+  },
+  {
+    timestamps: true,
+    toJSON: { getters: true },
+    toObject: { getters: true },
+    collection: "userconnectorwebhookevents",
+  },
+);
+
+UserConnectorWebhookEventSchema.index(
+  { instanceId: 1, eventId: 1 },
+  { unique: true },
+);
+UserConnectorWebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
+
 export const UserConnector =
   (mongoose.models.UserConnector as mongoose.Model<IUserConnector>) ||
   mongoose.model<IUserConnector>("UserConnector", UserConnectorSchema);
@@ -458,4 +517,12 @@ export const ConnectorExecution =
   mongoose.model<IConnectorExecution>(
     "ConnectorExecution",
     ConnectorExecutionSchema,
+  );
+
+export const UserConnectorWebhookEvent =
+  (mongoose.models
+    .UserConnectorWebhookEvent as mongoose.Model<IUserConnectorWebhookEvent>) ||
+  mongoose.model<IUserConnectorWebhookEvent>(
+    "UserConnectorWebhookEvent",
+    UserConnectorWebhookEventSchema,
   );

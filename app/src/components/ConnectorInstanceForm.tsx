@@ -79,6 +79,7 @@ export default function ConnectorInstanceForm({
   >("append");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState("0 */6 * * *");
+  const [scheduleTimezone, setScheduleTimezone] = useState("UTC");
   const [webhookEnabled, setWebhookEnabled] = useState(false);
   const [manualEnabled, setManualEnabled] = useState(true);
   const [configJson, setConfigJson] = useState("{}");
@@ -103,6 +104,7 @@ export default function ConnectorInstanceForm({
       setEvolutionMode("append");
       setScheduleEnabled(false);
       setScheduleCron("0 */6 * * *");
+      setScheduleTimezone("UTC");
       setWebhookEnabled(false);
       setManualEnabled(true);
       setConfigJson("{}");
@@ -125,6 +127,10 @@ export default function ConnectorInstanceForm({
     setScheduleCron(
       instance.triggers.find(trigger => trigger.type === "schedule")?.cron ||
         "0 */6 * * *",
+    );
+    setScheduleTimezone(
+      instance.triggers.find(trigger => trigger.type === "schedule")
+        ?.timezone || "UTC",
     );
     setWebhookEnabled(
       instance.triggers.some(
@@ -170,6 +176,7 @@ export default function ConnectorInstanceForm({
         type: "schedule" as const,
         enabled: scheduleEnabled,
         cron: scheduleCron,
+        timezone: scheduleTimezone,
       },
       { type: "webhook" as const, enabled: webhookEnabled },
     ].filter(trigger => trigger.enabled);
@@ -336,13 +343,22 @@ export default function ConnectorInstanceForm({
         label="Schedule enabled"
       />
       {scheduleEnabled ? (
-        <TextField
-          label="Cron expression"
-          value={scheduleCron}
-          onChange={event => setScheduleCron(event.target.value)}
-          size="small"
-          fullWidth
-        />
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          <TextField
+            label="Cron expression"
+            value={scheduleCron}
+            onChange={event => setScheduleCron(event.target.value)}
+            size="small"
+            fullWidth
+          />
+          <TextField
+            label="Timezone"
+            value={scheduleTimezone}
+            onChange={event => setScheduleTimezone(event.target.value)}
+            size="small"
+            fullWidth
+          />
+        </Stack>
       ) : null}
       <FormControlLabel
         control={

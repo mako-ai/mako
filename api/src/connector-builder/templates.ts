@@ -157,6 +157,129 @@ export const CONNECTOR_TEMPLATES: ConnectorTemplate[] = [
 }
 `,
   },
+  {
+    id: "graphql-api",
+    name: "GraphQL API",
+    description: "Query a GraphQL endpoint with cursor-based pagination",
+    category: "api",
+    code: `export async function pull(input) {
+  const { config = {}, secrets = {}, state = {} } = input;
+  const endpoint = secrets.GRAPHQL_ENDPOINT || config.endpoint;
+  const apiKey = secrets.API_KEY;
+
+  if (!endpoint) {
+    throw new Error("GRAPHQL_ENDPOINT secret or endpoint config is required");
+  }
+
+  const query = config.query || \`
+    query GetItems($cursor: String, $limit: Int) {
+      items(after: $cursor, first: $limit) {
+        nodes { id name createdAt }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  \`;
+
+  const rows = [];
+  let cursor = null;
+  let hasMore = true;
+  const limit = config.limit || 50;
+
+  while (hasMore) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: \`Bearer \${apiKey}\` } : {}),
+      },
+      body: JSON.stringify({
+        query,
+        variables: {
+          ...(config.variables || {}),
+          cursor,
+          limit,
+        },
+      }),
+    });
+
+    const payload = await response.json();
+    const page = payload?.data?.items;
+    const nextRows = page?.nodes || [];
+
+    rows.push(...nextRows);
+    cursor = page?.pageInfo?.endCursor || null;
+    hasMore = page?.pageInfo?.hasNextPage === true;
+  }
+
+  return {
+    hasMore: false,
+    state: {
+      ...state,
+      lastRunAt: new Date().toISOString(),
+      rowCount: rows.length,
+    },
+    batches: [
+      {
+        entity: config.entityName || "graphql_items",
+        rows,
+      },
+    ],
+  };
+}
+`,
+  },
+  {
+    id: "csv-import",
+    name: "CSV/File Import",
+    description: "Fetch and parse CSV rows from a remote URL",
+    category: "analytics",
+    code: `export async function pull(input) {
+  const { config = {}, secrets = {}, state = {} } = input;
+  const url = config.url;
+
+  if (!url) {
+    throw new Error("url config is required");
+  }
+
+  const response = await fetch(url, {
+    headers: secrets.AUTH_TOKEN
+      ? { Authorization: \`Bearer \${secrets.AUTH_TOKEN}\` }
+      : undefined,
+  });
+  const text = await response.text();
+
+  const delimiter = config.delimiter || ",";
+  const lines = text.split(/\\r?\\n/).filter(Boolean);
+  if (lines.length === 0) {
+    return { hasMore: false, state, batches: [] };
+  }
+
+  const headers = lines[0].split(delimiter).map(header => header.trim());
+  const rows = lines.slice(1).map(line => {
+    const values = line.split(delimiter);
+    return headers.reduce((record, header, index) => {
+      record[header] = values[index]?.trim() ?? null;
+      return record;
+    }, {});
+  });
+
+  return {
+    hasMore: false,
+    state: {
+      ...state,
+      lastRunAt: new Date().toISOString(),
+      rowCount: rows.length,
+    },
+    batches: [
+      {
+        entity: config.entityName || "csv_rows",
+        rows,
+      },
+    ],
+  };
+}
+`,
+  },
 ];
 
 export function getConnectorTemplate(

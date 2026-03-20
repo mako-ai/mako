@@ -28,6 +28,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
+import { useConnectorBuilderStore } from "../store/connectorBuilderStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { trackEvent, resetIdentity } from "../lib/analytics";
@@ -128,6 +129,7 @@ function Sidebar() {
       useExplorerStore.getState().reset();
       useChatStore.getState().reset();
       useFlowStore.getState().reset();
+      useConnectorBuilderStore.getState().reset();
 
       await logout();
 

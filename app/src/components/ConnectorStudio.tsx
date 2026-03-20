@@ -20,10 +20,11 @@ import {
   type ConnectorOutput,
 } from "../store/connectorBuilderStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { useUIStore } from "../store/uiStore";
 import ConnectorInstanceForm from "./ConnectorInstanceForm";
 
 type BottomView = "output" | "logs" | "schema";
-type RightView = "inputs" | "instances" | "versions";
+type RightView = "inputs" | "instances" | "versions" | "ai";
 
 interface ConnectorStudioProps {
   tabId: string;
@@ -100,6 +101,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
     fetchInstanceHistory,
     updateConnector,
     buildConnector,
+    rollbackConnector,
     devRun,
     selectConnector,
     toggleInstance,
@@ -107,6 +109,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
     cancelInstanceRun,
   } = useConnectorBuilderStore();
   const { updateContent, updateTitle, updateDirty } = useConsoleStore();
+  const openRightPane = useUIStore(state => state.openRightPane);
   const [bottomView, setBottomView] = useState<BottomView>("output");
   const [rightView, setRightView] = useState<RightView>("inputs");
   const [code, setCode] = useState("");
@@ -654,6 +657,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                 <Tab value="inputs" label="Run Inputs" />
                 <Tab value="instances" label="Instances" />
                 <Tab value="versions" label="Versions" />
+                <Tab value="ai" label="AI" />
               </Tabs>
 
               {rightView === "inputs" ? (
@@ -881,7 +885,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                     </>
                   ) : null}
                 </Stack>
-              ) : (
+              ) : rightView === "versions" ? (
                 <Stack spacing={2}>
                   <Box>
                     <Typography variant="h6">Version history</Typography>
@@ -944,11 +948,45 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                                   ? version.resolvedDependencies.join(", ")
                                   : "None"}
                               </Typography>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() =>
+                                  void rollbackConnector(
+                                    workspaceId,
+                                    connectorId,
+                                    version.version,
+                                  ).catch(error => {
+                                    setLocalError(
+                                      error instanceof Error
+                                        ? error.message
+                                        : "Rollback failed",
+                                    );
+                                  })
+                                }
+                              >
+                                Roll back
+                              </Button>
                             </Stack>
                           </Box>
                         ))}
                     </Stack>
                   )}
+                </Stack>
+              ) : (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="h6">AI</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Use the global AI chat to iterate on this connector. The
+                      studio already keeps the connector code and latest run
+                      results in the app state for follow-up assistance.
+                    </Typography>
+                  </Box>
+                  <Divider />
+                  <Button variant="contained" onClick={openRightPane}>
+                    Open global AI panel
+                  </Button>
                 </Stack>
               )}
             </Box>

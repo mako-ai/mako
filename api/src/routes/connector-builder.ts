@@ -5,6 +5,7 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   ConnectorInstance,
   ConnectorExecution,
+  UserConnectorWebhookEvent,
   UserConnector,
   type IConnectorInstance,
   type IConnectorExecution,
@@ -67,16 +68,19 @@ const createConnectorSchema = z.object({
   name: z.string().trim().min(1),
   description: z.string().trim().optional(),
   code: z.string().optional(),
-  visibility: z.enum(["workspace", "public"]).optional(),
+  visibility: z.enum(["private", "workspace", "public"]).optional(),
 });
 
 const createConnectorFromTemplateSchema = z.object({
   templateId: z.string().trim().min(1),
   name: z.string().trim().optional(),
-  visibility: z.enum(["workspace", "public"]).optional(),
+  visibility: z.enum(["private", "workspace", "public"]).optional(),
 });
 
 const updateConnectorSchema = createConnectorSchema.partial();
+const rollbackConnectorSchema = z.object({
+  version: z.number().int().positive(),
+});
 
 const devRunSchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
@@ -95,6 +99,7 @@ const connectorTriggerSchema = z.object({
   enabled: z.boolean().optional(),
   cron: z.string().optional(),
   path: z.string().optional(),
+  timezone: z.string().optional(),
 });
 
 const connectorInstanceSchema = z.object({
@@ -353,6 +358,8 @@ async function ensureConnectorBundle(
       connector.versions.push({
         version: connector.version,
         code: connector.source.code,
+        bundleJs: build.js,
+        bundleSourceMap: build.sourceMap,
         buildHash: build.buildHash,
         builtAt: new Date(build.builtAt),
         createdAt: new Date(),
@@ -392,7 +399,7 @@ connectorBuilderRoutes.post("/connectors", async (c: AuthenticatedContext) => {
       },
       version: 1,
       versions: [],
-      visibility: parsed.visibility ?? "workspace",
+      visibility: parsed.visibility ?? "private",
       createdBy: actorId,
     });
 
@@ -477,7 +484,7 @@ connectorBuilderRoutes.post(
         },
         version: 1,
         versions: [],
-        visibility: parsed.visibility ?? "workspace",
+        visibility: parsed.visibility ?? "private",
         createdBy: actorId,
       });
 
@@ -606,6 +613,74 @@ connectorBuilderRoutes.get(
             error instanceof Error
               ? error.message
               : "Failed to fetch connector versions",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.post(
+  "/connectors/:id/rollback",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const connectorId = c.req.param("id");
+      const parsed = rollbackConnectorSchema.parse(await c.req.json());
+      const connector = await getWorkspaceConnector(workspaceId, connectorId);
+
+      if (!connector) {
+        return c.json({ success: false, error: "Connector not found" }, 404);
+      }
+
+      const targetVersion = connector.versions.find(
+        version => version.version === parsed.version,
+      );
+      if (!targetVersion) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+
+      connector.source.code = targetVersion.code;
+      connector.source.resolvedDependencies =
+        targetVersion.resolvedDependencies || [];
+      connector.bundle = {
+        js: targetVersion.bundleJs,
+        sourceMap: targetVersion.bundleSourceMap,
+        buildHash: targetVersion.buildHash,
+        buildLog: `Rolled back to version ${targetVersion.version}`,
+        errors: [],
+        builtAt: targetVersion.builtAt || new Date(),
+        runtime: connector.bundle.runtime,
+      };
+
+      connector.version += 1;
+      connector.versions.push({
+        version: connector.version,
+        code: targetVersion.code,
+        bundleJs: targetVersion.bundleJs,
+        bundleSourceMap: targetVersion.bundleSourceMap,
+        buildHash: targetVersion.buildHash,
+        builtAt: targetVersion.builtAt,
+        createdAt: new Date(),
+        createdBy: getActorId(c),
+        resolvedDependencies: targetVersion.resolvedDependencies || [],
+      });
+
+      await connector.save();
+
+      return c.json({
+        success: true,
+        data: serializeUserConnector(connector.toObject()),
+      });
+    } catch (error) {
+      logger.error("Failed to rollback connector", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to rollback connector",
         },
         500,
       );
@@ -918,6 +993,7 @@ connectorBuilderRoutes.post("/instances", async (c: AuthenticatedContext) => {
               enabled: trigger.enabled ?? true,
               cron: trigger.cron,
               path: trigger.path,
+              timezone: trigger.timezone || "UTC",
             }))
           : [{ type: "manual", enabled: true }],
       state: parsed.state ?? {},
@@ -1042,6 +1118,7 @@ connectorBuilderRoutes.put(
           enabled: trigger.enabled ?? true,
           cron: trigger.cron,
           path: trigger.path,
+          timezone: trigger.timezone || "UTC",
         }));
       }
 
@@ -1344,6 +1421,23 @@ connectorBuilderWebhookRoutes.post("/:workspaceId/uc/:instanceId", async c => {
     }
 
     const payload = await c.req.json().catch(() => ({}));
+    const eventId =
+      (payload as any).id ||
+      (payload as any).event_id ||
+      `wh_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const eventType =
+      (payload as any).type || (payload as any).event_type || "webhook";
+
+    await UserConnectorWebhookEvent.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      instanceId: new Types.ObjectId(instanceId),
+      eventId,
+      eventType,
+      receivedAt: new Date(),
+      status: "pending",
+      rawPayload: payload,
+    }).catch(() => undefined);
+
     await inngest.send({
       name: "user-connector.execute",
       data: {

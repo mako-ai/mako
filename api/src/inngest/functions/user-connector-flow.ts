@@ -317,7 +317,9 @@ export const userConnectorSchedulerFunction = inngest.createFunction(
           }
 
           try {
-            const interval = CronExpressionParser.parse(scheduleTrigger.cron);
+            const interval = CronExpressionParser.parse(scheduleTrigger.cron, {
+              tz: scheduleTrigger.timezone || "UTC",
+            });
             const previousDate = interval.prev().toDate();
             if (previousDate < fiveMinutesAgo) {
               return false;
