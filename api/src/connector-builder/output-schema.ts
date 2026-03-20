@@ -42,9 +42,23 @@ export const connectorOutputSchema = z.object({
     .optional(),
 });
 
+export const connectorInputSchema = z.object({
+  config: z.record(z.string(), z.unknown()).default({}),
+  secrets: z.record(z.string(), z.unknown()).default({}),
+  state: z.record(z.string(), z.unknown()).default({}),
+  trigger: z
+    .object({
+      type: z.enum(["manual", "schedule", "webhook"]).default("manual"),
+      payload: z.unknown().optional(),
+    })
+    .default({ type: "manual" }),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
 export type ConnectorState = z.infer<typeof connectorStateSchema>;
 export type ConnectorColumn = z.infer<typeof connectorColumnSchema>;
 export type EntitySchema = z.infer<typeof entitySchema>;
 export type FlushBatch = z.infer<typeof flushBatchSchema>;
 export type ConnectorExecutionLog = z.infer<typeof connectorExecutionLogSchema>;
 export type ConnectorOutput = z.infer<typeof connectorOutputSchema>;
+export type ConnectorInput = z.infer<typeof connectorInputSchema>;

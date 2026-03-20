@@ -20,6 +20,11 @@ import {
   cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
+import {
+  cancelUserConnectorFunction,
+  userConnectorFlowFunction,
+  userConnectorSchedulerFunction,
+} from "./functions/user-connector-flow";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -30,6 +35,8 @@ const baseFunctions = [
   syncBackfillEntityFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  userConnectorFlowFunction,
+  cancelUserConnectorFunction,
 ];
 
 const allWebhookFunctions = [
@@ -65,6 +72,7 @@ export function getFunctions() {
         ...webhookFunctions,
         flowSchedulerFunction,
         dashboardSchedulerFunction,
+        userConnectorSchedulerFunction,
       ];
 
   return _functions;
@@ -111,4 +119,7 @@ export {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  userConnectorFlowFunction,
+  userConnectorSchedulerFunction,
+  cancelUserConnectorFunction,
 };

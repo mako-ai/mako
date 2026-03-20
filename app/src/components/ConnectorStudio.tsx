@@ -92,15 +92,19 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
   const {
     connectors,
     instances,
+    executionHistory,
     buildState,
     devRunState,
     fetchConnectors,
     fetchInstances,
+    fetchInstanceHistory,
     updateConnector,
     buildConnector,
     devRun,
     selectConnector,
     toggleInstance,
+    runInstance,
+    cancelInstanceRun,
   } = useConnectorBuilderStore();
   const { updateContent, updateTitle, updateDirty } = useConsoleStore();
   const [bottomView, setBottomView] = useState<BottomView>("output");
@@ -143,6 +147,13 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
       ) || null,
     [connectorInstances, selectedInstanceId],
   );
+  const selectedInstanceHistory = useMemo(
+    () =>
+      selectedInstanceId && workspaceId
+        ? executionHistory[`${workspaceId}:${selectedInstanceId}:history`] || []
+        : [],
+    [executionHistory, selectedInstanceId, workspaceId],
+  );
   const { rows, columns } = useMemo(
     () => flattenOutputRows(currentRunState?.output),
     [currentRunState?.output],
@@ -181,6 +192,16 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
 
     setSelectedInstanceId(connectorInstances[0]._id);
   }, [connectorInstances, selectedInstanceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !selectedInstanceId) {
+      return;
+    }
+
+    void fetchInstanceHistory(workspaceId, selectedInstanceId).catch(
+      () => undefined,
+    );
+  }, [fetchInstanceHistory, selectedInstanceId, workspaceId]);
 
   useEffect(() => {
     if (!connector) {
@@ -737,6 +758,22 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                           <Button
                             size="small"
                             onClick={() =>
+                              void runInstance(workspaceId, instance._id)
+                            }
+                          >
+                            Run
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() =>
+                              void cancelInstanceRun(workspaceId, instance._id)
+                            }
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() =>
                               void toggleInstance(
                                 workspaceId,
                                 instance._id,
@@ -770,6 +807,79 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                       setSelectedInstanceId(null);
                     }}
                   />
+
+                  {selectedInstance ? (
+                    <>
+                      <Divider />
+                      <Box>
+                        <Typography variant="subtitle2" gutterBottom>
+                          Recent runs
+                        </Typography>
+                        {selectedInstanceHistory.length === 0 ? (
+                          <Typography variant="body2" color="text.secondary">
+                            No executions recorded yet.
+                          </Typography>
+                        ) : (
+                          <Stack spacing={1}>
+                            {selectedInstanceHistory
+                              .slice(0, 5)
+                              .map(execution => (
+                                <Box
+                                  key={execution._id}
+                                  sx={{
+                                    border: 1,
+                                    borderColor: "divider",
+                                    borderRadius: 1,
+                                    p: 1,
+                                  }}
+                                >
+                                  <Stack spacing={0.5}>
+                                    <Stack
+                                      direction="row"
+                                      justifyContent="space-between"
+                                      alignItems="center"
+                                    >
+                                      <Typography variant="caption">
+                                        {execution.triggerType}
+                                      </Typography>
+                                      <Chip
+                                        size="small"
+                                        label={execution.status}
+                                      />
+                                    </Stack>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      {new Date(
+                                        execution.startedAt,
+                                      ).toLocaleString()}
+                                    </Typography>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      Rows: {execution.rowCount ?? 0}
+                                      {execution.durationMs
+                                        ? ` • ${execution.durationMs} ms`
+                                        : ""}
+                                    </Typography>
+                                    {execution.error?.message ? (
+                                      <Typography
+                                        variant="caption"
+                                        color="error"
+                                      >
+                                        {execution.error.message}
+                                      </Typography>
+                                    ) : null}
+                                  </Stack>
+                                </Box>
+                              ))}
+                          </Stack>
+                        )}
+                      </Box>
+                    </>
+                  ) : null}
                 </Stack>
               ) : (
                 <Stack spacing={2}>

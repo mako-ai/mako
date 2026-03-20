@@ -38,7 +38,10 @@ import { usageRoutes } from "./routes/usage";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
-import { connectorBuilderRoutes } from "./routes/connector-builder";
+import {
+  connectorBuilderRoutes,
+  connectorBuilderWebhookRoutes,
+} from "./routes/connector-builder";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
@@ -117,6 +120,7 @@ app.route(
   "/api/workspaces/:workspaceId/connector-builder",
   connectorBuilderRoutes,
 );
+app.route("/api/webhooks", connectorBuilderWebhookRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);

@@ -170,6 +170,31 @@ export interface ConnectorTemplateSummary {
   description: string;
   category: string;
 }
+export interface ConnectorExecution {
+  _id: string;
+  workspaceId: string;
+  connectorId: string;
+  instanceId: string;
+  triggerType: "manual" | "schedule" | "webhook";
+  status: "running" | "completed" | "failed" | "cancelled";
+  runtime?: "e2b" | "local-fallback";
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  rowCount?: number;
+  error?: {
+    message?: string;
+    stack?: string;
+  };
+  logs: Array<{
+    level: string;
+    message: string;
+    timestamp?: string;
+  }>;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
 export type ConnectorBuildState = {
   building: boolean;
   buildLog?: string;
@@ -188,6 +213,7 @@ export type ConnectorDevRunState = {
 interface ConnectorBuilderStore {
   connectors: Record<string, UserConnector[]>;
   instances: Record<string, ConnectorInstance[]>;
+  executionHistory: Record<string, ConnectorExecution[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
   selectedConnectorId: string | null;
@@ -301,6 +327,18 @@ interface ConnectorBuilderStore {
     instanceId: string,
     connectorId?: string,
   ) => Promise<ConnectorInstance>;
+  runInstance: (
+    workspaceId: string,
+    instanceId: string,
+  ) => Promise<{ instanceId: string; eventId?: string; startedAt?: string }>;
+  cancelInstanceRun: (
+    workspaceId: string,
+    instanceId: string,
+  ) => Promise<{ instanceId: string; eventId?: string }>;
+  fetchInstanceHistory: (
+    workspaceId: string,
+    instanceId: string,
+  ) => Promise<ConnectorExecution[]>;
   selectConnector: (connectorId: string | null) => void;
 }
 
@@ -352,10 +390,43 @@ function makeInstancesKey(workspaceId: string, connectorId?: string): string {
   return connectorId ? `${workspaceId}:${connectorId}` : `${workspaceId}:all`;
 }
 
+const connectorExecutionSchema = z.object({
+  _id: z.string(),
+  workspaceId: z.string(),
+  connectorId: z.string(),
+  instanceId: z.string(),
+  triggerType: z.enum(["manual", "schedule", "webhook"]),
+  status: z.enum(["running", "completed", "failed", "cancelled"]),
+  runtime: z.enum(["e2b", "local-fallback"]).optional(),
+  startedAt: z.string(),
+  completedAt: z.string().optional(),
+  durationMs: z.number().optional(),
+  rowCount: z.number().optional(),
+  error: z
+    .object({
+      message: z.string().optional(),
+      stack: z.string().optional(),
+    })
+    .optional(),
+  logs: z
+    .array(
+      z.object({
+        level: z.string(),
+        message: z.string(),
+        timestamp: z.string().optional(),
+      }),
+    )
+    .default([]),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
 export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
   immer(set => ({
     connectors: {},
     instances: {},
+    executionHistory: {},
     loading: {},
     error: {},
     selectedConnectorId: null,
@@ -790,6 +861,79 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         );
       });
       return instance;
+    },
+
+    runInstance: async (workspaceId, instanceId) => {
+      const response = await apiClient.post<{
+        success: boolean;
+        data: { instanceId: string; eventId?: string; startedAt?: string };
+        error?: string;
+      }>(
+        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/run`,
+      );
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to run instance");
+      }
+
+      return response.data;
+    },
+
+    cancelInstanceRun: async (workspaceId, instanceId) => {
+      const response = await apiClient.post<{
+        success: boolean;
+        data: { instanceId: string; eventId?: string };
+        error?: string;
+      }>(
+        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/cancel`,
+      );
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to cancel instance run");
+      }
+
+      return response.data;
+    },
+
+    fetchInstanceHistory: async (workspaceId, instanceId) => {
+      const key = `${workspaceId}:${instanceId}:history`;
+      set(state => {
+        state.loading[key] = true;
+        state.error[key] = null;
+      });
+
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          data: unknown[];
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/history`,
+        );
+
+        if (!response.success) {
+          throw new Error(
+            response.error || "Failed to fetch execution history",
+          );
+        }
+
+        const history = z
+          .array(connectorExecutionSchema)
+          .parse(response.data ?? []);
+        set(state => {
+          state.executionHistory[key] = history;
+        });
+        return history;
+      } catch (error) {
+        set(state => {
+          state.error[key] = normalizeError(error);
+        });
+        throw error;
+      } finally {
+        set(state => {
+          delete state.loading[key];
+        });
+      }
     },
 
     selectConnector: connectorId => {

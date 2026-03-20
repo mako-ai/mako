@@ -177,6 +177,32 @@ export interface IConnectorInstance extends Document {
   updatedAt: Date;
 }
 
+export interface IConnectorExecution extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  connectorId: Types.ObjectId;
+  instanceId: Types.ObjectId;
+  triggerType: "manual" | "schedule" | "webhook";
+  status: "running" | "completed" | "failed" | "cancelled";
+  runtime?: "e2b" | "local-fallback";
+  startedAt: Date;
+  completedAt?: Date;
+  durationMs?: number;
+  rowCount?: number;
+  error?: {
+    message: string;
+    stack?: string;
+  };
+  logs: Array<{
+    level: string;
+    message: string;
+    timestamp?: Date;
+  }>;
+  metadata?: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 const UserConnectorBuildErrorSchema = new Schema<IUserConnectorBuildError>(
   {
     message: { type: String, required: true },
@@ -340,6 +366,82 @@ const ConnectorInstanceSchema = new Schema<IConnectorInstance>(
 ConnectorInstanceSchema.index({ workspaceId: 1 });
 ConnectorInstanceSchema.index({ workspaceId: 1, connectorId: 1 });
 
+const ConnectorExecutionSchema = new Schema<IConnectorExecution>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    connectorId: {
+      type: Schema.Types.ObjectId,
+      ref: "UserConnector",
+      required: true,
+    },
+    instanceId: {
+      type: Schema.Types.ObjectId,
+      ref: "ConnectorInstance",
+      required: true,
+    },
+    triggerType: {
+      type: String,
+      enum: ["manual", "schedule", "webhook"],
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ["running", "completed", "failed", "cancelled"],
+      required: true,
+      default: "running",
+    },
+    runtime: {
+      type: String,
+      enum: ["e2b", "local-fallback"],
+    },
+    startedAt: { type: Date, required: true, default: Date.now },
+    completedAt: { type: Date },
+    durationMs: { type: Number },
+    rowCount: { type: Number },
+    error: {
+      message: { type: String },
+      stack: { type: String },
+    },
+    logs: {
+      type: [
+        new Schema(
+          {
+            level: { type: String, required: true },
+            message: { type: String, required: true },
+            timestamp: { type: Date },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
+    },
+  },
+  {
+    timestamps: true,
+    toJSON: { getters: true },
+    toObject: { getters: true },
+    collection: "connectorexecutions",
+  },
+);
+
+ConnectorExecutionSchema.index({
+  workspaceId: 1,
+  instanceId: 1,
+  startedAt: -1,
+});
+ConnectorExecutionSchema.index({
+  workspaceId: 1,
+  connectorId: 1,
+  startedAt: -1,
+});
+
 export const UserConnector =
   (mongoose.models.UserConnector as mongoose.Model<IUserConnector>) ||
   mongoose.model<IUserConnector>("UserConnector", UserConnectorSchema);
@@ -349,4 +451,11 @@ export const ConnectorInstance =
   mongoose.model<IConnectorInstance>(
     "ConnectorInstance",
     ConnectorInstanceSchema,
+  );
+
+export const ConnectorExecution =
+  (mongoose.models.ConnectorExecution as mongoose.Model<IConnectorExecution>) ||
+  mongoose.model<IConnectorExecution>(
+    "ConnectorExecution",
+    ConnectorExecutionSchema,
   );

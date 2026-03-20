@@ -4,8 +4,10 @@ import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   ConnectorInstance,
+  ConnectorExecution,
   UserConnector,
   type IConnectorInstance,
+  type IConnectorExecution,
   type IUserConnector,
 } from "../database/connector-builder-schema";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -21,6 +23,7 @@ import {
   CONNECTOR_TEMPLATES,
   getConnectorTemplate,
 } from "../connector-builder/templates";
+import { inngest } from "../inngest";
 
 const logger = loggers.api("connector-builder");
 const DEFAULT_CONNECTOR_CODE = `export async function pull(input) {
@@ -240,6 +243,44 @@ function serializeConnectorInstance(
     lastSuccessAt: instance.lastSuccessAt?.toISOString(),
     createdAt: instance.createdAt.toISOString(),
     updatedAt: instance.updatedAt.toISOString(),
+  };
+}
+
+function serializeConnectorExecution(
+  execution: Pick<
+    IConnectorExecution,
+    | "_id"
+    | "workspaceId"
+    | "connectorId"
+    | "instanceId"
+    | "triggerType"
+    | "status"
+    | "runtime"
+    | "startedAt"
+    | "completedAt"
+    | "durationMs"
+    | "rowCount"
+    | "error"
+    | "logs"
+    | "metadata"
+    | "createdAt"
+    | "updatedAt"
+  >,
+) {
+  return {
+    ...execution,
+    _id: execution._id.toString(),
+    workspaceId: execution.workspaceId.toString(),
+    connectorId: execution.connectorId.toString(),
+    instanceId: execution.instanceId.toString(),
+    startedAt: execution.startedAt.toISOString(),
+    completedAt: execution.completedAt?.toISOString(),
+    createdAt: execution.createdAt.toISOString(),
+    updatedAt: execution.updatedAt.toISOString(),
+    logs: execution.logs.map(log => ({
+      ...log,
+      timestamp: log.timestamp?.toISOString(),
+    })),
   };
 }
 
@@ -1100,5 +1141,236 @@ connectorBuilderRoutes.post(
     }
   },
 );
+
+connectorBuilderRoutes.patch(
+  "/instances/:id/state",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+      const state = z.record(z.string(), z.unknown()).parse(await c.req.json());
+      const instance = await getWorkspaceInstance(workspaceId, instanceId);
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      instance.state = state;
+      await instance.save();
+
+      return c.json({
+        success: true,
+        data: serializeConnectorInstance(instance.toObject()),
+      });
+    } catch (error) {
+      logger.error("Failed to update connector instance state", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to update state",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.post(
+  "/instances/:id/run",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+      const instance = await getWorkspaceInstance(workspaceId, instanceId);
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      const connector = await UserConnector.findById(instance.connectorId);
+      if (!connector?.bundle?.js) {
+        return c.json(
+          { success: false, error: "Connector has not been built yet" },
+          400,
+        );
+      }
+
+      const eventId = await inngest.send({
+        name: "user-connector.execute",
+        data: {
+          instanceId,
+          workspaceId,
+          trigger: { type: "manual" },
+        },
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          instanceId,
+          eventId,
+          startedAt: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      logger.error("Failed to trigger connector instance run", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to trigger run",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.post(
+  "/instances/:id/cancel",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+      const instance = await getWorkspaceInstance(workspaceId, instanceId);
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      const eventId = await inngest.send({
+        name: "user-connector.cancel",
+        data: {
+          instanceId,
+          workspaceId,
+        },
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          instanceId,
+          eventId,
+        },
+      });
+    } catch (error) {
+      logger.error("Failed to cancel connector instance run", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to cancel run",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.get(
+  "/instances/:id/history",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+      const instance = await getWorkspaceInstance(workspaceId, instanceId);
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      const executions = await ConnectorExecution.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        instanceId: new Types.ObjectId(instanceId),
+      })
+        .sort({ startedAt: -1 })
+        .limit(50)
+        .lean();
+
+      return c.json({
+        success: true,
+        data: executions.map(execution =>
+          serializeConnectorExecution(
+            execution as unknown as IConnectorExecution,
+          ),
+        ),
+      });
+    } catch (error) {
+      logger.error("Failed to fetch connector execution history", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to fetch history",
+        },
+        500,
+      );
+    }
+  },
+);
+
+export const connectorBuilderWebhookRoutes = new Hono();
+
+connectorBuilderWebhookRoutes.post("/:workspaceId/uc/:instanceId", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const instanceId = c.req.param("instanceId");
+
+    if (
+      !Types.ObjectId.isValid(workspaceId) ||
+      !Types.ObjectId.isValid(instanceId)
+    ) {
+      return c.json({ success: false, error: "Invalid ID format" }, 400);
+    }
+
+    const instance = await ConnectorInstance.findOne({
+      _id: new Types.ObjectId(instanceId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).lean();
+
+    if (!instance) {
+      return c.json({ success: false, error: "Instance not found" }, 404);
+    }
+
+    const hasWebhookTrigger = instance.triggers.some(
+      trigger => trigger.type === "webhook" && trigger.enabled,
+    );
+    if (!hasWebhookTrigger) {
+      return c.json(
+        { success: false, error: "No webhook trigger configured" },
+        400,
+      );
+    }
+
+    const payload = await c.req.json().catch(() => ({}));
+    await inngest.send({
+      name: "user-connector.execute",
+      data: {
+        instanceId,
+        workspaceId,
+        trigger: {
+          type: "webhook",
+          payload,
+        },
+      },
+    });
+
+    return c.json({
+      success: true,
+      message: "Webhook accepted",
+    });
+  } catch (error) {
+    logger.error("Failed to receive connector webhook", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to receive webhook",
+      },
+      500,
+    );
+  }
+});
 
 export { connectorBuilderRoutes };
