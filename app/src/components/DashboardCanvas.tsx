@@ -410,7 +410,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       );
       setCodeError(null);
     }
-  }, [viewMode, dashboard]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [viewMode, dashboard]);
 
   // When switching to code mode, always serialize fresh
   const prevViewModeRef = useRef(viewMode);
