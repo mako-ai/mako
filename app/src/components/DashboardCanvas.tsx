@@ -259,6 +259,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   const widgetFilterClauses = useMemo(() => {
+    if (useMosaic) return {};
     if (!activeDashboard?.crossFilter?.enabled) return {};
 
     const result: Record<string, string> = {};
@@ -284,6 +285,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
     return result;
   }, [
+    useMosaic,
     activeDashboard?.crossFilter?.enabled,
     activeDashboard?.widgets,
     crossFilterMap,
