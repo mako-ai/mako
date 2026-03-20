@@ -8,6 +8,9 @@ import {
   Chip,
   CircularProgress,
   Alert,
+  TextField,
+  Divider,
+  Stack,
 } from "@mui/material";
 import {
   Play as RunIcon,
@@ -28,7 +31,28 @@ interface ConnectorStudioProps {
 }
 
 type BottomTab = "output" | "logs" | "schema";
-type RightTab = "instances" | "ai";
+type RightTab = "run-inputs" | "instances" | "ai";
+
+function safeParseJson(
+  value: string,
+  label: string,
+): { parsed: Record<string, unknown>; error: string | null } {
+  if (!value.trim()) {
+    return { parsed: {}, error: null };
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { parsed: {}, error: `${label} must be a JSON object` };
+    }
+    return { parsed: parsed as Record<string, unknown>, error: null };
+  } catch (error) {
+    return {
+      parsed: {},
+      error: `${label} is not valid JSON: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
 
 export function ConnectorStudio({
   connectorId,
@@ -51,8 +75,12 @@ export function ConnectorStudio({
   const devRunState = devRunStateMap[connectorId];
 
   const [bottomTab, setBottomTab] = useState<BottomTab>("output");
-  const [rightTab, setRightTab] = useState<RightTab>("instances");
+  const [rightTab, setRightTab] = useState<RightTab>("run-inputs");
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null);
+  const [configJson, setConfigJson] = useState("{}");
+  const [secretsJson, setSecretsJson] = useState("{}");
+  const [stateJson, setStateJson] = useState("{}");
+  const [inputError, setInputError] = useState<string | null>(null);
   const editorRef = useRef<any>(null);
   const saveTimeoutRef = useRef<number | null>(null);
 
@@ -91,14 +119,40 @@ export function ConnectorStudio({
   const handleRun = useCallback(async () => {
     if (!connector) return;
 
+    // Validate JSON inputs
+    const config = safeParseJson(configJson, "Config");
+    const secrets = safeParseJson(secretsJson, "Secrets");
+    const state = safeParseJson(stateJson, "State");
+
+    const validationError = config.error || secrets.error || state.error;
+    if (validationError) {
+      setInputError(validationError);
+      return;
+    }
+    setInputError(null);
+
     // Save current code before running
     const currentCode = editorRef.current?.getValue();
     if (currentCode && currentCode !== connector.source.code) {
       await updateConnector(workspaceId, connectorId, { code: currentCode });
     }
 
-    await devRun(workspaceId, connectorId);
-  }, [connector, workspaceId, connectorId, updateConnector, devRun]);
+    await devRun(workspaceId, connectorId, {
+      config: config.parsed,
+      secrets: secrets.parsed as Record<string, string>,
+      state: state.parsed,
+      trigger: { type: "manual" },
+    });
+  }, [
+    connector,
+    workspaceId,
+    connectorId,
+    updateConnector,
+    devRun,
+    configJson,
+    secretsJson,
+    stateJson,
+  ]);
 
   const handleBuild = useCallback(async () => {
     if (!connector) return;
@@ -458,12 +512,93 @@ export function ConnectorStudio({
                 },
               }}
             >
+              <Tab label="Run Inputs" value="run-inputs" />
               <Tab label="Instances" value="instances" />
-              <Tab label="AI Assistant" value="ai" />
+              <Tab label="AI" value="ai" />
             </Tabs>
 
             <Box sx={{ flex: 1, overflow: "auto" }}>
-              {rightTab === "instances" ? (
+              {rightTab === "run-inputs" ? (
+                <Box sx={{ p: 2 }}>
+                  <Stack spacing={2}>
+                    <Typography variant="body2" color="text.secondary">
+                      Configure config, secrets, and state for dev runs.
+                    </Typography>
+
+                    {inputError && (
+                      <Alert
+                        severity="error"
+                        onClose={() => setInputError(null)}
+                        sx={{ fontSize: "0.75rem" }}
+                      >
+                        {inputError}
+                      </Alert>
+                    )}
+
+                    <TextField
+                      label="Config JSON"
+                      value={configJson}
+                      onChange={e => setConfigJson(e.target.value)}
+                      multiline
+                      minRows={4}
+                      fullWidth
+                      size="small"
+                      slotProps={{
+                        input: {
+                          sx: { fontFamily: "monospace", fontSize: "0.8rem" },
+                        },
+                      }}
+                    />
+                    <TextField
+                      label="Secrets JSON"
+                      value={secretsJson}
+                      onChange={e => setSecretsJson(e.target.value)}
+                      multiline
+                      minRows={4}
+                      fullWidth
+                      size="small"
+                      slotProps={{
+                        input: {
+                          sx: { fontFamily: "monospace", fontSize: "0.8rem" },
+                        },
+                      }}
+                    />
+                    <TextField
+                      label="State JSON"
+                      value={stateJson}
+                      onChange={e => setStateJson(e.target.value)}
+                      multiline
+                      minRows={4}
+                      fullWidth
+                      size="small"
+                      slotProps={{
+                        input: {
+                          sx: { fontFamily: "monospace", fontSize: "0.8rem" },
+                        },
+                      }}
+                    />
+
+                    <Divider />
+
+                    <Box>
+                      <Typography
+                        variant="subtitle2"
+                        gutterBottom
+                        color="text.secondary"
+                      >
+                        Build Metadata
+                      </Typography>
+                      <Typography variant="caption" display="block">
+                        Build hash:{" "}
+                        {connector?.bundle?.buildHash || "Not built yet"}
+                      </Typography>
+                      <Typography variant="caption" display="block">
+                        Version: {connector?.version || 1}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                </Box>
+              ) : rightTab === "instances" ? (
                 <ConnectorInstanceForm connectorId={connectorId} />
               ) : (
                 <Box

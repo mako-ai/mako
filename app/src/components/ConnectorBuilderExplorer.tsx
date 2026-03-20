@@ -18,6 +18,8 @@ import {
   DialogActions,
   Button,
   TextField,
+  Menu,
+  MenuItem,
 } from "@mui/material";
 import {
   Plus as AddIcon,
@@ -63,6 +65,11 @@ export function ConnectorBuilderExplorer() {
   const [templates, setTemplates] = useState<
     Array<{ id: string; name: string; description: string; category: string }>
   >([]);
+  const [contextMenu, setContextMenu] = useState<{
+    mouseX: number;
+    mouseY: number;
+    connector: UserConnector;
+  } | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [connectorToDelete, setConnectorToDelete] =
     useState<UserConnector | null>(null);
@@ -255,28 +262,19 @@ export function ConnectorBuilderExplorer() {
         ) : (
           <List dense disablePadding>
             {connectors.map(connector => (
-              <ListItem
-                key={connector._id}
-                disablePadding
-                secondaryAction={
-                  <IconButton
-                    edge="end"
-                    size="small"
-                    onClick={e => {
-                      e.stopPropagation();
-                      setConnectorToDelete(connector);
-                      setDeleteDialogOpen(true);
-                    }}
-                    sx={{ opacity: 0.5, "&:hover": { opacity: 1 } }}
-                  >
-                    <DeleteIcon size={14} />
-                  </IconButton>
-                }
-              >
+              <ListItem key={connector._id} disablePadding>
                 <ListItemButton
                   selected={selectedConnectorId === connector._id}
                   onClick={() => openConnectorStudio(connector)}
-                  sx={{ py: 0.75, pr: 5 }}
+                  onContextMenu={event => {
+                    event.preventDefault();
+                    setContextMenu({
+                      mouseX: event.clientX + 2,
+                      mouseY: event.clientY - 6,
+                      connector,
+                    });
+                  }}
+                  sx={{ py: 0.75 }}
                 >
                   <ListItemIcon sx={{ minWidth: 32 }}>
                     <ConnectorIcon size={16} />
@@ -305,6 +303,30 @@ export function ConnectorBuilderExplorer() {
           </List>
         )}
       </Box>
+
+      {/* Context Menu (right-click) */}
+      <Menu
+        open={contextMenu !== null}
+        onClose={() => setContextMenu(null)}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          contextMenu
+            ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
+            : undefined
+        }
+      >
+        <MenuItem
+          onClick={() => {
+            if (!contextMenu) return;
+            setConnectorToDelete(contextMenu.connector);
+            setDeleteDialogOpen(true);
+            setContextMenu(null);
+          }}
+        >
+          <DeleteIcon size={16} style={{ marginRight: 8 }} />
+          Delete
+        </MenuItem>
+      </Menu>
 
       {/* Create Dialog */}
       <Dialog

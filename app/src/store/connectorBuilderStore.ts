@@ -5,41 +5,129 @@ import { apiClient } from "../lib/api-client";
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
 
-// ── Types ──
+// ── Zod schemas for runtime validation of API responses ──
 
-export interface UserConnector {
-  _id: string;
-  workspaceId: string;
-  name: string;
-  description?: string;
-  source: {
-    code: string;
-    resolvedDependencies?: Record<string, string>;
-  };
-  bundle?: {
-    js?: string;
-    sourceMap?: string;
-    buildHash?: string;
-    buildLog?: string;
-    builtAt?: string;
-    errors?: Array<{
-      line?: number;
-      column?: number;
-      message: string;
-      severity: "error" | "warning";
-    }>;
-  };
-  metadata: {
-    entities?: string[];
-    configSchema?: Record<string, unknown>;
-    secretKeys?: string[];
-  };
-  version: number;
-  visibility: "private" | "workspace" | "public";
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
+const buildErrorSchema = z.object({
+  message: z.string(),
+  line: z.number().optional(),
+  column: z.number().optional(),
+  severity: z.enum(["error", "warning"]).default("error"),
+  raw: z.string().optional(),
+});
+
+const connectorSchema = z.object({
+  _id: z.string(),
+  workspaceId: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  source: z.object({
+    code: z.string(),
+    resolvedDependencies: z
+      .union([z.record(z.string()), z.array(z.string())])
+      .optional()
+      .default({}),
+  }),
+  bundle: z
+    .object({
+      js: z.string().optional(),
+      sourceMap: z.string().optional(),
+      buildHash: z.string().optional(),
+      buildLog: z.string().optional(),
+      builtAt: z.string().optional(),
+      errors: z.array(buildErrorSchema).default([]),
+      runtime: z.enum(["e2b", "local-fallback"]).optional(),
+    })
+    .optional()
+    .default({}),
+  metadata: z
+    .object({
+      entities: z.array(z.string()).optional(),
+      configSchema: z.record(z.unknown()).optional(),
+      secretKeys: z.array(z.string()).optional(),
+    })
+    .optional()
+    .default({}),
+  version: z.number().default(1),
+  visibility: z.enum(["private", "workspace", "public"]).default("private"),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const connectorOutputSchema = z.object({
+  hasMore: z.boolean().default(false),
+  state: z.record(z.unknown()).default({}),
+  batches: z
+    .array(
+      z.object({
+        entity: z.string(),
+        records: z.array(z.record(z.unknown())).default([]),
+        schema: z
+          .object({
+            name: z.string(),
+            columns: z
+              .array(
+                z.object({
+                  name: z.string(),
+                  type: z.string(),
+                  nullable: z.boolean().optional(),
+                  primaryKey: z.boolean().optional(),
+                }),
+              )
+              .default([]),
+          })
+          .optional(),
+      }),
+    )
+    .default([]),
+  logs: z
+    .array(
+      z.object({
+        level: z.string(),
+        message: z.string(),
+        timestamp: z.string().optional(),
+        data: z.unknown().optional(),
+      }),
+    )
+    .default([]),
+});
+
+const buildResponseSchema = z.object({
+  buildHash: z.string(),
+  buildLog: z.string(),
+  errors: z.array(buildErrorSchema).default([]),
+  resolvedDependencies: z
+    .union([z.record(z.string()), z.array(z.string())])
+    .default([]),
+  runtime: z.enum(["e2b", "local-fallback"]).optional(),
+});
+
+const devRunResponseSchema = z.object({
+  output: connectorOutputSchema,
+  logs: z
+    .union([
+      z.string(),
+      z.array(
+        z.object({
+          level: z.string(),
+          message: z.string(),
+          timestamp: z.string().optional(),
+        }),
+      ),
+    ])
+    .default([]),
+  durationMs: z.number(),
+  dryRun: z.boolean().optional(),
+  rowCount: z.number().optional(),
+  runtime: z.enum(["e2b", "local-fallback"]).optional(),
+  buildErrors: z.array(buildErrorSchema).optional(),
+  buildLog: z.string().optional(),
+});
+
+// ── Types (derived from Zod schemas) ──
+
+export type UserConnector = z.infer<typeof connectorSchema>;
+export type ConnectorOutput = z.infer<typeof connectorOutputSchema>;
 
 export interface ConnectorInstance {
   _id: string;
@@ -266,16 +354,19 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         try {
           const response = await apiClient.get<{
             success: boolean;
-            data: UserConnector[];
+            data: unknown[];
             error?: string;
           }>(`/workspaces/${workspaceId}/connector-builder/connectors`);
 
           if (response.success) {
+            const parsed = (response.data || []).map(d =>
+              connectorSchema.parse(d),
+            );
             set(state => {
-              state.connectors[workspaceId] = response.data || [];
+              state.connectors[workspaceId] = parsed;
               state.error[workspaceId] = null;
             });
-            return response.data || [];
+            return parsed;
           }
           throw new Error(response.error || "Failed to fetch connectors");
         } catch (error: unknown) {
@@ -299,7 +390,7 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         try {
           const response = await apiClient.post<{
             success: boolean;
-            data: UserConnector;
+            data: unknown;
             error?: string;
           }>(
             `/workspaces/${workspaceId}/connector-builder/connectors`,
@@ -307,13 +398,14 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
           );
 
           if (response.success) {
+            const parsed = connectorSchema.parse(response.data);
             set(state => {
               if (!state.connectors[workspaceId]) {
                 state.connectors[workspaceId] = [];
               }
-              state.connectors[workspaceId].push(response.data);
+              state.connectors[workspaceId].push(parsed);
             });
-            return response.data;
+            return parsed;
           }
           throw new Error(response.error || "Failed to create connector");
         } catch (error: unknown) {
@@ -413,31 +505,21 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         try {
           const response = await apiClient.post<{
             success: boolean;
-            data: {
-              buildHash: string;
-              buildLog: string;
-              errors: Array<{
-                line?: number;
-                column?: number;
-                message: string;
-                severity: "error" | "warning";
-              }>;
-              resolvedDependencies: Record<string, string>;
-            };
+            data: unknown;
             error?: string;
           }>(
             `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/build`,
           );
 
+          const parsed = buildResponseSchema.safeParse(response.data);
           set(state => {
             state.buildState[connectorId] = {
               building: false,
-              buildLog: response.data?.buildLog,
-              errors: response.data?.errors || [],
+              buildLog: parsed.success ? parsed.data.buildLog : undefined,
+              errors: parsed.success ? parsed.data.errors : [],
             };
           });
 
-          // Refresh connector data after build
           await get().fetchConnectors(workspaceId);
         } catch (error: unknown) {
           set(state => {
@@ -464,19 +546,7 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         try {
           const response = await apiClient.post<{
             success: boolean;
-            data: {
-              output: DevRunOutput;
-              logs: string;
-              durationMs: number;
-              rowCount: number;
-              buildErrors?: Array<{
-                line?: number;
-                column?: number;
-                message: string;
-                severity: "error" | "warning";
-              }>;
-              buildLog?: string;
-            };
+            data: unknown;
             error?: string;
           }>(
             `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/dev-run`,
@@ -484,29 +554,38 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
           );
 
           if (response.success) {
-            set(state => {
-              state.devRunState[connectorId] = {
-                running: false,
-                output: response.data.output,
-                logs: response.data.logs,
-                durationMs: response.data.durationMs,
-                rowCount: response.data.rowCount,
-              };
-            });
+            const parsed = devRunResponseSchema.safeParse(response.data);
+            if (parsed.success) {
+              const rowCount = parsed.data.output.batches.reduce(
+                (sum, b) => sum + b.records.length,
+                0,
+              );
+              set(state => {
+                state.devRunState[connectorId] = {
+                  running: false,
+                  output: parsed.data.output,
+                  logs:
+                    typeof parsed.data.logs === "string"
+                      ? parsed.data.logs
+                      : undefined,
+                  durationMs: parsed.data.durationMs,
+                  rowCount,
+                };
+              });
+            } else {
+              set(state => {
+                state.devRunState[connectorId] = {
+                  running: false,
+                  error: "Failed to parse dev-run response",
+                };
+              });
+            }
           } else {
-            // Build failure during dev-run
             set(state => {
               state.devRunState[connectorId] = {
                 running: false,
                 error: response.error || "Dev-run failed",
               };
-              if (response.data?.buildErrors) {
-                state.buildState[connectorId] = {
-                  building: false,
-                  buildLog: response.data.buildLog,
-                  errors: response.data.buildErrors,
-                };
-              }
             });
           }
         } catch (error: unknown) {
