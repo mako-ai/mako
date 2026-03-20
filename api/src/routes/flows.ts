@@ -28,6 +28,30 @@ const logger = loggers.inngest("flow");
 
 export const flowRoutes = new Hono();
 
+type RequestContextLike = {
+  req: {
+    url: string;
+    header: (name: string) => string | undefined;
+  };
+};
+
+function getRequestBaseUrl(c: RequestContextLike): string {
+  const requestUrl = new URL(c.req.url);
+  const forwardedHost = c.req.header("x-forwarded-host")?.split(",")[0]?.trim();
+  const host = (forwardedHost || c.req.header("host"))?.split(",")[0]?.trim();
+  const forwardedProto = c.req
+    .header("x-forwarded-proto")
+    ?.split(",")[0]
+    ?.trim();
+  const protocol = forwardedProto || requestUrl.protocol.replace(":", "");
+
+  if (host) {
+    return `${protocol}://${host}`;
+  }
+
+  return requestUrl.origin;
+}
+
 // Apply unified auth middleware to all flow routes
 flowRoutes.use("*", unifiedAuthMiddleware);
 
@@ -223,10 +247,30 @@ flowRoutes.get("/", async c => {
     ];
 
     const flows = await Flow.aggregate(pipeline);
+    const requestBaseUrl = getRequestBaseUrl(c);
+    const normalizedFlows = flows.map((flow: any) => {
+      if (flow?.type !== "webhook" || !flow?._id) {
+        return flow;
+      }
+
+      const endpoint = generateWebhookEndpoint(
+        workspaceId as string,
+        flow._id.toString(),
+        requestBaseUrl,
+      );
+
+      return {
+        ...flow,
+        webhookConfig: {
+          ...(flow.webhookConfig || {}),
+          endpoint,
+        },
+      };
+    });
 
     return c.json({
       success: true,
-      data: flows,
+      data: normalizedFlows,
     });
   } catch (error) {
     logger.error("Error listing flows", { error });
@@ -482,9 +526,11 @@ flowRoutes.post("/", async c => {
       };
     } else if (flowType === "webhook") {
       // Generate webhook configuration
+      const requestBaseUrl = getRequestBaseUrl(c);
       const webhookEndpoint = generateWebhookEndpoint(
         workspaceId,
         new Types.ObjectId().toString(),
+        requestBaseUrl,
       );
       // Webhook secret must be provided by the user (from Stripe/Close)
       const webhookSecret = body.webhookSecret || "";
@@ -500,9 +546,11 @@ flowRoutes.post("/", async c => {
 
     // Update webhook endpoint with actual flow ID
     if (flowType === "webhook" && flow.webhookConfig) {
+      const requestBaseUrl = getRequestBaseUrl(c);
       flow.webhookConfig.endpoint = generateWebhookEndpoint(
         workspaceId,
         flow._id.toString(),
+        requestBaseUrl,
       );
     }
 
@@ -581,6 +629,13 @@ flowRoutes.get("/:flowId", async c => {
       await flow.populate("dataSourceId", "name type config");
     }
     await flow.populate("destinationDatabaseId", "name type");
+    if (flow.type === "webhook" && flow.webhookConfig) {
+      flow.webhookConfig.endpoint = generateWebhookEndpoint(
+        workspaceId as string,
+        flow._id.toString(),
+        getRequestBaseUrl(c),
+      );
+    }
 
     return c.json({
       success: true,
@@ -794,6 +849,11 @@ flowRoutes.put("/:flowId", async c => {
 
     // Update webhook-specific fields
     if (flow.type === "webhook" && flow.webhookConfig) {
+      flow.webhookConfig.endpoint = generateWebhookEndpoint(
+        workspaceId as string,
+        flow._id.toString(),
+        getRequestBaseUrl(c),
+      );
       if (body.webhookSecret !== undefined) {
         flow.webhookConfig.secret = body.webhookSecret;
       }
@@ -1650,7 +1710,14 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     );
 
     const stats = {
-      webhookUrl: flow.webhookConfig?.endpoint,
+      webhookUrl:
+        flow.type === "webhook"
+          ? generateWebhookEndpoint(
+              workspaceId as string,
+              flowId as string,
+              getRequestBaseUrl(c),
+            )
+          : flow.webhookConfig?.endpoint,
       lastReceived: flow.webhookConfig?.lastReceivedAt
         ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
         : null,
