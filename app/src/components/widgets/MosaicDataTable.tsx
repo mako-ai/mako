@@ -6,6 +6,7 @@ import type { MosaicInstance } from "../../lib/mosaic";
 
 interface MosaicDataTableProps {
   widgetId: string;
+  dataSourceId?: string;
   localSql: string;
   tableConfig?: {
     columns?: string[];
@@ -13,22 +14,27 @@ interface MosaicDataTableProps {
   };
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
+  crossFilterResolution?: "intersect" | "union";
   onError?: (error: string) => void;
 }
 
 const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
   widgetId,
+  dataSourceId,
   localSql,
   tableConfig,
   mosaicInstance,
   crossFilterEnabled = true,
+  crossFilterResolution = "intersect",
   onError: _onError,
 }) => {
   const { rows, fields, loading } = useMosaicClient({
     widgetId,
     localSql,
+    dataSourceId,
     mosaicInstance: mosaicInstance ?? null,
     crossFilterEnabled,
+    crossFilterResolution,
   });
 
   let visibleFields = fields;

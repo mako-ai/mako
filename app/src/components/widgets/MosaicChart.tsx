@@ -10,49 +10,31 @@ import ResultsChart, { type CrossFilterSelection } from "../ResultsChart";
 import { useMosaicClient } from "../../dashboard-runtime/useMosaicClient";
 import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 import type { MakoChartSpec } from "../../lib/chart-spec";
-import type { MosaicInstance } from "../../lib/mosaic";
+import { createSelectionClause, type MosaicInstance } from "../../lib/mosaic";
 
 interface MosaicChartProps {
   queryExecutor?: DashboardQueryExecutor;
   widgetId: string;
+  dataSourceId?: string;
   tableName: string;
   localSql: string;
   vegaLiteSpec?: Record<string, unknown>;
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
+  crossFilterResolution?: "intersect" | "union";
   onError?: (error: string) => void;
-}
-
-function buildSelectionClause(sel: CrossFilterSelection): string {
-  const esc = (v: unknown) => {
-    if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
-    if (v instanceof Date) return `'${v.toISOString()}'`;
-    return String(v);
-  };
-
-  if (sel.type === "point") {
-    if (sel.values.length === 0) return "";
-    if (sel.values.length === 1) {
-      return `"${sel.field}" = ${esc(sel.values[0])}`;
-    }
-    return `"${sel.field}" IN (${sel.values.map(esc).join(", ")})`;
-  }
-
-  if (sel.type === "interval" && sel.values.length === 2) {
-    return `"${sel.field}" >= ${esc(sel.values[0])} AND "${sel.field}" <= ${esc(sel.values[1])}`;
-  }
-
-  return "";
 }
 
 const MosaicChart: React.FC<MosaicChartProps> = ({
   queryExecutor,
   widgetId,
+  dataSourceId,
   tableName: _tableName,
   localSql,
   vegaLiteSpec,
   mosaicInstance,
   crossFilterEnabled = true,
+  crossFilterResolution = "intersect",
   onError,
 }) => {
   const {
@@ -62,8 +44,10 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
   } = useMosaicClient({
     widgetId,
     localSql,
+    dataSourceId,
     mosaicInstance: mosaicInstance ?? null,
     crossFilterEnabled,
+    crossFilterResolution,
   });
 
   const [fallbackData, setFallbackData] = useState<any[]>([]);
@@ -120,7 +104,7 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
         return;
       }
 
-      const clause = buildSelectionClause(selection);
+      const clause = createSelectionClause(selection);
       if (!clause) return;
 
       if (

@@ -6,6 +6,7 @@ import type { MosaicInstance } from "../../lib/mosaic";
 
 interface MosaicKpiCardProps {
   widgetId: string;
+  dataSourceId?: string;
   localSql: string;
   kpiConfig: {
     valueField: string;
@@ -15,6 +16,7 @@ interface MosaicKpiCardProps {
   };
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
+  crossFilterResolution?: "intersect" | "union";
   onError?: (error: string) => void;
 }
 
@@ -44,17 +46,21 @@ function formatValue(value: number | null, format?: string): string {
 
 const MosaicKpiCardComponent: React.FC<MosaicKpiCardProps> = ({
   widgetId,
+  dataSourceId,
   localSql,
   kpiConfig,
   mosaicInstance,
   crossFilterEnabled = true,
+  crossFilterResolution = "intersect",
   onError: _onError,
 }) => {
   const { rows, loading } = useMosaicClient({
     widgetId,
     localSql,
+    dataSourceId,
     mosaicInstance: mosaicInstance ?? null,
     crossFilterEnabled,
+    crossFilterResolution,
   });
 
   const row = rows[0];

@@ -50,7 +50,7 @@ function buildDashboardExportPayload(
   return {
     connectionId: dataSource.query.connectionId,
     format,
-    batchSize: 2000,
+    batchSize: format === "arrow" ? 5000 : 2000,
     filename: dataSource.name,
     queryDefinition: dataSource.query,
   };
@@ -181,6 +181,30 @@ async function fetchExport(
   return response;
 }
 
+function parseNumericHeader(
+  headers: Headers,
+  name: string,
+): number | undefined {
+  const raw = headers.get(name);
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function estimateRowsFromBytes(
+  bytesLoaded: number,
+  totalBytes: number | undefined,
+  totalRows: number | undefined,
+): number | null {
+  if (!totalBytes || !totalRows || totalBytes <= 0 || totalRows <= 0) {
+    return null;
+  }
+  return Math.max(
+    0,
+    Math.min(totalRows, Math.round((bytesLoaded / totalBytes) * totalRows)),
+  );
+}
+
 async function fetchAndLoadDataSource(
   session: DashboardSessionHandle,
   workspaceId: string,
@@ -202,13 +226,26 @@ async function fetchAndLoadDataSource(
 
   try {
     const arrowResponse = await fetchExport(workspaceId, dataSource, "arrow");
+    const totalBytes = parseNumericHeader(
+      arrowResponse.headers,
+      "Content-Length",
+    );
+    const xRowCount = parseNumericHeader(arrowResponse.headers, "X-Row-Count");
+
     const rowCount = await loadArrowStreamTable(
       session.db,
       dataSource.tableRef,
       arrowResponse.body as ReadableStream<Uint8Array>,
       {
         onProgress: bytesReceived => {
-          dispatchProgress(bytesReceived);
+          const estimated = estimateRowsFromBytes(
+            bytesReceived,
+            totalBytes,
+            xRowCount,
+          );
+          if (estimated != null) {
+            dispatchProgress(estimated);
+          }
         },
       },
     );

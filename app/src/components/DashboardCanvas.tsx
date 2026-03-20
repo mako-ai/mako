@@ -635,17 +635,22 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       isCrossFilterEnabled && (widget.crossFilter?.enabled ?? true);
 
     if (useMosaic && mosaicInstance) {
+      const resolution =
+        activeDashboard?.crossFilter?.resolution ?? "intersect";
+
       switch (widget.type) {
         case "chart":
           return (
             <MosaicChart
               queryExecutor={queryExecutor}
               widgetId={widget.id}
+              dataSourceId={widget.dataSourceId}
               tableName={dataSourceRuntime.tableRef}
               localSql={widget.localSql}
               vegaLiteSpec={widget.vegaLiteSpec}
               mosaicInstance={mosaicInstance}
               crossFilterEnabled={widgetCrossFilterEnabled}
+              crossFilterResolution={resolution}
               onError={getWidgetErrorHandler(widget.id)}
             />
           );
@@ -653,10 +658,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           return widget.kpiConfig ? (
             <MosaicKpiCard
               widgetId={widget.id}
+              dataSourceId={widget.dataSourceId}
               localSql={widget.localSql}
               kpiConfig={widget.kpiConfig}
               mosaicInstance={mosaicInstance}
               crossFilterEnabled={widgetCrossFilterEnabled}
+              crossFilterResolution={resolution}
               onError={getWidgetErrorHandler(widget.id)}
             />
           ) : null;
@@ -664,10 +671,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           return (
             <MosaicDataTable
               widgetId={widget.id}
+              dataSourceId={widget.dataSourceId}
               localSql={widget.localSql}
               tableConfig={widget.tableConfig}
               mosaicInstance={mosaicInstance}
               crossFilterEnabled={widgetCrossFilterEnabled}
+              crossFilterResolution={resolution}
               onError={getWidgetErrorHandler(widget.id)}
             />
           );

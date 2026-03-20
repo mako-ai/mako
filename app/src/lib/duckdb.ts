@@ -115,10 +115,71 @@ export async function loadArrowTable(
   }
 }
 
+async function collectStreamBytes(
+  stream: ReadableStream<Uint8Array>,
+  onProgress?: (bytesReceived: number) => void,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      chunks.push(value);
+      totalBytes += value.byteLength;
+      onProgress?.(totalBytes);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const buffer = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return buffer;
+}
+
+async function insertArrowStreamWithChunks(
+  conn: any,
+  tableName: string,
+  stream: ReadableStream<Uint8Array>,
+  onProgress?: (bytesReceived: number) => void,
+): Promise<number> {
+  const reader = stream.getReader();
+  let bytesReceived = 0;
+
+  try {
+    await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      bytesReceived += value.byteLength;
+      onProgress?.(bytesReceived);
+      await conn.insertArrowFromIPCStream(value, { name: tableName });
+    }
+
+    await conn.insertArrowFromIPCStream(
+      new Uint8Array([255, 255, 255, 255, 0, 0, 0, 0]),
+      { name: tableName },
+    );
+    return bytesReceived;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 /**
- * Stream Arrow IPC bytes from a ReadableStream into a DuckDB table.
- * Accumulates the stream into a single buffer, then delegates to loadArrowTable.
- * Falls back to loadArrowTable with the accumulated buffer on any error.
+ * Load an Arrow IPC ReadableStream into DuckDB with bounded browser memory.
+ * Attempts incremental `insertArrowFromIPCStream` when DuckDB-WASM supports
+ * it; falls back to buffering the full stream otherwise.
  */
 export async function loadArrowStreamTable(
   db: AsyncDuckDB,
@@ -128,37 +189,40 @@ export async function loadArrowStreamTable(
     onProgress?: (bytesReceived: number) => void;
   },
 ): Promise<number> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      totalBytes += value.byteLength;
-      options?.onProgress?.(totalBytes);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (totalBytes === 0) {
-    return 0;
-  }
-
-  const combined = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  await loadArrowTable(db, tableName, combined);
-
   const conn = await db.connect();
+
   try {
+    if (typeof (conn as any).insertArrowFromIPCStream === "function") {
+      const [primaryStream, fallbackStream] =
+        typeof stream.tee === "function" ? stream.tee() : [stream, null];
+
+      try {
+        await insertArrowStreamWithChunks(
+          conn,
+          tableName,
+          primaryStream,
+          options?.onProgress,
+        );
+        const result = await conn.query(
+          `SELECT count(*) as cnt FROM "${tableName}"`,
+        );
+        return Number(result.getChild("cnt")?.get(0) ?? 0);
+      } catch {
+        if (fallbackStream) {
+          const arrowBuffer = await collectStreamBytes(fallbackStream);
+          await loadArrowTable(db, tableName, arrowBuffer);
+          const result = await conn.query(
+            `SELECT count(*) as cnt FROM "${tableName}"`,
+          );
+          return Number(result.getChild("cnt")?.get(0) ?? 0);
+        }
+        throw new Error("Arrow stream insertion failed");
+      }
+    }
+
+    const arrowBuffer = await collectStreamBytes(stream, options?.onProgress);
+    if (arrowBuffer.byteLength === 0) return 0;
+    await loadArrowTable(db, tableName, arrowBuffer);
     const result = await conn.query(
       `SELECT count(*) as cnt FROM "${tableName}"`,
     );
