@@ -62,10 +62,20 @@ export interface ConsoleDeleteResponse {
 
 export interface QueryExecuteResponse {
   success: boolean;
-  data?: unknown;
+  rows?: Array<Record<string, unknown>>;
+  pageInfo?: {
+    pageSize: number;
+    hasMore: boolean;
+    nextCursor: string | null;
+    returnedRows: number;
+    capApplied: boolean;
+  };
   error?: string;
   executionTime?: number;
   rowCount?: number;
+  fields?: Array<
+    { name?: string; originalName?: string; type?: string } | string
+  >;
 }
 
 export interface QueryCancelResponse {

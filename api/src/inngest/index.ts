@@ -13,6 +13,10 @@ import {
   bigQueryCdcMaterializeFunction,
   bigQueryCdcStaleSweepFunction,
 } from "./functions/webhook-flow";
+import {
+  dashboardRefreshFunction,
+  dashboardSchedulerFunction,
+} from "./functions/dashboard-refresh";
 import { loggers } from "../logging";
 
 // Check if we're running in development mode
@@ -31,12 +35,13 @@ const baseFunctions = [
   webhookRetryFunction,
   bigQueryCdcMaterializeFunction,
   bigQueryCdcStaleSweepFunction,
+  dashboardRefreshFunction,
 ];
 
 // Conditionally add schedulers (only in production)
 export const functions = isDevelopment
   ? baseFunctions
-  : [...baseFunctions, flowSchedulerFunction];
+  : [...baseFunctions, flowSchedulerFunction, dashboardSchedulerFunction];
 
 /**
  * Log Inngest configuration status
@@ -64,4 +69,6 @@ export {
   webhookRetryFunction,
   bigQueryCdcMaterializeFunction,
   bigQueryCdcStaleSweepFunction,
+  dashboardRefreshFunction,
+  dashboardSchedulerFunction,
 };

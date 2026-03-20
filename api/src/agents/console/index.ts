@@ -37,77 +37,110 @@ function buildRuntimeContext(
   databases: AgentContext["databases"],
   databaseTypeMap: Map<string, string>,
   databaseNameMap: Map<string, string>,
+  activeConsoleResults?: AgentContext["activeConsoleResults"],
 ): string {
-  let runtimeContext = "";
+  let runtimeContext = "\n\n---\n\n## Current State (auto-injected)\n";
 
-  if (
-    (consoles && consoles.length > 0) ||
-    (databases && databases.length > 0)
-  ) {
-    runtimeContext += "\n\n---\n\n## Current State (auto-injected)\n";
+  // Open Consoles section
+  if (consoles && consoles.length > 0) {
+    runtimeContext += "\n### Open Consoles:\n";
+    for (let i = 0; i < consoles.length; i++) {
+      const c = consoles[i];
+      const connType =
+        c.connectionType ||
+        (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined);
+      const connName = c.connectionId
+        ? databaseNameMap.get(c.connectionId)
+        : undefined;
 
-    // Open Consoles section
-    if (consoles && consoles.length > 0) {
-      runtimeContext += "\n### Open Consoles:\n";
-      for (let i = 0; i < consoles.length; i++) {
-        const c = consoles[i];
-        const connType =
-          c.connectionType ||
-          (c.connectionId ? databaseTypeMap.get(c.connectionId) : undefined);
-        const connName = c.connectionId
-          ? databaseNameMap.get(c.connectionId)
-          : undefined;
+      const isActive = c.id === consoleId;
+      const activeLabel = isActive ? "[ACTIVE] " : "";
+      runtimeContext += `\n${i + 1}. ${activeLabel}"${c.title}" (id: ${c.id})\n`;
 
-        // Determine active console using consoleId param
-        const isActive = c.id === consoleId;
-        const activeLabel = isActive ? "[ACTIVE] " : "";
-        runtimeContext += `\n${i + 1}. ${activeLabel}"${c.title}" (id: ${c.id})\n`;
+      if (connType || connName || c.databaseName) {
+        const parts: string[] = [];
+        if (connType) parts.push(connType);
+        if (connName) parts.push(connName);
+        if (c.databaseName) parts.push(`db: ${c.databaseName}`);
+        runtimeContext += `   - Connection: ${parts.join(" / ")}\n`;
+      } else {
+        runtimeContext += `   - Connection: none\n`;
+      }
 
-        // Connection info
-        if (connType || connName || c.databaseName) {
-          const parts: string[] = [];
-          if (connType) parts.push(connType);
-          if (connName) parts.push(connName);
-          if (c.databaseName) parts.push(`db: ${c.databaseName}`);
-          runtimeContext += `   - Connection: ${parts.join(" / ")}\n`;
-        } else {
-          runtimeContext += `   - Connection: none\n`;
-        }
-
-        // Content
-        const trimmedContent = c.content.trim();
-        if (!trimmedContent) {
-          runtimeContext += `   - Content: empty\n`;
-        } else {
-          // Truncate long content for context
-          const lines = trimmedContent.split("\n");
-          const truncated = lines.length > 50;
-          const displayContent = truncated
-            ? lines.slice(0, 50).join("\n")
-            : trimmedContent;
-          const truncatedNote = truncated
-            ? ` (truncated from ${lines.length} lines)`
-            : "";
-          runtimeContext += `   - Content${truncatedNote}:\n`;
-          const indentedContent = displayContent
-            .split("\n")
-            .map((line: string) => `     ${line}`)
-            .join("\n");
-          runtimeContext += `${indentedContent}\n`;
-        }
+      const trimmedContent = c.content.trim();
+      if (!trimmedContent) {
+        runtimeContext += `   - Content: empty\n`;
+      } else {
+        const lines = trimmedContent.split("\n");
+        const truncated = lines.length > 50;
+        const displayContent = truncated
+          ? lines.slice(0, 50).join("\n")
+          : trimmedContent;
+        const truncatedNote = truncated
+          ? ` (truncated from ${lines.length} lines)`
+          : "";
+        runtimeContext += `   - Content${truncatedNote}:\n`;
+        const indentedContent = displayContent
+          .split("\n")
+          .map((line: string) => `     ${line}`)
+          .join("\n");
+        runtimeContext += `${indentedContent}\n`;
       }
     }
-
-    // Available Connections section
-    if (databases && databases.length > 0) {
-      runtimeContext += "\n### Available Connections:\n";
-      for (const db of databases) {
-        runtimeContext += `- ${db.type}: ${db.name} (id: ${db.id})\n`;
-      }
-    }
-
-    runtimeContext += "\n---";
+  } else {
+    runtimeContext += "\n### Open Consoles:\nNo consoles open.\n";
   }
+
+  // Available Connections section
+  if (databases && databases.length > 0) {
+    runtimeContext += "\n### Available Connections:\n";
+    for (const db of databases) {
+      runtimeContext += `- ${db.type}: ${db.name} (id: ${db.id})\n`;
+    }
+  } else {
+    runtimeContext +=
+      "\n### Available Connections:\nNo database connections configured yet.\n";
+  }
+
+  // Active console results section
+  if (activeConsoleResults) {
+    runtimeContext += "\n### Active Console Results:\n";
+    runtimeContext += `- View: ${activeConsoleResults.viewMode}\n`;
+    if (activeConsoleResults.hasResults) {
+      runtimeContext += `- Rows: ${activeConsoleResults.rowCount}\n`;
+      if (activeConsoleResults.columns.length > 0) {
+        runtimeContext += `- Columns: ${activeConsoleResults.columns.join(", ")}\n`;
+      }
+      if (activeConsoleResults.sampleRows.length > 0) {
+        runtimeContext += `- Sample data (first ${activeConsoleResults.sampleRows.length} rows):\n`;
+        runtimeContext += "```json\n";
+        runtimeContext += JSON.stringify(
+          activeConsoleResults.sampleRows,
+          null,
+          2,
+        );
+        runtimeContext += "\n```\n";
+      }
+      if (
+        activeConsoleResults.viewMode === "chart" &&
+        activeConsoleResults.chartSpec
+      ) {
+        runtimeContext += `- Current chart spec:\n`;
+        runtimeContext += "```json\n";
+        runtimeContext += JSON.stringify(
+          activeConsoleResults.chartSpec,
+          null,
+          2,
+        );
+        runtimeContext += "\n```\n";
+      }
+    } else {
+      runtimeContext +=
+        "- No query results yet (query has not been executed)\n";
+    }
+  }
+
+  runtimeContext += "\n---";
 
   return runtimeContext;
 }
@@ -127,6 +160,7 @@ export const consoleAgentFactory: AgentFactory = (
     workspaceCustomPrompt = "",
     selfDirective = "",
     consoleHints = "",
+    activeConsoleResults,
   } = context;
 
   // Build database lookup maps
@@ -161,6 +195,7 @@ export const consoleAgentFactory: AgentFactory = (
     databases,
     databaseTypeMap,
     databaseNameMap,
+    activeConsoleResults,
   );
 
   // Create tools

@@ -5,7 +5,7 @@
  * https://streamdown.ai/docs/getting-started
  */
 import React from "react";
-import { Streamdown } from "streamdown";
+import { Streamdown, type CodeHighlighterPlugin } from "streamdown";
 import { code } from "@streamdown/code";
 
 interface StreamingMarkdownProps {
@@ -17,7 +17,8 @@ export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = ({
 }) => {
   return (
     <Streamdown
-      plugins={{ code }}
+      // streamdown and @streamdown/code currently expose mismatched shiki typings.
+      plugins={{ code: code as unknown as CodeHighlighterPlugin }}
       shikiTheme={["github-light", "github-dark"]}
       controls={false}
     >

@@ -49,7 +49,7 @@ const webhookConfigSchema = z
 const flowQuerySchema = z.object({
   name: z.string(),
   query: z.string(),
-  variables: z.record(z.any()).optional(),
+  variables: z.record(z.string(), z.any()).optional(),
   dataPath: z.string().optional(),
   data_path: z.string().optional(),
   hasNextPagePath: z.string().optional(),
@@ -394,11 +394,11 @@ interface ExecutionDetails {
 
 // Store state schema for validation
 const flowStoreStateSchema = z.object({
-  flows: z.record(z.array(flowSchema)),
-  loading: z.record(z.boolean()).optional().default({}),
-  error: z.record(errorSchema.nullable()).optional().default({}),
+  flows: z.record(z.string(), z.array(flowSchema)),
+  loading: z.record(z.string(), z.boolean()).optional().default({}),
+  error: z.record(z.string(), errorSchema.nullable()).optional().default({}),
   selectedFlowId: z.string().nullable(),
-  executionHistory: z.record(z.array(flowExecutionHistorySchema)),
+  executionHistory: z.record(z.string(), z.array(flowExecutionHistorySchema)),
 });
 
 type FlowStoreState = z.infer<typeof flowStoreStateSchema>;

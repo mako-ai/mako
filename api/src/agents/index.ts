@@ -6,6 +6,7 @@
  */
 
 import { consoleAgentFactory, consoleAgentMeta } from "./console";
+import { dashboardAgentFactory, dashboardAgentMeta } from "./dashboard";
 import { flowAgentFactory, flowAgentMeta } from "./flow";
 import type { AgentFactory, AgentMeta, AgentRegistryEntry } from "./types";
 
@@ -19,6 +20,7 @@ export * from "./types";
  */
 const agents: Record<string, AgentRegistryEntry> = {
   console: { factory: consoleAgentFactory, meta: consoleAgentMeta },
+  dashboard: { factory: dashboardAgentFactory, meta: dashboardAgentMeta },
   flow: { factory: flowAgentFactory, meta: flowAgentMeta },
 };
 

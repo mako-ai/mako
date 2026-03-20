@@ -22,7 +22,7 @@ export function createValidatedStorage<T>(
         if (!validationResult.success) {
           console.warn(
             `Validation failed for ${storageName}. Resetting to default state.`,
-            validationResult.error.errors,
+            validationResult.error.issues,
           );
           // Clear corrupted data
           localStorage.removeItem(name);
@@ -50,7 +50,7 @@ export function createValidatedStorage<T>(
         if (!validationResult.success) {
           console.error(
             `Validation failed when saving ${storageName}:`,
-            validationResult.error.errors,
+            validationResult.error.issues,
           );
           return;
         }
@@ -75,7 +75,7 @@ export const optionalDateString = z
 
 // Ensure errors are always strings
 export const errorSchema = z
-  .union([z.string(), z.record(z.any()), z.null()])
+  .union([z.string(), z.record(z.string(), z.any()), z.null()])
   .transform(val => {
     if (typeof val === "string") return val;
     if (val === null) return null;

@@ -147,6 +147,15 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     lineCount: number;
   }
 
+  interface ActiveConsoleResults {
+    viewMode: "table" | "json" | "chart";
+    hasResults: boolean;
+    rowCount: number;
+    columns: string[];
+    sampleRows: Record<string, unknown>[];
+    chartSpec: Record<string, unknown> | null;
+  }
+
   const {
     messages,
     chatId,
@@ -154,23 +163,46 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     openConsoles,
     consoleId,
     modelId,
+    activeConsoleResults,
     // Agent mode selection (new)
     agentId,
     tabKind,
     flowType,
     flowFormState,
+    activeDashboardContext,
   } = body as {
     messages?: UIMessage[];
-    chatId?: string; // Frontend-owned chat ID (AI SDK best practice)
+    chatId?: string;
     workspaceId?: string;
     openConsoles?: OpenConsoleContext[];
     consoleId?: string;
     modelId?: string;
-    // Agent mode selection
+    activeConsoleResults?: ActiveConsoleResults;
     agentId?: string;
     tabKind?: string;
     flowType?: string;
     flowFormState?: Record<string, unknown>;
+    activeDashboardContext?: {
+      dashboardId: string;
+      title: string;
+      dataSources: Array<{
+        id: string;
+        name: string;
+        tableRef?: string;
+        status?: "idle" | "loading" | "ready" | "error" | null;
+        rowsLoaded?: number;
+        error?: string | null;
+        columns: Array<{ name: string; type: string }>;
+        sampleRows?: Record<string, unknown>[];
+      }>;
+      widgets: Array<{
+        id: string;
+        title?: string;
+        type: string;
+        dataSourceId: string;
+      }>;
+      crossFilterEnabled: boolean;
+    };
   };
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -361,6 +393,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     workspaceCustomPrompt,
     selfDirective,
     consoleHints,
+    activeConsoleResults,
+    activeDashboardContext,
   };
 
   // Create agent configuration

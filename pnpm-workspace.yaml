@@ -4,5 +4,6 @@ packages:
   - api
   - website
   - docs
+  - packages/*
 ignoredBuiltDependencies:
   - bcrypt

@@ -10,6 +10,12 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import type { LeftPaneView } from "./lib/types";
 
+export const DEFAULT_LEFT_PANE_SIZE = 15;
+export const DEFAULT_RIGHT_PANE_SIZE = 20;
+export const SIDE_PANEL_MIN_DEFAULT_WIDTH_PX = 150;
+export const SIDE_PANEL_MAX_DEFAULT_WIDTH_PX = 300;
+export const SIDE_PANEL_COLLAPSE_THRESHOLD_PX = 120;
+
 interface ActiveEditorContent {
   content: string;
   fileName?: string;
@@ -20,6 +26,10 @@ interface UIState {
   // Navigation
   leftPane: LeftPaneView;
   activeView: LeftPaneView; // Legacy alias for leftPane
+  leftPaneOpen: boolean;
+  rightPaneOpen: boolean;
+  leftPaneWidthPx: number | null;
+  rightPaneWidthPx: number | null;
 
   // Loading indicators (keyed by operation name)
   loading: Record<string, boolean>;
@@ -35,6 +45,16 @@ interface UIActions {
   // Navigation
   setLeftPane: (pane: LeftPaneView) => void;
   navigateToView: (view: LeftPaneView) => void;
+  setLeftPaneOpen: (open: boolean) => void;
+  openLeftPane: () => void;
+  closeLeftPane: () => void;
+  setRightPaneOpen: (open: boolean) => void;
+  openRightPane: () => void;
+  closeRightPane: () => void;
+  setPaneWidths: (widths: {
+    leftPaneWidthPx?: number | null;
+    rightPaneWidthPx?: number | null;
+  }) => void;
 
   // Loading state
   setLoading: (key: string, value: boolean) => void;
@@ -55,6 +75,10 @@ type UIStore = UIState & UIActions;
 const initialState: UIState = {
   leftPane: "databases",
   activeView: "databases",
+  leftPaneOpen: true,
+  rightPaneOpen: true,
+  leftPaneWidthPx: null,
+  rightPaneWidthPx: null,
   loading: {},
   activeEditorContent: undefined,
   currentWorkspaceId: null,
@@ -76,6 +100,46 @@ export const useUIStore = create<UIStore>()(
         set(state => {
           state.leftPane = view;
           state.activeView = view;
+        }),
+
+      setLeftPaneOpen: open =>
+        set(state => {
+          state.leftPaneOpen = open;
+        }),
+
+      openLeftPane: () =>
+        set(state => {
+          state.leftPaneOpen = true;
+        }),
+
+      closeLeftPane: () =>
+        set(state => {
+          state.leftPaneOpen = false;
+        }),
+
+      setRightPaneOpen: open =>
+        set(state => {
+          state.rightPaneOpen = open;
+        }),
+
+      openRightPane: () =>
+        set(state => {
+          state.rightPaneOpen = true;
+        }),
+
+      closeRightPane: () =>
+        set(state => {
+          state.rightPaneOpen = false;
+        }),
+
+      setPaneWidths: widths =>
+        set(state => {
+          if (widths.leftPaneWidthPx !== undefined) {
+            state.leftPaneWidthPx = widths.leftPaneWidthPx;
+          }
+          if (widths.rightPaneWidthPx !== undefined) {
+            state.rightPaneWidthPx = widths.rightPaneWidthPx;
+          }
         }),
 
       // Loading state
@@ -111,6 +175,10 @@ export const useUIStore = create<UIStore>()(
       partialize: state => ({
         leftPane: state.leftPane,
         activeView: state.activeView,
+        leftPaneOpen: state.leftPaneOpen,
+        rightPaneOpen: state.rightPaneOpen,
+        leftPaneWidthPx: state.leftPaneWidthPx,
+        rightPaneWidthPx: state.rightPaneWidthPx,
         currentWorkspaceId: state.currentWorkspaceId,
       }),
     },

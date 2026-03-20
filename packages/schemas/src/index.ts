@@ -1,0 +1,18 @@
+export {
+  DashboardQueryLanguageSchema,
+  DashboardQueryDefinitionSchema,
+  DashboardDataSourceOriginSchema,
+  DashboardDataSourceSchema,
+  DashboardWidgetSchema,
+  TableRelationshipSchema,
+  GlobalFilterSchema,
+  DashboardDefinitionSchema,
+  type DashboardQueryLanguage,
+  type DashboardQueryDefinition,
+  type DashboardDataSourceOrigin,
+  type DashboardDataSource,
+  type DashboardWidget,
+  type TableRelationship,
+  type GlobalFilter,
+  type DashboardDefinition,
+} from "./dashboard.schema";
