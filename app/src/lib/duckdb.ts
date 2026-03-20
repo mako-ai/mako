@@ -151,6 +151,21 @@ async function collectStreamBytes(
   return buffer;
 }
 
+async function countTableRows(
+  db: AsyncDuckDB,
+  tableName: string,
+): Promise<number> {
+  const conn = await db.connect();
+  try {
+    const result = await conn.query(
+      `SELECT count(*) as cnt FROM "${tableName}"`,
+    );
+    return Number(result.getChild("cnt")?.get(0) ?? 0);
+  } finally {
+    await conn.close();
+  }
+}
+
 async function insertArrowStreamWithChunks(
   conn: any,
   tableName: string,
@@ -192,7 +207,7 @@ async function insertArrowStreamWithChunks(
 /**
  * Load an Arrow IPC ReadableStream into DuckDB with bounded browser memory.
  * Falls back to buffering the full stream if the current DuckDB-WASM build
- * does not support incremental IPC insertion.
+ * does not support incremental IPC insertion. Returns the inserted row count.
  */
 export async function loadArrowStreamTable(
   db: AsyncDuckDB,
@@ -210,25 +225,29 @@ export async function loadArrowStreamTable(
         typeof stream.tee === "function" ? stream.tee() : [stream, null];
 
       try {
-        return await insertArrowStreamWithChunks(
+        await insertArrowStreamWithChunks(
           conn,
           tableName,
           primaryStream,
           options?.onProgress,
         );
+        return await countTableRows(db, tableName);
       } catch (error) {
         if (fallbackStream) {
           const arrowBuffer = await collectStreamBytes(fallbackStream);
           await loadArrowTable(db, tableName, arrowBuffer);
-          return arrowBuffer.byteLength;
+          return await countTableRows(db, tableName);
         }
         throw error;
       }
     }
 
     const arrowBuffer = await collectStreamBytes(stream, options?.onProgress);
+    if (arrowBuffer.byteLength === 0) {
+      return 0;
+    }
     await loadArrowTable(db, tableName, arrowBuffer);
-    return arrowBuffer.byteLength;
+    return await countTableRows(db, tableName);
   } finally {
     await conn.close();
   }

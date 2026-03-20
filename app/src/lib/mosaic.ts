@@ -115,6 +115,8 @@ export function convertMosaicQueryResult(data: any): MosaicQueryResult {
 
 export interface MosaicInstance {
   coordinator: MosaicCoordinator;
+  /** Default crossfilter selection kept for backward-compatible callers. */
+  selection: MosaicSelection;
   getSelection: (
     selectionKey: string,
     resolution?: DashboardCrossFilterResolution,
@@ -148,25 +150,28 @@ export async function createMosaicInstance(
     string,
     { resolution: DashboardCrossFilterResolution; selection: MosaicSelection }
   >();
+  const getSelection = (
+    selectionKey: string,
+    resolution: DashboardCrossFilterResolution = "intersect",
+  ) => {
+    const existing = selections.get(selectionKey);
+    if (existing && existing.resolution === resolution) {
+      return existing.selection;
+    }
+
+    const selection =
+      resolution === "union"
+        ? mosaic.Selection.union({ cross: true })
+        : mosaic.Selection.crossfilter();
+    selections.set(selectionKey, { resolution, selection });
+    return selection;
+  };
+  const defaultSelection = getSelection("__default__", "intersect");
 
   return {
     coordinator,
-    getSelection: (
-      selectionKey: string,
-      resolution: DashboardCrossFilterResolution = "intersect",
-    ) => {
-      const existing = selections.get(selectionKey);
-      if (existing && existing.resolution === resolution) {
-        return existing.selection;
-      }
-
-      const selection =
-        resolution === "union"
-          ? mosaic.Selection.union({ cross: true })
-          : mosaic.Selection.crossfilter();
-      selections.set(selectionKey, { resolution, selection });
-      return selection;
-    },
+    selection: defaultSelection,
+    getSelection,
     createSelectionClause: (
       selection: MosaicSelectionInput | null,
       options: { source: object; client?: MosaicClient | null },

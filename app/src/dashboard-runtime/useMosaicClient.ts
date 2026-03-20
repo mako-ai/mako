@@ -9,7 +9,7 @@ import {
 
 interface UseMosaicClientConfig {
   widgetId: string;
-  dataSourceId: string;
+  dataSourceId?: string;
   localSql: string;
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
@@ -69,7 +69,9 @@ export function useMosaicClient({
     }
 
     selectionRef.current = crossFilterEnabled
-      ? mosaicInstance.getSelection(dataSourceId, crossFilterResolution)
+      ? dataSourceId
+        ? mosaicInstance.getSelection(dataSourceId, crossFilterResolution)
+        : mosaicInstance.selection
       : null;
     setLoading(true);
 

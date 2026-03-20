@@ -21,7 +21,7 @@ import { Types } from "mongoose";
 import { loggers } from "../logging";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
-import { createArrowIPCStream } from "../utils/arrow-serializer";
+import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 
 const logger = loggers.db();
 
@@ -1373,23 +1373,18 @@ workspaceExecuteRoutes.post(
           );
         }
 
-        const stream = createArrowIPCStream(fieldsResult.fields, emitRows =>
-          databaseConnectionService.executeStreamingQuery(
-            database,
-            executableQuery,
-            {
-              ...streamingOptions,
-              onBatch: emitRows,
-            },
-          ),
-        );
-
-        return new Response(stream, {
-          headers: {
-            "Content-Type": "application/vnd.apache.arrow.stream",
-            "Content-Disposition": `attachment; filename="${safeBaseName}.arrow"`,
-            "Cache-Control": "no-store",
-          },
+        return createArrowIPCStreamResponse({
+          fields: fieldsResult.fields,
+          filename: safeBaseName,
+          streamRows: emitRows =>
+            databaseConnectionService.executeStreamingQuery(
+              database,
+              executableQuery,
+              {
+                ...streamingOptions,
+                onBatch: emitRows,
+              },
+            ),
         });
       }
 

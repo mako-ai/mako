@@ -249,3 +249,30 @@ export function createArrowIPCStream(
 
   return streamWriter.readable;
 }
+
+/**
+ * Convenience wrapper for Arrow IPC export responses.
+ */
+export function createArrowIPCStreamResponse(options: {
+  fields?: FieldMeta[];
+  filename?: string;
+  streamRows: (
+    emitRows: (rows: Array<Record<string, unknown>>) => Promise<void>,
+  ) => Promise<{ totalRows: number }>;
+}): Response {
+  const { fields = [], streamRows, filename } = options;
+  const headers = new Headers();
+  headers.set("Content-Type", "application/vnd.apache.arrow.stream");
+  headers.set("Cache-Control", "no-store");
+
+  if (filename) {
+    headers.set(
+      "Content-Disposition",
+      `attachment; filename="${filename}.arrow"`,
+    );
+  }
+
+  return new Response(createArrowIPCStream(fields, streamRows), {
+    headers,
+  });
+}
