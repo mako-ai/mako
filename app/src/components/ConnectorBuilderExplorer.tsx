@@ -24,7 +24,6 @@ import {
   RotateCw as RefreshIcon,
   Blocks as ConnectorIcon,
   Trash2 as DeleteIcon,
-  MoreVertical as MoreIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
@@ -379,8 +378,8 @@ export function ConnectorBuilderExplorer() {
         <DialogTitle>Delete Connector</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            Are you sure you want to delete "{connectorToDelete?.name}"? This
-            will also remove all associated instances.
+            Are you sure you want to delete &quot;{connectorToDelete?.name}
+            &quot;? This will also remove all associated instances.
           </Typography>
         </DialogContent>
         <DialogActions>

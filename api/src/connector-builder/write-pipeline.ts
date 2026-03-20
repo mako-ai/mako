@@ -159,14 +159,20 @@ function inferSchemaFromRecords(
       else if (typeof value === "number") {
         columnTypes.set(key, Number.isInteger(value) ? "integer" : "number");
       } else if (typeof value === "string") {
-        // Try to detect dates
-        if (/^\d{4}-\d{2}-\d{2}T/.test(value)) columnTypes.set(key, "datetime");
-        else if (/^\d{4}-\d{2}-\d{2}$/.test(value))
+        if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+          columnTypes.set(key, "datetime");
+        } else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
           columnTypes.set(key, "date");
-        else columnTypes.set(key, "string");
-      } else if (Array.isArray(value)) columnTypes.set(key, "array");
-      else if (typeof value === "object") columnTypes.set(key, "json");
-      else columnTypes.set(key, "string");
+        } else {
+          columnTypes.set(key, "string");
+        }
+      } else if (Array.isArray(value)) {
+        columnTypes.set(key, "array");
+      } else if (typeof value === "object") {
+        columnTypes.set(key, "json");
+      } else {
+        columnTypes.set(key, "string");
+      }
     }
   }
 

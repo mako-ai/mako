@@ -8,25 +8,17 @@ import {
   Chip,
   CircularProgress,
   Alert,
-  IconButton,
-  Tooltip,
 } from "@mui/material";
 import {
   Play as RunIcon,
   Hammer as BuildIcon,
-  RotateCw as RefreshIcon,
-  Check as SuccessIcon,
   X as ErrorIcon,
   Clock as TimeIcon,
-  Eye as DryRunIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import Editor from "@monaco-editor/react";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
-import {
-  useConnectorBuilderStore,
-  type DevRunOutput,
-} from "../store/connectorBuilderStore";
+import { useConnectorBuilderStore } from "../store/connectorBuilderStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { ConnectorInstanceForm } from "./ConnectorInstanceForm";
 
@@ -43,7 +35,6 @@ export function ConnectorStudio({
   workspaceId,
 }: ConnectorStudioProps) {
   const {
-    getConnector,
     updateConnector,
     buildConnector,
     devRun,
@@ -200,7 +191,9 @@ export function ConnectorStudio({
     : [];
 
   const outputLogs = devRunState?.output?.logs || [];
-  const schemaEntries = batches.filter(b => b.schema).map(b => b.schema!);
+  const schemaEntries = batches
+    .filter(b => !!b.schema)
+    .map(b => b.schema as NonNullable<typeof b.schema>);
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -553,7 +546,7 @@ function OutputPanel({
         }}
       >
         <Typography variant="body2" color="text.secondary">
-          No output yet. Click "Run" to execute the connector.
+          No output yet. Click &quot;Run&quot; to execute the connector.
         </Typography>
       </Box>
     );
