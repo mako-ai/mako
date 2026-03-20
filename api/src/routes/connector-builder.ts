@@ -16,6 +16,10 @@ import {
 } from "../connector-builder/sandbox-runner";
 import { connectorInputSchema } from "../connector-builder/output-schema";
 import { inngest } from "../inngest";
+import {
+  CONNECTOR_TEMPLATES,
+  getTemplateById,
+} from "../connector-builder/templates";
 
 const logger = loggers.connector("builder");
 
@@ -64,6 +68,78 @@ connectorBuilderRoutes.use("*", async (c: AuthenticatedContext, next) => {
   }
   await next();
 });
+
+// ── Templates ──
+
+// GET /templates - List available connector templates
+connectorBuilderRoutes.get("/templates", async (c: AuthenticatedContext) => {
+  return c.json({
+    success: true,
+    data: CONNECTOR_TEMPLATES.map(t => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      category: t.category,
+    })),
+  });
+});
+
+// GET /templates/:id - Get a specific template with code
+connectorBuilderRoutes.get(
+  "/templates/:id",
+  async (c: AuthenticatedContext) => {
+    const template = getTemplateById(c.req.param("id"));
+    if (!template) {
+      return c.json({ success: false, error: "Template not found" }, 404);
+    }
+    return c.json({ success: true, data: template });
+  },
+);
+
+// POST /connectors/from-template - Create a connector from a template
+connectorBuilderRoutes.post(
+  "/connectors/from-template",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const user = c.get("user");
+      const body = await c.req.json();
+
+      const template = getTemplateById(body.templateId);
+      if (!template) {
+        return c.json({ success: false, error: "Template not found" }, 404);
+      }
+
+      const connector = await UserConnector.create({
+        workspaceId: new Types.ObjectId(workspaceId),
+        name: body.name || template.name,
+        description: template.description,
+        source: {
+          code: template.code,
+        },
+        metadata: {
+          entities: [],
+          configSchema: {},
+          secretKeys: [],
+        },
+        visibility: "private",
+        createdBy: user?.id || "system",
+      });
+
+      logger.info("Connector created from template", {
+        connectorId: connector._id,
+        templateId: template.id,
+        workspaceId,
+      });
+
+      return c.json({ success: true, data: connector });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to create connector from template", { error });
+      return c.json({ success: false, error: message }, 500);
+    }
+  },
+);
 
 // ── UserConnector CRUD ──
 
@@ -232,6 +308,112 @@ connectorBuilderRoutes.delete(
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to delete user connector", { error });
+      return c.json({ success: false, error: message }, 500);
+    }
+  },
+);
+
+// GET /connectors/:id/versions - Get version history
+connectorBuilderRoutes.get(
+  "/connectors/:id/versions",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid connector ID" }, 400);
+      }
+
+      const connector = await UserConnector.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+        .select("versions version")
+        .lean();
+
+      if (!connector) {
+        return c.json({ success: false, error: "Connector not found" }, 404);
+      }
+
+      // Return versions without full bundle JS to keep payload small
+      const versions = (connector.versions || []).map((v: any) => ({
+        version: v.version,
+        buildHash: v.buildHash,
+        createdAt: v.createdAt,
+        createdBy: v.createdBy,
+        hasCode: !!v.code,
+      }));
+
+      return c.json({
+        success: true,
+        data: {
+          currentVersion: connector.version,
+          versions,
+        },
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to get connector versions", { error });
+      return c.json({ success: false, error: message }, 500);
+    }
+  },
+);
+
+// POST /connectors/:id/rollback - Rollback to a previous version
+connectorBuilderRoutes.post(
+  "/connectors/:id/rollback",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      const body = await c.req.json();
+      const targetVersion = body.version;
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid connector ID" }, 400);
+      }
+
+      if (typeof targetVersion !== "number") {
+        return c.json({ success: false, error: "version is required" }, 400);
+      }
+
+      const connector = await UserConnector.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!connector) {
+        return c.json({ success: false, error: "Connector not found" }, 404);
+      }
+
+      const versionEntry = connector.versions.find(
+        (v: any) => v.version === targetVersion,
+      );
+      if (!versionEntry) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+
+      connector.source.code = versionEntry.code;
+      if (versionEntry.bundleJs) {
+        connector.bundle = {
+          js: versionEntry.bundleJs,
+          sourceMap: versionEntry.bundleSourceMap,
+          buildHash: versionEntry.buildHash,
+          builtAt: new Date(),
+        };
+      }
+      await connector.save();
+
+      logger.info("Connector rolled back", {
+        connectorId: id,
+        targetVersion,
+      });
+
+      return c.json({ success: true, data: connector });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to rollback connector", { error });
       return c.json({ success: false, error: message }, 500);
     }
   },
