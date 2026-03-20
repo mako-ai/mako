@@ -99,7 +99,22 @@ export interface Dashboard {
   relationships: TableRelationship[];
   widgets: DashboardWidget[];
   globalFilters: GlobalFilter[];
-  crossFilter: { enabled: boolean; resolution: "intersect" | "union" };
+  crossFilter: {
+    enabled: boolean;
+    resolution: "intersect" | "union";
+    /**
+     * Phase 1 Mosaic migration: controls which cross-filter engine is active.
+     * - "mosaic": Mosaic coordinator drives cross-filtering (default for new dashboards).
+     * - "legacy": filterClause-based SQL rewriting (kept for backward compat).
+     *
+     * Scope contract for Phase 1:
+     * - Same-data-source-only cross-filtering (matching legacy behavior).
+     * - relationships[] and globalFilters[] remain outside Mosaic in this phase.
+     * - Selection semantics (toggle, multi-select, interval) are preserved per
+     *   the dashboard's resolution setting.
+     */
+    engine?: "mosaic" | "legacy";
+  };
   layout: { columns: number; rowHeight: number };
   cache: { ttlSeconds: number; lastRefreshedAt?: string };
   access: "private" | "workspace";

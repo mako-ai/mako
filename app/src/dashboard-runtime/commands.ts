@@ -13,6 +13,7 @@ import {
   removeDashboardDataSourceRuntime,
   syncDashboardRuntime,
 } from "./gateway";
+import { ensureMosaicInstance } from "./session-registry";
 import { selectDataSourceRuntime } from "./selectors";
 import type {
   Dashboard,
@@ -274,6 +275,10 @@ export async function executeDashboardSql(options: {
     sql: options.sql,
     dataSourceId: options.dataSourceId,
   });
+}
+
+export async function getDashboardMosaicInstance(dashboardId: string) {
+  return await ensureMosaicInstance(dashboardId);
 }
 
 export function addDashboardWidget(widget: DashboardWidget): void {

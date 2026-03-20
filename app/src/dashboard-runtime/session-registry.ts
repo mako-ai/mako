@@ -6,6 +6,7 @@ import {
   deleteOPFSFiles,
   isOPFSAvailable,
 } from "../lib/duckdb";
+import { createMosaicInstance, type MosaicInstance } from "../lib/mosaic";
 
 export interface DashboardSessionHandle {
   dashboardId: string;
@@ -14,6 +15,7 @@ export interface DashboardSessionHandle {
   persistent: boolean;
   dataSourceVersions: Map<string, string>;
   activeLoads: Map<string, Promise<void>>;
+  mosaic: MosaicInstance | null;
 }
 
 const sessions = new Map<string, DashboardSessionHandle>();
@@ -94,6 +96,7 @@ export async function ensureDashboardSession(
     persistent,
     dataSourceVersions,
     activeLoads: new Map(),
+    mosaic: null,
   };
   sessions.set(dashboardId, session);
   return session;
@@ -152,12 +155,44 @@ export async function removePersistedDataSource(
   }
 }
 
+/**
+ * Lazily create a MosaicInstance for the given dashboard session.
+ * Returns the existing instance if already created.
+ */
+export async function ensureMosaicInstance(
+  dashboardId: string,
+): Promise<MosaicInstance | null> {
+  const session = sessions.get(dashboardId);
+  if (!session) return null;
+  if (session.mosaic) return session.mosaic;
+
+  try {
+    session.mosaic = await createMosaicInstance(session.db);
+    return session.mosaic;
+  } catch {
+    return null;
+  }
+}
+
+export function getMosaicInstance(dashboardId: string): MosaicInstance | null {
+  return sessions.get(dashboardId)?.mosaic ?? null;
+}
+
 export async function disposeDashboardSession(
   dashboardId: string,
 ): Promise<void> {
   const session = sessions.get(dashboardId);
   if (!session) {
     return;
+  }
+
+  if (session.mosaic) {
+    try {
+      session.mosaic.destroy();
+    } catch {
+      // best-effort cleanup
+    }
+    session.mosaic = null;
   }
 
   if (session.persistent) {
