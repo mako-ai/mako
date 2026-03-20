@@ -212,6 +212,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     useContainerWidth();
 
   const workspaceId = currentWorkspace?.id;
+  const crossFilterEngine = dashboard?.crossFilter.engine ?? "mosaic";
+  const crossFilterResolution =
+    dashboard?.crossFilter.resolution ?? "intersect";
+  const isCrossFilterEnabled = dashboard?.crossFilter.enabled ?? false;
+  const widgets = useMemo(() => dashboard?.widgets ?? [], [dashboard]);
   const widgetErrorHandlersRef = useRef<
     Record<string, (error: string) => void>
   >({});
@@ -275,15 +280,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   const widgetFilterClauses = useMemo(() => {
-    if (
-      !dashboard?.crossFilter?.enabled ||
-      (dashboard.crossFilter.engine ?? "mosaic") !== "legacy"
-    ) {
+    if (!isCrossFilterEnabled || crossFilterEngine !== "legacy") {
       return {};
     }
 
     const result: Record<string, string> = {};
-    for (const widget of dashboard.widgets) {
+    for (const widget of widgets) {
       if (widget.crossFilter && !widget.crossFilter.enabled) continue;
 
       const clauses: string[] = [];
@@ -305,8 +307,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
     return result;
   }, [
-    dashboard?.crossFilter?.enabled,
-    dashboard?.widgets,
+    crossFilterEngine,
+    isCrossFilterEnabled,
+    widgets,
     crossFilterMap,
     runtimeSession?.dataSources,
   ]);
@@ -414,13 +417,19 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (dashboardId) {
       openDashboard(workspaceId, dashboardId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, dashboardId, isNew, openDashboard, createDashboard]);
+  }, [
+    workspaceId,
+    dashboardId,
+    isNew,
+    openDashboard,
+    createDashboard,
+    onCreated,
+  ]);
 
   useEffect(() => {
     if (!dashboard || !workspaceId || !dashboardId) return;
     void activateDashboardSession(workspaceId, dashboardId);
-  }, [dashboard?._id, workspaceId, dashboardId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashboard?._id, workspaceId, dashboardId]);
 
   useEffect(() => {
     if (viewMode === "code" && dashboard && !isUserEditingCodeRef.current) {
@@ -661,8 +670,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [dashboard, runtimeSession]);
 
   const gridLayout = useMemo(() => {
-    if (!dashboard) return [];
-    return dashboard.widgets.map(w => ({
+    return widgets.map(w => ({
       i: w.id,
       x: w.layout.x,
       y: w.layout.y,
@@ -671,7 +679,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       minW: w.layout.minW || 2,
       minH: w.layout.minH || 2,
     }));
-  }, [dashboard]);
+  }, [widgets]);
 
   if (!dashboard) {
     return (
@@ -689,11 +697,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     );
   }
 
-  const isCrossFilterEnabled = dashboard.crossFilter?.enabled ?? false;
   const hasCodeError = Boolean(codeError);
-  const crossFilterEngine = dashboard.crossFilter.engine ?? "mosaic";
-  const crossFilterResolution = dashboard.crossFilter.resolution ?? "intersect";
-
   const renderWidget = (widget: DashboardWidget) => {
     if (!runtimeSession) {
       return null;

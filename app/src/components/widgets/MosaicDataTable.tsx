@@ -48,7 +48,7 @@ const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
   let visibleFields = resultFields;
   if (tableConfig?.columns && tableConfig.columns.length > 0) {
     visibleFields = visibleFields.filter(field =>
-      tableConfig.columns!.includes(field.name),
+      tableConfig.columns?.includes(field.name),
     );
   }
 
