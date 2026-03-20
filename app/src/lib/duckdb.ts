@@ -3,7 +3,7 @@ import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 let dbInstance: AsyncDuckDB | null = null;
 let initPromise: Promise<AsyncDuckDB> | null = null;
 
-export async function createDuckDBInstance(): Promise<AsyncDuckDB> {
+async function createWorkerAndInstantiate(): Promise<AsyncDuckDB> {
   const duckdb = await import("@duckdb/duckdb-wasm");
   const bundles = duckdb.getJsDelivrBundles();
   const bundle = await duckdb.selectBundle(bundles);
@@ -22,6 +22,53 @@ export async function createDuckDBInstance(): Promise<AsyncDuckDB> {
   const db = new duckdb.AsyncDuckDB(logger, worker);
   await db.instantiate(bundle.mainModule);
   return db;
+}
+
+export async function createDuckDBInstance(): Promise<AsyncDuckDB> {
+  return createWorkerAndInstantiate();
+}
+
+export function isOPFSAvailable(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    "storage" in navigator &&
+    typeof navigator.storage.getDirectory === "function"
+  );
+}
+
+/**
+ * Create a DuckDB instance backed by OPFS so data persists across page reloads.
+ */
+export async function createPersistentDuckDBInstance(
+  opfsPath: string,
+): Promise<AsyncDuckDB> {
+  const duckdb = await import("@duckdb/duckdb-wasm");
+  const db = await createWorkerAndInstantiate();
+  await db.open({
+    path: opfsPath,
+    accessMode: duckdb.DuckDBAccessMode.READ_WRITE,
+  });
+  return db;
+}
+
+export async function checkpointDatabase(db: AsyncDuckDB): Promise<void> {
+  const conn = await db.connect();
+  try {
+    await conn.query("CHECKPOINT");
+  } finally {
+    await conn.close();
+  }
+}
+
+export async function deleteOPFSFiles(dashboardId: string): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const name = `mako_dashboard_${dashboardId}.db`;
+    await root.removeEntry(name).catch(() => {});
+    await root.removeEntry(`${name}.wal`).catch(() => {});
+  } catch {
+    // OPFS not available or file doesn't exist
+  }
 }
 
 /**

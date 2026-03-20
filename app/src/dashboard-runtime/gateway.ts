@@ -9,6 +9,9 @@ import { selectDataSourceRuntime } from "./selectors";
 import {
   ensureDashboardSession,
   getDashboardSession,
+  checkpointSession,
+  persistDataSourceVersion,
+  removePersistedDataSource,
 } from "./session-registry";
 import { useDashboardRuntimeStore } from "./store";
 import type {
@@ -120,6 +123,23 @@ async function introspectDataSource(
   return { schema, sampleRows };
 }
 
+async function getPersistedRowCount(
+  db: import("@duckdb/duckdb-wasm").AsyncDuckDB,
+  tableRef: string,
+): Promise<number | null> {
+  const conn = await db.connect();
+  try {
+    const result = await conn.query(
+      `SELECT count(*) as cnt FROM "${tableRef}"`,
+    );
+    return Number(result.getChild("cnt")?.get(0));
+  } catch {
+    return null;
+  } finally {
+    await conn.close();
+  }
+}
+
 export async function activateDashboardRuntime(
   dashboard: Dashboard,
 ): Promise<void> {
@@ -167,6 +187,35 @@ export async function materializeDashboardDataSource(options: {
     existingRuntime?.status === "ready"
   ) {
     return;
+  }
+
+  // OPFS recovery: table persisted from a previous browser session
+  if (
+    !force &&
+    session.persistent &&
+    session.dataSourceVersions.get(dataSource.id) === version
+  ) {
+    const rowCount = await getPersistedRowCount(
+      session.db,
+      dataSource.tableRef,
+    );
+    if (rowCount !== null) {
+      const { schema, sampleRows } = await introspectDataSource(
+        dashboard._id,
+        dataSource,
+      );
+      runtimeStore.dispatch(
+        dashboardRuntimeEvents.datasourceLoadSucceeded(
+          dashboard._id,
+          dataSource.id,
+          rowCount,
+          rowCount,
+          schema,
+          sampleRows,
+        ),
+      );
+      return;
+    }
   }
 
   const inFlight = session.activeLoads.get(dataSource.id);
@@ -249,6 +298,15 @@ export async function materializeDashboardDataSource(options: {
           sampleRows,
         ),
       );
+
+      await persistDataSourceVersion(
+        dashboard._id,
+        dataSource.id,
+        version,
+        dataSource.tableRef,
+        rowCount,
+      );
+      await checkpointSession(dashboard._id);
     } catch (error) {
       session.dataSourceVersions.delete(dataSource.id);
       await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
@@ -285,6 +343,7 @@ export async function syncDashboardRuntime(options: {
     if (!currentIds.has(dataSourceId)) {
       await dropTable(session.db, runtimeState.tableRef).catch(() => undefined);
       session.dataSourceVersions.delete(dataSourceId);
+      await removePersistedDataSource(dashboard._id, dataSourceId);
       useDashboardRuntimeStore
         .getState()
         .dispatch(
@@ -345,6 +404,7 @@ export async function removeDashboardDataSourceRuntime(options: {
   if (session) {
     await dropTable(session.db, options.tableRef).catch(() => undefined);
     session.dataSourceVersions.delete(options.dataSourceId);
+    await removePersistedDataSource(options.dashboardId, options.dataSourceId);
   }
 
   useDashboardRuntimeStore
