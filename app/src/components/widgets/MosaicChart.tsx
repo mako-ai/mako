@@ -1,6 +1,4 @@
-import React, {
-  useMemo,
-} from "react";
+import React, { useMemo } from "react";
 import { Box, CircularProgress } from "@mui/material";
 import ResultsChart, { type CrossFilterSelection } from "../ResultsChart";
 import type { MakoChartSpec } from "../../lib/chart-spec";
@@ -100,9 +98,7 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
       fields={fields}
       spec={enhancedSpec as MakoChartSpec | undefined}
       enableSelection={crossFilterEnabled}
-      onSelectionChange={
-        crossFilterEnabled ? handleSelectionChange : undefined
-      }
+      onSelectionChange={crossFilterEnabled ? handleSelectionChange : undefined}
     />
   );
 };

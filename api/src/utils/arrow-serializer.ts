@@ -165,7 +165,7 @@ function buildArrowTable(
     columns["_empty"] = vectorFromArray([], new Utf8());
   }
 
-  return tableFromArrays(columns);
+  return tableFromArrays(columns as any);
 }
 
 export interface SerializeOptions {
@@ -214,7 +214,9 @@ export function createArrowIPCStream(
       resolvedFields = inferFieldsFromFirstBatch(rows, resolvedFields);
       columnTypes = buildColumnTypes(resolvedFields, rows);
       emittedRows += rows.length;
-      await writer.write(buildArrowTable(rows, resolvedFields, columnTypes));
+      await writer.write(
+        buildArrowTable(rows, resolvedFields, columnTypes) as any,
+      );
     };
 
     try {
@@ -236,7 +238,7 @@ export function createArrowIPCStream(
       if (emittedRows === 0) {
         const emptyFields = inferFieldsFromFirstBatch([], resolvedFields);
         const emptyTypes = buildColumnTypes(emptyFields, []);
-        await writer.write(buildArrowTable([], emptyFields, emptyTypes));
+        await writer.write(buildArrowTable([], emptyFields, emptyTypes) as any);
       }
 
       await writer.close();

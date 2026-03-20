@@ -1350,17 +1350,17 @@ workspaceExecuteRoutes.post(
             : typeof batchSize === "number"
               ? batchSize
               : 1000,
-        executionId:
-          typeof executionId === "string" ? executionId : undefined,
+        executionId: typeof executionId === "string" ? executionId : undefined,
         signal: c.req.raw.signal,
       };
 
       if (normalizedFormat === "arrow") {
-        const fieldsResult = await databaseConnectionService.getStreamingQueryFields(
-          database,
-          executableQuery,
-          streamingOptions,
-        );
+        const fieldsResult =
+          await databaseConnectionService.getStreamingQueryFields(
+            database,
+            executableQuery,
+            streamingOptions,
+          );
         if (!fieldsResult.success || !fieldsResult.fields?.length) {
           return c.json(
             {

@@ -31,7 +31,11 @@ const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
   crossFilterResolution = "intersect",
   onError,
 }) => {
-  const { rows: resultRows, fields: resultFields, loading } = useMosaicClient({
+  const {
+    rows: resultRows,
+    fields: resultFields,
+    loading,
+  } = useMosaicClient({
     widgetId,
     dataSourceId,
     localSql,

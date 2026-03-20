@@ -137,8 +137,9 @@ export async function createMosaicInstance(
   const coordinator = new mosaic.Coordinator();
   const conn = await db.connect();
   const connector = {
-    query: async (query: { sql: string }) => {
-      const result = await conn.query(query.sql);
+    query: async (query: { sql: string } | string) => {
+      const sql = typeof query === "string" ? query : query.sql;
+      const result = await conn.query(sql);
       return result as any;
     },
   };
@@ -176,7 +177,7 @@ export async function createMosaicInstance(
 
       const clients = options.client ? new Set([options.client]) : undefined;
       if (selection.type === "interval" && selection.values.length === 2) {
-        return mosaic.clauseInterval(selection.field, selection.values, {
+        return mosaic.clauseInterval(selection.field, selection.values as any, {
           source: options.source,
           clients,
         });
@@ -239,8 +240,8 @@ export async function createMosaicClient(
   const methods = {
     selection: selection || undefined,
     filterStable,
-    query(filter?: unknown): { sql: string } {
-      return { sql: applyFilterClause(getSql(), filter) };
+    query(filter?: unknown): string {
+      return applyFilterClause(getSql(), filter);
     },
     queryResult(data: unknown): void {
       onData(convertMosaicQueryResult(data));
