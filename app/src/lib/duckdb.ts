@@ -116,6 +116,59 @@ export async function loadArrowTable(
 }
 
 /**
+ * Stream Arrow IPC bytes from a ReadableStream into a DuckDB table.
+ * Accumulates the stream into a single buffer, then delegates to loadArrowTable.
+ * Falls back to loadArrowTable with the accumulated buffer on any error.
+ */
+export async function loadArrowStreamTable(
+  db: AsyncDuckDB,
+  tableName: string,
+  stream: ReadableStream<Uint8Array>,
+  options?: {
+    onProgress?: (bytesReceived: number) => void;
+  },
+): Promise<number> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      totalBytes += value.byteLength;
+      options?.onProgress?.(totalBytes);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (totalBytes === 0) {
+    return 0;
+  }
+
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  await loadArrowTable(db, tableName, combined);
+
+  const conn = await db.connect();
+  try {
+    const result = await conn.query(
+      `SELECT count(*) as cnt FROM "${tableName}"`,
+    );
+    return Number(result.getChild("cnt")?.get(0) ?? 0);
+  } finally {
+    await conn.close();
+  }
+}
+
+/**
  * Load JSON rows as a named table in DuckDB.
  * Simpler and more reliable than Arrow IPC for moderate datasets.
  */
