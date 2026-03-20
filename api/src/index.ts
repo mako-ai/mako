@@ -246,11 +246,22 @@ async function main(): Promise<void> {
   });
 }
 
+let isShuttingDown = false;
+
+function terminateProcess(signal: NodeJS.Signals, exitCode: number): void {
+  process.exitCode = exitCode;
+  process.removeAllListeners("SIGTERM");
+  process.removeAllListeners("SIGINT");
+  process.removeAllListeners("uncaughtException");
+  process.removeAllListeners("unhandledRejection");
+  process.kill(process.pid, signal);
+}
+
 // Start the application
 main().catch(error => {
   // Use console.error here since logging might not be initialized
   console.error("Fatal error during startup:", error);
-  throw error;
+  void gracefulShutdown("SIGTERM", 1);
 });
 
 // Graceful shutdown handling
@@ -264,11 +275,18 @@ process.on("unhandledRejection", reason => {
 
 process.on("uncaughtException", err => {
   logger.error("Uncaught Exception", { error: err });
+  void gracefulShutdown("SIGTERM", 1);
 });
 
-async function gracefulShutdown(signal: string): Promise<never> {
+async function gracefulShutdown(
+  signal: NodeJS.Signals,
+  forcedExitCode?: number,
+): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   logger.info("Graceful shutdown initiated", { signal });
 
+  let exitCode = forcedExitCode ?? 0;
   try {
     // Close unified MongoDB connection pool
     logger.info("Closing MongoDB connection pool");
@@ -280,11 +298,11 @@ async function gracefulShutdown(signal: string): Promise<never> {
       await mongoose.connection.close();
       logger.info("Mongoose connection closed");
     }
-
-    logger.info("Graceful shutdown complete");
-    throw new Error(`Process terminated by ${signal}`);
   } catch (error) {
     logger.error("Error during graceful shutdown", { error });
-    throw error;
+    exitCode = 1;
+  } finally {
+    logger.info("Graceful shutdown complete");
+    terminateProcess(signal, exitCode);
   }
 }

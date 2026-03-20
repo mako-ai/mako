@@ -38,6 +38,7 @@ import {
   substituteTemplates,
   detectTemplates,
 } from "../utils/template-substitution";
+import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 
 /**
  * Helper function to infer JavaScript type from a value
@@ -144,6 +145,7 @@ export class DestinationWriter {
   private inferredColumns?: ColumnDefinition[];
   private columnTypeMap: Map<string, string> | null = null; // Mapped types for BigQuery writes
   private existingSqlTables = new Set<string>();
+  private ensuredSqlSchemas = new Set<string>();
 
   constructor(config: DestinationConfig) {
     this.config = config;
@@ -179,6 +181,47 @@ export class DestinationWriter {
     return opts;
   }
 
+  private isBigQueryDestination(): boolean {
+    return this.connection?.type === "bigquery";
+  }
+
+  private getWorkingSchema(primarySchema?: string): string | undefined {
+    if (this.isBigQueryDestination()) {
+      return BIGQUERY_WORKING_DATASET;
+    }
+    return primarySchema;
+  }
+
+  private getTargetSchema(
+    primarySchema: string | undefined,
+    useWorking: boolean,
+  ): string | undefined {
+    if (useWorking) {
+      return this.getWorkingSchema(primarySchema);
+    }
+    return primarySchema;
+  }
+
+  private async ensureSchemaForWrite(schema?: string): Promise<void> {
+    if (!schema || !this.driver?.ensureSchema || !this.connection) {
+      return;
+    }
+
+    const createIfNotExists = this.config.tableDestination?.createIfNotExists;
+    const shouldEnsure =
+      createIfNotExists ||
+      (this.isBigQueryDestination() && schema === BIGQUERY_WORKING_DATASET);
+    if (!shouldEnsure || this.ensuredSqlSchemas.has(schema)) {
+      return;
+    }
+
+    const result = await this.driver.ensureSchema(this.connection, schema);
+    if (!result.success) {
+      throw new Error(`Failed to ensure dataset: ${result.error}`);
+    }
+    this.ensuredSqlSchemas.add(schema);
+  }
+
   /**
    * Initialize the writer (connect to destination if needed)
    */
@@ -210,11 +253,8 @@ export class DestinationWriter {
 
       // Auto-create dataset/schema if needed
       const td = this.config.tableDestination;
-      if (td?.createIfNotExists && td.schema && this.driver.ensureSchema) {
-        const result = await this.driver.ensureSchema(conn, td.schema);
-        if (!result.success) {
-          throw new Error(`Failed to ensure dataset: ${result.error}`);
-        }
+      if (td?.schema) {
+        await this.ensureSchemaForWrite(td.schema);
       }
     }
   }
@@ -559,9 +599,16 @@ export class DestinationWriter {
       throw new Error("SQL destination not configured");
     }
 
-    const { tableName, schema } = this.config.tableDestination;
+    const { tableName, schema: primarySchema } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
-    const layoutOpts = this.getInsertOptionsWithLayout();
+    const stagingSchema = this.getTargetSchema(primarySchema, true);
+    const layoutOpts: InsertOptions = {
+      ...this.getInsertOptionsWithLayout(),
+      schema: primarySchema,
+      stagingSchema,
+    };
+
+    await this.ensureSchemaForWrite(stagingSchema);
 
     // Always reset staging at the start of a new full sync run so stale rows
     // from interrupted previous runs cannot leak into the next swap.
@@ -569,7 +616,7 @@ export class DestinationWriter {
       const dropResult = await this.driver.dropTable(
         this.connection,
         stagingName,
-        { schema },
+        { schema: stagingSchema },
       );
       if (!dropResult.success) {
         throw new Error(
@@ -582,7 +629,7 @@ export class DestinationWriter {
     const tableExists = await this.driver.tableExists?.(
       this.connection,
       tableName,
-      { schema },
+      { schema: primarySchema },
     );
 
     if (tableExists) {
@@ -614,14 +661,23 @@ export class DestinationWriter {
       };
     }
 
-    const { tableName, schema, createIfNotExists } =
-      this.config.tableDestination;
+    const {
+      tableName,
+      schema: primarySchema,
+      createIfNotExists,
+    } = this.config.tableDestination;
     const targetTable = this.stagingActive
       ? options.stagingTableName || `${tableName}_staging`
       : tableName;
-    const tableCacheKey = `${schema || ""}.${targetTable}`;
+    const targetSchema = this.getTargetSchema(
+      primarySchema,
+      this.stagingActive,
+    );
+    const tableCacheKey = `${targetSchema || ""}.${targetTable}`;
 
     try {
+      await this.ensureSchemaForWrite(targetSchema);
+
       // Check if table exists, create if needed.
       // Cache existence per writer instance to avoid expensive INFORMATION_SCHEMA
       // lookups on every small batch.
@@ -630,7 +686,7 @@ export class DestinationWriter {
         tableExists = !!(await this.driver.tableExists?.(
           this.connection,
           targetTable,
-          { schema },
+          { schema: targetSchema },
         ));
         if (tableExists) {
           this.existingSqlTables.add(tableCacheKey);
@@ -727,7 +783,10 @@ export class DestinationWriter {
           this.connection,
           targetTable,
           this.inferredColumns,
-          this.getInsertOptionsWithLayout(),
+          {
+            ...this.getInsertOptionsWithLayout(),
+            schema: targetSchema,
+          },
         );
 
         if (!createResult?.success) {
@@ -748,7 +807,7 @@ export class DestinationWriter {
         await (this.driver as any).addMissingColumns(
           this.connection,
           targetTable,
-          schema,
+          targetSchema,
           rows,
         );
       }
@@ -768,7 +827,7 @@ export class DestinationWriter {
           rows,
           options.keyColumns,
           {
-            schema,
+            schema: targetSchema,
             conflictStrategy: options.conflictStrategy || "update",
             columnTypes: this.columnTypeMap ?? undefined,
           },
@@ -780,7 +839,7 @@ export class DestinationWriter {
           targetTable,
           rows,
           {
-            schema,
+            schema: targetSchema,
             columnTypes: this.columnTypeMap ?? undefined,
           },
         )) || { success: false, rowsWritten: 0, error: "Insert not supported" };
@@ -801,14 +860,19 @@ export class DestinationWriter {
       throw new Error("SQL destination not configured");
     }
 
-    const { tableName, schema } = this.config.tableDestination;
+    const { tableName, schema: primarySchema } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
+    const stagingSchema = this.getTargetSchema(primarySchema, true);
 
     const result = await this.driver.swapStagingTable?.(
       this.connection,
       tableName,
       stagingName,
-      this.getInsertOptionsWithLayout(),
+      {
+        ...this.getInsertOptionsWithLayout(),
+        schema: primarySchema,
+        stagingSchema,
+      },
     );
 
     if (!result?.success) {
@@ -823,7 +887,7 @@ export class DestinationWriter {
       const dropResult = await this.driver.dropTable(
         this.connection,
         stagingName,
-        { schema },
+        { schema: stagingSchema },
       );
       if (!dropResult.success) {
         throw new Error(
@@ -838,11 +902,14 @@ export class DestinationWriter {
       return;
     }
 
-    const { tableName, schema } = this.config.tableDestination;
+    const { tableName, schema: primarySchema } = this.config.tableDestination;
     const stagingName = options.stagingTableName || `${tableName}_staging`;
+    const stagingSchema = this.getTargetSchema(primarySchema, true);
 
     try {
-      await this.driver.dropTable?.(this.connection, stagingName, { schema });
+      await this.driver.dropTable?.(this.connection, stagingName, {
+        schema: stagingSchema,
+      });
     } catch {
       // Ignore cleanup errors
     }

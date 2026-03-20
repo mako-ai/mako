@@ -15,6 +15,7 @@ import { createDestinationWriter } from "./destination-writer.service";
 import { inngest } from "../inngest/client";
 import { getEntityTableName } from "../sync/sync-orchestrator";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
+import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 
 const log = loggers.sync("bigquery-cdc");
 
@@ -492,6 +493,7 @@ async function stageChangeEventsToBigQuery(params: {
       destinationDatabaseName: params.destinationDatabaseName,
       tableDestination: {
         ...params.tableDestination,
+        schema: BIGQUERY_WORKING_DATASET,
         tableName: stageTableName,
       },
     },

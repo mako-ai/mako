@@ -17,6 +17,7 @@ import { getEntityTableName } from "../sync/sync-orchestrator";
 import { retryFailedMaterializationForFlow } from "../services/bigquery-cdc.service";
 import { syncMachineService } from "./state/sync-machine.service";
 import { resolveConfiguredEntities } from "./entity-selection";
+import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -280,6 +281,8 @@ export class CdcBackfillService {
     const enabledEntities = resolveConfiguredEntities(flow).entities;
     const tablePrefix = flow.tableDestination.tableName || "sync";
     const schema = flow.tableDestination.schema;
+    const stageSchema =
+      destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
 
     for (const entity of enabledEntities) {
       const liveTable = getEntityTableName(tablePrefix, entity);
@@ -288,7 +291,7 @@ export class CdcBackfillService {
         destination as any,
         `${liveTable}__stage_changes`,
         {
-          schema,
+          schema: stageSchema,
         },
       );
     }
