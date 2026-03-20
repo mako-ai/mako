@@ -13,6 +13,49 @@ const logger = loggers.inngest("webhook");
 
 const router = new Hono();
 
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function enqueueWebhookEventProcessing(payload: {
+  flowId: string;
+  workspaceId: string;
+  eventId: string;
+  isTest?: boolean;
+}) {
+  const maxAttempts = 3;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await inngest.send({
+        name: "webhook/event.process",
+        data: payload,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      logger.warn("Failed to enqueue webhook event for processing", {
+        flowId: payload.flowId,
+        eventId: payload.eventId,
+        attempt,
+        maxAttempts,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      if (attempt < maxAttempts) {
+        await delay(attempt * 300);
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Unknown enqueue error");
+}
+
 /**
  * Webhook endpoint handler
  * URL structure: /api/webhooks/:workspaceId/:flowId
@@ -57,6 +100,9 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     if (!dataSource) {
       return c.json({ error: "Data source not found" }, 404);
     }
+
+    // Ensure connector registry is ready before resolving connector type.
+    await connectorRegistry.ensureInitialized();
 
     // Get the connector for this data source type
     const connector = connectorRegistry.getConnector(dataSource);
@@ -136,14 +182,54 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     );
 
     // 6. Trigger immediate processing via Inngest
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
+    try {
+      await enqueueWebhookEventProcessing({
         flowId,
         workspaceId,
         eventId: webhookEvent.eventId,
-      },
-    });
+      });
+    } catch (enqueueError) {
+      await WebhookEvent.updateOne(
+        { _id: webhookEvent._id },
+        {
+          $set: {
+            status: "failed",
+            applyStatus: "failed",
+            applyError: {
+              code: "ENQUEUE_FAILED",
+              message:
+                enqueueError instanceof Error
+                  ? enqueueError.message
+                  : "Failed to enqueue webhook event for processing",
+            },
+            error: {
+              message:
+                enqueueError instanceof Error
+                  ? enqueueError.message
+                  : String(enqueueError),
+            },
+          },
+        },
+      );
+
+      logger.error("Failed to enqueue webhook event", {
+        flowId,
+        eventId: webhookEvent.eventId,
+        error:
+          enqueueError instanceof Error
+            ? enqueueError.message
+            : String(enqueueError),
+      });
+
+      return c.json(
+        {
+          received: false,
+          error: "Failed to enqueue webhook processing",
+          eventId: webhookEvent.eventId,
+        },
+        503,
+      );
+    }
 
     // 8. Return success immediately
     logger.info("Webhook processed successfully", {
@@ -208,14 +294,11 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
     await webhookEvent.save();
 
     // Trigger processing
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
-        flowId,
-        workspaceId,
-        eventId: webhookEvent.eventId,
-        isTest: true,
-      },
+    await enqueueWebhookEventProcessing({
+      flowId,
+      workspaceId,
+      eventId: webhookEvent.eventId,
+      isTest: true,
     });
 
     return c.json({

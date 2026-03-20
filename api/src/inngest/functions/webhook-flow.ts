@@ -93,6 +93,9 @@ export const webhookEventProcessFunction = inngest.createFunction(
         const dbName = database.connection.database || database.name;
         const db = dbConnection.useDb(dbName);
 
+        // Cold-start safe: registry discovery is async and may not be ready yet.
+        await connectorRegistry.ensureInitialized();
+
         // Get the connector for event mapping
         const connector = connectorRegistry.getConnector(dataSource);
         if (!connector) {
@@ -682,7 +685,7 @@ export const webhookRetryFunction = inngest.createFunction(
     id: "webhook-retry-failed",
     name: "Retry Failed Webhook Events",
   },
-  { cron: "*/30 * * * *" }, // Run every 30 minutes
+  { cron: "*/2 * * * *" }, // Run every 2 minutes
   async ({ step, logger }) => {
     const result = await step.run("retry-failed-events", async () => {
       // Find failed events with less than 5 attempts
