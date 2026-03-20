@@ -31,10 +31,12 @@ function serializeDoc(doc: any): any {
   if (obj._id) obj._id = String(obj._id);
   if (obj.workspaceId) obj.workspaceId = String(obj.workspaceId);
   if (obj.connectorId) obj.connectorId = String(obj.connectorId);
-  if (obj.createdAt instanceof Date)
+  if (obj.createdAt instanceof Date) {
     obj.createdAt = obj.createdAt.toISOString();
-  if (obj.updatedAt instanceof Date)
+  }
+  if (obj.updatedAt instanceof Date) {
     obj.updatedAt = obj.updatedAt.toISOString();
+  }
   if (obj.output?.destinationConnectionId) {
     obj.output.destinationConnectionId = String(
       obj.output.destinationConnectionId,
