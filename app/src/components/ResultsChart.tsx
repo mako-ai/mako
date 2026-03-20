@@ -192,9 +192,24 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
   const resizeFrameRef = useRef<number | null>(null);
   const selectionEmitFrameRef = useRef<number | null>(null);
   const lastSelectionRef = useRef<string>("__init__");
+  const onRenderErrorRef = useRef(onRenderError);
+  const onRenderSuccessRef = useRef(onRenderSuccess);
+  const onSelectionChangeRef = useRef(onSelectionChange);
   const { effectiveMode } = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onRenderErrorRef.current = onRenderError;
+  }, [onRenderError]);
+
+  useEffect(() => {
+    onRenderSuccessRef.current = onRenderSuccess;
+  }, [onRenderSuccess]);
+
+  useEffect(() => {
+    onSelectionChangeRef.current = onSelectionChange;
+  }, [onSelectionChange]);
 
   const autoSpec = useMemo(() => {
     if (data.length === 0) return null;
@@ -270,7 +285,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         const fullSpec: any = {
           ...baseSpec,
-          $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+          $schema: "https://vega.github.io/schema/vega-lite/v6.json",
           width: "container",
           height: "container",
           autosize: { type: "fit", contains: "padding" },
@@ -295,7 +310,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         viewRef.current = result.view;
 
-        if (enableSelection && onSelectionChange) {
+        if (enableSelection && onSelectionChangeRef.current) {
           const scheduleEmitSelection = () => {
             if (selectionEmitFrameRef.current !== null) {
               cancelAnimationFrame(selectionEmitFrameRef.current);
@@ -309,12 +324,12 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
                 const signature = JSON.stringify(next);
                 if (signature !== lastSelectionRef.current) {
                   lastSelectionRef.current = signature;
-                  onSelectionChange(next);
+                  onSelectionChangeRef.current?.(next);
                 }
               } catch {
                 if (lastSelectionRef.current !== "null") {
                   lastSelectionRef.current = "null";
-                  onSelectionChange(null);
+                  onSelectionChangeRef.current?.(null);
                 }
               }
             });
@@ -344,7 +359,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
               scheduleEmitSelection();
             } else if (lastSelectionRef.current !== "null") {
               lastSelectionRef.current = "null";
-              onSelectionChange(null);
+              onSelectionChangeRef.current?.(null);
             }
           } catch {
             // Signal may not exist for this spec — ignore
@@ -353,13 +368,13 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         dispatchContainerResize();
         setLoading(false);
-        onRenderSuccess?.();
+        onRenderSuccessRef.current?.();
       } catch (e: any) {
         if (!cancelled) {
           const errorMsg = e?.message || "Failed to render chart";
           setError(errorMsg);
           setLoading(false);
-          onRenderError?.(errorMsg);
+          onRenderErrorRef.current?.(errorMsg);
         }
       }
     }
@@ -389,9 +404,6 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
     dispatchContainerResize,
     effectiveMode,
     enableSelection,
-    onRenderError,
-    onRenderSuccess,
-    onSelectionChange,
   ]);
 
   if (data.length === 0) {

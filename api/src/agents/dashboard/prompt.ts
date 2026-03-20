@@ -47,6 +47,10 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 When creating chart widgets:
 - The \`vegaLiteSpec\` should NOT include a \`data\` property — data is injected automatically from the \`localSql\` query results
 - Write simple SQL for \`localSql\` — the data is already prepared by the console query. Use GROUP BY, aggregations, and date_trunc for charts.
+- If a widget participates in cross-filtering, keep canonical dimension field names unchanged in widget SQL.
+- Do NOT rename dimension fields in cross-filtered widget SQL. Use Vega titles, legend titles, tooltip titles, and widget titles for presentation labels instead.
+- Do NOT create calculated dimension fields in cross-filtered widget SQL unless the same canonical field exists across related widgets. Prefer moving derived fields to the data source extraction query.
+- Metric aliases such as \`COUNT(*) AS enquiry_count\` are fine; avoid aliases like \`listing_canton_code AS canton\` for cross-filter dimensions.
 - Available mark types: bar, line, area, point, arc, boxplot, rect, rule, text, tick, trail
 - Use \`fold\` transforms to unpivot multiple numeric columns for multi-line charts
 - For time series, use \`temporal\` type on the x-axis with appropriate \`timeUnit\`

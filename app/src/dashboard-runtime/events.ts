@@ -28,24 +28,33 @@ export const dashboardRuntimeEvents = {
     version,
   }),
 
+  bumpQueryGeneration: (dashboardId: string): DashboardRuntimeEvent => ({
+    type: "dashboard/query-generation-bumped",
+    dashboardId,
+  }),
+
   datasourceLoadStarted: (
     dashboardId: string,
     dataSourceId: string,
+    preserveExistingData = false,
   ): DashboardRuntimeEvent => ({
     type: "datasource/load-started",
     dashboardId,
     dataSourceId,
+    preserveExistingData,
   }),
 
   datasourceLoadProgress: (
     dashboardId: string,
     dataSourceId: string,
     rowsLoaded: number,
+    preserveExistingData = false,
   ): DashboardRuntimeEvent => ({
     type: "datasource/load-progress",
     dashboardId,
     dataSourceId,
     rowsLoaded,
+    preserveExistingData,
   }),
 
   datasourceLoadSucceeded: (
@@ -70,12 +79,14 @@ export const dashboardRuntimeEvents = {
     dataSourceId: string,
     rowsLoaded: number,
     error: string,
+    preserveExistingData = false,
   ): DashboardRuntimeEvent => ({
     type: "datasource/load-failed",
     dashboardId,
     dataSourceId,
     rowsLoaded,
     error,
+    preserveExistingData,
   }),
 
   datasourceRemoved: (
@@ -85,5 +96,80 @@ export const dashboardRuntimeEvents = {
     type: "datasource/removed",
     dashboardId,
     dataSourceId,
+  }),
+
+  widgetQueryStarted: (
+    dashboardId: string,
+    widgetId: string,
+  ): DashboardRuntimeEvent => ({
+    type: "widget/query-started",
+    dashboardId,
+    widgetId,
+  }),
+
+  widgetQuerySucceeded: (
+    dashboardId: string,
+    widgetId: string,
+    rowCount: number,
+    fields: string[],
+  ): DashboardRuntimeEvent => ({
+    type: "widget/query-succeeded",
+    dashboardId,
+    widgetId,
+    rowCount,
+    fields,
+  }),
+
+  widgetQueryFailed: (
+    dashboardId: string,
+    widgetId: string,
+    error: string,
+    errorKind: string | null,
+  ): DashboardRuntimeEvent => ({
+    type: "widget/query-failed",
+    dashboardId,
+    widgetId,
+    error,
+    errorKind,
+  }),
+
+  widgetRenderSucceeded: (
+    dashboardId: string,
+    widgetId: string,
+  ): DashboardRuntimeEvent => ({
+    type: "widget/render-succeeded",
+    dashboardId,
+    widgetId,
+  }),
+
+  widgetRenderFailed: (
+    dashboardId: string,
+    widgetId: string,
+    error: string,
+    errorKind: string | null,
+  ): DashboardRuntimeEvent => ({
+    type: "widget/render-failed",
+    dashboardId,
+    widgetId,
+    error,
+    errorKind,
+  }),
+
+  bumpWidgetRefresh: (
+    dashboardId: string,
+    widgetId: string,
+  ): DashboardRuntimeEvent => ({
+    type: "widget/refresh-bumped",
+    dashboardId,
+    widgetId,
+  }),
+
+  widgetRemoved: (
+    dashboardId: string,
+    widgetId: string,
+  ): DashboardRuntimeEvent => ({
+    type: "widget/removed",
+    dashboardId,
+    widgetId,
   }),
 };

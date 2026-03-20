@@ -166,6 +166,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     activeConsoleResults,
     // Agent mode selection (new)
     agentId,
+    activeView,
     tabKind,
     flowType,
     flowFormState,
@@ -179,6 +180,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     modelId?: string;
     activeConsoleResults?: ActiveConsoleResults;
     agentId?: string;
+    activeView?: "console" | "dashboard" | "flow-editor" | "empty";
     tabKind?: string;
     flowType?: string;
     flowFormState?: Record<string, unknown>;
@@ -344,7 +346,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Auto-discover relevant consoles via embedding search (parallel with other setup)
   let consoleHints = "";
   if (
-    resolvedAgentId === "console" &&
+    (resolvedAgentId === "console" || resolvedAgentId === "unified") &&
     isEmbeddingAvailable() &&
     messages.length > 0
   ) {
@@ -381,6 +383,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Build agent context
   const agentContext: AgentContext = {
     workspaceId,
+    activeView,
     userId: actorId,
     consoles: enrichedConsoles,
     consoleId,

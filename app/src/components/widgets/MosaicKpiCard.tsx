@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, Typography, CircularProgress } from "@mui/material";
 import { TrendingUp, TrendingDown } from "lucide-react";
+import { dashboardRuntimeEvents } from "../../dashboard-runtime/events";
+import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
 import { useMosaicClient } from "../../dashboard-runtime/useMosaicClient";
 import type {
   DashboardCrossFilterResolution,
@@ -8,6 +10,7 @@ import type {
 } from "../../lib/mosaic";
 
 interface MosaicKpiCardProps {
+  dashboardId: string;
   widgetId: string;
   dataSourceId: string;
   localSql: string;
@@ -20,6 +23,8 @@ interface MosaicKpiCardProps {
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
   crossFilterResolution?: DashboardCrossFilterResolution;
+  queryGeneration?: number;
+  refreshGeneration?: number;
   onError?: (error: string) => void;
 }
 
@@ -48,6 +53,7 @@ function formatValue(value: number | null, format?: string): string {
 }
 
 const MosaicKpiCardComponent: React.FC<MosaicKpiCardProps> = ({
+  dashboardId,
   widgetId,
   dataSourceId,
   localSql,
@@ -55,17 +61,36 @@ const MosaicKpiCardComponent: React.FC<MosaicKpiCardProps> = ({
   mosaicInstance,
   crossFilterEnabled = true,
   crossFilterResolution = "intersect",
+  queryGeneration = 0,
+  refreshGeneration = 0,
   onError,
 }) => {
   const { rows, loading } = useMosaicClient({
+    dashboardId,
     widgetId,
     dataSourceId,
     localSql,
     mosaicInstance,
     crossFilterEnabled,
     crossFilterResolution,
+    queryGeneration,
+    refreshGeneration,
     onError,
   });
+
+  React.useEffect(() => {
+    const widgetRuntime =
+      useDashboardRuntimeStore.getState().sessions[dashboardId]?.widgets[
+        widgetId
+      ];
+    if (!loading && widgetRuntime?.queryStatus === "ready") {
+      useDashboardRuntimeStore
+        .getState()
+        .dispatch(
+          dashboardRuntimeEvents.widgetRenderSucceeded(dashboardId, widgetId),
+        );
+    }
+  }, [dashboardId, loading, widgetId]);
 
   const row = rows[0];
   const mainRaw = row?.[kpiConfig.valueField];

@@ -42,6 +42,12 @@ function buildDataSourceVersion(dataSource: DashboardDataSource): string {
   );
 }
 
+function buildTemporaryTableRef(tableRef: string): string {
+  return `${tableRef}__tmp__${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
 function buildDashboardExportPayload(
   dataSource: DashboardDataSource,
   format: "arrow" | "ndjson" = "arrow",
@@ -125,6 +131,7 @@ function dispatchLoadProgress(options: {
   dataSourceId: string;
   onRowsLoaded: (loaded: number) => void;
   rowsLoaded: number;
+  preserveExistingData?: boolean;
 }) {
   options.onRowsLoaded(options.rowsLoaded);
   options.runtimeStore.dispatch(
@@ -132,6 +139,7 @@ function dispatchLoadProgress(options: {
       options.dashboardId,
       options.dataSourceId,
       options.rowsLoaded,
+      options.preserveExistingData,
     ),
   );
 }
@@ -142,6 +150,8 @@ async function loadDashboardDataSourceWithFallback(options: {
   workspaceId: string;
   dashboardId: string;
   dataSource: DashboardDataSource;
+  targetTableRef: string;
+  preserveExistingData?: boolean;
   onRowsLoaded: (loaded: number) => void;
 }): Promise<number | null> {
   const {
@@ -150,6 +160,8 @@ async function loadDashboardDataSourceWithFallback(options: {
     workspaceId,
     dashboardId,
     dataSource,
+    targetTableRef,
+    preserveExistingData = false,
     onRowsLoaded,
   } = options;
 
@@ -164,7 +176,7 @@ async function loadDashboardDataSourceWithFallback(options: {
 
     const loadedRowCount = await loadArrowStreamTable(
       session.db,
-      dataSource.tableRef,
+      targetTableRef,
       response.body,
       {
         onProgress: bytesLoaded => {
@@ -183,6 +195,7 @@ async function loadDashboardDataSourceWithFallback(options: {
             dataSourceId: dataSource.id,
             onRowsLoaded,
             rowsLoaded: estimatedRows,
+            preserveExistingData,
           });
         },
       },
@@ -190,7 +203,7 @@ async function loadDashboardDataSourceWithFallback(options: {
 
     return totalRows ?? loadedRowCount;
   } catch {
-    await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
+    await dropTable(session.db, targetTableRef).catch(() => undefined);
   }
 
   const response = await fetchDashboardExport(
@@ -200,7 +213,7 @@ async function loadDashboardDataSourceWithFallback(options: {
   );
   return await loadNdjsonStreamTable(
     session.db,
-    dataSource.tableRef,
+    targetTableRef,
     response.body,
     {
       onProgress: loaded => {
@@ -210,6 +223,7 @@ async function loadDashboardDataSourceWithFallback(options: {
           dataSourceId: dataSource.id,
           onRowsLoaded,
           rowsLoaded: loaded,
+          preserveExistingData,
         });
       },
     },
@@ -255,6 +269,7 @@ function resolveSqlBindings(
 async function introspectDataSource(
   dashboardId: string,
   dataSource: DashboardDataSource,
+  tableRef = dataSource.tableRef,
 ): Promise<{
   schema: DashboardRuntimeColumn[];
   sampleRows: Record<string, unknown>[];
@@ -264,12 +279,12 @@ async function introspectDataSource(
     return { schema: [], sampleRows: [] };
   }
 
-  const schemaRows = await describeTable(session.db, dataSource.tableRef);
+  const schemaRows = await describeTable(session.db, tableRef);
   let sampleRows: Record<string, unknown>[] = [];
   try {
     const preview = await queryDuckDB(
       session.db,
-      `SELECT * FROM "${dataSource.tableRef}" LIMIT 5`,
+      `SELECT * FROM "${tableRef}" LIMIT 5`,
     );
     sampleRows = preview.rows;
   } catch {
@@ -286,6 +301,27 @@ async function introspectDataSource(
   }));
 
   return { schema, sampleRows };
+}
+
+async function swapMaterializedTable(options: {
+  db: import("@duckdb/duckdb-wasm").AsyncDuckDB;
+  liveTableRef: string;
+  temporaryTableRef: string;
+}): Promise<void> {
+  const conn = await options.db.connect();
+  try {
+    await conn.query("BEGIN TRANSACTION");
+    await conn.query(`DROP TABLE IF EXISTS "${options.liveTableRef}"`);
+    await conn.query(
+      `ALTER TABLE "${options.temporaryTableRef}" RENAME TO "${options.liveTableRef}"`,
+    );
+    await conn.query("COMMIT");
+  } catch (error) {
+    await conn.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await conn.close();
+  }
 }
 
 async function getPersistedRowCount(
@@ -336,6 +372,8 @@ export async function materializeDashboardDataSource(options: {
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
   const version = buildDataSourceVersion(dataSource);
+  const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
+  const preserveExistingData = force && existingRuntime?.status === "ready";
   runtimeStore.dispatch(
     dashboardRuntimeEvents.registerDataSource(
       dashboard._id,
@@ -344,8 +382,6 @@ export async function materializeDashboardDataSource(options: {
       version,
     ),
   );
-
-  const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
   if (
     !force &&
     session.dataSourceVersions.get(dataSource.id) === version &&
@@ -403,18 +439,26 @@ export async function materializeDashboardDataSource(options: {
   session.activeLoads.set(dataSource.id, loadPromise);
 
   let rowsLoaded = 0;
+  let temporaryTableRef: string | null = null;
   runtimeStore.dispatch(
-    dashboardRuntimeEvents.datasourceLoadStarted(dashboard._id, dataSource.id),
+    dashboardRuntimeEvents.datasourceLoadStarted(
+      dashboard._id,
+      dataSource.id,
+      preserveExistingData,
+    ),
   );
 
   try {
-    await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
+    temporaryTableRef = buildTemporaryTableRef(dataSource.tableRef);
+    await dropTable(session.db, temporaryTableRef).catch(() => undefined);
     const rowCount = await loadDashboardDataSourceWithFallback({
       session,
       runtimeStore,
       workspaceId,
       dashboardId: dashboard._id,
       dataSource,
+      targetTableRef: temporaryTableRef,
+      preserveExistingData,
       onRowsLoaded: loaded => {
         rowsLoaded = loaded;
       },
@@ -423,7 +467,14 @@ export async function materializeDashboardDataSource(options: {
     const { schema, sampleRows } = await introspectDataSource(
       dashboard._id,
       dataSource,
+      temporaryTableRef,
     );
+
+    await swapMaterializedTable({
+      db: session.db,
+      liveTableRef: dataSource.tableRef,
+      temporaryTableRef,
+    });
 
     session.dataSourceVersions.set(dataSource.id, version);
     runtimeStore.dispatch(
@@ -448,13 +499,16 @@ export async function materializeDashboardDataSource(options: {
     resolveLoad();
   } catch (error) {
     session.dataSourceVersions.delete(dataSource.id);
-    await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
+    if (temporaryTableRef) {
+      await dropTable(session.db, temporaryTableRef).catch(() => undefined);
+    }
     runtimeStore.dispatch(
       dashboardRuntimeEvents.datasourceLoadFailed(
         dashboard._id,
         dataSource.id,
         rowsLoaded,
         error instanceof Error ? error.message : "Failed to load data source",
+        preserveExistingData,
       ),
     );
     rejectLoad(error);

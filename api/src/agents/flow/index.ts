@@ -163,7 +163,7 @@ const listFlowTabsSchema = z.object({});
  * Create tools for flow agent
  * Uses shared database discovery tools from agent-lib
  */
-function createFlowTools(workspaceId: string) {
+export function createFlowTools(workspaceId: string) {
   return {
     // =========================================================================
     // Database Discovery Tools (from shared agent-lib module)

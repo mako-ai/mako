@@ -10,6 +10,7 @@ import {
   FormControl,
   InputLabel,
   Divider,
+  Chip,
 } from "@mui/material";
 import { X, Copy } from "lucide-react";
 import Editor from "@monaco-editor/react";
@@ -18,6 +19,8 @@ import {
   type DashboardWidget,
 } from "../../store/dashboardStore";
 import { useTheme } from "../../contexts/ThemeContext";
+import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
+import { previewDashboardQuery } from "../../dashboard-runtime/commands";
 
 interface WidgetInspectorProps {
   widget: DashboardWidget;
@@ -32,6 +35,12 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
 }) => {
   const { modifyWidget, addWidget } = useDashboardStore();
   const { effectiveMode } = useTheme();
+  const runtimeSession = useDashboardRuntimeStore(state =>
+    dashboardId ? state.sessions[dashboardId] || null : null,
+  );
+  const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const [title, setTitle] = useState(widget.title || "");
   const [localSql, setLocalSql] = useState(widget.localSql);
@@ -83,6 +92,30 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
     if (dashboardId) addWidget(dashboardId, newWidget);
     onClose();
   };
+
+  const handlePreview = async () => {
+    if (!dashboardId) return;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const result = await previewDashboardQuery({
+        dashboardId,
+        dataSourceId: widget.dataSourceId,
+        sql: localSql,
+      });
+      setPreviewRows(result.rows.slice(0, 10));
+    } catch (error) {
+      setPreviewRows([]);
+      setPreviewError(
+        error instanceof Error ? error.message : "Failed to preview query",
+      );
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const widgetRuntime = runtimeSession?.widgets[widget.id];
+  const dataSourceRuntime = runtimeSession?.dataSources[widget.dataSourceId];
 
   return (
     <Box
@@ -143,6 +176,58 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
 
         <Divider />
 
+        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+          <Chip
+            size="small"
+            label={`Source: ${widget.dataSourceId}`}
+            variant="outlined"
+          />
+          {widgetRuntime?.queryStatus && (
+            <Chip
+              size="small"
+              label={`Query: ${widgetRuntime.queryStatus}`}
+              color={
+                widgetRuntime.queryStatus === "error" ? "error" : "default"
+              }
+              variant="outlined"
+            />
+          )}
+          {widgetRuntime?.renderStatus && (
+            <Chip
+              size="small"
+              label={`Render: ${widgetRuntime.renderStatus}`}
+              color={
+                widgetRuntime.renderStatus === "error" ? "error" : "default"
+              }
+              variant="outlined"
+            />
+          )}
+        </Box>
+
+        {dataSourceRuntime?.error && (
+          <Typography variant="caption" color="error">
+            Data source error: {dataSourceRuntime.error}
+          </Typography>
+        )}
+        {widgetRuntime?.queryError && (
+          <Typography variant="caption" color="error">
+            Query error
+            {widgetRuntime.queryErrorKind
+              ? ` (${widgetRuntime.queryErrorKind})`
+              : ""}
+            : {widgetRuntime.queryError}
+          </Typography>
+        )}
+        {widgetRuntime?.renderError && (
+          <Typography variant="caption" color="error">
+            Render error
+            {widgetRuntime.renderErrorKind
+              ? ` (${widgetRuntime.renderErrorKind})`
+              : ""}
+            : {widgetRuntime.renderError}
+          </Typography>
+        )}
+
         <Typography variant="caption" color="text.secondary">
           SQL Query (runs against local DuckDB)
         </Typography>
@@ -169,6 +254,46 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
             }}
           />
         </Box>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={handlePreview}
+          disabled={previewLoading}
+        >
+          {previewLoading ? "Running..." : "Test run query"}
+        </Button>
+        {previewError && (
+          <Typography variant="caption" color="error">
+            {previewError}
+          </Typography>
+        )}
+        {previewRows.length > 0 && (
+          <Box
+            sx={{
+              maxHeight: 140,
+              overflow: "auto",
+              border: "1px solid",
+              borderColor: "divider",
+              borderRadius: 1,
+              p: 1,
+              backgroundColor: "background.default",
+            }}
+          >
+            <Typography variant="caption" color="text.secondary">
+              Preview (first {previewRows.length} rows)
+            </Typography>
+            <pre
+              style={{
+                margin: 0,
+                marginTop: 8,
+                fontSize: 11,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {JSON.stringify(previewRows, null, 2)}
+            </pre>
+          </Box>
+        )}
 
         {widget.type === "chart" && (
           <>
@@ -204,6 +329,16 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
         {error && (
           <Typography color="error" variant="caption">
             {error}
+          </Typography>
+        )}
+        {widgetRuntime?.lastQueryAt && (
+          <Typography variant="caption" color="text.secondary">
+            Last query: {new Date(widgetRuntime.lastQueryAt).toLocaleString()}
+          </Typography>
+        )}
+        {widgetRuntime?.lastRenderAt && (
+          <Typography variant="caption" color="text.secondary">
+            Last render: {new Date(widgetRuntime.lastRenderAt).toLocaleString()}
           </Typography>
         )}
       </Box>

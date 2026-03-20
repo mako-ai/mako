@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, CircularProgress } from "@mui/material";
 import { DataGridPremium } from "@mui/x-data-grid-premium";
+import { dashboardRuntimeEvents } from "../../dashboard-runtime/events";
+import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
 import { useMosaicClient } from "../../dashboard-runtime/useMosaicClient";
 import type {
   DashboardCrossFilterResolution,
@@ -8,6 +10,7 @@ import type {
 } from "../../lib/mosaic";
 
 interface MosaicDataTableProps {
+  dashboardId: string;
   widgetId: string;
   dataSourceId: string;
   localSql: string;
@@ -18,10 +21,13 @@ interface MosaicDataTableProps {
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
   crossFilterResolution?: DashboardCrossFilterResolution;
+  queryGeneration?: number;
+  refreshGeneration?: number;
   onError?: (error: string) => void;
 }
 
 const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
+  dashboardId,
   widgetId,
   dataSourceId,
   localSql,
@@ -29,6 +35,8 @@ const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
   mosaicInstance,
   crossFilterEnabled = true,
   crossFilterResolution = "intersect",
+  queryGeneration = 0,
+  refreshGeneration = 0,
   onError,
 }) => {
   const {
@@ -36,14 +44,31 @@ const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
     fields: resultFields,
     loading,
   } = useMosaicClient({
+    dashboardId,
     widgetId,
     dataSourceId,
     localSql,
     mosaicInstance,
     crossFilterEnabled,
     crossFilterResolution,
+    queryGeneration,
+    refreshGeneration,
     onError,
   });
+
+  React.useEffect(() => {
+    const widgetRuntime =
+      useDashboardRuntimeStore.getState().sessions[dashboardId]?.widgets[
+        widgetId
+      ];
+    if (!loading && widgetRuntime?.queryStatus === "ready") {
+      useDashboardRuntimeStore
+        .getState()
+        .dispatch(
+          dashboardRuntimeEvents.widgetRenderSucceeded(dashboardId, widgetId),
+        );
+    }
+  }, [dashboardId, loading, widgetId]);
 
   let visibleFields = resultFields;
   if (tableConfig?.columns && tableConfig.columns.length > 0) {

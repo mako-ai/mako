@@ -42,9 +42,6 @@ import {
   Plus,
   MessageSquare,
   Trash2,
-  SquareChevronRight as ConsoleIcon,
-  ArrowLeftRight as FlowIcon,
-  ChartPie as DashboardIcon,
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
@@ -503,7 +500,7 @@ const GENERIC_SUGGESTIONS = [
   "Help me write a query to...",
 ];
 
-// Suggestions for db-flow agent (sync configuration)
+// Suggestions for db-flow assistant
 const DB_FLOW_SUGGESTIONS = [
   "Help me write a query to sync all users",
   "What template placeholders should I use?",
@@ -524,27 +521,13 @@ const Chat: React.FC<ChatProps> = ({
   const consoleTabs = useMemo(() => Object.values(tabs), [tabs]);
   const activeConsoleId = activeTabId;
 
-  // Agent mode state - manually selected via the mode switcher, or auto-detected from tab kind
-  const [agentMode, setAgentMode] = useState<"console" | "flow" | "dashboard">(
-    "console",
-  );
-  const agentModeRef = useRef(agentMode);
-  agentModeRef.current = agentMode;
-
-  // Auto-detect dashboard mode when active tab is a dashboard
   const activeTab = tabs[activeTabId || ""];
-  useEffect(() => {
-    if (activeTab?.kind === "dashboard" && agentMode !== "dashboard") {
-      setAgentMode("dashboard");
-    } else if (activeTab?.kind === "flow-editor" && agentMode !== "flow") {
-      setAgentMode("flow");
-    } else if (
-      (!activeTab?.kind || activeTab?.kind === "console") &&
-      agentMode === "dashboard"
-    ) {
-      setAgentMode("console");
-    }
-  }, [activeTab?.kind]);
+  const activeView =
+    activeTab?.kind === "dashboard" ||
+    activeTab?.kind === "flow-editor" ||
+    activeTab?.kind === "console"
+      ? activeTab.kind
+      : "empty";
 
   // Ref for dbFlowFormRef to avoid stale closure in onToolCall
   const dbFlowFormRefCurrent = useRef(dbFlowFormRef);
@@ -607,11 +590,6 @@ const Chat: React.FC<ChatProps> = ({
   const [selectedTool, setSelectedTool] = useState<ToolInvocationInfo | null>(
     null,
   );
-
-  // Agent mode selector menu
-  const [modeSelectorAnchor, setModeSelectorAnchor] =
-    useState<null | HTMLElement>(null);
-  const modeSelectorOpen = Boolean(modeSelectorAnchor);
 
   // Filter to only real console tabs (used for capturedConsoleTitle)
   const realConsoleTabs = useMemo(
@@ -680,12 +658,9 @@ const Chat: React.FC<ChatProps> = ({
               };
             });
 
-          // Get flow form state for flow agent mode
-          const flowFormState =
-            agentModeRef.current === "flow" &&
-            dbFlowFormRefCurrent.current?.current
-              ? dbFlowFormRefCurrent.current.current.getFormState()
-              : undefined;
+          const flowFormState = dbFlowFormRefCurrent.current?.current
+            ? dbFlowFormRefCurrent.current.current.getFormState()
+            : undefined;
 
           // Read results context from Editor at request time
           const resultsCtx = resultsContextRef?.current ?? null;
@@ -708,46 +683,73 @@ const Chat: React.FC<ChatProps> = ({
             openConsoles,
             consoleId: activeConsoleIdRef.current,
             activeConsoleResults,
-            // Agent mode selection
-            agentId: agentModeRef.current,
+            // Unified agent selection
+            agentId: "unified",
+            activeView,
             tabKind: activeTab?.kind,
             flowType: activeTab?.metadata?.flowType,
             flowFormState,
             // Dashboard context
-            ...(agentModeRef.current === "dashboard"
-              ? (() => {
-                  try {
-                    const snapshot = getDashboardStateSnapshot();
-                    if (!snapshot) return {};
-                    return {
-                      activeDashboardContext: {
-                        dashboardId: snapshot._id,
-                        title: snapshot.title,
-                        dataSources: snapshot.dataSources.map((ds: any) => ({
-                          id: ds.id,
-                          name: ds.name,
-                          tableRef: ds.tableRef,
-                          status: ds.status || null,
-                          rowsLoaded: ds.rowsLoaded || 0,
-                          error: ds.error || null,
-                          columns: ds.columns || [],
-                          sampleRows: ds.sampleRows || [],
-                        })),
-                        widgets: snapshot.widgets.map((w: any) => ({
-                          id: w.id,
-                          title: w.title,
-                          type: w.type,
-                          dataSourceId: w.dataSourceId,
-                        })),
-                        crossFilterEnabled:
-                          snapshot.crossFilter?.enabled ?? true,
-                      },
-                    };
-                  } catch {
-                    return {};
-                  }
-                })()
-              : {}),
+            ...(() => {
+              try {
+                const snapshot = getDashboardStateSnapshot();
+                if (!snapshot) return {};
+                const connectionById = new Map(
+                  workspaceConnections.map(connection => [
+                    connection.id,
+                    connection,
+                  ]),
+                );
+                return {
+                  activeDashboardContext: {
+                    dashboardId: snapshot._id,
+                    title: snapshot.title,
+                    dataSources: snapshot.dataSources.map((ds: any) => ({
+                      id: ds.id,
+                      name: ds.name,
+                      tableRef: ds.tableRef,
+                      status: ds.status || null,
+                      rowsLoaded: ds.rowsLoaded || 0,
+                      rowCount: ds.rowCount,
+                      error: ds.error || null,
+                      connectionType:
+                        connectionById.get(ds.query?.connectionId)?.type ||
+                        undefined,
+                      sqlDialect:
+                        (
+                          connectionById.get(ds.query?.connectionId) as
+                            | { sqlDialect?: string }
+                            | undefined
+                        )?.sqlDialect ||
+                        (ds.query?.language === "sql" ? "duckdb" : undefined),
+                      queryCode: ds.query?.code,
+                      queryLanguage: ds.query?.language,
+                      columns: ds.columns || [],
+                      sampleRows: ds.sampleRows || [],
+                    })),
+                    widgets: snapshot.widgets.map((w: any) => ({
+                      id: w.id,
+                      title: w.title,
+                      type: w.type,
+                      dataSourceId: w.dataSourceId,
+                      localSql: w.localSql,
+                      queryEngine: "mosaic",
+                      queryStatus: w.queryStatus,
+                      queryError: w.queryError,
+                      queryErrorKind: w.queryErrorKind,
+                      renderStatus: w.renderStatus,
+                      renderError: w.renderError,
+                      renderErrorKind: w.renderErrorKind,
+                      queryRowCount: w.queryRowCount,
+                      queryFields: w.queryFields,
+                    })),
+                    crossFilterEnabled: snapshot.crossFilter?.enabled ?? true,
+                  },
+                };
+              } catch {
+                return {};
+              }
+            })(),
           };
 
           return {
@@ -755,7 +757,7 @@ const Chat: React.FC<ChatProps> = ({
           };
         },
       }),
-    [], // Empty deps - all values read from refs at request time
+    [activeView, resultsContextRef, workspaceConnections], // Request body uses live refs plus current screen context
   );
 
   // Note: We use useConsoleStore.getState() inside callbacks to avoid stale closure issues
@@ -1319,180 +1321,176 @@ const Chat: React.FC<ChatProps> = ({
       }
 
       // --- Dashboard tools (client-side) ---
-      if (agentModeRef.current === "dashboard") {
-        const dashboardToolOutput = await executeDashboardAgentTool(
-          toolName,
-          input,
-        );
+      const dashboardToolOutput = await executeDashboardAgentTool(
+        toolName,
+        input,
+      );
 
-        if (dashboardToolOutput !== null) {
-          addToolOutput({
-            tool: toolName,
-            toolCallId: toolCall.toolCallId,
-            output: dashboardToolOutput,
-          });
-          return;
-        }
+      if (dashboardToolOutput !== null) {
+        addToolOutput({
+          tool: toolName,
+          toolCallId: toolCall.toolCallId,
+          output: dashboardToolOutput,
+        });
+        return;
       }
 
       // Handle flow agent client-side tools
-      if (agentModeRef.current === "flow") {
-        // get_form_state - Return current form configuration
-        if (toolName === "get_form_state") {
-          const formRef = dbFlowFormRefCurrent.current?.current;
-          if (!formRef) {
-            addToolOutput({
-              tool: "get_form_state",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "Form is not available. Make sure you're in the flow editor.",
-              },
-            });
-            return;
-          }
-
-          const formState = formRef.getFormState();
+      // get_form_state - Return current form configuration
+      if (toolName === "get_form_state") {
+        const formRef = dbFlowFormRefCurrent.current?.current;
+        if (!formRef) {
           addToolOutput({
             tool: "get_form_state",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: true,
-              formState,
+              success: false,
+              error:
+                "Form is not available. Make sure you're in the flow editor.",
             },
           });
           return;
         }
 
-        // set_form_field - Update a single form field
-        if (toolName === "set_form_field") {
-          const formRef = dbFlowFormRefCurrent.current?.current;
-          if (!formRef) {
-            addToolOutput({
-              tool: "set_form_field",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "Form is not available. Make sure you're in the flow editor.",
-              },
-            });
-            return;
-          }
+        const formState = formRef.getFormState();
+        addToolOutput({
+          tool: "get_form_state",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            formState,
+          },
+        });
+        return;
+      }
 
-          const { fieldName, value } = input as {
-            fieldName: string;
-            value: unknown;
-          };
-
-          // The tool schema uses a structured z.union() instead of z.any(),
-          // so the LLM returns proper typed values (arrays as arrays, not strings).
-          // See: TYPE_COERCION_SCHEMA in db-flow-form.schema.ts
-          formRef.setField(fieldName, value);
+      // set_form_field - Update a single form field
+      if (toolName === "set_form_field") {
+        const formRef = dbFlowFormRefCurrent.current?.current;
+        if (!formRef) {
           addToolOutput({
             tool: "set_form_field",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: true,
-              fieldName,
-              value,
-              message: `Updated ${fieldName} successfully`,
+              success: false,
+              error:
+                "Form is not available. Make sure you're in the flow editor.",
             },
           });
           return;
         }
 
-        // set_multiple_fields - Update multiple fields at once
-        if (toolName === "set_multiple_fields") {
-          const formRef = dbFlowFormRefCurrent.current?.current;
-          if (!formRef) {
-            addToolOutput({
-              tool: "set_multiple_fields",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "Form is not available. Make sure you're in the flow editor.",
-              },
-            });
-            return;
-          }
+        const { fieldName, value } = input as {
+          fieldName: string;
+          value: unknown;
+        };
 
-          const { fields } = input as { fields: Record<string, unknown> };
-          formRef.setMultipleFields(fields);
+        // The tool schema uses a structured z.union() instead of z.any(),
+        // so the LLM returns proper typed values (arrays as arrays, not strings).
+        // See: TYPE_COERCION_SCHEMA in db-flow-form.schema.ts
+        formRef.setField(fieldName, value);
+        addToolOutput({
+          tool: "set_form_field",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            fieldName,
+            value,
+            message: `Updated ${fieldName} successfully`,
+          },
+        });
+        return;
+      }
+
+      // set_multiple_fields - Update multiple fields at once
+      if (toolName === "set_multiple_fields") {
+        const formRef = dbFlowFormRefCurrent.current?.current;
+        if (!formRef) {
           addToolOutput({
             tool: "set_multiple_fields",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: true,
-              fields: Object.keys(fields),
-              message: `Updated ${Object.keys(fields).length} field(s) successfully`,
+              success: false,
+              error:
+                "Form is not available. Make sure you're in the flow editor.",
             },
           });
           return;
         }
 
-        // NOTE: set_column_mappings has been removed
-        // Use set_form_field with fieldName="typeCoercions" instead
+        const { fields } = input as { fields: Record<string, unknown> };
+        formRef.setMultipleFields(fields);
+        addToolOutput({
+          tool: "set_multiple_fields",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            fields: Object.keys(fields),
+            message: `Updated ${Object.keys(fields).length} field(s) successfully`,
+          },
+        });
+        return;
+      }
 
-        // create_flow_tab - Create a new db-scheduled flow tab
-        if (toolName === "create_flow_tab") {
-          const currentStore = useConsoleStore.getState();
-          const title = (input.title as string) || "New Database Sync";
+      // NOTE: set_column_mappings has been removed
+      // Use set_form_field with fieldName="typeCoercions" instead
 
-          // Generate a new ID and create the flow tab
-          const newTabId = generateObjectId();
-          currentStore.openTab({
-            id: newTabId,
+      // create_flow_tab - Create a new db-scheduled flow tab
+      if (toolName === "create_flow_tab") {
+        const currentStore = useConsoleStore.getState();
+        const title = (input.title as string) || "New Database Sync";
+
+        // Generate a new ID and create the flow tab
+        const newTabId = generateObjectId();
+        currentStore.openTab({
+          id: newTabId,
+          title,
+          content: "",
+          kind: "flow-editor",
+          metadata: { isNew: true, flowType: "db-scheduled" },
+        });
+        currentStore.setActiveTab(newTabId);
+
+        addToolOutput({
+          tool: "create_flow_tab",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            tabId: newTabId,
             title,
-            content: "",
-            kind: "flow-editor",
-            metadata: { isNew: true, flowType: "db-scheduled" },
-          });
-          currentStore.setActiveTab(newTabId);
+            message: `Created new flow tab "${title}"`,
+          },
+        });
+        return;
+      }
 
-          addToolOutput({
-            tool: "create_flow_tab",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              tabId: newTabId,
-              title,
-              message: `Created new flow tab "${title}"`,
-            },
-          });
-          return;
-        }
+      // list_flow_tabs - List all open flow editor tabs
+      if (toolName === "list_flow_tabs") {
+        const currentStore = useConsoleStore.getState();
+        const currentTabs = Object.values(currentStore.tabs);
+        const currentActiveId = currentStore.activeTabId;
 
-        // list_flow_tabs - List all open flow editor tabs
-        if (toolName === "list_flow_tabs") {
-          const currentStore = useConsoleStore.getState();
-          const currentTabs = Object.values(currentStore.tabs);
-          const currentActiveId = currentStore.activeTabId;
+        const flowTabs = currentTabs
+          .filter((tab: any) => tab?.kind === "flow-editor")
+          .map((tab: any) => ({
+            id: tab.id,
+            title: tab.title || "Untitled Flow",
+            flowType: tab.metadata?.flowType || "unknown",
+            flowId: tab.metadata?.flowId,
+            isNew: tab.metadata?.isNew || false,
+            isActive: tab.id === currentActiveId,
+          }));
 
-          const flowTabs = currentTabs
-            .filter((tab: any) => tab?.kind === "flow-editor")
-            .map((tab: any) => ({
-              id: tab.id,
-              title: tab.title || "Untitled Flow",
-              flowType: tab.metadata?.flowType || "unknown",
-              flowId: tab.metadata?.flowId,
-              isNew: tab.metadata?.isNew || false,
-              isActive: tab.id === currentActiveId,
-            }));
-
-          addToolOutput({
-            tool: "list_flow_tabs",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              flowTabs,
-              message: `Found ${flowTabs.length} open flow tab(s)`,
-            },
-          });
-          return;
-        }
+        addToolOutput({
+          tool: "list_flow_tabs",
+          toolCallId: toolCall.toolCallId,
+          output: {
+            success: true,
+            flowTabs,
+            message: `Found ${flowTabs.length} open flow tab(s)`,
+          },
+        });
+        return;
       }
 
       // Unknown tool - not a client-side tool, let it be handled server-side
@@ -1925,7 +1923,7 @@ const Chat: React.FC<ChatProps> = ({
             color="text.secondary"
             sx={{ textAlign: "center", mb: 1 }}
           >
-            {agentMode === "flow"
+            {activeView === "flow-editor"
               ? "I can help you configure your flow"
               : hasOnlyDemoDatabase
                 ? "Try asking about the Chinook music store data"
@@ -1940,7 +1938,7 @@ const Chat: React.FC<ChatProps> = ({
               maxWidth: 400,
             }}
           >
-            {(agentMode === "flow"
+            {(activeView === "flow-editor"
               ? DB_FLOW_SUGGESTIONS
               : hasOnlyDemoDatabase
                 ? CHINOOK_SUGGESTIONS
@@ -2350,132 +2348,6 @@ const Chat: React.FC<ChatProps> = ({
             }}
           >
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-              {/* Agent Mode Selector */}
-              <Button
-                size="small"
-                onClick={e => setModeSelectorAnchor(e.currentTarget)}
-                startIcon={
-                  agentMode === "dashboard" ? (
-                    <DashboardIcon size={14} />
-                  ) : agentMode === "console" ? (
-                    <ConsoleIcon size={14} />
-                  ) : (
-                    <FlowIcon size={14} />
-                  )
-                }
-                endIcon={<ChevronDown size={14} />}
-                sx={{
-                  textTransform: "none",
-                  color: "text.secondary",
-                  fontSize: 12,
-                  py: 0.25,
-                  px: 1,
-                  minWidth: "auto",
-                  borderRadius: 1.5,
-                  border: 1,
-                  borderColor: "divider",
-                  "&:hover": {
-                    backgroundColor: "action.hover",
-                    borderColor: "text.secondary",
-                  },
-                }}
-              >
-                {agentMode === "console"
-                  ? "Console"
-                  : agentMode === "dashboard"
-                    ? "Dashboard"
-                    : "Flow"}
-              </Button>
-              <Menu
-                anchorEl={modeSelectorAnchor}
-                open={modeSelectorOpen}
-                onClose={() => setModeSelectorAnchor(null)}
-                anchorOrigin={{
-                  vertical: "top",
-                  horizontal: "left",
-                }}
-                transformOrigin={{
-                  vertical: "bottom",
-                  horizontal: "left",
-                }}
-                slotProps={{
-                  paper: {
-                    sx: {
-                      minWidth: 180,
-                    },
-                  },
-                }}
-              >
-                <MenuItem
-                  selected={agentMode === "console"}
-                  onClick={() => {
-                    if (agentMode !== "console") {
-                      // Create new session when switching modes
-                      setChatId(generateObjectId());
-                      setMessages([]);
-                      setIsExistingChat(false);
-                      setAgentMode("console");
-                    }
-                    setModeSelectorAnchor(null);
-                  }}
-                >
-                  <ListItemIcon>
-                    <ConsoleIcon size={16} />
-                  </ListItemIcon>
-                  <Box>
-                    <Typography variant="body2">Console</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Query writing & data analysis
-                    </Typography>
-                  </Box>
-                </MenuItem>
-                <MenuItem
-                  selected={agentMode === "flow"}
-                  onClick={() => {
-                    if (agentMode !== "flow") {
-                      // Create new session when switching modes
-                      setChatId(generateObjectId());
-                      setMessages([]);
-                      setIsExistingChat(false);
-                      setAgentMode("flow");
-                    }
-                    setModeSelectorAnchor(null);
-                  }}
-                >
-                  <ListItemIcon>
-                    <FlowIcon size={16} />
-                  </ListItemIcon>
-                  <Box>
-                    <Typography variant="body2">Flow</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Database sync configuration
-                    </Typography>
-                  </Box>
-                </MenuItem>
-                <MenuItem
-                  selected={agentMode === "dashboard"}
-                  onClick={() => {
-                    if (agentMode !== "dashboard") {
-                      setChatId(generateObjectId());
-                      setMessages([]);
-                      setIsExistingChat(false);
-                      setAgentMode("dashboard");
-                    }
-                    setModeSelectorAnchor(null);
-                  }}
-                >
-                  <ListItemIcon>
-                    <DashboardIcon size={16} />
-                  </ListItemIcon>
-                  <Box>
-                    <Typography variant="body2">Dashboard</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Build interactive dashboards
-                    </Typography>
-                  </Box>
-                </MenuItem>
-              </Menu>
-
               <ModelSelector />
             </Box>
 

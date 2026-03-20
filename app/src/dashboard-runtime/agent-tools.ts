@@ -11,6 +11,12 @@ import {
 } from "./commands";
 import { useDashboardStore } from "../store/dashboardStore";
 import type { DashboardDataSource, DashboardWidget } from "./types";
+import { classifyDuckDBError, classifySourceError } from "./error-kinds";
+import {
+  validateCrossFilterWidgetSql,
+  validateDuckDBQuery,
+  validateVegaSpec,
+} from "./validation";
 
 function getActiveContext(): {
   dashboardId: string;
@@ -38,25 +44,44 @@ export async function executeDashboardAgentTool(
     }
 
     if (typeof input.consoleId === "string") {
-      const dataSource = await importConsoleAsDashboardDataSource({
-        workspaceId: ctx.workspaceId,
-        consoleId: input.consoleId,
-        name: typeof input.name === "string" ? input.name : undefined,
-        rowLimit:
-          typeof input.rowLimit === "number" ? input.rowLimit : undefined,
-        timeDimension:
-          typeof input.timeDimension === "string"
-            ? input.timeDimension
-            : undefined,
-        dashboardId: ctx.dashboardId,
-      });
+      try {
+        const dataSource = await importConsoleAsDashboardDataSource({
+          workspaceId: ctx.workspaceId,
+          consoleId: input.consoleId,
+          name: typeof input.name === "string" ? input.name : undefined,
+          rowLimit:
+            typeof input.rowLimit === "number" ? input.rowLimit : undefined,
+          timeDimension:
+            typeof input.timeDimension === "string"
+              ? input.timeDimension
+              : undefined,
+          dashboardId: ctx.dashboardId,
+        });
+        const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
+        const runtimeSource = snapshot.dataSources.find(
+          ds => ds.id === dataSource.id,
+        );
 
-      return {
-        success: true,
-        dataSourceId: dataSource.id,
-        tableRef: dataSource.tableRef,
-        message: `Data source "${dataSource.name}" imported into the dashboard.`,
-      };
+        return {
+          success: true,
+          dataSourceId: dataSource.id,
+          tableRef: dataSource.tableRef,
+          rowCount: runtimeSource?.rowCount ?? null,
+          schema: runtimeSource?.columns ?? [],
+          sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
+          message: `Data source "${dataSource.name}" imported into the dashboard.`,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to import data source";
+        return {
+          success: false,
+          error: message,
+          errorKind: classifySourceError(message),
+        };
+      }
     }
 
     return { success: false, error: "consoleId is required" };
@@ -78,36 +103,54 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "code is required" };
     }
 
-    const dataSource = await createDashboardDataSource({
-      workspaceId: ctx.workspaceId,
-      name: input.name,
-      timeDimension:
-        typeof input.timeDimension === "string"
-          ? input.timeDimension
-          : undefined,
-      rowLimit: typeof input.rowLimit === "number" ? input.rowLimit : undefined,
-      dashboardId: ctx.dashboardId,
-      query: {
-        connectionId: input.connectionId,
-        language: (typeof input.language === "string"
-          ? input.language
-          : "sql") as DashboardDataSource["query"]["language"],
-        code: input.code,
-        databaseId:
-          typeof input.databaseId === "string" ? input.databaseId : undefined,
-        databaseName:
-          typeof input.databaseName === "string"
-            ? input.databaseName
+    try {
+      const dataSource = await createDashboardDataSource({
+        workspaceId: ctx.workspaceId,
+        name: input.name,
+        timeDimension:
+          typeof input.timeDimension === "string"
+            ? input.timeDimension
             : undefined,
-      },
-    });
+        rowLimit:
+          typeof input.rowLimit === "number" ? input.rowLimit : undefined,
+        dashboardId: ctx.dashboardId,
+        query: {
+          connectionId: input.connectionId,
+          language: (typeof input.language === "string"
+            ? input.language
+            : "sql") as DashboardDataSource["query"]["language"],
+          code: input.code,
+          databaseId:
+            typeof input.databaseId === "string" ? input.databaseId : undefined,
+          databaseName:
+            typeof input.databaseName === "string"
+              ? input.databaseName
+              : undefined,
+        },
+      });
+      const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
+      const runtimeSource = snapshot.dataSources.find(
+        ds => ds.id === dataSource.id,
+      );
 
-    return {
-      success: true,
-      dataSourceId: dataSource.id,
-      tableRef: dataSource.tableRef,
-      message: `Data source "${dataSource.name}" created and loaded.`,
-    };
+      return {
+        success: true,
+        dataSourceId: dataSource.id,
+        tableRef: dataSource.tableRef,
+        rowCount: runtimeSource?.rowCount ?? null,
+        schema: runtimeSource?.columns ?? [],
+        sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
+        message: `Data source "${dataSource.name}" created and loaded.`,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to create data source";
+      return {
+        success: false,
+        error: message,
+        errorKind: classifySourceError(message),
+      };
+    }
   }
 
   if (toolName === "update_data_source_query") {
@@ -135,42 +178,64 @@ export async function executeDashboardAgentTool(
         : existing.query.language
     ) as DashboardDataSource["query"]["language"];
 
-    await updateDashboardDataSourceQuery({
-      workspaceId: ctx.workspaceId,
-      dataSourceId: input.dataSourceId,
-      dashboardId: ctx.dashboardId,
-      changes: {
-        name: typeof input.name === "string" ? input.name : existing.name,
-        timeDimension:
-          typeof input.timeDimension === "string"
-            ? input.timeDimension
-            : existing.timeDimension,
-        rowLimit:
-          typeof input.rowLimit === "number"
-            ? input.rowLimit
-            : existing.rowLimit,
-        query: {
-          ...existing.query,
-          connectionId:
-            typeof input.connectionId === "string"
-              ? input.connectionId
-              : existing.query.connectionId,
-          language: nextLanguage,
-          code:
-            typeof input.code === "string" ? input.code : existing.query.code,
-          databaseId:
-            typeof input.databaseId === "string"
-              ? input.databaseId
-              : existing.query.databaseId,
-          databaseName:
-            typeof input.databaseName === "string"
-              ? input.databaseName
-              : existing.query.databaseName,
+    try {
+      await updateDashboardDataSourceQuery({
+        workspaceId: ctx.workspaceId,
+        dataSourceId: input.dataSourceId,
+        dashboardId: ctx.dashboardId,
+        changes: {
+          name: typeof input.name === "string" ? input.name : existing.name,
+          timeDimension:
+            typeof input.timeDimension === "string"
+              ? input.timeDimension
+              : existing.timeDimension,
+          rowLimit:
+            typeof input.rowLimit === "number"
+              ? input.rowLimit
+              : existing.rowLimit,
+          query: {
+            ...existing.query,
+            connectionId:
+              typeof input.connectionId === "string"
+                ? input.connectionId
+                : existing.query.connectionId,
+            language: nextLanguage,
+            code:
+              typeof input.code === "string" ? input.code : existing.query.code,
+            databaseId:
+              typeof input.databaseId === "string"
+                ? input.databaseId
+                : existing.query.databaseId,
+            databaseName:
+              typeof input.databaseName === "string"
+                ? input.databaseName
+                : existing.query.databaseName,
+          },
         },
-      },
-    });
+      });
 
-    return { success: true, dataSourceId: input.dataSourceId };
+      const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
+      const runtimeSource = snapshot.dataSources.find(
+        ds => ds.id === input.dataSourceId,
+      );
+      return {
+        success: true,
+        dataSourceId: input.dataSourceId,
+        rowCount: runtimeSource?.rowCount ?? null,
+        schema: runtimeSource?.columns ?? [],
+        sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to update data source query";
+      return {
+        success: false,
+        error: message,
+        errorKind: classifySourceError(message),
+      };
+    }
   }
 
   if (toolName === "get_dashboard_state") {
@@ -218,6 +283,35 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "add_widget") {
+    const ctx = getActiveContext();
+    if (!ctx) {
+      return { success: false, error: "No active dashboard" };
+    }
+
+    if (input.vegaLiteSpec !== undefined) {
+      const specValidation = validateVegaSpec(input.vegaLiteSpec);
+      if (!specValidation.valid) {
+        return {
+          success: false,
+          error: `Invalid Vega-Lite spec: ${specValidation.errors.join(" | ")}`,
+          errorKind: specValidation.errorKind,
+        };
+      }
+    }
+
+    const queryValidation = await validateDuckDBQuery({
+      dashboardId: ctx.dashboardId,
+      dataSourceId: input.dataSourceId as string | undefined,
+      sql: String(input.localSql || ""),
+    });
+    if (!queryValidation.valid) {
+      return {
+        success: false,
+        error: queryValidation.error,
+        errorKind: queryValidation.errorKind,
+      };
+    }
+
     const widget: DashboardWidget = {
       id: nanoid(),
       title: input.title as string | undefined,
@@ -230,8 +324,39 @@ export async function executeDashboardAgentTool(
       crossFilter: { enabled: true },
       layout: input.layout as DashboardWidget["layout"],
     };
+    const crossFilterWarnings = validateCrossFilterWidgetSql({
+      sql: widget.localSql,
+      crossFilterEnabled: widget.crossFilter.enabled,
+    });
     addDashboardWidget(widget);
-    return { success: true, widgetId: widget.id };
+
+    try {
+      const result = await previewDashboardQuery({
+        dashboardId: ctx.dashboardId,
+        dataSourceId: widget.dataSourceId,
+        sql: widget.localSql,
+      });
+      return {
+        success: true,
+        widgetId: widget.id,
+        query: {
+          rowCount: result.rowCount,
+          fields: result.fields.map(field => field.name),
+          sampleRow: result.rows[0] ?? null,
+        },
+        specValidation: input.vegaLiteSpec ? { valid: true } : undefined,
+        warnings: crossFilterWarnings,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Widget query failed";
+      return {
+        success: false,
+        widgetId: widget.id,
+        error: message,
+        errorKind: classifyDuckDBError(message),
+      };
+    }
   }
 
   if (toolName === "modify_widget") {
@@ -249,8 +374,77 @@ export async function executeDashboardAgentTool(
       changes.tableConfig = input.tableConfig;
     }
     if (input.layout !== undefined) changes.layout = input.layout;
+    if (changes.vegaLiteSpec !== undefined) {
+      const specValidation = validateVegaSpec(changes.vegaLiteSpec);
+      if (!specValidation.valid) {
+        return {
+          success: false,
+          error: `Invalid Vega-Lite spec: ${specValidation.errors.join(" | ")}`,
+          errorKind: specValidation.errorKind,
+        };
+      }
+    }
+    if (changes.localSql !== undefined) {
+      const ctx = getActiveContext();
+      if (!ctx) {
+        return { success: false, error: "No active dashboard" };
+      }
+      const dashboard =
+        useDashboardStore.getState().openDashboards[ctx.dashboardId];
+      const widget = dashboard?.widgets.find(w => w.id === input.widgetId);
+      const queryValidation = await validateDuckDBQuery({
+        dashboardId: ctx.dashboardId,
+        dataSourceId: widget?.dataSourceId,
+        sql: String(changes.localSql),
+      });
+      if (!queryValidation.valid) {
+        return {
+          success: false,
+          error: queryValidation.error,
+          errorKind: queryValidation.errorKind,
+        };
+      }
+    }
     updateDashboardWidget(input.widgetId, changes as Partial<DashboardWidget>);
-    return { success: true, widgetId: input.widgetId };
+
+    try {
+      const ctx = getActiveContext();
+      const dashboard = ctx
+        ? useDashboardStore.getState().openDashboards[ctx.dashboardId]
+        : null;
+      const widget = dashboard?.widgets.find(w => w.id === input.widgetId);
+      if (!ctx || !widget) {
+        return { success: true, widgetId: input.widgetId };
+      }
+      const crossFilterWarnings = validateCrossFilterWidgetSql({
+        sql: widget.localSql,
+        crossFilterEnabled: widget.crossFilter?.enabled ?? true,
+      });
+      const result = await previewDashboardQuery({
+        dashboardId: ctx.dashboardId,
+        dataSourceId: widget.dataSourceId,
+        sql: widget.localSql,
+      });
+      return {
+        success: true,
+        widgetId: input.widgetId,
+        query: {
+          rowCount: result.rowCount,
+          fields: result.fields.map(field => field.name),
+          sampleRow: result.rows[0] ?? null,
+        },
+        warnings: crossFilterWarnings,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Widget query failed";
+      return {
+        success: false,
+        widgetId: input.widgetId,
+        error: message,
+        errorKind: classifyDuckDBError(message),
+      };
+    }
   }
 
   if (toolName === "remove_widget") {

@@ -3,6 +3,7 @@ import type {
   DashboardDataSource,
   DashboardDataSourceRuntimeState,
   DashboardSessionRuntimeState,
+  DashboardWidgetRuntimeState,
 } from "./types";
 import { useDashboardRuntimeStore } from "./store";
 
@@ -30,6 +31,22 @@ export function selectDataSourceRuntime(
   }
 
   return session.dataSources[dataSourceId] || null;
+}
+
+export function selectWidgetRuntime(
+  dashboardId: string | null | undefined,
+  widgetId: string | null | undefined,
+): DashboardWidgetRuntimeState | null {
+  if (!dashboardId || !widgetId) {
+    return null;
+  }
+
+  const session = selectDashboardSession(dashboardId);
+  if (!session) {
+    return null;
+  }
+
+  return session.widgets[widgetId] || null;
 }
 
 export function selectAllSourcesReady(dashboard: Dashboard | null): boolean {

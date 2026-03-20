@@ -6,24 +6,55 @@ import {
   type MosaicQueryResult,
   type MosaicSelectionInput,
 } from "../lib/mosaic";
+import { dashboardRuntimeEvents } from "./events";
+import { classifyDuckDBError } from "./error-kinds";
+import { useDashboardRuntimeStore } from "./store";
 
 interface UseMosaicClientConfig {
+  dashboardId: string;
   widgetId: string;
   dataSourceId?: string;
   localSql: string;
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
   crossFilterResolution?: DashboardCrossFilterResolution;
+  queryGeneration?: number;
+  refreshGeneration?: number;
   onError?: (error: string) => void;
 }
 
+function destroyMosaicClient(
+  mosaicInstance: MosaicInstance,
+  client: any,
+): void {
+  if (!client) return;
+
+  try {
+    if (typeof client.destroy === "function") {
+      client.destroy();
+      return;
+    }
+  } catch {
+    // Fall through to coordinator disconnect as a best-effort fallback.
+  }
+
+  try {
+    mosaicInstance.coordinator.disconnect?.(client);
+  } catch {
+    // Best-effort cleanup when widget teardown races with coordinator updates.
+  }
+}
+
 export function useMosaicClient({
+  dashboardId,
   widgetId,
   dataSourceId,
   localSql,
   mosaicInstance,
   crossFilterEnabled = true,
   crossFilterResolution = "intersect",
+  queryGeneration = 0,
+  refreshGeneration = 0,
   onError,
 }: UseMosaicClientConfig) {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
@@ -65,6 +96,16 @@ export function useMosaicClient({
       setRows([]);
       setFields([]);
       setLoading(false);
+      useDashboardRuntimeStore
+        .getState()
+        .dispatch(
+          dashboardRuntimeEvents.widgetQueryFailed(
+            dashboardId,
+            widgetId,
+            "Mosaic runtime is not available",
+            "crossfilter_invalid",
+          ),
+        );
       return;
     }
 
@@ -74,6 +115,11 @@ export function useMosaicClient({
         : mosaicInstance.selection
       : null;
     setLoading(true);
+    useDashboardRuntimeStore
+      .getState()
+      .dispatch(
+        dashboardRuntimeEvents.widgetQueryStarted(dashboardId, widgetId),
+      );
 
     void (async () => {
       try {
@@ -89,6 +135,14 @@ export function useMosaicClient({
             setRows(result.rows);
             setFields(result.fields);
             setLoading(false);
+            useDashboardRuntimeStore.getState().dispatch(
+              dashboardRuntimeEvents.widgetQuerySucceeded(
+                dashboardId,
+                widgetId,
+                result.rows.length,
+                result.fields.map(field => field.name),
+              ),
+            );
           },
           onPending: () => {
             if (!cancelled) {
@@ -98,13 +152,23 @@ export function useMosaicClient({
           onError: error => {
             if (!cancelled) {
               setLoading(false);
+              useDashboardRuntimeStore
+                .getState()
+                .dispatch(
+                  dashboardRuntimeEvents.widgetQueryFailed(
+                    dashboardId,
+                    widgetId,
+                    error.message || "Mosaic query failed",
+                    classifyDuckDBError(error.message || "Mosaic query failed"),
+                  ),
+                );
               onError?.(error.message || "Mosaic query failed");
             }
           },
         });
 
         if (cancelled) {
-          mosaicInstance.coordinator.disconnect?.(nextClient);
+          destroyMosaicClient(mosaicInstance, nextClient);
           return;
         }
 
@@ -112,9 +176,19 @@ export function useMosaicClient({
       } catch (error) {
         if (!cancelled) {
           setLoading(false);
-          onError?.(
-            error instanceof Error ? error.message : "Failed to connect Mosaic",
-          );
+          const message =
+            error instanceof Error ? error.message : "Failed to connect Mosaic";
+          useDashboardRuntimeStore
+            .getState()
+            .dispatch(
+              dashboardRuntimeEvents.widgetQueryFailed(
+                dashboardId,
+                widgetId,
+                message,
+                "crossfilter_invalid",
+              ),
+            );
+          onError?.(message);
         }
       }
     })();
@@ -124,11 +198,7 @@ export function useMosaicClient({
       const currentClient = clientRef.current;
       clientRef.current = null;
       if (currentClient) {
-        try {
-          mosaicInstance.coordinator.disconnect?.(currentClient);
-        } catch {
-          // Best-effort cleanup when widgets unmount or switch engines.
-        }
+        destroyMosaicClient(mosaicInstance, currentClient);
       }
       clearSelection();
     };
@@ -140,6 +210,7 @@ export function useMosaicClient({
     hasSql,
     mosaicInstance,
     onError,
+    dashboardId,
     widgetId,
   ]);
 
@@ -150,7 +221,15 @@ export function useMosaicClient({
 
     setLoading(true);
     void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
-  }, [hasSql, localSql, mosaicInstance]);
+  }, [
+    dashboardId,
+    hasSql,
+    localSql,
+    mosaicInstance,
+    queryGeneration,
+    refreshGeneration,
+    widgetId,
+  ]);
 
   const updateSelection = useCallback(
     (selection: MosaicSelectionInput | null) => {
