@@ -401,7 +401,12 @@ connectorBuilderRoutes.post(
         trigger: body.trigger || { type: "manual" },
       });
 
-      logger.info("Executing dev-run", { connectorId: id, workspaceId });
+      const dryRun = body.dryRun === true;
+      logger.info("Executing dev-run", {
+        connectorId: id,
+        workspaceId,
+        dryRun,
+      });
 
       const result = await executeConnector(bundleJs, input);
 
@@ -411,6 +416,7 @@ connectorBuilderRoutes.post(
           output: result.output,
           logs: result.logs,
           durationMs: result.durationMs,
+          dryRun,
           rowCount: result.output.batches.reduce(
             (sum, b) => sum + b.records.length,
             0,
