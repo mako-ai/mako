@@ -102,6 +102,14 @@ const buildResponseSchema = z.object({
   runtime: z.enum(["e2b", "local-fallback"]).optional(),
 });
 
+const runtimeErrorSchema = z.object({
+  message: z.string(),
+  originalLine: z.number().optional(),
+  originalColumn: z.number().optional(),
+  originalSource: z.string().optional(),
+  stack: z.string().optional(),
+});
+
 const devRunResponseSchema = z.object({
   output: connectorOutputSchema,
   logs: z
@@ -120,6 +128,7 @@ const devRunResponseSchema = z.object({
   dryRun: z.boolean().optional(),
   rowCount: z.number().optional(),
   runtime: z.enum(["e2b", "local-fallback"]).optional(),
+  runtimeError: runtimeErrorSchema.optional(),
   buildErrors: z.array(buildErrorSchema).optional(),
   buildLog: z.string().optional(),
 });
@@ -197,6 +206,14 @@ export interface DevRunOutput {
   }>;
 }
 
+export interface RuntimeError {
+  message: string;
+  originalLine?: number;
+  originalColumn?: number;
+  originalSource?: string;
+  stack?: string;
+}
+
 export interface DevRunState {
   running: boolean;
   output?: DevRunOutput;
@@ -204,6 +221,8 @@ export interface DevRunState {
   error?: string;
   durationMs?: number;
   rowCount?: number;
+  runtime?: string;
+  runtimeError?: RuntimeError;
 }
 
 // ── Zod Schemas for validation ──
@@ -520,7 +539,24 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
             };
           });
 
-          await get().fetchConnectors(workspaceId);
+          // Update connector in store if returned
+          const fullResp = response as any;
+          if (fullResp.connector) {
+            const connParsed = connectorSchema.safeParse(fullResp.connector);
+            if (connParsed.success) {
+              set(state => {
+                const list = state.connectors[workspaceId] || [];
+                const idx = list.findIndex(c => c._id === connectorId);
+                if (idx !== -1) {
+                  list[idx] = connParsed.data;
+                } else {
+                  list.unshift(connParsed.data);
+                }
+              });
+            }
+          } else {
+            await get().fetchConnectors(workspaceId);
+          }
         } catch (error: unknown) {
           set(state => {
             state.buildState[connectorId] = {
@@ -553,6 +589,21 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
             input || {},
           );
 
+          // Update connector in store if returned (keeps state in sync even on failure)
+          const fullResp = response as any;
+          if (fullResp.connector) {
+            const connParsed = connectorSchema.safeParse(fullResp.connector);
+            if (connParsed.success) {
+              set(state => {
+                const list = state.connectors[workspaceId] || [];
+                const idx = list.findIndex(c => c._id === connectorId);
+                if (idx !== -1) {
+                  list[idx] = connParsed.data;
+                }
+              });
+            }
+          }
+
           if (response.success) {
             const parsed = devRunResponseSchema.safeParse(response.data);
             if (parsed.success) {
@@ -570,6 +621,8 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
                       : undefined,
                   durationMs: parsed.data.durationMs,
                   rowCount,
+                  runtime: parsed.data.runtime,
+                  runtimeError: parsed.data.runtimeError,
                 };
               });
             } else {

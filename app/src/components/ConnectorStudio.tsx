@@ -11,6 +11,12 @@ import {
   TextField,
   Divider,
   Stack,
+  List,
+  ListItem,
+  ListItemText,
+  Switch,
+  Card,
+  CardContent,
 } from "@mui/material";
 import {
   Play as RunIcon,
@@ -21,7 +27,10 @@ import {
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import Editor from "@monaco-editor/react";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
-import { useConnectorBuilderStore } from "../store/connectorBuilderStore";
+import {
+  useConnectorBuilderStore,
+  type ConnectorInstance,
+} from "../store/connectorBuilderStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { ConnectorInstanceForm } from "./ConnectorInstanceForm";
 
@@ -31,7 +40,7 @@ interface ConnectorStudioProps {
 }
 
 type BottomTab = "output" | "logs" | "schema";
-type RightTab = "run-inputs" | "instances" | "ai";
+type RightTab = "run-inputs" | "instances" | "versions" | "ai";
 
 function safeParseJson(
   value: string,
@@ -65,6 +74,9 @@ export function ConnectorStudio({
     buildState: buildStateMap,
     devRunState: devRunStateMap,
     fetchConnectors,
+    fetchInstances,
+    toggleInstance,
+    instances: instancesMap,
   } = useConnectorBuilderStore();
 
   const connector = useConnectorBuilderStore(state =>
@@ -73,6 +85,8 @@ export function ConnectorStudio({
 
   const buildState = buildStateMap[connectorId];
   const devRunState = devRunStateMap[connectorId];
+  const connectorInstances: ConnectorInstance[] =
+    instancesMap[connectorId] || [];
 
   const [bottomTab, setBottomTab] = useState<BottomTab>("output");
   const [rightTab, setRightTab] = useState<RightTab>("run-inputs");
@@ -81,6 +95,14 @@ export function ConnectorStudio({
   const [secretsJson, setSecretsJson] = useState("{}");
   const [stateJson, setStateJson] = useState("{}");
   const [inputError, setInputError] = useState<string | null>(null);
+  const [versions, setVersions] = useState<
+    Array<{
+      version: number;
+      buildHash?: string;
+      createdAt: string;
+      createdBy: string;
+    }>
+  >([]);
   const editorRef = useRef<any>(null);
   const saveTimeoutRef = useRef<number | null>(null);
 
@@ -89,6 +111,42 @@ export function ConnectorStudio({
       fetchConnectors(workspaceId);
     }
   }, [connector, workspaceId, fetchConnectors]);
+
+  // Load instances for this connector
+  useEffect(() => {
+    if (workspaceId && connectorId) {
+      fetchInstances(workspaceId, connectorId);
+    }
+  }, [workspaceId, connectorId, fetchInstances]);
+
+  // Load versions when Versions tab is selected
+  useEffect(() => {
+    if (rightTab === "versions" && workspaceId && connectorId) {
+      import("../lib/api-client").then(({ apiClient }) => {
+        apiClient
+          .get<{
+            success: boolean;
+            data: {
+              currentVersion: number;
+              versions: Array<{
+                version: number;
+                buildHash?: string;
+                createdAt: string;
+                createdBy: string;
+              }>;
+            };
+          }>(
+            `/workspaces/${workspaceId}/connector-builder/connectors/${connectorId}/versions`,
+          )
+          .then(res => {
+            if (res.success) {
+              setVersions(res.data.versions || []);
+            }
+          })
+          .catch(() => {});
+      });
+    }
+  }, [rightTab, workspaceId, connectorId, connector?.version]);
 
   const handleEditorChange = useCallback(
     (value: string | undefined) => {
@@ -202,11 +260,39 @@ export function ConnectorStudio({
         endLineNumber: e.line || 1,
         endColumn: (e.column || 1) + 100,
         message: e.message,
-        source: "connector-builder",
+        source: "connector-builder-build",
       }));
 
-    monaco.editor.setModelMarkers(model, "connector-builder", markers);
+    monaco.editor.setModelMarkers(model, "connector-builder-build", markers);
   }, [buildState?.errors]);
+
+  // Set Monaco markers for runtime errors (source-mapped)
+  useEffect(() => {
+    if (!editorRef.current) return;
+
+    const monaco = (window as any).monaco;
+    if (!monaco) return;
+
+    const model = editorRef.current.getModel();
+    if (!model) return;
+
+    const runtimeError = devRunState?.runtimeError;
+    if (runtimeError?.originalLine) {
+      monaco.editor.setModelMarkers(model, "connector-builder-runtime", [
+        {
+          severity: monaco.MarkerSeverity.Error,
+          startLineNumber: runtimeError.originalLine,
+          startColumn: runtimeError.originalColumn || 1,
+          endLineNumber: runtimeError.originalLine,
+          endColumn: (runtimeError.originalColumn || 1) + 100,
+          message: `Runtime error: ${runtimeError.message}`,
+          source: "connector-builder-runtime",
+        },
+      ]);
+    } else {
+      monaco.editor.setModelMarkers(model, "connector-builder-runtime", []);
+    }
+  }, [devRunState?.runtimeError]);
 
   if (!connector) {
     return (
@@ -343,6 +429,15 @@ export function ConnectorStudio({
               sx={{ fontSize: "0.7rem" }}
             />
           )}
+
+        {devRunState?.runtime && !devRunState.running && (
+          <Chip
+            label={devRunState.runtime}
+            size="small"
+            variant="outlined"
+            sx={{ fontSize: "0.65rem" }}
+          />
+        )}
 
         <Typography
           variant="caption"
@@ -514,6 +609,7 @@ export function ConnectorStudio({
             >
               <Tab label="Run Inputs" value="run-inputs" />
               <Tab label="Instances" value="instances" />
+              <Tab label="Versions" value="versions" />
               <Tab label="AI" value="ai" />
             </Tabs>
 
@@ -599,7 +695,166 @@ export function ConnectorStudio({
                   </Stack>
                 </Box>
               ) : rightTab === "instances" ? (
-                <ConnectorInstanceForm connectorId={connectorId} />
+                <Box
+                  sx={{
+                    display: "flex",
+                    flexDirection: "column",
+                    height: "100%",
+                  }}
+                >
+                  {/* Instance list */}
+                  {connectorInstances.length > 0 && (
+                    <Box
+                      sx={{
+                        borderBottom: "1px solid",
+                        borderColor: "divider",
+                        maxHeight: 200,
+                        overflow: "auto",
+                      }}
+                    >
+                      <List dense disablePadding>
+                        {connectorInstances.map(inst => (
+                          <ListItem
+                            key={inst._id}
+                            secondaryAction={
+                              <Switch
+                                size="small"
+                                checked={inst.status.enabled}
+                                onChange={() =>
+                                  toggleInstance(workspaceId, inst._id)
+                                    .then(() =>
+                                      fetchInstances(workspaceId, connectorId),
+                                    )
+                                    .catch(() => {})
+                                }
+                              />
+                            }
+                          >
+                            <ListItemText
+                              primary={inst.name}
+                              secondary={
+                                <Box
+                                  sx={{
+                                    display: "flex",
+                                    gap: 0.5,
+                                    mt: 0.25,
+                                  }}
+                                >
+                                  <Chip
+                                    label={
+                                      inst.status.enabled
+                                        ? "enabled"
+                                        : "disabled"
+                                    }
+                                    size="small"
+                                    color={
+                                      inst.status.enabled
+                                        ? "success"
+                                        : "default"
+                                    }
+                                    sx={{ height: 18, fontSize: "0.6rem" }}
+                                  />
+                                  {inst.triggers
+                                    .map(t => t.type)
+                                    .map(t => (
+                                      <Chip
+                                        key={t}
+                                        label={t}
+                                        size="small"
+                                        variant="outlined"
+                                        sx={{
+                                          height: 18,
+                                          fontSize: "0.6rem",
+                                        }}
+                                      />
+                                    ))}
+                                </Box>
+                              }
+                              primaryTypographyProps={{
+                                variant: "body2",
+                                noWrap: true,
+                              }}
+                            />
+                          </ListItem>
+                        ))}
+                      </List>
+                    </Box>
+                  )}
+                  {/* Instance form */}
+                  <Box sx={{ flex: 1, overflow: "auto" }}>
+                    <ConnectorInstanceForm connectorId={connectorId} />
+                  </Box>
+                </Box>
+              ) : rightTab === "versions" ? (
+                <Box sx={{ p: 1.5, overflow: "auto", height: "100%" }}>
+                  {versions.length === 0 ? (
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ textAlign: "center", mt: 4 }}
+                    >
+                      No versions yet. Build the connector to create a version.
+                    </Typography>
+                  ) : (
+                    <Stack spacing={1}>
+                      {[...versions].reverse().map(v => (
+                        <Card
+                          key={v.version}
+                          variant="outlined"
+                          sx={{
+                            bgcolor:
+                              v.version === connector?.version
+                                ? "action.selected"
+                                : undefined,
+                          }}
+                        >
+                          <CardContent
+                            sx={{ py: 1, "&:last-child": { pb: 1 } }}
+                          >
+                            <Box
+                              sx={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                              }}
+                            >
+                              <Typography variant="subtitle2">
+                                v{v.version}
+                                {v.version === connector?.version && (
+                                  <Chip
+                                    label="current"
+                                    size="small"
+                                    color="primary"
+                                    sx={{
+                                      ml: 1,
+                                      height: 16,
+                                      fontSize: "0.6rem",
+                                    }}
+                                  />
+                                )}
+                              </Typography>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {new Date(v.createdAt).toLocaleDateString()}
+                              </Typography>
+                            </Box>
+                            {v.buildHash && (
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ fontFamily: "monospace" }}
+                              >
+                                {v.buildHash.slice(0, 12)}
+                              </Typography>
+                            )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  )}
+                </Box>
               ) : (
                 <Box
                   sx={{

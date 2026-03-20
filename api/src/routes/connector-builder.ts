@@ -13,13 +13,84 @@ import {
   buildConnector,
   executeConnector,
   computeBuildHash,
+  type BuildResult,
 } from "../connector-builder/sandbox-runner";
 import { connectorInputSchema } from "../connector-builder/output-schema";
+import { mapRuntimeError } from "../connector-builder/error-mapper";
 import { inngest } from "../inngest";
 import {
   CONNECTOR_TEMPLATES,
   getTemplateById,
 } from "../connector-builder/templates";
+
+/**
+ * Build-diff-persist-version helper. Shared by /build and /dev-run.
+ * Returns the build result and whether the connector was updated.
+ */
+async function ensureConnectorBundle(
+  connector: any,
+  userId: string,
+): Promise<{ build: BuildResult; updated: boolean }> {
+  const currentHash = computeBuildHash(connector.source.code);
+
+  if (connector.bundle?.js && connector.bundle?.buildHash === currentHash) {
+    return {
+      build: {
+        js: connector.bundle.js,
+        sourceMap: connector.bundle.sourceMap || "",
+        buildHash: currentHash,
+        buildLog: connector.bundle.buildLog || "",
+        errors: connector.bundle.errors || [],
+        resolvedDependencies: [],
+        runtime: (connector.bundle.runtime as any) || "e2b",
+      },
+      updated: false,
+    };
+  }
+
+  const result = await buildConnector(connector.source.code);
+  const hasErrors = result.errors.some(e => e.severity === "error");
+
+  if (!hasErrors && result.js) {
+    const existingHash = connector.versions?.find(
+      (v: any) => v.buildHash === result.buildHash,
+    );
+    if (!existingHash) {
+      const nextVersion = connector.version + 1;
+      connector.version = nextVersion;
+      connector.versions.push({
+        version: nextVersion,
+        code: connector.source.code,
+        bundleJs: result.js,
+        bundleSourceMap: result.sourceMap,
+        buildHash: result.buildHash,
+        createdAt: new Date(),
+        createdBy: userId,
+      });
+    }
+    connector.bundle = {
+      js: result.js,
+      sourceMap: result.sourceMap,
+      buildHash: result.buildHash,
+      buildLog: result.buildLog,
+      builtAt: new Date(),
+      errors: result.errors,
+      runtime: result.runtime,
+    };
+    connector.source.resolvedDependencies = result.resolvedDependencies;
+  } else {
+    connector.bundle = {
+      ...connector.bundle,
+      buildLog: result.buildLog,
+      errors: result.errors,
+      builtAt: new Date(),
+      runtime: result.runtime,
+    };
+  }
+  await connector.save();
+
+  return { build: result, updated: true };
+}
 
 /**
  * Explicit serialization to avoid leaking Mongoose internals.
@@ -479,52 +550,22 @@ connectorBuilderRoutes.post(
         workspaceId,
       });
 
-      const result = await buildConnector(connector.source.code);
-
-      const hasErrors = result.errors.some(e => e.severity === "error");
-
-      // Store version snapshot on successful build
-      if (!hasErrors && result.js) {
-        const nextVersion = connector.version + 1;
-        connector.bundle = {
-          js: result.js,
-          sourceMap: result.sourceMap,
-          buildHash: result.buildHash,
-          buildLog: result.buildLog,
-          builtAt: new Date(),
-          errors: result.errors,
-        };
-        connector.source.resolvedDependencies = result.resolvedDependencies;
-        connector.version = nextVersion;
-        connector.versions.push({
-          version: nextVersion,
-          code: connector.source.code,
-          bundleJs: result.js,
-          bundleSourceMap: result.sourceMap,
-          buildHash: result.buildHash,
-          createdAt: new Date(),
-          createdBy: user?.id || "system",
-        });
-        await connector.save();
-      } else {
-        // Still save errors/log even on failure
-        connector.bundle = {
-          ...connector.bundle,
-          buildLog: result.buildLog,
-          errors: result.errors,
-          builtAt: new Date(),
-        };
-        await connector.save();
-      }
+      const { build } = await ensureConnectorBundle(
+        connector,
+        user?.id || "system",
+      );
+      const hasErrors = build.errors.some(e => e.severity === "error");
 
       return c.json({
         success: !hasErrors,
         data: {
-          buildHash: result.buildHash,
-          buildLog: result.buildLog,
-          errors: result.errors,
-          resolvedDependencies: result.resolvedDependencies,
+          buildHash: build.buildHash,
+          buildLog: build.buildLog,
+          errors: build.errors,
+          resolvedDependencies: build.resolvedDependencies,
+          runtime: build.runtime,
         },
+        connector: serializeDoc(connector),
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -557,58 +598,25 @@ connectorBuilderRoutes.post(
         return c.json({ success: false, error: "Connector not found" }, 404);
       }
 
-      // Check if rebuild is needed
-      const currentHash = computeBuildHash(connector.source.code);
-      let bundleJs = connector.bundle?.js;
+      const { build } = await ensureConnectorBundle(
+        connector,
+        user?.id || "system",
+      );
 
-      if (!bundleJs || connector.bundle?.buildHash !== currentHash) {
-        logger.info("Rebuilding connector for dev-run", {
-          connectorId: id,
-          reason: !bundleJs ? "no bundle" : "source changed",
+      const hasErrors = build.errors.some(e => e.severity === "error");
+      if (hasErrors || !build.js) {
+        return c.json({
+          success: false,
+          data: {
+            buildErrors: build.errors,
+            buildLog: build.buildLog,
+            runtime: build.runtime,
+          },
+          connector: serializeDoc(connector),
+          error: "Build failed",
         });
-
-        const buildResult = await buildConnector(connector.source.code);
-        const hasErrors = buildResult.errors.some(e => e.severity === "error");
-
-        if (hasErrors || !buildResult.js) {
-          return c.json({
-            success: false,
-            data: {
-              buildErrors: buildResult.errors,
-              buildLog: buildResult.buildLog,
-            },
-            error: "Build failed",
-          });
-        }
-
-        bundleJs = buildResult.js;
-
-        // Save the build result
-        const nextVersion = connector.version + 1;
-        connector.bundle = {
-          js: buildResult.js,
-          sourceMap: buildResult.sourceMap,
-          buildHash: buildResult.buildHash,
-          buildLog: buildResult.buildLog,
-          builtAt: new Date(),
-          errors: buildResult.errors,
-        };
-        connector.source.resolvedDependencies =
-          buildResult.resolvedDependencies;
-        connector.version = nextVersion;
-        connector.versions.push({
-          version: nextVersion,
-          code: connector.source.code,
-          bundleJs: buildResult.js,
-          bundleSourceMap: buildResult.sourceMap,
-          buildHash: buildResult.buildHash,
-          createdAt: new Date(),
-          createdBy: user?.id || "system",
-        });
-        await connector.save();
       }
 
-      // Build input context
       const input = connectorInputSchema.parse({
         config: body.config || {},
         secrets: body.secrets || {},
@@ -623,7 +631,18 @@ connectorBuilderRoutes.post(
         dryRun,
       });
 
-      const result = await executeConnector(bundleJs, input);
+      const result = await executeConnector(build.js, input);
+
+      // Map runtime errors through source map for Monaco diagnostics
+      let runtimeError = undefined;
+      const errorLog = result.output.logs?.find(l => l.level === "error");
+      if (errorLog) {
+        runtimeError = await mapRuntimeError(
+          errorLog.message,
+          (errorLog as any).data?.stack,
+          build.sourceMap,
+        );
+      }
 
       return c.json({
         success: true,
@@ -631,12 +650,15 @@ connectorBuilderRoutes.post(
           output: result.output,
           logs: result.logs,
           durationMs: result.durationMs,
+          runtime: result.runtime,
           dryRun,
+          runtimeError,
           rowCount: result.output.batches.reduce(
             (sum, b) => sum + b.records.length,
             0,
           ),
         },
+        connector: serializeDoc(connector),
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
