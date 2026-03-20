@@ -495,8 +495,12 @@ async function runBuildInSandbox(
       await sandbox.commands.run("npm install --yes --no-package-lock", {
         cwd: "/tmp/connector-builder",
         timeoutMs: DEFAULT_SANDBOX_TIMEOUT_MS,
-        onStdout: data => stdoutLines.push(data),
-        onStderr: data => stderrLines.push(data),
+        onStdout: data => {
+          stdoutLines.push(data);
+        },
+        onStderr: data => {
+          stderrLines.push(data);
+        },
       });
     } catch (error) {
       const failure = extractCommandFailure(error);
@@ -528,8 +532,12 @@ async function runBuildInSandbox(
         {
           cwd: "/tmp/connector-builder",
           timeoutMs: DEFAULT_SANDBOX_TIMEOUT_MS,
-          onStdout: data => stdoutLines.push(data),
-          onStderr: data => stderrLines.push(data),
+          onStdout: data => {
+            stdoutLines.push(data);
+          },
+          onStderr: data => {
+            stderrLines.push(data);
+          },
         },
       );
     } catch (error) {

@@ -147,10 +147,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
     updateTitle(tabId, connector.name);
     updateDirty(tabId, false);
   }, [
-    connector?._id,
-    connector?.name,
-    connector?.description,
-    connector?.source.code,
+    connector,
     selectConnector,
     tabId,
     updateContent,
