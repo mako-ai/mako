@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import { DashboardDefinitionSchema } from "@mako/schemas";
 import type {
   Dashboard,
   DashboardDataSource,
@@ -21,15 +22,20 @@ export type {
   TableRelationship,
 } from "../dashboard-runtime/types";
 
+interface HistoryEntry {
+  stack: Dashboard[];
+  index: number;
+}
+
 interface DashboardStoreState {
   dashboards: Record<string, Dashboard[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
+
+  openDashboards: Record<string, Dashboard>;
   activeDashboardId: string | null;
-  activeDashboard: Dashboard | null;
+  historyMap: Record<string, HistoryEntry>;
   autoRefreshInterval: number | null;
-  history: Dashboard[];
-  historyIndex: number;
 
   fetchDashboards: (workspaceId: string) => Promise<Dashboard[]>;
   createDashboard: (
@@ -47,33 +53,46 @@ interface DashboardStoreState {
     id: string,
   ) => Promise<Dashboard | null>;
   openDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
-  closeDashboard: () => void;
-  saveDashboard: (workspaceId: string) => Promise<void>;
-  addDataSource: (dataSource: DashboardDataSource) => void;
+  closeDashboard: (dashboardId: string) => void;
+  saveDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
+  applyDefinition: (
+    dashboardId: string,
+    json: unknown,
+  ) => { issues: Array<{ path: PropertyKey[]; message: string }> } | null;
+  addDataSource: (dashboardId: string, dataSource: DashboardDataSource) => void;
   updateDataSource: (
+    dashboardId: string,
     dataSourceId: string,
     changes: Partial<DashboardDataSource>,
   ) => void;
-  removeDataSource: (dataSourceId: string) => void;
-  addWidget: (widget: DashboardWidget) => void;
-  modifyWidget: (widgetId: string, changes: Partial<DashboardWidget>) => void;
-  removeWidget: (widgetId: string) => void;
-  addRelationship: (rel: TableRelationship) => void;
-  removeRelationship: (relId: string) => void;
-  addGlobalFilter: (filter: GlobalFilter) => void;
-  removeGlobalFilter: (filterId: string) => void;
+  removeDataSource: (dashboardId: string, dataSourceId: string) => void;
+  addWidget: (dashboardId: string, widget: DashboardWidget) => void;
+  modifyWidget: (
+    dashboardId: string,
+    widgetId: string,
+    changes: Partial<DashboardWidget>,
+  ) => void;
+  removeWidget: (dashboardId: string, widgetId: string) => void;
+  addRelationship: (dashboardId: string, rel: TableRelationship) => void;
+  removeRelationship: (dashboardId: string, relId: string) => void;
+  addGlobalFilter: (dashboardId: string, filter: GlobalFilter) => void;
+  removeGlobalFilter: (dashboardId: string, filterId: string) => void;
   setAutoRefreshInterval: (interval: number | null) => void;
-  pushHistory: () => void;
-  undo: () => void;
-  redo: () => void;
+  pushHistory: (dashboardId: string) => void;
+  undo: (dashboardId: string) => void;
+  redo: (dashboardId: string) => void;
 }
 
-let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+const saveTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
 
-function debouncedSave(get: () => DashboardStoreState, workspaceId: string) {
-  if (saveTimeout) clearTimeout(saveTimeout);
-  saveTimeout = setTimeout(() => {
-    get().saveDashboard(workspaceId);
+function debouncedSave(
+  get: () => DashboardStoreState,
+  workspaceId: string,
+  dashboardId: string,
+) {
+  if (saveTimeouts[dashboardId]) clearTimeout(saveTimeouts[dashboardId]);
+  saveTimeouts[dashboardId] = setTimeout(() => {
+    get().saveDashboard(workspaceId, dashboardId);
   }, 500);
 }
 
@@ -83,11 +102,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
       dashboards: {},
       loading: {},
       error: {},
+      openDashboards: {},
       activeDashboardId: null,
-      activeDashboard: null,
+      historyMap: {},
       autoRefreshInterval: null,
-      history: [],
-      historyIndex: -1,
 
       fetchDashboards: async (workspaceId: string) => {
         set(state => {
@@ -159,8 +177,8 @@ export const useDashboardStore = create<DashboardStoreState>()(
               const idx = list.findIndex(d => d._id === id);
               if (idx !== -1) Object.assign(list[idx], data);
             }
-            if (state.activeDashboard?._id === id) {
-              Object.assign(state.activeDashboard, data);
+            if (state.openDashboards[id]) {
+              Object.assign(state.openDashboards[id], data);
             }
           });
         } catch {
@@ -176,9 +194,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
             if (list) {
               state.dashboards[workspaceId] = list.filter(d => d._id !== id);
             }
+            delete state.openDashboards[id];
+            delete state.historyMap[id];
             if (state.activeDashboardId === id) {
               state.activeDashboardId = null;
-              state.activeDashboard = null;
             }
           });
         } catch {
@@ -209,6 +228,14 @@ export const useDashboardStore = create<DashboardStoreState>()(
       },
 
       openDashboard: async (workspaceId: string, dashboardId: string) => {
+        const existing = get().openDashboards[dashboardId];
+        if (existing) {
+          set(state => {
+            state.activeDashboardId = dashboardId;
+          });
+          return;
+        }
+
         try {
           const response = await apiClient.get<{
             success: boolean;
@@ -217,10 +244,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
           if (response.data) {
             set(state => {
+              state.openDashboards[dashboardId] = response.data;
               state.activeDashboardId = dashboardId;
-              state.activeDashboard = response.data;
-              state.history = [];
-              state.historyIndex = -1;
+              state.historyMap[dashboardId] = { stack: [], index: -1 };
             });
           }
         } catch {
@@ -228,32 +254,33 @@ export const useDashboardStore = create<DashboardStoreState>()(
         }
       },
 
-      closeDashboard: () => {
+      closeDashboard: (dashboardId: string) => {
         set(state => {
-          state.activeDashboardId = null;
-          state.activeDashboard = null;
-          state.history = [];
-          state.historyIndex = -1;
+          delete state.openDashboards[dashboardId];
+          delete state.historyMap[dashboardId];
+          if (state.activeDashboardId === dashboardId) {
+            state.activeDashboardId = null;
+          }
         });
       },
 
-      saveDashboard: async (workspaceId: string) => {
-        const { activeDashboard } = get();
-        if (!activeDashboard) return;
+      saveDashboard: async (workspaceId: string, dashboardId: string) => {
+        const dashboard = get().openDashboards[dashboardId];
+        if (!dashboard) return;
         try {
           const payload = {
-            widgets: activeDashboard.widgets,
-            dataSources: activeDashboard.dataSources,
-            relationships: activeDashboard.relationships,
-            globalFilters: activeDashboard.globalFilters,
-            crossFilter: activeDashboard.crossFilter,
-            layout: activeDashboard.layout,
-            cache: activeDashboard.cache,
-            title: activeDashboard.title,
-            description: activeDashboard.description,
+            widgets: dashboard.widgets,
+            dataSources: dashboard.dataSources,
+            relationships: dashboard.relationships,
+            globalFilters: dashboard.globalFilters,
+            crossFilter: dashboard.crossFilter,
+            layout: dashboard.layout,
+            cache: dashboard.cache,
+            title: dashboard.title,
+            description: dashboard.description,
           };
           await apiClient.patch(
-            `/workspaces/${workspaceId}/dashboards/${activeDashboard._id}`,
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}`,
             payload,
           );
         } catch {
@@ -261,171 +288,173 @@ export const useDashboardStore = create<DashboardStoreState>()(
         }
       },
 
-      addDataSource: (dataSource: DashboardDataSource) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+      applyDefinition: (dashboardId: string, json: unknown) => {
+        const result = DashboardDefinitionSchema.safeParse(json);
+        if (!result.success) {
+          return result.error;
+        }
+        const dashboard = get().openDashboards[dashboardId];
+        if (!dashboard) return null;
+
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.dataSources.push(dataSource);
+          const d = state.openDashboards[dashboardId];
+          if (d) {
+            Object.assign(d, result.data);
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+
+        const workspaceId = dashboard.workspaceId;
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        return null;
+      },
+
+      addDataSource: (dashboardId: string, dataSource: DashboardDataSource) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
+        set(state => {
+          const d = state.openDashboards[dashboardId];
+          if (d) d.dataSources.push(dataSource);
+        });
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
       updateDataSource: (
+        dashboardId: string,
         dataSourceId: string,
         changes: Partial<DashboardDataSource>,
       ) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            const idx = state.activeDashboard.dataSources.findIndex(
-              ds => ds.id === dataSourceId,
-            );
+          const d = state.openDashboards[dashboardId];
+          if (d) {
+            const idx = d.dataSources.findIndex(ds => ds.id === dataSourceId);
             if (idx !== -1) {
-              const current = state.activeDashboard.dataSources[idx];
-              state.activeDashboard.dataSources[idx] = {
+              const current = d.dataSources[idx];
+              d.dataSources[idx] = {
                 ...current,
                 ...changes,
                 query: changes.query
-                  ? {
-                      ...current.query,
-                      ...changes.query,
-                    }
+                  ? { ...current.query, ...changes.query }
                   : current.query,
                 cache: changes.cache
-                  ? {
-                      ...current.cache,
-                      ...changes.cache,
-                    }
+                  ? { ...current.cache, ...changes.cache }
                   : current.cache,
                 origin: changes.origin
-                  ? {
-                      ...current.origin,
-                      ...changes.origin,
-                    }
+                  ? { ...current.origin, ...changes.origin }
                   : current.origin,
               };
             }
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
-      removeDataSource: dataSourceId => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+      removeDataSource: (dashboardId: string, dataSourceId: string) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.dataSources =
-              state.activeDashboard.dataSources.filter(
-                ds => ds.id !== dataSourceId,
-              );
-            state.activeDashboard.widgets =
-              state.activeDashboard.widgets.filter(
-                widget => widget.dataSourceId !== dataSourceId,
-              );
-            state.activeDashboard.relationships =
-              state.activeDashboard.relationships.filter(
-                rel =>
-                  rel.from.dataSourceId !== dataSourceId &&
-                  rel.to.dataSourceId !== dataSourceId,
-              );
-            state.activeDashboard.globalFilters =
-              state.activeDashboard.globalFilters.filter(
-                filter => filter.dataSourceId !== dataSourceId,
-              );
-          }
-        });
-        if (workspaceId) debouncedSave(get, workspaceId);
-      },
-
-      addWidget: (widget: DashboardWidget) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
-        set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.widgets.push(widget);
-          }
-        });
-        if (workspaceId) debouncedSave(get, workspaceId);
-      },
-
-      modifyWidget: (widgetId: string, changes: Partial<DashboardWidget>) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
-        set(state => {
-          if (state.activeDashboard) {
-            const idx = state.activeDashboard.widgets.findIndex(
-              w => w.id === widgetId,
+          const d = state.openDashboards[dashboardId];
+          if (d) {
+            d.dataSources = d.dataSources.filter(ds => ds.id !== dataSourceId);
+            d.widgets = d.widgets.filter(w => w.dataSourceId !== dataSourceId);
+            d.relationships = d.relationships.filter(
+              r =>
+                r.from.dataSourceId !== dataSourceId &&
+                r.to.dataSourceId !== dataSourceId,
             );
+            d.globalFilters = d.globalFilters.filter(
+              f => f.dataSourceId !== dataSourceId,
+            );
+          }
+        });
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+      },
+
+      addWidget: (dashboardId: string, widget: DashboardWidget) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
+        set(state => {
+          const d = state.openDashboards[dashboardId];
+          if (d) d.widgets.push(widget);
+        });
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+      },
+
+      modifyWidget: (
+        dashboardId: string,
+        widgetId: string,
+        changes: Partial<DashboardWidget>,
+      ) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
+        set(state => {
+          const d = state.openDashboards[dashboardId];
+          if (d) {
+            const idx = d.widgets.findIndex(w => w.id === widgetId);
             if (idx !== -1) {
-              Object.assign(state.activeDashboard.widgets[idx], changes);
+              Object.assign(d.widgets[idx], changes);
             }
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
-      removeWidget: (widgetId: string) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+      removeWidget: (dashboardId: string, widgetId: string) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.widgets =
-              state.activeDashboard.widgets.filter(w => w.id !== widgetId);
+          const d = state.openDashboards[dashboardId];
+          if (d) {
+            d.widgets = d.widgets.filter(w => w.id !== widgetId);
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
-      addRelationship: (rel: TableRelationship) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+      addRelationship: (dashboardId: string, rel: TableRelationship) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.relationships.push(rel);
-          }
+          const d = state.openDashboards[dashboardId];
+          if (d) d.relationships.push(rel);
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
-      removeRelationship: (relId: string) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+      removeRelationship: (dashboardId: string, relId: string) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.relationships =
-              state.activeDashboard.relationships.filter(r => r.id !== relId);
+          const d = state.openDashboards[dashboardId];
+          if (d) {
+            d.relationships = d.relationships.filter(r => r.id !== relId);
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
-      addGlobalFilter: (filter: GlobalFilter) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+      addGlobalFilter: (dashboardId: string, filter: GlobalFilter) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.globalFilters.push(filter);
-          }
+          const d = state.openDashboards[dashboardId];
+          if (d) d.globalFilters.push(filter);
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
-      removeGlobalFilter: (filterId: string) => {
-        const workspaceId = get().activeDashboard?.workspaceId;
-        get().pushHistory();
+      removeGlobalFilter: (dashboardId: string, filterId: string) => {
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+        get().pushHistory(dashboardId);
         set(state => {
-          if (state.activeDashboard) {
-            state.activeDashboard.globalFilters =
-              state.activeDashboard.globalFilters.filter(
-                f => f.id !== filterId,
-              );
+          const d = state.openDashboards[dashboardId];
+          if (d) {
+            d.globalFilters = d.globalFilters.filter(f => f.id !== filterId);
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId);
+        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
       },
 
       setAutoRefreshInterval: (interval: number | null) => {
@@ -434,46 +463,56 @@ export const useDashboardStore = create<DashboardStoreState>()(
         });
       },
 
-      pushHistory: () => {
+      pushHistory: (dashboardId: string) => {
         set(state => {
-          if (state.activeDashboard) {
-            const snapshot = JSON.parse(JSON.stringify(state.activeDashboard));
-            state.history = state.history.slice(0, state.historyIndex + 1);
-            state.history.push(snapshot);
-            if (state.history.length > 50) state.history.shift();
-            state.historyIndex = state.history.length - 1;
+          const d = state.openDashboards[dashboardId];
+          if (!d) return;
+          if (!state.historyMap[dashboardId]) {
+            state.historyMap[dashboardId] = { stack: [], index: -1 };
           }
+          const h = state.historyMap[dashboardId];
+          const snapshot = JSON.parse(JSON.stringify(d));
+          h.stack = h.stack.slice(0, h.index + 1);
+          h.stack.push(snapshot);
+          if (h.stack.length > 50) h.stack.shift();
+          h.index = h.stack.length - 1;
         });
       },
 
-      undo: () => {
+      undo: (dashboardId: string) => {
         set(state => {
-          if (state.historyIndex > 0) {
-            state.historyIndex -= 1;
-            state.activeDashboard = JSON.parse(
-              JSON.stringify(state.history[state.historyIndex]),
-            );
-          }
+          const h = state.historyMap[dashboardId];
+          if (!h || h.index <= 0) return;
+          h.index -= 1;
+          state.openDashboards[dashboardId] = JSON.parse(
+            JSON.stringify(h.stack[h.index]),
+          );
         });
       },
 
-      redo: () => {
+      redo: (dashboardId: string) => {
         set(state => {
-          if (state.historyIndex < state.history.length - 1) {
-            state.historyIndex += 1;
-            state.activeDashboard = JSON.parse(
-              JSON.stringify(state.history[state.historyIndex]),
-            );
-          }
+          const h = state.historyMap[dashboardId];
+          if (!h || h.index >= h.stack.length - 1) return;
+          h.index += 1;
+          state.openDashboards[dashboardId] = JSON.parse(
+            JSON.stringify(h.stack[h.index]),
+          );
         });
       },
     })),
     {
       name: "mako-dashboard-store",
       partialize: state => ({
+        openDashboards: state.openDashboards,
         activeDashboardId: state.activeDashboardId,
         autoRefreshInterval: state.autoRefreshInterval,
       }),
     },
   ),
 );
+
+export const selectDashboard =
+  (id: string | undefined) =>
+  (state: DashboardStoreState): Dashboard | undefined =>
+    id ? state.openDashboards[id] : undefined;

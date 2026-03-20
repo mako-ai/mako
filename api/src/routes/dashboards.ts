@@ -6,6 +6,7 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { DashboardDefinitionSchema } from "@mako/schemas";
 
 const logger = loggers.api("dashboards");
 
@@ -424,10 +425,26 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       }
     }
 
-    if (body.dataSources !== undefined) {
+    const validation = DashboardDefinitionSchema.partial().safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        {
+          success: false,
+          error: "Invalid dashboard definition",
+          issues: validation.error.issues.map(i => ({
+            path: i.path.join("."),
+            message: i.message,
+          })),
+        },
+        400,
+      );
+    }
+    const validatedBody = validation.data as Record<string, unknown>;
+
+    if (validatedBody.dataSources !== undefined) {
       const normalizedDataSources = await normalizeDashboardDataSources(
         workspaceId,
-        body.dataSources,
+        validatedBody.dataSources as any[],
       );
       if (!normalizedDataSources.success) {
         return c.json(
@@ -435,7 +452,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
           400,
         );
       }
-      body.dataSources = normalizedDataSources.dataSources;
+      validatedBody.dataSources = normalizedDataSources.dataSources;
     }
 
     const dashboard = await Dashboard.findOneAndUpdate(
@@ -443,7 +460,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
         _id: new Types.ObjectId(id),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: body },
+      { $set: validatedBody },
       { new: true, runValidators: true },
     );
 

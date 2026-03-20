@@ -21,9 +21,14 @@ interface PresentationModeProps {
 }
 
 const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
-  const activeDashboard = useDashboardStore(state => state.activeDashboard);
+  const activeDashboardId = useDashboardStore(state => state.activeDashboardId);
+  const activeDashboard = useDashboardStore(state =>
+    state.activeDashboardId
+      ? state.openDashboards[state.activeDashboardId]
+      : undefined,
+  );
   const runtimeSession = useDashboardRuntimeStore(state =>
-    activeDashboard ? state.sessions[activeDashboard._id] || null : null,
+    activeDashboardId ? state.sessions[activeDashboardId] || null : null,
   );
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();

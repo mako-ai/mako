@@ -12,6 +12,18 @@ import {
 import { useDashboardStore } from "../store/dashboardStore";
 import type { DashboardDataSource, DashboardWidget } from "./types";
 
+function getActiveContext(): {
+  dashboardId: string;
+  workspaceId: string;
+} | null {
+  const state = useDashboardStore.getState();
+  const dashboardId = state.activeDashboardId;
+  if (!dashboardId) return null;
+  const workspaceId = state.openDashboards[dashboardId]?.workspaceId;
+  if (!workspaceId) return null;
+  return { dashboardId, workspaceId };
+}
+
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
@@ -20,15 +32,14 @@ export async function executeDashboardAgentTool(
     toolName === "add_data_source" ||
     toolName === "import_console_as_data_source"
   ) {
-    const workspaceId =
-      useDashboardStore.getState().activeDashboard?.workspaceId;
-    if (!workspaceId) {
+    const ctx = getActiveContext();
+    if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
 
     if (typeof input.consoleId === "string") {
       const dataSource = await importConsoleAsDashboardDataSource({
-        workspaceId,
+        workspaceId: ctx.workspaceId,
         consoleId: input.consoleId,
         name: typeof input.name === "string" ? input.name : undefined,
         rowLimit:
@@ -37,6 +48,7 @@ export async function executeDashboardAgentTool(
           typeof input.timeDimension === "string"
             ? input.timeDimension
             : undefined,
+        dashboardId: ctx.dashboardId,
       });
 
       return {
@@ -51,9 +63,8 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "create_data_source") {
-    const workspaceId =
-      useDashboardStore.getState().activeDashboard?.workspaceId;
-    if (!workspaceId) {
+    const ctx = getActiveContext();
+    if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
 
@@ -68,13 +79,14 @@ export async function executeDashboardAgentTool(
     }
 
     const dataSource = await createDashboardDataSource({
-      workspaceId,
+      workspaceId: ctx.workspaceId,
       name: input.name,
       timeDimension:
         typeof input.timeDimension === "string"
           ? input.timeDimension
           : undefined,
       rowLimit: typeof input.rowLimit === "number" ? input.rowLimit : undefined,
+      dashboardId: ctx.dashboardId,
       query: {
         connectionId: input.connectionId,
         language: (typeof input.language === "string"
@@ -99,9 +111,8 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "update_data_source_query") {
-    const workspaceId =
-      useDashboardStore.getState().activeDashboard?.workspaceId;
-    if (!workspaceId) {
+    const ctx = getActiveContext();
+    if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
 
@@ -109,7 +120,8 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "dataSourceId is required" };
     }
 
-    const currentDashboard = useDashboardStore.getState().activeDashboard;
+    const currentDashboard =
+      useDashboardStore.getState().openDashboards[ctx.dashboardId];
     const existing = currentDashboard?.dataSources.find(
       ds => ds.id === input.dataSourceId,
     );
@@ -124,8 +136,9 @@ export async function executeDashboardAgentTool(
     ) as DashboardDataSource["query"]["language"];
 
     await updateDashboardDataSourceQuery({
-      workspaceId,
+      workspaceId: ctx.workspaceId,
       dataSourceId: input.dataSourceId,
+      dashboardId: ctx.dashboardId,
       changes: {
         name: typeof input.name === "string" ? input.name : existing.name,
         timeDimension:
@@ -249,6 +262,12 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "add_global_filter") {
+    const ctx = getActiveContext();
+    if (!ctx) {
+      return { success: false, error: "No active dashboard" };
+    }
+    const activeDashboard =
+      useDashboardStore.getState().openDashboards[ctx.dashboardId];
     const filter = {
       id: nanoid(),
       type: input.type as any,
@@ -257,32 +276,44 @@ export async function executeDashboardAgentTool(
       column: input.column as string,
       config: input.defaultValue ? { defaultValue: input.defaultValue } : {},
       layout: {
-        order:
-          useDashboardStore.getState().activeDashboard?.globalFilters.length ||
-          0,
+        order: activeDashboard?.globalFilters.length || 0,
       },
     };
-    useDashboardStore.getState().addGlobalFilter(filter);
+    useDashboardStore.getState().addGlobalFilter(ctx.dashboardId, filter);
     return { success: true, filterId: filter.id };
   }
 
   if (toolName === "remove_global_filter") {
-    useDashboardStore.getState().removeGlobalFilter(input.filterId as string);
+    const ctx = getActiveContext();
+    if (!ctx) {
+      return { success: false, error: "No active dashboard" };
+    }
+    useDashboardStore
+      .getState()
+      .removeGlobalFilter(ctx.dashboardId, input.filterId as string);
     return { success: true };
   }
 
   if (toolName === "link_tables") {
+    const ctx = getActiveContext();
+    if (!ctx) {
+      return { success: false, error: "No active dashboard" };
+    }
     const relationship = {
       id: nanoid(),
       from: input.from as any,
       to: input.to as any,
       type: input.type as any,
     };
-    useDashboardStore.getState().addRelationship(relationship);
+    useDashboardStore.getState().addRelationship(ctx.dashboardId, relationship);
     return { success: true, relationshipId: relationship.id };
   }
 
   if (toolName === "set_time_dimension") {
+    const ctx = getActiveContext();
+    if (!ctx) {
+      return { success: false, error: "No active dashboard" };
+    }
     if (
       typeof input.dataSourceId !== "string" ||
       typeof input.column !== "string"
@@ -292,9 +323,11 @@ export async function executeDashboardAgentTool(
         error: "dataSourceId and column are required",
       };
     }
-    useDashboardStore.getState().updateDataSource(input.dataSourceId, {
-      timeDimension: input.column,
-    });
+    useDashboardStore
+      .getState()
+      .updateDataSource(ctx.dashboardId, input.dataSourceId, {
+        timeDimension: input.column,
+      });
     return { success: true };
   }
 

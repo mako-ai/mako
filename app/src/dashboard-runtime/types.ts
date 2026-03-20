@@ -1,107 +1,25 @@
-export type DashboardQueryLanguage = "sql" | "javascript" | "mongodb";
+export type {
+  DashboardQueryLanguage,
+  DashboardQueryDefinition,
+  DashboardDataSourceOrigin,
+  DashboardDataSource,
+  DashboardWidget,
+  TableRelationship,
+  GlobalFilter,
+  DashboardDefinition,
+} from "@mako/schemas";
 
-export interface DashboardQueryDefinition {
-  connectionId: string;
-  language: DashboardQueryLanguage;
-  code: string;
-  databaseId?: string;
-  databaseName?: string;
-  mongoOptions?: {
-    collection?: string;
-    operation?:
-      | "find"
-      | "aggregate"
-      | "insertMany"
-      | "updateMany"
-      | "deleteMany"
-      | "findOne"
-      | "updateOne"
-      | "deleteOne";
-  };
-}
+export {
+  DashboardDefinitionSchema,
+  DashboardWidgetSchema,
+  DashboardDataSourceSchema,
+  TableRelationshipSchema,
+  GlobalFilterSchema,
+} from "@mako/schemas";
 
-export interface DashboardDataSourceOrigin {
-  type: "saved_console" | "local";
-  consoleId?: string;
-  consoleName?: string;
-  importedAt?: string;
-}
-
-export interface DashboardDataSource {
-  id: string;
-  name: string;
-  tableRef: string;
-  query: DashboardQueryDefinition;
-  origin?: DashboardDataSourceOrigin;
-  timeDimension?: string;
-  rowLimit?: number;
-  cache?: {
-    ttlSeconds?: number;
-    lastRefreshedAt?: string;
-    rowCount?: number;
-    byteSize?: number;
-  };
-  computedColumns?: Array<{
-    name: string;
-    expression: string;
-    type: "quantitative" | "temporal" | "nominal" | "ordinal";
-  }>;
-}
-
-export interface DashboardWidget {
-  id: string;
-  title?: string;
-  type: "chart" | "kpi" | "table";
-  dataSourceId: string;
-  localSql: string;
-  vegaLiteSpec?: Record<string, unknown>;
-  kpiConfig?: {
-    valueField: string;
-    format?: string;
-    comparisonField?: string;
-    comparisonLabel?: string;
-  };
-  tableConfig?: { columns?: string[]; pageSize?: number };
-  crossFilter: { enabled: boolean; fields?: string[] };
-  layout: {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-    minW?: number;
-    minH?: number;
-  };
-}
-
-export interface TableRelationship {
-  id: string;
-  from: { dataSourceId: string; column: string };
-  to: { dataSourceId: string; column: string };
-  type: "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many";
-}
-
-export interface GlobalFilter {
-  id: string;
-  type: "date-range" | "select" | "multi-select" | "search";
-  label: string;
-  dataSourceId: string;
-  column: string;
-  config: Record<string, unknown>;
-  layout: { order: number; width?: number };
-}
-
-export interface Dashboard {
+export interface Dashboard extends DashboardDefinition {
   _id: string;
   workspaceId: string;
-  title: string;
-  description?: string;
-  dataSources: DashboardDataSource[];
-  relationships: TableRelationship[];
-  widgets: DashboardWidget[];
-  globalFilters: GlobalFilter[];
-  crossFilter: { enabled: boolean; resolution: "intersect" | "union" };
-  layout: { columns: number; rowHeight: number };
-  cache: { ttlSeconds: number; lastRefreshedAt?: string };
   access: "private" | "workspace";
   createdBy: string;
   createdAt: string;
@@ -199,3 +117,34 @@ export type DashboardQueryExecutor = (
   sql: string,
   options?: { dataSourceId?: string },
 ) => Promise<DashboardQueryResult>;
+
+import type { DashboardDefinition } from "@mako/schemas";
+
+/**
+ * Metadata fields that are excluded from the code editor.
+ * These are managed by the server and should never be editable by users.
+ */
+const DASHBOARD_METADATA_KEYS: ReadonlySet<string> = new Set([
+  "_id",
+  "workspaceId",
+  "access",
+  "createdBy",
+  "createdAt",
+  "updatedAt",
+]);
+
+/**
+ * Serializes a Dashboard into the editable definition portion only,
+ * stripping DB metadata fields (_id, workspaceId, etc.).
+ */
+export function serializeDashboardDefinition(
+  dashboard: Dashboard,
+): DashboardDefinition {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(dashboard)) {
+    if (!DASHBOARD_METADATA_KEYS.has(key)) {
+      result[key] = value;
+    }
+  }
+  return result as DashboardDefinition;
+}

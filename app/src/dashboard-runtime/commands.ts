@@ -30,28 +30,36 @@ function buildTableRef(): string {
   return sanitizeTableRef(`ds_${nanoid()}`);
 }
 
-function getActiveDashboardOrThrow(): Dashboard {
-  const dashboard = useDashboardStore.getState().activeDashboard;
+function resolveActiveDashboardId(): string {
+  const id = useDashboardStore.getState().activeDashboardId;
+  if (!id) throw new Error("No active dashboard");
+  return id;
+}
+
+function getDashboardOrThrow(dashboardId?: string): Dashboard {
+  const id = dashboardId ?? resolveActiveDashboardId();
+  const dashboard = useDashboardStore.getState().openDashboards[id];
   if (!dashboard) {
-    throw new Error("No active dashboard");
+    throw new Error(`Dashboard ${id} is not open`);
   }
   return dashboard;
 }
 
 export async function activateDashboardSession(
   workspaceId: string,
+  dashboardId?: string,
 ): Promise<void> {
-  const dashboard = getActiveDashboardOrThrow();
+  const dashboard = getDashboardOrThrow(dashboardId);
   await activateDashboardRuntime(dashboard);
   await syncDashboardRuntime({ workspaceId, dashboard });
 }
 
-export async function closeDashboardSession(): Promise<void> {
-  const dashboardId = useDashboardStore.getState().activeDashboard?._id;
-  if (!dashboardId) {
-    return;
-  }
-  await disposeDashboardRuntime(dashboardId);
+export async function closeDashboardSession(
+  dashboardId?: string,
+): Promise<void> {
+  const id = dashboardId ?? useDashboardStore.getState().activeDashboardId;
+  if (!id) return;
+  await disposeDashboardRuntime(id);
 }
 
 export function buildDashboardDataSource(input: {
@@ -84,9 +92,10 @@ export async function createDashboardDataSource(options: {
   timeDimension?: string;
   rowLimit?: number;
   cacheTtlSeconds?: number;
+  dashboardId?: string;
 }): Promise<DashboardDataSource> {
   const store = useDashboardStore.getState();
-  const dashboard = getActiveDashboardOrThrow();
+  const dashboard = getDashboardOrThrow(options.dashboardId);
   const dataSource = buildDashboardDataSource({
     name: options.name,
     query: options.query,
@@ -96,8 +105,8 @@ export async function createDashboardDataSource(options: {
     origin: { type: "local" },
   });
 
-  store.addDataSource(dataSource);
-  await store.saveDashboard(options.workspaceId);
+  store.addDataSource(dashboard._id, dataSource);
+  await store.saveDashboard(options.workspaceId, dashboard._id);
   await materializeDashboardDataSource({
     workspaceId: options.workspaceId,
     dashboard,
@@ -114,6 +123,7 @@ export async function importConsoleAsDashboardDataSource(options: {
   name?: string;
   rowLimit?: number;
   timeDimension?: string;
+  dashboardId?: string;
 }): Promise<DashboardDataSource> {
   const response = await apiClient.get<ConsoleContentResponse>(
     `/workspaces/${options.workspaceId}/consoles/content`,
@@ -129,7 +139,7 @@ export async function importConsoleAsDashboardDataSource(options: {
   }
 
   const store = useDashboardStore.getState();
-  const dashboard = getActiveDashboardOrThrow();
+  const dashboard = getDashboardOrThrow(options.dashboardId);
   const dataSource = buildDashboardDataSource({
     name: options.name || response.name || "imported_data_source",
     rowLimit: options.rowLimit,
@@ -149,8 +159,8 @@ export async function importConsoleAsDashboardDataSource(options: {
     },
   });
 
-  store.addDataSource(dataSource);
-  await store.saveDashboard(options.workspaceId);
+  store.addDataSource(dashboard._id, dataSource);
+  await store.saveDashboard(options.workspaceId, dashboard._id);
   await materializeDashboardDataSource({
     workspaceId: options.workspaceId,
     dashboard,
@@ -166,14 +176,15 @@ export async function updateDashboardDataSourceQuery(options: {
   dataSourceId: string;
   changes: Partial<DashboardDataSource>;
   rematerialize?: boolean;
+  dashboardId?: string;
 }): Promise<void> {
   const store = useDashboardStore.getState();
-  getActiveDashboardOrThrow();
-  store.updateDataSource(options.dataSourceId, options.changes);
-  await store.saveDashboard(options.workspaceId);
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  store.updateDataSource(dashboard._id, options.dataSourceId, options.changes);
+  await store.saveDashboard(options.workspaceId, dashboard._id);
 
   if (options.rematerialize !== false) {
-    const updatedDashboard = getActiveDashboardOrThrow();
+    const updatedDashboard = getDashboardOrThrow(dashboard._id);
     const dataSource = updatedDashboard.dataSources.find(
       ds => ds.id === options.dataSourceId,
     );
@@ -191,20 +202,21 @@ export async function updateDashboardDataSourceQuery(options: {
 export async function removeDashboardDataSource(options: {
   workspaceId: string;
   dataSourceId: string;
+  dashboardId?: string;
 }): Promise<void> {
   const store = useDashboardStore.getState();
-  const _dashboard = getActiveDashboardOrThrow();
-  const dataSource = _dashboard.dataSources.find(
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  const dataSource = dashboard.dataSources.find(
     ds => ds.id === options.dataSourceId,
   );
   if (!dataSource) {
     return;
   }
 
-  store.removeDataSource(options.dataSourceId);
-  await store.saveDashboard(options.workspaceId);
+  store.removeDataSource(dashboard._id, options.dataSourceId);
+  await store.saveDashboard(options.workspaceId, dashboard._id);
   await removeDashboardDataSourceRuntime({
-    dashboardId: _dashboard._id,
+    dashboardId: dashboard._id,
     dataSourceId: dataSource.id,
     tableRef: dataSource.tableRef,
   });
@@ -213,8 +225,9 @@ export async function removeDashboardDataSource(options: {
 export async function refreshDashboardDataSourceCommand(options: {
   workspaceId: string;
   dataSourceId: string;
+  dashboardId?: string;
 }): Promise<void> {
-  const dashboard = getActiveDashboardOrThrow();
+  const dashboard = getDashboardOrThrow(options.dashboardId);
   await refreshDashboardDataSource({
     workspaceId: options.workspaceId,
     dashboard,
@@ -224,16 +237,14 @@ export async function refreshDashboardDataSourceCommand(options: {
 
 export async function refreshAllDashboardDataSourcesCommand(
   workspaceId: string,
+  dashboardId?: string,
 ): Promise<void> {
-  const dashboard = getActiveDashboardOrThrow();
+  const dashboard = getDashboardOrThrow(dashboardId);
   await refreshAllDashboardDataSources({ workspaceId, dashboard });
 }
 
 export function getDashboardStateSnapshot(dashboardId?: string) {
-  const dashboard = useDashboardStore.getState().activeDashboard;
-  if (!dashboard || (dashboardId && dashboard._id !== dashboardId)) {
-    throw new Error("No matching active dashboard");
-  }
+  const dashboard = getDashboardOrThrow(dashboardId);
 
   return {
     ...dashboard,
@@ -255,8 +266,9 @@ export function getDashboardStateSnapshot(dashboardId?: string) {
 export async function previewDashboardQuery(options: {
   dataSourceId: string;
   sql?: string;
+  dashboardId?: string;
 }) {
-  const dashboard = getActiveDashboardOrThrow();
+  const dashboard = getDashboardOrThrow(options.dashboardId);
   return await previewDashboardDataSource({
     dashboard,
     dataSourceId: options.dataSourceId,
@@ -267,8 +279,9 @@ export async function previewDashboardQuery(options: {
 export async function executeDashboardSql(options: {
   sql: string;
   dataSourceId?: string;
+  dashboardId?: string;
 }) {
-  const dashboard = getActiveDashboardOrThrow();
+  const dashboard = getDashboardOrThrow(options.dashboardId);
   return await queryDashboardRuntime({
     dashboard,
     sql: options.sql,
@@ -276,17 +289,27 @@ export async function executeDashboardSql(options: {
   });
 }
 
-export function addDashboardWidget(widget: DashboardWidget): void {
-  useDashboardStore.getState().addWidget(widget);
+export function addDashboardWidget(
+  widget: DashboardWidget,
+  dashboardId?: string,
+): void {
+  const id = dashboardId ?? resolveActiveDashboardId();
+  useDashboardStore.getState().addWidget(id, widget);
 }
 
 export function updateDashboardWidget(
   widgetId: string,
   changes: Partial<DashboardWidget>,
+  dashboardId?: string,
 ): void {
-  useDashboardStore.getState().modifyWidget(widgetId, changes);
+  const id = dashboardId ?? resolveActiveDashboardId();
+  useDashboardStore.getState().modifyWidget(id, widgetId, changes);
 }
 
-export function removeDashboardWidget(widgetId: string): void {
-  useDashboardStore.getState().removeWidget(widgetId);
+export function removeDashboardWidget(
+  widgetId: string,
+  dashboardId?: string,
+): void {
+  const id = dashboardId ?? resolveActiveDashboardId();
+  useDashboardStore.getState().removeWidget(id, widgetId);
 }

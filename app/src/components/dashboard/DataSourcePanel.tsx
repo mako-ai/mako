@@ -51,6 +51,7 @@ interface ConsoleResult {
 interface DataSourcePanelProps {
   open: boolean;
   onClose: () => void;
+  dashboardId?: string;
 }
 
 const STATUS_CHIP_PROPS: Record<
@@ -63,13 +64,19 @@ const STATUS_CHIP_PROPS: Record<
   error: { label: "Error", color: "error" },
 };
 
-const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
+const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
+  open,
+  onClose,
+  dashboardId,
+}) => {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
 
-  const activeDashboard = useDashboardStore(s => s.activeDashboard);
+  const dashboard = useDashboardStore(s =>
+    dashboardId ? s.openDashboards[dashboardId] : undefined,
+  );
   const runtimeSession = useDashboardRuntimeStore(state =>
-    activeDashboard ? state.sessions[activeDashboard._id] || null : null,
+    dashboardId ? state.sessions[dashboardId] || null : null,
   );
   const ensureConnections = useSchemaStore(state => state.ensureConnections);
   const availableConnections = useSchemaStore(state =>
@@ -157,7 +164,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
   }, [searchQuery, allConsoles]);
 
   const handleAddDataSource = async (console_: ConsoleResult) => {
-    if (!activeDashboard || !workspaceId) return;
+    if (!dashboard || !workspaceId) return;
 
     setAddingId(console_.id);
 
@@ -245,7 +252,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
   };
 
   const handleEditDataSource = (dataSourceId: string) => {
-    const ds = activeDashboard?.dataSources.find(
+    const ds = dashboard?.dataSources.find(
       source => source.id === dataSourceId,
     );
     if (!ds) {
@@ -269,7 +276,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({ open, onClose }) => {
     setDirectQuery("");
   };
 
-  const dataSources = activeDashboard?.dataSources ?? [];
+  const dataSources = dashboard?.dataSources ?? [];
 
   return (
     <Drawer

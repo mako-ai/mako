@@ -49,6 +49,7 @@
     "sqlite3": "^5.1.7",
     "stripe": "^14.25.0",
     "uuid": "^9.0.0",
+    "@mako/schemas": "workspace:*",
     "zod": "^4.2.1"
   },
   "devDependencies": {

@@ -419,12 +419,9 @@ function Editor({
   const closeConsole = (id: string) => {
     const closingTab = tabs[id];
     if (closingTab?.kind === "dashboard") {
-      const dashStore = useDashboardStore.getState();
-      if (
-        dashStore.activeDashboardId &&
-        closingTab.metadata?.dashboardId === dashStore.activeDashboardId
-      ) {
-        dashStore.closeDashboard();
+      const dbId = closingTab.metadata?.dashboardId as string | undefined;
+      if (dbId) {
+        useDashboardStore.getState().closeDashboard(dbId);
       }
     }
     closeTab(id);
