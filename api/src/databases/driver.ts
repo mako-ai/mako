@@ -226,4 +226,15 @@ export interface DatabaseDriver {
     query: string,
     options: StreamingQueryOptions,
   ): Promise<{ success: boolean; totalRows: number; error?: string }>;
+
+  /**
+   * Add columns to an existing table (ALTER TABLE ADD COLUMN).
+   * Used by the connector builder's schema reconciliation engine.
+   */
+  addColumns?(
+    database: IDatabaseConnection,
+    tableName: string,
+    columns: ColumnDefinition[],
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }>;
 }

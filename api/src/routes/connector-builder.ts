@@ -15,6 +15,7 @@ import {
   computeBuildHash,
 } from "../connector-builder/sandbox-runner";
 import { connectorInputSchema } from "../connector-builder/output-schema";
+import { inngest } from "../inngest";
 
 const logger = loggers.connector("builder");
 
@@ -687,6 +688,160 @@ connectorBuilderRoutes.patch(
     }
   },
 );
+
+// POST /instances/:id/run - Manual production run via Inngest
+connectorBuilderRoutes.post(
+  "/instances/:id/run",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid instance ID" }, 400);
+      }
+
+      const instance = await ConnectorInstance.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      // Verify the connector has a built bundle
+      const connector = await UserConnector.findById(instance.connectorId);
+      if (!connector?.bundle?.js) {
+        return c.json(
+          { success: false, error: "Connector has not been built yet" },
+          400,
+        );
+      }
+
+      await inngest.send({
+        name: "user-connector.execute",
+        data: {
+          instanceId: id,
+          workspaceId,
+          trigger: { type: "manual" },
+        },
+      });
+
+      logger.info("Manual run triggered", { instanceId: id, workspaceId });
+
+      return c.json({ success: true, message: "Execution started" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to trigger manual run", { error });
+      return c.json({ success: false, error: message }, 500);
+    }
+  },
+);
+
+// POST /instances/:id/cancel - Cancel running execution
+connectorBuilderRoutes.post(
+  "/instances/:id/cancel",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid instance ID" }, 400);
+      }
+
+      await inngest.send({
+        name: "user-connector.cancel",
+        data: {
+          instanceId: id,
+          workspaceId,
+        },
+      });
+
+      return c.json({ success: true, message: "Cancellation requested" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to cancel execution", { error });
+      return c.json({ success: false, error: message }, 500);
+    }
+  },
+);
+
+// ── Webhook Reception (no auth required - external services call this) ──
+
+export const connectorBuilderWebhookRoutes = new Hono();
+
+// POST /api/webhooks/:workspaceId/uc/:instanceId - Receive webhook
+connectorBuilderWebhookRoutes.post("/:workspaceId/uc/:instanceId", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const instanceId = c.req.param("instanceId");
+
+    if (
+      !Types.ObjectId.isValid(workspaceId) ||
+      !Types.ObjectId.isValid(instanceId)
+    ) {
+      return c.json({ error: "Invalid ID format" }, 400);
+    }
+
+    const instance = await ConnectorInstance.findOne({
+      _id: new Types.ObjectId(instanceId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      "status.enabled": true,
+    }).lean();
+
+    if (!instance) {
+      return c.json({ error: "Instance not found or disabled" }, 404);
+    }
+
+    // Verify a webhook trigger exists
+    const hasWebhookTrigger = instance.triggers.some(t => t.type === "webhook");
+    if (!hasWebhookTrigger) {
+      return c.json({ error: "No webhook trigger configured" }, 400);
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const eventId =
+      (body as any).id ||
+      (body as any).event_id ||
+      `wh_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const eventType =
+      (body as any).type || (body as any).event_type || "webhook";
+
+    // Store webhook event
+    await UserConnectorWebhookEvent.create({
+      instanceId: new Types.ObjectId(instanceId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      eventId,
+      eventType,
+      receivedAt: new Date(),
+      status: "pending",
+      rawPayload: body,
+    }).catch(() => {
+      // Ignore duplicate events
+    });
+
+    // Send to Inngest for processing
+    await inngest.send({
+      name: "user-connector.execute",
+      data: {
+        instanceId,
+        workspaceId,
+        trigger: {
+          type: "webhook",
+          payload: body,
+        },
+      },
+    });
+
+    return c.json({ received: true });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    logger.error("Webhook reception failed", { error });
+    return c.json({ error: message }, 500);
+  }
+});
 
 // ── Helper ──
 

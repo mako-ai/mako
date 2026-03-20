@@ -714,6 +714,30 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Add columns to an existing table via ALTER TABLE ADD COLUMN
+   */
+  async addColumns(
+    database: IDatabaseConnection,
+    tableName: string,
+    columns: ColumnDefinition[],
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    const schema = options?.schema || "public";
+    const fullTableName = `${escapeIdentifier(schema)}.${escapeIdentifier(tableName)}`;
+
+    const alterStatements = columns.map(col => {
+      let def = `ADD COLUMN IF NOT EXISTS ${escapeIdentifier(col.name)} ${col.type}`;
+      if (!col.nullable) def += " NOT NULL DEFAULT ''";
+      return def;
+    });
+
+    const query = `ALTER TABLE ${fullTableName}\n  ${alterStatements.join(",\n  ")};`;
+
+    const result = await this.executeQuery(database, query);
+    return { success: result.success, error: result.error };
+  }
+
+  /**
    * Execute a streaming query with batched callbacks
    * Uses CURSOR for memory-efficient large result set handling
    */

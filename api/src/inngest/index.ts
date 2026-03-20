@@ -15,6 +15,11 @@ import {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
 } from "./functions/dashboard-refresh";
+import {
+  userConnectorFlowFunction,
+  userConnectorSchedulerFunction,
+  cancelUserConnectorFunction,
+} from "./functions/user-connector-flow";
 import { loggers } from "../logging";
 
 // Check if we're running in development mode
@@ -32,12 +37,19 @@ const baseFunctions = [
   webhookCleanupFunction,
   webhookRetryFunction,
   dashboardRefreshFunction,
+  userConnectorFlowFunction,
+  cancelUserConnectorFunction,
 ];
 
 // Conditionally add schedulers (only in production)
 export const functions = isDevelopment
   ? baseFunctions
-  : [...baseFunctions, flowSchedulerFunction, dashboardSchedulerFunction];
+  : [
+      ...baseFunctions,
+      flowSchedulerFunction,
+      dashboardSchedulerFunction,
+      userConnectorSchedulerFunction,
+    ];
 
 /**
  * Log Inngest configuration status
@@ -65,4 +77,7 @@ export {
   webhookRetryFunction,
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
+  userConnectorFlowFunction,
+  userConnectorSchedulerFunction,
+  cancelUserConnectorFunction,
 };

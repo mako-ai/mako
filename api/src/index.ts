@@ -34,7 +34,10 @@ import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
 import { dashboardRoutes } from "./routes/dashboards";
-import { connectorBuilderRoutes } from "./routes/connector-builder";
+import {
+  connectorBuilderRoutes,
+  connectorBuilderWebhookRoutes,
+} from "./routes/connector-builder";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -128,6 +131,7 @@ databaseRegistry.register(new CloudflareKVDatabaseDriver());
 databaseRegistry.register(new ClickHouseDatabaseDriver());
 databaseRegistry.register(new RedshiftDatabaseDriver());
 app.route("/api", webhookRoutes);
+app.route("/api/webhooks", connectorBuilderWebhookRoutes);
 
 // Inngest endpoint
 app.on(
