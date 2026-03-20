@@ -22,11 +22,13 @@ import { useTheme } from "../../contexts/ThemeContext";
 interface WidgetInspectorProps {
   widget: DashboardWidget;
   onClose: () => void;
+  dashboardId?: string;
 }
 
 const WidgetInspector: React.FC<WidgetInspectorProps> = ({
   widget,
   onClose,
+  dashboardId,
 }) => {
   const { modifyWidget, addWidget } = useDashboardStore();
   const { effectiveMode } = useTheme();
@@ -45,7 +47,7 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
       widget.vegaLiteSpec ? JSON.stringify(widget.vegaLiteSpec, null, 2) : "",
     );
     setError(null);
-  }, [widget.id]);
+  }, [widget.id, widget.title, widget.localSql, widget.vegaLiteSpec]);
 
   const handleApply = () => {
     setError(null);
@@ -63,7 +65,7 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
       }
     }
 
-    modifyWidget(widget.id, changes);
+    if (dashboardId) modifyWidget(dashboardId, widget.id, changes);
     onClose();
   };
 
@@ -78,7 +80,7 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
         y: widget.layout.y + widget.layout.h,
       },
     };
-    addWidget(newWidget);
+    if (dashboardId) addWidget(dashboardId, newWidget);
     onClose();
   };
 

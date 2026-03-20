@@ -14,7 +14,6 @@ import {
   LinearProgress,
   ToggleButton,
   ToggleButtonGroup,
-  Button,
 } from "@mui/material";
 import {
   RefreshCw,
@@ -44,9 +43,10 @@ import {
   refreshAllDashboardDataSourcesCommand,
 } from "../dashboard-runtime/commands";
 import { useDashboardRuntimeStore } from "../dashboard-runtime/store";
-import type {
-  DashboardQueryExecutor,
-  DashboardRuntimeStatus,
+import {
+  serializeDashboardDefinition,
+  type DashboardQueryExecutor,
+  type DashboardRuntimeStatus,
 } from "../dashboard-runtime/types";
 import type { CrossFilterSelection } from "./ResultsChart";
 import WidgetContainer from "./widgets/WidgetContainer";
@@ -57,7 +57,6 @@ import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
 import WidgetInspector from "./dashboard/WidgetInspector";
-
 interface ActiveCrossFilter extends CrossFilterSelection {
   dataSourceId: string;
 }
@@ -72,11 +71,9 @@ function resolveFilterField(
   const lowerSelected = selectedField.toLowerCase();
   const lowerFields = availableFields.map(f => f.toLowerCase());
 
-  // 1) Exact match
   const exactIdx = lowerFields.indexOf(lowerSelected);
   if (exactIdx >= 0) return availableFields[exactIdx];
 
-  // 2) Common convention matches: *_field, field_*, field_code, *_field_code
   const conventionMatches = availableFields.filter(field => {
     const lf = field.toLowerCase();
     return (
@@ -88,7 +85,6 @@ function resolveFilterField(
   });
   if (conventionMatches.length === 1) return conventionMatches[0];
 
-  // 3) Token match fallback (shortest candidate wins)
   const tokenMatches = availableFields.filter(field =>
     field
       .toLowerCase()
@@ -154,6 +150,15 @@ function shouldClearTransientWidgetError(
   return false;
 }
 
+function formatZodErrors(error: {
+  issues: Array<{ path: PropertyKey[]; message: string }>;
+}): string {
+  return error.issues
+    .slice(0, 5)
+    .map(issue => `${issue.path.join(".")}: ${issue.message}`)
+    .join(" | ");
+}
+
 const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   dashboardId,
   isNew,
@@ -161,19 +166,25 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 }) => {
   const { currentWorkspace } = useWorkspace();
   const { effectiveMode } = useTheme();
-  const activeDashboard = useDashboardStore(state => state.activeDashboard);
+  const dashboard = useDashboardStore(state =>
+    dashboardId ? state.openDashboards[dashboardId] : undefined,
+  );
   const openDashboard = useDashboardStore(state => state.openDashboard);
   const saveDashboard = useDashboardStore(state => state.saveDashboard);
   const createDashboard = useDashboardStore(state => state.createDashboard);
   const addWidget = useDashboardStore(state => state.addWidget);
   const modifyWidget = useDashboardStore(state => state.modifyWidget);
   const removeWidget = useDashboardStore(state => state.removeWidget);
+  const applyDefinition = useDashboardStore(state => state.applyDefinition);
   const undo = useDashboardStore(state => state.undo);
   const redo = useDashboardStore(state => state.redo);
-  const historyIndex = useDashboardStore(state => state.historyIndex);
-  const historyLength = useDashboardStore(state => state.history.length);
+  const historyEntry = useDashboardStore(state =>
+    dashboardId ? state.historyMap[dashboardId] : undefined,
+  );
+  const historyIndex = historyEntry?.index ?? -1;
+  const historyLength = historyEntry?.stack.length ?? 0;
   const runtimeSession = useDashboardRuntimeStore(state =>
-    activeDashboard ? state.sessions[activeDashboard._id] || null : null,
+    dashboardId ? state.sessions[dashboardId] || null : null,
   );
 
   const [widgetErrors, setWidgetErrors] = useState<Record<string, string>>({});
@@ -199,6 +210,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const selectionHandlersRef = useRef<
     Record<string, (sel: CrossFilterSelection | null) => void>
   >({});
+
+  // Suppress re-serialization while user is typing in the code editor
+  const isUserEditingCodeRef = useRef(false);
+
   const queryExecutor = useCallback<DashboardQueryExecutor>(
     (sql, options) =>
       executeDashboardSql({
@@ -251,10 +266,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   const widgetFilterClauses = useMemo(() => {
-    if (!activeDashboard?.crossFilter?.enabled) return {};
+    if (!dashboard?.crossFilter?.enabled) return {};
 
     const result: Record<string, string> = {};
-    for (const widget of activeDashboard.widgets) {
+    for (const widget of dashboard.widgets) {
       if (widget.crossFilter && !widget.crossFilter.enabled) continue;
 
       const clauses: string[] = [];
@@ -276,14 +291,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
     return result;
   }, [
-    activeDashboard?.crossFilter?.enabled,
-    activeDashboard?.widgets,
+    dashboard?.crossFilter?.enabled,
+    dashboard?.widgets,
     crossFilterMap,
     runtimeSession?.dataSources,
   ]);
 
   useEffect(() => {
-    if (!activeDashboard) {
+    if (!dashboard) {
       widgetErrorHandlersRef.current = {};
       selectionHandlersRef.current = {};
       setWidgetErrors({});
@@ -292,7 +307,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
 
     const widgetById = new Map(
-      activeDashboard.widgets.map(widget => [widget.id, widget]),
+      dashboard.widgets.map(widget => [widget.id, widget]),
     );
     const activeWidgetIds = new Set(widgetById.keys());
     const hasRuntimeSession = Boolean(runtimeSession);
@@ -347,7 +362,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       for (const id of stale) delete next[id];
       return next;
     });
-  }, [activeDashboard, runtimeSession]);
+  }, [dashboard, runtimeSession]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -366,11 +381,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           access: "private",
         } as any);
         if (created) {
-          useDashboardStore.setState({
-            activeDashboardId: created._id,
-            activeDashboard: created,
-            history: [],
-            historyIndex: -1,
+          useDashboardStore.setState(state => {
+            state.openDashboards[created._id] = created;
+            state.activeDashboardId = created._id;
+            state.historyMap[created._id] = { stack: [], index: -1 };
           });
           onCreated?.(created._id);
         }
@@ -381,20 +395,67 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (dashboardId) {
       openDashboard(workspaceId, dashboardId);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, dashboardId, isNew, openDashboard, createDashboard]);
 
   useEffect(() => {
-    if (!activeDashboard || !workspaceId) return;
-    void activateDashboardSession(workspaceId);
-  }, [activeDashboard?._id, workspaceId]);
+    if (!dashboard || !workspaceId || !dashboardId) return;
+    void activateDashboardSession(workspaceId, dashboardId);
+  }, [dashboard?._id, workspaceId, dashboardId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync code view when switching to code mode
   useEffect(() => {
-    if (viewMode === "code" && activeDashboard) {
-      setCodeValue(JSON.stringify(activeDashboard, null, 2));
+    if (viewMode === "code" && dashboard && !isUserEditingCodeRef.current) {
+      setCodeValue(
+        JSON.stringify(serializeDashboardDefinition(dashboard), null, 2),
+      );
       setCodeError(null);
     }
-  }, [viewMode, activeDashboard?._id]);
+  }, [viewMode, dashboard]);
+
+  // When switching to code mode, always serialize fresh
+  const prevViewModeRef = useRef(viewMode);
+  useEffect(() => {
+    if (
+      viewMode === "code" &&
+      prevViewModeRef.current !== "code" &&
+      dashboard
+    ) {
+      setCodeValue(
+        JSON.stringify(serializeDashboardDefinition(dashboard), null, 2),
+      );
+      setCodeError(null);
+    }
+    prevViewModeRef.current = viewMode;
+  }, [viewMode, dashboard]);
+
+  const handleCodeChange = useCallback(
+    (val: string | undefined) => {
+      const newVal = val || "";
+      setCodeValue(newVal);
+      isUserEditingCodeRef.current = true;
+
+      if (!dashboardId) return;
+
+      try {
+        const parsed = JSON.parse(newVal);
+        const zodError = applyDefinition(dashboardId, parsed);
+        if (zodError) {
+          setCodeError(formatZodErrors(zodError));
+        } else {
+          setCodeError(null);
+        }
+      } catch (e: any) {
+        setCodeError(e?.message || "Invalid JSON");
+      }
+
+      // Reset the flag after a short delay to allow store-triggered re-renders
+      // to not fight with user typing
+      setTimeout(() => {
+        isUserEditingCodeRef.current = false;
+      }, 100);
+    },
+    [dashboardId, applyDefinition],
+  );
 
   const handleExportPng = useCallback(async () => {
     const gridEl = document.querySelector(".layout") as HTMLElement;
@@ -406,13 +467,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         scale: 2,
       });
       const link = document.createElement("a");
-      link.download = `${activeDashboard?.title || "dashboard"}.png`;
+      link.download = `${dashboard?.title || "dashboard"}.png`;
       link.href = canvas.toDataURL("image/png");
       link.click();
     } catch {
       // silent
     }
-  }, [activeDashboard?.title]);
+  }, [dashboard?.title]);
 
   const handleRefresh = useCallback(() => {
     if (workspaceId) {
@@ -422,17 +483,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const handleLayoutChange = useCallback(
     (layout: readonly any[], allLayouts?: Record<string, readonly any[]>) => {
-      if (!activeDashboard) return;
+      if (!dashboard || !dashboardId) return;
 
-      // Persist only the canonical desktop layout.
-      // Responsive breakpoints can compact/reflow items; saving those coordinates
-      // would overwrite the original positions and prevent restoration on expand.
       const layoutToPersist =
         allLayouts?.lg ?? (gridWidth >= 1200 ? layout : undefined);
       if (!layoutToPersist) return;
 
       for (const item of layoutToPersist) {
-        const widget = activeDashboard.widgets.find(w => w.id === item.i);
+        const widget = dashboard.widgets.find(w => w.id === item.i);
         if (widget) {
           const newLayout = { x: item.x, y: item.y, w: item.w, h: item.h };
           if (
@@ -441,32 +499,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             widget.layout.w !== newLayout.w ||
             widget.layout.h !== newLayout.h
           ) {
-            modifyWidget(widget.id, { layout: newLayout });
+            modifyWidget(dashboardId, widget.id, { layout: newLayout });
           }
         }
       }
     },
-    [activeDashboard, gridWidth, modifyWidget],
+    [dashboard, dashboardId, gridWidth, modifyWidget],
   );
-
-  const handleCodeSave = useCallback(() => {
-    if (!workspaceId || !activeDashboard) return;
-    try {
-      const parsed = JSON.parse(codeValue);
-      useDashboardStore.setState(state => ({
-        activeDashboard: state.activeDashboard
-          ? { ...state.activeDashboard, ...parsed }
-          : state.activeDashboard,
-      }));
-      void saveDashboard(workspaceId);
-      setCodeError(null);
-    } catch (e: any) {
-      setCodeError(e?.message || "Invalid JSON");
-    }
-  }, [activeDashboard, codeValue, saveDashboard, workspaceId]);
 
   const handleDuplicateWidget = useCallback(
     async (widget: DashboardWidget) => {
+      if (!dashboardId) return;
       const { nanoid } = await import("nanoid");
       const newWidget: DashboardWidget = {
         ...widget,
@@ -477,26 +520,26 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           y: widget.layout.y + widget.layout.h,
         },
       };
-      addWidget(newWidget);
+      addWidget(dashboardId, newWidget);
     },
-    [addWidget],
+    [dashboardId, addWidget],
   );
 
   const allSourcesReady = useMemo(() => {
-    if (!activeDashboard) return false;
-    if (activeDashboard.dataSources.length === 0) return true;
-    return activeDashboard.dataSources.every(
+    if (!dashboard) return false;
+    if (dashboard.dataSources.length === 0) return true;
+    return dashboard.dataSources.every(
       ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
     );
-  }, [activeDashboard, runtimeSession]);
+  }, [dashboard, runtimeSession]);
 
   const isRuntimeInitializing = useMemo(() => {
-    if (!activeDashboard) {
+    if (!dashboard) {
       return false;
     }
 
-    return activeDashboard.dataSources.length > 0 && !runtimeSession;
-  }, [activeDashboard, runtimeSession]);
+    return dashboard.dataSources.length > 0 && !runtimeSession;
+  }, [dashboard, runtimeSession]);
 
   const someSourcesLoading = useMemo(() => {
     if (isRuntimeInitializing) {
@@ -509,7 +552,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [isRuntimeInitializing, runtimeSession]);
 
   const loadingSummary = useMemo(() => {
-    if (!activeDashboard) {
+    if (!dashboard) {
       return null;
     }
 
@@ -520,7 +563,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       };
     }
 
-    const loadingSources = activeDashboard.dataSources.filter(
+    const loadingSources = dashboard.dataSources.filter(
       ds => runtimeSession?.dataSources[ds.id]?.status === "loading",
     );
 
@@ -539,14 +582,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         0,
       ),
     };
-  }, [activeDashboard, isRuntimeInitializing, runtimeSession]);
+  }, [dashboard, isRuntimeInitializing, runtimeSession]);
 
   const errorSummary = useMemo(() => {
-    if (!activeDashboard) {
+    if (!dashboard) {
       return null;
     }
 
-    const failingSources = activeDashboard.dataSources.filter(
+    const failingSources = dashboard.dataSources.filter(
       ds => runtimeSession?.dataSources[ds.id]?.status === "error",
     );
 
@@ -561,11 +604,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         runtimeSession?.dataSources[first.id]?.error ||
         "Failed to load one or more data sources",
     };
-  }, [activeDashboard, runtimeSession]);
+  }, [dashboard, runtimeSession]);
 
   const gridLayout = useMemo(() => {
-    if (!activeDashboard) return [];
-    return activeDashboard.widgets.map(w => ({
+    if (!dashboard) return [];
+    return dashboard.widgets.map(w => ({
       i: w.id,
       x: w.layout.x,
       y: w.layout.y,
@@ -574,9 +617,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       minW: w.layout.minW || 2,
       minH: w.layout.minH || 2,
     }));
-  }, [activeDashboard?.widgets]);
+  }, [dashboard]);
 
-  if (!activeDashboard) {
+  if (!dashboard) {
     return (
       <Box
         sx={{
@@ -592,7 +635,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     );
   }
 
-  const isCrossFilterEnabled = activeDashboard.crossFilter?.enabled ?? false;
+  const isCrossFilterEnabled = dashboard.crossFilter?.enabled ?? false;
+  const hasCodeError = Boolean(codeError);
 
   const renderWidget = (widget: DashboardWidget) => {
     if (!runtimeSession) {
@@ -681,7 +725,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         <Tooltip title="Manage data sources">
           <Chip
             icon={<Database size={14} />}
-            label={`${activeDashboard.dataSources.length} sources`}
+            label={`${dashboard.dataSources.length} sources`}
             size="small"
             variant="outlined"
             onClick={() => setDataSourcePanelOpen(true)}
@@ -708,7 +752,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           <span>
             <IconButton
               size="small"
-              onClick={undo}
+              onClick={() => dashboardId && undo(dashboardId)}
               disabled={historyIndex <= 0}
             >
               <Undo2 size={16} />
@@ -719,7 +763,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           <span>
             <IconButton
               size="small"
-              onClick={redo}
+              onClick={() => dashboardId && redo(dashboardId)}
               disabled={historyIndex >= historyLength - 1}
             >
               <Redo2 size={16} />
@@ -754,13 +798,22 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </IconButton>
         </Tooltip>
 
-        <Tooltip title="Save">
-          <IconButton
-            size="small"
-            onClick={() => workspaceId && saveDashboard(workspaceId)}
-          >
-            <Save size={16} />
-          </IconButton>
+        <Tooltip
+          title={hasCodeError ? "Fix JSON errors before saving" : "Save"}
+        >
+          <span>
+            <IconButton
+              size="small"
+              disabled={viewMode === "code" && hasCodeError}
+              onClick={() =>
+                workspaceId &&
+                dashboardId &&
+                saveDashboard(workspaceId, dashboardId)
+              }
+            >
+              <Save size={16} />
+            </IconButton>
+          </span>
         </Tooltip>
 
         {/* Settings */}
@@ -820,7 +873,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         <Box sx={{ flex: 1, overflow: "auto" }}>
           {viewMode === "canvas" ? (
             <Box ref={gridContainerRef} sx={{ height: "100%", p: 1 }}>
-              {activeDashboard.widgets.length === 0 ? (
+              {dashboard.widgets.length === 0 ? (
                 <Box
                   sx={{
                     height: "100%",
@@ -833,24 +886,18 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   }}
                 >
                   <Typography variant="body2">No widgets yet.</Typography>
-                  {activeDashboard.dataSources.length === 0 ? (
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      startIcon={<Database size={16} />}
-                      onClick={() => setDataSourcePanelOpen(true)}
-                    >
-                      Add a data source
-                    </Button>
+                  {dashboard.dataSources.length === 0 ? (
+                    <Tooltip title="Add a data source">
+                      <IconButton onClick={() => setDataSourcePanelOpen(true)}>
+                        <Database size={16} />
+                      </IconButton>
+                    </Tooltip>
                   ) : (
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      startIcon={<Plus size={16} />}
-                      onClick={() => setAddWidgetOpen(true)}
-                    >
-                      Add a widget
-                    </Button>
+                    <Tooltip title="Add a widget">
+                      <IconButton onClick={() => setAddWidgetOpen(true)}>
+                        <Plus size={16} />
+                      </IconButton>
+                    </Tooltip>
                   )}
                 </Box>
               ) : (
@@ -860,17 +907,19 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   layouts={{ lg: gridLayout }}
                   breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480 }}
                   cols={{ lg: 12, md: 10, sm: 6, xs: 4 }}
-                  rowHeight={activeDashboard.layout?.rowHeight || 80}
+                  rowHeight={dashboard.layout?.rowHeight || 80}
                   onLayoutChange={handleLayoutChange}
                   dragConfig={{ handle: ".drag-handle" }}
                 >
-                  {activeDashboard.widgets.map(widget => (
+                  {dashboard.widgets.map(widget => (
                     <div key={widget.id}>
                       <WidgetContainer
                         title={widget.title}
                         loading={!allSourcesReady}
                         error={widgetErrors[widget.id]}
-                        onRemove={() => removeWidget(widget.id)}
+                        onRemove={() =>
+                          dashboardId && removeWidget(dashboardId, widget.id)
+                        }
                         onDuplicate={() => handleDuplicateWidget(widget)}
                         onInspect={() => setInspectedWidget(widget)}
                       >
@@ -903,7 +952,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                 }}
               >
                 <Typography variant="caption" color="text.secondary">
-                  Dashboard JSON Spec
+                  Dashboard Definition (JSON)
                 </Typography>
                 <Box sx={{ flex: 1 }} />
                 {codeError && (
@@ -911,21 +960,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                     {codeError}
                   </Typography>
                 )}
-                <Button
-                  size="small"
-                  variant="contained"
-                  onClick={handleCodeSave}
-                  sx={{ textTransform: "none", fontSize: 12 }}
-                >
-                  Apply Changes
-                </Button>
               </Box>
               <Box sx={{ flex: 1 }}>
                 <Editor
                   height="100%"
                   language="json"
                   value={codeValue}
-                  onChange={val => setCodeValue(val || "")}
+                  onChange={handleCodeChange}
                   theme={effectiveMode === "dark" ? "vs-dark" : "light"}
                   options={{
                     minimap: { enabled: false },
@@ -945,6 +986,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         {inspectedWidget && (
           <WidgetInspector
             widget={inspectedWidget}
+            dashboardId={dashboardId}
             onClose={() => setInspectedWidget(null)}
           />
         )}
@@ -954,14 +996,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       <DataSourcePanel
         open={dataSourcePanelOpen}
         onClose={() => setDataSourcePanelOpen(false)}
+        dashboardId={dashboardId}
       />
       <AddWidgetDialog
         open={addWidgetOpen}
         onClose={() => setAddWidgetOpen(false)}
+        dashboardId={dashboardId}
       />
       <DashboardSettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        dashboardId={dashboardId}
       />
     </Box>
   );

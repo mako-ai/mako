@@ -25,6 +25,7 @@ import { useConsoleStore } from "../../store/consoleStore";
 interface DashboardSettingsDialogProps {
   open: boolean;
   onClose: () => void;
+  dashboardId?: string;
 }
 
 const CACHE_TTL_OPTIONS = [
@@ -38,10 +39,13 @@ const CACHE_TTL_OPTIONS = [
 export default function DashboardSettingsDialog({
   open,
   onClose,
+  dashboardId,
 }: DashboardSettingsDialogProps) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const dashboard = useDashboardStore(s => s.activeDashboard);
+  const dashboard = useDashboardStore(s =>
+    dashboardId ? s.openDashboards[dashboardId] : undefined,
+  );
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -84,23 +88,24 @@ export default function DashboardSettingsDialog({
           resolution: crossFilterResolution,
         },
       } as any);
-    useDashboardStore.setState(prev => ({
-      ...prev,
-      activeDashboard: prev.activeDashboard
-        ? {
-            ...prev.activeDashboard,
-            title,
-            description,
-            access,
-            layout: { columns: gridColumns, rowHeight },
-            cache: { ...prev.activeDashboard.cache, ttlSeconds: cacheTtl },
-            crossFilter: {
-              enabled: crossFilterEnabled,
-              resolution: crossFilterResolution,
-            },
-          }
-        : prev.activeDashboard,
-    }));
+    useDashboardStore.setState(state => {
+      if (dashboardId && state.openDashboards[dashboardId]) {
+        Object.assign(state.openDashboards[dashboardId], {
+          title,
+          description,
+          access,
+          layout: { columns: gridColumns, rowHeight },
+          cache: {
+            ...state.openDashboards[dashboardId].cache,
+            ttlSeconds: cacheTtl,
+          },
+          crossFilter: {
+            enabled: crossFilterEnabled,
+            resolution: crossFilterResolution,
+          },
+        });
+      }
+    });
     onClose();
   };
 

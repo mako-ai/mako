@@ -34,9 +34,9 @@ function buildDataSourceVersion(dataSource: DashboardDataSource): string {
   return hashString(
     JSON.stringify({
       tableRef: dataSource.tableRef,
-      rowLimit: dataSource.rowLimit,
+      rowLimit: dataSource.rowLimit ?? null,
       query: dataSource.query,
-      computedColumns: dataSource.computedColumns,
+      computedColumns: dataSource.computedColumns ?? [],
     }),
   );
 }
@@ -219,113 +219,120 @@ export async function materializeDashboardDataSource(options: {
   }
 
   const inFlight = session.activeLoads.get(dataSource.id);
-  if (!force && inFlight) {
-    await inFlight;
-    return;
+  if (inFlight) {
+    if (!force) {
+      await inFlight;
+      return;
+    }
+    // When forced, wait for the existing load to settle before starting fresh
+    await inFlight.catch(() => {});
   }
 
-  const loadPromise = (async () => {
-    let rowsLoaded = 0;
+  // Reserve the slot BEFORE creating the promise to prevent concurrent loads
+  let resolveLoad: () => void = () => {};
+  let rejectLoad: (err: unknown) => void = () => {};
+  const loadPromise = new Promise<void>((resolve, reject) => {
+    resolveLoad = resolve;
+    rejectLoad = reject;
+  });
+  session.activeLoads.set(dataSource.id, loadPromise);
+
+  let rowsLoaded = 0;
+  runtimeStore.dispatch(
+    dashboardRuntimeEvents.datasourceLoadStarted(dashboard._id, dataSource.id),
+  );
+
+  try {
+    await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
+
+    const response = await fetch(
+      `/api/workspaces/${workspaceId}/execute/export`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildDashboardExportPayload(dataSource)),
+      },
+    );
+
+    if (!response.ok) {
+      let message =
+        response.statusText || "Failed to export dashboard data source";
+      try {
+        const payload = await response.json();
+        if (payload?.error) {
+          message = payload.error;
+        }
+      } catch {
+        // fall back to status text
+      }
+      throw new Error(message);
+    }
+
+    if (!response.body) {
+      throw new Error("Dashboard data source export stream is not available");
+    }
+
+    const rowCount = await loadNdjsonStreamTable(
+      session.db,
+      dataSource.tableRef,
+      response.body,
+      {
+        onProgress: loaded => {
+          rowsLoaded = loaded;
+          runtimeStore.dispatch(
+            dashboardRuntimeEvents.datasourceLoadProgress(
+              dashboard._id,
+              dataSource.id,
+              loaded,
+            ),
+          );
+        },
+      },
+    );
+
+    const { schema, sampleRows } = await introspectDataSource(
+      dashboard._id,
+      dataSource,
+    );
+
+    session.dataSourceVersions.set(dataSource.id, version);
     runtimeStore.dispatch(
-      dashboardRuntimeEvents.datasourceLoadStarted(
+      dashboardRuntimeEvents.datasourceLoadSucceeded(
         dashboard._id,
         dataSource.id,
+        rowCount,
+        rowCount,
+        schema,
+        sampleRows,
       ),
     );
 
-    try {
-      await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
-
-      const response = await fetch(
-        `/api/workspaces/${workspaceId}/execute/export`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(buildDashboardExportPayload(dataSource)),
-        },
-      );
-
-      if (!response.ok) {
-        let message =
-          response.statusText || "Failed to export dashboard data source";
-        try {
-          const payload = await response.json();
-          if (payload?.error) {
-            message = payload.error;
-          }
-        } catch {
-          // fall back to status text
-        }
-        throw new Error(message);
-      }
-
-      if (!response.body) {
-        throw new Error("Dashboard data source export stream is not available");
-      }
-
-      const rowCount = await loadNdjsonStreamTable(
-        session.db,
-        dataSource.tableRef,
-        response.body,
-        {
-          onProgress: loaded => {
-            rowsLoaded = loaded;
-            runtimeStore.dispatch(
-              dashboardRuntimeEvents.datasourceLoadProgress(
-                dashboard._id,
-                dataSource.id,
-                loaded,
-              ),
-            );
-          },
-        },
-      );
-
-      const { schema, sampleRows } = await introspectDataSource(
-        dashboard._id,
-        dataSource,
-      );
-
-      session.dataSourceVersions.set(dataSource.id, version);
-      runtimeStore.dispatch(
-        dashboardRuntimeEvents.datasourceLoadSucceeded(
-          dashboard._id,
-          dataSource.id,
-          rowCount,
-          rowCount,
-          schema,
-          sampleRows,
-        ),
-      );
-
-      await persistDataSourceVersion(
+    await persistDataSourceVersion(
+      dashboard._id,
+      dataSource.id,
+      version,
+      dataSource.tableRef,
+      rowCount,
+    );
+    await checkpointSession(dashboard._id);
+    resolveLoad();
+  } catch (error) {
+    session.dataSourceVersions.delete(dataSource.id);
+    await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
+    runtimeStore.dispatch(
+      dashboardRuntimeEvents.datasourceLoadFailed(
         dashboard._id,
         dataSource.id,
-        version,
-        dataSource.tableRef,
-        rowCount,
-      );
-      await checkpointSession(dashboard._id);
-    } catch (error) {
-      session.dataSourceVersions.delete(dataSource.id);
-      await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
-      runtimeStore.dispatch(
-        dashboardRuntimeEvents.datasourceLoadFailed(
-          dashboard._id,
-          dataSource.id,
-          rowsLoaded,
-          error instanceof Error ? error.message : "Failed to load data source",
-        ),
-      );
-      throw error;
-    } finally {
-      session.activeLoads.delete(dataSource.id);
-    }
-  })();
-
-  session.activeLoads.set(dataSource.id, loadPromise);
-  await loadPromise;
+        rowsLoaded,
+        error instanceof Error ? error.message : "Failed to load data source",
+      ),
+    );
+    rejectLoad(error);
+    throw error;
+  } finally {
+    session.activeLoads.delete(dataSource.id);
+  }
 }
 
 export async function syncDashboardRuntime(options: {

@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 import {
   createDuckDBInstance,
@@ -17,6 +18,7 @@ export interface DashboardSessionHandle {
 }
 
 const sessions = new Map<string, DashboardSessionHandle>();
+const pendingCreations = new Map<string, Promise<DashboardSessionHandle>>();
 
 const METADATA_TABLE = "_mako_ds_versions";
 
@@ -62,14 +64,9 @@ async function loadPersistedVersions(
   return versions;
 }
 
-export async function ensureDashboardSession(
+async function createSession(
   dashboardId: string,
 ): Promise<DashboardSessionHandle> {
-  const existing = sessions.get(dashboardId);
-  if (existing) {
-    return existing;
-  }
-
   let db: AsyncDuckDB;
   let persistent = false;
   let dataSourceVersions = new Map<string, string>();
@@ -80,10 +77,21 @@ export async function ensureDashboardSession(
       persistent = true;
       await initMetadataTable(db);
       dataSourceVersions = await loadPersistedVersions(db);
-    } catch {
+      console.debug(
+        `[dashboard-session] OPFS session created for ${dashboardId}, ` +
+          `${dataSourceVersions.size} persisted data sources`,
+      );
+    } catch (err) {
+      console.warn(
+        `[dashboard-session] OPFS failed for ${dashboardId}, falling back to in-memory:`,
+        err,
+      );
       db = await createDuckDBInstance();
     }
   } else {
+    console.debug(
+      `[dashboard-session] OPFS not available, using in-memory for ${dashboardId}`,
+    );
     db = await createDuckDBInstance();
   }
 
@@ -97,6 +105,22 @@ export async function ensureDashboardSession(
   };
   sessions.set(dashboardId, session);
   return session;
+}
+
+export async function ensureDashboardSession(
+  dashboardId: string,
+): Promise<DashboardSessionHandle> {
+  const existing = sessions.get(dashboardId);
+  if (existing) return existing;
+
+  const pending = pendingCreations.get(dashboardId);
+  if (pending) return pending;
+
+  const creation = createSession(dashboardId).finally(() => {
+    pendingCreations.delete(dashboardId);
+  });
+  pendingCreations.set(dashboardId, creation);
+  return creation;
 }
 
 export function getDashboardSession(

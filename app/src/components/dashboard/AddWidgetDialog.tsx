@@ -26,6 +26,7 @@ import { executeDashboardSql } from "../../dashboard-runtime/commands";
 interface AddWidgetDialogProps {
   open: boolean;
   onClose: () => void;
+  dashboardId?: string;
 }
 
 const defaultLayouts: Record<
@@ -40,9 +41,12 @@ const defaultLayouts: Record<
 export default function AddWidgetDialog({
   open,
   onClose,
+  dashboardId,
 }: AddWidgetDialogProps) {
   const dataSources = useDashboardStore(
-    s => s.activeDashboard?.dataSources ?? [],
+    s =>
+      (dashboardId ? s.openDashboards[dashboardId]?.dataSources : undefined) ??
+      [],
   );
 
   const [widgetType, setWidgetType] =
@@ -127,7 +131,7 @@ export default function AddWidgetDialog({
       layout: defaultLayouts[widgetType],
     };
 
-    store.addWidget(widget);
+    if (dashboardId) store.addWidget(dashboardId, widget);
     onClose();
   };
 

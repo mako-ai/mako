@@ -129,6 +129,9 @@ importers:
       '@logtape/logtape':
         specifier: ^1.0.4
         version: 1.0.4
+      '@mako/schemas':
+        specifier: workspace:*
+        version: link:../packages/schemas
       ai:
         specifier: 6.0.0-beta.166
         version: 6.0.0-beta.166(zod@4.2.1)
@@ -258,7 +261,7 @@ importers:
     dependencies:
       '@ai-sdk/react':
         specifier: 3.0.0-beta.169
-        version: 3.0.0-beta.169(react@18.3.1)(zod@3.25.76)
+        version: 3.0.0-beta.169(react@18.3.1)(zod@4.2.1)
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -277,6 +280,9 @@ importers:
       '@emotion/styled':
         specifier: ^11.11.0
         version: 11.14.0(@emotion/react@11.14.0(@types/react@18.3.23)(react@18.3.1))(@types/react@18.3.23)(react@18.3.1)
+      '@mako/schemas':
+        specifier: workspace:*
+        version: link:../packages/schemas
       '@monaco-editor/react':
         specifier: ^4.6.0
         version: 4.7.0(monaco-editor@0.52.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -303,7 +309,7 @@ importers:
         version: 0.21.1
       ai:
         specifier: 6.0.0-beta.166
-        version: 6.0.0-beta.166(zod@3.25.76)
+        version: 6.0.0-beta.166(zod@4.2.1)
       axios:
         specifier: ^1.6.2
         version: 1.9.0
@@ -330,7 +336,7 @@ importers:
         version: 5.1.7
       openai:
         specifier: ^4.103.0
-        version: 4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@3.25.76)
+        version: 4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@4.2.1)
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -368,8 +374,8 @@ importers:
         specifier: ^6.4.2
         version: 6.4.2(vega@6.2.0)
       zod:
-        specifier: ^3.25.76
-        version: 3.25.76
+        specifier: ^4.2.1
+        version: 4.2.1
       zustand:
         specifier: ^5.0.5
         version: 5.0.5(@types/react@18.3.23)(immer@10.1.1)(react@18.3.1)(use-sync-external-store@1.6.0(react@18.3.1))
@@ -428,6 +434,16 @@ importers:
       sharp:
         specifier: ^0.34.2
         version: 0.34.5
+
+  packages/schemas:
+    dependencies:
+      zod:
+        specifier: ^4.2.1
+        version: 4.2.1
+    devDependencies:
+      typescript:
+        specifier: ^5.8.3
+        version: 5.8.3
 
   website:
     dependencies:
@@ -9476,13 +9492,6 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.0-beta.58(zod@4.2.1)
       zod: 4.2.1
 
-  '@ai-sdk/gateway@2.0.0-beta.91(zod@3.25.76)':
-    dependencies:
-      '@ai-sdk/provider': 3.0.0-beta.31
-      '@ai-sdk/provider-utils': 4.0.0-beta.58(zod@3.25.76)
-      '@vercel/oidc': 3.0.5
-      zod: 3.25.76
-
   '@ai-sdk/gateway@2.0.0-beta.91(zod@4.2.1)':
     dependencies:
       '@ai-sdk/provider': 3.0.0-beta.31
@@ -9502,13 +9511,6 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.0-beta.58(zod@4.2.1)
       zod: 4.2.1
 
-  '@ai-sdk/provider-utils@4.0.0-beta.58(zod@3.25.76)':
-    dependencies:
-      '@ai-sdk/provider': 3.0.0-beta.31
-      '@standard-schema/spec': 1.1.0
-      eventsource-parser: 3.0.6
-      zod: 3.25.76
-
   '@ai-sdk/provider-utils@4.0.0-beta.58(zod@4.2.1)':
     dependencies:
       '@ai-sdk/provider': 3.0.0-beta.31
@@ -9520,10 +9522,10 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@3.0.0-beta.169(react@18.3.1)(zod@3.25.76)':
+  '@ai-sdk/react@3.0.0-beta.169(react@18.3.1)(zod@4.2.1)':
     dependencies:
-      '@ai-sdk/provider-utils': 4.0.0-beta.58(zod@3.25.76)
-      ai: 6.0.0-beta.166(zod@3.25.76)
+      '@ai-sdk/provider-utils': 4.0.0-beta.58(zod@4.2.1)
+      ai: 6.0.0-beta.166(zod@4.2.1)
       react: 18.3.1
       swr: 2.3.8(react@18.3.1)
       throttleit: 2.1.0
@@ -13425,14 +13427,6 @@ snapshots:
       clean-stack: 2.2.0
       indent-string: 4.0.0
     optional: true
-
-  ai@6.0.0-beta.166(zod@3.25.76):
-    dependencies:
-      '@ai-sdk/gateway': 2.0.0-beta.91(zod@3.25.76)
-      '@ai-sdk/provider': 3.0.0-beta.31
-      '@ai-sdk/provider-utils': 4.0.0-beta.58(zod@3.25.76)
-      '@opentelemetry/api': 1.9.0
-      zod: 3.25.76
 
   ai@6.0.0-beta.166(zod@4.2.1):
     dependencies:
@@ -17926,7 +17920,7 @@ snapshots:
       is-inside-container: 1.0.0
       is-wsl: 3.1.0
 
-  openai@4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@3.25.76):
+  openai@4.103.0(encoding@0.1.13)(ws@8.18.2)(zod@4.2.1):
     dependencies:
       '@types/node': 18.19.111
       '@types/node-fetch': 2.6.12
@@ -17937,7 +17931,7 @@ snapshots:
       node-fetch: 2.7.0(encoding@0.1.13)
     optionalDependencies:
       ws: 8.18.2
-      zod: 3.25.76
+      zod: 4.2.1
     transitivePeerDependencies:
       - encoding
 
