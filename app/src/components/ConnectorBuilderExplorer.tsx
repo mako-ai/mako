@@ -31,7 +31,8 @@ import {
   useConnectorBuilderStore,
   type UserConnector,
 } from "../store/connectorBuilderStore";
-import { useConsoleStore, selectTabByKind } from "../store/consoleStore";
+import { useConsoleStore } from "../store/consoleStore";
+import { apiClient } from "../lib/api-client";
 
 export function ConnectorBuilderExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -59,9 +60,33 @@ export function ConnectorBuilderExplorer() {
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [templates, setTemplates] = useState<
+    Array<{ id: string; name: string; description: string; category: string }>
+  >([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [connectorToDelete, setConnectorToDelete] =
     useState<UserConnector | null>(null);
+
+  // Load templates when dialog opens
+  useEffect(() => {
+    if (createDialogOpen && templates.length === 0 && currentWorkspace?.id) {
+      apiClient
+        .get<{
+          success: boolean;
+          data: Array<{
+            id: string;
+            name: string;
+            description: string;
+            category: string;
+          }>;
+        }>(`/workspaces/${currentWorkspace.id}/connector-builder/templates`)
+        .then(res => {
+          if (res.success) setTemplates(res.data || []);
+        })
+        .catch(() => {});
+    }
+  }, [createDialogOpen, templates.length, currentWorkspace?.id]);
 
   useEffect(() => {
     if (currentWorkspace?.id) {
@@ -78,11 +103,33 @@ export function ConnectorBuilderExplorer() {
   const handleCreate = async () => {
     if (!currentWorkspace?.id) return;
     try {
-      const connector = await createConnector(currentWorkspace.id, {
-        name: newName || "Untitled Connector",
-      });
+      let connector: UserConnector;
+
+      if (selectedTemplate) {
+        // Create from template
+        const res = await apiClient.post<{
+          success: boolean;
+          data: UserConnector;
+        }>(
+          `/workspaces/${currentWorkspace.id}/connector-builder/connectors/from-template`,
+          {
+            templateId: selectedTemplate,
+            name: newName || undefined,
+          },
+        );
+        if (!res.success) throw new Error("Failed to create from template");
+        connector = res.data;
+        // Refresh list
+        await fetchConnectors(currentWorkspace.id);
+      } else {
+        connector = await createConnector(currentWorkspace.id, {
+          name: newName || "Untitled Connector",
+        });
+      }
+
       setCreateDialogOpen(false);
       setNewName("");
+      setSelectedTemplate("");
       openConnectorStudio(connector);
     } catch {
       // Error is handled by the store
@@ -264,7 +311,7 @@ export function ConnectorBuilderExplorer() {
       <Dialog
         open={createDialogOpen}
         onClose={() => setCreateDialogOpen(false)}
-        maxWidth="xs"
+        maxWidth="sm"
         fullWidth
       >
         <DialogTitle>New Connector</DialogTitle>
@@ -272,12 +319,48 @@ export function ConnectorBuilderExplorer() {
           <TextField
             autoFocus
             fullWidth
-            label="Name"
+            label="Name (optional)"
             value={newName}
             onChange={e => setNewName(e.target.value)}
             onKeyDown={e => e.key === "Enter" && handleCreate()}
-            sx={{ mt: 1 }}
+            sx={{ mt: 1, mb: 2 }}
           />
+
+          {templates.length > 0 && (
+            <>
+              <Typography
+                variant="caption"
+                fontWeight={600}
+                color="text.secondary"
+                sx={{ mb: 1, display: "block" }}
+              >
+                START FROM TEMPLATE (optional)
+              </Typography>
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                {templates.map(t => (
+                  <Chip
+                    key={t.id}
+                    label={t.name}
+                    variant={selectedTemplate === t.id ? "filled" : "outlined"}
+                    color={selectedTemplate === t.id ? "primary" : "default"}
+                    onClick={() =>
+                      setSelectedTemplate(selectedTemplate === t.id ? "" : t.id)
+                    }
+                    sx={{ fontSize: "0.75rem" }}
+                  />
+                ))}
+              </Box>
+              {selectedTemplate && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ mt: 0.5, display: "block" }}
+                >
+                  {templates.find(t => t.id === selectedTemplate)?.description}
+                </Typography>
+              )}
+            </>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
