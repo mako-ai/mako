@@ -258,6 +258,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     [],
   );
 
+  const crossFilterEngine = activeDashboard?.crossFilter?.engine ?? "mosaic";
+  const useMosaic = crossFilterEngine === "mosaic";
+
   const widgetFilterClauses = useMemo(() => {
     if (useMosaic) return {};
     if (!activeDashboard?.crossFilter?.enabled) return {};
@@ -398,8 +401,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     void activateDashboardSession(workspaceId);
   }, [activeDashboard?._id, workspaceId]);
 
-  const crossFilterEngine = activeDashboard?.crossFilter?.engine ?? "mosaic";
-  const useMosaic = crossFilterEngine === "mosaic";
+  const allSourcesReady = useMemo(() => {
+    if (!activeDashboard) return false;
+    if (activeDashboard.dataSources.length === 0) return true;
+    return activeDashboard.dataSources.every(
+      ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
+    );
+  }, [activeDashboard, runtimeSession]);
 
   useEffect(() => {
     if (!useMosaic || !allSourcesReady || !activeDashboard) {
@@ -508,14 +516,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     },
     [addWidget],
   );
-
-  const allSourcesReady = useMemo(() => {
-    if (!activeDashboard) return false;
-    if (activeDashboard.dataSources.length === 0) return true;
-    return activeDashboard.dataSources.every(
-      ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
-    );
-  }, [activeDashboard, runtimeSession]);
 
   const isRuntimeInitializing = useMemo(() => {
     if (!activeDashboard) {
