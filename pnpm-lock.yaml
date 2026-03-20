@@ -219,6 +219,9 @@ importers:
       pg:
         specifier: ^8.16.0
         version: 8.16.0
+      source-map:
+        specifier: ^0.7.6
+        version: 0.7.6
       sqlite:
         specifier: ^5.1.1
         version: 5.1.1

@@ -39,6 +39,7 @@ export interface ConnectorBuildError {
   line?: number;
   column?: number;
   raw?: string;
+  severity?: "error" | "warning";
 }
 
 export interface ConnectorBuildResult {
@@ -106,6 +107,7 @@ function parseBuildErrors(stderr: string): ConnectorBuildError[] {
         return {
           message: line,
           raw: line,
+          severity: "error",
         };
       }
 
@@ -114,6 +116,7 @@ function parseBuildErrors(stderr: string): ConnectorBuildError[] {
         line: Number.parseInt(match[1], 10),
         column: Number.parseInt(match[2], 10),
         raw: line,
+        severity: "error",
       };
     });
 }
@@ -180,6 +183,7 @@ async function buildLocally(
         {
           message:
             "Local fallback build does not support external dependencies. Configure E2B_API_KEY to use sandboxed builds.",
+          severity: "error",
         },
       ],
       resolvedDependencies: dependencies,
@@ -203,7 +207,7 @@ async function buildLocally(
     });
 
     const errors =
-      transpiled.diagnostics?.map(diagnostic => {
+      transpiled.diagnostics?.map<ConnectorBuildError>(diagnostic => {
         const location =
           diagnostic.file && typeof diagnostic.start === "number"
             ? diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
@@ -216,6 +220,10 @@ async function buildLocally(
           ),
           line: location ? location.line + 1 : undefined,
           column: location ? location.character + 1 : undefined,
+          severity:
+            diagnostic.category === ts.DiagnosticCategory.Warning
+              ? "warning"
+              : "error",
         };
       }) ?? [];
 
@@ -243,6 +251,7 @@ async function buildLocally(
             error instanceof Error
               ? error.message
               : "Local fallback build failed",
+          severity: "error",
         },
       ],
       resolvedDependencies: dependencies,
@@ -518,6 +527,7 @@ async function runBuildInSandbox(
         errors: [
           {
             message: failure.message || "npm install failed inside sandbox",
+            severity: "error",
           },
         ],
         resolvedDependencies: dependencies,
@@ -557,7 +567,12 @@ async function runBuildInSandbox(
         errors:
           errors.length > 0
             ? errors
-            : [{ message: failure.message || "Build failed" }],
+            : [
+                {
+                  message: failure.message || "Build failed",
+                  severity: "error",
+                },
+              ],
         resolvedDependencies: dependencies,
         runtime: "e2b",
         builtAt: new Date().toISOString(),

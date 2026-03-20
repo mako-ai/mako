@@ -113,6 +113,7 @@ export interface IUserConnectorBuildError {
   line?: number;
   column?: number;
   raw?: string;
+  severity?: "error" | "warning";
 }
 
 export interface IUserConnector extends Document {
@@ -182,6 +183,11 @@ const UserConnectorBuildErrorSchema = new Schema<IUserConnectorBuildError>(
     line: { type: Number },
     column: { type: Number },
     raw: { type: String },
+    severity: {
+      type: String,
+      enum: ["error", "warning"],
+      default: "error",
+    },
   },
   { _id: false },
 );

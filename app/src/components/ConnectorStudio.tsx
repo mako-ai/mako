@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -20,8 +20,10 @@ import {
   type ConnectorOutput,
 } from "../store/connectorBuilderStore";
 import { useConsoleStore } from "../store/consoleStore";
+import ConnectorInstanceForm from "./ConnectorInstanceForm";
 
 type BottomView = "output" | "logs" | "schema";
+type RightView = "inputs" | "instances" | "versions";
 
 interface ConnectorStudioProps {
   tabId: string;
@@ -89,16 +91,20 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
   const workspaceId = currentWorkspace?.id;
   const {
     connectors,
+    instances,
     buildState,
     devRunState,
     fetchConnectors,
+    fetchInstances,
     updateConnector,
     buildConnector,
     devRun,
     selectConnector,
+    toggleInstance,
   } = useConnectorBuilderStore();
   const { updateContent, updateTitle, updateDirty } = useConsoleStore();
   const [bottomView, setBottomView] = useState<BottomView>("output");
+  const [rightView, setRightView] = useState<RightView>("inputs");
   const [code, setCode] = useState("");
   const [name, setName] = useState("Untitled Connector");
   const [description, setDescription] = useState("");
@@ -107,6 +113,11 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
   const [stateJson, setStateJson] = useState("{}");
   const [localError, setLocalError] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(
+    null,
+  );
+  const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
 
   const connector = useMemo(
     () =>
@@ -118,6 +129,20 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
 
   const currentBuildState = connectorId ? buildState[connectorId] : undefined;
   const currentRunState = connectorId ? devRunState[connectorId] : undefined;
+  const connectorInstances = useMemo(
+    () =>
+      workspaceId && connectorId
+        ? instances[`${workspaceId}:${connectorId}`] || []
+        : [],
+    [connectorId, instances, workspaceId],
+  );
+  const selectedInstance = useMemo(
+    () =>
+      connectorInstances.find(
+        instance => instance._id === selectedInstanceId,
+      ) || null,
+    [connectorInstances, selectedInstanceId],
+  );
   const { rows, columns } = useMemo(
     () => flattenOutputRows(currentRunState?.output),
     [currentRunState?.output],
@@ -132,6 +157,30 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
       void fetchConnectors(workspaceId).catch(() => undefined);
     }
   }, [connector, connectorId, fetchConnectors, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !connectorId) {
+      return;
+    }
+
+    void fetchInstances(workspaceId, connectorId).catch(() => undefined);
+  }, [connectorId, fetchInstances, workspaceId]);
+
+  useEffect(() => {
+    if (connectorInstances.length === 0) {
+      setSelectedInstanceId(null);
+      return;
+    }
+
+    if (
+      selectedInstanceId &&
+      connectorInstances.some(instance => instance._id === selectedInstanceId)
+    ) {
+      return;
+    }
+
+    setSelectedInstanceId(connectorInstances[0]._id);
+  }, [connectorInstances, selectedInstanceId]);
 
   useEffect(() => {
     if (!connector) {
@@ -172,6 +221,53 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
     setIsDirty(false);
     return updated;
   };
+
+  useEffect(() => {
+    if (!editorRef.current || !monacoRef.current) {
+      return;
+    }
+
+    const model = editorRef.current.getModel?.();
+    if (!model) {
+      return;
+    }
+
+    const markers = [
+      ...(currentBuildState?.errors || [])
+        .filter(error => error.line !== undefined)
+        .map(error => ({
+          severity:
+            error.severity === "warning"
+              ? monacoRef.current.MarkerSeverity.Warning
+              : monacoRef.current.MarkerSeverity.Error,
+          startLineNumber: error.line || 1,
+          startColumn: error.column || 1,
+          endLineNumber: error.line || 1,
+          endColumn: (error.column || 1) + 1,
+          message: error.message,
+          source: "connector-builder-build",
+        })),
+      ...(currentRunState?.runtimeError?.originalLine
+        ? [
+            {
+              severity: monacoRef.current.MarkerSeverity.Error,
+              startLineNumber: currentRunState.runtimeError.originalLine,
+              startColumn: currentRunState.runtimeError.originalColumn || 1,
+              endLineNumber: currentRunState.runtimeError.originalLine,
+              endColumn: (currentRunState.runtimeError.originalColumn || 1) + 1,
+              message: currentRunState.runtimeError.message,
+              source: "connector-builder-runtime",
+            },
+          ]
+        : []),
+    ];
+
+    monacoRef.current.editor.setModelMarkers(
+      model,
+      "connector-builder",
+      markers,
+    );
+  }, [currentBuildState?.errors, currentRunState?.runtimeError]);
 
   const handleBuild = async () => {
     if (!workspaceId || !connectorId) {
@@ -225,6 +321,22 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
       setBottomView("logs");
     }
   };
+
+  if (!workspaceId) {
+    return (
+      <Box
+        sx={{
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "text.secondary",
+        }}
+      >
+        <Typography>Select a workspace to use connector builder.</Typography>
+      </Box>
+    );
+  }
 
   if (!connectorId) {
     return (
@@ -374,7 +486,9 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
 
       {(localError || currentRunState?.error) && (
         <Alert severity="error" sx={{ m: 2, mb: 0 }}>
-          {localError || currentRunState?.error}
+          {currentRunState?.runtimeError?.stack ||
+            localError ||
+            currentRunState?.error}
         </Alert>
       )}
 
@@ -394,6 +508,10 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                   defaultLanguage="typescript"
                   language="typescript"
                   value={code}
+                  onMount={(editor, monaco) => {
+                    editorRef.current = editor;
+                    monacoRef.current = monaco;
+                  }}
                   onChange={value => {
                     const nextCode = value ?? "";
                     setCode(nextCode);
@@ -507,69 +625,222 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
 
           <Panel defaultSize={40} minSize={25}>
             <Box sx={{ height: "100%", overflow: "auto", p: 2 }}>
-              <Stack spacing={2}>
-                <Box>
-                  <Typography variant="h6">Run Inputs</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Phase 1 keeps this panel lightweight: configure config,
-                    secrets, and state for dev runs. The AI copilot panel will
-                    land here in a later phase.
-                  </Typography>
-                </Box>
+              <Tabs
+                value={rightView}
+                onChange={(_, value: RightView) => setRightView(value)}
+                sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}
+              >
+                <Tab value="inputs" label="Run Inputs" />
+                <Tab value="instances" label="Instances" />
+                <Tab value="versions" label="Versions" />
+              </Tabs>
 
-                <Divider />
-
-                <TextField
-                  label="Config JSON"
-                  value={configJson}
-                  onChange={event => setConfigJson(event.target.value)}
-                  multiline
-                  minRows={6}
-                  fullWidth
-                  InputProps={{ sx: { fontFamily: "monospace" } }}
-                />
-                <TextField
-                  label="Secrets JSON"
-                  value={secretsJson}
-                  onChange={event => setSecretsJson(event.target.value)}
-                  multiline
-                  minRows={6}
-                  fullWidth
-                  InputProps={{ sx: { fontFamily: "monospace" } }}
-                />
-                <TextField
-                  label="State JSON"
-                  value={stateJson}
-                  onChange={event => setStateJson(event.target.value)}
-                  multiline
-                  minRows={6}
-                  fullWidth
-                  InputProps={{ sx: { fontFamily: "monospace" } }}
-                />
-
-                <Divider />
-
-                <Box>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Build metadata
-                  </Typography>
-                  <Stack spacing={1}>
+              {rightView === "inputs" ? (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="h6">Run Inputs</Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Build hash:{" "}
-                      {connector.bundle.buildHash || "Not built yet"}
+                      Configure config, secrets, and state for dev runs.
                     </Typography>
+                  </Box>
+
+                  <Divider />
+
+                  <TextField
+                    label="Config JSON"
+                    value={configJson}
+                    onChange={event => setConfigJson(event.target.value)}
+                    multiline
+                    minRows={6}
+                    fullWidth
+                    InputProps={{ sx: { fontFamily: "monospace" } }}
+                  />
+                  <TextField
+                    label="Secrets JSON"
+                    value={secretsJson}
+                    onChange={event => setSecretsJson(event.target.value)}
+                    multiline
+                    minRows={6}
+                    fullWidth
+                    InputProps={{ sx: { fontFamily: "monospace" } }}
+                  />
+                  <TextField
+                    label="State JSON"
+                    value={stateJson}
+                    onChange={event => setStateJson(event.target.value)}
+                    multiline
+                    minRows={6}
+                    fullWidth
+                    InputProps={{ sx: { fontFamily: "monospace" } }}
+                  />
+
+                  <Divider />
+
+                  <Box>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Build metadata
+                    </Typography>
+                    <Stack spacing={1}>
+                      <Typography variant="body2" color="text.secondary">
+                        Build hash:{" "}
+                        {connector.bundle.buildHash || "Not built yet"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Entrypoint: {connector.metadata.entrypoint}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Dependencies:{" "}
+                        {connector.source.resolvedDependencies.length > 0
+                          ? connector.source.resolvedDependencies.join(", ")
+                          : "None"}
+                      </Typography>
+                    </Stack>
+                  </Box>
+                </Stack>
+              ) : rightView === "instances" ? (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="h6">Instances</Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Entrypoint: {connector.metadata.entrypoint}
+                      Save reusable deployment config for this connector.
                     </Typography>
+                  </Box>
+
+                  <Button
+                    variant="outlined"
+                    onClick={() => setSelectedInstanceId(null)}
+                  >
+                    New instance
+                  </Button>
+
+                  {connectorInstances.length > 0 ? (
+                    <Stack spacing={1}>
+                      {connectorInstances.map(instance => (
+                        <Stack
+                          key={instance._id}
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                        >
+                          <Button
+                            variant={
+                              selectedInstanceId === instance._id
+                                ? "contained"
+                                : "outlined"
+                            }
+                            onClick={() => setSelectedInstanceId(instance._id)}
+                            sx={{ justifyContent: "flex-start", flex: 1 }}
+                          >
+                            {instance.name}
+                          </Button>
+                          <Chip size="small" label={instance.status} />
+                          <Button
+                            size="small"
+                            onClick={() =>
+                              void toggleInstance(
+                                workspaceId,
+                                instance._id,
+                                connectorId,
+                              )
+                            }
+                          >
+                            {instance.status === "disabled"
+                              ? "Enable"
+                              : "Disable"}
+                          </Button>
+                        </Stack>
+                      ))}
+                    </Stack>
+                  ) : (
                     <Typography variant="body2" color="text.secondary">
-                      Dependencies:{" "}
-                      {connector.source.resolvedDependencies.length > 0
-                        ? connector.source.resolvedDependencies.join(", ")
-                        : "None"}
+                      No instances created yet.
                     </Typography>
-                  </Stack>
-                </Box>
-              </Stack>
+                  )}
+
+                  <Divider />
+
+                  <ConnectorInstanceForm
+                    workspaceId={workspaceId}
+                    connectorId={connectorId}
+                    instance={selectedInstance}
+                    onSaved={savedInstance => {
+                      setSelectedInstanceId(savedInstance._id);
+                    }}
+                    onDeleted={() => {
+                      setSelectedInstanceId(null);
+                    }}
+                  />
+                </Stack>
+              ) : (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="h6">Version history</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Successful builds snapshot the connector source so you can
+                      inspect previous revisions.
+                    </Typography>
+                  </Box>
+
+                  <Divider />
+
+                  {connector.versions.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      No build snapshots yet.
+                    </Typography>
+                  ) : (
+                    <Stack spacing={1.5}>
+                      {connector.versions
+                        .slice()
+                        .sort((left, right) => right.version - left.version)
+                        .map(version => (
+                          <Box
+                            key={`${version.version}-${version.createdAt}`}
+                            sx={{
+                              border: 1,
+                              borderColor: "divider",
+                              borderRadius: 1,
+                              p: 1.5,
+                            }}
+                          >
+                            <Stack spacing={0.75}>
+                              <Stack
+                                direction="row"
+                                justifyContent="space-between"
+                                alignItems="center"
+                              >
+                                <Typography variant="subtitle2">
+                                  Version {version.version}
+                                </Typography>
+                                <Chip
+                                  size="small"
+                                  label={
+                                    version.buildHash?.slice(0, 10) || "draft"
+                                  }
+                                  variant="outlined"
+                                />
+                              </Stack>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {new Date(version.createdAt).toLocaleString()}
+                              </Typography>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                Dependencies:{" "}
+                                {version.resolvedDependencies.length > 0
+                                  ? version.resolvedDependencies.join(", ")
+                                  : "None"}
+                              </Typography>
+                            </Stack>
+                          </Box>
+                        ))}
+                    </Stack>
+                  )}
+                </Stack>
+              )}
             </Box>
           </Panel>
         </PanelGroup>

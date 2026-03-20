@@ -8,6 +8,7 @@ const connectorBuildErrorSchema = z.object({
   line: z.number().optional(),
   column: z.number().optional(),
   raw: z.string().optional(),
+  severity: z.enum(["error", "warning"]).optional(),
 });
 
 const connectorVersionSchema = z.object({
@@ -94,6 +95,47 @@ const connectorOutputSchema = z.object({
     .optional(),
 });
 
+const connectorRuntimeErrorSchema = z.object({
+  message: z.string(),
+  originalLine: z.number().optional(),
+  originalColumn: z.number().optional(),
+  originalSource: z.string().optional(),
+  stack: z.string().optional(),
+});
+
+const connectorInstanceTriggerSchema = z.object({
+  type: z.enum(["manual", "schedule", "webhook"]),
+  enabled: z.boolean(),
+  cron: z.string().optional(),
+  path: z.string().optional(),
+});
+
+const connectorInstanceSchema = z.object({
+  _id: z.string(),
+  workspaceId: z.string(),
+  connectorId: z.string(),
+  name: z.string(),
+  secrets: z.record(z.unknown()).default({}),
+  config: z.record(z.unknown()).default({}),
+  output: z.object({
+    destinationDatabaseId: z.string().optional(),
+    destinationSchema: z.string().optional(),
+    destinationTablePrefix: z.string().optional(),
+    evolutionMode: z
+      .enum(["strict", "append", "variant", "relaxed"])
+      .optional(),
+  }),
+  triggers: z.array(connectorInstanceTriggerSchema).default([]),
+  state: z.record(z.unknown()).default({}),
+  status: z.enum(["idle", "active", "running", "error", "disabled"]),
+  lastRunAt: z.string().optional(),
+  lastSuccessAt: z.string().optional(),
+  lastError: z.string().optional(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
 const buildResponseSchema = z.object({
   build: z.object({
     js: z.string().optional(),
@@ -111,14 +153,17 @@ const buildResponseSchema = z.object({
 const devRunResponseSchema = z.object({
   build: buildResponseSchema.shape.build,
   connector: connectorSchema,
-  output: connectorOutputSchema,
+  output: connectorOutputSchema.optional(),
   logs: z.array(connectorLogSchema).default([]),
-  durationMs: z.number(),
-  runtime: z.enum(["e2b", "local-fallback"]),
+  durationMs: z.number().optional(),
+  runtime: z.enum(["e2b", "local-fallback"]).optional(),
+  runtimeError: connectorRuntimeErrorSchema.optional(),
 });
 
 export type UserConnector = z.infer<typeof connectorSchema>;
 export type ConnectorOutput = z.infer<typeof connectorOutputSchema>;
+export type ConnectorRuntimeError = z.infer<typeof connectorRuntimeErrorSchema>;
+export type ConnectorInstance = z.infer<typeof connectorInstanceSchema>;
 export type ConnectorBuildState = {
   building: boolean;
   buildLog?: string;
@@ -131,10 +176,12 @@ export type ConnectorDevRunState = {
   error?: string | null;
   duration?: number;
   runtime?: "e2b" | "local-fallback";
+  runtimeError?: ConnectorRuntimeError;
 };
 
 interface ConnectorBuilderStore {
   connectors: Record<string, UserConnector[]>;
+  instances: Record<string, ConnectorInstance[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
   selectedConnectorId: string | null;
@@ -178,6 +225,67 @@ interface ConnectorBuilderStore {
       };
     },
   ) => Promise<z.infer<typeof devRunResponseSchema>>;
+  fetchInstances: (
+    workspaceId: string,
+    connectorId?: string,
+  ) => Promise<ConnectorInstance[]>;
+  createInstance: (
+    workspaceId: string,
+    input: {
+      connectorId: string;
+      name: string;
+      secrets?: Record<string, unknown>;
+      config?: Record<string, unknown>;
+      output?: {
+        destinationDatabaseId?: string;
+        destinationSchema?: string;
+        destinationTablePrefix?: string;
+        evolutionMode?: "strict" | "append" | "variant" | "relaxed";
+      };
+      triggers?: Array<{
+        type: "manual" | "schedule" | "webhook";
+        enabled?: boolean;
+        cron?: string;
+        path?: string;
+      }>;
+      state?: Record<string, unknown>;
+      status?: "idle" | "active" | "running" | "error" | "disabled";
+    },
+  ) => Promise<ConnectorInstance>;
+  updateInstance: (
+    workspaceId: string,
+    instanceId: string,
+    input: Partial<{
+      connectorId: string;
+      name: string;
+      secrets: Record<string, unknown>;
+      config: Record<string, unknown>;
+      output: {
+        destinationDatabaseId?: string;
+        destinationSchema?: string;
+        destinationTablePrefix?: string;
+        evolutionMode?: "strict" | "append" | "variant" | "relaxed";
+      };
+      triggers: Array<{
+        type: "manual" | "schedule" | "webhook";
+        enabled?: boolean;
+        cron?: string;
+        path?: string;
+      }>;
+      state: Record<string, unknown>;
+      status: "idle" | "active" | "running" | "error" | "disabled";
+    }>,
+  ) => Promise<ConnectorInstance>;
+  deleteInstance: (
+    workspaceId: string,
+    instanceId: string,
+    connectorId?: string,
+  ) => Promise<void>;
+  toggleInstance: (
+    workspaceId: string,
+    instanceId: string,
+    connectorId?: string,
+  ) => Promise<ConnectorInstance>;
   selectConnector: (connectorId: string | null) => void;
 }
 
@@ -197,6 +305,22 @@ function upsertConnector(
   return next;
 }
 
+function upsertInstance(
+  instances: ConnectorInstance[],
+  nextInstance: ConnectorInstance,
+): ConnectorInstance[] {
+  const index = instances.findIndex(
+    instance => instance._id === nextInstance._id,
+  );
+  if (index === -1) {
+    return [nextInstance, ...instances];
+  }
+
+  const next = [...instances];
+  next[index] = nextInstance;
+  return next;
+}
+
 function normalizeError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -209,9 +333,14 @@ function normalizeError(error: unknown): string {
   return "Unknown error";
 }
 
+function makeInstancesKey(workspaceId: string, connectorId?: string): string {
+  return connectorId ? `${workspaceId}:${connectorId}` : `${workspaceId}:all`;
+}
+
 export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
   immer(set => ({
     connectors: {},
+    instances: {},
     loading: {},
     error: {},
     selectedConnectorId: null,
@@ -318,6 +447,7 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         state.connectors[workspaceId] = (
           state.connectors[workspaceId] || []
         ).filter(connector => connector._id !== connectorId);
+        delete state.instances[makeInstancesKey(workspaceId, connectorId)];
         if (state.selectedConnectorId === connectorId) {
           state.selectedConnectorId = null;
         }
@@ -395,6 +525,7 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
           ...state.devRunState[connectorId],
           running: true,
           error: null,
+          runtimeError: undefined,
         };
       });
 
@@ -424,6 +555,7 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
               ...state.devRunState[connectorId],
               running: false,
               error: response.error || "Failed to run connector",
+              runtimeError: parsed.runtimeError,
             };
           });
           throw new Error(response.error || "Failed to run connector");
@@ -446,6 +578,7 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
             error: null,
             duration: parsed.durationMs,
             runtime: parsed.runtime,
+            runtimeError: parsed.runtimeError,
           };
         });
 
@@ -460,6 +593,149 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         });
         throw error;
       }
+    },
+
+    fetchInstances: async (workspaceId, connectorId) => {
+      const key = makeInstancesKey(workspaceId, connectorId);
+      set(state => {
+        state.loading[key] = true;
+        state.error[key] = null;
+      });
+
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          data: unknown[];
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/instances`,
+          connectorId ? { connectorId } : undefined,
+        );
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to fetch instances");
+        }
+
+        const instances = z
+          .array(connectorInstanceSchema)
+          .parse(response.data ?? []);
+        set(state => {
+          state.instances[key] = instances;
+        });
+        return instances;
+      } catch (error) {
+        set(state => {
+          state.error[key] = normalizeError(error);
+        });
+        throw error;
+      } finally {
+        set(state => {
+          delete state.loading[key];
+        });
+      }
+    },
+
+    createInstance: async (workspaceId, input) => {
+      const response = await apiClient.post<{
+        success: boolean;
+        data: unknown;
+        error?: string;
+      }>(`/workspaces/${workspaceId}/connector-builder/instances`, input);
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to create instance");
+      }
+
+      const instance = connectorInstanceSchema.parse(response.data);
+      set(state => {
+        const key = makeInstancesKey(workspaceId, instance.connectorId);
+        state.instances[key] = upsertInstance(
+          state.instances[key] || [],
+          instance,
+        );
+      });
+      return instance;
+    },
+
+    updateInstance: async (workspaceId, instanceId, input) => {
+      const response = await apiClient.put<{
+        success: boolean;
+        data: unknown;
+        error?: string;
+      }>(
+        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}`,
+        input,
+      );
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to update instance");
+      }
+
+      const instance = connectorInstanceSchema.parse(response.data);
+      set(state => {
+        const key = makeInstancesKey(workspaceId, instance.connectorId);
+        state.instances[key] = upsertInstance(
+          state.instances[key] || [],
+          instance,
+        );
+      });
+      return instance;
+    },
+
+    deleteInstance: async (workspaceId, instanceId, connectorId) => {
+      const response = await apiClient.delete<{
+        success: boolean;
+        error?: string;
+      }>(
+        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}`,
+      );
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to delete instance");
+      }
+
+      set(state => {
+        if (connectorId) {
+          const key = makeInstancesKey(workspaceId, connectorId);
+          state.instances[key] = (state.instances[key] || []).filter(
+            instance => instance._id !== instanceId,
+          );
+          return;
+        }
+
+        Object.keys(state.instances).forEach(key => {
+          state.instances[key] = (state.instances[key] || []).filter(
+            instance => instance._id !== instanceId,
+          );
+        });
+      });
+    },
+
+    toggleInstance: async (workspaceId, instanceId, connectorId) => {
+      const response = await apiClient.post<{
+        success: boolean;
+        data: unknown;
+        error?: string;
+      }>(
+        `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/toggle`,
+      );
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to toggle instance");
+      }
+
+      const instance = connectorInstanceSchema.parse(response.data);
+      set(state => {
+        const key = makeInstancesKey(
+          workspaceId,
+          connectorId || instance.connectorId,
+        );
+        state.instances[key] = upsertInstance(
+          state.instances[key] || [],
+          instance,
+        );
+      });
+      return instance;
     },
 
     selectConnector: connectorId => {

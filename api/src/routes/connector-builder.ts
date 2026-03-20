@@ -16,6 +16,7 @@ import {
   type ConnectorBuildResult,
   type ConnectorExecutionInput,
 } from "../connector-builder/sandbox-runner";
+import { mapRuntimeError } from "../connector-builder/error-mapper";
 
 const logger = loggers.api("connector-builder");
 const DEFAULT_CONNECTOR_CODE = `export async function pull(input) {
@@ -75,6 +76,40 @@ const devRunSchema = z.object({
     })
     .optional(),
 });
+
+const connectorTriggerSchema = z.object({
+  type: z.enum(["manual", "schedule", "webhook"]),
+  enabled: z.boolean().optional(),
+  cron: z.string().optional(),
+  path: z.string().optional(),
+});
+
+const connectorInstanceSchema = z.object({
+  connectorId: z.string().optional(),
+  name: z.string().trim().min(1).optional(),
+  secrets: z.record(z.string(), z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+  output: z
+    .object({
+      destinationDatabaseId: z.string().optional(),
+      destinationSchema: z.string().optional(),
+      destinationTablePrefix: z.string().optional(),
+      evolutionMode: z
+        .enum(["strict", "append", "variant", "relaxed"])
+        .optional(),
+    })
+    .optional(),
+  triggers: z.array(connectorTriggerSchema).optional(),
+  state: z.record(z.string(), z.unknown()).optional(),
+  status: z.enum(["idle", "active", "running", "error", "disabled"]).optional(),
+});
+
+const createConnectorInstanceSchema = connectorInstanceSchema.extend({
+  connectorId: z.string(),
+  name: z.string().trim().min(1),
+});
+
+const updateConnectorInstanceSchema = connectorInstanceSchema.partial();
 
 connectorBuilderRoutes.use("*", unifiedAuthMiddleware);
 
@@ -208,6 +243,20 @@ async function getWorkspaceConnector(
 
   return UserConnector.findOne({
     _id: new Types.ObjectId(connectorId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+}
+
+async function getWorkspaceInstance(
+  workspaceId: string,
+  instanceId: string,
+): Promise<IConnectorInstance | null> {
+  if (!Types.ObjectId.isValid(instanceId)) {
+    return null;
+  }
+
+  return ConnectorInstance.findOne({
+    _id: new Types.ObjectId(instanceId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
 }
@@ -369,6 +418,55 @@ connectorBuilderRoutes.get(
             error instanceof Error
               ? error.message
               : "Failed to fetch connector",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.get(
+  "/connectors/:id/versions",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const connectorId = c.req.param("id");
+      const connector = await getWorkspaceConnector(workspaceId, connectorId);
+
+      if (!connector) {
+        return c.json({ success: false, error: "Connector not found" }, 404);
+      }
+
+      return c.json({
+        success: true,
+        data: connector.versions
+          .slice()
+          .sort((left, right) => right.version - left.version)
+          .map(version => {
+            const maybeDocumentVersion = version as typeof version & {
+              toObject?: () => Record<string, unknown>;
+            };
+            const serializedVersion =
+              typeof maybeDocumentVersion.toObject === "function"
+                ? maybeDocumentVersion.toObject()
+                : version;
+
+            return {
+              ...serializedVersion,
+              builtAt: version.builtAt?.toISOString(),
+              createdAt: version.createdAt.toISOString(),
+            };
+          }),
+      });
+    } catch (error) {
+      logger.error("Failed to fetch connector version history", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to fetch connector versions",
         },
         500,
       );
@@ -556,19 +654,37 @@ connectorBuilderRoutes.post(
         },
       };
 
-      const execution = await sandboxRunner.execute(build.js, executionInput);
+      try {
+        const execution = await sandboxRunner.execute(build.js, executionInput);
 
-      return c.json({
-        success: true,
-        data: {
-          build,
-          connector: serializeUserConnector(updatedConnector.toObject()),
-          output: execution.output,
-          logs: execution.logs,
-          durationMs: execution.durationMs,
-          runtime: execution.runtime,
-        },
-      });
+        return c.json({
+          success: true,
+          data: {
+            build,
+            connector: serializeUserConnector(updatedConnector.toObject()),
+            output: execution.output,
+            logs: execution.logs,
+            durationMs: execution.durationMs,
+            runtime: execution.runtime,
+          },
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to execute connector";
+        const runtimeError = await mapRuntimeError(message, build.sourceMap);
+
+        return c.json({
+          success: false,
+          error: "Connector execution failed",
+          data: {
+            build,
+            connector: serializeUserConnector(updatedConnector.toObject()),
+            runtimeError,
+          },
+        });
+      }
     } catch (error) {
       logger.error("Failed to execute connector dev run", { error });
       return c.json(
@@ -585,14 +701,22 @@ connectorBuilderRoutes.post(
   },
 );
 
-// Phase 1 only persists the instance model. Production triggers and scheduling
-// are added in later phases, but the data model is available immediately.
 connectorBuilderRoutes.get("/instances", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    const instances = await ConnectorInstance.find({
+    const connectorId = new URL(c.req.url).searchParams.get("connectorId");
+    const filter: Record<string, unknown> = {
       workspaceId: new Types.ObjectId(workspaceId),
-    })
+    };
+
+    if (connectorId) {
+      if (!Types.ObjectId.isValid(connectorId)) {
+        return c.json({ success: false, error: "Invalid connector ID" }, 400);
+      }
+      filter.connectorId = new Types.ObjectId(connectorId);
+    }
+
+    const instances = await ConnectorInstance.find(filter)
       .sort({ updatedAt: -1 })
       .lean();
 
@@ -614,5 +738,269 @@ connectorBuilderRoutes.get("/instances", async (c: AuthenticatedContext) => {
     );
   }
 });
+
+connectorBuilderRoutes.post("/instances", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const parsed = createConnectorInstanceSchema.parse(await c.req.json());
+
+    if (!Types.ObjectId.isValid(parsed.connectorId)) {
+      return c.json({ success: false, error: "Invalid connector ID" }, 400);
+    }
+
+    const connector = await getWorkspaceConnector(
+      workspaceId,
+      parsed.connectorId,
+    );
+    if (!connector) {
+      return c.json({ success: false, error: "Connector not found" }, 404);
+    }
+
+    const instance = await ConnectorInstance.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      connectorId: new Types.ObjectId(parsed.connectorId),
+      name: parsed.name,
+      secrets: parsed.secrets ?? {},
+      config: parsed.config ?? {},
+      output: {
+        destinationDatabaseId:
+          parsed.output?.destinationDatabaseId &&
+          Types.ObjectId.isValid(parsed.output.destinationDatabaseId)
+            ? new Types.ObjectId(parsed.output.destinationDatabaseId)
+            : undefined,
+        destinationSchema: parsed.output?.destinationSchema,
+        destinationTablePrefix: parsed.output?.destinationTablePrefix,
+        evolutionMode: parsed.output?.evolutionMode ?? "append",
+      },
+      triggers:
+        parsed.triggers && parsed.triggers.length > 0
+          ? parsed.triggers.map(trigger => ({
+              type: trigger.type,
+              enabled: trigger.enabled ?? true,
+              cron: trigger.cron,
+              path: trigger.path,
+            }))
+          : [{ type: "manual", enabled: true }],
+      state: parsed.state ?? {},
+      status: parsed.status ?? "idle",
+      createdBy: getActorId(c),
+    });
+
+    return c.json(
+      {
+        success: true,
+        data: serializeConnectorInstance(instance.toObject()),
+      },
+      201,
+    );
+  } catch (error) {
+    logger.error("Failed to create connector instance", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to create instance",
+      },
+      500,
+    );
+  }
+});
+
+connectorBuilderRoutes.get(
+  "/instances/:id",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+      const instance = await getWorkspaceInstance(workspaceId, instanceId);
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      return c.json({
+        success: true,
+        data: serializeConnectorInstance(instance.toObject()),
+      });
+    } catch (error) {
+      logger.error("Failed to fetch connector instance", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to fetch instance",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.put(
+  "/instances/:id",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+      const parsed = updateConnectorInstanceSchema.parse(await c.req.json());
+      const instance = await getWorkspaceInstance(workspaceId, instanceId);
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      if (parsed.connectorId) {
+        if (!Types.ObjectId.isValid(parsed.connectorId)) {
+          return c.json({ success: false, error: "Invalid connector ID" }, 400);
+        }
+
+        const connector = await getWorkspaceConnector(
+          workspaceId,
+          parsed.connectorId,
+        );
+        if (!connector) {
+          return c.json({ success: false, error: "Connector not found" }, 404);
+        }
+
+        instance.connectorId = new Types.ObjectId(parsed.connectorId);
+      }
+
+      if (parsed.name !== undefined) {
+        instance.name = parsed.name;
+      }
+      if (parsed.secrets !== undefined) {
+        instance.secrets = parsed.secrets;
+      }
+      if (parsed.config !== undefined) {
+        instance.config = parsed.config;
+      }
+      if (parsed.state !== undefined) {
+        instance.state = parsed.state;
+      }
+      if (parsed.status !== undefined) {
+        instance.status = parsed.status;
+      }
+      if (parsed.output !== undefined) {
+        instance.output = {
+          destinationDatabaseId:
+            parsed.output.destinationDatabaseId &&
+            Types.ObjectId.isValid(parsed.output.destinationDatabaseId)
+              ? new Types.ObjectId(parsed.output.destinationDatabaseId)
+              : instance.output.destinationDatabaseId,
+          destinationSchema:
+            parsed.output.destinationSchema ??
+            instance.output.destinationSchema,
+          destinationTablePrefix:
+            parsed.output.destinationTablePrefix ??
+            instance.output.destinationTablePrefix,
+          evolutionMode:
+            parsed.output.evolutionMode ?? instance.output.evolutionMode,
+        };
+      }
+      if (parsed.triggers !== undefined) {
+        instance.triggers = parsed.triggers.map(trigger => ({
+          type: trigger.type,
+          enabled: trigger.enabled ?? true,
+          cron: trigger.cron,
+          path: trigger.path,
+        }));
+      }
+
+      await instance.save();
+
+      return c.json({
+        success: true,
+        data: serializeConnectorInstance(instance.toObject()),
+      });
+    } catch (error) {
+      logger.error("Failed to update connector instance", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to update instance",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.delete(
+  "/instances/:id",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(instanceId)) {
+        return c.json({ success: false, error: "Invalid instance ID" }, 400);
+      }
+
+      const result = await ConnectorInstance.deleteOne({
+        _id: new Types.ObjectId(instanceId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (result.deletedCount === 0) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      return c.json({
+        success: true,
+        message: "Instance deleted successfully",
+      });
+    } catch (error) {
+      logger.error("Failed to delete connector instance", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to delete instance",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorBuilderRoutes.post(
+  "/instances/:id/toggle",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const instanceId = c.req.param("id");
+      const instance = await getWorkspaceInstance(workspaceId, instanceId);
+
+      if (!instance) {
+        return c.json({ success: false, error: "Instance not found" }, 404);
+      }
+
+      instance.status = instance.status === "disabled" ? "active" : "disabled";
+      await instance.save();
+
+      return c.json({
+        success: true,
+        data: serializeConnectorInstance(instance.toObject()),
+      });
+    } catch (error) {
+      logger.error("Failed to toggle connector instance", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to toggle instance",
+        },
+        500,
+      );
+    }
+  },
+);
 
 export { connectorBuilderRoutes };

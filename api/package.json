@@ -53,6 +53,7 @@
     "openai": "^5.2.0",
     "parquet-wasm": "^0.7.1",
     "pg": "^8.16.0",
+    "source-map": "^0.7.6",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "stripe": "^14.25.0",
