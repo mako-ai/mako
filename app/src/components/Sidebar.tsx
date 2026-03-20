@@ -15,13 +15,14 @@ import {
   Database as DatabaseIcon,
   Plug as DataSourceIcon,
   ArrowLeftRight as FlowsIcon,
-  LayoutDashboard as DashboardIcon,
+  ChartPie as DashboardIcon,
   CircleUserRound as UserIcon,
+  MessageCircleMore as ChatIcon,
 } from "lucide-react";
 import { useUIStore } from "../store/uiStore";
 import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
-import { useState } from "react";
+import { startTransition, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
@@ -78,8 +79,10 @@ const bottomNavigationItems: {
 function Sidebar() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const setLeftPane = useUIStore(state => state.setLeftPane);
   const openLeftPane = useUIStore(state => state.openLeftPane);
+  const openRightPane = useUIStore(state => state.openRightPane);
   const { user, logout } = useAuth();
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(
     null,
@@ -92,6 +95,10 @@ function Sidebar() {
 
   const handleUserMenuClose = () => {
     setUserMenuAnchorEl(null);
+  };
+
+  const preloadDashboardsExplorer = () => {
+    void import("./DashboardsExplorer");
   };
 
   const handleLogout = async () => {
@@ -133,18 +140,20 @@ function Sidebar() {
       view === "flows" ||
       view === "dashboards"
     ) {
-      setLeftPane(
-        view as
-          | "databases"
-          | "consoles"
-          | "connectors"
-          | "flows"
-          | "dashboards",
-      );
+      startTransition(() => {
+        setLeftPane(
+          view as
+            | "databases"
+            | "consoles"
+            | "connectors"
+            | "flows"
+            | "dashboards",
+        );
 
-      if (!leftPaneOpen) {
-        openLeftPane();
-      }
+        if (!leftPaneOpen) {
+          openLeftPane();
+        }
+      });
     }
 
     // Only certain views should automatically open (or focus) a tab in the editor.
@@ -209,12 +218,35 @@ function Sidebar() {
                 <NavButton
                   isActive={isActive}
                   onClick={() => handleNavigation(item.view as NavigationView)}
+                  onMouseEnter={
+                    item.view === "dashboards"
+                      ? preloadDashboardsExplorer
+                      : undefined
+                  }
+                  onFocus={
+                    item.view === "dashboards"
+                      ? preloadDashboardsExplorer
+                      : undefined
+                  }
+                  onTouchStart={
+                    item.view === "dashboards"
+                      ? preloadDashboardsExplorer
+                      : undefined
+                  }
                 >
                   <Icon size={24} strokeWidth={1.5} />
                 </NavButton>
               </Tooltip>
             );
           })}
+
+          {!rightPaneOpen && (
+            <Tooltip title="Open Chat" placement="right">
+              <NavButton onClick={openRightPane}>
+                <ChatIcon size={24} strokeWidth={1.5} />
+              </NavButton>
+            </Tooltip>
+          )}
         </Box>
 
         <Box

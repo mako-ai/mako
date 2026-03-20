@@ -22,7 +22,7 @@ import {
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
-  LayoutDashboard,
+  ChartPie as DashboardIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -1058,7 +1058,7 @@ function Editor({
                           <ScheduleIcon size={20} strokeWidth={1.5} />
                         )
                       ) : tab.kind === "dashboard" ? (
-                        <LayoutDashboard size={20} strokeWidth={1.5} />
+                        <DashboardIcon size={20} strokeWidth={1.5} />
                       ) : (
                         <ConsoleIcon size={20} strokeWidth={1.5} />
                       )}

@@ -1,4 +1,11 @@
-import { useEffect, useRef, lazy } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  lazy,
+} from "react";
 import { Box, CircularProgress, styled } from "@mui/material";
 import {
   Routes,
@@ -10,7 +17,14 @@ import {
 } from "react-router-dom";
 import { trackPageView } from "./lib/analytics";
 import Sidebar from "./components/Sidebar";
-import { DEFAULT_LEFT_PANE_SIZE, useUIStore } from "./store/uiStore";
+import {
+  DEFAULT_LEFT_PANE_SIZE,
+  DEFAULT_RIGHT_PANE_SIZE,
+  SIDE_PANEL_COLLAPSE_THRESHOLD_PX,
+  SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
+  SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+  useUIStore,
+} from "./store/uiStore";
 import { useConsoleStore } from "./store/consoleStore";
 import {
   Panel,
@@ -24,9 +38,8 @@ import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
 import { FlowsExplorer } from "./components/FlowsExplorer";
-const DashboardsExplorer = lazy(
-  () => import("./components/DashboardsExplorer"),
-);
+const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
+const DashboardsExplorer = lazy(loadDashboardsExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -71,16 +84,142 @@ function InvitePage() {
 import { UrlSync } from "./components/UrlSync";
 
 // Main application component (extracted from original App)
-const LEFT_PANE_MIN_SIZE = 0;
-const LEFT_PANE_CLOSE_THRESHOLD = 4;
+const EDITOR_PANEL_MIN_SIZE = 30;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
 
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const setLeftPaneOpen = useUIStore(state => state.setLeftPaneOpen);
-  // Avoid re-rendering MainApp on console state changes; use getState on demand
+  const setRightPaneOpen = useUIStore(state => state.setRightPaneOpen);
+  const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
+  const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
+  const setPaneWidths = useUIStore(state => state.setPaneWidths);
+
   const leftPaneRef = useRef<ImperativePanelHandle | null>(null);
-  const previousLeftPaneOpenRef = useRef(leftPaneOpen);
+  const rightPaneRef = useRef<ImperativePanelHandle | null>(null);
+  const panelContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Initialize with window width to avoid 0 width on first render
+  const [panelContainerWidth, setPanelContainerWidth] = useState(() =>
+    typeof window === "undefined" ? 1000 : window.innerWidth - 52,
+  );
+
+  // Keep container width updated
+  useEffect(() => {
+    const el = panelContainerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(entries => {
+      const newWidth = entries[0].contentRect.width;
+      if (newWidth > 0) {
+        setPanelContainerWidth(newWidth);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Calculate default and initial sizes
+  const defaultLeftPx = clamp(
+    (panelContainerWidth * DEFAULT_LEFT_PANE_SIZE) / 100,
+    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
+  );
+
+  const defaultRightPx = clamp(
+    (panelContainerWidth * DEFAULT_RIGHT_PANE_SIZE) / 100,
+    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
+  );
+
+  const initialLeftPx =
+    leftPaneWidthPx && leftPaneWidthPx > 0 ? leftPaneWidthPx : defaultLeftPx;
+  const initialRightPx =
+    rightPaneWidthPx && rightPaneWidthPx > 0
+      ? rightPaneWidthPx
+      : defaultRightPx;
+
+  // Convert to percentages for Panel
+  const leftSizePct = (initialLeftPx / panelContainerWidth) * 100;
+  const rightSizePct = (initialRightPx / panelContainerWidth) * 100;
+
+  // Threshold for collapsing
+  const collapseThresholdPct =
+    (SIDE_PANEL_COLLAPSE_THRESHOLD_PX / panelContainerWidth) * 100;
+
+  // Handle layout changes (persistence)
+  const persistTimeoutRef = useRef<number | null>(null);
+  const handleLayout = useCallback(
+    (sizes: number[]) => {
+      if (panelContainerWidth <= 0) return;
+
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
+      }
+
+      persistTimeoutRef.current = window.setTimeout(() => {
+        const [leftPct, , rightPct] = sizes;
+        const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } =
+          {};
+
+        // Only save if panel is actually open (size > 0)
+        if (leftPct > 0) {
+          updates.leftPaneWidthPx = (leftPct * panelContainerWidth) / 100;
+        }
+        if (rightPct > 0) {
+          updates.rightPaneWidthPx = (rightPct * panelContainerWidth) / 100;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setPaneWidths(updates);
+        }
+      }, 200);
+    },
+    [panelContainerWidth, setPaneWidths],
+  );
+
+  // Handle external open/close for Left Pane
+  const prevLeftOpen = useRef(leftPaneOpen);
+  useEffect(() => {
+    if (leftPaneOpen && !prevLeftOpen.current) {
+      const panel = leftPaneRef.current;
+      if (panel && panel.isCollapsed()) {
+        panel.expand();
+        panel.resize((defaultLeftPx / panelContainerWidth) * 100);
+      }
+    } else if (!leftPaneOpen && prevLeftOpen.current) {
+      const panel = leftPaneRef.current;
+      if (panel && !panel.isCollapsed()) {
+        panel.collapse();
+      }
+    }
+    prevLeftOpen.current = leftPaneOpen;
+  }, [leftPaneOpen, defaultLeftPx, panelContainerWidth]);
+
+  // Handle external open/close for Right Pane
+  const prevRightOpen = useRef(rightPaneOpen);
+  useEffect(() => {
+    if (rightPaneOpen && !prevRightOpen.current) {
+      const panel = rightPaneRef.current;
+      if (panel && panel.isCollapsed()) {
+        panel.expand();
+        panel.resize((defaultRightPx / panelContainerWidth) * 100);
+      }
+    } else if (!rightPaneOpen && prevRightOpen.current) {
+      const panel = rightPaneRef.current;
+      if (panel && !panel.isCollapsed()) {
+        panel.collapse();
+      }
+    }
+    prevRightOpen.current = rightPaneOpen;
+  }, [rightPaneOpen, defaultRightPx, panelContainerWidth]);
+
+  const defaultLeftPanelSize = leftPaneOpen ? leftSizePct : 0;
+  const defaultRightPanelSize = rightPaneOpen ? rightSizePct : 0;
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
   const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
@@ -318,42 +457,37 @@ function MainApp() {
     }
   };
 
-  const handleLeftPaneResize = (size: number) => {
-    if (size <= LEFT_PANE_CLOSE_THRESHOLD) {
-      if (!leftPaneRef.current?.isCollapsed()) {
-        leftPaneRef.current?.collapse();
-      }
-    }
-  };
-
   useEffect(() => {
-    const panel = leftPaneRef.current;
-    if (!panel) {
-      return;
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+
+    let idleId: number | undefined;
+    let timeoutId: number | undefined;
+
+    if (typeof win.requestIdleCallback === "function") {
+      idleId = win.requestIdleCallback(() => {
+        void loadDashboardsExplorer();
+      });
+    } else {
+      timeoutId = window.setTimeout(() => {
+        void loadDashboardsExplorer();
+      }, 1500);
     }
 
-    const previousLeftPaneOpen = previousLeftPaneOpenRef.current;
-    previousLeftPaneOpenRef.current = leftPaneOpen;
-
-    if (previousLeftPaneOpen === leftPaneOpen) {
-      return;
-    }
-
-    if (!leftPaneOpen) {
-      if (!panel.isCollapsed()) {
-        panel.collapse();
+    return () => {
+      if (
+        idleId !== undefined &&
+        typeof win.cancelIdleCallback === "function"
+      ) {
+        win.cancelIdleCallback(idleId);
       }
-      return;
-    }
-
-    if (panel.isCollapsed()) {
-      panel.expand();
-    }
-
-    if (Math.abs(panel.getSize() - DEFAULT_LEFT_PANE_SIZE) > 0.1) {
-      panel.resize(DEFAULT_LEFT_PANE_SIZE);
-    }
-  }, [leftPaneOpen]);
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, []);
 
   return (
     <AuthWrapper>
@@ -370,67 +504,103 @@ function MainApp() {
         {/* Sidebar Navigation */}
         <Sidebar />
 
-        <PanelGroup
-          direction="horizontal"
-          style={{ height: "100%", width: "100%" }}
-        >
-          <Panel
-            ref={leftPaneRef}
-            collapsible
-            collapsedSize={0}
-            defaultSize={leftPaneOpen ? DEFAULT_LEFT_PANE_SIZE : 0}
-            minSize={LEFT_PANE_MIN_SIZE}
-            onCollapse={() => setLeftPaneOpen(false)}
-            onExpand={() => setLeftPaneOpen(true)}
-            onResize={handleLeftPaneResize}
+        <Box ref={panelContainerRef} sx={{ height: "100%", width: "100%" }}>
+          <PanelGroup
+            direction="horizontal"
+            style={{ height: "100%", width: "100%" }}
+            onLayout={handleLayout}
           >
-            <Box sx={{ height: "100%", overflow: "hidden" }}>
-              {renderLeftPane()}
-            </Box>
-          </Panel>
-
-          <StyledHorizontalResizeHandle
-            style={
-              leftPaneOpen
-                ? undefined
-                : {
-                    width: 0,
-                    minWidth: 0,
-                    opacity: 0,
-                    pointerEvents: "none",
-                  }
-            }
-          />
-
-          {/* Editor + Results vertical layout inside Editor component */}
-          <Panel defaultSize={30} minSize={30}>
-            <Editor
-              dbFlowFormRef={dbFlowFormRef}
-              onChartSpecChangeRef={onChartSpecChangeRef}
-              resultsContextRef={resultsContextRef}
-            />
-          </Panel>
-
-          <StyledHorizontalResizeHandle />
-
-          <Panel defaultSize={30} minSize={10}>
-            <Box
-              sx={{
-                height: "100%",
-                overflow: "hidden",
-                borderLeft: "1px solid",
-                borderColor: "divider",
-              }}
+            <Panel
+              ref={leftPaneRef}
+              collapsible
+              collapsedSize={0}
+              defaultSize={defaultLeftPanelSize}
+              minSize={collapseThresholdPct}
+              onCollapse={() => setLeftPaneOpen(false)}
+              onExpand={() => setLeftPaneOpen(true)}
             >
-              <Chat
-                onConsoleModification={handleConsoleModification}
+              <Box sx={{ height: "100%", overflow: "hidden" }}>
+                <Suspense
+                  fallback={
+                    <Box
+                      sx={{
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <CircularProgress size={20} />
+                    </Box>
+                  }
+                >
+                  {renderLeftPane()}
+                </Suspense>
+              </Box>
+            </Panel>
+
+            <StyledHorizontalResizeHandle
+              style={
+                leftPaneOpen
+                  ? undefined
+                  : {
+                      width: 0,
+                      minWidth: 0,
+                      opacity: 0,
+                      pointerEvents: "none",
+                    }
+              }
+            />
+
+            {/* Editor + Results vertical layout inside Editor component */}
+            <Panel minSize={EDITOR_PANEL_MIN_SIZE}>
+              <Editor
                 dbFlowFormRef={dbFlowFormRef}
                 onChartSpecChangeRef={onChartSpecChangeRef}
                 resultsContextRef={resultsContextRef}
               />
-            </Box>
-          </Panel>
-        </PanelGroup>
+            </Panel>
+
+            <StyledHorizontalResizeHandle
+              style={
+                rightPaneOpen
+                  ? undefined
+                  : {
+                      width: 0,
+                      minWidth: 0,
+                      opacity: 0,
+                      pointerEvents: "none",
+                    }
+              }
+            />
+
+            <Panel
+              ref={rightPaneRef}
+              collapsible
+              collapsedSize={0}
+              defaultSize={defaultRightPanelSize}
+              minSize={collapseThresholdPct}
+              onCollapse={() => setRightPaneOpen(false)}
+              onExpand={() => setRightPaneOpen(true)}
+            >
+              <Box
+                sx={{
+                  height: "100%",
+                  overflow: "hidden",
+                  borderLeft: "1px solid",
+                  borderColor: "divider",
+                }}
+              >
+                <Chat
+                  onConsoleModification={handleConsoleModification}
+                  dbFlowFormRef={dbFlowFormRef}
+                  onChartSpecChangeRef={onChartSpecChangeRef}
+                  resultsContextRef={resultsContextRef}
+                />
+              </Box>
+            </Panel>
+          </PanelGroup>
+        </Box>
       </Box>
     </AuthWrapper>
   );

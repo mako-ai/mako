@@ -44,7 +44,7 @@ import {
   Trash2,
   SquareChevronRight as ConsoleIcon,
   ArrowLeftRight as FlowIcon,
-  LayoutDashboard as DashboardIcon,
+  ChartPie as DashboardIcon,
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
