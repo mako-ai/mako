@@ -38,6 +38,7 @@ import { usageRoutes } from "./routes/usage";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
+import { connectorBuilderRoutes } from "./routes/connector-builder";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
@@ -112,6 +113,10 @@ app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
+app.route(
+  "/api/workspaces/:workspaceId/connector-builder",
+  connectorBuilderRoutes,
+);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);

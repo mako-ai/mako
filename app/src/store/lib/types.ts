@@ -12,6 +12,7 @@ export type TabKind =
   | "console"
   | "settings"
   | "connectors"
+  | "connector-studio"
   | "members"
   | "flow-editor"
   | "dashboard";
@@ -92,6 +93,7 @@ export type LeftPaneView =
   | "databases"
   | "consoles"
   | "connectors"
+  | "user-connectors"
   | "flows"
   | "dashboards"
   | "settings";
