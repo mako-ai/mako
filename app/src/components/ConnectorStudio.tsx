@@ -18,6 +18,7 @@ import {
   Check as SuccessIcon,
   X as ErrorIcon,
   Clock as TimeIcon,
+  Eye as DryRunIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import Editor from "@monaco-editor/react";
@@ -27,6 +28,7 @@ import {
   type DevRunOutput,
 } from "../store/connectorBuilderStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { ConnectorInstanceForm } from "./ConnectorInstanceForm";
 
 interface ConnectorStudioProps {
   connectorId: string;
@@ -34,6 +36,7 @@ interface ConnectorStudioProps {
 }
 
 type BottomTab = "output" | "logs" | "schema";
+type RightTab = "instances" | "ai";
 
 export function ConnectorStudio({
   connectorId,
@@ -57,6 +60,7 @@ export function ConnectorStudio({
   const devRunState = devRunStateMap[connectorId];
 
   const [bottomTab, setBottomTab] = useState<BottomTab>("output");
+  const [rightTab, setRightTab] = useState<RightTab>("instances");
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null);
   const editorRef = useRef<any>(null);
   const saveTimeoutRef = useRef<number | null>(null);
@@ -436,28 +440,59 @@ export function ConnectorStudio({
           }}
         />
 
-        {/* Right: Placeholder for Phase 4 AI chat */}
+        {/* Right: Config + AI panel */}
         <Panel defaultSize={35} minSize={15}>
           <Box
             sx={{
               height: "100%",
               display: "flex",
               flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              p: 3,
-              textAlign: "center",
-              bgcolor: "background.default",
+              overflow: "hidden",
             }}
           >
-            <Typography variant="h6" color="text.secondary" gutterBottom>
-              AI Assistant
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              AI-powered connector development coming in a future update. The
-              assistant will help you write connector code, debug errors, and
-              optimize data fetching.
-            </Typography>
+            <Tabs
+              value={rightTab}
+              onChange={(_, v) => setRightTab(v)}
+              sx={{
+                minHeight: 32,
+                borderBottom: "1px solid",
+                borderColor: "divider",
+                "& .MuiTab-root": {
+                  minHeight: 32,
+                  py: 0,
+                  fontSize: "0.75rem",
+                  textTransform: "none",
+                },
+              }}
+            >
+              <Tab label="Instances" value="instances" />
+              <Tab label="AI Assistant" value="ai" />
+            </Tabs>
+
+            <Box sx={{ flex: 1, overflow: "auto" }}>
+              {rightTab === "instances" ? (
+                <ConnectorInstanceForm connectorId={connectorId} />
+              ) : (
+                <Box
+                  sx={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    height: "100%",
+                    p: 3,
+                    textAlign: "center",
+                  }}
+                >
+                  <Typography variant="h6" color="text.secondary" gutterBottom>
+                    AI Assistant
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    AI-powered connector development coming in a future update.
+                  </Typography>
+                </Box>
+              )}
+            </Box>
           </Box>
         </Panel>
       </PanelGroup>
