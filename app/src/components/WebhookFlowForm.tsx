@@ -773,7 +773,11 @@ export function WebhookFlowForm({
       if (isNewMode) {
         newFlow = await createFlow(currentWorkspace.id, payload);
         if (desiredSyncEngine !== "legacy") {
-          await setSyncEngine(currentWorkspace.id, newFlow._id, desiredSyncEngine);
+          await setSyncEngine(
+            currentWorkspace.id,
+            newFlow._id,
+            desiredSyncEngine,
+          );
         }
 
         // Track flow creation
@@ -800,7 +804,11 @@ export function WebhookFlowForm({
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
         if (desiredSyncEngine !== currentSyncEngine) {
-          await setSyncEngine(currentWorkspace.id, currentFlowId, desiredSyncEngine);
+          await setSyncEngine(
+            currentWorkspace.id,
+            currentFlowId,
+            desiredSyncEngine,
+          );
         }
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
