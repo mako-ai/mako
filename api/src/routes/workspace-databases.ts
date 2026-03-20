@@ -21,6 +21,7 @@ import { Types } from "mongoose";
 import { loggers } from "../logging";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
+import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 
 const logger = loggers.db();
 
@@ -1277,10 +1278,15 @@ workspaceExecuteRoutes.post(
       }
 
       const normalizedFormat =
-        format === "ndjson" || format === "csv" ? format : null;
+        format === "ndjson" || format === "csv" || format === "arrow"
+          ? format
+          : null;
       if (!normalizedFormat) {
         return c.json(
-          { success: false, error: "format must be either 'ndjson' or 'csv'" },
+          {
+            success: false,
+            error: "format must be 'ndjson', 'csv', or 'arrow'",
+          },
           400,
         );
       }
@@ -1331,6 +1337,40 @@ workspaceExecuteRoutes.post(
           : `query-results-${Date.now()}`,
       );
 
+      const effectiveBatchSize =
+        typeof batchSize === "string"
+          ? parseInt(batchSize, 10)
+          : typeof batchSize === "number"
+            ? batchSize
+            : 1000;
+
+      const streamingOpts = {
+        databaseId:
+          queryDefinition.databaseId ||
+          (typeof databaseId === "string" ? databaseId : undefined),
+        databaseName:
+          queryDefinition.databaseName ||
+          (typeof databaseName === "string" ? databaseName : undefined),
+        batchSize: effectiveBatchSize,
+        executionId: typeof executionId === "string" ? executionId : undefined,
+        signal: c.req.raw.signal,
+      };
+
+      if (normalizedFormat === "arrow") {
+        return createArrowIPCStreamResponse({
+          filename: safeBaseName,
+          streamRows: emitRows =>
+            databaseConnectionService.executeStreamingQuery(
+              database,
+              executableQuery,
+              {
+                ...streamingOpts,
+                onBatch: emitRows,
+              },
+            ),
+        });
+      }
+
       return createStreamingExportResponse({
         format: normalizedFormat,
         filename: `${safeBaseName}.${normalizedFormat === "csv" ? "csv" : "ndjson"}`,
@@ -1339,21 +1379,7 @@ workspaceExecuteRoutes.post(
             database,
             executableQuery,
             {
-              databaseId:
-                queryDefinition.databaseId ||
-                (typeof databaseId === "string" ? databaseId : undefined),
-              databaseName:
-                queryDefinition.databaseName ||
-                (typeof databaseName === "string" ? databaseName : undefined),
-              batchSize:
-                typeof batchSize === "string"
-                  ? parseInt(batchSize, 10)
-                  : typeof batchSize === "number"
-                    ? batchSize
-                    : 1000,
-              executionId:
-                typeof executionId === "string" ? executionId : undefined,
-              signal: c.req.raw.signal,
+              ...streamingOpts,
               onBatch: emitRows,
             },
           ),
