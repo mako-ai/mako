@@ -9,9 +9,16 @@ const logger = loggers.inngest("webhook");
 export function generateWebhookEndpoint(
   workspaceId: string,
   flowId: string,
+  baseUrl?: string,
 ): string {
-  const baseUrl = process.env.API_BASE_URL || "http://localhost:3001";
-  return `${baseUrl}/api/webhooks/${workspaceId}/${flowId}`;
+  const resolvedBaseUrl =
+    baseUrl ||
+    process.env.API_BASE_URL ||
+    process.env.BASE_URL ||
+    process.env.PUBLIC_URL ||
+    "http://localhost:8080";
+  const normalizedBaseUrl = resolvedBaseUrl.replace(/\/+$/, "");
+  return `${normalizedBaseUrl}/api/webhooks/${workspaceId}/${flowId}`;
 }
 
 /**
@@ -26,7 +33,9 @@ export function verifyWebhookSignature(
 ): boolean {
   // This function is deprecated - webhook verification should be done
   // through the connector's verifyWebhook() method
-  logger.warn("verifyWebhookSignature is deprecated. Use connector.verifyWebhook() instead.");
+  logger.warn(
+    "verifyWebhookSignature is deprecated. Use connector.verifyWebhook() instead.",
+  );
   return true;
 }
 
@@ -73,7 +82,9 @@ export function parseWebhookPayload(
 } {
   // This function is deprecated - webhook data extraction should be done
   // through the connector's extractWebhookData() and getWebhookEventMapping() methods
-  logger.warn("parseWebhookPayload is deprecated. Use connector methods instead.");
+  logger.warn(
+    "parseWebhookPayload is deprecated. Use connector methods instead.",
+  );
 
   return {
     entityId: payload.id || payload.data?.id || uuidv4(),
