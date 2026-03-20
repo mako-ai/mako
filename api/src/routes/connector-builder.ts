@@ -17,6 +17,10 @@ import {
   type ConnectorExecutionInput,
 } from "../connector-builder/sandbox-runner";
 import { mapRuntimeError } from "../connector-builder/error-mapper";
+import {
+  CONNECTOR_TEMPLATES,
+  getConnectorTemplate,
+} from "../connector-builder/templates";
 
 const logger = loggers.api("connector-builder");
 const DEFAULT_CONNECTOR_CODE = `export async function pull(input) {
@@ -60,6 +64,12 @@ const createConnectorSchema = z.object({
   name: z.string().trim().min(1),
   description: z.string().trim().optional(),
   code: z.string().optional(),
+  visibility: z.enum(["workspace", "public"]).optional(),
+});
+
+const createConnectorFromTemplateSchema = z.object({
+  templateId: z.string().trim().min(1),
+  name: z.string().trim().optional(),
   visibility: z.enum(["workspace", "public"]).optional(),
 });
 
@@ -364,6 +374,94 @@ connectorBuilderRoutes.post("/connectors", async (c: AuthenticatedContext) => {
     );
   }
 });
+
+connectorBuilderRoutes.get("/templates", async c => {
+  return c.json({
+    success: true,
+    data: CONNECTOR_TEMPLATES.map(template => ({
+      id: template.id,
+      name: template.name,
+      description: template.description,
+      category: template.category,
+    })),
+  });
+});
+
+connectorBuilderRoutes.get(
+  "/templates/:id",
+  async (c: AuthenticatedContext) => {
+    const template = getConnectorTemplate(c.req.param("id"));
+    if (!template) {
+      return c.json({ success: false, error: "Template not found" }, 404);
+    }
+
+    return c.json({
+      success: true,
+      data: template,
+    });
+  },
+);
+
+connectorBuilderRoutes.post(
+  "/connectors/from-template",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const actorId = getActorId(c);
+      const parsed = createConnectorFromTemplateSchema.parse(
+        await c.req.json(),
+      );
+      const template = getConnectorTemplate(parsed.templateId);
+
+      if (!template) {
+        return c.json({ success: false, error: "Template not found" }, 404);
+      }
+
+      const connector = await UserConnector.create({
+        workspaceId: new Types.ObjectId(workspaceId),
+        name: parsed.name || template.name,
+        description: template.description,
+        source: {
+          code: template.code,
+          resolvedDependencies: [],
+        },
+        bundle: {
+          errors: [],
+        },
+        metadata: {
+          language: "typescript",
+          entrypoint: "pull",
+          runtime: "nodejs",
+          tags: [template.category, "template"],
+        },
+        version: 1,
+        versions: [],
+        visibility: parsed.visibility ?? "workspace",
+        createdBy: actorId,
+      });
+
+      return c.json(
+        {
+          success: true,
+          data: serializeUserConnector(connector.toObject()),
+        },
+        201,
+      );
+    } catch (error) {
+      logger.error("Failed to create connector from template", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to create connector from template",
+        },
+        500,
+      );
+    }
+  },
+);
 
 connectorBuilderRoutes.get("/connectors", async (c: AuthenticatedContext) => {
   try {

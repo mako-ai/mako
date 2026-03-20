@@ -164,6 +164,12 @@ export type UserConnector = z.infer<typeof connectorSchema>;
 export type ConnectorOutput = z.infer<typeof connectorOutputSchema>;
 export type ConnectorRuntimeError = z.infer<typeof connectorRuntimeErrorSchema>;
 export type ConnectorInstance = z.infer<typeof connectorInstanceSchema>;
+export interface ConnectorTemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+}
 export type ConnectorBuildState = {
   building: boolean;
   buildLog?: string;
@@ -188,12 +194,21 @@ interface ConnectorBuilderStore {
   buildState: Record<string, ConnectorBuildState>;
   devRunState: Record<string, ConnectorDevRunState>;
   fetchConnectors: (workspaceId: string) => Promise<UserConnector[]>;
+  fetchTemplates: (workspaceId: string) => Promise<ConnectorTemplateSummary[]>;
   createConnector: (
     workspaceId: string,
     input: {
       name: string;
       description?: string;
       code?: string;
+      visibility?: "workspace" | "public";
+    },
+  ) => Promise<UserConnector>;
+  createConnectorFromTemplate: (
+    workspaceId: string,
+    input: {
+      templateId: string;
+      name?: string;
       visibility?: "workspace" | "public";
     },
   ) => Promise<UserConnector>;
@@ -383,6 +398,20 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
       }
     },
 
+    fetchTemplates: async workspaceId => {
+      const response = await apiClient.get<{
+        success: boolean;
+        data: ConnectorTemplateSummary[];
+        error?: string;
+      }>(`/workspaces/${workspaceId}/connector-builder/templates`);
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to fetch templates");
+      }
+
+      return response.data || [];
+    },
+
     createConnector: async (workspaceId, input) => {
       const response = await apiClient.post<{
         success: boolean;
@@ -403,6 +432,31 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         state.selectedConnectorId = connector._id;
       });
 
+      return connector;
+    },
+
+    createConnectorFromTemplate: async (workspaceId, input) => {
+      const response = await apiClient.post<{
+        success: boolean;
+        data: unknown;
+        error?: string;
+      }>(
+        `/workspaces/${workspaceId}/connector-builder/connectors/from-template`,
+        input,
+      );
+
+      if (!response.success) {
+        throw new Error(response.error || "Failed to create connector");
+      }
+
+      const connector = connectorSchema.parse(response.data);
+      set(state => {
+        state.connectors[workspaceId] = upsertConnector(
+          state.connectors[workspaceId] || [],
+          connector,
+        );
+        state.selectedConnectorId = connector._id;
+      });
       return connector;
     },
 

@@ -5,6 +5,7 @@ import {
   Button,
   CircularProgress,
   Dialog,
+  DialogContentText,
   DialogActions,
   DialogContent,
   DialogTitle,
@@ -16,6 +17,8 @@ import {
   ListItemText,
   Menu,
   MenuItem,
+  Stack,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -41,7 +44,9 @@ function ConnectorBuilderExplorer() {
     loading,
     error,
     fetchConnectors,
+    fetchTemplates,
     createConnector,
+    createConnectorFromTemplate,
     deleteConnector,
     selectConnector,
   } = useConnectorBuilderStore();
@@ -54,6 +59,12 @@ function ConnectorBuilderExplorer() {
   const [selectedConnector, setSelectedConnector] =
     useState<UserConnector | null>(null);
   const [creating, setCreating] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [templateOptions, setTemplateOptions] = useState<
+    Array<{ id: string; name: string; description: string; category: string }>
+  >([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [newConnectorName, setNewConnectorName] = useState("");
 
   const workspaceId = currentWorkspace?.id;
   const workspaceConnectors = useMemo(
@@ -69,6 +80,16 @@ function ConnectorBuilderExplorer() {
 
     void fetchConnectors(workspaceId).catch(() => undefined);
   }, [fetchConnectors, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !createDialogOpen || templateOptions.length > 0) {
+      return;
+    }
+
+    void fetchTemplates(workspaceId)
+      .then(setTemplateOptions)
+      .catch(() => undefined);
+  }, [createDialogOpen, fetchTemplates, templateOptions.length, workspaceId]);
 
   const openConnectorTab = (connector: UserConnector) => {
     const existing = tabsList.find(
@@ -103,9 +124,17 @@ function ConnectorBuilderExplorer() {
 
     setCreating(true);
     try {
-      const connector = await createConnector(workspaceId, {
-        name: "Untitled Connector",
-      });
+      const connector = selectedTemplateId
+        ? await createConnectorFromTemplate(workspaceId, {
+            templateId: selectedTemplateId,
+            name: newConnectorName || undefined,
+          })
+        : await createConnector(workspaceId, {
+            name: newConnectorName || "Untitled Connector",
+          });
+      setCreateDialogOpen(false);
+      setSelectedTemplateId("");
+      setNewConnectorName("");
       openConnectorTab(connector);
     } finally {
       setCreating(false);
@@ -158,7 +187,7 @@ function ConnectorBuilderExplorer() {
               <span>
                 <IconButton
                   size="small"
-                  onClick={handleCreate}
+                  onClick={() => setCreateDialogOpen(true)}
                   disabled={creating}
                 >
                   {creating ? (
@@ -212,7 +241,10 @@ function ConnectorBuilderExplorer() {
             <Typography variant="body2">
               No user-defined connectors yet.
             </Typography>
-            <Button variant="outlined" onClick={handleCreate}>
+            <Button
+              variant="outlined"
+              onClick={() => setCreateDialogOpen(true)}
+            >
               Create connector
             </Button>
           </Box>
@@ -279,6 +311,66 @@ function ConnectorBuilderExplorer() {
           Delete
         </MenuItem>
       </Menu>
+
+      <Dialog
+        open={createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Create Connector</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <DialogContentText>
+              Start from a blank connector or choose a starter template.
+            </DialogContentText>
+            <TextField
+              label="Name"
+              value={newConnectorName}
+              onChange={event => setNewConnectorName(event.target.value)}
+              fullWidth
+              size="small"
+            />
+            <TextField
+              select
+              label="Template"
+              value={selectedTemplateId}
+              onChange={event => setSelectedTemplateId(event.target.value)}
+              fullWidth
+              size="small"
+              helperText="Optional. Leave blank for an empty starter."
+            >
+              <MenuItem value="">
+                <em>Blank connector</em>
+              </MenuItem>
+              {templateOptions.map(template => (
+                <MenuItem key={template.id} value={template.id}>
+                  {template.name} — {template.category}
+                </MenuItem>
+              ))}
+            </TextField>
+            {selectedTemplateId ? (
+              <Alert severity="info">
+                {
+                  templateOptions.find(
+                    template => template.id === selectedTemplateId,
+                  )?.description
+                }
+              </Alert>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleCreate}
+            disabled={creating}
+          >
+            Create
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={deleteDialogOpen}
