@@ -1089,24 +1089,26 @@ connectorBuilderWebhookRoutes.post("/:workspaceId/uc/:instanceId", async c => {
 // ── Helper ──
 
 function getDefaultConnectorCode(): string {
-  return `import type { ConnectorInput, ConnectorOutput } from "./types";
-
-/**
+  return `/**
  * Pull data from your source.
- * 
- * ctx.config  - Configuration values
- * ctx.secrets - Encrypted secrets (API keys, etc.)
- * ctx.state   - Persisted state from previous runs
- * ctx.trigger - What triggered this run (manual, cron, webhook)
- * ctx.paginate - Pagination helper (cursor, offset, link strategies)
- * ctx.log     - Structured logging (ctx.log.info, ctx.log.warn, etc.)
+ *
+ * input.ctx      - Context with fetch, paginate, log helpers
+ * input.config   - Configuration values
+ * input.secrets  - Encrypted secrets (API keys, etc.)
+ * input.state    - Persisted state from previous runs
+ * input.trigger  - What triggered this run (manual, cron, webhook)
+ *
+ * Logging: use console.log/warn/error (captured automatically)
+ * Pagination: use ctx.paginate({ initialUrl, mode, ... })
  */
-export async function pull(ctx: any): Promise<ConnectorOutput> {
-  ctx.log.info("Starting connector pull");
+export async function pull(input: any) {
+  const { ctx, config = {}, secrets = {}, state = {} } = input;
+
+  console.log("Starting connector pull");
 
   // Example: fetch data from an API
   // const response = await fetch("https://api.example.com/data", {
-  //   headers: { Authorization: \`Bearer \${ctx.secrets.API_KEY}\` },
+  //   headers: { Authorization: \\\`Bearer \\\${secrets.API_KEY}\\\` },
   // });
   // const data = await response.json();
 
@@ -1129,10 +1131,7 @@ export async function pull(ctx: any): Promise<ConnectorOutput> {
         },
       },
     ],
-    state: {
-      ...ctx.state,
-      lastRunAt: new Date().toISOString(),
-    },
+    state: { ...state, lastRunAt: new Date().toISOString() },
     hasMore: false,
   };
 }

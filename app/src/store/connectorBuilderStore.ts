@@ -334,6 +334,17 @@ interface ConnectorBuilderStore extends StoreState {
   deleteInstance: (workspaceId: string, instanceId: string) => Promise<void>;
   toggleInstance: (workspaceId: string, instanceId: string) => Promise<void>;
 
+  // Template actions
+  fetchTemplates: (
+    workspaceId: string,
+  ) => Promise<
+    Array<{ id: string; name: string; description: string; category: string }>
+  >;
+  createConnectorFromTemplate: (
+    workspaceId: string,
+    input: { templateId: string; name?: string },
+  ) => Promise<UserConnector>;
+
   clearError: (workspaceId: string) => void;
   reset: () => void;
 }
@@ -727,6 +738,47 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
         await apiClient.post(
           `/workspaces/${workspaceId}/connector-builder/instances/${instanceId}/toggle`,
         );
+      },
+
+      fetchTemplates: async workspaceId => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: Array<{
+              id: string;
+              name: string;
+              description: string;
+              category: string;
+            }>;
+          }>(`/workspaces/${workspaceId}/connector-builder/templates`);
+          return response.success ? response.data : [];
+        } catch {
+          return [];
+        }
+      },
+
+      createConnectorFromTemplate: async (workspaceId, input) => {
+        const response = await apiClient.post<{
+          success: boolean;
+          data: unknown;
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/connector-builder/connectors/from-template`,
+          input,
+        );
+
+        if (!response.success) {
+          throw new Error(response.error || "Failed to create from template");
+        }
+
+        const parsed = connectorSchema.parse(response.data);
+        set(state => {
+          if (!state.connectors[workspaceId]) {
+            state.connectors[workspaceId] = [];
+          }
+          state.connectors[workspaceId].unshift(parsed);
+        });
+        return parsed;
       },
 
       clearError: workspaceId => {

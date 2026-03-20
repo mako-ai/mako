@@ -33,7 +33,6 @@ import {
   type UserConnector,
 } from "../store/connectorBuilderStore";
 import { useConsoleStore } from "../store/consoleStore";
-import { apiClient } from "../lib/api-client";
 
 export function ConnectorBuilderExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -47,6 +46,8 @@ export function ConnectorBuilderExplorer() {
     deleteConnector,
     selectConnector,
     clearError,
+    fetchTemplates,
+    createConnectorFromTemplate,
   } = useConnectorBuilderStore();
 
   const connectors = currentWorkspace
@@ -77,22 +78,16 @@ export function ConnectorBuilderExplorer() {
   // Load templates when dialog opens
   useEffect(() => {
     if (createDialogOpen && templates.length === 0 && currentWorkspace?.id) {
-      apiClient
-        .get<{
-          success: boolean;
-          data: Array<{
-            id: string;
-            name: string;
-            description: string;
-            category: string;
-          }>;
-        }>(`/workspaces/${currentWorkspace.id}/connector-builder/templates`)
-        .then(res => {
-          if (res.success) setTemplates(res.data || []);
-        })
+      fetchTemplates(currentWorkspace.id)
+        .then(setTemplates)
         .catch(() => {});
     }
-  }, [createDialogOpen, templates.length, currentWorkspace?.id]);
+  }, [
+    createDialogOpen,
+    templates.length,
+    currentWorkspace?.id,
+    fetchTemplates,
+  ]);
 
   useEffect(() => {
     if (currentWorkspace?.id) {
@@ -109,29 +104,14 @@ export function ConnectorBuilderExplorer() {
   const handleCreate = async () => {
     if (!currentWorkspace?.id) return;
     try {
-      let connector: UserConnector;
-
-      if (selectedTemplate) {
-        // Create from template
-        const res = await apiClient.post<{
-          success: boolean;
-          data: UserConnector;
-        }>(
-          `/workspaces/${currentWorkspace.id}/connector-builder/connectors/from-template`,
-          {
+      const connector = selectedTemplate
+        ? await createConnectorFromTemplate(currentWorkspace.id, {
             templateId: selectedTemplate,
             name: newName || undefined,
-          },
-        );
-        if (!res.success) throw new Error("Failed to create from template");
-        connector = res.data;
-        // Refresh list
-        await fetchConnectors(currentWorkspace.id);
-      } else {
-        connector = await createConnector(currentWorkspace.id, {
-          name: newName || "Untitled Connector",
-        });
-      }
+          })
+        : await createConnector(currentWorkspace.id, {
+            name: newName || "Untitled Connector",
+          });
 
       setCreateDialogOpen(false);
       setNewName("");

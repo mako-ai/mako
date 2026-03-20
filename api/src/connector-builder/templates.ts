@@ -14,46 +14,45 @@ export const CONNECTOR_TEMPLATES: ConnectorTemplate[] = [
   {
     id: "rest-api",
     name: "REST API",
-    description: "Fetch data from any REST API with pagination support",
+    description: "Fetch paginated records from any REST endpoint",
     category: "api",
     code: `/**
  * REST API Connector
  * Fetches data from a REST API with cursor-based pagination.
  *
  * Secrets: API_KEY, API_BASE_URL
- * Config: endpoint, dataPath, cursorPath
+ * Config: endpoint, pageSize, entityName
  */
-export async function pull(ctx: any) {
-  const baseUrl = ctx.secrets.API_BASE_URL || ctx.config.baseUrl;
-  const apiKey = ctx.secrets.API_KEY;
-  const endpoint = ctx.config.endpoint || "/data";
-  const dataPath = ctx.config.dataPath || "data";
-  const cursorPath = ctx.config.cursorPath || "next_cursor";
+export async function pull(input: any) {
+  const { ctx, config = {}, secrets = {}, state = {} } = input;
+  const baseUrl = secrets.API_BASE_URL || config.baseUrl;
+  const apiKey = secrets.API_KEY;
+  const endpoint = config.endpoint || "/items";
 
   if (!baseUrl) {
     throw new Error("API_BASE_URL secret or baseUrl config is required");
   }
 
-  const allRecords: any[] = [];
+  const records: any[] = [];
 
   for await (const page of ctx.paginate({
-    url: baseUrl + endpoint,
-    headers: apiKey ? { Authorization: \`Bearer \${apiKey}\` } : {},
-    strategy: "cursor",
-    dataPath,
-    cursorPath,
-    limit: 100,
+    initialUrl: baseUrl + endpoint,
+    mode: "cursor",
+    pageSize: config.pageSize || 100,
+    init: {
+      headers: apiKey ? { Authorization: \`Bearer \${apiKey}\` } : {},
+    },
   })) {
-    allRecords.push(...page);
-    ctx.log.info(\`Fetched \${page.length} records (total: \${allRecords.length})\`);
+    records.push(...page.items);
+    console.log(\`Fetched page \${page.page}: \${page.items.length} records\`);
   }
 
   return {
     batches: [{
-      entity: ctx.config.entityName || "records",
-      records: allRecords,
+      entity: config.entityName || "records",
+      records,
     }],
-    state: { lastRunAt: new Date().toISOString() },
+    state: { ...state, lastRunAt: new Date().toISOString() },
     hasMore: false,
   };
 }
@@ -71,37 +70,42 @@ export async function pull(ctx: any) {
  * Secrets: STRIPE_API_KEY
  * Config: entities (array of entity names to sync)
  */
-export async function pull(ctx: any) {
-  const apiKey = ctx.secrets.STRIPE_API_KEY;
+export async function pull(input: any) {
+  const { ctx, config = {}, secrets = {}, state = {} } = input;
+  const apiKey = secrets.STRIPE_API_KEY;
   if (!apiKey) throw new Error("STRIPE_API_KEY secret is required");
 
-  const entities = ctx.config.entities || ["customers", "charges", "subscriptions"];
+  const entities = config.entities || ["customers", "charges", "subscriptions"];
   const batches: any[] = [];
 
   for (const entity of entities) {
-    ctx.log.info(\`Syncing Stripe \${entity}\`);
+    console.log(\`Syncing Stripe \${entity}\`);
     const records: any[] = [];
 
     for await (const page of ctx.paginate({
-      url: \`https://api.stripe.com/v1/\${entity}\`,
-      headers: { Authorization: \`Bearer \${apiKey}\` },
-      strategy: "cursor",
+      initialUrl: \`https://api.stripe.com/v1/\${entity}\`,
+      mode: "cursor",
+      pageSize: 100,
       cursorParam: "starting_after",
-      cursorPath: "data.-1.id", // Last item's ID
-      dataPath: "data",
-      limitParam: "limit",
-      limit: 100,
+      init: {
+        headers: { Authorization: \`Bearer \${apiKey}\` },
+      },
+      getItems: (payload: any) => payload.data || [],
+      getNextCursor: (payload: any) => {
+        const data = payload.data;
+        return data?.length ? data[data.length - 1].id : null;
+      },
     })) {
-      records.push(...page);
+      records.push(...page.items);
     }
 
-    ctx.log.info(\`Fetched \${records.length} \${entity}\`);
+    console.log(\`Fetched \${records.length} \${entity}\`);
     batches.push({ entity, records });
   }
 
   return {
     batches,
-    state: { lastRunAt: new Date().toISOString() },
+    state: { ...state, lastRunAt: new Date().toISOString() },
     hasMore: false,
   };
 }
@@ -119,30 +123,29 @@ export async function pull(ctx: any) {
  * Triggered by: webhook events
  * Config: entityName
  */
-export async function pull(ctx: any) {
-  const payload = ctx.trigger.payload;
+export async function pull(input: any) {
+  const { config = {}, state = {} } = input;
+  const payload = input.trigger?.payload;
 
   if (!payload) {
-    ctx.log.warn("No webhook payload received");
-    return { batches: [], state: ctx.state, hasMore: false };
+    console.warn("No webhook payload received");
+    return { batches: [], state, hasMore: false };
   }
 
-  const entityName = ctx.config.entityName || "webhook_events";
+  const entityName = config.entityName || "webhook_events";
 
-  // Transform the webhook payload into a record
   const record = {
     event_id: payload.id || payload.event_id || \`evt_\${Date.now()}\`,
     event_type: payload.type || payload.event_type || "unknown",
     received_at: new Date().toISOString(),
     payload: JSON.stringify(payload),
-    // Extract common fields if present
     ...(payload.data?.object && {
       resource_id: payload.data.object.id,
       resource_type: payload.data.object.object,
     }),
   };
 
-  ctx.log.info(\`Processing webhook event: \${record.event_type}\`);
+  console.log(\`Processing webhook event: \${record.event_type}\`);
 
   return {
     batches: [{
@@ -161,9 +164,9 @@ export async function pull(ctx: any) {
       },
     }],
     state: {
+      ...state,
       lastEventId: record.event_id,
-      lastEventAt: record.received_at,
-      eventCount: (ctx.state.eventCount || 0) + 1,
+      eventCount: (state.eventCount || 0) + 1,
     },
     hasMore: false,
   };
@@ -173,21 +176,22 @@ export async function pull(ctx: any) {
   {
     id: "graphql-api",
     name: "GraphQL API",
-    description: "Query data from any GraphQL endpoint",
+    description: "Query data from any GraphQL endpoint with pagination",
     category: "api",
     code: `/**
  * GraphQL API Connector
  * Fetches data using a GraphQL query with cursor-based pagination.
  *
  * Secrets: API_KEY, GRAPHQL_ENDPOINT
- * Config: query, variables, dataPath, cursorPath
+ * Config: query, variables, dataPath, cursorPath, hasMorePath
  */
-export async function pull(ctx: any) {
-  const endpoint = ctx.secrets.GRAPHQL_ENDPOINT || ctx.config.endpoint;
-  const apiKey = ctx.secrets.API_KEY;
+export async function pull(input: any) {
+  const { ctx, config = {}, secrets = {}, state = {} } = input;
+  const endpoint = secrets.GRAPHQL_ENDPOINT || config.endpoint;
+  const apiKey = secrets.API_KEY;
   if (!endpoint) throw new Error("GRAPHQL_ENDPOINT is required");
 
-  const query = ctx.config.query || \`
+  const query = config.query || \`
     query GetData($cursor: String, $limit: Int) {
       data(after: $cursor, first: $limit) {
         nodes { id name createdAt }
@@ -196,17 +200,20 @@ export async function pull(ctx: any) {
     }
   \`;
 
-  const dataPath = ctx.config.dataPath || "data.data.nodes";
-  const cursorPath = ctx.config.cursorPath || "data.data.pageInfo.endCursor";
-  const hasMorePath = ctx.config.hasMorePath || "data.data.pageInfo.hasNextPage";
+  const dataPath = config.dataPath || "data.data.nodes";
+  const cursorPath = config.cursorPath || "data.data.pageInfo.endCursor";
+  const hasMorePath = config.hasMorePath || "data.data.pageInfo.hasNextPage";
+
+  const getNestedValue = (obj: any, path: string) =>
+    path.split(".").reduce((o: any, k: string) => o?.[k], obj);
 
   const allRecords: any[] = [];
   let cursor: string | null = null;
   let hasMore = true;
-  const limit = ctx.config.limit || 50;
+  const limit = config.limit || 50;
 
   while (hasMore) {
-    const variables = { ...ctx.config.variables, cursor, limit };
+    const variables = { ...config.variables, cursor, limit };
 
     const response = await fetch(endpoint, {
       method: "POST",
@@ -218,10 +225,6 @@ export async function pull(ctx: any) {
     });
 
     const json = await response.json();
-
-    const getNestedValue = (obj: any, path: string) =>
-      path.split(".").reduce((o: any, k: string) => o?.[k], obj);
-
     const data = getNestedValue(json, dataPath);
     if (!Array.isArray(data) || data.length === 0) break;
 
@@ -229,15 +232,15 @@ export async function pull(ctx: any) {
     cursor = getNestedValue(json, cursorPath);
     hasMore = getNestedValue(json, hasMorePath) === true;
 
-    ctx.log.info(\`Fetched \${data.length} records (total: \${allRecords.length})\`);
+    console.log(\`Fetched \${data.length} records (total: \${allRecords.length})\`);
   }
 
   return {
     batches: [{
-      entity: ctx.config.entityName || "graphql_data",
+      entity: config.entityName || "graphql_data",
       records: allRecords,
     }],
-    state: { lastRunAt: new Date().toISOString() },
+    state: { ...state, lastRunAt: new Date().toISOString() },
     hasMore: false,
   };
 }
@@ -253,19 +256,20 @@ export async function pull(ctx: any) {
  * Fetches CSV or JSON data from a URL.
  *
  * Secrets: AUTH_TOKEN (optional)
- * Config: url, format ("csv" | "json"), delimiter
+ * Config: url, format ("csv" | "json"), delimiter, entityName
  */
-export async function pull(ctx: any) {
-  const url = ctx.config.url;
+export async function pull(input: any) {
+  const { config = {}, secrets = {}, state = {} } = input;
+  const url = config.url;
   if (!url) throw new Error("url config is required");
 
-  const format = ctx.config.format || "json";
+  const format = config.format || "json";
   const headers: Record<string, string> = {};
-  if (ctx.secrets.AUTH_TOKEN) {
-    headers.Authorization = \`Bearer \${ctx.secrets.AUTH_TOKEN}\`;
+  if (secrets.AUTH_TOKEN) {
+    headers.Authorization = \`Bearer \${secrets.AUTH_TOKEN}\`;
   }
 
-  ctx.log.info(\`Fetching \${format} data from \${url}\`);
+  console.log(\`Fetching \${format} data from \${url}\`);
 
   const response = await fetch(url, { headers });
   if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
@@ -274,7 +278,7 @@ export async function pull(ctx: any) {
 
   if (format === "csv") {
     const text = await response.text();
-    const delimiter = ctx.config.delimiter || ",";
+    const delimiter = config.delimiter || ",";
     const lines = text.split("\\n").filter((l: string) => l.trim());
     const headerLine = lines[0].split(delimiter).map((h: string) => h.trim().replace(/^"|"$/g, ""));
     records = lines.slice(1).map((line: string) => {
@@ -288,14 +292,14 @@ export async function pull(ctx: any) {
     records = Array.isArray(data) ? data : data.data || data.results || [data];
   }
 
-  ctx.log.info(\`Parsed \${records.length} records\`);
+  console.log(\`Parsed \${records.length} records\`);
 
   return {
     batches: [{
-      entity: ctx.config.entityName || "imported_data",
+      entity: config.entityName || "imported_data",
       records,
     }],
-    state: { lastRunAt: new Date().toISOString(), rowCount: records.length },
+    state: { ...state, lastRunAt: new Date().toISOString(), rowCount: records.length },
     hasMore: false,
   };
 }
