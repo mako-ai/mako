@@ -1184,15 +1184,22 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   ): Promise<{ success: boolean; error?: string }> {
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
+    const stagingDataset = options?.stagingSchema || dataset;
     if (!dataset) {
       return {
         success: false,
         error: "Dataset (schema) is required for BigQuery",
       };
     }
+    if (!stagingDataset) {
+      return {
+        success: false,
+        error: "Staging dataset is required for BigQuery",
+      };
+    }
 
     const fullOriginal = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(originalTableName)}`;
-    const fullStaging = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(stagingTableName)}`;
+    const fullStaging = `${escapeIdentifier(projectId)}.${escapeIdentifier(stagingDataset)}.${escapeIdentifier(stagingTableName)}`;
 
     // Drop staging table if exists
     const dropResult = await this.executeQuery(
@@ -1221,7 +1228,10 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       const columns: ColumnDefinition[] = Array.from(colTypes.entries()).map(
         ([name, type]) => ({ name, type, nullable: true }),
       );
-      return this.createTable(database, stagingTableName, columns, options);
+      return this.createTable(database, stagingTableName, columns, {
+        ...options,
+        schema: stagingDataset,
+      });
     }
 
     const query = `CREATE TABLE ${fullStaging} AS SELECT * FROM ${fullOriginal} WHERE FALSE;`;
@@ -1242,15 +1252,22 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   ): Promise<{ success: boolean; error?: string }> {
     const projectId = this.getProjectId(database);
     const dataset = options?.schema;
+    const stagingDataset = options?.stagingSchema || dataset;
     if (!dataset) {
       return {
         success: false,
         error: "Dataset (schema) is required for BigQuery",
       };
     }
+    if (!stagingDataset) {
+      return {
+        success: false,
+        error: "Staging dataset is required for BigQuery",
+      };
+    }
 
     const fullOriginal = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(originalTableName)}`;
-    const fullStaging = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(stagingTableName)}`;
+    const fullStaging = `${escapeIdentifier(projectId)}.${escapeIdentifier(stagingDataset)}.${escapeIdentifier(stagingTableName)}`;
     const fullBackup = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(`${originalTableName}_backup_${Date.now()}`)}`;
 
     // First-time full sync path: original table may not exist yet.

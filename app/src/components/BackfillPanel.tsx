@@ -555,6 +555,19 @@ export function BackfillPanel({
   if (isCdcFlow) {
     const summary = cdcSummary;
 
+    const formatLagDuration = (lagSeconds: number | null) => {
+      if (lagSeconds === null || !Number.isFinite(lagSeconds)) return "n/a";
+      if (lagSeconds < 60) return `${lagSeconds}s`;
+      if (lagSeconds < 3600) {
+        const minutes = Math.floor(lagSeconds / 60);
+        const seconds = lagSeconds % 60;
+        return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+      }
+      const hours = Math.floor(lagSeconds / 3600);
+      const minutes = Math.floor((lagSeconds % 3600) / 60);
+      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    };
+
     const stateColor = (state?: string) => {
       switch (state) {
         case "live":
@@ -570,6 +583,27 @@ export function BackfillPanel({
           return "default";
       }
     };
+
+    const freshnessSummary = (() => {
+      if (!summary) return "unknown";
+      const webhookLagSeconds = (() => {
+        if (!summary.lastWebhookAt) return null;
+        const lastWebhookTs = new Date(summary.lastWebhookAt).getTime();
+        if (!Number.isFinite(lastWebhookTs)) return null;
+        return Math.max(Math.floor((Date.now() - lastWebhookTs) / 1000), 0);
+      })();
+
+      if (
+        (summary.failedCount ?? 0) === 0 &&
+        (summary.backlogCount ?? 0) === 0
+      ) {
+        return "live";
+      }
+      if (webhookLagSeconds !== null) {
+        return `lag ${formatLagDuration(webhookLagSeconds)}`;
+      }
+      return `lag ${formatLagDuration(summary.lagSeconds)}`;
+    })();
 
     const entityBackfillStatus = (entity: {
       backlogCount: number;
@@ -605,6 +639,18 @@ export function BackfillPanel({
         return { label: "Running", color: "success" as const };
       }
       return { label: "Pending", color: "default" as const };
+    };
+
+    const entityLagLabel = (entity: {
+      backlogCount: number;
+      failedCount: number;
+      lagSeconds: number | null;
+    }) => {
+      if (entity.lagSeconds === null) return "—";
+      // For entities with no queued/failed events, a growing lag mostly means
+      // "no recent events" rather than "pipeline delay".
+      if (entity.backlogCount === 0 && entity.failedCount === 0) return "—";
+      return formatLagDuration(entity.lagSeconds);
     };
 
     const connectorName = currentFlow?.dataSourceId
@@ -649,6 +695,11 @@ export function BackfillPanel({
     const isDegraded = state === "degraded" && !backfillRunning;
     const isIdle = (!state || state === "idle") && !backfillRunning;
     const hasFailed = (summary?.failedCount ?? 0) > 0;
+    const failedDroppedDetail =
+      summary &&
+      ((summary.failedCount ?? 0) > 0 || (summary.backlogCount ?? 0) > 0)
+        ? `Lag ${formatLagDuration(summary.lagSeconds)}`
+        : "No queued or failed events";
 
     return (
       <Box
@@ -826,11 +877,15 @@ export function BackfillPanel({
             <Typography className="lbl">Webhook</Typography>
             <Typography
               className="val"
+              title={webhookEndpoint || ""}
               sx={{
                 fontFamily: "monospace",
                 fontSize: "0.68rem",
-                wordBreak: "break-all",
                 opacity: 0.75,
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
             >
               {webhookEndpoint || "—"}
@@ -898,6 +953,13 @@ export function BackfillPanel({
                       sx={{ fontWeight: 600, fontSize: "0.72rem" }}
                     />
                   </Box>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ display: "block", mt: 0.8, fontSize: "0.65rem" }}
+                  >
+                    Freshness: {freshnessSummary}
+                  </Typography>
                 </Box>
                 {/* Backfill status */}
                 <Box
@@ -994,10 +1056,7 @@ export function BackfillPanel({
                     color="text.secondary"
                     sx={{ display: "block", mt: 0.25, fontSize: "0.65rem" }}
                   >
-                    Lag:{" "}
-                    {summary.lagSeconds !== null
-                      ? `${summary.lagSeconds}s`
-                      : "n/a"}
+                    {failedDroppedDetail}
                   </Typography>
                 </Box>
               </Box>
@@ -1361,9 +1420,7 @@ export function BackfillPanel({
                               </Typography>
                             </TableCell>
                             <TableCell align="right">
-                              {entity.lagSeconds === null
-                                ? "—"
-                                : `${entity.lagSeconds}s`}
+                              {entityLagLabel(entity)}
                             </TableCell>
                             <TableCell align="right">
                               <Typography

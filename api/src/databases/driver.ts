@@ -59,6 +59,8 @@ export interface TableClustering {
 export interface InsertOptions {
   /** Schema/dataset name for the target table */
   schema?: string;
+  /** Optional schema/dataset where staging/working tables are stored */
+  stagingSchema?: string;
   /** Pre-mapped column types for write operations (avoids re-querying INFORMATION_SCHEMA) */
   columnTypes?: Map<string, string>;
   /** Table partitioning config (BigQuery) */

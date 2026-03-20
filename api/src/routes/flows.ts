@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import {
+  CdcChangeEvent,
   Flow,
   Connector as DataSource,
   DatabaseConnection,
@@ -76,7 +77,10 @@ flowRoutes.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-async function assertOwnerOrAdmin(c: AuthenticatedContext, workspaceId: string) {
+async function assertOwnerOrAdmin(
+  c: AuthenticatedContext,
+  workspaceId: string,
+) {
   const user = c.get("user");
   if (!user) {
     return c.json(
@@ -85,16 +89,12 @@ async function assertOwnerOrAdmin(c: AuthenticatedContext, workspaceId: string) 
     );
   }
 
-  const isOwnerOrAdmin = await workspaceService.hasRole(
-    workspaceId,
-    user.id,
-    ["owner", "admin"],
-  );
+  const isOwnerOrAdmin = await workspaceService.hasRole(workspaceId, user.id, [
+    "owner",
+    "admin",
+  ]);
   if (!isOwnerOrAdmin) {
-    return c.json(
-      { success: false, error: "Owner/admin role required" },
-      403,
-    );
+    return c.json({ success: false, error: "Owner/admin role required" }, 403);
   }
 
   return null;
@@ -978,7 +978,10 @@ flowRoutes.post("/:flowId/backfill", async c => {
     }
 
     if (flow.syncEngine === "cdc") {
-      const backfill = await cdcBackfillService.startBackfill(workspaceId, flowId);
+      const backfill = await cdcBackfillService.startBackfill(
+        workspaceId,
+        flowId,
+      );
       return c.json({
         success: true,
         message: "CDC backfill started",
@@ -1096,7 +1099,10 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
       workspaceId,
     );
     if (authorizationError) return authorizationError;
-    const backfill = await cdcBackfillService.startBackfill(workspaceId, flowId);
+    const backfill = await cdcBackfillService.startBackfill(
+      workspaceId,
+      flowId,
+    );
     return c.json({
       success: true,
       message: "CDC backfill started",
@@ -1258,6 +1264,31 @@ flowRoutes.post("/:flowId/sync-cdc/resume", async c => {
       flowId,
       event: { type: "RESUME", reason: "Resumed via API" },
     });
+
+    // RESUME transitions paused -> catchup by design. If there is no pending
+    // CDC backlog at resume time, emit LAG_CLEARED immediately so the stream
+    // returns to live without waiting for another materialization tick.
+    const pending = await CdcChangeEvent.countDocuments({
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      materializationStatus: "pending",
+    });
+    if (pending === 0) {
+      await syncMachineService.applyTransition({
+        workspaceId,
+        flowId,
+        event: {
+          type: "LAG_CLEARED",
+          reason: "Resume with empty backlog",
+        },
+        context: {
+          backlogCount: 0,
+          lagSeconds: 0,
+          lagThresholdSeconds: 60,
+        },
+      });
+    }
+
     return c.json({ success: true, message: "CDC flow resumed" });
   } catch (error) {
     return c.json(
@@ -1275,7 +1306,10 @@ flowRoutes.get("/:flowId/sync-cdc/summary", async c => {
   try {
     const workspaceId = c.req.param("workspaceId") as string;
     const flowId = c.req.param("flowId") as string;
-    const summary = await cdcObservabilityService.getSummary(workspaceId, flowId);
+    const summary = await cdcObservabilityService.getSummary(
+      workspaceId,
+      flowId,
+    );
     return c.json({ success: true, data: summary });
   } catch (error) {
     return c.json(
