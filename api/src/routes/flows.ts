@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
   Flow,
   Connector as DataSource,
@@ -10,7 +10,10 @@ import {
 } from "../database/workspace-schema";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
-import { generateWebhookEndpoint } from "../utils/webhook.utils";
+import {
+  generateWebhookEndpoint,
+  resolveWebhookBaseUrl,
+} from "../utils/webhook.utils";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -32,6 +35,15 @@ const logger = loggers.inngest("flow");
 
 export const flowRoutes = new Hono();
 const RUNNING_EXECUTION_STALE_MS = 2 * 60 * 1000;
+
+function getWebhookBaseUrlForRequest(c: Context): string {
+  return resolveWebhookBaseUrl({
+    requestUrl: c.req.url,
+    forwardedProto: c.req.header("x-forwarded-proto"),
+    forwardedHost: c.req.header("x-forwarded-host"),
+    host: c.req.header("host"),
+  });
+}
 
 function isSafeBigQueryIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
@@ -299,7 +311,11 @@ flowRoutes.use("*", async (c: AuthenticatedContext, next) => {
 flowRoutes.get("/", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId) {
+      return c.json({ success: false, error: "Workspace ID is required" }, 400);
+    }
     const sourceType = c.req.query("sourceType"); // Optional filter
+    const webhookBaseUrl = getWebhookBaseUrlForRequest(c);
 
     const pipeline: PipelineStage[] = [
       {
@@ -414,10 +430,27 @@ flowRoutes.get("/", async c => {
     ];
 
     const flows = await Flow.aggregate(pipeline);
+    const flowsWithResolvedWebhookEndpoints = flows.map(flow => {
+      if (flow.type !== "webhook") {
+        return flow;
+      }
+
+      return {
+        ...flow,
+        webhookConfig: {
+          ...(flow.webhookConfig || {}),
+          endpoint: generateWebhookEndpoint(
+            workspaceId,
+            flow._id.toString(),
+            webhookBaseUrl,
+          ),
+        },
+      };
+    });
 
     return c.json({
       success: true,
-      data: flows,
+      data: flowsWithResolvedWebhookEndpoints,
     });
   } catch (error) {
     logger.error("Error listing flows", { error });
@@ -445,6 +478,7 @@ flowRoutes.post("/", async c => {
     // Validate required fields based on flow type and source type
     const flowType = body.type || "scheduled";
     const sourceType = body.sourceType || "connector";
+    const webhookBaseUrl = getWebhookBaseUrlForRequest(c);
 
     // Schedule cron required only when schedule is enabled
     if (
@@ -673,6 +707,7 @@ flowRoutes.post("/", async c => {
       const webhookEndpoint = generateWebhookEndpoint(
         workspaceId,
         new Types.ObjectId().toString(),
+        webhookBaseUrl,
       );
       // Webhook secret must be provided by the user (from Stripe/Close)
       const webhookSecret = body.webhookSecret || "";
@@ -691,6 +726,7 @@ flowRoutes.post("/", async c => {
       flow.webhookConfig.endpoint = generateWebhookEndpoint(
         workspaceId,
         flow._id.toString(),
+        webhookBaseUrl,
       );
     }
 
@@ -733,9 +769,25 @@ flowRoutes.post("/", async c => {
     }
     await flow.populate("destinationDatabaseId", "name type");
 
+    const flowResponse = flow.toObject();
+    if (flowResponse.type === "webhook") {
+      const currentWebhookConfig = flowResponse.webhookConfig;
+      flowResponse.webhookConfig = {
+        ...(currentWebhookConfig || {}),
+        endpoint: generateWebhookEndpoint(
+          workspaceId,
+          flow._id.toString(),
+          webhookBaseUrl,
+        ),
+        secret: currentWebhookConfig?.secret ?? "",
+        enabled: currentWebhookConfig?.enabled ?? true,
+        totalReceived: currentWebhookConfig?.totalReceived ?? 0,
+      };
+    }
+
     return c.json({
       success: true,
-      data: flow,
+      data: flowResponse,
     });
   } catch (error) {
     logger.error("Error creating flow", { error });
@@ -754,6 +806,13 @@ flowRoutes.get("/:flowId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const flowId = c.req.param("flowId");
+    if (!workspaceId || !flowId) {
+      return c.json(
+        { success: false, error: "Workspace ID and Flow ID are required" },
+        400,
+      );
+    }
+    const webhookBaseUrl = getWebhookBaseUrlForRequest(c);
 
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -770,9 +829,25 @@ flowRoutes.get("/:flowId", async c => {
     }
     await flow.populate("destinationDatabaseId", "name type");
 
+    const flowResponse = flow.toObject();
+    if (flowResponse.type === "webhook") {
+      const currentWebhookConfig = flowResponse.webhookConfig;
+      flowResponse.webhookConfig = {
+        ...(currentWebhookConfig || {}),
+        endpoint: generateWebhookEndpoint(
+          workspaceId,
+          flow._id.toString(),
+          webhookBaseUrl,
+        ),
+        secret: currentWebhookConfig?.secret ?? "",
+        enabled: currentWebhookConfig?.enabled ?? true,
+        totalReceived: currentWebhookConfig?.totalReceived ?? 0,
+      };
+    }
+
     return c.json({
       success: true,
-      data: flow,
+      data: flowResponse,
     });
   } catch (error) {
     logger.error("Error getting flow", { error });
@@ -791,7 +866,14 @@ flowRoutes.put("/:flowId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const flowId = c.req.param("flowId");
+    if (!workspaceId || !flowId) {
+      return c.json(
+        { success: false, error: "Workspace ID and Flow ID are required" },
+        400,
+      );
+    }
     const body = await c.req.json();
+    const webhookBaseUrl = getWebhookBaseUrlForRequest(c);
 
     // Find and validate flow
     const flow = await Flow.findOne({
@@ -1005,9 +1087,25 @@ flowRoutes.put("/:flowId", async c => {
     }
     await flow.populate("destinationDatabaseId", "name type");
 
+    const flowResponse = flow.toObject();
+    if (flowResponse.type === "webhook") {
+      const currentWebhookConfig = flowResponse.webhookConfig;
+      flowResponse.webhookConfig = {
+        ...(currentWebhookConfig || {}),
+        endpoint: generateWebhookEndpoint(
+          workspaceId,
+          flow._id.toString(),
+          webhookBaseUrl,
+        ),
+        secret: currentWebhookConfig?.secret ?? "",
+        enabled: currentWebhookConfig?.enabled ?? true,
+        totalReceived: currentWebhookConfig?.totalReceived ?? 0,
+      };
+    }
+
     return c.json({
       success: true,
-      data: flow,
+      data: flowResponse,
     });
   } catch (error) {
     logger.error("Error updating flow", { error });
@@ -1570,6 +1668,13 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const flowId = c.req.param("flowId");
+    if (!workspaceId || !flowId) {
+      return c.json(
+        { success: false, error: "Workspace ID and Flow ID are required" },
+        400,
+      );
+    }
+    const webhookBaseUrl = getWebhookBaseUrlForRequest(c);
 
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -1747,7 +1852,11 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       .sort((a, b) => b.total - a.total);
 
     const stats = {
-      webhookUrl: flow.webhookConfig?.endpoint,
+      webhookUrl: generateWebhookEndpoint(
+        workspaceId,
+        flow._id.toString(),
+        webhookBaseUrl,
+      ),
       lastReceived: flow.webhookConfig?.lastReceivedAt
         ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
         : null,
