@@ -1,194 +1,257 @@
 import { Sandbox } from "e2b";
-import * as crypto from "crypto";
-import { loggers } from "../logging";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { builtinModules } from "node:module";
+import path from "node:path";
+import { promisify } from "node:util";
 import {
   ConnectorOutput,
   ConnectorInput,
-  validateConnectorOutput,
+  connectorOutputSchema,
 } from "./output-schema";
 import { getPaginateHelperCode } from "./paginate-helper";
 
-const logger = loggers.connector("sandbox-runner");
+const execFileAsync = promisify(execFile);
 
-const SANDBOX_TIMEOUT_MS = 60_000;
-const BUILD_TIMEOUT_MS = 120_000;
+const SANDBOX_TIMEOUT_MS = 5 * 60 * 1000;
+const buildCache = new Map<string, BuildResult>();
+
+export type Runtime = "e2b" | "local-fallback";
+
+const builtinModuleNames = new Set(
+  builtinModules.flatMap(name =>
+    name.startsWith("node:") ? [name, name.replace(/^node:/, "")] : [name],
+  ),
+);
+
+export interface BuildError {
+  message: string;
+  line?: number;
+  column?: number;
+  severity: "error" | "warning";
+  raw?: string;
+}
 
 export interface BuildResult {
   js: string;
   sourceMap: string;
   buildHash: string;
   buildLog: string;
-  errors: Array<{
-    line?: number;
-    column?: number;
-    message: string;
-    severity: "error" | "warning";
-  }>;
-  resolvedDependencies: Record<string, string>;
+  errors: BuildError[];
+  resolvedDependencies: string[];
+  runtime: Runtime;
 }
 
 export interface ExecuteResult {
   output: ConnectorOutput;
-  logs: string;
+  logs: Array<{
+    level: string;
+    message: string;
+    timestamp?: string;
+  }>;
+  runtime: Runtime;
   durationMs: number;
 }
 
-/**
- * Compute SHA-256 hash of source code for cache invalidation.
- */
 export function computeBuildHash(code: string): string {
-  return crypto.createHash("sha256").update(code).digest("hex");
+  return createHash("sha256").update(code).digest("hex");
 }
 
-/**
- * Parse import/require statements from TypeScript/JavaScript source to extract npm package names.
- */
+function normalizePackageName(specifier: string): string {
+  if (specifier.startsWith("@")) {
+    const parts = specifier.split("/");
+    return parts.slice(0, 2).join("/");
+  }
+  return specifier.split("/")[0];
+}
+
 function extractDependencies(code: string): string[] {
   const deps = new Set<string>();
-
   const importRegex =
-    /(?:import\s+.*?\s+from\s+['"]([^'"./][^'"]*?)['"]|require\s*\(\s*['"]([^'"./][^'"]*?)['"]\s*\))/g;
-  let match: RegExpExecArray | null;
-  while ((match = importRegex.exec(code)) !== null) {
-    const pkg = match[1] || match[2];
-    if (pkg) {
-      // Extract the package name (handle scoped packages like @scope/name)
-      const parts = pkg.split("/");
-      const name =
-        parts[0].startsWith("@") && parts.length > 1
-          ? `${parts[0]}/${parts[1]}`
-          : parts[0];
-      deps.add(name);
+    /(?:import\s+(?:[\w*\s{},]*?\s+from\s+)?|import\s*\()\s*["']([^"']+)["']|require\(\s*["']([^"']+)["']\s*\)/g;
+
+  for (const match of code.matchAll(importRegex)) {
+    const specifier = (match[1] || match[2] || "").trim();
+    if (!specifier || specifier.startsWith(".") || specifier.startsWith("/")) {
+      continue;
     }
+    const packageName = normalizePackageName(specifier);
+    if (!packageName || builtinModuleNames.has(packageName)) {
+      continue;
+    }
+    deps.add(packageName);
   }
 
-  return Array.from(deps);
+  return Array.from(deps).sort();
+}
+
+function parseBuildErrors(output: string): BuildError[] {
+  return output
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map<BuildError>(line => {
+      const m = line.match(
+        /(?:connector|index)\.ts:(\d+):(\d+):\s*(?:(error|warning):)?\s*(.*)$/i,
+      );
+      if (!m) {
+        return { message: line, severity: "error", raw: line };
+      }
+      return {
+        message: m[4] || line,
+        line: parseInt(m[1], 10),
+        column: parseInt(m[2], 10),
+        severity: (m[3]?.toLowerCase() as "error" | "warning") || "error",
+        raw: line,
+      };
+    });
+}
+
+function buildPackageJson(dependencies: string[]): string {
+  return JSON.stringify(
+    {
+      name: "connector-builder-runner",
+      private: true,
+      type: "commonjs",
+      dependencies: Object.fromEntries(dependencies.map(d => [d, "latest"])),
+      devDependencies: { esbuild: "latest" },
+    },
+    null,
+    2,
+  );
 }
 
 /**
- * Build user connector code in an E2B sandbox.
- *
- * - Parses imports to discover dependencies
- * - Generates package.json
- * - Runs npm install && esbuild to produce a CommonJS bundle
+ * Runner script injected into sandbox / local temp directory.
+ * Intercepts console.* for structured log capture.
  */
-export async function buildConnector(code: string): Promise<BuildResult> {
-  const buildHash = computeBuildHash(code);
-  const dependencies = extractDependencies(code);
+function createRunnerSource(): string {
+  return `
+const fs = require("node:fs");
 
-  const packageJson: Record<string, unknown> = {
-    name: "user-connector",
-    version: "1.0.0",
-    private: true,
-    dependencies: Object.fromEntries(dependencies.map(d => [d, "latest"])),
-    devDependencies: {
-      esbuild: "^0.20.0",
-      typescript: "^5.4.0",
-    },
+${getPaginateHelperCode()}
+
+function serializeLogValue(value) {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+  if (typeof value === "undefined") return "undefined";
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+async function main() {
+  const mod = require("./bundle.js");
+  const pull = mod.pull || mod.default?.pull || mod.default;
+  if (typeof pull !== "function") {
+    throw new Error('Connector bundle must export a "pull" function');
+  }
+
+  const logs = [];
+  const input = JSON.parse(fs.readFileSync("./input.json", "utf8"));
+
+  const pushLog = (level, args) => {
+    logs.push({
+      level,
+      message: args.map(serializeLogValue).join(" "),
+      timestamp: new Date().toISOString(),
+    });
   };
 
-  const tsconfig = {
-    compilerOptions: {
-      target: "ES2022",
-      module: "commonjs",
-      moduleResolution: "node",
-      esModuleInterop: true,
-      strict: false,
-      skipLibCheck: true,
-      outDir: "./dist",
-    },
+  console.log = (...args) => pushLog("info", args);
+  console.info = (...args) => pushLog("info", args);
+  console.warn = (...args) => pushLog("warn", args);
+  console.error = (...args) => pushLog("error", args);
+  console.debug = (...args) => pushLog("debug", args);
+
+  const ctx = {
+    fetch: globalThis.fetch.bind(globalThis),
+    paginate,
+    log: (...args) => pushLog("info", args),
   };
 
-  let sandbox: Sandbox | null = null;
-  const errors: BuildResult["errors"] = [];
-  let buildLog = "";
+  const result = await pull({ ...input, ctx });
+  process.stdout.write(JSON.stringify({ result, logs }));
+}
+
+main().catch(error => {
+  process.stderr.write(
+    error instanceof Error ? error.stack || error.message : String(error),
+  );
+  process.exit(1);
+});
+`;
+}
+
+// ── E2B sandbox build ──
+
+async function runBuildInSandbox(
+  code: string,
+  dependencies: string[],
+  buildHash: string,
+): Promise<BuildResult> {
+  const sandbox = await Sandbox.create("base", {
+    timeoutMs: SANDBOX_TIMEOUT_MS,
+  });
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
 
   try {
-    sandbox = await Sandbox.create("base", {
-      timeoutMs: BUILD_TIMEOUT_MS,
-    });
-
     await sandbox.files.write("connector.ts", code);
-    await sandbox.files.write(
-      "package.json",
-      JSON.stringify(packageJson, null, 2),
-    );
-    await sandbox.files.write(
-      "tsconfig.json",
-      JSON.stringify(tsconfig, null, 2),
-    );
+    await sandbox.files.write("package.json", buildPackageJson(dependencies));
 
     const installResult = await sandbox.commands.run(
-      "npm install --no-audit --no-fund 2>&1",
-      { timeoutMs: 60_000 },
+      "npm install --yes --no-package-lock 2>&1",
+      { timeoutMs: SANDBOX_TIMEOUT_MS },
     );
-    buildLog += installResult.stdout + "\n" + installResult.stderr + "\n";
+    stdoutLines.push(installResult.stdout || "");
+    stderrLines.push(installResult.stderr || "");
 
     if (installResult.exitCode !== 0) {
-      errors.push({
-        message: `npm install failed: ${installResult.stderr || installResult.stdout}`,
-        severity: "error",
-      });
+      const buildLog = [...stdoutLines, ...stderrLines].join("");
       return {
         js: "",
         sourceMap: "",
         buildHash,
         buildLog,
-        errors,
-        resolvedDependencies: {},
+        errors: [
+          { message: "npm install failed in sandbox", severity: "error" },
+        ],
+        resolvedDependencies: dependencies,
+        runtime: "e2b",
       };
     }
 
     const esbuildCmd = [
       "npx esbuild connector.ts",
-      "--bundle",
-      "--platform=node",
-      "--target=node20",
-      "--format=cjs",
-      "--outfile=bundle.js",
-      "--sourcemap=external",
+      "--bundle --platform=node --format=cjs --target=node20",
+      "--sourcemap=external --outfile=bundle.js",
       "--external:node:*",
-      "2>&1",
     ].join(" ");
 
-    const buildResult = await sandbox.commands.run(esbuildCmd, {
-      timeoutMs: 30_000,
+    const buildResult = await sandbox.commands.run(esbuildCmd + " 2>&1", {
+      timeoutMs: SANDBOX_TIMEOUT_MS,
     });
-    buildLog += buildResult.stdout + "\n" + buildResult.stderr + "\n";
+    stdoutLines.push(buildResult.stdout || "");
+    stderrLines.push(buildResult.stderr || "");
+
+    const buildLog = [...stdoutLines, ...stderrLines].join("");
 
     if (buildResult.exitCode !== 0) {
-      const errorOutput = buildResult.stderr || buildResult.stdout || "";
-      const lineMatch = errorOutput.match(
-        /connector\.ts:(\d+):(\d+):\s*(error|warning):\s*(.*)/g,
-      );
-      if (lineMatch) {
-        for (const line of lineMatch) {
-          const m = line.match(
-            /connector\.ts:(\d+):(\d+):\s*(error|warning):\s*(.*)/,
-          );
-          if (m) {
-            errors.push({
-              line: parseInt(m[1], 10),
-              column: parseInt(m[2], 10),
-              message: m[4],
-              severity: m[3] as "error" | "warning",
-            });
-          }
-        }
-      } else {
-        errors.push({
-          message: `Build failed: ${errorOutput}`,
-          severity: "error",
-        });
-      }
-
+      const errors = parseBuildErrors(buildLog);
       return {
         js: "",
         sourceMap: "",
         buildHash,
         buildLog,
-        errors,
-        resolvedDependencies: {},
+        errors:
+          errors.length > 0
+            ? errors
+            : [{ message: "Build failed", severity: "error" }],
+        resolvedDependencies: dependencies,
+        runtime: "e2b",
       };
     }
 
@@ -197,33 +260,7 @@ export async function buildConnector(code: string): Promise<BuildResult> {
     try {
       sourceMap = await sandbox.files.read("bundle.js.map");
     } catch {
-      // Source map may not be generated in all cases
-    }
-
-    // Read resolved dependency versions
-    let resolvedDependencies: Record<string, string> = {};
-    try {
-      const lockContent = await sandbox.files.read("package.json");
-      const pkgData = JSON.parse(lockContent);
-      resolvedDependencies =
-        (pkgData.dependencies as Record<string, string>) || {};
-    } catch {
-      // Non-critical
-    }
-
-    // Check for warnings in build output
-    const warnRegex = /connector\.ts:(\d+):(\d+):\s*warning:\s*(.*)/g;
-    let warnMatch: RegExpExecArray | null;
-    while (
-      (warnMatch = warnRegex.exec(buildResult.stdout + buildResult.stderr)) !==
-      null
-    ) {
-      errors.push({
-        line: parseInt(warnMatch[1], 10),
-        column: parseInt(warnMatch[2], 10),
-        message: warnMatch[3],
-        severity: "warning",
-      });
+      /* source map optional */
     }
 
     return {
@@ -231,215 +268,183 @@ export async function buildConnector(code: string): Promise<BuildResult> {
       sourceMap,
       buildHash,
       buildLog,
-      errors,
-      resolvedDependencies,
+      errors: [],
+      resolvedDependencies: dependencies,
+      runtime: "e2b",
     };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.error("Sandbox build failed", { error: err });
-    errors.push({ message: `Sandbox error: ${message}`, severity: "error" });
+  } finally {
+    await sandbox.kill().catch(() => undefined);
+  }
+}
+
+// ── Local fallback build (no E2B key) ──
+
+async function buildLocally(
+  code: string,
+  dependencies: string[],
+  buildHash: string,
+): Promise<BuildResult> {
+  if (dependencies.length > 0) {
     return {
       js: "",
       sourceMap: "",
       buildHash,
-      buildLog,
-      errors,
-      resolvedDependencies: {},
+      buildLog:
+        "Local fallback build cannot resolve external dependencies. Set E2B_API_KEY for sandboxed builds with npm packages.",
+      errors: [
+        {
+          message:
+            "Local fallback does not support external dependencies. Set E2B_API_KEY to use sandboxed builds.",
+          severity: "error",
+        },
+      ],
+      resolvedDependencies: dependencies,
+      runtime: "local-fallback",
     };
-  } finally {
-    if (sandbox) {
-      try {
-        await sandbox.kill();
-      } catch {
-        // Ignore cleanup errors
+  }
+
+  try {
+    const ts = await import("typescript");
+    const transpiled = ts.transpileModule(code, {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+        sourceMap: true,
+        inlineSources: true,
+        esModuleInterop: true,
+      },
+      reportDiagnostics: true,
+    });
+
+    const errors: BuildError[] = [];
+    if (transpiled.diagnostics && transpiled.diagnostics.length > 0) {
+      for (const diag of transpiled.diagnostics) {
+        const msg = ts.flattenDiagnosticMessageText(diag.messageText, "\n");
+        let line: number | undefined;
+        let column: number | undefined;
+        if (diag.file && diag.start !== undefined) {
+          const pos = diag.file.getLineAndCharacterOfPosition(diag.start);
+          line = pos.line + 1;
+          column = pos.character + 1;
+        }
+        errors.push({ message: msg, line, column, severity: "error" });
       }
     }
+
+    return {
+      js: transpiled.outputText,
+      sourceMap: transpiled.sourceMapText || "",
+      buildHash,
+      buildLog: "Built locally via TypeScript compiler (no E2B sandbox)",
+      errors,
+      resolvedDependencies: [],
+      runtime: "local-fallback",
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      js: "",
+      sourceMap: "",
+      buildHash,
+      buildLog: `Local build failed: ${message}`,
+      errors: [{ message, severity: "error" }],
+      resolvedDependencies: [],
+      runtime: "local-fallback",
+    };
   }
 }
 
-/**
- * Execute a built connector bundle in an E2B sandbox.
- *
- * Writes the bundle and a runner wrapper to the sandbox,
- * executes it, and parses + validates the JSON output.
- */
-export async function executeConnector(
-  bundleJs: string,
+// ── E2B sandbox execution ──
+
+async function runBundleInSandbox(
+  bundle: string,
   input: ConnectorInput,
 ): Promise<ExecuteResult> {
-  let sandbox: Sandbox | null = null;
-  const startTime = Date.now();
+  const startedAt = Date.now();
+  const sandbox = await Sandbox.create("base", {
+    timeoutMs: SANDBOX_TIMEOUT_MS,
+  });
 
   try {
-    sandbox = await Sandbox.create("base", {
-      timeoutMs: SANDBOX_TIMEOUT_MS,
-    });
-
-    await sandbox.files.write("bundle.js", bundleJs);
-
-    const paginateCode = getPaginateHelperCode();
-
-    const runnerCode = `
-const mod = require("./bundle.js");
-const input = JSON.parse(process.env.CONNECTOR_INPUT || "{}");
-
-${paginateCode}
-
-const ctx = {
-  config: input.config || {},
-  secrets: input.secrets || {},
-  state: input.state || {},
-  trigger: input.trigger || { type: "manual" },
-  paginate: paginate,
-  log: function(level, message, data) {
-    const entry = { level: level, message: message, timestamp: new Date().toISOString(), data: data };
-    process.stderr.write("__LOG__" + JSON.stringify(entry) + "\\n");
-  },
-};
-
-// Convenience logging methods
-ctx.log.info = function(msg, data) { ctx.log("info", msg, data); };
-ctx.log.warn = function(msg, data) { ctx.log("warn", msg, data); };
-ctx.log.error = function(msg, data) { ctx.log("error", msg, data); };
-ctx.log.debug = function(msg, data) { ctx.log("debug", msg, data); };
-
-(async () => {
-  try {
-    const pullFn = mod.pull || mod.default?.pull || mod.default;
-    if (typeof pullFn !== "function") {
-      throw new Error("Connector must export a 'pull' function");
-    }
-    const result = await pullFn(ctx);
-    process.stdout.write(JSON.stringify(result));
-  } catch (err) {
-    process.stderr.write("__ERROR__" + JSON.stringify({ message: err.message, stack: err.stack }) + "\\n");
-    process.exit(1);
-  }
-})();
-`;
-
-    await sandbox.files.write("runner.js", runnerCode);
+    await sandbox.files.write("bundle.js", bundle);
+    await sandbox.files.write("input.json", JSON.stringify(input));
+    await sandbox.files.write("runner.js", createRunnerSource());
 
     const execResult = await sandbox.commands.run("node runner.js", {
       timeoutMs: SANDBOX_TIMEOUT_MS,
-      envs: {
-        CONNECTOR_INPUT: JSON.stringify(input),
-      },
     });
 
-    const durationMs = Date.now() - startTime;
-    const stderr = execResult.stderr || "";
-    const stdout = execResult.stdout || "";
+    return parseRunnerOutput(
+      execResult.stdout || "",
+      execResult.stderr || "",
+      execResult.exitCode || 0,
+      "e2b",
+      Date.now() - startedAt,
+    );
+  } finally {
+    await sandbox.kill().catch(() => undefined);
+  }
+}
 
-    // Extract log entries from stderr
-    const logEntries: Array<{
-      level: "debug" | "info" | "warn" | "error";
-      message: string;
-      timestamp?: string;
-      data?: unknown;
-    }> = [];
-    const logLines = stderr.split("\n");
-    const stderrNonLog: string[] = [];
-    for (const line of logLines) {
-      if (line.startsWith("__LOG__")) {
-        try {
-          const entry = JSON.parse(line.slice(7));
-          logEntries.push(entry);
-        } catch {
-          stderrNonLog.push(line);
-        }
-      } else if (line.startsWith("__ERROR__")) {
-        try {
-          const errorData = JSON.parse(line.slice(9));
-          logEntries.push({
-            level: "error",
-            message: errorData.message || "Unknown error",
-            timestamp: new Date().toISOString(),
-            data: { stack: errorData.stack },
-          });
-        } catch {
-          stderrNonLog.push(line);
-        }
-      } else if (line.trim()) {
-        stderrNonLog.push(line);
-      }
-    }
+// ── Local fallback execution ──
 
-    if (execResult.exitCode !== 0) {
-      const errorMsg =
-        stderrNonLog.join("\n") ||
-        `Process exited with code ${execResult.exitCode}`;
-      return {
-        output: {
-          batches: [],
-          state: {},
-          hasMore: false,
-          logs: logEntries,
-        },
-        logs: errorMsg,
-        durationMs,
-      };
-    }
+async function runBundleLocally(
+  bundle: string,
+  input: ConnectorInput,
+): Promise<ExecuteResult> {
+  const startedAt = Date.now();
+  const tempDir = await mkdtemp(path.join(tmpdir(), "mako-connector-builder-"));
 
-    // Parse stdout as JSON
-    let rawOutput: unknown;
-    try {
-      rawOutput = JSON.parse(stdout);
-    } catch {
-      return {
-        output: {
-          batches: [],
-          state: {},
-          hasMore: false,
-          logs: [
-            ...logEntries,
-            {
-              level: "error" as const,
-              message: `Failed to parse connector output as JSON: ${stdout.slice(0, 500)}`,
-              timestamp: new Date().toISOString(),
-            },
-          ],
-        },
-        logs: stderrNonLog.join("\n"),
-        durationMs,
-      };
-    }
+  try {
+    await writeFile(path.join(tempDir, "bundle.js"), bundle, "utf8");
+    await writeFile(
+      path.join(tempDir, "input.json"),
+      JSON.stringify(input),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, "runner.js"),
+      createRunnerSource(),
+      "utf8",
+    );
 
-    // Validate against schema
-    const validation = validateConnectorOutput(rawOutput);
-    if (!validation.success) {
-      return {
-        output: {
-          batches: [],
-          state: {},
-          hasMore: false,
-          logs: [
-            ...logEntries,
-            {
-              level: "error" as const,
-              message: validation.error,
-              timestamp: new Date().toISOString(),
-            },
-          ],
-        },
-        logs: stderrNonLog.join("\n"),
-        durationMs,
-      };
-    }
+    const { stdout, stderr } = await execFileAsync("node", ["runner.js"], {
+      cwd: tempDir,
+      timeout: SANDBOX_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+    });
 
-    // Merge log entries from stderr with those from the output itself
-    const outputData = validation.data;
-    outputData.logs = [...logEntries, ...(outputData.logs || [])];
-
-    return {
-      output: outputData,
-      logs: stderrNonLog.join("\n"),
-      durationMs,
-    };
+    return parseRunnerOutput(
+      stdout || "",
+      stderr || "",
+      0,
+      "local-fallback",
+      Date.now() - startedAt,
+    );
   } catch (err: unknown) {
-    const durationMs = Date.now() - startTime;
-    const message = err instanceof Error ? err.message : String(err);
-    logger.error("Sandbox execution failed", { error: err });
+    const durationMs = Date.now() - startedAt;
+    const stderr =
+      err instanceof Error
+        ? (err as Error & { stderr?: string }).stderr || err.message
+        : String(err);
+    return parseRunnerOutput("", stderr, 1, "local-fallback", durationMs);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+// ── Shared output parsing ──
+
+function parseRunnerOutput(
+  stdout: string,
+  stderr: string,
+  exitCode: number,
+  runtime: Runtime,
+  durationMs: number,
+): ExecuteResult {
+  const rawOutput = stdout.trim();
+
+  if (exitCode !== 0 || (!rawOutput && stderr.trim())) {
     return {
       output: {
         batches: [],
@@ -448,21 +453,94 @@ ctx.log.debug = function(msg, data) { ctx.log("debug", msg, data); };
         logs: [
           {
             level: "error",
-            message: `Sandbox error: ${message}`,
+            message: stderr.trim() || `Process exited with code ${exitCode}`,
             timestamp: new Date().toISOString(),
           },
         ],
       },
-      logs: message,
+      logs: [],
+      runtime,
       durationMs,
     };
-  } finally {
-    if (sandbox) {
-      try {
-        await sandbox.kill();
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
+  }
+
+  try {
+    const parsed = JSON.parse(rawOutput || "{}") as {
+      result?: unknown;
+      logs?: Array<{ level: string; message: string; timestamp?: string }>;
+    };
+
+    const output = connectorOutputSchema.parse(parsed.result ?? {});
+    const logs = Array.isArray(parsed.logs) ? parsed.logs : [];
+
+    const mergedLogs = [...(output.logs ?? []), ...logs];
+
+    return {
+      output: { ...output, logs: mergedLogs },
+      logs,
+      runtime,
+      durationMs,
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      output: {
+        batches: [],
+        state: {},
+        hasMore: false,
+        logs: [
+          {
+            level: "error",
+            message: `Failed to parse connector output: ${message}`,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      },
+      logs: [],
+      runtime,
+      durationMs,
+    };
   }
 }
+
+// ── Public API (object style for clarity) ──
+
+export const sandboxRunner = {
+  /**
+   * Build connector code. Uses E2B if E2B_API_KEY is set, otherwise falls
+   * back to local TypeScript compilation (zero-dependency connectors only).
+   * Results are cached in-memory by content hash.
+   */
+  async build(code: string): Promise<BuildResult> {
+    const buildHash = computeBuildHash(code);
+    const cached = buildCache.get(buildHash);
+    if (cached) {
+      return cached;
+    }
+
+    const dependencies = extractDependencies(code);
+    const result = process.env.E2B_API_KEY
+      ? await runBuildInSandbox(code, dependencies, buildHash)
+      : await buildLocally(code, dependencies, buildHash);
+
+    if (result.js && result.errors.length === 0) {
+      buildCache.set(buildHash, result);
+    }
+
+    return result;
+  },
+
+  /**
+   * Execute a built bundle with the given input context.
+   * Uses E2B if E2B_API_KEY is set, otherwise runs locally via child_process.
+   */
+  async execute(bundle: string, input: ConnectorInput): Promise<ExecuteResult> {
+    return process.env.E2B_API_KEY
+      ? runBundleInSandbox(bundle, input)
+      : runBundleLocally(bundle, input);
+  },
+};
+
+// Legacy named exports for backward compatibility with routes
+export const buildConnector = sandboxRunner.build;
+export const executeConnector = sandboxRunner.execute;

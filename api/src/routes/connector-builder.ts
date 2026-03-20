@@ -21,6 +21,37 @@ import {
   getTemplateById,
 } from "../connector-builder/templates";
 
+/**
+ * Explicit serialization to avoid leaking Mongoose internals.
+ * Converts ObjectIds to strings and Dates to ISO strings.
+ */
+function serializeDoc(doc: any): any {
+  if (!doc) return doc;
+  const obj = typeof doc.toObject === "function" ? doc.toObject() : { ...doc };
+  if (obj._id) obj._id = String(obj._id);
+  if (obj.workspaceId) obj.workspaceId = String(obj.workspaceId);
+  if (obj.connectorId) obj.connectorId = String(obj.connectorId);
+  if (obj.createdAt instanceof Date)
+    obj.createdAt = obj.createdAt.toISOString();
+  if (obj.updatedAt instanceof Date)
+    obj.updatedAt = obj.updatedAt.toISOString();
+  if (obj.output?.destinationConnectionId) {
+    obj.output.destinationConnectionId = String(
+      obj.output.destinationConnectionId,
+    );
+  }
+  if (obj.bundle?.builtAt instanceof Date) {
+    obj.bundle.builtAt = obj.bundle.builtAt.toISOString();
+  }
+  if (obj.status?.lastRunAt instanceof Date) {
+    obj.status.lastRunAt = obj.status.lastRunAt.toISOString();
+  }
+  if (obj.status?.lastSuccessAt instanceof Date) {
+    obj.status.lastSuccessAt = obj.status.lastSuccessAt.toISOString();
+  }
+  return obj;
+}
+
 const logger = loggers.connector("builder");
 
 export const connectorBuilderRoutes = new Hono();
@@ -132,7 +163,7 @@ connectorBuilderRoutes.post(
         workspaceId,
       });
 
-      return c.json({ success: true, data: connector });
+      return c.json({ success: true, data: serializeDoc(connector) });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to create connector from template", { error });
@@ -171,7 +202,7 @@ connectorBuilderRoutes.post("/connectors", async (c: AuthenticatedContext) => {
       workspaceId,
     });
 
-    return c.json({ success: true, data: connector });
+    return c.json({ success: true, data: serializeDoc(connector) });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error("Failed to create user connector", { error });
@@ -192,7 +223,7 @@ connectorBuilderRoutes.get("/connectors", async (c: AuthenticatedContext) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    return c.json({ success: true, data: connectors });
+    return c.json({ success: true, data: connectors.map(serializeDoc) });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error("Failed to list user connectors", { error });
@@ -221,7 +252,7 @@ connectorBuilderRoutes.get(
         return c.json({ success: false, error: "Connector not found" }, 404);
       }
 
-      return c.json({ success: true, data: connector });
+      return c.json({ success: true, data: serializeDoc(connector) });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to get user connector", { error });
@@ -263,7 +294,7 @@ connectorBuilderRoutes.put(
         return c.json({ success: false, error: "Connector not found" }, 404);
       }
 
-      return c.json({ success: true, data: connector });
+      return c.json({ success: true, data: serializeDoc(connector) });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to update user connector", { error });
@@ -410,7 +441,7 @@ connectorBuilderRoutes.post(
         targetVersion,
       });
 
-      return c.json({ success: true, data: connector });
+      return c.json({ success: true, data: serializeDoc(connector) });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to rollback connector", { error });
@@ -666,7 +697,7 @@ connectorBuilderRoutes.post("/instances", async (c: AuthenticatedContext) => {
       workspaceId,
     });
 
-    return c.json({ success: true, data: instance });
+    return c.json({ success: true, data: serializeDoc(instance) });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error("Failed to create connector instance", { error });
@@ -691,7 +722,7 @@ connectorBuilderRoutes.get("/instances", async (c: AuthenticatedContext) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    return c.json({ success: true, data: instances });
+    return c.json({ success: true, data: instances.map(serializeDoc) });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error("Failed to list connector instances", { error });
@@ -720,7 +751,7 @@ connectorBuilderRoutes.get(
         return c.json({ success: false, error: "Instance not found" }, 404);
       }
 
-      return c.json({ success: true, data: instance });
+      return c.json({ success: true, data: serializeDoc(instance) });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to get connector instance", { error });
@@ -762,7 +793,7 @@ connectorBuilderRoutes.put(
         return c.json({ success: false, error: "Instance not found" }, 404);
       }
 
-      return c.json({ success: true, data: instance });
+      return c.json({ success: true, data: serializeDoc(instance) });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to update connector instance", { error });
@@ -868,7 +899,7 @@ connectorBuilderRoutes.patch(
         return c.json({ success: false, error: "Instance not found" }, 404);
       }
 
-      return c.json({ success: true, data: instance });
+      return c.json({ success: true, data: serializeDoc(instance) });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to update instance state", { error });

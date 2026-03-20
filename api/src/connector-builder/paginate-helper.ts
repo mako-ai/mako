@@ -1,117 +1,132 @@
 /**
- * Generates self-contained pagination helper code that runs inside the E2B sandbox.
- * This code uses native `fetch` and must not import any Node-specific modules.
+ * Generates self-contained pagination helper code that runs inside the sandbox.
+ * Uses native `fetch` — must not import Node-specific modules.
  *
- * The generated code provides a `paginate()` async generator that supports
- * cursor-based, offset-based, and link-based pagination strategies.
+ * The helper auto-detects common response shapes when custom extractors
+ * are not provided, and supports cursor, offset, and link-based pagination.
  */
+
+export type PaginationMode = "cursor" | "offset" | "link";
+
+export interface PaginateOptions {
+  initialUrl: string;
+  mode?: PaginationMode;
+  init?: RequestInit;
+  pageSize?: number;
+  cursorParam?: string;
+  offsetParam?: string;
+  limitParam?: string;
+  getItems?: (payload: any) => unknown[];
+  getNextCursor?: (payload: any) => string | null | undefined;
+  getNextOffset?: (
+    payload: any,
+    currentOffset: number,
+    pageSize: number,
+  ) => number | null | undefined;
+  getNextLink?: (response: Response, payload: any) => string | null | undefined;
+}
 
 export function getPaginateHelperCode(): string {
-  return `
-/**
- * Pagination helper — available as ctx.paginate() inside connector pull().
- *
- * @param {Object} options
- * @param {string} options.url - Base URL for the first request
- * @param {Object} [options.headers] - HTTP headers for each request
- * @param {"cursor"|"offset"|"link"} [options.strategy] - Pagination strategy (default: "cursor")
- * @param {string} [options.cursorParam] - Query param name for cursor (default: "cursor")
- * @param {string} [options.cursorPath] - JSON path to next cursor in response (default: "next_cursor")
- * @param {string} [options.dataPath] - JSON path to data array in response (default: "data")
- * @param {string} [options.offsetParam] - Query param name for offset (default: "offset")
- * @param {string} [options.limitParam] - Query param name for limit (default: "limit")
- * @param {number} [options.limit] - Page size (default: 100)
- * @param {string} [options.nextLinkPath] - JSON path to next page URL (for link strategy)
- * @param {string} [options.method] - HTTP method (default: "GET")
- * @param {*} [options.body] - Request body (for POST pagination)
- * @param {number} [options.maxPages] - Safety limit on total pages (default: 1000)
- * @returns {AsyncGenerator<any[]>} Yields arrays of records per page
- */
+  return PAGINATE_HELPER_SOURCE;
+}
+
+export const PAGINATE_HELPER_SOURCE = String.raw`
 async function* paginate(options) {
-  const {
-    url,
-    headers = {},
-    strategy = "cursor",
-    cursorParam = "cursor",
-    cursorPath = "next_cursor",
-    dataPath = "data",
-    offsetParam = "offset",
-    limitParam = "limit",
-    limit = 100,
-    nextLinkPath = "next",
-    method = "GET",
-    body,
-    maxPages = 1000,
-  } = options;
+  const mode = options.mode || "cursor";
+  const pageSize = options.pageSize || 100;
+  const cursorParam = options.cursorParam || "cursor";
+  const offsetParam = options.offsetParam || "offset";
+  const limitParam = options.limitParam || "limit";
 
-  function getNestedValue(obj, path) {
-    return path.split(".").reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
-  }
+  const getItems =
+    options.getItems ||
+    ((payload) => {
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload?.items)) return payload.items;
+      if (Array.isArray(payload?.results)) return payload.results;
+      if (Array.isArray(payload?.records)) return payload.records;
+      return [];
+    });
 
-  let pageCount = 0;
+  const getNextCursor =
+    options.getNextCursor ||
+    ((payload) =>
+      payload?.nextCursor ??
+      payload?.next_cursor ??
+      payload?.cursor ??
+      payload?.paging?.next_cursor ??
+      payload?.meta?.next_cursor ??
+      null);
 
-  if (strategy === "cursor") {
-    let cursor = null;
-    while (pageCount < maxPages) {
-      const reqUrl = new URL(url);
-      if (cursor) reqUrl.searchParams.set(cursorParam, cursor);
-      reqUrl.searchParams.set(limitParam, String(limit));
+  const getNextOffset =
+    options.getNextOffset ||
+    ((_payload, currentOffset, currentPageSize) => currentOffset + currentPageSize);
 
-      const fetchOpts = { method, headers: { ...headers } };
-      if (body && method !== "GET") fetchOpts.body = typeof body === "string" ? body : JSON.stringify(body);
+  const getNextLink =
+    options.getNextLink ||
+    ((response, payload) => {
+      if (typeof payload?.next === "string" && payload.next) return payload.next;
+      if (typeof payload?.next_url === "string" && payload.next_url) return payload.next_url;
+      if (typeof payload?.paging?.next === "string") return payload.paging.next;
 
-      const res = await fetch(reqUrl.toString(), fetchOpts);
-      if (!res.ok) throw new Error("HTTP " + res.status + ": " + (await res.text()));
-      const json = await res.json();
+      const linkHeader = response.headers.get("link");
+      if (!linkHeader) return null;
+      const match = linkHeader.match(/<([^>]+)>;\s*rel="?next"?/i);
+      return match ? match[1] : null;
+    });
 
-      const data = getNestedValue(json, dataPath);
-      if (!Array.isArray(data) || data.length === 0) break;
-      yield data;
-      pageCount++;
+  let page = 0;
+  let nextCursor = null;
+  let nextOffset = 0;
+  let nextUrl = options.initialUrl;
+  let hasMore = true;
 
-      cursor = getNestedValue(json, cursorPath);
-      if (!cursor) break;
+  while (hasMore && nextUrl) {
+    page += 1;
+
+    const url = new URL(nextUrl);
+    if (mode === "cursor") {
+      url.searchParams.set(limitParam, String(pageSize));
+      if (nextCursor) url.searchParams.set(cursorParam, String(nextCursor));
+    } else if (mode === "offset") {
+      url.searchParams.set(limitParam, String(pageSize));
+      url.searchParams.set(offsetParam, String(nextOffset));
     }
-  } else if (strategy === "offset") {
-    let offset = 0;
-    while (pageCount < maxPages) {
-      const reqUrl = new URL(url);
-      reqUrl.searchParams.set(offsetParam, String(offset));
-      reqUrl.searchParams.set(limitParam, String(limit));
 
-      const fetchOpts = { method, headers: { ...headers } };
-      if (body && method !== "GET") fetchOpts.body = typeof body === "string" ? body : JSON.stringify(body);
-
-      const res = await fetch(reqUrl.toString(), fetchOpts);
-      if (!res.ok) throw new Error("HTTP " + res.status + ": " + (await res.text()));
-      const json = await res.json();
-
-      const data = getNestedValue(json, dataPath);
-      if (!Array.isArray(data) || data.length === 0) break;
-      yield data;
-      pageCount++;
-      offset += data.length;
-
-      if (data.length < limit) break;
+    const response = await fetch(url.toString(), options.init || {});
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error("Pagination request failed with status " + response.status + ": " + errorBody);
     }
-  } else if (strategy === "link") {
-    let nextUrl = url;
-    while (nextUrl && pageCount < maxPages) {
-      const fetchOpts = { method, headers: { ...headers } };
-      if (body && method !== "GET") fetchOpts.body = typeof body === "string" ? body : JSON.stringify(body);
 
-      const res = await fetch(nextUrl, fetchOpts);
-      if (!res.ok) throw new Error("HTTP " + res.status + ": " + (await res.text()));
-      const json = await res.json();
+    const payload = await response.json();
+    const items = getItems(payload);
 
-      const data = getNestedValue(json, dataPath);
-      if (!Array.isArray(data) || data.length === 0) break;
-      yield data;
-      pageCount++;
-
-      nextUrl = getNestedValue(json, nextLinkPath) || null;
+    if (!Array.isArray(items)) {
+      throw new Error("paginate() expected getItems() to return an array");
     }
+
+    if (mode === "cursor") {
+      nextCursor = getNextCursor(payload) ?? null;
+      hasMore = items.length > 0 && Boolean(nextCursor);
+      if (!hasMore) nextUrl = null;
+    } else if (mode === "offset") {
+      const candidate = getNextOffset(payload, nextOffset, pageSize);
+      nextOffset = typeof candidate === "number" && Number.isFinite(candidate)
+        ? candidate
+        : nextOffset + pageSize;
+      hasMore = items.length === pageSize;
+      if (!hasMore) nextUrl = null;
+    } else {
+      const link = getNextLink(response, payload);
+      nextUrl = link || null;
+      hasMore = Boolean(nextUrl);
+    }
+
+    yield { page, items, payload, response, nextCursor, nextOffset, hasMore };
+
+    if (mode !== "link" && !hasMore) break;
   }
 }
 `;
-}
