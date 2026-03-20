@@ -17,9 +17,25 @@ export {
   GlobalFilterSchema,
 } from "@mako/schemas";
 
-export interface Dashboard extends DashboardDefinition {
+import type { DashboardDefinition } from "@mako/schemas";
+
+export interface Dashboard extends Omit<DashboardDefinition, "crossFilter"> {
   _id: string;
   workspaceId: string;
+  crossFilter: {
+    enabled: DashboardDefinition["crossFilter"]["enabled"];
+    resolution: DashboardDefinition["crossFilter"]["resolution"];
+    /**
+     * Phase 1 migration switch for dashboard cross-filtering.
+     * - "mosaic": use the Mosaic coordinator/client path on the main canvas
+     * - "legacy": keep SQL filterClause rewriting for rollback
+     *
+     * Scope contract for this phase:
+     * - same-data-source-only cross-filtering
+     * - relationships and global filters stay out of Mosaic
+     */
+    engine?: "mosaic" | "legacy";
+  };
   access: "private" | "workspace";
   createdBy: string;
   createdAt: string;
@@ -117,8 +133,6 @@ export type DashboardQueryExecutor = (
   sql: string,
   options?: { dataSourceId?: string },
 ) => Promise<DashboardQueryResult>;
-
-import type { DashboardDefinition } from "@mako/schemas";
 
 /**
  * Metadata fields that are excluded from the code editor.

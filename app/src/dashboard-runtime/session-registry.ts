@@ -7,6 +7,7 @@ import {
   deleteOPFSFiles,
   isOPFSAvailable,
 } from "../lib/duckdb";
+import { createMosaicInstance, type MosaicInstance } from "../lib/mosaic";
 
 export interface DashboardSessionHandle {
   dashboardId: string;
@@ -15,6 +16,7 @@ export interface DashboardSessionHandle {
   persistent: boolean;
   dataSourceVersions: Map<string, string>;
   activeLoads: Map<string, Promise<void>>;
+  mosaic: MosaicInstance | null;
 }
 
 const sessions = new Map<string, DashboardSessionHandle>();
@@ -102,6 +104,7 @@ async function createSession(
     persistent,
     dataSourceVersions,
     activeLoads: new Map(),
+    mosaic: null,
   };
   sessions.set(dashboardId, session);
   return session;
@@ -133,6 +136,22 @@ export async function checkpointSession(dashboardId: string): Promise<void> {
   const session = sessions.get(dashboardId);
   if (!session?.persistent) return;
   await checkpointDatabase(session.db);
+}
+
+export async function ensureMosaicInstance(
+  dashboardId: string,
+): Promise<MosaicInstance> {
+  const session = await ensureDashboardSession(dashboardId);
+  if (session.mosaic) {
+    return session.mosaic;
+  }
+
+  session.mosaic = await createMosaicInstance(session.db);
+  return session.mosaic;
+}
+
+export function getMosaicInstance(dashboardId: string): MosaicInstance | null {
+  return sessions.get(dashboardId)?.mosaic || null;
 }
 
 export async function persistDataSourceVersion(
@@ -184,10 +203,19 @@ export async function disposeDashboardSession(
     return;
   }
 
+  if (session.mosaic) {
+    try {
+      session.mosaic.destroy();
+    } catch {
+      // Best-effort cleanup when coordinator teardown fails.
+    }
+    session.mosaic = null;
+  }
   if (session.persistent) {
     await checkpointDatabase(session.db).catch(() => {});
   }
 
+  pendingCreations.delete(dashboardId);
   sessions.delete(dashboardId);
   await (session.db as any).terminate?.();
 }

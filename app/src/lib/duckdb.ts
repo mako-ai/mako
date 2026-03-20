@@ -115,6 +115,125 @@ export async function loadArrowTable(
   }
 }
 
+async function collectStreamBytes(
+  stream: ReadableStream<Uint8Array>,
+  onProgress?: (bytesReceived: number) => void,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      if (!value) {
+        continue;
+      }
+
+      chunks.push(value);
+      totalBytes += value.byteLength;
+      onProgress?.(totalBytes);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const buffer = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return buffer;
+}
+
+async function insertArrowStreamWithChunks(
+  conn: any,
+  tableName: string,
+  stream: ReadableStream<Uint8Array>,
+  onProgress?: (bytesReceived: number) => void,
+): Promise<number> {
+  const reader = stream.getReader();
+  let bytesReceived = 0;
+
+  try {
+    await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      if (!value) {
+        continue;
+      }
+
+      bytesReceived += value.byteLength;
+      onProgress?.(bytesReceived);
+      await conn.insertArrowFromIPCStream(value, { name: tableName });
+    }
+
+    // DuckDB-WASM's chunked insert API requires an explicit end-of-stream marker.
+    await conn.insertArrowFromIPCStream(
+      new Uint8Array([255, 255, 255, 255, 0, 0, 0, 0]),
+      { name: tableName },
+    );
+    return bytesReceived;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Load an Arrow IPC ReadableStream into DuckDB with bounded browser memory.
+ * Falls back to buffering the full stream if the current DuckDB-WASM build
+ * does not support incremental IPC insertion.
+ */
+export async function loadArrowStreamTable(
+  db: AsyncDuckDB,
+  tableName: string,
+  stream: ReadableStream<Uint8Array>,
+  options?: {
+    onProgress?: (bytesReceived: number) => void;
+  },
+): Promise<number> {
+  const conn = await db.connect();
+
+  try {
+    if (typeof (conn as any).insertArrowFromIPCStream === "function") {
+      const [primaryStream, fallbackStream] =
+        typeof stream.tee === "function" ? stream.tee() : [stream, null];
+
+      try {
+        return await insertArrowStreamWithChunks(
+          conn,
+          tableName,
+          primaryStream,
+          options?.onProgress,
+        );
+      } catch (error) {
+        if (fallbackStream) {
+          const arrowBuffer = await collectStreamBytes(fallbackStream);
+          await loadArrowTable(db, tableName, arrowBuffer);
+          return arrowBuffer.byteLength;
+        }
+        throw error;
+      }
+    }
+
+    const arrowBuffer = await collectStreamBytes(stream, options?.onProgress);
+    await loadArrowTable(db, tableName, arrowBuffer);
+    return arrowBuffer.byteLength;
+  } finally {
+    await conn.close();
+  }
+}
+
 /**
  * Load JSON rows as a named table in DuckDB.
  * Simpler and more reliable than Arrow IPC for moderate datasets.

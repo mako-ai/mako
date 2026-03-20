@@ -21,6 +21,7 @@ import { Types } from "mongoose";
 import { loggers } from "../logging";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
+import { createArrowIPCStream } from "../utils/arrow-serializer";
 
 const logger = loggers.db();
 
@@ -1277,10 +1278,15 @@ workspaceExecuteRoutes.post(
       }
 
       const normalizedFormat =
-        format === "ndjson" || format === "csv" ? format : null;
+        format === "ndjson" || format === "csv" || format === "arrow"
+          ? format
+          : null;
       if (!normalizedFormat) {
         return c.json(
-          { success: false, error: "format must be either 'ndjson' or 'csv'" },
+          {
+            success: false,
+            error: "format must be one of 'arrow', 'ndjson', or 'csv'",
+          },
           400,
         );
       }
@@ -1331,6 +1337,62 @@ workspaceExecuteRoutes.post(
           : `query-results-${Date.now()}`,
       );
 
+      const streamingOptions = {
+        databaseId:
+          queryDefinition.databaseId ||
+          (typeof databaseId === "string" ? databaseId : undefined),
+        databaseName:
+          queryDefinition.databaseName ||
+          (typeof databaseName === "string" ? databaseName : undefined),
+        batchSize:
+          typeof batchSize === "string"
+            ? parseInt(batchSize, 10)
+            : typeof batchSize === "number"
+              ? batchSize
+              : 1000,
+        executionId:
+          typeof executionId === "string" ? executionId : undefined,
+        signal: c.req.raw.signal,
+      };
+
+      if (normalizedFormat === "arrow") {
+        const fieldsResult = await databaseConnectionService.getStreamingQueryFields(
+          database,
+          executableQuery,
+          streamingOptions,
+        );
+        if (!fieldsResult.success || !fieldsResult.fields?.length) {
+          return c.json(
+            {
+              success: false,
+              error:
+                fieldsResult.error ||
+                "Arrow export requires schema metadata before streaming begins",
+            },
+            400,
+          );
+        }
+
+        const stream = createArrowIPCStream(fieldsResult.fields, emitRows =>
+          databaseConnectionService.executeStreamingQuery(
+            database,
+            executableQuery,
+            {
+              ...streamingOptions,
+              onBatch: emitRows,
+            },
+          ),
+        );
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "application/vnd.apache.arrow.stream",
+            "Content-Disposition": `attachment; filename="${safeBaseName}.arrow"`,
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+
       return createStreamingExportResponse({
         format: normalizedFormat,
         filename: `${safeBaseName}.${normalizedFormat === "csv" ? "csv" : "ndjson"}`,
@@ -1339,21 +1401,7 @@ workspaceExecuteRoutes.post(
             database,
             executableQuery,
             {
-              databaseId:
-                queryDefinition.databaseId ||
-                (typeof databaseId === "string" ? databaseId : undefined),
-              databaseName:
-                queryDefinition.databaseName ||
-                (typeof databaseName === "string" ? databaseName : undefined),
-              batchSize:
-                typeof batchSize === "string"
-                  ? parseInt(batchSize, 10)
-                  : typeof batchSize === "number"
-                    ? batchSize
-                    : 1000,
-              executionId:
-                typeof executionId === "string" ? executionId : undefined,
-              signal: c.req.raw.signal,
+              ...streamingOptions,
               onBatch: emitRows,
             },
           ),

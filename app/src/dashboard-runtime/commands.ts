@@ -13,6 +13,7 @@ import {
   removeDashboardDataSourceRuntime,
   syncDashboardRuntime,
 } from "./gateway";
+import { ensureMosaicInstance, getMosaicInstance } from "./session-registry";
 import { selectDataSourceRuntime } from "./selectors";
 import type {
   Dashboard,
@@ -60,6 +61,19 @@ export async function closeDashboardSession(
   const id = dashboardId ?? useDashboardStore.getState().activeDashboardId;
   if (!id) return;
   await disposeDashboardRuntime(id);
+}
+
+export async function getDashboardMosaicInstance(dashboardId?: string) {
+  const resolvedDashboardId =
+    dashboardId || useDashboardStore.getState().activeDashboardId;
+  if (!resolvedDashboardId) {
+    throw new Error("No active dashboard");
+  }
+
+  return (
+    getMosaicInstance(resolvedDashboardId) ||
+    (await ensureMosaicInstance(resolvedDashboardId))
+  );
 }
 
 export function buildDashboardDataSource(input: {

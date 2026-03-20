@@ -39,6 +39,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useTheme } from "../contexts/ThemeContext";
 import {
   activateDashboardSession,
+  getDashboardMosaicInstance,
   executeDashboardSql,
   refreshAllDashboardDataSourcesCommand,
 } from "../dashboard-runtime/commands";
@@ -48,11 +49,15 @@ import {
   type DashboardQueryExecutor,
   type DashboardRuntimeStatus,
 } from "../dashboard-runtime/types";
+import type { MosaicInstance } from "../lib/mosaic";
 import type { CrossFilterSelection } from "./ResultsChart";
 import WidgetContainer from "./widgets/WidgetContainer";
 import ChartWidget from "./widgets/ChartWidget";
 import KpiCard from "./widgets/KpiCard";
 import DataTableWidget from "./widgets/DataTableWidget";
+import MosaicChart from "./widgets/MosaicChart";
+import MosaicKpiCard from "./widgets/MosaicKpiCard";
+import MosaicDataTable from "./widgets/MosaicDataTable";
 import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
@@ -196,6 +201,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
+  const [mosaicInstance, setMosaicInstance] = useState<MosaicInstance | null>(
+    null,
+  );
   const [crossFilterMap, setCrossFilterMap] = useState<
     Record<string, ActiveCrossFilter>
   >({});
@@ -219,8 +227,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       executeDashboardSql({
         sql,
         dataSourceId: options?.dataSourceId,
+        dashboardId,
       }),
-    [],
+    [dashboardId],
   );
 
   const getWidgetErrorHandler = useCallback((widgetId: string) => {
@@ -266,7 +275,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   const widgetFilterClauses = useMemo(() => {
-    if (!dashboard?.crossFilter?.enabled) return {};
+    if (
+      !dashboard?.crossFilter?.enabled ||
+      (dashboard.crossFilter.engine ?? "mosaic") !== "legacy"
+    ) {
+      return {};
+    }
 
     const result: Record<string, string> = {};
     for (const widget of dashboard.widgets) {
@@ -302,6 +316,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       widgetErrorHandlersRef.current = {};
       selectionHandlersRef.current = {};
       setWidgetErrors({});
+      setMosaicInstance(null);
       setCrossFilterMap({});
       return;
     }
@@ -375,7 +390,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           widgets: [],
           relationships: [],
           globalFilters: [],
-          crossFilter: { enabled: true, resolution: "intersect" },
+          crossFilter: {
+            enabled: true,
+            resolution: "intersect",
+            engine: "mosaic",
+          },
           layout: { columns: 12, rowHeight: 80 },
           cache: { ttlSeconds: 3600 },
           access: "private",
@@ -477,9 +496,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const handleRefresh = useCallback(() => {
     if (workspaceId) {
-      void refreshAllDashboardDataSourcesCommand(workspaceId);
+      void refreshAllDashboardDataSourcesCommand(workspaceId, dashboardId);
     }
-  }, [workspaceId]);
+  }, [workspaceId, dashboardId]);
 
   const handleLayoutChange = useCallback(
     (layout: readonly any[], allLayouts?: Record<string, readonly any[]>) => {
@@ -540,6 +559,41 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     return dashboard.dataSources.length > 0 && !runtimeSession;
   }, [dashboard, runtimeSession]);
+
+  useEffect(() => {
+    const dashboardEngine = dashboard?.crossFilter.engine ?? "mosaic";
+    if (
+      !dashboard ||
+      !dashboardId ||
+      dashboardEngine !== "mosaic" ||
+      !allSourcesReady
+    ) {
+      setMosaicInstance(null);
+      return;
+    }
+
+    let cancelled = false;
+    void getDashboardMosaicInstance(dashboardId)
+      .then(instance => {
+        if (!cancelled) {
+          setMosaicInstance(instance);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMosaicInstance(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    dashboard?._id,
+    dashboard?.crossFilter.engine,
+    dashboardId,
+    allSourcesReady,
+  ]);
 
   const someSourcesLoading = useMemo(() => {
     if (isRuntimeInitializing) {
@@ -637,6 +691,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const isCrossFilterEnabled = dashboard.crossFilter?.enabled ?? false;
   const hasCodeError = Boolean(codeError);
+  const crossFilterEngine = dashboard.crossFilter.engine ?? "mosaic";
+  const crossFilterResolution = dashboard.crossFilter.resolution ?? "intersect";
 
   const renderWidget = (widget: DashboardWidget) => {
     if (!runtimeSession) {
@@ -650,10 +706,31 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     const widgetCrossFilterEnabled =
       isCrossFilterEnabled && (widget.crossFilter?.enabled ?? true);
-    const filterClause = widgetFilterClauses[widget.id];
+    const filterClause =
+      crossFilterEngine === "legacy"
+        ? widgetFilterClauses[widget.id]
+        : undefined;
+
+    if (crossFilterEngine === "mosaic" && !mosaicInstance) {
+      return null;
+    }
 
     switch (widget.type) {
       case "chart":
+        if (crossFilterEngine === "mosaic") {
+          return (
+            <MosaicChart
+              widgetId={widget.id}
+              dataSourceId={widget.dataSourceId}
+              localSql={widget.localSql}
+              vegaLiteSpec={widget.vegaLiteSpec}
+              mosaicInstance={mosaicInstance}
+              crossFilterEnabled={widgetCrossFilterEnabled}
+              crossFilterResolution={crossFilterResolution}
+              onError={getWidgetErrorHandler(widget.id)}
+            />
+          );
+        }
         return (
           <ChartWidget
             queryExecutor={queryExecutor}
@@ -672,7 +749,24 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         );
       case "kpi":
-        return widget.kpiConfig ? (
+        if (!widget.kpiConfig) {
+          return null;
+        }
+        if (crossFilterEngine === "mosaic") {
+          return (
+            <MosaicKpiCard
+              widgetId={widget.id}
+              dataSourceId={widget.dataSourceId}
+              localSql={widget.localSql}
+              kpiConfig={widget.kpiConfig}
+              mosaicInstance={mosaicInstance}
+              crossFilterEnabled={widgetCrossFilterEnabled}
+              crossFilterResolution={crossFilterResolution}
+              onError={getWidgetErrorHandler(widget.id)}
+            />
+          );
+        }
+        return (
           <KpiCard
             queryExecutor={queryExecutor}
             dataSourceId={widget.dataSourceId}
@@ -681,8 +775,22 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             onError={getWidgetErrorHandler(widget.id)}
             filterClause={filterClause}
           />
-        ) : null;
+        );
       case "table":
+        if (crossFilterEngine === "mosaic") {
+          return (
+            <MosaicDataTable
+              widgetId={widget.id}
+              dataSourceId={widget.dataSourceId}
+              localSql={widget.localSql}
+              tableConfig={widget.tableConfig}
+              mosaicInstance={mosaicInstance}
+              crossFilterEnabled={widgetCrossFilterEnabled}
+              crossFilterResolution={crossFilterResolution}
+              onError={getWidgetErrorHandler(widget.id)}
+            />
+          );
+        }
         return (
           <DataTableWidget
             queryExecutor={queryExecutor}
