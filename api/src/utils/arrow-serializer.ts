@@ -1,6 +1,8 @@
 import {
   tableToIPC,
   tableFromArrays,
+  vectorFromArray,
+  RecordBatchStreamWriter,
   Utf8,
   Float64,
   Int32,
@@ -8,7 +10,7 @@ import {
   TimestampMillisecond,
 } from "apache-arrow";
 
-interface FieldMeta {
+export interface FieldMeta {
   name: string;
   type?: string;
 }
@@ -167,33 +169,113 @@ export function serializeToArrowIPC(
 
 const ARROW_STREAM_BATCH_SIZE = 5000;
 
-function buildBatchTable(
+function inferFieldsFromFirstBatch(
+  rows: Record<string, unknown>[],
+  fields: FieldMeta[],
+): FieldMeta[] {
+  if (fields.length > 0 || rows.length === 0) return fields;
+  return Object.keys(rows[0] || {}).map(name => ({ name, type: undefined }));
+}
+
+function buildColumnTypes(
+  fields: FieldMeta[],
+  rows: Record<string, unknown>[],
+): Map<string, ArrowDataType> {
+  const sampleSize = Math.min(100, rows.length);
+  const columnTypes = new Map<string, ArrowDataType>();
+  for (const field of fields) {
+    const samples: unknown[] = [];
+    for (let i = 0; i < sampleSize; i++) {
+      samples.push(rows[i]?.[field.name]);
+    }
+    columnTypes.set(
+      field.name,
+      inferArrowType(field.name, field.type, samples),
+    );
+  }
+  return columnTypes;
+}
+
+function buildArrowTable(
   rows: Record<string, unknown>[],
   fields: FieldMeta[],
   columnTypes: Map<string, ArrowDataType>,
 ) {
-  const columnArrays: Record<string, unknown[]> = {};
+  const columns: Record<string, unknown> = {};
   for (const field of fields) {
-    const arrowType = columnTypes.get(field.name) ?? Utf8;
-    columnArrays[field.name] = rows.map(row =>
-      coerceValue(row[field.name], arrowType),
-    );
+    const arrowType = columnTypes.get(field.name) || Utf8;
+    const values = rows.map(row => coerceValue(row[field.name], arrowType));
+    columns[field.name] = vectorFromArray(values, new arrowType());
   }
-  return tableFromArrays(columnArrays);
+  if (fields.length === 0) {
+    columns["_empty"] = vectorFromArray([], new Utf8());
+  }
+  return tableFromArrays(columns as any);
 }
 
 /**
- * Create a streaming Arrow IPC response. Rows flow through in batches of
- * ~5 000 so neither server nor client ever buffers the full dataset.
+ * Create a streaming Arrow IPC `ReadableStream`. Rows flow through in batches
+ * of ~5 000 so neither server nor client ever buffers the full dataset.
  *
- * Uses a RecordBatchStreamWriter driven by an async iterator so the output
- * is a single valid Arrow IPC stream (schema, N record-batches, EOS).
- *
- * @param fields  Column metadata (name + optional DB type string). If empty,
- *   fields are inferred from the first batch of rows.
- * @param streamRows  Callback that receives an `emitRows` function. Call
- *   `emitRows(batch)` for every chunk from the DB cursor. Return `{ totalRows }`.
- * @returns A web-standard `Response` with `Content-Type: application/vnd.apache.arrow.stream`.
+ * Uses `RecordBatchStreamWriter.throughDOM()` so Arrow IPC bytes are emitted
+ * incrementally as each batch is written — true back-pressured streaming.
+ */
+export function createArrowIPCStream(
+  fields: FieldMeta[],
+  streamRows: (
+    emitRows: (rows: Array<Record<string, unknown>>) => Promise<void>,
+  ) => Promise<{ totalRows: number }>,
+): ReadableStream<Uint8Array> {
+  const streamWriter = RecordBatchStreamWriter.throughDOM();
+  const writer = streamWriter.writable.getWriter();
+
+  void (async () => {
+    let pendingRows: Record<string, unknown>[] = [];
+    let resolvedFields = fields;
+    let columnTypes = buildColumnTypes(fields, []);
+    let emittedRows = 0;
+
+    const flushRows = async (rows: Record<string, unknown>[]) => {
+      if (rows.length === 0) return;
+      resolvedFields = inferFieldsFromFirstBatch(rows, resolvedFields);
+      columnTypes = buildColumnTypes(resolvedFields, rows);
+      emittedRows += rows.length;
+      await writer.write(
+        buildArrowTable(rows, resolvedFields, columnTypes) as any,
+      );
+    };
+
+    try {
+      await streamRows(async rows => {
+        if (rows.length === 0) return;
+        pendingRows.push(...rows);
+        while (pendingRows.length >= ARROW_STREAM_BATCH_SIZE) {
+          const batch = pendingRows.slice(0, ARROW_STREAM_BATCH_SIZE);
+          pendingRows = pendingRows.slice(ARROW_STREAM_BATCH_SIZE);
+          await flushRows(batch);
+        }
+      });
+
+      await flushRows(pendingRows);
+
+      if (emittedRows === 0) {
+        const emptyFields = inferFieldsFromFirstBatch([], resolvedFields);
+        const emptyTypes = buildColumnTypes(emptyFields, []);
+        await writer.write(buildArrowTable([], emptyFields, emptyTypes) as any);
+      }
+
+      await writer.close();
+    } catch (error) {
+      await writer.abort(error);
+    }
+  })();
+
+  return streamWriter.readable;
+}
+
+/**
+ * Convenience wrapper that returns a complete `Response` with appropriate
+ * headers for an Arrow IPC stream export.
  */
 export function createArrowIPCStreamResponse(options: {
   fields?: FieldMeta[];
@@ -202,7 +284,9 @@ export function createArrowIPCStreamResponse(options: {
     emitRows: (rows: Array<Record<string, unknown>>) => Promise<void>,
   ) => Promise<{ totalRows: number }>;
 }): Response {
-  const { fields: initialFields, streamRows, filename } = options;
+  const { fields = [], streamRows, filename } = options;
+
+  const stream = createArrowIPCStream(fields, streamRows);
 
   const headers = new Headers();
   headers.set("Content-Type", "application/vnd.apache.arrow.stream");
@@ -214,125 +298,5 @@ export function createArrowIPCStreamResponse(options: {
   }
   headers.set("Cache-Control", "no-store");
 
-  type BatchTable = ReturnType<typeof buildBatchTable>;
-  let resolveNextTable: ((table: BatchTable | null) => void) | null = null;
-  const tableQueue: (BatchTable | null)[] = [];
-
-  function enqueueTable(table: BatchTable | null) {
-    if (resolveNextTable) {
-      const resolve = resolveNextTable;
-      resolveNextTable = null;
-      resolve(table);
-    } else {
-      tableQueue.push(table);
-    }
-  }
-
-  function dequeueTable(): Promise<BatchTable | null> {
-    if (tableQueue.length > 0) {
-      return Promise.resolve(tableQueue.shift() ?? null);
-    }
-    return new Promise(resolve => {
-      resolveNextTable = resolve;
-    });
-  }
-
-  async function* batchGenerator(): AsyncGenerator<any> {
-    for (;;) {
-      const table = await dequeueTable();
-      if (table === null) break;
-      for (const batch of table.batches) {
-        yield batch;
-      }
-    }
-  }
-
-  let resolvedFields: FieldMeta[] = initialFields ?? [];
-  const columnTypes = new Map<string, ArrowDataType>();
-
-  function ensureSchema(sampleRows: Record<string, unknown>[]) {
-    if (resolvedFields.length > 0) return;
-    if (sampleRows.length === 0) return;
-    resolvedFields = Object.keys(sampleRows[0]).map(name => ({ name }));
-    const sampleSize = Math.min(100, sampleRows.length);
-    for (const field of resolvedFields) {
-      const samples = sampleRows.slice(0, sampleSize).map(r => r[field.name]);
-      columnTypes.set(
-        field.name,
-        inferArrowType(field.name, undefined, samples),
-      );
-    }
-  }
-
-  if (resolvedFields.length > 0) {
-    for (const field of resolvedFields) {
-      columnTypes.set(field.name, inferArrowType(field.name, field.type, []));
-    }
-  }
-
-  const writeComplete = (async () => {
-    let pendingRows: Record<string, unknown>[] = [];
-
-    const result = await streamRows(async rows => {
-      ensureSchema(rows);
-      pendingRows.push(...rows);
-      while (pendingRows.length >= ARROW_STREAM_BATCH_SIZE) {
-        const batch = pendingRows.splice(0, ARROW_STREAM_BATCH_SIZE);
-        const table = buildBatchTable(batch, resolvedFields, columnTypes);
-        enqueueTable(table);
-      }
-    });
-
-    if (pendingRows.length > 0) {
-      const table = buildBatchTable(pendingRows, resolvedFields, columnTypes);
-      enqueueTable(table);
-      pendingRows = [];
-    }
-
-    enqueueTable(null);
-    return result;
-  })();
-
-  const readable = new ReadableStream<Uint8Array>({
-    start(controller) {
-      void (async () => {
-        try {
-          const arrowModule = await import("apache-arrow");
-          const writer = new arrowModule.RecordBatchStreamWriter();
-          const gen = batchGenerator();
-          const first = await gen.next();
-          if (first.done || !first.value) {
-            if (resolvedFields.length === 0) {
-              resolvedFields = [{ name: "_empty" }];
-              columnTypes.set("_empty", Utf8);
-            }
-            const emptyTable = buildBatchTable([], resolvedFields, columnTypes);
-            const bytes = tableToIPC(emptyTable, "stream");
-            controller.enqueue(bytes);
-            await writeComplete;
-            controller.close();
-            return;
-          }
-
-          writer.write(first.value);
-
-          for await (const batch of gen) {
-            writer.write(batch);
-          }
-
-          writer.finish();
-
-          const bytes = await writer.toUint8Array();
-          controller.enqueue(bytes);
-
-          await writeComplete;
-          controller.close();
-        } catch (error) {
-          controller.error(error);
-        }
-      })();
-    },
-  });
-
-  return new Response(readable, { headers });
+  return new Response(stream, { headers });
 }

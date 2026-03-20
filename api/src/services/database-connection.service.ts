@@ -653,6 +653,82 @@ export class DatabaseConnectionService {
   }
 
   /**
+   * Resolve column names and types for a query without streaming the full
+   * result set. Prefers `driver.getQuerySchema` when available; otherwise
+   * executes a 1-row probe and normalizes the result fields.
+   */
+  async getStreamingQueryFields(
+    database: IDatabaseConnection,
+    query: any,
+    options: QueryExecuteOptions = {},
+  ): Promise<{
+    success: boolean;
+    fields?: Array<{ name: string; type?: string }>;
+    error?: string;
+  }> {
+    if (database.type === "cloudflare-kv") {
+      return {
+        success: false,
+        error: "Arrow export is not supported for this database type",
+      };
+    }
+
+    if (typeof query === "string") {
+      const driver = databaseRegistry.getDriver(database.type);
+      if (driver?.getQuerySchema) {
+        const result = await driver.getQuerySchema(database, query, {
+          databaseName: options.databaseName,
+        });
+        if (result.success && result.columns && result.columns.length > 0) {
+          return {
+            success: true,
+            fields: result.columns.map(col => ({
+              name: col.name,
+              type: col.type,
+            })),
+          };
+        }
+      }
+    }
+
+    const probeQuery =
+      typeof query === "string"
+        ? prepareSqlBatchQuery({
+            query,
+            databaseType: database.type,
+            batchSize: 1,
+            offset: 0,
+          }).query
+        : query;
+
+    const probe = await this.executeQuery(database, probeQuery, {
+      databaseId: options.databaseId,
+      databaseName: options.databaseName,
+      signal: options.signal,
+    });
+
+    if (!probe.success) {
+      return { success: false, error: probe.error };
+    }
+
+    const rows = Array.isArray(probe.data)
+      ? (probe.data as Record<string, unknown>[])
+      : probe.data == null
+        ? []
+        : [probe.data as Record<string, unknown>];
+    const fields = this.normalizeQueryFields(probe.fields, rows);
+
+    if (fields.length === 0) {
+      return {
+        success: false,
+        error: "Unable to determine query schema for Arrow export",
+      };
+    }
+
+    return { success: true, fields };
+  }
+
+  /**
    * Get database connection
    */
   async getConnection(database: IDatabaseConnection): Promise<any> {

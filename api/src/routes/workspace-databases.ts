@@ -21,7 +21,7 @@ import { Types } from "mongoose";
 import { loggers } from "../logging";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
-import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
+import { createArrowIPCStream } from "../utils/arrow-serializer";
 
 const logger = loggers.db();
 
@@ -1357,17 +1357,41 @@ workspaceExecuteRoutes.post(
       };
 
       if (normalizedFormat === "arrow") {
-        return createArrowIPCStreamResponse({
-          filename: safeBaseName,
-          streamRows: emitRows =>
-            databaseConnectionService.executeStreamingQuery(
-              database,
-              executableQuery,
-              {
-                ...streamingOpts,
-                onBatch: emitRows,
-              },
-            ),
+        const fieldsResult =
+          await databaseConnectionService.getStreamingQueryFields(
+            database,
+            executableQuery,
+            streamingOpts,
+          );
+        if (!fieldsResult.success || !fieldsResult.fields?.length) {
+          return c.json(
+            {
+              success: false,
+              error:
+                fieldsResult.error ||
+                "Arrow export requires schema metadata before streaming begins",
+            },
+            400,
+          );
+        }
+
+        const stream = createArrowIPCStream(fieldsResult.fields, emitRows =>
+          databaseConnectionService.executeStreamingQuery(
+            database,
+            executableQuery,
+            {
+              ...streamingOpts,
+              onBatch: emitRows,
+            },
+          ),
+        );
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "application/vnd.apache.arrow.stream",
+            "Content-Disposition": `attachment; filename="${safeBaseName}.arrow"`,
+            "Cache-Control": "no-store",
+          },
         });
       }
 
