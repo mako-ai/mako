@@ -3,17 +3,26 @@
  * Produces a Vega-Lite Config object for light and dark modes.
  */
 
+// Tailwind CSS default palette (v3 docs), mostly 500 shades for categorical charts.
 const CATEGORICAL_COLORS = [
-  "#4e79a7",
-  "#f28e2b",
-  "#e15759",
-  "#76b7b2",
-  "#59a14f",
-  "#edc948",
-  "#b07aa1",
-  "#ff9da7",
-  "#9c755f",
-  "#bab0ac",
+  // Keep the first colors maximally distinct for low-cardinality charts.
+  "#0ea5e9", // sky-500
+  "#f59e0b", // amber-500
+  "#22c55e", // green-500
+  "#ef4444", // red-500
+  "#a855f7", // purple-500
+  "#14b8a6", // teal-500
+  "#f97316", // orange-500
+  "#6366f1", // indigo-500
+  "#84cc16", // lime-500
+  "#ec4899", // pink-500
+  "#06b6d4", // cyan-500
+  "#8b5cf6", // violet-500
+  "#eab308", // yellow-500
+  "#10b981", // emerald-500
+  "#f43f5e", // rose-500
+  "#3b82f6", // blue-500
+  "#d946ef", // fuchsia-500
 ];
 
 interface ThemeColors {
@@ -87,6 +96,8 @@ export function getVegaThemeConfig(
 
     mark: {
       tooltip: true,
+      // Used when no color encoding is provided (single-series defaults).
+      color: CATEGORICAL_COLORS[0],
     },
 
     bar: {

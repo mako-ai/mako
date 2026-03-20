@@ -10,7 +10,6 @@ import {
   Typography,
   IconButton,
   Tooltip,
-  TextField,
   Chip,
   LinearProgress,
   ToggleButton,
@@ -21,13 +20,12 @@ import {
   RefreshCw,
   Save,
   Download,
-  FileImage,
   Database,
   Plus,
   Settings,
   Undo2,
   Redo2,
-  LayoutGrid,
+  ChartPie as DashboardIcon,
   Code2,
 } from "lucide-react";
 import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
@@ -167,7 +165,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const openDashboard = useDashboardStore(state => state.openDashboard);
   const saveDashboard = useDashboardStore(state => state.saveDashboard);
   const createDashboard = useDashboardStore(state => state.createDashboard);
-  const updateDashboard = useDashboardStore(state => state.updateDashboard);
   const addWidget = useDashboardStore(state => state.addWidget);
   const modifyWidget = useDashboardStore(state => state.modifyWidget);
   const removeWidget = useDashboardStore(state => state.removeWidget);
@@ -179,8 +176,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     activeDashboard ? state.sessions[activeDashboard._id] || null : null,
   );
 
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [titleValue, setTitleValue] = useState("");
   const [widgetErrors, setWidgetErrors] = useState<Record<string, string>>({});
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
   const [codeValue, setCodeValue] = useState("");
@@ -389,12 +384,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [workspaceId, dashboardId, isNew, openDashboard, createDashboard]);
 
   useEffect(() => {
-    if (activeDashboard) {
-      setTitleValue(activeDashboard.title);
-    }
-  }, [activeDashboard?.title]);
-
-  useEffect(() => {
     if (!activeDashboard || !workspaceId) return;
     void activateDashboardSession(workspaceId);
   }, [activeDashboard?._id, workspaceId]);
@@ -406,19 +395,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       setCodeError(null);
     }
   }, [viewMode, activeDashboard?._id]);
-
-  const handleTitleSave = useCallback(() => {
-    setEditingTitle(false);
-    if (
-      activeDashboard &&
-      workspaceId &&
-      titleValue !== activeDashboard.title
-    ) {
-      void updateDashboard(workspaceId, activeDashboard._id, {
-        title: titleValue,
-      });
-    }
-  }, [activeDashboard, workspaceId, titleValue, updateDashboard]);
 
   const handleExportPng = useCallback(async () => {
     const gridEl = document.querySelector(".layout") as HTMLElement;
@@ -701,45 +677,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           minHeight: 44,
         }}
       >
-        {/* Title */}
-        {editingTitle ? (
-          <TextField
-            value={titleValue}
-            onChange={e => setTitleValue(e.target.value)}
-            onBlur={handleTitleSave}
-            onKeyDown={e => {
-              if (e.key === "Enter") handleTitleSave();
-              if (e.key === "Escape") {
-                setEditingTitle(false);
-                setTitleValue(activeDashboard.title);
-              }
-            }}
-            size="small"
-            autoFocus
-            sx={{ maxWidth: 280 }}
-          />
-        ) : (
-          <Tooltip title="Click to rename">
-            <Typography
-              variant="subtitle2"
-              sx={{
-                fontWeight: 600,
-                cursor: "pointer",
-                "&:hover": { color: "primary.main" },
-                maxWidth: 280,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              onClick={() => setEditingTitle(true)}
-            >
-              {activeDashboard.title}
-            </Typography>
-          </Tooltip>
-        )}
-
-        <Box sx={{ flex: 1 }} />
-
         {/* Data Sources */}
         <Tooltip title="Manage data sources">
           <Chip
@@ -752,22 +689,19 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
 
+        {/* Refresh Sources */}
+        <Tooltip title="Refresh all data sources">
+          <IconButton size="small" onClick={handleRefresh}>
+            <RefreshCw size={16} />
+          </IconButton>
+        </Tooltip>
+
         {/* Add Widget */}
         <Tooltip title="Add widget">
           <IconButton size="small" onClick={() => setAddWidgetOpen(true)}>
             <Plus size={18} />
           </IconButton>
         </Tooltip>
-
-        {/* Divider */}
-        <Box
-          sx={{
-            width: 1,
-            height: 20,
-            backgroundColor: "divider",
-            mx: 0.25,
-          }}
-        />
 
         {/* Undo / Redo */}
         <Tooltip title="Undo (Cmd+Z)">
@@ -802,8 +736,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           sx={{ height: 28 }}
         >
           <ToggleButton value="canvas" sx={{ px: 1, py: 0.25 }}>
-            <Tooltip title="Canvas view">
-              <LayoutGrid size={14} />
+            <Tooltip title="Dashboard view">
+              <DashboardIcon size={14} />
             </Tooltip>
           </ToggleButton>
           <ToggleButton value="code" sx={{ px: 1, py: 0.25 }}>
@@ -813,34 +747,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </ToggleButton>
         </ToggleButtonGroup>
 
-        {/* Divider */}
-        <Box
-          sx={{
-            width: 1,
-            height: 20,
-            backgroundColor: "divider",
-            mx: 0.25,
-          }}
-        />
-
         {/* Export */}
-        <Tooltip title="Export PNG">
-          <IconButton size="small" onClick={handleExportPng}>
-            <FileImage size={16} />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Export PDF">
+        <Tooltip title="Export">
           <IconButton size="small" onClick={handleExportPng}>
             <Download size={16} />
           </IconButton>
         </Tooltip>
 
-        {/* Refresh & Save */}
-        <Tooltip title="Refresh all data">
-          <IconButton size="small" onClick={handleRefresh}>
-            <RefreshCw size={16} />
-          </IconButton>
-        </Tooltip>
         <Tooltip title="Save">
           <IconButton
             size="small"

@@ -23,7 +23,7 @@ import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
   Trash2 as DeleteIcon,
-  LayoutDashboard as DashboardIcon,
+  ChartPie as DashboardIcon,
   Copy as CopyIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
