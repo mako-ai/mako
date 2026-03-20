@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "concurrently \"pnpm --filter app run dev\" \"pnpm --filter api run dev\" \"pnpm dlx inngest-cli@latest dev\"",
-    "build": "pnpm run lint:fix:all && pnpm run app:build && pnpm run api:build && node scripts/check-connector-agnosticism.js",
+    "build": "pnpm run lint:fix:all && pnpm --filter @mako/schemas run build && pnpm run app:build && pnpm run api:build && node scripts/check-connector-agnosticism.js",
     "start": "node dist/index.js",
     "format": "prettier --write \"api/**/*.ts\"",
     "sync": "ts-node api/src/sync/cli.ts",

@@ -431,10 +431,12 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
         {
           success: false,
           error: "Invalid dashboard definition",
-          issues: validation.error.issues.map(i => ({
-            path: i.path.join("."),
-            message: i.message,
-          })),
+          issues: validation.error.issues.map(
+            (i: { path: PropertyKey[]; message: string }) => ({
+              path: i.path.join("."),
+              message: i.message,
+            }),
+          ),
         },
         400,
       );
