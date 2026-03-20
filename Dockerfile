@@ -11,7 +11,8 @@ COPY . .
 # Install all dependencies (workspace handles conflicts)
 RUN pnpm install
 
-# Build both apps
+# Build shared packages first, then apps
+RUN pnpm --filter @mako/schemas run build
 RUN pnpm run app:build
 RUN pnpm run api:build
 
@@ -29,18 +30,27 @@ RUN apt-get update && apt-get install -y \
 # Install pnpm in production too (this layer will be cached)
 RUN npm install -g pnpm
 
-# Copy EVERYTHING we need for the API to run
-COPY --from=builder /app/api/package.json ./package.json
+# Set up minimal workspace so pnpm can resolve workspace:* deps
+RUN echo '{"private":true}' > package.json
+COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=builder /app/pnpm-lock.yaml ./pnpm-lock.yaml
 
-# Install production dependencies and rebuild native modules
-RUN pnpm install --prod
-# uncomment this if you are using sqlite3
-# RUN cd node_modules/.pnpm/sqlite3@*/node_modules/sqlite3 && npm run install --target_platform=linux --target_arch=x64
+# Copy API package manifest
+COPY --from=builder /app/api/package.json ./api/package.json
 
-# Copy built files
-COPY --from=builder /app/api/dist ./dist
-COPY --from=builder /app/app/dist ./public
+# Copy compiled shared schemas package (runtime dependency of API)
+COPY --from=builder /app/packages/schemas/package.json ./packages/schemas/package.json
+COPY --from=builder /app/packages/schemas/dist ./packages/schemas/dist
+
+# Install production dependencies
+RUN pnpm install --prod --filter api...
+
+# Copy built API into api/dist and frontend into api/public
+# (API server resolves public/ from process.cwd())
+COPY --from=builder /app/api/dist ./api/dist
+COPY --from=builder /app/app/dist ./api/public
+
+WORKDIR /app/api
 
 ENV PORT=8080
 EXPOSE 8080
