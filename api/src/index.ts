@@ -34,6 +34,7 @@ import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
 import { dashboardRoutes } from "./routes/dashboards";
+import { connectorBuilderRoutes } from "./routes/connector-builder";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -104,6 +105,10 @@ app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
+app.route(
+  "/api/workspaces/:workspaceId/connector-builder",
+  connectorBuilderRoutes,
+);
 app.route("/api/run", executeRoutes);
 app.route("/api/execute", executeRoutes);
 app.route("/api/database", databaseRoutes);
