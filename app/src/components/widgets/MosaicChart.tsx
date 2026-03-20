@@ -6,7 +6,8 @@ import React, {
   useMemo,
 } from "react";
 import { Box, CircularProgress } from "@mui/material";
-import ResultsChart from "../ResultsChart";
+import ResultsChart, { type CrossFilterSelection } from "../ResultsChart";
+import { useMosaicClient } from "../../dashboard-runtime/useMosaicClient";
 import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
 import type { MakoChartSpec } from "../../lib/chart-spec";
 import type { MosaicInstance } from "../../lib/mosaic";
@@ -22,6 +23,28 @@ interface MosaicChartProps {
   onError?: (error: string) => void;
 }
 
+function buildSelectionClause(sel: CrossFilterSelection): string {
+  const esc = (v: unknown) => {
+    if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
+    if (v instanceof Date) return `'${v.toISOString()}'`;
+    return String(v);
+  };
+
+  if (sel.type === "point") {
+    if (sel.values.length === 0) return "";
+    if (sel.values.length === 1) {
+      return `"${sel.field}" = ${esc(sel.values[0])}`;
+    }
+    return `"${sel.field}" IN (${sel.values.map(esc).join(", ")})`;
+  }
+
+  if (sel.type === "interval" && sel.values.length === 2) {
+    return `"${sel.field}" >= ${esc(sel.values[0])} AND "${sel.field}" <= ${esc(sel.values[1])}`;
+  }
+
+  return "";
+}
+
 const MosaicChart: React.FC<MosaicChartProps> = ({
   queryExecutor,
   widgetId,
@@ -32,117 +55,105 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
   crossFilterEnabled = true,
   onError,
 }) => {
-  const [data, setData] = useState<any[]>([]);
-  const [fields, setFields] = useState<Array<{ name: string; type: string }>>(
-    [],
-  );
-  const [loading, setLoading] = useState(true);
-  const clientRef = useRef<any>(null);
+  const {
+    rows: mosaicRows,
+    fields: mosaicFields,
+    loading: mosaicLoading,
+  } = useMosaicClient({
+    widgetId,
+    localSql,
+    mosaicInstance: mosaicInstance ?? null,
+    crossFilterEnabled,
+  });
 
-  const fetchData = useCallback(
-    async (filterClause?: string) => {
-      setLoading(true);
-      try {
-        let sql = localSql;
-        if (filterClause) {
-          if (sql.toLowerCase().includes("where")) {
-            sql += ` AND (${filterClause})`;
-          } else {
-            const groupIdx = sql.toLowerCase().indexOf("group by");
-            const orderIdx = sql.toLowerCase().indexOf("order by");
-            const insertIdx = Math.min(
-              groupIdx === -1 ? sql.length : groupIdx,
-              orderIdx === -1 ? sql.length : orderIdx,
-            );
-            sql =
-              sql.slice(0, insertIdx) +
-              ` WHERE ${filterClause} ` +
-              sql.slice(insertIdx);
-          }
-        }
-        if (!queryExecutor) {
-          throw new Error("Query executor is not available");
-        }
-        const result = await queryExecutor(sql);
-        setData(result.rows);
-        setFields(result.fields);
-      } catch (e: any) {
-        onError?.(e?.message || "Query failed");
-      } finally {
-        setLoading(false);
+  const [fallbackData, setFallbackData] = useState<any[]>([]);
+  const [fallbackFields, setFallbackFields] = useState<
+    Array<{ name: string; type: string }>
+  >([]);
+  const [fallbackLoading, setFallbackLoading] = useState(true);
+  const activeSelectionRef = useRef<CrossFilterSelection | null>(null);
+
+  const fetchData = useCallback(async () => {
+    if (mosaicInstance && crossFilterEnabled) return;
+    setFallbackLoading(true);
+    try {
+      if (!queryExecutor) {
+        throw new Error("Query executor is not available");
       }
-    },
-    [localSql, onError, queryExecutor],
-  );
+      const result = await queryExecutor(localSql);
+      setFallbackData(result.rows);
+      setFallbackFields(result.fields);
+    } catch (e: any) {
+      onError?.(e?.message || "Query failed");
+    } finally {
+      setFallbackLoading(false);
+    }
+  }, [localSql, onError, queryExecutor, mosaicInstance, crossFilterEnabled]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  useEffect(() => {
-    if (!mosaicInstance || !crossFilterEnabled) return;
+  const useMosaicData = Boolean(mosaicInstance && crossFilterEnabled);
+  const data = useMosaicData ? mosaicRows : fallbackData;
+  const fields = useMosaicData ? mosaicFields : fallbackFields;
+  const loading = useMosaicData ? mosaicLoading : fallbackLoading;
 
-    const { coordinator, selection } = mosaicInstance;
+  const handleSelectionChange = useCallback(
+    (selection: CrossFilterSelection | null) => {
+      if (!mosaicInstance || !crossFilterEnabled) return;
 
-    const client = {
-      _id: widgetId,
-      filterBy: selection,
+      const { selection: mosaicSelection } = mosaicInstance;
 
-      query(filter?: any): { sql: string } {
-        let sql = localSql;
-        if (filter) {
-          const clause =
-            typeof filter === "string" ? filter : filter.toString?.() || "";
-          if (clause) {
-            if (sql.toLowerCase().includes("where")) {
-              sql += ` AND (${clause})`;
-            } else {
-              sql += ` WHERE ${clause}`;
-            }
+      if (!selection) {
+        if (activeSelectionRef.current) {
+          activeSelectionRef.current = null;
+          try {
+            mosaicSelection.update?.({
+              source: widgetId,
+              value: null,
+            });
+          } catch {
+            // silent
           }
         }
-        return { sql };
-      },
-
-      queryResult(resultData: any): void {
-        if (!resultData) return;
-        const rows: Record<string, unknown>[] = [];
-        if (resultData.numRows) {
-          const schema = resultData.schema?.fields || [];
-          for (let i = 0; i < resultData.numRows; i++) {
-            const row: Record<string, unknown> = {};
-            for (const f of schema) {
-              const col = resultData.getChild(f.name);
-              row[f.name] = col?.get(i);
-            }
-            rows.push(row);
-          }
-        }
-        setData(rows);
-        setLoading(false);
-      },
-
-      update(): void {
-        coordinator.requestQuery?.(client);
-      },
-    };
-
-    try {
-      coordinator.connect?.(client);
-      clientRef.current = client;
-    } catch {
-      // Mosaic connection failed — fall back to non-filtered mode
-    }
-
-    return () => {
-      try {
-        coordinator.disconnect?.(clientRef.current);
-      } catch {
-        // Silent cleanup
+        return;
       }
-      clientRef.current = null;
-    };
-  }, [mosaicInstance, crossFilterEnabled, widgetId, localSql]);
+
+      const clause = buildSelectionClause(selection);
+      if (!clause) return;
+
+      if (
+        activeSelectionRef.current &&
+        activeSelectionRef.current.field === selection.field &&
+        activeSelectionRef.current.type === selection.type &&
+        JSON.stringify(activeSelectionRef.current.values) ===
+          JSON.stringify(selection.values)
+      ) {
+        activeSelectionRef.current = null;
+        try {
+          mosaicSelection.update?.({
+            source: widgetId,
+            value: null,
+          });
+        } catch {
+          // silent
+        }
+        return;
+      }
+
+      activeSelectionRef.current = selection;
+      try {
+        mosaicSelection.update?.({
+          source: widgetId,
+          value: clause,
+        });
+      } catch {
+        // silent
+      }
+    },
+    [mosaicInstance, crossFilterEnabled, widgetId],
+  );
 
   const enhancedSpec = useMemo(() => {
     if (!vegaLiteSpec) return undefined;
@@ -195,6 +206,8 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
       data={data}
       fields={fields}
       spec={enhancedSpec as MakoChartSpec | undefined}
+      enableSelection={crossFilterEnabled}
+      onSelectionChange={crossFilterEnabled ? handleSelectionChange : undefined}
     />
   );
 };

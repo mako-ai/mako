@@ -41,6 +41,7 @@ import { useTheme } from "../contexts/ThemeContext";
 import {
   activateDashboardSession,
   executeDashboardSql,
+  getDashboardMosaicInstance,
   refreshAllDashboardDataSourcesCommand,
 } from "../dashboard-runtime/commands";
 import { useDashboardRuntimeStore } from "../dashboard-runtime/store";
@@ -48,11 +49,15 @@ import type {
   DashboardQueryExecutor,
   DashboardRuntimeStatus,
 } from "../dashboard-runtime/types";
+import type { MosaicInstance } from "../lib/mosaic";
 import type { CrossFilterSelection } from "./ResultsChart";
 import WidgetContainer from "./widgets/WidgetContainer";
 import ChartWidget from "./widgets/ChartWidget";
 import KpiCard from "./widgets/KpiCard";
 import DataTableWidget from "./widgets/DataTableWidget";
+import MosaicChart from "./widgets/MosaicChart";
+import MosaicKpiCard from "./widgets/MosaicKpiCard";
+import MosaicDataTable from "./widgets/MosaicDataTable";
 import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
@@ -188,6 +193,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [crossFilterMap, setCrossFilterMap] = useState<
     Record<string, ActiveCrossFilter>
   >({});
+  const [mosaicInstance, setMosaicInstance] = useState<MosaicInstance | null>(
+    null,
+  );
 
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();
@@ -387,6 +395,23 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (!activeDashboard || !workspaceId) return;
     void activateDashboardSession(workspaceId);
   }, [activeDashboard?._id, workspaceId]);
+
+  const crossFilterEngine = activeDashboard?.crossFilter?.engine ?? "mosaic";
+  const useMosaic = crossFilterEngine === "mosaic";
+
+  useEffect(() => {
+    if (!useMosaic || !allSourcesReady || !activeDashboard) {
+      setMosaicInstance(null);
+      return;
+    }
+    let cancelled = false;
+    void getDashboardMosaicInstance(activeDashboard._id).then(instance => {
+      if (!cancelled) setMosaicInstance(instance);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [useMosaic, allSourcesReady, activeDashboard?._id]);
 
   // Sync code view when switching to code mode
   useEffect(() => {
@@ -606,6 +631,49 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     const widgetCrossFilterEnabled =
       isCrossFilterEnabled && (widget.crossFilter?.enabled ?? true);
+
+    if (useMosaic && mosaicInstance) {
+      switch (widget.type) {
+        case "chart":
+          return (
+            <MosaicChart
+              queryExecutor={queryExecutor}
+              widgetId={widget.id}
+              tableName={dataSourceRuntime.tableRef}
+              localSql={widget.localSql}
+              vegaLiteSpec={widget.vegaLiteSpec}
+              mosaicInstance={mosaicInstance}
+              crossFilterEnabled={widgetCrossFilterEnabled}
+              onError={getWidgetErrorHandler(widget.id)}
+            />
+          );
+        case "kpi":
+          return widget.kpiConfig ? (
+            <MosaicKpiCard
+              widgetId={widget.id}
+              localSql={widget.localSql}
+              kpiConfig={widget.kpiConfig}
+              mosaicInstance={mosaicInstance}
+              crossFilterEnabled={widgetCrossFilterEnabled}
+              onError={getWidgetErrorHandler(widget.id)}
+            />
+          ) : null;
+        case "table":
+          return (
+            <MosaicDataTable
+              widgetId={widget.id}
+              localSql={widget.localSql}
+              tableConfig={widget.tableConfig}
+              mosaicInstance={mosaicInstance}
+              crossFilterEnabled={widgetCrossFilterEnabled}
+              onError={getWidgetErrorHandler(widget.id)}
+            />
+          );
+        default:
+          return null;
+      }
+    }
+
     const filterClause = widgetFilterClauses[widget.id];
 
     switch (widget.type) {
