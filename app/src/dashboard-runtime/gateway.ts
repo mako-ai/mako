@@ -352,13 +352,11 @@ export async function syncDashboardRuntime(options: {
     }
   }
 
-  for (const dataSource of dashboard.dataSources) {
-    await materializeDashboardDataSource({
-      workspaceId,
-      dashboard,
-      dataSource,
-    });
-  }
+  await Promise.allSettled(
+    dashboard.dataSources.map(dataSource =>
+      materializeDashboardDataSource({ workspaceId, dashboard, dataSource }),
+    ),
+  );
 }
 
 export async function refreshDashboardDataSource(options: {
@@ -385,14 +383,16 @@ export async function refreshAllDashboardDataSources(options: {
   workspaceId: string;
   dashboard: Dashboard;
 }): Promise<void> {
-  for (const dataSource of options.dashboard.dataSources) {
-    await materializeDashboardDataSource({
-      workspaceId: options.workspaceId,
-      dashboard: options.dashboard,
-      dataSource,
-      force: true,
-    });
-  }
+  await Promise.allSettled(
+    options.dashboard.dataSources.map(dataSource =>
+      materializeDashboardDataSource({
+        workspaceId: options.workspaceId,
+        dashboard: options.dashboard,
+        dataSource,
+        force: true,
+      }),
+    ),
+  );
 }
 
 export async function removeDashboardDataSourceRuntime(options: {
