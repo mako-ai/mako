@@ -1756,6 +1756,7 @@ export interface IDashboard extends Document {
   crossFilter: {
     enabled: boolean;
     resolution: "intersect" | "union";
+    engine?: "mosaic" | "legacy";
   };
 
   layout: {
@@ -1995,6 +1996,11 @@ const DashboardSchema = new Schema<IDashboard>(
         type: String,
         enum: ["intersect", "union"],
         default: "intersect",
+      },
+      engine: {
+        type: String,
+        enum: ["mosaic", "legacy"],
+        default: "mosaic",
       },
     },
 

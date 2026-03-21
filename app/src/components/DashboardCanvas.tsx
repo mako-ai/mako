@@ -39,115 +39,28 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useTheme } from "../contexts/ThemeContext";
 import {
   activateDashboardSession,
-  executeDashboardSql,
-  refreshAllDashboardDataSourcesCommand,
+  getDashboardMosaicInstance,
+  refreshDashboardCommand,
+  reloadDashboardDataSourcesCommand,
+  refreshDashboardWidgetCommand,
 } from "../dashboard-runtime/commands";
 import { useDashboardRuntimeStore } from "../dashboard-runtime/store";
-import {
-  serializeDashboardDefinition,
-  type DashboardQueryExecutor,
-  type DashboardRuntimeStatus,
-} from "../dashboard-runtime/types";
-import type { CrossFilterSelection } from "./ResultsChart";
+import { serializeDashboardDefinition } from "../dashboard-runtime/types";
+import type { MosaicInstance } from "../lib/mosaic";
 import WidgetContainer from "./widgets/WidgetContainer";
-import ChartWidget from "./widgets/ChartWidget";
-import KpiCard from "./widgets/KpiCard";
-import DataTableWidget from "./widgets/DataTableWidget";
+import MosaicChart from "./widgets/MosaicChart";
+import MosaicKpiCard from "./widgets/MosaicKpiCard";
+import MosaicDataTable from "./widgets/MosaicDataTable";
 import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
 import WidgetInspector from "./dashboard/WidgetInspector";
-interface ActiveCrossFilter extends CrossFilterSelection {
-  dataSourceId: string;
-}
-
-function resolveFilterField(
-  selectedField: string,
-  availableFields: string[],
-): string | null {
-  if (!selectedField) return null;
-  if (availableFields.length === 0) return selectedField;
-
-  const lowerSelected = selectedField.toLowerCase();
-  const lowerFields = availableFields.map(f => f.toLowerCase());
-
-  const exactIdx = lowerFields.indexOf(lowerSelected);
-  if (exactIdx >= 0) return availableFields[exactIdx];
-
-  const conventionMatches = availableFields.filter(field => {
-    const lf = field.toLowerCase();
-    return (
-      lf.endsWith(`_${lowerSelected}`) ||
-      lf.startsWith(`${lowerSelected}_`) ||
-      lf === `${lowerSelected}_code` ||
-      lf.endsWith(`_${lowerSelected}_code`)
-    );
-  });
-  if (conventionMatches.length === 1) return conventionMatches[0];
-
-  const tokenMatches = availableFields.filter(field =>
-    field
-      .toLowerCase()
-      .split("_")
-      .some(token => token === lowerSelected),
-  );
-  if (tokenMatches.length > 0) {
-    return [...tokenMatches].sort((a, b) => a.length - b.length)[0];
-  }
-
-  return null;
-}
-
-function buildSqlClause(
-  sel: CrossFilterSelection,
-  targetField: string,
-): string {
-  const esc = (v: unknown) => {
-    if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
-    if (v instanceof Date) return `'${v.toISOString()}'`;
-    return String(v);
-  };
-
-  if (sel.type === "point") {
-    if (sel.values.length === 0) return "";
-    if (sel.values.length === 1) {
-      return `"${targetField}" = ${esc(sel.values[0])}`;
-    }
-    return `"${targetField}" IN (${sel.values.map(esc).join(", ")})`;
-  }
-
-  if (sel.type === "interval" && sel.values.length === 2) {
-    return `"${targetField}" >= ${esc(sel.values[0])} AND "${targetField}" <= ${esc(sel.values[1])}`;
-  }
-
-  return "";
-}
-
 type ViewMode = "canvas" | "code";
 
 interface DashboardCanvasProps {
   dashboardId?: string;
   isNew?: boolean;
   onCreated?: (dashboardId: string) => void;
-}
-
-function shouldClearTransientWidgetError(
-  error: string,
-  runtimeStatus: DashboardRuntimeStatus | undefined,
-  hasRuntimeSession: boolean,
-): boolean {
-  if (error === "Dashboard runtime session is not initialized") {
-    return hasRuntimeSession;
-  }
-
-  if (
-    error.includes("is not materialized yet") ||
-    error.includes("is still loading")
-  ) {
-    return runtimeStatus === "loading" || runtimeStatus === "ready";
-  }
-
-  return false;
 }
 
 function formatZodErrors(error: {
@@ -187,182 +100,31 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     dashboardId ? state.sessions[dashboardId] || null : null,
   );
 
-  const [widgetErrors, setWidgetErrors] = useState<Record<string, string>>({});
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const [dataSourcePanelOpen, setDataSourcePanelOpen] = useState(false);
   const [addWidgetOpen, setAddWidgetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showEventLog, setShowEventLog] = useState(false);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
-  const [crossFilterMap, setCrossFilterMap] = useState<
-    Record<string, ActiveCrossFilter>
-  >({});
+  const [mosaicInstance, setMosaicInstance] = useState<MosaicInstance | null>(
+    null,
+  );
 
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();
 
   const workspaceId = currentWorkspace?.id;
-  const widgetErrorHandlersRef = useRef<
-    Record<string, (error: string) => void>
-  >({});
-  const selectionHandlersRef = useRef<
-    Record<string, (sel: CrossFilterSelection | null) => void>
-  >({});
+  const crossFilterResolution =
+    dashboard?.crossFilter.resolution ?? "intersect";
+  const isCrossFilterEnabled = dashboard?.crossFilter.enabled ?? false;
+  const widgets = useMemo(() => dashboard?.widgets ?? [], [dashboard]);
 
   // Suppress re-serialization while user is typing in the code editor
   const isUserEditingCodeRef = useRef(false);
-
-  const queryExecutor = useCallback<DashboardQueryExecutor>(
-    (sql, options) =>
-      executeDashboardSql({
-        sql,
-        dataSourceId: options?.dataSourceId,
-      }),
-    [],
-  );
-
-  const getWidgetErrorHandler = useCallback((widgetId: string) => {
-    const existing = widgetErrorHandlersRef.current[widgetId];
-    if (existing) {
-      return existing;
-    }
-
-    const handler = (error: string) => {
-      setWidgetErrors(prev =>
-        prev[widgetId] === error ? prev : { ...prev, [widgetId]: error },
-      );
-    };
-    widgetErrorHandlersRef.current[widgetId] = handler;
-    return handler;
-  }, []);
-
-  const getWidgetSelectionHandler = useCallback(
-    (widgetId: string, dataSourceId: string) => {
-      const key = `${widgetId}:${dataSourceId}`;
-      const existing = selectionHandlersRef.current[key];
-      if (existing) return existing;
-
-      const handler = (selection: CrossFilterSelection | null) => {
-        setCrossFilterMap(
-          (
-            prev: Record<string, ActiveCrossFilter>,
-          ): Record<string, ActiveCrossFilter> => {
-            if (!selection) {
-              if (!(widgetId in prev)) return prev;
-              const next = { ...prev };
-              delete next[widgetId];
-              return next;
-            }
-            return { ...prev, [widgetId]: { ...selection, dataSourceId } };
-          },
-        );
-      };
-      selectionHandlersRef.current[key] = handler;
-      return handler;
-    },
-    [],
-  );
-
-  const widgetFilterClauses = useMemo(() => {
-    if (!dashboard?.crossFilter?.enabled) return {};
-
-    const result: Record<string, string> = {};
-    for (const widget of dashboard.widgets) {
-      if (widget.crossFilter && !widget.crossFilter.enabled) continue;
-
-      const clauses: string[] = [];
-      const schemaFields =
-        runtimeSession?.dataSources[widget.dataSourceId]?.schema?.map(
-          col => col.name,
-        ) ?? [];
-      for (const [sourceId, filter] of Object.entries(crossFilterMap)) {
-        if (sourceId === widget.id) continue;
-        if (filter.dataSourceId !== widget.dataSourceId) continue;
-        const resolvedField = resolveFilterField(filter.field, schemaFields);
-        if (!resolvedField) continue;
-        const clause = buildSqlClause(filter, resolvedField);
-        if (clause) clauses.push(clause);
-      }
-      if (clauses.length > 0) {
-        result[widget.id] = clauses.join(" AND ");
-      }
-    }
-    return result;
-  }, [
-    dashboard?.crossFilter?.enabled,
-    dashboard?.widgets,
-    crossFilterMap,
-    runtimeSession?.dataSources,
-  ]);
-
-  useEffect(() => {
-    if (!dashboard) {
-      widgetErrorHandlersRef.current = {};
-      selectionHandlersRef.current = {};
-      setWidgetErrors({});
-      setCrossFilterMap({});
-      return;
-    }
-
-    const widgetById = new Map(
-      dashboard.widgets.map(widget => [widget.id, widget]),
-    );
-    const activeWidgetIds = new Set(widgetById.keys());
-    const hasRuntimeSession = Boolean(runtimeSession);
-
-    setWidgetErrors(prev => {
-      let changed = false;
-      const next: Record<string, string> = {};
-
-      for (const [widgetId, error] of Object.entries(prev)) {
-        const widget = widgetById.get(widgetId);
-        if (!widget) {
-          changed = true;
-          continue;
-        }
-
-        const runtimeStatus =
-          runtimeSession?.dataSources[widget.dataSourceId]?.status;
-        if (
-          shouldClearTransientWidgetError(
-            error,
-            runtimeStatus,
-            hasRuntimeSession,
-          )
-        ) {
-          changed = true;
-          continue;
-        }
-
-        next[widgetId] = error;
-      }
-
-      return changed ? next : prev;
-    });
-
-    for (const widgetId of Object.keys(widgetErrorHandlersRef.current)) {
-      if (!activeWidgetIds.has(widgetId)) {
-        delete widgetErrorHandlersRef.current[widgetId];
-      }
-    }
-
-    for (const key of Object.keys(selectionHandlersRef.current)) {
-      const wId = key.split(":")[0];
-      if (!activeWidgetIds.has(wId)) {
-        delete selectionHandlersRef.current[key];
-      }
-    }
-
-    setCrossFilterMap(prev => {
-      const stale = Object.keys(prev).filter(id => !activeWidgetIds.has(id));
-      if (stale.length === 0) return prev;
-      const next = { ...prev };
-      for (const id of stale) delete next[id];
-      return next;
-    });
-  }, [dashboard, runtimeSession]);
+  const queryGeneration = runtimeSession?.queryGeneration ?? 0;
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -375,7 +137,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           widgets: [],
           relationships: [],
           globalFilters: [],
-          crossFilter: { enabled: true, resolution: "intersect" },
+          crossFilter: {
+            enabled: true,
+            resolution: "intersect",
+            engine: "mosaic",
+          },
           layout: { columns: 12, rowHeight: 80 },
           cache: { ttlSeconds: 3600 },
           access: "private",
@@ -395,13 +161,19 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (dashboardId) {
       openDashboard(workspaceId, dashboardId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, dashboardId, isNew, openDashboard, createDashboard]);
+  }, [
+    workspaceId,
+    dashboardId,
+    isNew,
+    openDashboard,
+    createDashboard,
+    onCreated,
+  ]);
 
   useEffect(() => {
     if (!dashboard || !workspaceId || !dashboardId) return;
     void activateDashboardSession(workspaceId, dashboardId);
-  }, [dashboard?._id, workspaceId, dashboardId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashboard, workspaceId, dashboardId]);
 
   useEffect(() => {
     if (viewMode === "code" && dashboard && !isUserEditingCodeRef.current) {
@@ -476,10 +248,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [dashboard?.title]);
 
   const handleRefresh = useCallback(() => {
+    void refreshDashboardCommand(dashboardId);
+  }, [dashboardId]);
+
+  const handleReloadData = useCallback(() => {
     if (workspaceId) {
-      void refreshAllDashboardDataSourcesCommand(workspaceId);
+      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
     }
-  }, [workspaceId]);
+  }, [workspaceId, dashboardId]);
 
   const handleLayoutChange = useCallback(
     (layout: readonly any[], allLayouts?: Record<string, readonly any[]>) => {
@@ -540,6 +316,30 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     return dashboard.dataSources.length > 0 && !runtimeSession;
   }, [dashboard, runtimeSession]);
+
+  useEffect(() => {
+    if (!dashboard || !dashboardId || !allSourcesReady) {
+      setMosaicInstance(null);
+      return;
+    }
+
+    let cancelled = false;
+    void getDashboardMosaicInstance(dashboardId)
+      .then(instance => {
+        if (!cancelled) {
+          setMosaicInstance(instance);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMosaicInstance(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboard, dashboardId, allSourcesReady]);
 
   const someSourcesLoading = useMemo(() => {
     if (isRuntimeInitializing) {
@@ -605,10 +405,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         "Failed to load one or more data sources",
     };
   }, [dashboard, runtimeSession]);
+  const recentEventLog = useMemo(
+    () => runtimeSession?.eventLog.slice(-10).reverse() || [],
+    [runtimeSession?.eventLog],
+  );
 
   const gridLayout = useMemo(() => {
-    if (!dashboard) return [];
-    return dashboard.widgets.map(w => ({
+    return widgets.map(w => ({
       i: w.id,
       x: w.layout.x,
       y: w.layout.y,
@@ -617,7 +420,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       minW: w.layout.minW || 2,
       minH: w.layout.minH || 2,
     }));
-  }, [dashboard]);
+  }, [widgets]);
 
   if (!dashboard) {
     return (
@@ -635,9 +438,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     );
   }
 
-  const isCrossFilterEnabled = dashboard.crossFilter?.enabled ?? false;
   const hasCodeError = Boolean(codeError);
-
   const renderWidget = (widget: DashboardWidget) => {
     if (!runtimeSession) {
       return null;
@@ -650,47 +451,60 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     const widgetCrossFilterEnabled =
       isCrossFilterEnabled && (widget.crossFilter?.enabled ?? true);
-    const filterClause = widgetFilterClauses[widget.id];
+    if (!mosaicInstance) {
+      return null;
+    }
+
+    const widgetRuntime = runtimeSession.widgets[widget.id];
+    const refreshGeneration = widgetRuntime?.refreshGeneration ?? 0;
 
     switch (widget.type) {
       case "chart":
         return (
-          <ChartWidget
-            queryExecutor={queryExecutor}
+          <MosaicChart
+            dashboardId={dashboard._id}
+            widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             vegaLiteSpec={widget.vegaLiteSpec}
-            onError={getWidgetErrorHandler(widget.id)}
-            layoutSignature={`${widget.layout.x}:${widget.layout.y}:${widget.layout.w}:${widget.layout.h}`}
-            enableCrossFilter={widgetCrossFilterEnabled}
-            filterClause={filterClause}
-            onSelectionChange={
-              widgetCrossFilterEnabled
-                ? getWidgetSelectionHandler(widget.id, widget.dataSourceId)
-                : undefined
-            }
+            mosaicInstance={mosaicInstance}
+            crossFilterEnabled={widgetCrossFilterEnabled}
+            crossFilterResolution={crossFilterResolution}
+            queryGeneration={queryGeneration}
+            refreshGeneration={refreshGeneration}
           />
         );
       case "kpi":
-        return widget.kpiConfig ? (
-          <KpiCard
-            queryExecutor={queryExecutor}
+        if (!widget.kpiConfig) {
+          return null;
+        }
+        return (
+          <MosaicKpiCard
+            dashboardId={dashboard._id}
+            widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             kpiConfig={widget.kpiConfig}
-            onError={getWidgetErrorHandler(widget.id)}
-            filterClause={filterClause}
+            mosaicInstance={mosaicInstance}
+            crossFilterEnabled={widgetCrossFilterEnabled}
+            crossFilterResolution={crossFilterResolution}
+            queryGeneration={queryGeneration}
+            refreshGeneration={refreshGeneration}
           />
-        ) : null;
+        );
       case "table":
         return (
-          <DataTableWidget
-            queryExecutor={queryExecutor}
+          <MosaicDataTable
+            dashboardId={dashboard._id}
+            widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             tableConfig={widget.tableConfig}
-            onError={getWidgetErrorHandler(widget.id)}
-            filterClause={filterClause}
+            mosaicInstance={mosaicInstance}
+            crossFilterEnabled={widgetCrossFilterEnabled}
+            crossFilterResolution={crossFilterResolution}
+            queryGeneration={queryGeneration}
+            refreshGeneration={refreshGeneration}
           />
         );
       default:
@@ -733,11 +547,28 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
 
-        {/* Refresh Sources */}
-        <Tooltip title="Refresh all data sources">
-          <IconButton size="small" onClick={handleRefresh}>
-            <RefreshCw size={16} />
-          </IconButton>
+        {/* Refresh dashboard: clear filters + rerun widgets */}
+        <Tooltip title="Clear filters and rerun all widgets">
+          <Chip
+            icon={<RefreshCw size={14} />}
+            label="Refresh"
+            size="small"
+            variant="outlined"
+            onClick={handleRefresh}
+            sx={{ cursor: "pointer" }}
+          />
+        </Tooltip>
+
+        {/* Reload data: re-fetch from source DB */}
+        <Tooltip title="Reload data from source database">
+          <Chip
+            icon={<Database size={14} />}
+            label="Reload data"
+            size="small"
+            variant="outlined"
+            onClick={handleReloadData}
+            sx={{ cursor: "pointer" }}
+          />
         </Tooltip>
 
         {/* Add Widget */}
@@ -822,6 +653,15 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             <Settings size={16} />
           </IconButton>
         </Tooltip>
+        <Tooltip title="Toggle dashboard event log">
+          <Chip
+            size="small"
+            label={`Logs ${recentEventLog.length}`}
+            variant={showEventLog ? "filled" : "outlined"}
+            onClick={() => setShowEventLog(prev => !prev)}
+            sx={{ cursor: "pointer", ml: "auto" }}
+          />
+        </Tooltip>
       </Box>
 
       {/* Loading bar */}
@@ -858,6 +698,39 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               : "Data source failed."}{" "}
             {errorSummary.message}
           </Typography>
+        </Box>
+      )}
+      {showEventLog && recentEventLog.length > 0 && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            backgroundColor: "background.paper",
+            maxHeight: 160,
+            overflow: "auto",
+          }}
+        >
+          {recentEventLog.map((entry, index) => (
+            <Typography
+              key={`${entry.timestamp}-${index}`}
+              variant="caption"
+              sx={{
+                display: "block",
+                color:
+                  entry.level === "error"
+                    ? "error.main"
+                    : entry.level === "warn"
+                      ? "warning.main"
+                      : "text.secondary",
+                fontFamily: "monospace",
+                mb: 0.5,
+              }}
+            >
+              [{new Date(entry.timestamp).toLocaleTimeString()}] {entry.message}
+            </Typography>
+          ))}
         </Box>
       )}
 
@@ -913,18 +786,35 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                 >
                   {dashboard.widgets.map(widget => (
                     <div key={widget.id}>
-                      <WidgetContainer
-                        title={widget.title}
-                        loading={!allSourcesReady}
-                        error={widgetErrors[widget.id]}
-                        onRemove={() =>
-                          dashboardId && removeWidget(dashboardId, widget.id)
-                        }
-                        onDuplicate={() => handleDuplicateWidget(widget)}
-                        onInspect={() => setInspectedWidget(widget)}
-                      >
-                        {renderWidget(widget)}
-                      </WidgetContainer>
+                      {(() => {
+                        const widgetRuntime =
+                          runtimeSession?.widgets[widget.id];
+                        const widgetError =
+                          widgetRuntime?.queryError ||
+                          widgetRuntime?.renderError;
+                        return (
+                          <WidgetContainer
+                            title={widget.title}
+                            loading={!allSourcesReady}
+                            error={widgetError || undefined}
+                            onRefresh={() =>
+                              dashboardId &&
+                              refreshDashboardWidgetCommand({
+                                dashboardId,
+                                widgetId: widget.id,
+                              })
+                            }
+                            onRemove={() =>
+                              dashboardId &&
+                              removeWidget(dashboardId, widget.id)
+                            }
+                            onDuplicate={() => handleDuplicateWidget(widget)}
+                            onInspect={() => setInspectedWidget(widget)}
+                          >
+                            {renderWidget(widget)}
+                          </WidgetContainer>
+                        );
+                      })()}
                     </div>
                   ))}
                 </ResponsiveGridLayout>

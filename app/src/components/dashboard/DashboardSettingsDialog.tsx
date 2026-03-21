@@ -57,6 +57,9 @@ export default function DashboardSettingsDialog({
   const [crossFilterResolution, setCrossFilterResolution] = useState<
     "intersect" | "union"
   >("intersect");
+  const [crossFilterEngine, setCrossFilterEngine] = useState<
+    "mosaic" | "legacy"
+  >("mosaic");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
@@ -69,6 +72,7 @@ export default function DashboardSettingsDialog({
       setCacheTtl(dashboard.cache.ttlSeconds);
       setCrossFilterEnabled(dashboard.crossFilter.enabled);
       setCrossFilterResolution(dashboard.crossFilter.resolution);
+      setCrossFilterEngine(dashboard.crossFilter.engine ?? "mosaic");
       setConfirmDelete(false);
     }
   }, [dashboard, open]);
@@ -86,6 +90,7 @@ export default function DashboardSettingsDialog({
         crossFilter: {
           enabled: crossFilterEnabled,
           resolution: crossFilterResolution,
+          engine: crossFilterEngine,
         },
       } as any);
     useDashboardStore.setState(state => {
@@ -102,6 +107,7 @@ export default function DashboardSettingsDialog({
           crossFilter: {
             enabled: crossFilterEnabled,
             resolution: crossFilterResolution,
+            engine: crossFilterEngine,
           },
         });
       }
@@ -218,21 +224,36 @@ export default function DashboardSettingsDialog({
         />
 
         {crossFilterEnabled && (
-          <FormControl size="small" fullWidth>
-            <InputLabel>Cross-filter resolution</InputLabel>
-            <Select
-              value={crossFilterResolution}
-              label="Cross-filter resolution"
-              onChange={e =>
-                setCrossFilterResolution(
-                  e.target.value as "intersect" | "union",
-                )
-              }
-            >
-              <MenuItem value="intersect">Intersect</MenuItem>
-              <MenuItem value="union">Union</MenuItem>
-            </Select>
-          </FormControl>
+          <>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Cross-filter resolution</InputLabel>
+              <Select
+                value={crossFilterResolution}
+                label="Cross-filter resolution"
+                onChange={e =>
+                  setCrossFilterResolution(
+                    e.target.value as "intersect" | "union",
+                  )
+                }
+              >
+                <MenuItem value="intersect">Intersect</MenuItem>
+                <MenuItem value="union">Union</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Cross-filter engine</InputLabel>
+              <Select
+                value={crossFilterEngine}
+                label="Cross-filter engine"
+                onChange={e =>
+                  setCrossFilterEngine(e.target.value as "mosaic" | "legacy")
+                }
+              >
+                <MenuItem value="mosaic">Mosaic</MenuItem>
+                <MenuItem value="legacy">Legacy</MenuItem>
+              </Select>
+            </FormControl>
+          </>
         )}
 
         <Divider sx={{ mt: 1 }} />

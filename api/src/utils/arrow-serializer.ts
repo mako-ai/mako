@@ -1,6 +1,8 @@
 import {
   tableToIPC,
   tableFromArrays,
+  vectorFromArray,
+  RecordBatchStreamWriter,
   Utf8,
   Float64,
   Int32,
@@ -8,7 +10,7 @@ import {
   TimestampMillisecond,
 } from "apache-arrow";
 
-interface FieldMeta {
+export interface FieldMeta {
   name: string;
   type?: string;
 }
@@ -19,6 +21,8 @@ type ArrowDataType =
   | typeof Int32
   | typeof Bool
   | typeof TimestampMillisecond;
+
+const DEFAULT_ARROW_BATCH_SIZE = 5000;
 
 function inferArrowType(
   fieldName: string,
@@ -109,6 +113,61 @@ function coerceValue(value: unknown, arrowType: ArrowDataType): unknown {
   return String(value);
 }
 
+function inferFieldsFromFirstBatch(
+  rows: Record<string, unknown>[],
+  fields: FieldMeta[],
+): FieldMeta[] {
+  if (fields.length > 0 || rows.length === 0) {
+    return fields;
+  }
+
+  return Object.keys(rows[0] || {}).map(name => ({
+    name,
+    type: undefined,
+  }));
+}
+
+function buildColumnTypes(
+  fields: FieldMeta[],
+  rows: Record<string, unknown>[],
+): Map<string, ArrowDataType> {
+  const sampleSize = Math.min(100, rows.length);
+  const columnTypes: Map<string, ArrowDataType> = new Map();
+
+  for (const field of fields) {
+    const samples: unknown[] = [];
+    for (let i = 0; i < sampleSize; i++) {
+      samples.push(rows[i]?.[field.name]);
+    }
+    columnTypes.set(
+      field.name,
+      inferArrowType(field.name, field.type, samples),
+    );
+  }
+
+  return columnTypes;
+}
+
+function buildArrowTable(
+  rows: Record<string, unknown>[],
+  fields: FieldMeta[],
+  columnTypes: Map<string, ArrowDataType>,
+) {
+  const columns: Record<string, unknown> = {};
+
+  for (const field of fields) {
+    const arrowType = columnTypes.get(field.name) || Utf8;
+    const values = rows.map(row => coerceValue(row[field.name], arrowType));
+    columns[field.name] = vectorFromArray(values, new arrowType());
+  }
+
+  if (fields.length === 0) {
+    columns["_empty"] = vectorFromArray([], new Utf8());
+  }
+
+  return tableFromArrays(columns as any);
+}
+
 export interface SerializeOptions {
   limit?: number;
 }
@@ -126,41 +185,94 @@ export function serializeToArrowIPC(
     options?.limit && rows.length > options.limit
       ? rows.slice(0, options.limit)
       : rows;
-
-  if (effectiveRows.length === 0 || fields.length === 0) {
-    const emptyArrays: Record<string, unknown[]> = {};
-    for (const f of fields) {
-      emptyArrays[f.name] = [];
-    }
-    if (fields.length === 0) {
-      emptyArrays["_empty"] = [];
-    }
-    const table = tableFromArrays(emptyArrays);
-    return tableToIPC(table);
-  }
-
-  const sampleSize = Math.min(100, effectiveRows.length);
-  const columnTypes: Map<string, ArrowDataType> = new Map();
-
-  for (const field of fields) {
-    const samples: unknown[] = [];
-    for (let i = 0; i < sampleSize; i++) {
-      samples.push(effectiveRows[i]?.[field.name]);
-    }
-    columnTypes.set(
-      field.name,
-      inferArrowType(field.name, field.type, samples),
-    );
-  }
-
-  const columnArrays: Record<string, unknown[]> = {};
-  for (const field of fields) {
-    const arrowType = columnTypes.get(field.name)!;
-    columnArrays[field.name] = effectiveRows.map(row =>
-      coerceValue(row[field.name], arrowType),
-    );
-  }
-
-  const table = tableFromArrays(columnArrays);
+  const resolvedFields = inferFieldsFromFirstBatch(effectiveRows, fields);
+  const columnTypes = buildColumnTypes(resolvedFields, effectiveRows);
+  const table = buildArrowTable(effectiveRows, resolvedFields, columnTypes);
   return tableToIPC(table);
+}
+
+export function createArrowIPCStream(
+  fields: FieldMeta[],
+  streamRows: (
+    emitRows: (rows: Array<Record<string, unknown>>) => Promise<void>,
+  ) => Promise<{ totalRows: number }>,
+): ReadableStream<Uint8Array> {
+  const streamWriter = RecordBatchStreamWriter.throughDOM();
+  const writer = streamWriter.writable.getWriter();
+
+  void (async () => {
+    let pendingRows: Record<string, unknown>[] = [];
+    let resolvedFields = fields;
+    let columnTypes = buildColumnTypes(fields, []);
+    let emittedRows = 0;
+
+    const flushRows = async (rows: Record<string, unknown>[]) => {
+      if (rows.length === 0) {
+        return;
+      }
+
+      resolvedFields = inferFieldsFromFirstBatch(rows, resolvedFields);
+      columnTypes = buildColumnTypes(resolvedFields, rows);
+      emittedRows += rows.length;
+      await writer.write(
+        buildArrowTable(rows, resolvedFields, columnTypes) as any,
+      );
+    };
+
+    try {
+      await streamRows(async rows => {
+        if (rows.length === 0) {
+          return;
+        }
+
+        pendingRows.push(...rows);
+        while (pendingRows.length >= DEFAULT_ARROW_BATCH_SIZE) {
+          const batch = pendingRows.slice(0, DEFAULT_ARROW_BATCH_SIZE);
+          pendingRows = pendingRows.slice(DEFAULT_ARROW_BATCH_SIZE);
+          await flushRows(batch);
+        }
+      });
+
+      await flushRows(pendingRows);
+
+      if (emittedRows === 0) {
+        const emptyFields = inferFieldsFromFirstBatch([], resolvedFields);
+        const emptyTypes = buildColumnTypes(emptyFields, []);
+        await writer.write(buildArrowTable([], emptyFields, emptyTypes) as any);
+      }
+
+      await writer.close();
+    } catch (error) {
+      await writer.abort(error);
+    }
+  })();
+
+  return streamWriter.readable;
+}
+
+/**
+ * Convenience wrapper for Arrow IPC export responses.
+ */
+export function createArrowIPCStreamResponse(options: {
+  fields?: FieldMeta[];
+  filename?: string;
+  streamRows: (
+    emitRows: (rows: Array<Record<string, unknown>>) => Promise<void>,
+  ) => Promise<{ totalRows: number }>;
+}): Response {
+  const { fields = [], streamRows, filename } = options;
+  const headers = new Headers();
+  headers.set("Content-Type", "application/vnd.apache.arrow.stream");
+  headers.set("Cache-Control", "no-store");
+
+  if (filename) {
+    headers.set(
+      "Content-Disposition",
+      `attachment; filename="${filename}.arrow"`,
+    );
+  }
+
+  return new Response(createArrowIPCStream(fields, streamRows), {
+    headers,
+  });
 }

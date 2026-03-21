@@ -1,0 +1,185 @@
+import { MakoChartSpec } from "../lib/chart-spec";
+import { executeDashboardSql } from "./commands";
+import { classifyDuckDBError, type DashboardErrorKind } from "./error-kinds";
+
+function stripTrailingSemicolons(sql: string): string {
+  return sql.trim().replace(/;+$/, "");
+}
+
+export async function validateDuckDBQuery(options: {
+  dashboardId?: string;
+  sql: string;
+  dataSourceId?: string;
+}): Promise<
+  | { valid: true; fields: string[]; rowCount: number }
+  | { valid: false; error: string; errorKind: DashboardErrorKind }
+> {
+  const trimmed = stripTrailingSemicolons(options.sql);
+  if (!trimmed) {
+    return {
+      valid: false,
+      error: "Query is empty",
+      errorKind: "duckdb_sql_syntax",
+    };
+  }
+
+  try {
+    const validationSql = `SELECT * FROM (${trimmed}) AS __mako_validation LIMIT 0`;
+    const result = await executeDashboardSql({
+      dashboardId: options.dashboardId,
+      dataSourceId: options.dataSourceId,
+      sql: validationSql,
+    });
+
+    return {
+      valid: true,
+      fields: result.fields.map(field => field.name),
+      rowCount: 0,
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "DuckDB query validation failed";
+    return {
+      valid: false,
+      error: message,
+      errorKind: classifyDuckDBError(message),
+    };
+  }
+}
+
+export function validateVegaSpec(spec: unknown):
+  | { valid: true }
+  | {
+      valid: false;
+      errors: string[];
+      errorKind: "vega_schema_invalid";
+    } {
+  const parsed = MakoChartSpec.safeParse(spec);
+  if (parsed.success) {
+    return { valid: true };
+  }
+
+  return {
+    valid: false,
+    errors: parsed.error.issues
+      .slice(0, 10)
+      .map(issue => `${issue.path.join(".") || "<root>"}: ${issue.message}`),
+    errorKind: "vega_schema_invalid",
+  };
+}
+
+function splitTopLevelCsv(value: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let depth = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (const char of value) {
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+    } else if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+    } else if (!inSingleQuote && !inDoubleQuote) {
+      if (char === "(") depth += 1;
+      if (char === ")") depth = Math.max(0, depth - 1);
+      if (char === "," && depth === 0) {
+        if (current.trim()) parts.push(current.trim());
+        current = "";
+        continue;
+      }
+    }
+    current += char;
+  }
+
+  if (current.trim()) {
+    parts.push(current.trim());
+  }
+
+  return parts;
+}
+
+function normalizeIdentifier(value: string): string {
+  return value.replace(/"/g, "").trim().toLowerCase();
+}
+
+function parseAliasedExpression(expression: string): {
+  source: string;
+  alias: string | null;
+} {
+  const asMatch = expression.match(/^(.*?)(?:\s+AS\s+)([A-Za-z_][\w$"]*)$/i);
+  if (asMatch) {
+    return { source: asMatch[1].trim(), alias: asMatch[2].trim() };
+  }
+
+  return { source: expression.trim(), alias: null };
+}
+
+function isAggregateExpression(expression: string): boolean {
+  return /\b(count|sum|avg|mean|min|max|median|variance|stdev|q1|q3)\s*\(/i.test(
+    expression,
+  );
+}
+
+function isSimpleColumnReference(expression: string): boolean {
+  return /^"?[A-Za-z_][\w$]*"?(?:\s*\.\s*"?[A-Za-z_][\w$]*"?)*$/.test(
+    expression.trim(),
+  );
+}
+
+export function validateCrossFilterWidgetSql(options: {
+  sql: string;
+  crossFilterEnabled: boolean;
+}): { valid: true } | { valid: false; error: string } {
+  if (!options.crossFilterEnabled) {
+    return { valid: true };
+  }
+
+  const sql = stripTrailingSemicolons(options.sql);
+  const selectMatch = sql.match(/select\s+([\s\S]*?)\s+from\s/i);
+  if (!selectMatch) {
+    return { valid: true };
+  }
+
+  const selectExpressions = splitTopLevelCsv(selectMatch[1]);
+
+  for (const expression of selectExpressions) {
+    const { source, alias } = parseAliasedExpression(expression);
+    if (isAggregateExpression(source)) {
+      continue;
+    }
+
+    if (alias) {
+      const normalizedSource = normalizeIdentifier(source);
+      const normalizedAlias = normalizeIdentifier(alias);
+      if (
+        normalizedSource !== normalizedAlias &&
+        isSimpleColumnReference(source)
+      ) {
+        return {
+          valid: false,
+          error: `Cross-filtered widget SQL must not rename dimension fields. Found "${source} AS ${alias}". Keep the canonical field name "${source}" and use Vega title/legend.title for presentation.`,
+        };
+      }
+      if (
+        normalizedSource !== normalizedAlias &&
+        !isSimpleColumnReference(source)
+      ) {
+        return {
+          valid: false,
+          error: `Cross-filtered widget SQL must not create calculated dimensions. Found "${source} AS ${alias}". Add this derived field to the data source extraction query instead.`,
+        };
+      }
+      continue;
+    }
+
+    if (!isSimpleColumnReference(source)) {
+      return {
+        valid: false,
+        error: `Cross-filtered widget SQL must not create calculated dimensions. Found "${source}". Add derived dimensions to the data source extraction query instead.`,
+      };
+    }
+  }
+
+  return { valid: true };
+}

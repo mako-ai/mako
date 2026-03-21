@@ -33,6 +33,8 @@ export interface AgentMeta {
 export interface AgentContext {
   /** Current workspace ID */
   workspaceId: string;
+  /** What the user is currently looking at */
+  activeView?: "console" | "dashboard" | "flow-editor" | "empty";
   /** Current user ID (if session auth) */
   userId?: string;
   /** Open console tabs (for console agent) */
@@ -70,8 +72,13 @@ export interface AgentContext {
       id: string;
       name: string;
       tableRef?: string;
+      connectionType?: string;
+      sqlDialect?: string;
+      queryCode?: string;
+      queryLanguage?: string;
       status?: "idle" | "loading" | "ready" | "error" | null;
       rowsLoaded?: number;
+      rowCount?: number;
       error?: string | null;
       columns: Array<{ name: string; type: string }>;
       sampleRows?: Record<string, unknown>[];
@@ -81,6 +88,16 @@ export interface AgentContext {
       title?: string;
       type: string;
       dataSourceId: string;
+      localSql?: string;
+      queryEngine?: "mosaic";
+      queryStatus?: "idle" | "loading" | "ready" | "error";
+      queryError?: string | null;
+      queryErrorKind?: string | null;
+      renderStatus?: "idle" | "ready" | "error";
+      renderError?: string | null;
+      renderErrorKind?: string | null;
+      queryRowCount?: number | null;
+      queryFields?: string[];
     }>;
     crossFilterEnabled: boolean;
   };

@@ -1,148 +1,86 @@
-import React, {
-  useEffect,
-  useRef,
-  useState,
-  useCallback,
-  useMemo,
-} from "react";
+import React, { useMemo } from "react";
 import { Box, CircularProgress } from "@mui/material";
-import ResultsChart from "../ResultsChart";
-import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
+import ResultsChart, { type CrossFilterSelection } from "../ResultsChart";
 import type { MakoChartSpec } from "../../lib/chart-spec";
-import type { MosaicInstance } from "../../lib/mosaic";
+import { dashboardRuntimeEvents } from "../../dashboard-runtime/events";
+import type {
+  DashboardCrossFilterResolution,
+  MosaicInstance,
+} from "../../lib/mosaic";
+import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
+import { useMosaicClient } from "../../dashboard-runtime/useMosaicClient";
 
 interface MosaicChartProps {
-  queryExecutor?: DashboardQueryExecutor;
+  dashboardId: string;
   widgetId: string;
-  tableName: string;
+  dataSourceId: string;
   localSql: string;
   vegaLiteSpec?: Record<string, unknown>;
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
+  crossFilterResolution?: DashboardCrossFilterResolution;
+  queryGeneration?: number;
+  refreshGeneration?: number;
   onError?: (error: string) => void;
 }
 
 const MosaicChart: React.FC<MosaicChartProps> = ({
-  queryExecutor,
+  dashboardId,
   widgetId,
-  tableName: _tableName,
+  dataSourceId,
   localSql,
   vegaLiteSpec,
   mosaicInstance,
   crossFilterEnabled = true,
+  crossFilterResolution = "intersect",
+  queryGeneration = 0,
+  refreshGeneration = 0,
   onError,
 }) => {
-  const [data, setData] = useState<any[]>([]);
-  const [fields, setFields] = useState<Array<{ name: string; type: string }>>(
-    [],
-  );
-  const [loading, setLoading] = useState(true);
-  const clientRef = useRef<any>(null);
+  const { rows, fields, loading, updateSelection } = useMosaicClient({
+    dashboardId,
+    widgetId,
+    dataSourceId,
+    localSql,
+    mosaicInstance,
+    crossFilterEnabled,
+    crossFilterResolution,
+    queryGeneration,
+    refreshGeneration,
+    onError,
+  });
 
-  const fetchData = useCallback(
-    async (filterClause?: string) => {
-      setLoading(true);
-      try {
-        let sql = localSql;
-        if (filterClause) {
-          if (sql.toLowerCase().includes("where")) {
-            sql += ` AND (${filterClause})`;
-          } else {
-            const groupIdx = sql.toLowerCase().indexOf("group by");
-            const orderIdx = sql.toLowerCase().indexOf("order by");
-            const insertIdx = Math.min(
-              groupIdx === -1 ? sql.length : groupIdx,
-              orderIdx === -1 ? sql.length : orderIdx,
-            );
-            sql =
-              sql.slice(0, insertIdx) +
-              ` WHERE ${filterClause} ` +
-              sql.slice(insertIdx);
-          }
-        }
-        if (!queryExecutor) {
-          throw new Error("Query executor is not available");
-        }
-        const result = await queryExecutor(sql);
-        setData(result.rows);
-        setFields(result.fields);
-      } catch (e: any) {
-        onError?.(e?.message || "Query failed");
-      } finally {
-        setLoading(false);
-      }
+  const handleSelectionChange = React.useCallback(
+    (selection: CrossFilterSelection | null) => {
+      updateSelection(selection);
     },
-    [localSql, onError, queryExecutor],
+    [updateSelection],
   );
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const handleRenderSuccess = React.useCallback(() => {
+    useDashboardRuntimeStore
+      .getState()
+      .dispatch(
+        dashboardRuntimeEvents.widgetRenderSucceeded(dashboardId, widgetId),
+      );
+  }, [dashboardId, widgetId]);
 
-  useEffect(() => {
-    if (!mosaicInstance || !crossFilterEnabled) return;
-
-    const { coordinator, selection } = mosaicInstance;
-
-    const client = {
-      _id: widgetId,
-      filterBy: selection,
-
-      query(filter?: any): { sql: string } {
-        let sql = localSql;
-        if (filter) {
-          const clause =
-            typeof filter === "string" ? filter : filter.toString?.() || "";
-          if (clause) {
-            if (sql.toLowerCase().includes("where")) {
-              sql += ` AND (${clause})`;
-            } else {
-              sql += ` WHERE ${clause}`;
-            }
-          }
-        }
-        return { sql };
-      },
-
-      queryResult(resultData: any): void {
-        if (!resultData) return;
-        const rows: Record<string, unknown>[] = [];
-        if (resultData.numRows) {
-          const schema = resultData.schema?.fields || [];
-          for (let i = 0; i < resultData.numRows; i++) {
-            const row: Record<string, unknown> = {};
-            for (const f of schema) {
-              const col = resultData.getChild(f.name);
-              row[f.name] = col?.get(i);
-            }
-            rows.push(row);
-          }
-        }
-        setData(rows);
-        setLoading(false);
-      },
-
-      update(): void {
-        coordinator.requestQuery?.(client);
-      },
-    };
-
-    try {
-      coordinator.connect?.(client);
-      clientRef.current = client;
-    } catch {
-      // Mosaic connection failed — fall back to non-filtered mode
-    }
-
-    return () => {
-      try {
-        coordinator.disconnect?.(clientRef.current);
-      } catch {
-        // Silent cleanup
-      }
-      clientRef.current = null;
-    };
-  }, [mosaicInstance, crossFilterEnabled, widgetId, localSql]);
+  const handleRenderError = React.useCallback(
+    (error: string) => {
+      useDashboardRuntimeStore
+        .getState()
+        .dispatch(
+          dashboardRuntimeEvents.widgetRenderFailed(
+            dashboardId,
+            widgetId,
+            error,
+            "vega_render_failed",
+          ),
+        );
+      onError?.(error);
+    },
+    [dashboardId, onError, widgetId],
+  );
 
   const enhancedSpec = useMemo(() => {
     if (!vegaLiteSpec) return undefined;
@@ -175,7 +113,7 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
     return spec;
   }, [vegaLiteSpec, crossFilterEnabled]);
 
-  if (loading && data.length === 0) {
+  if (loading && rows.length === 0) {
     return (
       <Box
         sx={{
@@ -192,9 +130,13 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
 
   return (
     <ResultsChart
-      data={data}
+      data={rows}
       fields={fields}
       spec={enhancedSpec as MakoChartSpec | undefined}
+      enableSelection={crossFilterEnabled}
+      onSelectionChange={crossFilterEnabled ? handleSelectionChange : undefined}
+      onRenderSuccess={handleRenderSuccess}
+      onRenderError={handleRenderError}
     />
   );
 };

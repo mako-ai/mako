@@ -17,9 +17,16 @@ export {
   GlobalFilterSchema,
 } from "@mako/schemas";
 
-export interface Dashboard extends DashboardDefinition {
+import type { DashboardDefinition } from "@mako/schemas";
+
+export interface Dashboard extends Omit<DashboardDefinition, "crossFilter"> {
   _id: string;
   workspaceId: string;
+  crossFilter: {
+    enabled: DashboardDefinition["crossFilter"]["enabled"];
+    resolution: DashboardDefinition["crossFilter"]["resolution"];
+    engine?: "mosaic";
+  };
   access: "private" | "workspace";
   createdBy: string;
   createdAt: string;
@@ -38,6 +45,7 @@ export interface DashboardDataSourceRuntimeState {
   dataSourceId: string;
   tableRef: string;
   version: string;
+  dataVersion: number;
   status: DashboardRuntimeStatus;
   rowsLoaded: number;
   rowCount?: number;
@@ -46,10 +54,36 @@ export interface DashboardDataSourceRuntimeState {
   error: string | null;
 }
 
+export interface DashboardLogEntry {
+  timestamp: number;
+  level: "info" | "warn" | "error";
+  message: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DashboardWidgetRuntimeState {
+  widgetId: string;
+  queryEngine: "mosaic";
+  queryStatus: DashboardRuntimeStatus;
+  queryError: string | null;
+  queryErrorKind: string | null;
+  queryRowCount: number | null;
+  queryFields: string[];
+  renderStatus: "idle" | "ready" | "error";
+  renderError: string | null;
+  renderErrorKind: string | null;
+  lastQueryAt: number | null;
+  lastRenderAt: number | null;
+  refreshGeneration: number;
+}
+
 export interface DashboardSessionRuntimeState {
   dashboardId: string;
   sessionId: string;
+  queryGeneration: number;
   dataSources: Record<string, DashboardDataSourceRuntimeState>;
+  widgets: Record<string, DashboardWidgetRuntimeState>;
+  eventLog: DashboardLogEntry[];
 }
 
 export interface DashboardRuntimeState {
@@ -75,15 +109,66 @@ export type DashboardRuntimeEvent =
       version: string;
     }
   | {
+      type: "dashboard/query-generation-bumped";
+      dashboardId: string;
+    }
+  | {
+      type: "dashboard/reset";
+      dashboardId: string;
+    }
+  | {
       type: "datasource/load-started";
       dashboardId: string;
       dataSourceId: string;
+      preserveExistingData?: boolean;
+    }
+  | {
+      type: "widget/query-started";
+      dashboardId: string;
+      widgetId: string;
+    }
+  | {
+      type: "widget/query-succeeded";
+      dashboardId: string;
+      widgetId: string;
+      rowCount: number;
+      fields: string[];
+    }
+  | {
+      type: "widget/query-failed";
+      dashboardId: string;
+      widgetId: string;
+      error: string;
+      errorKind: string | null;
+    }
+  | {
+      type: "widget/render-succeeded";
+      dashboardId: string;
+      widgetId: string;
+    }
+  | {
+      type: "widget/render-failed";
+      dashboardId: string;
+      widgetId: string;
+      error: string;
+      errorKind: string | null;
+    }
+  | {
+      type: "widget/refresh-bumped";
+      dashboardId: string;
+      widgetId: string;
+    }
+  | {
+      type: "widget/removed";
+      dashboardId: string;
+      widgetId: string;
     }
   | {
       type: "datasource/load-progress";
       dashboardId: string;
       dataSourceId: string;
       rowsLoaded: number;
+      preserveExistingData?: boolean;
     }
   | {
       type: "datasource/load-succeeded";
@@ -100,6 +185,7 @@ export type DashboardRuntimeEvent =
       dataSourceId: string;
       rowsLoaded: number;
       error: string;
+      preserveExistingData?: boolean;
     }
   | {
       type: "datasource/removed";
@@ -117,8 +203,6 @@ export type DashboardQueryExecutor = (
   sql: string,
   options?: { dataSourceId?: string },
 ) => Promise<DashboardQueryResult>;
-
-import type { DashboardDefinition } from "@mako/schemas";
 
 /**
  * Metadata fields that are excluded from the code editor.

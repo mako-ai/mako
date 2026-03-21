@@ -13,7 +13,10 @@ import {
   removeDashboardDataSourceRuntime,
   syncDashboardRuntime,
 } from "./gateway";
-import { selectDataSourceRuntime } from "./selectors";
+import { ensureMosaicInstance, getMosaicInstance } from "./session-registry";
+import { selectDataSourceRuntime, selectWidgetRuntime } from "./selectors";
+import { dashboardRuntimeEvents } from "./events";
+import { useDashboardRuntimeStore } from "./store";
 import type {
   Dashboard,
   DashboardDataSource,
@@ -60,6 +63,19 @@ export async function closeDashboardSession(
   const id = dashboardId ?? useDashboardStore.getState().activeDashboardId;
   if (!id) return;
   await disposeDashboardRuntime(id);
+}
+
+export async function getDashboardMosaicInstance(dashboardId?: string) {
+  const resolvedDashboardId =
+    dashboardId || useDashboardStore.getState().activeDashboardId;
+  if (!resolvedDashboardId) {
+    throw new Error("No active dashboard");
+  }
+
+  return (
+    getMosaicInstance(resolvedDashboardId) ||
+    (await ensureMosaicInstance(resolvedDashboardId))
+  );
 }
 
 export function buildDashboardDataSource(input: {
@@ -233,14 +249,49 @@ export async function refreshDashboardDataSourceCommand(options: {
     dashboard,
     dataSourceId: options.dataSourceId,
   });
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(dashboardRuntimeEvents.bumpQueryGeneration(dashboard._id));
 }
 
-export async function refreshAllDashboardDataSourcesCommand(
+export async function reloadDashboardDataSourcesCommand(
   workspaceId: string,
   dashboardId?: string,
 ): Promise<void> {
   const dashboard = getDashboardOrThrow(dashboardId);
   await refreshAllDashboardDataSources({ workspaceId, dashboard });
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(dashboardRuntimeEvents.bumpQueryGeneration(dashboard._id));
+}
+
+export async function refreshDashboardCommand(
+  dashboardId?: string,
+): Promise<void> {
+  const dashboard = getDashboardOrThrow(dashboardId);
+  const mosaicInstance = getMosaicInstance(dashboard._id);
+  if (mosaicInstance) {
+    try {
+      mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+    } catch {
+      // best-effort selection clear
+    }
+  }
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(dashboardRuntimeEvents.resetDashboard(dashboard._id));
+}
+
+export function refreshDashboardWidgetCommand(options: {
+  dashboardId?: string;
+  widgetId: string;
+}): void {
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(
+      dashboardRuntimeEvents.bumpWidgetRefresh(dashboard._id, options.widgetId),
+    );
 }
 
 export function getDashboardStateSnapshot(dashboardId?: string) {
@@ -260,6 +311,27 @@ export function getDashboardStateSnapshot(dashboardId?: string) {
         sampleRows: runtime?.sampleRows || [],
       };
     }),
+    widgets: dashboard.widgets.map(widget => {
+      const runtime = selectWidgetRuntime(dashboard._id, widget.id);
+      return {
+        ...widget,
+        queryEngine: "mosaic" as const,
+        queryStatus: runtime?.queryStatus || "idle",
+        queryError: runtime?.queryError || null,
+        queryErrorKind: runtime?.queryErrorKind || null,
+        renderStatus: runtime?.renderStatus || "idle",
+        renderError: runtime?.renderError || null,
+        renderErrorKind: runtime?.renderErrorKind || null,
+        queryRowCount: runtime?.queryRowCount ?? null,
+        queryFields: runtime?.queryFields || [],
+      };
+    }),
+    queryGeneration:
+      useDashboardRuntimeStore.getState().sessions[dashboard._id]
+        ?.queryGeneration || 0,
+    eventLog:
+      useDashboardRuntimeStore.getState().sessions[dashboard._id]?.eventLog ||
+      [],
   };
 }
 
@@ -295,6 +367,9 @@ export function addDashboardWidget(
 ): void {
   const id = dashboardId ?? resolveActiveDashboardId();
   useDashboardStore.getState().addWidget(id, widget);
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(dashboardRuntimeEvents.bumpWidgetRefresh(id, widget.id));
 }
 
 export function updateDashboardWidget(
@@ -304,6 +379,9 @@ export function updateDashboardWidget(
 ): void {
   const id = dashboardId ?? resolveActiveDashboardId();
   useDashboardStore.getState().modifyWidget(id, widgetId, changes);
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(dashboardRuntimeEvents.bumpWidgetRefresh(id, widgetId));
 }
 
 export function removeDashboardWidget(
@@ -312,4 +390,7 @@ export function removeDashboardWidget(
 ): void {
   const id = dashboardId ?? resolveActiveDashboardId();
   useDashboardStore.getState().removeWidget(id, widgetId);
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(dashboardRuntimeEvents.widgetRemoved(id, widgetId));
 }

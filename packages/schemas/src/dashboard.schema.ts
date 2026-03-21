@@ -104,12 +104,7 @@ export const TableRelationshipSchema = z.object({
   id: z.string(),
   from: z.object({ dataSourceId: z.string(), column: z.string() }),
   to: z.object({ dataSourceId: z.string(), column: z.string() }),
-  type: z.enum([
-    "one-to-one",
-    "one-to-many",
-    "many-to-one",
-    "many-to-many",
-  ]),
+  type: z.enum(["one-to-one", "one-to-many", "many-to-one", "many-to-many"]),
 });
 
 export const GlobalFilterSchema = z.object({
@@ -140,6 +135,7 @@ export const DashboardDefinitionSchema = z.object({
   crossFilter: z.object({
     enabled: z.boolean(),
     resolution: z.enum(["intersect", "union"]),
+    engine: z.enum(["mosaic", "legacy"]).optional(),
   }),
   layout: z.object({
     columns: z.number(),
@@ -151,9 +147,15 @@ export const DashboardDefinitionSchema = z.object({
   }),
 });
 
-export type DashboardQueryLanguage = z.infer<typeof DashboardQueryLanguageSchema>;
-export type DashboardQueryDefinition = z.infer<typeof DashboardQueryDefinitionSchema>;
-export type DashboardDataSourceOrigin = z.infer<typeof DashboardDataSourceOriginSchema>;
+export type DashboardQueryLanguage = z.infer<
+  typeof DashboardQueryLanguageSchema
+>;
+export type DashboardQueryDefinition = z.infer<
+  typeof DashboardQueryDefinitionSchema
+>;
+export type DashboardDataSourceOrigin = z.infer<
+  typeof DashboardDataSourceOriginSchema
+>;
 export type DashboardDataSource = z.infer<typeof DashboardDataSourceSchema>;
 export type DashboardWidget = z.infer<typeof DashboardWidgetSchema>;
 export type TableRelationship = z.infer<typeof TableRelationshipSchema>;

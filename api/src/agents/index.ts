@@ -8,6 +8,7 @@
 import { consoleAgentFactory, consoleAgentMeta } from "./console";
 import { dashboardAgentFactory, dashboardAgentMeta } from "./dashboard";
 import { flowAgentFactory, flowAgentMeta } from "./flow";
+import { unifiedAgentFactory, unifiedAgentMeta } from "./unified";
 import type { AgentFactory, AgentMeta, AgentRegistryEntry } from "./types";
 
 // Export types for external use
@@ -19,6 +20,7 @@ export * from "./types";
  * To remove an agent: delete import and folder
  */
 const agents: Record<string, AgentRegistryEntry> = {
+  unified: { factory: unifiedAgentFactory, meta: unifiedAgentMeta },
   console: { factory: consoleAgentFactory, meta: consoleAgentMeta },
   dashboard: { factory: dashboardAgentFactory, meta: dashboardAgentMeta },
   flow: { factory: flowAgentFactory, meta: flowAgentMeta },
@@ -57,22 +59,24 @@ export function getAllAgentMeta(): AgentMeta[] {
  * Falls back to "console" if no match
  */
 export function detectAgentId(tabKind?: string, flowType?: string): string {
+  const defaultAgentId = "unified";
   for (const [id, { meta }] of Object.entries(agents)) {
+    if (id === defaultAgentId) continue;
     // Check if tab kind matches
     if (tabKind && meta.tabKinds?.includes(tabKind)) {
       // For flow-editor, also check flowType if specified
       if (tabKind === "flow-editor" && flowType && meta.flowTypes) {
         if (meta.flowTypes.includes(flowType)) {
-          return id;
+          return defaultAgentId;
         }
         // This agent handles flow-editor but not this flowType, skip
         continue;
       }
       // Tab kind matches and no flowType check needed
-      return id;
+      return defaultAgentId;
     }
   }
 
   // Default fallback
-  return "console";
+  return defaultAgentId;
 }

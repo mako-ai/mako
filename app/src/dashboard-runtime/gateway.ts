@@ -1,6 +1,7 @@
 import {
   describeTable,
   dropTable,
+  loadArrowStreamTable,
   loadNdjsonStreamTable,
   queryDuckDB,
 } from "../lib/duckdb";
@@ -41,14 +42,192 @@ function buildDataSourceVersion(dataSource: DashboardDataSource): string {
   );
 }
 
-function buildDashboardExportPayload(dataSource: DashboardDataSource) {
+function buildTemporaryTableRef(tableRef: string): string {
+  return `${tableRef}__tmp__${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function buildDashboardExportPayload(
+  dataSource: DashboardDataSource,
+  format: "arrow" | "ndjson" = "arrow",
+) {
   return {
     connectionId: dataSource.query.connectionId,
-    format: "ndjson",
-    batchSize: 2000,
+    format,
+    batchSize: format === "arrow" ? 5000 : 2000,
     filename: dataSource.name,
     queryDefinition: dataSource.query,
   };
+}
+
+function parseNumericHeader(
+  headers: Headers,
+  name: string,
+): number | undefined {
+  const raw = headers.get(name);
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function estimateRowsFromBytes(
+  bytesLoaded: number,
+  totalBytes: number | undefined,
+  totalRows: number | undefined,
+): number | null {
+  if (!totalBytes || !totalRows || totalBytes <= 0 || totalRows <= 0) {
+    return null;
+  }
+
+  return Math.max(
+    0,
+    Math.min(totalRows, Math.round((bytesLoaded / totalBytes) * totalRows)),
+  );
+}
+
+async function fetchDashboardExport(
+  workspaceId: string,
+  dataSource: DashboardDataSource,
+  format: "arrow" | "ndjson",
+): Promise<Response & { body: ReadableStream<Uint8Array> }> {
+  const response = await fetch(
+    `/api/workspaces/${workspaceId}/execute/export`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildDashboardExportPayload(dataSource, format)),
+    },
+  );
+
+  if (!response.ok) {
+    let message =
+      response.statusText || "Failed to export dashboard data source";
+    try {
+      const payload = await response.json();
+      if (payload?.error) {
+        message = payload.error;
+      }
+    } catch {
+      // Fall back to status text when the body is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  if (!response.body) {
+    throw new Error("Dashboard data source export stream is not available");
+  }
+
+  return response as Response & { body: ReadableStream<Uint8Array> };
+}
+
+function dispatchLoadProgress(options: {
+  runtimeStore: ReturnType<typeof useDashboardRuntimeStore.getState>;
+  dashboardId: string;
+  dataSourceId: string;
+  onRowsLoaded: (loaded: number) => void;
+  rowsLoaded: number;
+  preserveExistingData?: boolean;
+}) {
+  options.onRowsLoaded(options.rowsLoaded);
+  options.runtimeStore.dispatch(
+    dashboardRuntimeEvents.datasourceLoadProgress(
+      options.dashboardId,
+      options.dataSourceId,
+      options.rowsLoaded,
+      options.preserveExistingData,
+    ),
+  );
+}
+
+async function loadDashboardDataSourceWithFallback(options: {
+  session: Awaited<ReturnType<typeof ensureDashboardSession>>;
+  runtimeStore: ReturnType<typeof useDashboardRuntimeStore.getState>;
+  workspaceId: string;
+  dashboardId: string;
+  dataSource: DashboardDataSource;
+  targetTableRef: string;
+  preserveExistingData?: boolean;
+  onRowsLoaded: (loaded: number) => void;
+}): Promise<number | null> {
+  const {
+    session,
+    runtimeStore,
+    workspaceId,
+    dashboardId,
+    dataSource,
+    targetTableRef,
+    preserveExistingData = false,
+    onRowsLoaded,
+  } = options;
+
+  try {
+    const response = await fetchDashboardExport(
+      workspaceId,
+      dataSource,
+      "arrow",
+    );
+    const totalBytes = parseNumericHeader(response.headers, "Content-Length");
+    const totalRows = parseNumericHeader(response.headers, "X-Row-Count");
+
+    const loadedRowCount = await loadArrowStreamTable(
+      session.db,
+      targetTableRef,
+      response.body,
+      {
+        onProgress: bytesLoaded => {
+          const estimatedRows = estimateRowsFromBytes(
+            bytesLoaded,
+            totalBytes,
+            totalRows,
+          );
+          if (estimatedRows == null) {
+            return;
+          }
+
+          dispatchLoadProgress({
+            runtimeStore,
+            dashboardId,
+            dataSourceId: dataSource.id,
+            onRowsLoaded,
+            rowsLoaded: estimatedRows,
+            preserveExistingData,
+          });
+        },
+      },
+    );
+
+    return totalRows ?? loadedRowCount;
+  } catch {
+    await dropTable(session.db, targetTableRef).catch(() => undefined);
+  }
+
+  const response = await fetchDashboardExport(
+    workspaceId,
+    dataSource,
+    "ndjson",
+  );
+  return await loadNdjsonStreamTable(
+    session.db,
+    targetTableRef,
+    response.body,
+    {
+      onProgress: loaded => {
+        dispatchLoadProgress({
+          runtimeStore,
+          dashboardId,
+          dataSourceId: dataSource.id,
+          onRowsLoaded,
+          rowsLoaded: loaded,
+          preserveExistingData,
+        });
+      },
+    },
+  );
 }
 
 function resolveSqlBindings(
@@ -90,6 +269,7 @@ function resolveSqlBindings(
 async function introspectDataSource(
   dashboardId: string,
   dataSource: DashboardDataSource,
+  tableRef = dataSource.tableRef,
 ): Promise<{
   schema: DashboardRuntimeColumn[];
   sampleRows: Record<string, unknown>[];
@@ -99,12 +279,12 @@ async function introspectDataSource(
     return { schema: [], sampleRows: [] };
   }
 
-  const schemaRows = await describeTable(session.db, dataSource.tableRef);
+  const schemaRows = await describeTable(session.db, tableRef);
   let sampleRows: Record<string, unknown>[] = [];
   try {
     const preview = await queryDuckDB(
       session.db,
-      `SELECT * FROM "${dataSource.tableRef}" LIMIT 5`,
+      `SELECT * FROM "${tableRef}" LIMIT 5`,
     );
     sampleRows = preview.rows;
   } catch {
@@ -121,6 +301,27 @@ async function introspectDataSource(
   }));
 
   return { schema, sampleRows };
+}
+
+async function swapMaterializedTable(options: {
+  db: import("@duckdb/duckdb-wasm").AsyncDuckDB;
+  liveTableRef: string;
+  temporaryTableRef: string;
+}): Promise<void> {
+  const conn = await options.db.connect();
+  try {
+    await conn.query("BEGIN TRANSACTION");
+    await conn.query(`DROP TABLE IF EXISTS "${options.liveTableRef}"`);
+    await conn.query(
+      `ALTER TABLE "${options.temporaryTableRef}" RENAME TO "${options.liveTableRef}"`,
+    );
+    await conn.query("COMMIT");
+  } catch (error) {
+    await conn.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await conn.close();
+  }
 }
 
 async function getPersistedRowCount(
@@ -171,6 +372,8 @@ export async function materializeDashboardDataSource(options: {
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
   const version = buildDataSourceVersion(dataSource);
+  const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
+  const preserveExistingData = force && existingRuntime?.status === "ready";
   runtimeStore.dispatch(
     dashboardRuntimeEvents.registerDataSource(
       dashboard._id,
@@ -179,8 +382,6 @@ export async function materializeDashboardDataSource(options: {
       version,
     ),
   );
-
-  const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
   if (
     !force &&
     session.dataSourceVersions.get(dataSource.id) === version &&
@@ -238,71 +439,50 @@ export async function materializeDashboardDataSource(options: {
   session.activeLoads.set(dataSource.id, loadPromise);
 
   let rowsLoaded = 0;
+  let temporaryTableRef: string | null = null;
   runtimeStore.dispatch(
-    dashboardRuntimeEvents.datasourceLoadStarted(dashboard._id, dataSource.id),
+    dashboardRuntimeEvents.datasourceLoadStarted(
+      dashboard._id,
+      dataSource.id,
+      preserveExistingData,
+    ),
   );
 
   try {
-    await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
-
-    const response = await fetch(
-      `/api/workspaces/${workspaceId}/execute/export`,
-      {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildDashboardExportPayload(dataSource)),
+    temporaryTableRef = buildTemporaryTableRef(dataSource.tableRef);
+    await dropTable(session.db, temporaryTableRef).catch(() => undefined);
+    const rowCount = await loadDashboardDataSourceWithFallback({
+      session,
+      runtimeStore,
+      workspaceId,
+      dashboardId: dashboard._id,
+      dataSource,
+      targetTableRef: temporaryTableRef,
+      preserveExistingData,
+      onRowsLoaded: loaded => {
+        rowsLoaded = loaded;
       },
-    );
-
-    if (!response.ok) {
-      let message =
-        response.statusText || "Failed to export dashboard data source";
-      try {
-        const payload = await response.json();
-        if (payload?.error) {
-          message = payload.error;
-        }
-      } catch {
-        // fall back to status text
-      }
-      throw new Error(message);
-    }
-
-    if (!response.body) {
-      throw new Error("Dashboard data source export stream is not available");
-    }
-
-    const rowCount = await loadNdjsonStreamTable(
-      session.db,
-      dataSource.tableRef,
-      response.body,
-      {
-        onProgress: loaded => {
-          rowsLoaded = loaded;
-          runtimeStore.dispatch(
-            dashboardRuntimeEvents.datasourceLoadProgress(
-              dashboard._id,
-              dataSource.id,
-              loaded,
-            ),
-          );
-        },
-      },
-    );
+    });
 
     const { schema, sampleRows } = await introspectDataSource(
       dashboard._id,
       dataSource,
+      temporaryTableRef,
     );
+
+    await swapMaterializedTable({
+      db: session.db,
+      liveTableRef: dataSource.tableRef,
+      temporaryTableRef,
+    });
 
     session.dataSourceVersions.set(dataSource.id, version);
     runtimeStore.dispatch(
       dashboardRuntimeEvents.datasourceLoadSucceeded(
         dashboard._id,
         dataSource.id,
-        rowCount,
-        rowCount,
+        rowCount ?? rowsLoaded,
+        rowCount ?? rowsLoaded,
         schema,
         sampleRows,
       ),
@@ -313,19 +493,22 @@ export async function materializeDashboardDataSource(options: {
       dataSource.id,
       version,
       dataSource.tableRef,
-      rowCount,
+      rowCount ?? rowsLoaded,
     );
     await checkpointSession(dashboard._id);
     resolveLoad();
   } catch (error) {
     session.dataSourceVersions.delete(dataSource.id);
-    await dropTable(session.db, dataSource.tableRef).catch(() => undefined);
+    if (temporaryTableRef) {
+      await dropTable(session.db, temporaryTableRef).catch(() => undefined);
+    }
     runtimeStore.dispatch(
       dashboardRuntimeEvents.datasourceLoadFailed(
         dashboard._id,
         dataSource.id,
         rowsLoaded,
         error instanceof Error ? error.message : "Failed to load data source",
+        preserveExistingData,
       ),
     );
     rejectLoad(error);

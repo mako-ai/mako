@@ -15,6 +15,7 @@ import {
   Trash2,
   Copy,
   Settings,
+  RefreshCw,
 } from "lucide-react";
 
 class WidgetErrorBoundary extends React.Component<
@@ -73,6 +74,7 @@ interface WidgetContainerProps {
   title?: string;
   loading?: boolean;
   error?: string;
+  onRefresh?: () => void;
   onRemove?: () => void;
   onDuplicate?: () => void;
   onInspect?: () => void;
@@ -83,6 +85,7 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
   title,
   loading,
   error,
+  onRefresh,
   onRemove,
   onDuplicate,
   onInspect,
@@ -131,6 +134,13 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
           {title || "Untitled"}
         </Typography>
         {loading && <CircularProgress size={14} />}
+        {onRefresh && (
+          <Tooltip title="Refresh widget">
+            <IconButton size="small" onClick={onRefresh} sx={{ p: 0.25 }}>
+              <RefreshCw size={14} />
+            </IconButton>
+          </Tooltip>
+        )}
         <Tooltip title="Options">
           <IconButton
             size="small"
@@ -155,6 +165,17 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
             >
               <Settings size={14} style={{ marginRight: 8 }} />
               Inspect
+            </MenuItem>
+          )}
+          {onRefresh && (
+            <MenuItem
+              onClick={() => {
+                setAnchorEl(null);
+                onRefresh();
+              }}
+            >
+              <RefreshCw size={14} style={{ marginRight: 8 }} />
+              Refresh
             </MenuItem>
           )}
           {onDuplicate && (
@@ -186,14 +207,19 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
       <Box
         sx={{ flex: 1, position: "relative", overflow: "hidden", minHeight: 0 }}
       >
-        {error ? (
+        <WidgetErrorBoundary>{children}</WidgetErrorBoundary>
+        {error && (
           <Box
             sx={{
+              position: "absolute",
+              inset: 0,
               p: 2,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              height: "100%",
+              backgroundColor: "rgba(255,255,255,0.72)",
+              backdropFilter: "blur(1px)",
+              pointerEvents: "none",
             }}
           >
             <Typography
@@ -204,8 +230,6 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
               {error}
             </Typography>
           </Box>
-        ) : (
-          <WidgetErrorBoundary>{children}</WidgetErrorBoundary>
         )}
       </Box>
     </Box>

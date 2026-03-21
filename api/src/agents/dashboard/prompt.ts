@@ -47,6 +47,10 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 When creating chart widgets:
 - The \`vegaLiteSpec\` should NOT include a \`data\` property — data is injected automatically from the \`localSql\` query results
 - Write simple SQL for \`localSql\` — the data is already prepared by the console query. Use GROUP BY, aggregations, and date_trunc for charts.
+- **Cross-filter rule (HARD ENFORCED):** Cross-filtered widgets MUST keep canonical dimension field names from the data source. Do NOT alias them (e.g., \`listing_canton_code AS canton\` is rejected). Do NOT create calculated dimensions (e.g., \`strftime(...) AS week_label\` is rejected). Use Vega \`title\`, \`legend.title\`, \`axis.title\`, and tooltip labels for presentation instead.
+- Metric aliases such as \`COUNT(*) AS enquiry_count\` are allowed because aggregates are not cross-filter dimensions.
+- If you need a derived dimension for cross-filtering (e.g., \`week_start\`), add it to the **data source extraction query** so it becomes a canonical field in DuckDB. Do not compute it in widget SQL.
+- Source query rewrites are allowed when genuinely needed for new canonical fields, but prefer widget SQL and Vega label changes for presentation-only issues.
 - Available mark types: bar, line, area, point, arc, boxplot, rect, rule, text, tick, trail
 - Use \`fold\` transforms to unpivot multiple numeric columns for multi-line charts
 - For time series, use \`temporal\` type on the x-axis with appropriate \`timeUnit\`
