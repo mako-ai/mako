@@ -510,6 +510,31 @@ export const flowFunction = inngest.createFunction(
         });
     };
 
+    const throwIfExecutionCancelled = async (
+      scope: string,
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (!executionId) return;
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
+      const execution = await collection.findOne(
+        { _id: new Types.ObjectId(executionId) },
+        { projection: { status: 1 } },
+      );
+
+      if (execution?.status === "cancelled") {
+        logger.warn("Detected cancelled flow execution; stopping run", {
+          flowId,
+          executionId,
+          scope,
+          ...metadata,
+        });
+        const cancelError = new Error("Flow execution cancelled by user");
+        (cancelError as Error & { code?: string }).code = "USER_CANCELLED";
+        throw cancelError;
+      }
+    };
+
     try {
       // Add jitter to prevent thundering herd - random delay 0-60 seconds
       // Skip jitter if noJitter flag is set
@@ -685,6 +710,7 @@ export const flowFunction = inngest.createFunction(
         flowId,
         runCount: currentRunCount,
       });
+      await throwIfExecutionCancelled("post-flow-status-update");
 
       // Validate sync configuration
       await step.run("validate-sync-config", async () => {
@@ -781,6 +807,10 @@ export const flowFunction = inngest.createFunction(
         let totalRowsProcessed = 0;
 
         while (!completed) {
+          await throwIfExecutionCancelled("db-sync-before-chunk", {
+            chunkIndex,
+            totalRowsProcessed,
+          });
           const chunkResult = await step.run(
             `db-sync-chunk-${chunkIndex}`,
             async () => {
@@ -847,6 +877,10 @@ export const flowFunction = inngest.createFunction(
               return result;
             },
           );
+          await throwIfExecutionCancelled("db-sync-after-chunk", {
+            chunkIndex,
+            rowsProcessed: chunkResult.rowsProcessed,
+          });
 
           // Update state for next iteration
           chunkState = chunkResult.state;
@@ -914,6 +948,7 @@ export const flowFunction = inngest.createFunction(
 
         // Finalize staging table swap for full sync
         if (flow.syncMode === "full") {
+          await throwIfExecutionCancelled("db-sync-before-finalize-staging");
           await step.run("finalize-staging-swap", async () => {
             logger.info("Finalizing full sync (staging table swap)", {
               flowId,
@@ -1002,6 +1037,7 @@ export const flowFunction = inngest.createFunction(
         syncedEntities = ["database_query"];
 
         // Update success status
+        await throwIfExecutionCancelled("db-sync-before-success-mark");
         await step.run("update-success-status", async () => {
           logger.info("Updating flow success status", { flowId });
           await Flow.findByIdAndUpdate(flowId, {
@@ -1019,8 +1055,8 @@ export const flowFunction = inngest.createFunction(
             const collection = db.collection("flow_executions");
             const completedAt = new Date();
 
-            await collection.updateOne(
-              { _id: new Types.ObjectId(executionId) },
+            const updateResult = await collection.updateOne(
+              { _id: new Types.ObjectId(executionId), status: "running" },
               {
                 $set: {
                   completedAt,
@@ -1040,6 +1076,23 @@ export const flowFunction = inngest.createFunction(
                 },
               },
             );
+
+            if (updateResult.matchedCount === 0) {
+              const current = await collection.findOne(
+                { _id: new Types.ObjectId(executionId) },
+                { projection: { status: 1 } },
+              );
+              if (current?.status === "cancelled") {
+                logger.info(
+                  "Skipping completion update because execution is cancelled",
+                  {
+                    flowId,
+                    executionId,
+                  },
+                );
+                return;
+              }
+            }
 
             const execution = await collection.findOne({
               _id: new Types.ObjectId(executionId),
@@ -1252,6 +1305,9 @@ export const flowFunction = inngest.createFunction(
         // Process each entity with chunked execution
         for (const entity of entitiesToSync) {
           const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
+          await throwIfExecutionCancelled("connector-before-entity", {
+            entity,
+          });
           if (checkpointEnabled && checkpointCompletedEntities.has(entity)) {
             logger.info(
               "Skipping entity already completed in checkpointed run",
@@ -1358,6 +1414,10 @@ export const flowFunction = inngest.createFunction(
           let completed = false;
 
           while (!completed) {
+            await throwIfExecutionCancelled("connector-before-chunk", {
+              entity,
+              chunkIndex,
+            });
             const chunkResult = await step.run(
               `sync-${entity}-chunk-${chunkIndex}`,
               async () => {
@@ -1543,6 +1603,10 @@ export const flowFunction = inngest.createFunction(
                 return result;
               },
             );
+            await throwIfExecutionCancelled("connector-after-chunk", {
+              entity,
+              chunkIndex,
+            });
 
             state = chunkResult.state;
             completed = chunkResult.completed;
@@ -1595,6 +1659,7 @@ export const flowFunction = inngest.createFunction(
         }
       } else {
         // Fall back to non-chunked execution for connectors that don't support it
+        await throwIfExecutionCancelled("connector-before-non-chunked-sync");
         await step.run("execute-sync", async () => {
           // For non-chunked sync, we need to get the entities
           const dataSource = await databaseDataSourceManager.getDataSource(
@@ -1772,6 +1837,10 @@ export const flowFunction = inngest.createFunction(
             let lastEventId: string | null = null;
 
             while (maxReplayEvents === 0 || queued < maxReplayEvents) {
+              await throwIfExecutionCancelled("webhook-replay-loop", {
+                queued,
+                totalPending,
+              });
               const cursorClause: Record<string, unknown> =
                 lastReceivedAt && lastEventId
                   ? {
@@ -1924,6 +1993,7 @@ export const flowFunction = inngest.createFunction(
       }
 
       // Update flow success status
+      await throwIfExecutionCancelled("connector-before-success-mark");
       await step.run("update-success-status", async () => {
         logger.info("Updating flow success status", { flowId });
         await Flow.findByIdAndUpdate(flowId, {
@@ -1946,7 +2016,7 @@ export const flowFunction = inngest.createFunction(
 
             // Update the execution to completed
             const result = await collection.updateOne(
-              { _id: new Types.ObjectId(executionId) },
+              { _id: new Types.ObjectId(executionId), status: "running" },
               {
                 $set: {
                   completedAt,
@@ -1976,9 +2046,21 @@ export const flowFunction = inngest.createFunction(
             );
 
             if (result.matchedCount === 0) {
-              throw new Error(
-                `Failed to update execution to completed: ${executionId}`,
+              const current = await collection.findOne(
+                { _id: new Types.ObjectId(executionId) },
+                { projection: { status: 1 } },
               );
+              if (current?.status === "cancelled") {
+                logger.info(
+                  "Skipping completion update because execution is cancelled",
+                  {
+                    flowId,
+                    executionId,
+                  },
+                );
+                return;
+              }
+              throw new Error(`Failed to update execution: ${executionId}`);
             }
 
             // Calculate duration after update
