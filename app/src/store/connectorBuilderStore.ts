@@ -77,12 +77,12 @@ const connectorEntitySchema = z.object({
 
 const connectorOutputSchema = z.object({
   hasMore: z.boolean().default(false),
-  state: z.record(z.unknown()).default({}),
+  state: z.record(z.string(), z.unknown()).default({}),
   batches: z
     .array(
       z.object({
         entity: z.string(),
-        rows: z.array(z.record(z.unknown())).default([]),
+        rows: z.array(z.record(z.string(), z.unknown())).default([]),
         schema: connectorEntitySchema.optional(),
       }),
     )
@@ -118,8 +118,8 @@ const connectorInstanceSchema = z.object({
   workspaceId: z.string(),
   connectorId: z.string(),
   name: z.string(),
-  secrets: z.record(z.unknown()).default({}),
-  config: z.record(z.unknown()).default({}),
+  secrets: z.record(z.string(), z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   output: z.object({
     destinationDatabaseId: z.string().optional(),
     destinationSchema: z.string().optional(),
@@ -129,7 +129,7 @@ const connectorInstanceSchema = z.object({
       .optional(),
   }),
   triggers: z.array(connectorInstanceTriggerSchema).default([]),
-  state: z.record(z.unknown()).default({}),
+  state: z.record(z.string(), z.unknown()).default({}),
   status: z.enum(["idle", "active", "running", "error", "disabled"]),
   lastRunAt: z.string().optional(),
   lastSuccessAt: z.string().optional(),
@@ -435,11 +435,11 @@ const connectorExecutionSchema = z.object({
 });
 
 const persistedConnectorBuilderStateSchema = z.object({
-  connectors: z.record(z.array(connectorSchema)),
-  instances: z.record(z.array(connectorInstanceSchema)),
-  executionHistory: z.record(z.array(connectorExecutionSchema)),
+  connectors: z.record(z.string(), z.array(connectorSchema)),
+  instances: z.record(z.string(), z.array(connectorInstanceSchema)),
+  executionHistory: z.record(z.string(), z.array(connectorExecutionSchema)),
   selectedConnectorId: z.string().nullable(),
-  error: z.record(errorSchema.nullable()).optional().default({}),
+  error: z.record(z.string(), errorSchema.nullable()).optional().default({}),
 });
 
 type PersistedConnectorBuilderState = z.infer<
