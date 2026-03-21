@@ -235,12 +235,18 @@ export function useMosaicClient({
     (selection: MosaicSelectionInput | null) => {
       if (!crossFilterEnabled || !selectionRef.current) {
         clearSelection();
+        if (clientRef.current && mosaicInstance) {
+          void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+        }
         return;
       }
 
       const signature = selection ? JSON.stringify(selection) : null;
       if (!selection || selection.values.length === 0) {
         clearSelection();
+        if (clientRef.current && mosaicInstance) {
+          void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+        }
         return;
       }
 
@@ -250,6 +256,9 @@ export function useMosaicClient({
         lastClauseRef.current
       ) {
         clearSelection();
+        if (clientRef.current && mosaicInstance) {
+          void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+        }
         return;
       }
 
@@ -260,6 +269,9 @@ export function useMosaicClient({
 
       if (!clause) {
         clearSelection();
+        if (clientRef.current && mosaicInstance) {
+          void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+        }
         return;
       }
 

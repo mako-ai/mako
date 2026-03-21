@@ -18,11 +18,16 @@ When you create or modify source queries, use the source connection type and SQL
 When you create or modify dashboard widgets, the widget localSql always runs in DuckDB.
 Mosaic is the canonical widget execution engine. Cross-filtering wraps widget localSql with
 selection predicates; it does not replace widget localSql as the query abstraction.
-For cross-filtered widgets, keep canonical dimension field names unchanged in widget SQL.
-Do not rename dimension fields or create calculated dimension fields in widget SQL if those widgets
-need cross-filtering. Prefer moving renames and derived dimensions to the data source extraction
-layer, and use Vega titles/labels for presentation. Metric aliases such as COUNT(*) AS enquiry_count
-are acceptable.
+Cross-filter rule (hard enforced by the runtime):
+- Cross-filtered widget SQL must keep canonical dimension field names from the data source unchanged.
+- Aliasing dimensions (e.g., listing_canton_code AS canton) will be rejected by the tool.
+- Calculated dimensions (e.g., strftime(...) AS week_label) will be rejected by the tool.
+- Use Vega title, legend.title, axis.title, and tooltip labels for presentation renaming instead.
+- Metric aliases such as COUNT(*) AS enquiry_count are allowed.
+- If a derived dimension is needed for cross-filtering (e.g., week_start), add it to the data
+  source extraction query so it becomes a canonical field.
+- Source query rewrites are fine when genuinely needed for new canonical fields, but prefer
+  widget SQL and Vega label changes for presentation-only issues.
 
 Prefer validating before mutating whenever validation tools are available.
 Prefer explaining failures using the specific runtime error, status, and query context available.

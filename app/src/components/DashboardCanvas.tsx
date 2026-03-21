@@ -40,7 +40,8 @@ import { useTheme } from "../contexts/ThemeContext";
 import {
   activateDashboardSession,
   getDashboardMosaicInstance,
-  refreshAllDashboardDataSourcesCommand,
+  refreshDashboardCommand,
+  reloadDashboardDataSourcesCommand,
   refreshDashboardWidgetCommand,
 } from "../dashboard-runtime/commands";
 import { useDashboardRuntimeStore } from "../dashboard-runtime/store";
@@ -247,8 +248,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [dashboard?.title]);
 
   const handleRefresh = useCallback(() => {
+    void refreshDashboardCommand(dashboardId);
+  }, [dashboardId]);
+
+  const handleReloadData = useCallback(() => {
     if (workspaceId) {
-      void refreshAllDashboardDataSourcesCommand(workspaceId, dashboardId);
+      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
     }
   }, [workspaceId, dashboardId]);
 
@@ -542,14 +547,26 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
 
-        {/* Refresh Sources */}
-        <Tooltip title="Refresh dashboard data and rerun widgets">
+        {/* Refresh dashboard: clear filters + rerun widgets */}
+        <Tooltip title="Clear filters and rerun all widgets">
           <Chip
             icon={<RefreshCw size={14} />}
-            label="Refresh dashboard"
+            label="Refresh"
             size="small"
             variant="outlined"
             onClick={handleRefresh}
+            sx={{ cursor: "pointer" }}
+          />
+        </Tooltip>
+
+        {/* Reload data: re-fetch from source DB */}
+        <Tooltip title="Reload data from source database">
+          <Chip
+            icon={<Database size={14} />}
+            label="Reload data"
+            size="small"
+            variant="outlined"
+            onClick={handleReloadData}
             sx={{ cursor: "pointer" }}
           />
         </Tooltip>

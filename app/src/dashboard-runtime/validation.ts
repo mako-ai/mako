@@ -130,24 +130,22 @@ function isSimpleColumnReference(expression: string): boolean {
 export function validateCrossFilterWidgetSql(options: {
   sql: string;
   crossFilterEnabled: boolean;
-}): string[] {
+}): { valid: true } | { valid: false; error: string } {
   if (!options.crossFilterEnabled) {
-    return [];
+    return { valid: true };
   }
 
   const sql = stripTrailingSemicolons(options.sql);
   const selectMatch = sql.match(/select\s+([\s\S]*?)\s+from\s/i);
   if (!selectMatch) {
-    return [];
+    return { valid: true };
   }
 
-  const warnings: string[] = [];
   const selectExpressions = splitTopLevelCsv(selectMatch[1]);
 
   for (const expression of selectExpressions) {
     const { source, alias } = parseAliasedExpression(expression);
-    const aggregate = isAggregateExpression(source);
-    if (aggregate) {
+    if (isAggregateExpression(source)) {
       continue;
     }
 
@@ -158,26 +156,30 @@ export function validateCrossFilterWidgetSql(options: {
         normalizedSource !== normalizedAlias &&
         isSimpleColumnReference(source)
       ) {
-        warnings.push(
-          `Cross-filter warning: avoid renaming dimension field "${source}" to "${alias}" in widget SQL. Keep the canonical source field name and use Vega titles/labels for presentation.`,
-        );
-      } else if (
+        return {
+          valid: false,
+          error: `Cross-filtered widget SQL must not rename dimension fields. Found "${source} AS ${alias}". Keep the canonical field name "${source}" and use Vega title/legend.title for presentation.`,
+        };
+      }
+      if (
         normalizedSource !== normalizedAlias &&
         !isSimpleColumnReference(source)
       ) {
-        warnings.push(
-          `Cross-filter warning: avoid calculated dimension "${source} AS ${alias}" in widget SQL. Move this derived field to the data source extraction layer if the widget needs cross-filtering.`,
-        );
+        return {
+          valid: false,
+          error: `Cross-filtered widget SQL must not create calculated dimensions. Found "${source} AS ${alias}". Add this derived field to the data source extraction query instead.`,
+        };
       }
       continue;
     }
 
     if (!isSimpleColumnReference(source)) {
-      warnings.push(
-        `Cross-filter warning: avoid calculated dimension "${source}" in widget SQL. Move derived dimensions to the data source extraction layer for cross-filtered widgets.`,
-      );
+      return {
+        valid: false,
+        error: `Cross-filtered widget SQL must not create calculated dimensions. Found "${source}". Add derived dimensions to the data source extraction query instead.`,
+      };
     }
   }
 
-  return warnings;
+  return { valid: true };
 }

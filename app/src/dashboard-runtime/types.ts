@@ -113,6 +113,10 @@ export type DashboardRuntimeEvent =
       dashboardId: string;
     }
   | {
+      type: "dashboard/reset";
+      dashboardId: string;
+    }
+  | {
       type: "datasource/load-started";
       dashboardId: string;
       dataSourceId: string;

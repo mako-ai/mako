@@ -33,6 +33,11 @@ export const dashboardRuntimeEvents = {
     dashboardId,
   }),
 
+  resetDashboard: (dashboardId: string): DashboardRuntimeEvent => ({
+    type: "dashboard/reset",
+    dashboardId,
+  }),
+
   datasourceLoadStarted: (
     dashboardId: string,
     dataSourceId: string,

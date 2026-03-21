@@ -33,7 +33,7 @@ import { apiClient } from "../../lib/api-client";
 import {
   createDashboardDataSource,
   importConsoleAsDashboardDataSource,
-  refreshAllDashboardDataSourcesCommand,
+  reloadDashboardDataSourcesCommand,
   refreshDashboardDataSourceCommand,
   removeDashboardDataSource,
   updateDashboardDataSourceQuery,
@@ -640,7 +640,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               startIcon={<RefreshCw size={14} />}
               onClick={() => {
                 if (workspaceId) {
-                  void refreshAllDashboardDataSourcesCommand(workspaceId);
+                  void reloadDashboardDataSourcesCommand(workspaceId);
                 }
               }}
             >

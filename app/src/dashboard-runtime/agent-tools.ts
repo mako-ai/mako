@@ -324,10 +324,18 @@ export async function executeDashboardAgentTool(
       crossFilter: { enabled: true },
       layout: input.layout as DashboardWidget["layout"],
     };
-    const crossFilterWarnings = validateCrossFilterWidgetSql({
+    const crossFilterValidation = validateCrossFilterWidgetSql({
       sql: widget.localSql,
       crossFilterEnabled: widget.crossFilter.enabled,
     });
+    if (!crossFilterValidation.valid) {
+      return {
+        success: false,
+        error: crossFilterValidation.error,
+        errorKind: "crossfilter_invalid",
+      };
+    }
+
     addDashboardWidget(widget);
 
     try {
@@ -345,7 +353,6 @@ export async function executeDashboardAgentTool(
           sampleRow: result.rows[0] ?? null,
         },
         specValidation: input.vegaLiteSpec ? { valid: true } : undefined,
-        warnings: crossFilterWarnings,
       };
     } catch (error) {
       const message =
@@ -405,6 +412,27 @@ export async function executeDashboardAgentTool(
         };
       }
     }
+    {
+      const ctx2 = getActiveContext();
+      const dashboard2 = ctx2
+        ? useDashboardStore.getState().openDashboards[ctx2.dashboardId]
+        : null;
+      const widgetForValidation = dashboard2?.widgets.find(
+        w => w.id === input.widgetId,
+      );
+      const crossFilterValidation = validateCrossFilterWidgetSql({
+        sql: String(changes.localSql ?? widgetForValidation?.localSql ?? ""),
+        crossFilterEnabled: widgetForValidation?.crossFilter?.enabled ?? true,
+      });
+      if (!crossFilterValidation.valid) {
+        return {
+          success: false,
+          error: crossFilterValidation.error,
+          errorKind: "crossfilter_invalid",
+        };
+      }
+    }
+
     updateDashboardWidget(input.widgetId, changes as Partial<DashboardWidget>);
 
     try {
@@ -416,10 +444,6 @@ export async function executeDashboardAgentTool(
       if (!ctx || !widget) {
         return { success: true, widgetId: input.widgetId };
       }
-      const crossFilterWarnings = validateCrossFilterWidgetSql({
-        sql: widget.localSql,
-        crossFilterEnabled: widget.crossFilter?.enabled ?? true,
-      });
       const result = await previewDashboardQuery({
         dashboardId: ctx.dashboardId,
         dataSourceId: widget.dataSourceId,
@@ -433,7 +457,6 @@ export async function executeDashboardAgentTool(
           fields: result.fields.map(field => field.name),
           sampleRow: result.rows[0] ?? null,
         },
-        warnings: crossFilterWarnings,
       };
     } catch (error) {
       const message =

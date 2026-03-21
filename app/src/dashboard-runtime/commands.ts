@@ -254,7 +254,7 @@ export async function refreshDashboardDataSourceCommand(options: {
     .dispatch(dashboardRuntimeEvents.bumpQueryGeneration(dashboard._id));
 }
 
-export async function refreshAllDashboardDataSourcesCommand(
+export async function reloadDashboardDataSourcesCommand(
   workspaceId: string,
   dashboardId?: string,
 ): Promise<void> {
@@ -263,6 +263,23 @@ export async function refreshAllDashboardDataSourcesCommand(
   useDashboardRuntimeStore
     .getState()
     .dispatch(dashboardRuntimeEvents.bumpQueryGeneration(dashboard._id));
+}
+
+export async function refreshDashboardCommand(
+  dashboardId?: string,
+): Promise<void> {
+  const dashboard = getDashboardOrThrow(dashboardId);
+  const mosaicInstance = getMosaicInstance(dashboard._id);
+  if (mosaicInstance) {
+    try {
+      mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+    } catch {
+      // best-effort selection clear
+    }
+  }
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(dashboardRuntimeEvents.resetDashboard(dashboard._id));
 }
 
 export function refreshDashboardWidgetCommand(options: {

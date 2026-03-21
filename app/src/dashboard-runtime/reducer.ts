@@ -140,6 +140,26 @@ export function reduceDashboardRuntimeEvent(
       return;
     }
 
+    case "dashboard/reset": {
+      const session = ensureSessionState(state, event.dashboardId);
+      for (const widget of Object.values(session.widgets)) {
+        widget.queryStatus = "idle";
+        widget.queryError = null;
+        widget.queryErrorKind = null;
+        widget.renderStatus = "idle";
+        widget.renderError = null;
+        widget.renderErrorKind = null;
+      }
+      session.queryGeneration += 1;
+      appendLog(session, {
+        timestamp: Date.now(),
+        level: "info",
+        message: "Dashboard reset: cleared all widget errors and selections",
+        metadata: { queryGeneration: session.queryGeneration },
+      });
+      return;
+    }
+
     case "datasource/load-started": {
       const session = ensureSessionState(state, event.dashboardId);
       const dataSource = ensureDataSourceState(session, event.dataSourceId);
@@ -265,6 +285,7 @@ export function reduceDashboardRuntimeEvent(
       widget.queryError = event.error;
       widget.queryErrorKind = event.errorKind;
       widget.lastQueryAt = Date.now();
+      // Preserve last-known-good queryRowCount and queryFields for display
       appendLog(session, {
         timestamp: Date.now(),
         level: "error",
