@@ -8,8 +8,11 @@ import {
   IFlow,
 } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
-import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
+import {
+  cdcLiveTableName,
+  cdcStageTableName,
+} from "../../sync-cdc/table-names";
 import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
@@ -21,18 +24,18 @@ import { createDestinationWriter } from "../destination-writer.service";
 const log = loggers.sync("bigquery-cdc");
 
 async function stageChangeEventsToBigQuery(params: {
-  flow: Pick<IFlow, "tableDestination">;
+  flow: Pick<IFlow, "_id" | "tableDestination">;
   destinationDatabaseId: Types.ObjectId;
   destinationDatabaseName?: string;
   tableDestination: NonNullable<IFlow["tableDestination"]>;
   entity: string;
   events: IBigQueryChangeEvent[];
 }): Promise<void> {
-  const entityTableName = getEntityTableName(
-    params.tableDestination.tableName || "sync",
+  const stageTableName = cdcStageTableName(
+    params.tableDestination.tableName,
     params.entity,
+    String(params.flow._id),
   );
-  const stageTableName = `${entityTableName}__stage_changes`;
 
   const writer = await createDestinationWriter(
     {
@@ -208,9 +211,10 @@ export async function materializeBigQueryEntity(params: {
   );
 
   const latest = selectLatestChangePerRecord(pending);
-  const entityTableName = getEntityTableName(
+  const entityTableName = cdcLiveTableName(
     flow.tableDestination.tableName,
     params.entity,
+    String(flow._id),
   );
   const writer = await createDestinationWriter(
     {

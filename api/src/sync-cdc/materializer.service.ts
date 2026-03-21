@@ -13,9 +13,9 @@ import {
   buildCdcEntityLayout,
   resolveCdcDestinationAdapter,
 } from "./adapters/registry";
-import { getEntityTableName } from "../sync/sync-orchestrator";
 import { getCdcStateInvariant } from "./state/sync.machine";
 import { toCdcErrorInfo } from "./error-utils";
+import { cdcLiveTableName } from "./table-names";
 
 const log = loggers.sync("cdc.materializer");
 
@@ -52,9 +52,10 @@ export class CdcMaterializerService {
         layout.entity === params.entity ||
         layout.entity === params.entity.split(":")[0],
     );
-    const tableName = getEntityTableName(
+    const tableName = cdcLiveTableName(
       flow.tableDestination.tableName,
       params.entity,
+      String(flow._id),
     );
     const adapter = resolveCdcDestinationAdapter({
       destinationType: destination.type,

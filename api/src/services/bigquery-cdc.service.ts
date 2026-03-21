@@ -51,8 +51,17 @@ export function sanitizeBackfillPayloadForIdempotency(
   return sanitizeBackfillPayload(payload);
 }
 
-function buildIdempotencyKey(input: ChangeInput): string {
-  if (input.idempotencyKey) return input.idempotencyKey;
+function scopeIdempotencyKey(flowId: Types.ObjectId, key: string): string {
+  return `flow:${String(flowId)}:${key}`;
+}
+
+function buildIdempotencyKey(
+  input: ChangeInput,
+  flowId: Types.ObjectId,
+): string {
+  if (input.idempotencyKey) {
+    return scopeIdempotencyKey(flowId, input.idempotencyKey);
+  }
   const payloadForHash =
     input.sourceKind === "backfill"
       ? sanitizeBackfillPayloadForIdempotency(input.payload || {})
@@ -61,7 +70,7 @@ function buildIdempotencyKey(input: ChangeInput): string {
     .createHash("sha1")
     .update(stableStringify(payloadForHash))
     .digest("hex");
-  return [
+  const rawKey = [
     input.sourceKind,
     input.entity,
     input.recordId,
@@ -69,6 +78,7 @@ function buildIdempotencyKey(input: ChangeInput): string {
     input.sourceTs?.toISOString() || "na",
     payloadHash,
   ].join(":");
+  return scopeIdempotencyKey(flowId, rawKey);
 }
 
 async function reserveIngestSeqRange(
@@ -280,11 +290,14 @@ export async function appendBigQueryChangeEvents(params: {
       sourceTs,
       ingestTs: now,
       ingestSeq: nextSeq++,
-      idempotencyKey: buildIdempotencyKey({
-        ...change,
-        payload,
-        sourceTs,
-      }),
+      idempotencyKey: buildIdempotencyKey(
+        {
+          ...change,
+          payload,
+          sourceTs,
+        },
+        params.flowId,
+      ),
       payload,
       webhookEventId: change.webhookEventId,
       stageStatus: "pending",
@@ -460,6 +473,7 @@ export async function getBigQueryCdcFlowStats(params: {
 }
 
 export async function mapBackfillRecordsToChanges(params: {
+  flowId?: string;
   entity: string;
   records: Array<Record<string, unknown>>;
   runId?: string;
@@ -491,7 +505,7 @@ export async function mapBackfillRecordsToChanges(params: {
       sourceTs,
       sourceKind: "backfill",
       runId: params.runId,
-      idempotencyKey: `backfill:${params.entity}:${recordId}:${sourceTs.toISOString()}:${hash}`,
+      idempotencyKey: `backfill:${params.flowId ? `${params.flowId}:` : ""}${params.entity}:${recordId}:${sourceTs.toISOString()}:${hash}`,
     };
   });
 }

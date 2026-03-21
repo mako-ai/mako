@@ -14,11 +14,11 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { databaseRegistry } from "../databases/registry";
-import { getEntityTableName } from "../sync/sync-orchestrator";
 import { retryFailedMaterializationForFlow } from "../services/bigquery-cdc.service";
 import { syncMachineService } from "./state/sync-machine.service";
 import { resolveConfiguredEntities } from "./entity-selection";
 import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
+import { cdcLiveTableName, cdcStageTableName } from "./table-names";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -452,13 +452,20 @@ export class CdcBackfillService {
     const schema = flow.tableDestination.schema;
     const stageSchema =
       destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
+    const flowId = flow._id.toString();
 
     for (const entity of enabledEntities) {
-      const liveTable = getEntityTableName(tablePrefix, entity);
+      const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
+      const stageTables = new Set<string>([
+        cdcStageTableName(tablePrefix, entity, flowId),
+        `${liveTable}__stage_changes`,
+      ]);
       await driver.dropTable(destination, liveTable, { schema });
-      await driver.dropTable(destination, `${liveTable}__stage_changes`, {
-        schema: stageSchema,
-      });
+      for (const stageTable of stageTables) {
+        await driver.dropTable(destination, stageTable, {
+          schema: stageSchema,
+        });
+      }
     }
 
     log.info("CDC destination tables dropped during resync", {
