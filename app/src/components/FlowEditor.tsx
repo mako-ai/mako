@@ -1,5 +1,5 @@
 import { useState, type RefObject } from "react";
-import { Box, Tabs, Tab } from "@mui/material";
+import { Box } from "@mui/material";
 import { ScheduledFlowForm } from "./ScheduledFlowForm";
 import { WebhookFlowForm } from "./WebhookFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
@@ -12,7 +12,7 @@ import { useFlowStore } from "../store/flowStore";
 interface FlowEditorProps {
   flowId?: string;
   isNew?: boolean;
-  flowType?: "scheduled" | "webhook" | "db-scheduled"; // For new flows, specify the type
+  flowType?: "scheduled" | "webhook" | "cdc" | "db-scheduled"; // For new flows, specify the type
   onSave?: () => void;
   onCancel?: () => void;
   dbFlowFormRef?: RefObject<DbFlowFormRef | null>;
@@ -30,7 +30,6 @@ export function FlowEditor({
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );
-  const [webhookTab, setWebhookTab] = useState(0);
   const { currentWorkspace } = useWorkspace();
   const { flows: flowsMap, runFlow } = useFlowStore();
 
@@ -39,12 +38,20 @@ export function FlowEditor({
   const currentFlow = currentFlowId
     ? flows.find(f => f._id === currentFlowId)
     : null;
+  const webhookFormType: "webhook" | "cdc" =
+    currentFlow?.type === "cdc" ||
+    currentFlow?.syncEngine === "cdc" ||
+    flowType === "cdc"
+      ? "cdc"
+      : "webhook";
 
   // Determine flow type - for new flows, use the prop; for existing, check the flow
   const isWebhookFlow = isNew
-    ? flowType === "webhook"
-    : currentFlow?.type === "webhook";
-  const isCdcFlow = !isNew && currentFlow?.syncEngine === "cdc";
+    ? flowType === "webhook" || flowType === "cdc"
+    : currentFlow?.type === "webhook" || currentFlow?.type === "cdc";
+  const isCdcFlow = isNew
+    ? flowType === "cdc"
+    : currentFlow?.type === "cdc" || currentFlow?.syncEngine === "cdc";
 
   // Check if this is a database-to-database flow
   const isDbFlow = isNew
@@ -92,6 +99,7 @@ export function FlowEditor({
           <WebhookFlowForm
             flowId={currentFlowId}
             isNew={isNew && !currentFlowId}
+            flowType={webhookFormType}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}
@@ -132,43 +140,14 @@ export function FlowEditor({
                 workspaceId={currentWorkspace.id}
                 flowId={currentFlowId}
                 onEdit={handleEditClick}
+                forceCdc={isCdcFlow}
               />
             ) : (
-              <Box
-                sx={{
-                  height: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                <Tabs
-                  value={webhookTab}
-                  onChange={(_, v) => setWebhookTab(v)}
-                  sx={{
-                    borderBottom: 1,
-                    borderColor: "divider",
-                    minHeight: 36,
-                  }}
-                >
-                  <Tab label="Webhook Events" sx={{ minHeight: 36, py: 0.5 }} />
-                  <Tab label="Backfill" sx={{ minHeight: 36, py: 0.5 }} />
-                </Tabs>
-                <Box sx={{ flex: 1, overflow: "hidden" }}>
-                  {webhookTab === 0 && (
-                    <WebhookStats
-                      workspaceId={currentWorkspace.id}
-                      flowId={currentFlowId}
-                      onEdit={handleEditClick}
-                    />
-                  )}
-                  {webhookTab === 1 && (
-                    <BackfillPanel
-                      workspaceId={currentWorkspace.id}
-                      flowId={currentFlowId}
-                    />
-                  )}
-                </Box>
-              </Box>
+              <WebhookStats
+                workspaceId={currentWorkspace.id}
+                flowId={currentFlowId}
+                onEdit={handleEditClick}
+              />
             ))}
         </>
       )}

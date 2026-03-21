@@ -70,7 +70,7 @@ const flowSchema = z.object({
   dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseName: z.string().nullable().optional(),
-  type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
+  type: z.enum(["scheduled", "webhook", "cdc"]).optional(), // Remove default to detect missing type
   schedule: flowScheduleSchema,
   webhookConfig: webhookConfigSchema,
   entityFilter: z.array(z.string()).nullable().optional(),
@@ -304,6 +304,22 @@ export interface CdcSummary {
   }>;
 }
 
+export interface CdcRestartPreview {
+  flowId: string;
+  destinationType: string;
+  destinationSchema: string;
+  workingSchema: string;
+  entities: string[];
+  safeToDropLegacyTables: boolean;
+  tables: Array<{
+    entity: string;
+    kind: "live" | "working" | "legacy_live" | "legacy_working";
+    schema: string;
+    table: string;
+    fullName: string;
+  }>;
+}
+
 export interface CdcDiagnostics {
   syncState: "idle" | "backfill" | "catchup" | "live" | "paused" | "degraded";
   transitions: Array<{
@@ -417,13 +433,21 @@ interface FlowStore extends FlowStoreState {
   deleteFlow: (workspaceId: string, flowId: string) => Promise<void>;
   toggleFlow: (workspaceId: string, flowId: string) => Promise<void>;
   runFlow: (workspaceId: string, flowId: string) => Promise<void>;
-  backfillFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  backfillFlow: (
+    workspaceId: string,
+    flowId: string,
+    options?: { entities?: string[] },
+  ) => Promise<void>;
   setSyncEngine: (
     workspaceId: string,
     flowId: string,
     syncEngine: "legacy" | "cdc",
   ) => Promise<boolean>;
-  startCdcBackfill: (workspaceId: string, flowId: string) => Promise<boolean>;
+  startCdcBackfill: (
+    workspaceId: string,
+    flowId: string,
+    options?: { entities?: string[] },
+  ) => Promise<boolean>;
   pauseCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resumeCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resyncCdcFlow: (
@@ -432,6 +456,7 @@ interface FlowStore extends FlowStoreState {
     options?: {
       deleteDestination?: boolean;
       clearWebhookEvents?: boolean;
+      entities?: string[];
     },
   ) => Promise<boolean>;
   recoverCdcFlow: (
@@ -452,6 +477,11 @@ interface FlowStore extends FlowStoreState {
     workspaceId: string,
     flowId: string,
   ) => Promise<CdcSummary | null>;
+  fetchCdcRestartPreview: (
+    workspaceId: string,
+    flowId: string,
+    options?: { entities?: string[] },
+  ) => Promise<CdcRestartPreview | null>;
   fetchCdcDiagnostics: (
     workspaceId: string,
     flowId: string,
@@ -794,7 +824,7 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      backfillFlow: async (workspaceId: string, flowId: string) => {
+      backfillFlow: async (workspaceId: string, flowId: string, options) => {
         set(state => {
           state.loading[workspaceId] = true;
           state.error[workspaceId] = null;
@@ -806,11 +836,15 @@ export const useFlowStore = create<FlowStore>()(
             flow?.syncEngine === "cdc"
               ? `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`
               : `/workspaces/${workspaceId}/flows/${flowId}/backfill`;
+          const payload =
+            options?.entities && options.entities.length > 0
+              ? { entities: options.entities }
+              : undefined;
           const response = await apiClient.post<{
             success: boolean;
             message?: string;
             error?: string;
-          }>(endpoint);
+          }>(endpoint, payload);
 
           if (response.success) {
             await get().refresh(workspaceId);
@@ -849,13 +883,18 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      startCdcBackfill: async (workspaceId, flowId) => {
+      startCdcBackfill: async (workspaceId, flowId, options) => {
         try {
+          const payload =
+            options?.entities && options.entities.length > 0
+              ? { entities: options.entities }
+              : undefined;
           const response = await apiClient.post<{
             success: boolean;
             error?: string;
           }>(
             `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`,
+            payload,
           );
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC backfill");
@@ -910,12 +949,17 @@ export const useFlowStore = create<FlowStore>()(
 
       resyncCdcFlow: async (workspaceId, flowId, options) => {
         try {
+          const entities =
+            options?.entities && options.entities.length > 0
+              ? options.entities
+              : undefined;
           const response = await apiClient.post<{
             success: boolean;
             error?: string;
           }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/resync`, {
             deleteDestination: options?.deleteDestination === true,
             clearWebhookEvents: options?.clearWebhookEvents === true,
+            entities,
           });
           if (!response.success) {
             throw new Error(response.error || "Failed to resync CDC flow");
@@ -987,6 +1031,29 @@ export const useFlowStore = create<FlowStore>()(
             data: CdcSummary;
             error?: string;
           }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/summary`);
+          return response.success ? response.data : null;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return null;
+        }
+      },
+
+      fetchCdcRestartPreview: async (workspaceId, flowId, options) => {
+        try {
+          const entitiesParam =
+            options?.entities && options.entities.length > 0
+              ? { entities: options.entities.join(",") }
+              : undefined;
+          const response = await apiClient.get<{
+            success: boolean;
+            data: CdcRestartPreview;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/restart-preview`,
+            entitiesParam,
+          );
           return response.success ? response.data : null;
         } catch (error) {
           set(state => {

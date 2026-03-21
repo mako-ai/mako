@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useForm, Controller } from "react-hook-form";
 import {
   Box,
@@ -14,6 +14,7 @@ import {
   Chip,
   Stack,
   Checkbox,
+  CircularProgress,
 } from "@mui/material";
 import {
   Save as SaveIcon,
@@ -27,11 +28,13 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
+import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 import { trackEvent } from "../lib/analytics";
 
 interface WebhookFlowFormProps {
   flowId?: string;
   isNew?: boolean;
+  flowType?: "webhook" | "cdc";
   onSave?: () => void;
   onSaved?: (flowId: string) => void;
   onCancel?: () => void;
@@ -281,8 +284,8 @@ interface FormData {
   dataSourceId: string;
   destinationDatabaseId: string;
   webhookSecret?: string;
-  syncEngine?: "legacy" | "cdc";
   deleteMode?: "hard" | "soft";
+  entityFilter?: string[];
   tableDestination?: {
     tablePrefix?: string;
     schema?: string;
@@ -290,9 +293,17 @@ interface FormData {
   entityLayouts?: EntityLayoutConfig[];
 }
 
+interface EntityMetadata {
+  name: string;
+  label?: string;
+  description?: string;
+  subEntities?: EntityMetadata[];
+}
+
 export function WebhookFlowForm({
   flowId,
   isNew = false,
+  flowType = "webhook",
   onSave,
   onSaved,
   onCancel,
@@ -304,7 +315,6 @@ export function WebhookFlowForm({
     error: errorMap,
     createFlow,
     updateFlow,
-    setSyncEngine,
     clearError,
     deleteFlow,
     fetchConnectors,
@@ -331,6 +341,14 @@ export function WebhookFlowForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [_copySuccess, setCopySuccess] = useState(false);
+  const [availableEntities, setAvailableEntities] = useState<EntityMetadata[]>(
+    [],
+  );
+  const [entitiesLoadState, setEntitiesLoadState] = useState<
+    "idle" | "loading" | "loaded" | "error"
+  >("idle");
+  const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
+  const [selectAllEntities, setSelectAllEntities] = useState(true);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );
@@ -348,8 +366,8 @@ export function WebhookFlowForm({
     defaultValues: {
       dataSourceId: "",
       destinationDatabaseId: "",
-      syncEngine: "legacy",
       deleteMode: "hard",
+      entityFilter: [],
       tableDestination: {
         tablePrefix: "",
         schema: "",
@@ -360,9 +378,18 @@ export function WebhookFlowForm({
 
   const watchDataSourceId = watch("dataSourceId");
   const watchDestinationId = watch("destinationDatabaseId");
-  const watchSyncEngine = watch("syncEngine") || "legacy";
   const watchEntityLayouts = watch("entityLayouts") || [];
   const watchDeleteMode = watch("deleteMode");
+  const currentFlow = currentFlowId
+    ? flows.find(flow => flow._id === currentFlowId)
+    : undefined;
+  const effectiveFlowType: "webhook" | "cdc" =
+    currentFlow?.type === "cdc" ||
+    currentFlow?.syncEngine === "cdc" ||
+    flowType === "cdc"
+      ? "cdc"
+      : "webhook";
+  const isLegacyWebhookFlow = effectiveFlowType === "webhook";
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -654,11 +681,131 @@ export function WebhookFlowForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id, ensureConnections]);
 
+  const normalizedEntityOptions = useMemo(() => {
+    if (!availableEntities.length) return [];
+    const options: Array<{ key: string; label: string }> = [];
+    for (const entity of availableEntities) {
+      options.push({
+        key: entity.name,
+        label: entity.label || entity.name,
+      });
+      for (const subEntity of entity.subEntities || []) {
+        options.push({
+          key: `${entity.name}:${subEntity.name}`,
+          label:
+            subEntity.label ||
+            `${entity.label || entity.name} / ${subEntity.name}`,
+        });
+      }
+    }
+    return options;
+  }, [availableEntities]);
+
+  const totalLegacyEntityOptions = normalizedEntityOptions.length;
+
+  const updateLegacyAvailableEntities = useCallback(
+    (dataSourceId: string) => {
+      if (!isLegacyWebhookFlow) {
+        setAvailableEntities([]);
+        setEntitiesLoadState("idle");
+        return;
+      }
+
+      if (!dataSourceId) {
+        setAvailableEntities([]);
+        setEntitiesLoadState("idle");
+        return;
+      }
+
+      if (isLoadingConnectors || !connectors.length) {
+        setEntitiesLoadState("loading");
+        return;
+      }
+
+      setEntitiesLoadState("loading");
+      (async () => {
+        try {
+          if (!currentWorkspace?.id) throw new Error("No workspace selected");
+          const list = await useAvailableEntitiesStore
+            .getState()
+            .fetch(currentWorkspace.id, dataSourceId);
+
+          const entityMetadata: EntityMetadata[] = Array.isArray(list)
+            ? list.map((entity: any) => {
+                if (typeof entity === "string") {
+                  return {
+                    name: entity,
+                    label: entity.charAt(0).toUpperCase() + entity.slice(1),
+                  };
+                }
+                return entity as EntityMetadata;
+              })
+            : [];
+
+          setAvailableEntities(entityMetadata);
+          setEntitiesLoadState("loaded");
+
+          if (isNewMode) {
+            setSelectAllEntities(true);
+            setSelectedEntities([]);
+            setValue("entityFilter", [], { shouldDirty: true });
+          }
+        } catch (_error) {
+          setAvailableEntities([]);
+          setEntitiesLoadState("error");
+        }
+      })();
+    },
+    [
+      isLegacyWebhookFlow,
+      isLoadingConnectors,
+      connectors,
+      currentWorkspace?.id,
+      isNewMode,
+      setValue,
+    ],
+  );
+
+  useEffect(() => {
+    updateLegacyAvailableEntities(watchDataSourceId);
+  }, [watchDataSourceId, updateLegacyAvailableEntities]);
+
+  const handleLegacySelectAllChange = (checked: boolean) => {
+    setSelectAllEntities(checked);
+    if (checked) {
+      setSelectedEntities([]);
+      setValue("entityFilter", [], { shouldDirty: true });
+      return;
+    }
+
+    setSelectedEntities([]);
+    setValue("entityFilter", [], { shouldDirty: true });
+  };
+
+  const handleLegacyEntityToggle = (entityKey: string, checked: boolean) => {
+    const baseSelected = selectAllEntities
+      ? normalizedEntityOptions.map(option => option.key)
+      : selectedEntities;
+    const nextSelected = checked
+      ? Array.from(new Set([...baseSelected, entityKey]))
+      : baseSelected.filter(entity => entity !== entityKey);
+
+    const allSelected =
+      totalLegacyEntityOptions > 0 &&
+      nextSelected.length === totalLegacyEntityOptions;
+
+    setSelectedEntities(allSelected ? [] : nextSelected);
+    setSelectAllEntities(allSelected);
+    setValue("entityFilter", allSelected ? [] : nextSelected, {
+      shouldDirty: true,
+    });
+  };
+
   // Load flow data if editing
   useEffect(() => {
     if (!isNewMode && currentFlowId && flows.length > 0) {
       const flow = flows.find(j => j._id === currentFlowId);
-      if (flow && flow.type === "webhook") {
+      if (flow && (flow.type === "webhook" || flow.type === "cdc")) {
         const dataSourceId =
           typeof flow.dataSourceId === "string"
             ? flow.dataSourceId
@@ -671,8 +818,8 @@ export function WebhookFlowForm({
         const formData: FormData = {
           dataSourceId: dataSourceId || "",
           destinationDatabaseId: destinationDatabaseId || "",
-          syncEngine: flow.syncEngine || "legacy",
           deleteMode: flow.deleteMode || "hard",
+          entityFilter: flow.entityFilter || [],
         };
 
         if (flow.tableDestination) {
@@ -695,9 +842,32 @@ export function WebhookFlowForm({
         }
 
         reset(formData);
+
+        const flowIsLegacyWebhook =
+          flow.type === "webhook" && flow.syncEngine !== "cdc";
+        if (flowIsLegacyWebhook && flow.entityFilter?.length) {
+          setSelectAllEntities(false);
+          setSelectedEntities(flow.entityFilter);
+          setValue("entityFilter", flow.entityFilter);
+        } else {
+          setSelectAllEntities(true);
+          setSelectedEntities([]);
+          setValue("entityFilter", []);
+        }
       }
     }
-  }, [isNewMode, currentFlowId, flows, reset]);
+  }, [isNewMode, currentFlowId, flows, reset, setValue]);
+
+  useEffect(() => {
+    if (!isLegacyWebhookFlow) {
+      return;
+    }
+    if (selectAllEntities) {
+      setValue("entityFilter", [], { shouldDirty: true });
+    } else {
+      setValue("entityFilter", selectedEntities, { shouldDirty: true });
+    }
+  }, [isLegacyWebhookFlow, selectAllEntities, selectedEntities, setValue]);
 
   // Clear store error when component unmounts
   useEffect(() => {
@@ -731,29 +901,49 @@ export function WebhookFlowForm({
       const generatedName = `${selectedSource?.name || "Source"} → ${selectedDatabase?.name || "Destination"}`;
 
       const isBq = selectedDestination?.type === "bigquery";
-      if (data.syncEngine === "cdc" && !isBq) {
+      const desiredSyncEngine: "legacy" | "cdc" =
+        effectiveFlowType === "cdc" ? "cdc" : "legacy";
+      const tablePrefix = data.tableDestination?.tablePrefix?.trim() || "";
+
+      if (effectiveFlowType === "cdc" && !isBq) {
+        throw new Error("CDC flow type requires a BigQuery destination.");
+      }
+      if (effectiveFlowType === "webhook" && isBq) {
         throw new Error(
-          "CDC engine is currently available only for BigQuery destinations.",
+          "Legacy webhook flow does not support BigQuery table destination. Use CDC flow type instead.",
+        );
+      }
+      if (
+        effectiveFlowType === "webhook" &&
+        !selectAllEntities &&
+        selectedEntities.length === 0
+      ) {
+        throw new Error(
+          "Please select at least one entity to sync, or choose All Entities.",
         );
       }
 
       const payload: any = {
         name: generatedName,
-        type: "webhook",
+        type: effectiveFlowType,
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,
         syncMode: "incremental",
-        syncEngine: data.syncEngine || "legacy",
+        syncEngine: desiredSyncEngine,
         enabled: true,
         webhookSecret: data.webhookSecret || "",
         deleteMode: isBq ? "soft" : data.deleteMode || "hard",
       };
 
+      if (effectiveFlowType === "webhook") {
+        payload.entityFilter = selectAllEntities ? [] : selectedEntities;
+      }
+
       if (isBq && data.tableDestination?.schema) {
         payload.tableDestination = {
           connectionId: data.destinationDatabaseId,
           schema: data.tableDestination.schema,
-          tableName: data.tableDestination.tablePrefix || "",
+          tableName: tablePrefix,
           createIfNotExists: true,
         };
         payload.entityLayouts = data.entityLayouts;
@@ -762,27 +952,13 @@ export function WebhookFlowForm({
           .map(l => l.entity);
       }
 
-      const desiredSyncEngine = data.syncEngine || "legacy";
-      const currentSyncEngine =
-        !isNewMode && currentFlowId
-          ? (flows.find(flow => flow._id === currentFlowId)?.syncEngine ??
-            "legacy")
-          : "legacy";
-
       let newFlow;
       if (isNewMode) {
         newFlow = await createFlow(currentWorkspace.id, payload);
-        if (desiredSyncEngine !== "legacy") {
-          await setSyncEngine(
-            currentWorkspace.id,
-            newFlow._id,
-            desiredSyncEngine,
-          );
-        }
 
         // Track flow creation
         trackEvent("flow_created", {
-          flow_type: "webhook",
+          flow_type: effectiveFlowType,
           connector_type: selectedSource?.type,
         });
 
@@ -803,13 +979,6 @@ export function WebhookFlowForm({
         onSave?.();
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
-        if (desiredSyncEngine !== currentSyncEngine) {
-          await setSyncEngine(
-            currentWorkspace.id,
-            currentFlowId,
-            desiredSyncEngine,
-          );
-        }
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
@@ -1006,29 +1175,6 @@ export function WebhookFlowForm({
                 />
               </Stack>
 
-              <Controller
-                name="syncEngine"
-                control={control}
-                render={({ field }) => (
-                  <FormControl fullWidth>
-                    <InputLabel>Sync engine</InputLabel>
-                    <Select {...field} label="Sync engine">
-                      <MenuItem value="legacy">legacy</MenuItem>
-                      <MenuItem value="cdc" disabled={!isBigQueryDest}>
-                        cdc
-                      </MenuItem>
-                    </Select>
-                    <FormHelperText>
-                      {watchSyncEngine === "cdc"
-                        ? "CDC mode enabled for this flow."
-                        : isBigQueryDest
-                          ? "CDC is opt-in per flow; legacy remains default."
-                          : "CDC currently requires a BigQuery destination."}
-                    </FormHelperText>
-                  </FormControl>
-                )}
-              />
-
               {/* Delete Mode */}
               <Controller
                 name="deleteMode"
@@ -1059,6 +1205,121 @@ export function WebhookFlowForm({
                   </FormControl>
                 )}
               />
+
+              {isLegacyWebhookFlow && (
+                <Box
+                  sx={{
+                    p: 2,
+                    bgcolor: "background.paper",
+                    borderRadius: 1,
+                    border: 1,
+                    borderColor: "divider",
+                  }}
+                >
+                  <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
+                    Entities to Sync
+                  </Typography>
+
+                  {entitiesLoadState === "loading" && (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1,
+                        color: "text.secondary",
+                      }}
+                    >
+                      <CircularProgress size={18} />
+                      <Typography variant="body2">
+                        Loading available entities...
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {entitiesLoadState === "error" && (
+                    <Alert severity="warning">
+                      Failed to load entities for this connector.
+                    </Alert>
+                  )}
+
+                  {entitiesLoadState === "loaded" && (
+                    <Stack spacing={1}>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 1,
+                        }}
+                      >
+                        <Checkbox
+                          size="small"
+                          checked={selectAllEntities}
+                          indeterminate={
+                            !selectAllEntities &&
+                            selectedEntities.length > 0 &&
+                            selectedEntities.length < totalLegacyEntityOptions
+                          }
+                          onChange={e =>
+                            handleLegacySelectAllChange(e.target.checked)
+                          }
+                        />
+                        <Typography variant="body2" fontWeight={600}>
+                          All Entities
+                        </Typography>
+                      </Box>
+
+                      {totalLegacyEntityOptions > 0 ? (
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gridTemplateColumns:
+                              "repeat(auto-fit, minmax(180px, 1fr))",
+                            gap: 0.5,
+                          }}
+                        >
+                          {normalizedEntityOptions.map(option => (
+                            <Box
+                              key={option.key}
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                minHeight: 36,
+                              }}
+                            >
+                              <Checkbox
+                                size="small"
+                                checked={
+                                  selectAllEntities ||
+                                  selectedEntities.includes(option.key)
+                                }
+                                onChange={e =>
+                                  handleLegacyEntityToggle(
+                                    option.key,
+                                    e.target.checked,
+                                  )
+                                }
+                              />
+                              <Typography variant="body2">
+                                {option.label}
+                              </Typography>
+                            </Box>
+                          ))}
+                        </Box>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          No entities available for this connector.
+                        </Typography>
+                      )}
+
+                      <Typography variant="caption" color="text.secondary">
+                        {selectAllEntities
+                          ? "All webhook entity types will be processed."
+                          : `${selectedEntities.length} entities selected.`}
+                      </Typography>
+                    </Stack>
+                  )}
+                </Box>
+              )}
 
               {/* BigQuery Destination Config */}
               {isBigQueryDest && (

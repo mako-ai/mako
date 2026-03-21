@@ -576,7 +576,7 @@ export interface ISyncStateMeta {
 export interface IFlow extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
-  type: "scheduled" | "webhook"; // Required field
+  type: "scheduled" | "webhook" | "cdc"; // Required field
 
   // Source configuration - either connector or database
   sourceType: "connector" | "database";
@@ -1496,7 +1496,7 @@ const FlowSchema = new Schema<IFlow>(
     },
     type: {
       type: String,
-      enum: ["scheduled", "webhook"],
+      enum: ["scheduled", "webhook", "cdc"],
       required: true,
     },
     // Source type discriminator - defaults to "connector" for backward compatibility
@@ -1568,8 +1568,8 @@ const FlowSchema = new Schema<IFlow>(
         },
         validate: {
           validator: function (v: string) {
-            // Skip validation for webhook flows
-            if (this.type === "webhook") return true;
+            // Skip validation for webhook and CDC flows
+            if (this.type === "webhook" || this.type === "cdc") return true;
             if (!this.schedule?.enabled) return true;
             // Basic cron validation - 5 or 6 fields
             const fields = v.split(" ");

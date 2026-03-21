@@ -13,8 +13,8 @@ import {
 import { loggers } from "../logging";
 import { createDestinationWriter } from "./destination-writer.service";
 import { inngest } from "../inngest/client";
-import { getEntityTableName } from "../sync/sync-orchestrator";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
+import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/table-names";
 import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 
 const log = loggers.sync("bigquery-cdc");
@@ -142,6 +142,65 @@ function resolveSourceTs(
   return fallback || new Date();
 }
 
+function resolveCdcEntityLayout(flow: any, entity: string): any | undefined {
+  const layouts = Array.isArray(flow?.entityLayouts) ? flow.entityLayouts : [];
+  if (layouts.length === 0) return undefined;
+
+  const exact = layouts.find((layout: any) => layout?.entity === entity);
+  if (exact) return exact;
+
+  const baseEntity = entity.split(":")[0];
+  return layouts.find((layout: any) => layout?.entity === baseEntity);
+}
+
+function resolveCdcLiveTableDestination(params: {
+  flow: any;
+  entity: string;
+  tableName: string;
+}) {
+  const baseDestination = params.flow.tableDestination || {};
+  const entityLayout = resolveCdcEntityLayout(params.flow, params.entity);
+
+  const partitioning = entityLayout?.partitionField
+    ? {
+        enabled: true,
+        type: "time" as const,
+        field: entityLayout.partitionField,
+        granularity: entityLayout.partitionGranularity || "day",
+        requirePartitionFilter:
+          baseDestination.partitioning?.requirePartitionFilter,
+      }
+    : baseDestination.partitioning;
+
+  const clustering =
+    Array.isArray(entityLayout?.clusterFields) &&
+    entityLayout.clusterFields.length > 0
+      ? {
+          enabled: true,
+          fields: entityLayout.clusterFields,
+        }
+      : baseDestination.clustering;
+
+  return {
+    ...baseDestination,
+    tableName: params.tableName,
+    partitioning,
+    clustering,
+  };
+}
+
+function isRetryableBigQueryWriteError(errorMessage?: string): boolean {
+  if (!errorMessage) return false;
+  const normalized = errorMessage.toLowerCase();
+  return (
+    normalized.includes("bigquery_schema_update_quota_exceeded") ||
+    normalized.includes("table exceeded quota for table update operations") ||
+    normalized.includes("job exceeded rate limits") ||
+    normalized.includes("unrecognized name:") ||
+    normalized.includes("is not present in table")
+  );
+}
+
 function buildIdempotencyKey(input: ChangeInput): string {
   if (input.idempotencyKey) return input.idempotencyKey;
   const payloadForHash =
@@ -188,9 +247,9 @@ async function upsertStateAfterIngest(params: {
     params.sourceKind === "backfill"
       ? Math.max(
           parseInt(
-            process.env.BIGQUERY_CDC_BACKFILL_MERGE_INTERVAL_SECONDS || "900",
+            process.env.BIGQUERY_CDC_BACKFILL_MERGE_INTERVAL_SECONDS || "300",
             10,
-          ) || 900,
+          ) || 300,
           60,
         )
       : Math.max(
@@ -333,8 +392,12 @@ export async function appendBigQueryChangeEvents(params: {
 
   const byEntity = new Map<string, ChangeInput[]>();
   for (const change of params.changes) {
-    if (!byEntity.has(change.entity)) byEntity.set(change.entity, []);
-    byEntity.get(change.entity)!.push(change);
+    const existing = byEntity.get(change.entity);
+    if (existing) {
+      existing.push(change);
+    } else {
+      byEntity.set(change.entity, [change]);
+    }
   }
 
   const seqStart = await reserveIngestSeqRange(
@@ -481,11 +544,12 @@ async function stageChangeEventsToBigQuery(params: {
   entity: string;
   events: any[];
 }): Promise<void> {
-  const entityTableName = getEntityTableName(
+  const flowId = String(params.flow._id);
+  const stageTableName = cdcStageTableName(
     params.tableDestination.tableName,
     params.entity,
+    flowId,
   );
-  const stageTableName = `${entityTableName}__stage_changes`;
 
   const writer = await createDestinationWriter(
     {
@@ -658,9 +722,10 @@ export async function materializeBigQueryEntity(params: {
   );
 
   const latest = selectLatestChangePerRecord(pending);
-  const entityTableName = getEntityTableName(
+  const entityTableName = cdcLiveTableName(
     flow.tableDestination.tableName,
     params.entity,
+    String(flow._id),
   );
   const writer = await createDestinationWriter(
     {
@@ -668,10 +733,11 @@ export async function materializeBigQueryEntity(params: {
         String(flow.destinationDatabaseId),
       ),
       destinationDatabaseName: flow.destinationDatabaseName,
-      tableDestination: {
-        ...flow.tableDestination,
+      tableDestination: resolveCdcLiveTableDestination({
+        flow,
+        entity: params.entity,
         tableName: entityTableName,
-      },
+      }),
     },
     "bigquery-cdc",
   );
@@ -696,20 +762,53 @@ export async function materializeBigQueryEntity(params: {
     conflictStrategy: "update",
   });
   if (!write.success) {
+    const writeError = write.error || "Materialization write failed";
+    if (isRetryableBigQueryWriteError(writeError)) {
+      await BigQueryChangeEvent.updateMany(
+        { _id: { $in: pending.map(e => e._id) } },
+        {
+          $set: {
+            materializationStatus: "pending",
+            materializationError: {
+              message: writeError,
+              code: "WRITE_RETRYABLE",
+            },
+          },
+          $inc: { materializationAttemptCount: 1 },
+        },
+      );
+
+      log.warn(
+        "Retryable BigQuery CDC write failure; keeping rows pending for retry",
+        {
+          flowId: params.flowId,
+          entity: params.entity,
+          error: writeError,
+          pending: pending.length,
+        },
+      );
+
+      return {
+        staged: 0,
+        applied: 0,
+        lastMaterializedSeq: 0,
+      };
+    }
+
     await BigQueryChangeEvent.updateMany(
       { _id: { $in: pending.map(e => e._id) } },
       {
         $set: {
           materializationStatus: "failed",
           materializationError: {
-            message: write.error || "Materialization write failed",
+            message: writeError,
             code: "WRITE_FAILED",
           },
         },
         $inc: { materializationAttemptCount: 1 },
       },
     );
-    throw new Error(write.error || "Failed to materialize BigQuery CDC batch");
+    throw new Error(writeError || "Failed to materialize BigQuery CDC batch");
   }
 
   await BigQueryChangeEvent.updateMany(
@@ -858,6 +957,7 @@ export async function getBigQueryCdcFlowStats(params: {
 }
 
 export async function mapWebhookEventToChangeInput(params: {
+  flowId: string;
   entity: string;
   operation: ChangeOp;
   recordId: string;
@@ -876,11 +976,12 @@ export async function mapWebhookEventToChangeInput(params: {
     sourceTs,
     sourceKind: "webhook",
     webhookEventId: params.webhookEvent.eventId,
-    idempotencyKey: `webhook:${params.webhookEvent.eventId}:${params.entity}:${params.recordId}:${params.operation}`,
+    idempotencyKey: `webhook:${params.flowId}:${params.webhookEvent.eventId}:${params.entity}:${params.recordId}:${params.operation}`,
   };
 }
 
 export async function mapBackfillRecordsToChanges(params: {
+  flowId: string;
   entity: string;
   records: Array<Record<string, unknown>>;
   runId?: string;
@@ -910,7 +1011,7 @@ export async function mapBackfillRecordsToChanges(params: {
       sourceTs,
       sourceKind: "backfill",
       runId: params.runId,
-      idempotencyKey: `backfill:${params.entity}:${recordId}:${sourceTs.toISOString()}:${hash}`,
+      idempotencyKey: `backfill:${params.flowId}:${params.entity}:${recordId}:${sourceTs.toISOString()}:${hash}`,
     };
   });
 }

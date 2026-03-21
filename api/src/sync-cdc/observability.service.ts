@@ -5,7 +5,6 @@ import {
   CdcStateTransition,
   Flow,
   SyncState,
-  WebhookEvent,
 } from "../database/workspace-schema";
 import { CdcSyncDiagnostics, CdcSyncSummary } from "./contracts/sync-summary";
 import { resolveConfiguredEntities } from "./entity-selection";
@@ -32,19 +31,20 @@ export class CdcObservabilityService {
     }
 
     const syncState = (flow.syncState || "idle") as SyncState;
-    const [lastTransition, lastWebhook, states] = await Promise.all([
+    const [lastTransition, lastIngestedWebhook, states] = await Promise.all([
       CdcStateTransition.findOne({
         workspaceId: workspaceObjectId,
         flowId: flowObjectId,
       })
         .sort({ at: -1 })
         .lean(),
-      WebhookEvent.findOne({
+      CdcChangeEvent.findOne({
         workspaceId: workspaceObjectId,
         flowId: flowObjectId,
+        sourceKind: "webhook",
       })
-        .sort({ receivedAt: -1 })
-        .select({ receivedAt: 1 })
+        .sort({ ingestTs: -1 })
+        .select({ ingestTs: 1 })
         .lean(),
       CdcEntityState.find({
         workspaceId: workspaceObjectId,
@@ -216,7 +216,10 @@ export class CdcObservabilityService {
             reason: lastTransition.reason,
           }
         : null,
-      lastWebhookAt: lastWebhook?.receivedAt || null,
+      // Use the latest ingested webhook-derived CDC change timestamp so this
+      // aligns with materialization/log views (raw webhook receipts can be
+      // validated but intentionally ignored before CDC ingestion).
+      lastWebhookAt: lastIngestedWebhook?.ingestTs || null,
       lastMaterializedAt,
       appliedCount,
       backlogCount,

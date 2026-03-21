@@ -9,6 +9,7 @@ import { getSyncLogger } from "../logging";
 import { connectorRegistry } from "../../connectors/registry";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { getEntityTableName } from "../../sync/sync-orchestrator";
+import { cdcLiveTableName } from "../../sync-cdc/table-names";
 import { Types } from "mongoose";
 import {
   appendBigQueryChangeEvents,
@@ -118,12 +119,15 @@ export const webhookEventProcessFunction = inngest.createFunction(
               $set: {
                 status: "completed",
                 applyStatus: "applied",
+                applyError: {
+                  code: "UNKNOWN_EVENT_TYPE",
+                  message: `No webhook mapping configured for event type: ${eventType}`,
+                },
                 appliedAt: new Date(),
                 processedAt: new Date(),
                 processingDurationMs:
                   Date.now() - new Date(webhookEvent.receivedAt).getTime(),
               },
-              $unset: { applyError: "" },
             },
           );
 
@@ -306,6 +310,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
 
         if (isBigQueryCdcEnabled && flow.tableDestination?.connectionId) {
           const change = await mapWebhookEventToChangeInput({
+            flowId,
             entity: resolvedEntity,
             operation: mapping.operation,
             recordId: String(id),
@@ -388,10 +393,17 @@ export const webhookEventProcessFunction = inngest.createFunction(
 
         // ========== SQL/BigQuery destination path ==========
         if (flow.tableDestination?.connectionId) {
-          const entityTableName = getEntityTableName(
-            flow.tableDestination.tableName,
-            resolvedEntity,
-          );
+          const entityTableName =
+            flow.syncEngine === "cdc"
+              ? cdcLiveTableName(
+                  flow.tableDestination.tableName,
+                  resolvedEntity,
+                  flowId,
+                )
+              : getEntityTableName(
+                  flow.tableDestination.tableName,
+                  resolvedEntity,
+                );
 
           const entityTableDest = {
             ...flow.tableDestination,
@@ -837,16 +849,16 @@ export const bigQueryCdcStaleSweepFunction = inngest.createFunction(
     id: "bigquery-cdc-stale-sweep",
     name: "BigQuery CDC Stale Sweep",
   },
-  { cron: "*/2 * * * *" },
+  { cron: "* * * * *" },
   async ({ step, logger }) => {
     const staleSeconds = Math.max(
-      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_SECONDS || "180", 10) ||
-        180,
+      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_SECONDS || "120", 10) ||
+        120,
       30,
     );
     const maxEntities = Math.max(
-      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_MAX_ENTITIES || "25", 10) ||
-        25,
+      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_MAX_ENTITIES || "50", 10) ||
+        50,
       1,
     );
 

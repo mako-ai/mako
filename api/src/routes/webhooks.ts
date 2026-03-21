@@ -39,7 +39,7 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     const flow = await Flow.findOne({
       _id: flowId,
       workspaceId: workspaceId,
-      type: "webhook",
+      type: { $in: ["webhook", "cdc"] },
     });
 
     if (!flow) {
@@ -136,14 +136,59 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     );
 
     // 6. Trigger immediate processing via Inngest
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
+    try {
+      await inngest.send({
+        name: "webhook/event.process",
+        data: {
+          flowId,
+          workspaceId,
+          eventId: webhookEvent.eventId,
+        },
+      });
+    } catch (enqueueError) {
+      await WebhookEvent.updateOne(
+        { _id: webhookEvent._id },
+        {
+          $set: {
+            status: "failed",
+            applyStatus: "failed",
+            processedAt: new Date(),
+            applyError: {
+              code: "ENQUEUE_FAILED",
+              message:
+                enqueueError instanceof Error
+                  ? enqueueError.message
+                  : String(enqueueError),
+            },
+            error: {
+              message:
+                enqueueError instanceof Error
+                  ? enqueueError.message
+                  : String(enqueueError),
+            },
+          },
+        },
+      );
+
+      logger.error("Failed to enqueue webhook event for processing", {
         flowId,
         workspaceId,
         eventId: webhookEvent.eventId,
-      },
-    });
+        error:
+          enqueueError instanceof Error
+            ? enqueueError.message
+            : String(enqueueError),
+      });
+
+      return c.json(
+        {
+          received: false,
+          eventId: webhookEvent.eventId,
+          error: "Failed to enqueue webhook event for processing",
+        },
+        200,
+      );
+    }
 
     // 8. Return success immediately
     logger.info("Webhook processed successfully", {
@@ -175,11 +220,11 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
     const flow = await Flow.findOne({
       _id: flowId,
       workspaceId: workspaceId,
-      type: "webhook",
+      type: { $in: ["webhook", "cdc"] },
     });
 
     if (!flow) {
-      return c.json({ error: "Webhook flow not found" });
+      return c.json({ error: "Webhook/CDC flow not found" });
     }
 
     // Create a test event

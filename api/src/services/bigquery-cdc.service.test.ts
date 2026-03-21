@@ -38,6 +38,7 @@ describe("sanitizeBackfillPayloadForIdempotency", () => {
 describe("mapBackfillRecordsToChanges", () => {
   it("builds stable idempotency keys when only volatile fields change", async () => {
     const first = await mapBackfillRecordsToChanges({
+      flowId: "flow-1",
       entity: "contacts",
       runId: "run-a",
       records: [
@@ -49,6 +50,7 @@ describe("mapBackfillRecordsToChanges", () => {
       ],
     });
     const second = await mapBackfillRecordsToChanges({
+      flowId: "flow-1",
       entity: "contacts",
       runId: "run-b",
       records: [
@@ -71,12 +73,16 @@ describe("mapBackfillRecordsToChanges", () => {
 
   it("uses deterministic fallback id/sourceTs when source record has no identifiers", async () => {
     const [a] = await mapBackfillRecordsToChanges({
+      flowId: "flow-1",
       entity: "opportunities",
       records: [{ status: "open", amount: 100 }],
     });
     const [b] = await mapBackfillRecordsToChanges({
+      flowId: "flow-1",
       entity: "opportunities",
-      records: [{ status: "open", amount: 100, _syncedAt: new Date().toISOString() }],
+      records: [
+        { status: "open", amount: 100, _syncedAt: new Date().toISOString() },
+      ],
     });
 
     expect(a.recordId).toBe(b.recordId);

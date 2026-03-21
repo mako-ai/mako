@@ -86,17 +86,21 @@ function formatBigQueryValue(
   targetType?: string,
   useCast = false,
 ): string {
+  // In cast mode, always force a concrete target type.
+  // This prevents BigQuery STRUCT arrays from inferring mixed field types
+  // when schema evolution is temporarily lagging (e.g. ALTER TABLE throttling).
+  const resolvedTargetType = useCast ? targetType || "STRING" : targetType;
+  const upperType = resolvedTargetType?.toUpperCase();
+
   // For useCast mode (STRUCT arrays in MERGE/INSERT), NULL must be typed to avoid
   // BigQuery defaulting to INT64 and causing "Array elements of types do not have
   // a common supertype" errors when mixed with other typed values
   if (value === null || value === undefined) {
-    if (useCast && targetType) {
-      return `CAST(NULL AS ${targetType.toUpperCase()})`;
+    if (useCast && upperType) {
+      return `CAST(NULL AS ${upperType})`;
     }
     return "NULL";
   }
-
-  const upperType = targetType?.toUpperCase();
   const isNumericTarget =
     upperType === "INT64" ||
     upperType === "INTEGER" ||
@@ -108,7 +112,7 @@ function formatBigQueryValue(
   // When useCast is true (for STRUCT arrays in MERGE), we need to ensure ALL values
   // are formatted consistently to avoid "Array elements of types do not have a common supertype"
   // We do this by always formatting as string and casting to target type
-  if (useCast && targetType) {
+  if (useCast && upperType) {
     // First, format the value as a plain string literal
     let stringValue: string;
 
@@ -679,31 +683,107 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
     const projectId = this.getProjectId(database);
     const fullTableName = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(tableName)}`;
+    const maxRetries = Math.max(
+      parseInt(process.env.BIGQUERY_SCHEMA_UPDATE_MAX_RETRIES || "8", 10) || 8,
+      1,
+    );
+    const baseDelayMs = Math.max(
+      parseInt(
+        process.env.BIGQUERY_SCHEMA_UPDATE_RETRY_BASE_MS || "1000",
+        10,
+      ) || 1000,
+      200,
+    );
+    const maxDelayMs = Math.max(
+      parseInt(
+        process.env.BIGQUERY_SCHEMA_UPDATE_RETRY_MAX_MS || "30000",
+        10,
+      ) || 30000,
+      baseDelayMs,
+    );
+
+    const addedColumns: string[] = [];
+    const unresolved: Array<{ key: string; error?: string }> = [];
 
     for (const { key, colType } of missing) {
-      const query = `ALTER TABLE ${fullTableName} ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType}`;
-      const result = await this.executeQuery(database, query);
-      if (result.success) {
-        existingColumns.set(key.toLowerCase(), colType);
-      } else {
+      let added = false;
+      let lastError: string | undefined;
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const query = `ALTER TABLE ${fullTableName} ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType}`;
+        const result = await this.executeQuery(database, query);
+        if (result.success) {
+          existingColumns.set(key.toLowerCase(), colType);
+          addedColumns.push(key);
+          added = true;
+          break;
+        }
+
+        lastError =
+          typeof result.error === "string"
+            ? result.error
+            : JSON.stringify(result.error);
+        const quotaExceeded = this.isTableUpdateQuotaExceededError(lastError);
         this.logger.warn("Failed to add column", {
           table: tableName,
           column: key,
-          error: result.error,
+          attempt: attempt + 1,
+          maxRetries,
+          quotaExceeded,
+          error: lastError,
         });
+
+        if (quotaExceeded && attempt < maxRetries - 1) {
+          const jitter = Math.floor(Math.random() * 250);
+          const backoff = Math.min(
+            baseDelayMs * 2 ** attempt + jitter,
+            maxDelayMs,
+          );
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        }
+
+        break;
+      }
+
+      if (!added) {
+        unresolved.push({ key, error: lastError });
       }
     }
 
-    if (missing.length > 0) {
+    if (addedColumns.length > 0) {
       this.logger.info("Schema evolution: added columns", {
         table: tableName,
-        columns: missing.map(m => m.key),
-        count: missing.length,
+        columns: addedColumns,
+        count: addedColumns.length,
       });
     }
 
     const cacheKey = this.getTableCacheKey(database, dataset, tableName);
     this.tableColumnTypeCache.set(cacheKey, existingColumns);
+
+    if (unresolved.length > 0) {
+      const quotaOnly = unresolved.every(entry =>
+        this.isTableUpdateQuotaExceededError(entry.error),
+      );
+      const firstError = unresolved[0]?.error || "unknown";
+      const reason = quotaOnly
+        ? "BIGQUERY_SCHEMA_UPDATE_QUOTA_EXCEEDED"
+        : "BIGQUERY_SCHEMA_UPDATE_FAILED";
+      throw new Error(
+        `${reason}: Unable to add ${unresolved.length} columns for ${dataset}.${tableName}. First error: ${firstError}`,
+      );
+    }
+  }
+
+  private isTableUpdateQuotaExceededError(error?: string): boolean {
+    if (!error) return false;
+    const normalized = error.toLowerCase();
+    return (
+      normalized.includes("table exceeded quota for table update operations") ||
+      normalized.includes("job exceeded rate limits") ||
+      normalized.includes("rate limit exceeded")
+    );
   }
 
   private extractRequiredNullField(error?: string): string | undefined {
@@ -785,8 +865,8 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       );
 
       // If query is too large, reduce chunk size and retry
-      while (query.length > MAX_QUERY_SIZE && chunkSize > 50) {
-        chunkSize = Math.floor(chunkSize / 2);
+      while (query.length > MAX_QUERY_SIZE && chunkSize > 1) {
+        chunkSize = Math.max(1, Math.floor(chunkSize / 2));
         chunk = rows.slice(i, i + chunkSize);
         query = this.buildInsertQuery(
           fullTableName,
@@ -991,8 +1071,8 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       );
 
       // If query is too large, reduce chunk size and retry
-      while (query.length > MAX_QUERY_SIZE && chunkSize > 25) {
-        chunkSize = Math.floor(chunkSize / 2);
+      while (query.length > MAX_QUERY_SIZE && chunkSize > 1) {
+        chunkSize = Math.max(1, Math.floor(chunkSize / 2));
         chunk = rows.slice(i, i + chunkSize);
         query = this.buildMergeQuery(
           fullTableName,

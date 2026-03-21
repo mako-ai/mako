@@ -1128,6 +1128,7 @@ function Editor({
                     flowType={
                       tab.metadata?.flowType as
                         | "webhook"
+                        | "cdc"
                         | "scheduled"
                         | "db-scheduled"
                         | undefined

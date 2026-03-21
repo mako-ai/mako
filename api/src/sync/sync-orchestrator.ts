@@ -21,6 +21,7 @@ import {
   isBigQueryCdcEnabledForFlow,
   mapBackfillRecordsToChanges,
 } from "../services/bigquery-cdc.service";
+import { cdcLiveTableName } from "../sync-cdc/table-names";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
@@ -520,32 +521,38 @@ async function performSyncChunkSql(
     throw new Error("tableDestination required for SQL sync path");
   }
 
-  const entityTableName = getEntityTableName(
-    tableDestination.tableName,
-    entity,
-  );
+  const destinationConn = await DatabaseConnection.findById(
+    tableDestination.connectionId,
+  )
+    .select({ type: 1 })
+    .lean();
+  const flowId =
+    typeof options.flowId === "string" && options.flowId.length > 0
+      ? options.flowId
+      : undefined;
+  const isBigQueryCdcEnabled =
+    Boolean(flowId && options.workspaceId) &&
+    isBigQueryCdcEnabledForFlow(
+      {
+        _id: new Types.ObjectId(flowId),
+        tableDestination,
+        syncEngine: options.syncEngine,
+      } as any,
+      destinationConn?.type,
+    );
+
+  const shouldUseCdcScopedTableNames =
+    options.syncEngine === "cdc" && Boolean(flowId);
+  const entityTableName =
+    shouldUseCdcScopedTableNames && flowId
+      ? cdcLiveTableName(tableDestination.tableName, entity, flowId)
+      : getEntityTableName(tableDestination.tableName, entity);
 
   // Build per-entity tableDestination with the resolved table name
   const entityTableDest: ITableDestination = {
     ...tableDestination,
     tableName: entityTableName,
   };
-
-  const destinationConn = await DatabaseConnection.findById(
-    tableDestination.connectionId,
-  )
-    .select({ type: 1 })
-    .lean();
-  const isBigQueryCdcEnabled =
-    Boolean(options.flowId && options.workspaceId) &&
-    isBigQueryCdcEnabledForFlow(
-      {
-        _id: new Types.ObjectId(options.flowId!),
-        tableDestination,
-        syncEngine: options.syncEngine,
-      } as any,
-      destinationConn?.type,
-    );
 
   const writer = isBigQueryCdcEnabled
     ? undefined
@@ -714,6 +721,7 @@ async function performSyncChunkSql(
               );
             }
             const changes = await mapBackfillRecordsToChanges({
+              flowId: options.flowId,
               entity,
               records: processedRecords,
               runId: options.backfillRunId,

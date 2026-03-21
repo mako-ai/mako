@@ -71,14 +71,16 @@ export function FlowsExplorer() {
   };
 
   const handleCreateNew = (
-    flowType: "scheduled" | "webhook" | "db-scheduled",
+    flowType: "scheduled" | "webhook" | "cdc" | "db-scheduled",
   ) => {
     const title =
       flowType === "scheduled"
         ? "New Scheduled Flow"
-        : flowType === "webhook"
-          ? "New Webhook Flow"
-          : "New Database Sync";
+        : flowType === "cdc"
+          ? "New CDC Flow"
+          : flowType === "webhook"
+            ? "New Webhook Flow"
+            : "New Database Sync";
     const id = openTab({
       title,
       content: "",
@@ -110,7 +112,7 @@ export function FlowsExplorer() {
             flowType:
               flow.sourceType === "database" ? "db-scheduled" : flow.type,
             enabled:
-              flow.type === "webhook"
+              flow.type === "webhook" || flow.type === "cdc"
                 ? flow.webhookConfig?.enabled
                 : flow.schedule?.enabled,
           },
@@ -135,7 +137,7 @@ export function FlowsExplorer() {
 
   const getFlowStatus = (flow: any) => {
     const isEnabled =
-      flow.type === "webhook"
+      flow.type === "webhook" || flow.type === "cdc"
         ? flow.webhookConfig?.enabled !== false
         : flow.schedule?.enabled === true;
     if (!isEnabled) {
@@ -291,7 +293,7 @@ export function FlowsExplorer() {
                     }}
                   >
                     <ListItemIcon sx={{ minWidth: 28 }}>
-                      {flow.type === "webhook" ? (
+                      {flow.type === "webhook" || flow.type === "cdc" ? (
                         <WebhookIcon
                           size={20}
                           strokeWidth={1.5}
@@ -423,6 +425,12 @@ export function FlowsExplorer() {
             <WebhookIcon fontSize="small" />
           </ListItemIcon>
           <ListItemText>Webhook Sync</ListItemText>
+        </MenuItem>
+        <MenuItem onClick={() => handleCreateNew("cdc")}>
+          <ListItemIcon>
+            <WebhookIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>CDC Sync</ListItemText>
         </MenuItem>
       </Menu>
     </Box>

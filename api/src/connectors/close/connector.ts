@@ -101,7 +101,9 @@ export class CloseConnector extends BaseConnector {
       EmailThread: "/activity/email_thread/",
       SMS: "/activity/sms/",
       Note: "/activity/note/",
-      TaskCompleted: "/activity/task/",
+      // Close API serves task-completed activity records via /activity/task_completed/.
+      // Using /activity/task/ returns 404 and aborts backfill for this entity.
+      TaskCompleted: "/activity/task_completed/",
       CustomActivity: "/activity/custom/",
     };
     return map[subType] || "/activity/";
@@ -650,13 +652,10 @@ export class CloseConnector extends BaseConnector {
 
         const hasMoreInCurrentQuery = response.data.has_more || false;
 
-        if (hasMoreInCurrentQuery) {
-          // More data in current date/query
-          dailyOffset += batchSize;
-          iterations++;
-          await this.sleep(rateLimitDelay);
-        } else if (isCheckingForOlderData) {
-          // We were checking for older data
+        if (isCheckingForOlderData) {
+          // We only issue a single probe request in this mode.
+          // Do not paginate older data with _skip, jump directly to the
+          // most recent older day to avoid excessive API calls.
           if (data.length === 0) {
             // No older data exists - we're done
             return {
@@ -683,7 +682,15 @@ export class CloseConnector extends BaseConnector {
             isCheckingForOlderData = false;
             iterations++;
             await this.sleep(rateLimitDelay);
+            continue;
           }
+        }
+
+        if (hasMoreInCurrentQuery) {
+          // More data in current date/query
+          dailyOffset += batchSize;
+          iterations++;
+          await this.sleep(rateLimitDelay);
         } else {
           // Finished current day
           if (data.length < batchSize && !since) {
@@ -1098,11 +1105,10 @@ export class CloseConnector extends BaseConnector {
 
           hasMoreInCurrentQuery = response.data.has_more || false;
 
-          if (hasMoreInCurrentQuery) {
-            dailyOffset += batchSize;
-            await this.sleep(rateLimitDelay);
-          } else if (isCheckingForOlderData) {
-            // We were checking for older data
+          if (isCheckingForOlderData) {
+            // We only issue a single probe request in this mode.
+            // Do not paginate older data with _skip, jump directly to the
+            // most recent older day to avoid excessive API calls.
             if (data.length === 0) {
               // No older data exists - we're done
               shouldContinue = false;
@@ -1121,6 +1127,9 @@ export class CloseConnector extends BaseConnector {
               await this.sleep(rateLimitDelay);
               break; // Break inner loop to continue with next day
             }
+          } else if (hasMoreInCurrentQuery) {
+            dailyOffset += batchSize;
+            await this.sleep(rateLimitDelay);
           } else {
             // Finished current day
             if (data.length < batchSize && !since) {
@@ -1398,7 +1407,10 @@ export class CloseConnector extends BaseConnector {
       "lead.merged": { entity: "leads", operation: "upsert" },
 
       // Contacts
+      "contact.created": { entity: "contacts", operation: "upsert" },
       "contact.updated": { entity: "contacts", operation: "upsert" },
+      "contact.deleted": { entity: "contacts", operation: "delete" },
+      "contact.merged": { entity: "contacts", operation: "upsert" },
 
       // Opportunities
       "opportunity.created": { entity: "opportunities", operation: "upsert" },
@@ -1495,7 +1507,10 @@ export class CloseConnector extends BaseConnector {
       "lead.updated",
       "lead.deleted",
       "lead.merged",
+      "contact.created",
       "contact.updated",
+      "contact.deleted",
+      "contact.merged",
       "opportunity.created",
       "opportunity.updated",
       "opportunity.deleted",
@@ -1566,14 +1581,18 @@ export class CloseConnector extends BaseConnector {
     const innerEvent = event?.event;
     const data = innerEvent?.data || event?.data;
 
-    if (data) {
-      return { id: data.id, data };
+    // Prefer explicit object_id from event wrapper when present, and always
+    // fall back to it if payload data exists but does not include id.
+    const objectId =
+      innerEvent?.object_id || event?.object_id || data?.id || event?.id;
+
+    if (data && objectId) {
+      return { id: String(objectId), data: { ...data, id: String(objectId) } };
     }
 
-    // Delete/merge events: no data payload, just object_id
-    const objectId = innerEvent?.object_id || event?.object_id;
+    // Delete/merge events can have no data payload, only object_id
     if (objectId) {
-      return { id: objectId, data: { id: objectId } };
+      return { id: String(objectId), data: { id: String(objectId) } };
     }
 
     return null;

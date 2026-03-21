@@ -173,7 +173,7 @@ export interface FlowResponse {
   flow?: {
     id: string;
     name: string;
-    type: "webhook" | "scheduled";
+    type: "webhook" | "scheduled" | "cdc";
     status: "active" | "paused" | "error";
     config: Record<string, unknown>;
   };
@@ -185,7 +185,7 @@ export interface FlowListResponse {
   flows: Array<{
     id: string;
     name: string;
-    type: "webhook" | "scheduled";
+    type: "webhook" | "scheduled" | "cdc";
     status: "active" | "paused" | "error";
   }>;
 }

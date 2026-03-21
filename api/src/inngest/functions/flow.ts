@@ -394,7 +394,20 @@ export const flowFunction = inngest.createFunction(
   },
   { event: "flow.execute" },
   async ({ event, step, logger }) => {
-    const { flowId, noJitter, backfill, backfillRunId } = event.data;
+    const { flowId, noJitter, backfill, backfillRunId, backfillEntities } =
+      event.data;
+    const requestedBackfillEntities = Array.isArray(backfillEntities)
+      ? Array.from(
+          new Set(
+            backfillEntities
+              .filter(
+                (entity): entity is string =>
+                  typeof entity === "string" && entity.trim().length > 0,
+              )
+              .map(entity => entity.trim()),
+          ),
+        )
+      : [];
 
     logger.info("Flow function started", {
       flowId,
@@ -491,6 +504,31 @@ export const flowFunction = inngest.createFunction(
         });
     };
 
+    const throwIfExecutionCancelled = async (
+      scope: string,
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (!executionId) return;
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
+      const execution = await collection.findOne(
+        { _id: new Types.ObjectId(executionId) },
+        { projection: { status: 1 } },
+      );
+
+      if (execution?.status === "cancelled") {
+        logger.warn("Detected cancelled flow execution; stopping run", {
+          flowId,
+          executionId,
+          scope,
+          ...metadata,
+        });
+        const cancelError = new Error("Flow execution cancelled by user");
+        (cancelError as any).code = "USER_CANCELLED";
+        throw cancelError;
+      }
+    };
+
     try {
       // Add jitter to prevent thundering herd - random delay 0-60 seconds
       // Skip jitter if noJitter flag is set
@@ -552,13 +590,15 @@ export const flowFunction = inngest.createFunction(
           ? backfillRunId
           : undefined;
       cdcBackfillRunId =
-        backfill && flow.type === "webhook" && isBigQueryCdcEnabled
+        backfill &&
+        (flow.type === "webhook" || flow.type === "cdc") &&
+        isBigQueryCdcEnabled
           ? requestedBackfillRunId || flow.backfillState?.runId
           : undefined;
 
-      // Webhook flows should not be executed unless it's a backfill
-      if (flow.type === "webhook" && !backfill) {
-        logger.error("CRITICAL: Webhook flow reached flow executor!", {
+      // Webhook-like flows should not be executed unless it's a backfill
+      if ((flow.type === "webhook" || flow.type === "cdc") && !backfill) {
+        logger.error("CRITICAL: Webhook/CDC flow reached flow executor!", {
           flowId,
           flowType: flow.type,
           dataSourceId: flow.dataSourceId,
@@ -567,13 +607,17 @@ export const flowFunction = inngest.createFunction(
         });
         return {
           success: false,
-          message: "Webhook flows cannot be executed as scheduled flows",
+          message: "Webhook/CDC flows cannot be executed as scheduled flows",
         };
       }
 
       // Backfill for webhook-triggered flows should run as full sync.
       // This ensures a complete reload instead of incremental upserts.
-      if (backfill && flow.type === "webhook" && !isBigQueryCdcEnabled) {
+      if (
+        backfill &&
+        (flow.type === "webhook" || flow.type === "cdc") &&
+        !isBigQueryCdcEnabled
+      ) {
         (flow as any).syncMode = "full";
         logger.info("Backfill mode: using full sync for webhook flow", {
           flowId,
@@ -590,7 +634,11 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && isBigQueryCdcEnabled) {
+      if (
+        backfill &&
+        (flow.type === "webhook" || flow.type === "cdc") &&
+        isBigQueryCdcEnabled
+      ) {
         (flow as any).syncMode = "full";
         logger.info(
           "Backfill mode: BigQuery CDC enabled, no webhook apply gate",
@@ -666,6 +714,7 @@ export const flowFunction = inngest.createFunction(
         flowId,
         runCount: currentRunCount,
       });
+      await throwIfExecutionCancelled("post-flow-status-update");
 
       // Validate sync configuration
       await step.run("validate-sync-config", async () => {
@@ -762,6 +811,10 @@ export const flowFunction = inngest.createFunction(
         let totalRowsProcessed = 0;
 
         while (!completed) {
+          await throwIfExecutionCancelled("db-sync-before-chunk", {
+            chunkIndex,
+            totalRowsProcessed,
+          });
           const chunkResult = await step.run(
             `db-sync-chunk-${chunkIndex}`,
             async () => {
@@ -828,6 +881,10 @@ export const flowFunction = inngest.createFunction(
               return result;
             },
           );
+          await throwIfExecutionCancelled("db-sync-after-chunk", {
+            chunkIndex,
+            rowsProcessed: chunkResult.rowsProcessed,
+          });
 
           // Update state for next iteration
           chunkState = chunkResult.state;
@@ -895,6 +952,7 @@ export const flowFunction = inngest.createFunction(
 
         // Finalize staging table swap for full sync
         if (flow.syncMode === "full") {
+          await throwIfExecutionCancelled("db-sync-before-finalize-staging");
           await step.run("finalize-staging-swap", async () => {
             logger.info("Finalizing full sync (staging table swap)", {
               flowId,
@@ -983,6 +1041,7 @@ export const flowFunction = inngest.createFunction(
         syncedEntities = ["database_query"];
 
         // Update success status
+        await throwIfExecutionCancelled("db-sync-before-success-mark");
         await step.run("update-success-status", async () => {
           logger.info("Updating flow success status", { flowId });
           await Flow.findByIdAndUpdate(flowId, {
@@ -1000,8 +1059,8 @@ export const flowFunction = inngest.createFunction(
             const collection = db.collection("flow_executions");
             const completedAt = new Date();
 
-            await collection.updateOne(
-              { _id: new Types.ObjectId(executionId) },
+            const result = await collection.updateOne(
+              { _id: new Types.ObjectId(executionId), status: "running" },
               {
                 $set: {
                   completedAt,
@@ -1021,6 +1080,23 @@ export const flowFunction = inngest.createFunction(
                 },
               },
             );
+
+            if (result.matchedCount === 0) {
+              const current = await collection.findOne(
+                { _id: new Types.ObjectId(executionId) },
+                { projection: { status: 1 } },
+              );
+              if (current?.status === "cancelled") {
+                logger.info(
+                  "Skipping completion update because execution is cancelled",
+                  {
+                    flowId,
+                    executionId,
+                  },
+                );
+                return;
+              }
+            }
 
             const execution = await collection.findOne({
               _id: new Types.ObjectId(executionId),
@@ -1093,7 +1169,7 @@ export const flowFunction = inngest.createFunction(
       if (supportsChunking) {
         const checkpointEnabled =
           Boolean(backfill) &&
-          flow.type === "webhook" &&
+          (flow.type === "webhook" || flow.type === "cdc") &&
           isBigQueryCdcEnabled &&
           Boolean(cdcBackfillRunId);
         let checkpointCompletedEntities = new Set<string>();
@@ -1151,6 +1227,9 @@ export const flowFunction = inngest.createFunction(
               .filter(e => typeof e === "string" && e.trim().length > 0);
             const { entities: configuredEntities, hasExplicitSelection } =
               resolveConfiguredEntities(flow);
+            const selectedEntities = hasExplicitSelection
+              ? configuredEntities
+              : availableEntities;
 
             if (hasExplicitSelection) {
               // Validate requested entities
@@ -1162,9 +1241,21 @@ export const flowFunction = inngest.createFunction(
                   `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
                 );
               }
-              return configuredEntities;
             }
-            return availableEntities;
+
+            if (backfill && requestedBackfillEntities.length > 0) {
+              const invalidRequestedEntities = requestedBackfillEntities.filter(
+                entity => !selectedEntities.includes(entity),
+              );
+              if (invalidRequestedEntities.length > 0) {
+                throw new Error(
+                  `Invalid targeted backfill entities: ${invalidRequestedEntities.join(", ")}. Allowed: ${selectedEntities.join(", ")}`,
+                );
+              }
+              return requestedBackfillEntities;
+            }
+
+            return selectedEntities;
           },
         );
 
@@ -1202,6 +1293,9 @@ export const flowFunction = inngest.createFunction(
         // Process each entity with chunked execution
         for (const entity of entitiesToSync) {
           const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
+          await throwIfExecutionCancelled("connector-before-entity", {
+            entity,
+          });
           if (checkpointEnabled && checkpointCompletedEntities.has(entity)) {
             logger.info(
               "Skipping entity already completed in checkpointed run",
@@ -1308,6 +1402,10 @@ export const flowFunction = inngest.createFunction(
           let completed = false;
 
           while (!completed) {
+            await throwIfExecutionCancelled("connector-before-chunk", {
+              entity,
+              chunkIndex,
+            });
             const chunkResult = await step.run(
               `sync-${entity}-chunk-${chunkIndex}`,
               async () => {
@@ -1493,6 +1591,10 @@ export const flowFunction = inngest.createFunction(
                 return result;
               },
             );
+            await throwIfExecutionCancelled("connector-after-chunk", {
+              entity,
+              chunkIndex,
+            });
 
             state = chunkResult.state;
             completed = chunkResult.completed;
@@ -1545,6 +1647,7 @@ export const flowFunction = inngest.createFunction(
         }
       } else {
         // Fall back to non-chunked execution for connectors that don't support it
+        await throwIfExecutionCancelled("connector-before-non-chunked-sync");
         await step.run("execute-sync", async () => {
           // For non-chunked sync, we need to get the entities
           const dataSource = await databaseDataSourceManager.getDataSource(
@@ -1569,6 +1672,9 @@ export const flowFunction = inngest.createFunction(
                 .filter(e => typeof e === "string" && e.trim().length > 0);
               const { entities: configuredEntities, hasExplicitSelection } =
                 resolveConfiguredEntities(flow);
+              const selectedEntities = hasExplicitSelection
+                ? configuredEntities
+                : availableEntities;
 
               if (hasExplicitSelection) {
                 const invalidEntities = configuredEntities.filter(
@@ -1581,9 +1687,20 @@ export const flowFunction = inngest.createFunction(
                 }
               }
 
-              syncedEntities = hasExplicitSelection
-                ? configuredEntities
-                : availableEntities;
+              if (backfill && requestedBackfillEntities.length > 0) {
+                const invalidRequestedEntities =
+                  requestedBackfillEntities.filter(
+                    entity => !selectedEntities.includes(entity),
+                  );
+                if (invalidRequestedEntities.length > 0) {
+                  throw new Error(
+                    `Invalid targeted backfill entities: ${invalidRequestedEntities.join(", ")}. Allowed: ${selectedEntities.join(", ")}`,
+                  );
+                }
+                syncedEntities = requestedBackfillEntities;
+              } else {
+                syncedEntities = selectedEntities;
+              }
             }
           }
           logger.info("Starting non-chunked sync operation", {
@@ -1659,7 +1776,11 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && !isBigQueryCdcEnabled) {
+      if (
+        backfill &&
+        (flow.type === "webhook" || flow.type === "cdc") &&
+        !isBigQueryCdcEnabled
+      ) {
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
@@ -1688,6 +1809,10 @@ export const flowFunction = inngest.createFunction(
             let lastEventId: string | null = null;
 
             while (maxReplayEvents === 0 || queued < maxReplayEvents) {
+              await throwIfExecutionCancelled("webhook-replay-loop", {
+                queued,
+                totalPending,
+              });
               const cursorClause: Record<string, unknown> =
                 lastReceivedAt && lastEventId
                   ? {
@@ -1771,7 +1896,11 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && isBigQueryCdcEnabled) {
+      if (
+        backfill &&
+        (flow.type === "webhook" || flow.type === "cdc") &&
+        isBigQueryCdcEnabled
+      ) {
         await step.run("mark-bigquery-cdc-backfill-complete", async () => {
           await markBackfillCompletedForFlow({
             flowId: String(flowId),
@@ -1840,6 +1969,7 @@ export const flowFunction = inngest.createFunction(
       }
 
       // Update flow success status
+      await throwIfExecutionCancelled("connector-before-success-mark");
       await step.run("update-success-status", async () => {
         logger.info("Updating flow success status", { flowId });
         await Flow.findByIdAndUpdate(flowId, {
@@ -1862,7 +1992,7 @@ export const flowFunction = inngest.createFunction(
 
             // Update the execution to completed
             const result = await collection.updateOne(
-              { _id: new Types.ObjectId(executionId) },
+              { _id: new Types.ObjectId(executionId), status: "running" },
               {
                 $set: {
                   completedAt,
@@ -1892,9 +2022,21 @@ export const flowFunction = inngest.createFunction(
             );
 
             if (result.matchedCount === 0) {
-              throw new Error(
-                `Failed to update execution to completed: ${executionId}`,
+              const current = await collection.findOne(
+                { _id: new Types.ObjectId(executionId) },
+                { projection: { status: 1 } },
               );
+              if (current?.status === "cancelled") {
+                logger.info(
+                  "Skipping completion update because execution is cancelled",
+                  {
+                    flowId,
+                    executionId,
+                  },
+                );
+                return;
+              }
+              throw new Error(`Failed to update execution: ${executionId}`);
             }
 
             // Calculate duration after update
@@ -2081,7 +2223,10 @@ export const flowFunction = inngest.createFunction(
       }
 
       // Safety: ensure webhook backfill gate is not left active after failures.
-      if (backfill && flowRef?.type === "webhook") {
+      if (
+        backfill &&
+        (flowRef?.type === "webhook" || flowRef?.type === "cdc")
+      ) {
         const destinationType = flowRef.tableDestination?.connectionId
           ? (
               await DatabaseConnection.findById(
@@ -2189,7 +2334,11 @@ export const flowSchedulerFunction = inngest.createFunction(
           const flowLogger = getSyncLogger(`scheduler.${flow._id}`);
 
           // Safety check: skip webhook flows (shouldn't happen with our filter, but just in case)
-          if (flow.type === "webhook" || !flow.schedule?.cron) {
+          if (
+            flow.type === "webhook" ||
+            flow.type === "cdc" ||
+            !flow.schedule?.cron
+          ) {
             flowLogger.warn(
               "CRITICAL: Non-scheduled flow found in scheduler!",
               {
@@ -2523,7 +2672,7 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
             const gateResetResult = await Flow.updateMany(
               {
                 _id: { $in: staleGateFlowIds },
-                type: "webhook",
+                type: { $in: ["webhook", "cdc"] },
                 "backfillState.active": true,
               },
               {
@@ -2534,7 +2683,7 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
               },
             );
 
-            logger.warn("Reset stale webhook backfill gates", {
+            logger.warn("Reset stale webhook/cdc backfill gates", {
               matched: gateResetResult.matchedCount,
               modified: gateResetResult.modifiedCount,
               flowIds: staleGateFlowIds.map(id => id.toString()),

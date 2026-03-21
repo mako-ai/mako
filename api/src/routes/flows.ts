@@ -52,6 +52,45 @@ function getRequestBaseUrl(c: RequestContextLike): string {
   return requestUrl.origin;
 }
 
+function isLocalhostBase(baseUrl: string): boolean {
+  try {
+    const parsed = new URL(baseUrl);
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "::1"
+    );
+  } catch {
+    return /localhost|127\.0\.0\.1|\[::1\]/i.test(baseUrl);
+  }
+}
+
+function resolveWebhookEndpoint(params: {
+  workspaceId: string;
+  flowId: string;
+  requestBaseUrl: string;
+  existingEndpoint?: string | null;
+}): string {
+  const generated = generateWebhookEndpoint(
+    params.workspaceId,
+    params.flowId,
+    params.requestBaseUrl,
+  );
+
+  const existing = params.existingEndpoint?.trim();
+  if (!existing) {
+    return generated;
+  }
+
+  // Preserve an already-public webhook URL when requests originate from localhost.
+  // This avoids clobbering cloudflared/public endpoints during local UI edits.
+  if (isLocalhostBase(params.requestBaseUrl) && !isLocalhostBase(existing)) {
+    return existing;
+  }
+
+  return generated;
+}
+
 // Apply unified auth middleware to all flow routes
 flowRoutes.use("*", unifiedAuthMiddleware);
 
@@ -249,15 +288,16 @@ flowRoutes.get("/", async c => {
     const flows = await Flow.aggregate(pipeline);
     const requestBaseUrl = getRequestBaseUrl(c);
     const normalizedFlows = flows.map((flow: any) => {
-      if (flow?.type !== "webhook" || !flow?._id) {
+      if ((flow?.type !== "webhook" && flow?.type !== "cdc") || !flow?._id) {
         return flow;
       }
 
-      const endpoint = generateWebhookEndpoint(
-        workspaceId as string,
-        flow._id.toString(),
+      const endpoint = resolveWebhookEndpoint({
+        workspaceId: workspaceId as string,
+        flowId: flow._id.toString(),
         requestBaseUrl,
-      );
+        existingEndpoint: flow?.webhookConfig?.endpoint,
+      });
 
       return {
         ...flow,
@@ -298,6 +338,17 @@ flowRoutes.post("/", async c => {
     // Validate required fields based on flow type and source type
     const flowType = body.type || "scheduled";
     const sourceType = body.sourceType || "connector";
+    if (!["scheduled", "webhook", "cdc"].includes(flowType)) {
+      return c.json(
+        {
+          success: false,
+          error: "type must be 'scheduled', 'webhook', or 'cdc'",
+        },
+        400,
+      );
+    }
+    const requestedSyncEngine: "legacy" | "cdc" =
+      flowType === "cdc" || body.syncEngine === "cdc" ? "cdc" : "legacy";
 
     // Schedule cron required only when schedule is enabled
     if (
@@ -393,6 +444,21 @@ flowRoutes.post("/", async c => {
         );
       }
 
+      if (
+        requestedSyncEngine === "legacy" &&
+        sourceType === "database" &&
+        !body.tableDestination.tableName
+      ) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "tableDestination.tableName is required for legacy database-source flows.",
+          },
+          400,
+        );
+      }
+
       // Use the table destination connection as the destinationDatabaseId
       destinationDatabaseId = new Types.ObjectId(
         body.tableDestination.connectionId,
@@ -424,6 +490,31 @@ flowRoutes.post("/", async c => {
       );
     }
 
+    if (flowType === "cdc" && sourceType !== "connector") {
+      return c.json(
+        { success: false, error: "CDC flows support connector sources only" },
+        400,
+      );
+    }
+    if (flowType === "cdc" && destinationType !== "bigquery") {
+      return c.json(
+        {
+          success: false,
+          error: "CDC flow type requires a BigQuery destination",
+        },
+        400,
+      );
+    }
+    if (flowType === "cdc" && !body.tableDestination?.connectionId) {
+      return c.json(
+        {
+          success: false,
+          error: "CDC flow type requires tableDestination.connectionId",
+        },
+        400,
+      );
+    }
+
     // Create flow with type-specific configuration
     const flowData: any = {
       workspaceId: new Types.ObjectId(workspaceId),
@@ -436,7 +527,7 @@ flowRoutes.post("/", async c => {
           ? body.destinationDatabaseName.trim()
           : undefined,
       syncMode: body.syncMode || "full",
-      syncEngine: "legacy",
+      syncEngine: requestedSyncEngine,
       syncState: "idle",
       syncStateUpdatedAt: new Date(),
       enabled: true,
@@ -485,13 +576,33 @@ flowRoutes.post("/", async c => {
       }));
     }
 
+    // Keep legacy connector behavior identical to main:
+    // connector sources cannot use tableDestination.
+    if (
+      sourceType === "connector" &&
+      body.tableDestination?.connectionId &&
+      requestedSyncEngine === "legacy"
+    ) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
+        },
+        400,
+      );
+    }
+
     // Add table destination if specified
     if (body.tableDestination?.connectionId) {
       const td: any = {
         connectionId: new Types.ObjectId(body.tableDestination.connectionId),
         database: body.tableDestination.database,
         schema: body.tableDestination.schema,
-        tableName: body.tableDestination.tableName || "",
+        tableName:
+          requestedSyncEngine === "cdc"
+            ? body.tableDestination.tableName || ""
+            : body.tableDestination.tableName,
         createIfNotExists: body.tableDestination.createIfNotExists !== false,
       };
       if (body.tableDestination.partitioning) {
@@ -503,13 +614,21 @@ flowRoutes.post("/", async c => {
       flowData.tableDestination = td;
     }
 
-    if (flowType === "webhook" && destinationType === "bigquery") {
+    if (
+      requestedSyncEngine === "cdc" &&
+      (flowType === "webhook" || flowType === "cdc") &&
+      destinationType === "bigquery"
+    ) {
       // BigQuery CDC path relies on tombstones for correctness.
       flowData.deleteMode = "soft";
-    } else if (body.deleteMode) {
+    } else if (requestedSyncEngine === "cdc" && body.deleteMode) {
       flowData.deleteMode = body.deleteMode;
     }
-    if (body.entityLayouts && Array.isArray(body.entityLayouts)) {
+    if (
+      requestedSyncEngine === "cdc" &&
+      body.entityLayouts &&
+      Array.isArray(body.entityLayouts)
+    ) {
       flowData.entityLayouts = body.entityLayouts;
     }
 
@@ -524,7 +643,7 @@ flowRoutes.post("/", async c => {
           ? body.schedule?.timezone || body.timezone || "UTC"
           : undefined,
       };
-    } else if (flowType === "webhook") {
+    } else if (flowType === "webhook" || flowType === "cdc") {
       // Generate webhook configuration
       const requestBaseUrl = getRequestBaseUrl(c);
       const webhookEndpoint = generateWebhookEndpoint(
@@ -545,19 +664,21 @@ flowRoutes.post("/", async c => {
     const flow = new Flow(flowData);
 
     // Update webhook endpoint with actual flow ID
-    if (flowType === "webhook" && flow.webhookConfig) {
+    if ((flowType === "webhook" || flowType === "cdc") && flow.webhookConfig) {
       const requestBaseUrl = getRequestBaseUrl(c);
-      flow.webhookConfig.endpoint = generateWebhookEndpoint(
+      flow.webhookConfig.endpoint = resolveWebhookEndpoint({
         workspaceId,
-        flow._id.toString(),
+        flowId: flow._id.toString(),
         requestBaseUrl,
-      );
+        existingEndpoint: flow.webhookConfig.endpoint,
+      });
     }
 
     await flow.save();
 
     // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
     if (
+      requestedSyncEngine === "cdc" &&
       sourceType === "connector" &&
       flowData.tableDestination?.connectionId &&
       flowData.tableDestination?.schema
@@ -629,12 +750,16 @@ flowRoutes.get("/:flowId", async c => {
       await flow.populate("dataSourceId", "name type config");
     }
     await flow.populate("destinationDatabaseId", "name type");
-    if (flow.type === "webhook" && flow.webhookConfig) {
-      flow.webhookConfig.endpoint = generateWebhookEndpoint(
-        workspaceId as string,
-        flow._id.toString(),
-        getRequestBaseUrl(c),
-      );
+    if (
+      (flow.type === "webhook" || flow.type === "cdc") &&
+      flow.webhookConfig
+    ) {
+      flow.webhookConfig.endpoint = resolveWebhookEndpoint({
+        workspaceId: workspaceId as string,
+        flowId: flow._id.toString(),
+        requestBaseUrl: getRequestBaseUrl(c),
+        existingEndpoint: flow.webhookConfig.endpoint,
+      });
     }
 
     return c.json({
@@ -669,6 +794,19 @@ flowRoutes.put("/:flowId", async c => {
     if (!flow) {
       return c.json({ success: false, error: "Flow not found" }, 404);
     }
+    if (flow.type === "cdc" && body?.syncEngine === "legacy") {
+      return c.json(
+        { success: false, error: "CDC flow type must use cdc syncEngine" },
+        400,
+      );
+    }
+    const requestedSyncEngine =
+      body?.syncEngine === "cdc"
+        ? "cdc"
+        : body?.syncEngine === "legacy"
+          ? "legacy"
+          : flow.syncEngine;
+    const isCdcFlow = flow.type === "cdc" || requestedSyncEngine === "cdc";
 
     // Update common fields
     if (flow.type === "scheduled" && body.schedule) {
@@ -775,6 +913,23 @@ flowRoutes.put("/:flowId", async c => {
       }
     }
 
+    // Keep legacy connector behavior identical to main:
+    // connector sources cannot use tableDestination.
+    if (
+      !isCdcFlow &&
+      flow.sourceType === "connector" &&
+      body.tableDestination?.connectionId
+    ) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Connector sources do not support tableDestination. Connectors always write to MongoDB. Use a database source for SQL-to-SQL sync.",
+        },
+        400,
+      );
+    }
+
     // Update table destination - merge entire object to avoid missing fields
     if (body.tableDestination) {
       const newConnectionId = body.tableDestination.connectionId
@@ -806,16 +961,18 @@ flowRoutes.put("/:flowId", async c => {
           true,
       };
 
-      const resolvedPartitioning =
-        body.tableDestination.partitioning ??
-        flow.tableDestination?.partitioning;
-      if (resolvedPartitioning) {
-        flow.tableDestination.partitioning = resolvedPartitioning;
-      }
-      const resolvedClustering =
-        body.tableDestination.clustering ?? flow.tableDestination?.clustering;
-      if (resolvedClustering) {
-        flow.tableDestination.clustering = resolvedClustering;
+      if (isCdcFlow) {
+        const resolvedPartitioning =
+          body.tableDestination.partitioning ??
+          flow.tableDestination?.partitioning;
+        if (resolvedPartitioning) {
+          flow.tableDestination.partitioning = resolvedPartitioning;
+        }
+        const resolvedClustering =
+          body.tableDestination.clustering ?? flow.tableDestination?.clustering;
+        if (resolvedClustering) {
+          flow.tableDestination.clustering = resolvedClustering;
+        }
       }
 
       // Keep destinationDatabaseId in sync (used for population/lookups)
@@ -826,7 +983,7 @@ flowRoutes.put("/:flowId", async c => {
       }
     }
 
-    if (flow.type === "webhook") {
+    if (isCdcFlow && (flow.type === "webhook" || flow.type === "cdc")) {
       const effectiveDestConnectionId =
         flow.tableDestination?.connectionId || flow.destinationDatabaseId;
       const destination = await DatabaseConnection.findById(
@@ -840,20 +997,24 @@ flowRoutes.put("/:flowId", async c => {
       } else if (body.deleteMode !== undefined) {
         flow.deleteMode = body.deleteMode;
       }
-    } else if (body.deleteMode !== undefined) {
+    } else if (isCdcFlow && body.deleteMode !== undefined) {
       flow.deleteMode = body.deleteMode;
     }
-    if (body.entityLayouts !== undefined) {
+    if (isCdcFlow && body.entityLayouts !== undefined) {
       (flow as any).entityLayouts = body.entityLayouts;
     }
 
     // Update webhook-specific fields
-    if (flow.type === "webhook" && flow.webhookConfig) {
-      flow.webhookConfig.endpoint = generateWebhookEndpoint(
-        workspaceId as string,
-        flow._id.toString(),
-        getRequestBaseUrl(c),
-      );
+    if (
+      (flow.type === "webhook" || flow.type === "cdc") &&
+      flow.webhookConfig
+    ) {
+      flow.webhookConfig.endpoint = resolveWebhookEndpoint({
+        workspaceId: workspaceId as string,
+        flowId: flow._id.toString(),
+        requestBaseUrl: getRequestBaseUrl(c),
+        existingEndpoint: flow.webhookConfig.endpoint,
+      });
       if (body.webhookSecret !== undefined) {
         flow.webhookConfig.secret = body.webhookSecret;
       }
@@ -1027,6 +1188,20 @@ flowRoutes.post("/:flowId/backfill", async c => {
   try {
     const workspaceId = c.req.param("workspaceId") as string;
     const flowId = c.req.param("flowId") as string;
+    const body = await c.req.json().catch(() => ({}));
+    const rawEntities: unknown[] = Array.isArray(body?.entities)
+      ? (body.entities as unknown[])
+      : [];
+    const requestedEntities: string[] = Array.from(
+      new Set(
+        rawEntities
+          .filter(
+            (entity): entity is string =>
+              typeof entity === "string" && entity.trim().length > 0,
+          )
+          .map(entity => entity.trim()),
+      ),
+    );
 
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -1041,6 +1216,9 @@ flowRoutes.post("/:flowId/backfill", async c => {
       const backfill = await cdcBackfillService.startBackfill(
         workspaceId,
         flowId,
+        requestedEntities.length > 0
+          ? { entities: requestedEntities }
+          : undefined,
       );
       return c.json({
         success: true,
@@ -1050,6 +1228,8 @@ flowRoutes.post("/:flowId/backfill", async c => {
           startedAt: new Date(),
           runId: backfill.runId,
           resumed: backfill.reusedRunId,
+          entities:
+            requestedEntities.length > 0 ? requestedEntities : undefined,
         },
       });
     }
@@ -1076,12 +1256,17 @@ flowRoutes.post("/:flowId/backfill", async c => {
     });
   } catch (error) {
     logger.error("Error triggering backfill", { error });
+    const message = error instanceof Error ? error.message : "Unknown error";
+    const status =
+      /already running|active run lock|cannot start backfill/i.test(message)
+        ? 409
+        : 500;
     return c.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: message,
       },
-      500,
+      status,
     );
   }
 });
@@ -1109,6 +1294,12 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
     });
     if (!flow) {
       return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+    if (flow.type === "cdc" && syncEngine !== "cdc") {
+      return c.json(
+        { success: false, error: "CDC flow type must use cdc syncEngine" },
+        400,
+      );
     }
 
     flow.syncEngine = syncEngine;
@@ -1154,6 +1345,20 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
   try {
     const workspaceId = c.req.param("workspaceId") as string;
     const flowId = c.req.param("flowId") as string;
+    const body = await c.req.json().catch(() => ({}));
+    const rawEntities: unknown[] = Array.isArray(body?.entities)
+      ? (body.entities as unknown[])
+      : [];
+    const requestedEntities: string[] = Array.from(
+      new Set(
+        rawEntities
+          .filter(
+            (entity): entity is string =>
+              typeof entity === "string" && entity.trim().length > 0,
+          )
+          .map(entity => entity.trim()),
+      ),
+    );
     const authorizationError = await assertOwnerOrAdmin(
       c as AuthenticatedContext,
       workspaceId,
@@ -1162,6 +1367,9 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
     const backfill = await cdcBackfillService.startBackfill(
       workspaceId,
       flowId,
+      requestedEntities.length > 0
+        ? { entities: requestedEntities }
+        : undefined,
     );
     return c.json({
       success: true,
@@ -1169,15 +1377,21 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
       data: {
         runId: backfill.runId,
         resumed: backfill.reusedRunId,
+        entities: requestedEntities.length > 0 ? requestedEntities : undefined,
       },
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    const status =
+      /already running|active run lock|cannot start backfill/i.test(message)
+        ? 409
+        : 400;
     return c.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: message,
       },
-      400,
+      status,
     );
   }
 });
@@ -1261,15 +1475,91 @@ flowRoutes.post("/:flowId/sync-cdc/resync", async c => {
     );
     if (authorizationError) return authorizationError;
     const body = await c.req.json().catch(() => ({}));
+    if (body?.deleteDestination !== true) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Restart from scratch requires deleteDestination=true to drop destination live and working tables.",
+        },
+        400,
+      );
+    }
+    const rawEntities: unknown[] = Array.isArray(body?.entities)
+      ? (body.entities as unknown[])
+      : [];
+    const requestedEntities: string[] = Array.from(
+      new Set(
+        rawEntities
+          .filter(
+            (entity): entity is string =>
+              typeof entity === "string" && entity.trim().length > 0,
+          )
+          .map(entity => entity.trim()),
+      ),
+    );
     await cdcBackfillService.resyncFlow({
       workspaceId,
       flowId,
-      deleteDestination: Boolean(body.deleteDestination),
+      deleteDestination: true,
       clearWebhookEvents: Boolean(body.clearWebhookEvents),
+      entities: requestedEntities,
     });
     return c.json({
       success: true,
-      message: "CDC resync started",
+      message: "CDC restart-from-scratch started",
+      data: {
+        entities: requestedEntities.length > 0 ? requestedEntities : undefined,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    const status = /cannot restart from scratch|active run/i.test(message)
+      ? 409
+      : 400;
+    return c.json(
+      {
+        success: false,
+        error: message,
+      },
+      status,
+    );
+  }
+});
+
+// GET /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/restart-preview
+flowRoutes.get("/:flowId/sync-cdc/restart-preview", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const entitiesParam = c.req.query("entities");
+    const requestedEntities =
+      typeof entitiesParam === "string" && entitiesParam.trim().length > 0
+        ? Array.from(
+            new Set(
+              entitiesParam
+                .split(",")
+                .map(entity => entity.trim())
+                .filter(entity => entity.length > 0),
+            ),
+          )
+        : [];
+
+    const preview = await cdcBackfillService.getRestartTablePreview({
+      workspaceId,
+      flowId,
+      entities: requestedEntities,
+    });
+
+    return c.json({
+      success: true,
+      data: preview,
     });
   } catch (error) {
     return c.json(
@@ -1493,6 +1783,30 @@ flowRoutes.post("/:flowId/cancel", async c => {
       executionIdToCancel = runningExecution._id.toString();
     }
 
+    // Mark execution cancelled immediately so the running worker can cooperatively
+    // stop on its next cancellation checkpoint without waiting for async event lag.
+    const now = new Date();
+    await FlowExecution.updateOne(
+      {
+        _id: new Types.ObjectId(executionIdToCancel),
+        flowId: new Types.ObjectId(flowId),
+        workspaceId: new Types.ObjectId(workspaceId),
+        status: "running",
+      },
+      {
+        $set: {
+          status: "cancelled",
+          success: false,
+          completedAt: now,
+          lastHeartbeat: now,
+          error: {
+            message: "Flow execution cancelled by user",
+            code: "USER_CANCELLED",
+          },
+        },
+      },
+    );
+
     // Trigger cancellation via Inngest
     const eventId = await inngest.send({
       name: "flow.cancel",
@@ -1641,11 +1955,14 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
-      type: "webhook",
+      type: { $in: ["webhook", "cdc"] },
     });
 
     if (!flow) {
-      return c.json({ success: false, error: "Webhook flow not found" }, 404);
+      return c.json(
+        { success: false, error: "Webhook/CDC flow not found" },
+        404,
+      );
     }
 
     // Get recent webhook events
@@ -1661,81 +1978,113 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [
-      eventsToday,
-      completedToday,
-      failedToday,
-      totalCount,
-      deferredCount,
-      runningFullSyncExecution,
-      cdcStats,
-    ] = await Promise.all([
-      WebhookEvent.countDocuments({
-        flowId: new Types.ObjectId(flowId),
-        receivedAt: { $gte: today },
-      }),
-      WebhookEvent.countDocuments({
-        flowId: new Types.ObjectId(flowId),
-        receivedAt: { $gte: today },
-        status: "completed",
-      }),
-      WebhookEvent.countDocuments({
-        flowId: new Types.ObjectId(flowId),
-        receivedAt: { $gte: today },
-        status: "failed",
-      }),
-      WebhookEvent.countDocuments({
-        flowId: new Types.ObjectId(flowId),
-      }),
-      WebhookEvent.countDocuments({
-        flowId: new Types.ObjectId(flowId),
-        applyStatus: "pending",
-      }),
-      FlowExecution.findOne({
-        flowId: new Types.ObjectId(flowId),
-        status: "running",
-        "context.syncMode": "full",
-      })
-        .select({ _id: 1 })
-        .lean(),
-      getBigQueryCdcFlowStats({ flowId }),
-    ]);
-    // Only use terminal events for success-rate math.
-    // Pending/processing events should not be counted as successful.
-    const terminalToday = completedToday + failedToday;
-    const successRate =
-      terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
-    const backfillActive = Boolean(
-      flow.backfillState?.active || runningFullSyncExecution,
-    );
+    const webhookUrl = resolveWebhookEndpoint({
+      workspaceId: workspaceId as string,
+      flowId: flowId as string,
+      requestBaseUrl: getRequestBaseUrl(c),
+      existingEndpoint: flow.webhookConfig?.endpoint,
+    });
+    const isCdcFlow = flow.type === "cdc" || flow.syncEngine === "cdc";
 
-    const stats = {
-      webhookUrl:
-        flow.type === "webhook"
-          ? generateWebhookEndpoint(
-              workspaceId as string,
-              flowId as string,
-              getRequestBaseUrl(c),
-            )
-          : flow.webhookConfig?.endpoint,
-      lastReceived: flow.webhookConfig?.lastReceivedAt
-        ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
-        : null,
-      totalReceived: totalCount,
-      eventsToday,
-      deferredCount,
-      backfillActive,
-      cdc: cdcStats,
-      successRate: Math.round(successRate),
-      recentEvents: recentEvents.slice(0, 10).map(event => ({
-        eventId: event.eventId,
-        eventType: event.eventType,
-        receivedAt: event.receivedAt,
-        status: event.status,
-        applyStatus: event.applyStatus,
-        processingDurationMs: event.processingDurationMs,
-      })),
-    };
+    let stats: any;
+    if (isCdcFlow) {
+      const [
+        eventsToday,
+        completedToday,
+        failedToday,
+        totalCount,
+        deferredCount,
+        runningFullSyncExecution,
+        cdcStats,
+      ] = await Promise.all([
+        WebhookEvent.countDocuments({
+          flowId: new Types.ObjectId(flowId),
+          receivedAt: { $gte: today },
+        }),
+        WebhookEvent.countDocuments({
+          flowId: new Types.ObjectId(flowId),
+          receivedAt: { $gte: today },
+          status: "completed",
+        }),
+        WebhookEvent.countDocuments({
+          flowId: new Types.ObjectId(flowId),
+          receivedAt: { $gte: today },
+          status: "failed",
+        }),
+        WebhookEvent.countDocuments({
+          flowId: new Types.ObjectId(flowId),
+        }),
+        WebhookEvent.countDocuments({
+          flowId: new Types.ObjectId(flowId),
+          applyStatus: "pending",
+        }),
+        FlowExecution.findOne({
+          flowId: new Types.ObjectId(flowId),
+          status: "running",
+          "context.syncMode": "full",
+        })
+          .select({ _id: 1 })
+          .lean(),
+        getBigQueryCdcFlowStats({ flowId }),
+      ]);
+      // Only use terminal events for success-rate math.
+      // Pending/processing events should not be counted as successful.
+      const terminalToday = completedToday + failedToday;
+      const successRate =
+        terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
+      const backfillActive = Boolean(
+        flow.backfillState?.active || runningFullSyncExecution,
+      );
+
+      stats = {
+        webhookUrl,
+        lastReceived: flow.webhookConfig?.lastReceivedAt
+          ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
+          : null,
+        totalReceived: totalCount,
+        eventsToday,
+        deferredCount,
+        backfillActive,
+        cdc: cdcStats,
+        successRate: Math.round(successRate),
+        recentEvents: recentEvents.slice(0, 10).map(event => ({
+          eventId: event.eventId,
+          eventType: event.eventType,
+          receivedAt: event.receivedAt,
+          status: event.status,
+          applyStatus: event.applyStatus,
+          processingDurationMs: event.processingDurationMs,
+        })),
+      };
+    } else {
+      const eventsToday = recentEvents.filter(
+        e => new Date(e.receivedAt) >= today,
+      ).length;
+      const failedEvents = recentEvents.filter(
+        e => e.status === "failed",
+      ).length;
+      const successRate =
+        recentEvents.length > 0
+          ? ((recentEvents.length - failedEvents) / recentEvents.length) * 100
+          : 100;
+
+      stats = {
+        webhookUrl,
+        lastReceived: flow.webhookConfig?.lastReceivedAt
+          ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
+          : null,
+        totalReceived: flow.webhookConfig?.totalReceived || 0,
+        eventsToday,
+        successRate: Math.round(successRate),
+        recentEvents: recentEvents.slice(0, 10).map(event => ({
+          eventId: event.eventId,
+          eventType: event.eventType,
+          receivedAt: event.receivedAt,
+          status: event.status,
+          processingDurationMs: event.processingDurationMs,
+        })),
+      };
+    }
 
     return c.json({ success: true, data: stats });
   } catch (error) {
@@ -1756,11 +2105,14 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
-      type: "webhook",
+      type: { $in: ["webhook", "cdc"] },
     });
 
     if (!flow) {
-      return c.json({ success: false, error: "Webhook flow not found" }, 404);
+      return c.json(
+        { success: false, error: "Webhook/CDC flow not found" },
+        404,
+      );
     }
 
     const query: any = {
@@ -1793,7 +2145,9 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
           receivedAt: event.receivedAt,
           processedAt: event.processedAt,
           status: event.status,
-          applyStatus: event.applyStatus,
+          ...(flow.type === "cdc" || flow.syncEngine === "cdc"
+            ? { applyStatus: event.applyStatus }
+            : {}),
           attempts: event.attempts,
           error: event.error,
           processingDurationMs: event.processingDurationMs,

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   Box,
   Button,
@@ -37,12 +37,17 @@ import {
   Healing as RecoverIcon,
   ContentCopy as CopyIcon,
 } from "@mui/icons-material";
-import { useFlowStore, type FlowExecutionHistory } from "../store/flowStore";
+import {
+  useFlowStore,
+  type CdcRestartPreview,
+  type FlowExecutionHistory,
+} from "../store/flowStore";
 
 interface BackfillPanelProps {
   workspaceId: string;
   flowId: string;
   onEdit?: () => void;
+  forceCdc?: boolean;
 }
 
 type ExecutionLog = {
@@ -190,6 +195,7 @@ export function BackfillPanel({
   workspaceId,
   flowId,
   onEdit,
+  forceCdc = false,
 }: BackfillPanelProps) {
   const {
     flows: flowsMap,
@@ -200,6 +206,7 @@ export function BackfillPanel({
     fetchExecutionDetails,
     cancelFlowExecution,
     fetchCdcSummary,
+    fetchCdcRestartPreview,
     fetchCdcDiagnostics,
     pauseCdcFlow,
     resumeCdcFlow,
@@ -227,10 +234,17 @@ export function BackfillPanel({
   const [cdcDiagnostics, setCdcDiagnostics] = useState<any | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [resyncDialogOpen, setResyncDialogOpen] = useState(false);
-  const [deleteDestination, setDeleteDestination] = useState(false);
+  const [deleteDestination] = useState(true);
   const [clearWebhookEvents, setClearWebhookEvents] = useState(false);
   const [resyncConfirmText, setResyncConfirmText] = useState("");
   const [isResyncing, setIsResyncing] = useState(false);
+  const [isLoadingResyncPreview, setIsLoadingResyncPreview] = useState(false);
+  const [resyncPreview, setResyncPreview] = useState<CdcRestartPreview | null>(
+    null,
+  );
+  const [entityBackfillTarget, setEntityBackfillTarget] = useState<
+    string | null
+  >(null);
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [panelWidth, setPanelWidth] = useState(0);
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
@@ -240,7 +254,10 @@ export function BackfillPanel({
   const kpiColumnCount = panelWidth >= 980 ? 4 : 2;
 
   const currentFlow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
-  const isCdcFlow = currentFlow?.syncEngine === "cdc";
+  const isCdcFlow =
+    forceCdc ||
+    currentFlow?.type === "cdc" ||
+    currentFlow?.syncEngine === "cdc";
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -450,35 +467,60 @@ export function BackfillPanel({
     return stopCdcPolling;
   }, [isCdcFlow, pollCdcOverview, stopCdcPolling]);
 
-  const handleBackfill = async () => {
-    if (isCdcFlow) {
+  const detectRunningExecution = useCallback(
+    async (attempts = 0): Promise<void> => {
+      if (attempts > 8) return;
+      const statusResp = await fetchFlowStatus(workspaceId, flowId);
+      if (statusResp?.isRunning && statusResp.runningExecution) {
+        setStatus("running");
+        setExecutionId(statusResp.runningExecution.executionId);
+        setStartedAt(statusResp.runningExecution.startedAt);
+        return;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+      return detectRunningExecution(attempts + 1);
+    },
+    [workspaceId, flowId, fetchFlowStatus],
+  );
+
+  const triggerCdcBackfill = useCallback(
+    async (entities?: string[]): Promise<boolean> => {
       setIsTriggering(true);
       setRecentLogs([]);
       setEntityStats({});
       setEntityStatus({});
       setError(null);
-      const ok = await startCdcBackfill(workspaceId, flowId);
+
+      const payload =
+        entities && entities.length > 0 ? { entities } : undefined;
+      const ok = await startCdcBackfill(workspaceId, flowId, payload);
       if (!ok) {
-        setError("Failed to start CDC backfill");
+        setError(
+          entities && entities.length === 1
+            ? `Failed to start CDC backfill for ${formatEntityAsTableName(entities[0])}`
+            : "Failed to start CDC backfill",
+        );
         setIsTriggering(false);
-        return;
+        return false;
       }
+
       await pollCdcOverview();
       setIsTriggering(false);
+      void detectRunningExecution();
+      return true;
+    },
+    [
+      workspaceId,
+      flowId,
+      startCdcBackfill,
+      pollCdcOverview,
+      detectRunningExecution,
+    ],
+  );
 
-      const detectExecution = async (attempts = 0): Promise<void> => {
-        if (attempts > 8) return;
-        const statusResp = await fetchFlowStatus(workspaceId, flowId);
-        if (statusResp?.isRunning && statusResp.runningExecution) {
-          setStatus("running");
-          setExecutionId(statusResp.runningExecution.executionId);
-          setStartedAt(statusResp.runningExecution.startedAt);
-          return;
-        }
-        await new Promise(r => setTimeout(r, 2000));
-        return detectExecution(attempts + 1);
-      };
-      detectExecution();
+  const handleBackfill = async () => {
+    if (isCdcFlow) {
+      await triggerCdcBackfill();
       return;
     }
 
@@ -513,6 +555,16 @@ export function BackfillPanel({
       setStatus("failed");
       setError(err instanceof Error ? err.message : "Backfill failed");
       setIsTriggering(false);
+    }
+  };
+
+  const handleEntityBackfill = async (entity: string) => {
+    if (!isCdcFlow) return;
+    setEntityBackfillTarget(entity);
+    try {
+      await triggerCdcBackfill([entity]);
+    } finally {
+      setEntityBackfillTarget(null);
     }
   };
 
@@ -559,13 +611,84 @@ export function BackfillPanel({
     });
     setIsResyncing(false);
     if (!success) {
-      setError("Failed to reset CDC flow");
+      setError("Failed to restart CDC flow from scratch");
       return;
     }
     setResyncDialogOpen(false);
     setResyncConfirmText("");
     await pollCdcOverview();
   };
+
+  const restartPreviewEntities = Array.from(
+    new Set([
+      ...(Array.isArray(cdcSummary?.entityCounts)
+        ? cdcSummary.entityCounts
+            .map((entry: { entity?: string }) => entry?.entity)
+            .filter(
+              (entity: unknown): entity is string =>
+                typeof entity === "string" && entity.trim().length > 0,
+            )
+        : []),
+      ...(Array.isArray(currentFlow?.entityFilter)
+        ? currentFlow.entityFilter
+            .filter(
+              (entity): entity is string =>
+                typeof entity === "string" && entity.trim().length > 0,
+            )
+            .map(entity => entity.trim())
+        : []),
+      ...(Array.isArray(currentFlow?.entityLayouts)
+        ? currentFlow.entityLayouts
+            .filter(
+              layout =>
+                layout &&
+                typeof layout.entity === "string" &&
+                layout.entity.trim().length > 0,
+            )
+            .map(layout => layout.entity.trim())
+        : []),
+      ...plannedEntities
+        .filter(
+          entity => typeof entity === "string" && entity.trim().length > 0,
+        )
+        .map(entity => entity.trim()),
+      ...Object.keys(entityStatus)
+        .filter(entity => entity.trim().length > 0)
+        .map(entity => entity.trim()),
+    ]),
+  );
+
+  const sortedRestartPreviewTables = useMemo(() => {
+    if (!resyncPreview?.tables?.length) {
+      return [];
+    }
+
+    return [...resyncPreview.tables].sort((a, b) => {
+      const byName = a.fullName.localeCompare(b.fullName, undefined, {
+        sensitivity: "base",
+      });
+      if (byName !== 0) {
+        return byName;
+      }
+      return a.kind.localeCompare(b.kind, undefined, { sensitivity: "base" });
+    });
+  }, [resyncPreview]);
+  const restartPreviewEntityCount = resyncPreview?.entities?.length ?? 0;
+
+  const openResyncDialog = useCallback(async () => {
+    setResyncDialogOpen(true);
+    setResyncPreview(null);
+    setIsLoadingResyncPreview(true);
+    const preview = await fetchCdcRestartPreview(
+      workspaceId,
+      flowId,
+      restartPreviewEntities.length > 0
+        ? { entities: restartPreviewEntities }
+        : undefined,
+    );
+    setResyncPreview(preview);
+    setIsLoadingResyncPreview(false);
+  }, [fetchCdcRestartPreview, flowId, restartPreviewEntities, workspaceId]);
 
   const handleCdcRecover = async () => {
     if (!isCdcFlow) return;
@@ -740,10 +863,16 @@ export function BackfillPanel({
     const actDanger = { ...act, color: "error.main" };
 
     const state = summary?.syncState;
-    const backfillRunning = status === "running" || state === "backfill";
-    const isPaused = state === "paused" && !backfillRunning;
-    const isDegraded = state === "degraded" && !backfillRunning;
-    const isIdle = (!state || state === "idle") && !backfillRunning;
+    const backfillRunning =
+      state === "backfill" || (status === "running" && state !== "paused");
+    const isPaused = state === "paused";
+    const isDegraded = state === "degraded";
+    const canPauseStream =
+      state === "idle" ||
+      state === "backfill" ||
+      state === "catchup" ||
+      state === "live" ||
+      !state;
     const hasFailed = (summary?.failedCount ?? 0) > 0;
     const failedDroppedDetail =
       summary &&
@@ -772,7 +901,6 @@ export function BackfillPanel({
             borderColor: "divider",
             columnGap: 0.5,
             rowGap: 0.75,
-            minHeight: 40,
           }}
         >
           <Box
@@ -784,81 +912,50 @@ export function BackfillPanel({
               flex: "1 1 auto",
             }}
           >
-            {/* Primary action — changes based on state */}
-            {isIdle && (
+            {/* Primary actions */}
+            <Button
+              sx={act}
+              startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
+              onClick={handleBackfill}
+              disabled={isTriggering || backfillRunning}
+            >
+              {backfillRunning ? "Backfilling…" : "Start backfill"}
+            </Button>
+            <Button
+              sx={actDanger}
+              startIcon={<CancelIcon sx={{ fontSize: 18 }} />}
+              onClick={handleCancel}
+              disabled={!backfillRunning}
+            >
+              Cancel
+            </Button>
+            {isPaused ? (
               <Button
                 sx={act}
-                startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                onClick={handleBackfill}
-                disabled={isTriggering}
-              >
-                Start backfill
-              </Button>
-            )}
-            {backfillRunning && (
-              <>
-                <Button
-                  sx={act}
-                  startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                  disabled
-                >
-                  Backfilling…
-                </Button>
-                <Button
-                  sx={actDanger}
-                  startIcon={<CancelIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleCancel}
-                >
-                  Cancel
-                </Button>
-              </>
-            )}
-            {(state === "catchup" || state === "live") && (
-              <Button
-                sx={act}
-                startIcon={<PauseIcon sx={{ fontSize: 18 }} />}
+                startIcon={<ResumeIcon sx={{ fontSize: 18 }} />}
                 onClick={handleCdcPauseResume}
               >
-                Pause stream
+                Resume stream
               </Button>
-            )}
-            {isPaused && (
-              <>
+            ) : (
+              canPauseStream && (
                 <Button
                   sx={act}
-                  startIcon={<ResumeIcon sx={{ fontSize: 18 }} />}
+                  startIcon={<PauseIcon sx={{ fontSize: 18 }} />}
                   onClick={handleCdcPauseResume}
                 >
-                  Resume stream
+                  Pause stream
                 </Button>
-                <Button
-                  sx={act}
-                  startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleBackfill}
-                  disabled={isTriggering}
-                >
-                  Start backfill
-                </Button>
-              </>
+              )
             )}
             {isDegraded && (
-              <>
-                <Button
-                  sx={act}
-                  startIcon={<RecoverIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleCdcRecover}
-                >
-                  Recover
-                </Button>
-                <Button
-                  sx={act}
-                  startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleBackfill}
-                  disabled={isTriggering}
-                >
-                  Start backfill
-                </Button>
-              </>
+              <Button
+                sx={act}
+                startIcon={<RecoverIcon sx={{ fontSize: 18 }} />}
+                onClick={handleCdcRecover}
+              >
+                Recover
+              </Button>
             )}
 
             {/* Secondary actions — contextual */}
@@ -887,9 +984,9 @@ export function BackfillPanel({
             <Button
               sx={actDanger}
               startIcon={<ResyncIcon sx={{ fontSize: 18 }} />}
-              onClick={() => setResyncDialogOpen(true)}
+              onClick={openResyncDialog}
             >
-              Reset sync
+              Restart from scratch
             </Button>
             {onEdit && (
               <Button
@@ -1235,8 +1332,12 @@ export function BackfillPanel({
                     >
                       <TableContainer
                         sx={{
-                          width: "max-content",
-                          minWidth: "100%",
+                          width: "100%",
+                          minWidth: 0,
+                          "& .MuiTable-root": {
+                            width: "100%",
+                            minWidth: 560,
+                          },
                         }}
                       >
                         <Table stickyHeader size="small">
@@ -1427,10 +1528,10 @@ export function BackfillPanel({
                 >
                   <TableContainer
                     sx={{
-                      width: "max-content",
-                      minWidth: "100%",
+                      width: "100%",
+                      minWidth: 0,
                       "& .MuiTable-root": {
-                        width: "max-content",
+                        width: "100%",
                         minWidth: 900,
                       },
                       "& .MuiTableCell-root": {
@@ -1458,6 +1559,7 @@ export function BackfillPanel({
                           }}
                         >
                           <TableCell>Entity name</TableCell>
+                          <TableCell align="right">Action</TableCell>
                           <TableCell>Status</TableCell>
                           <TableCell>Backfill</TableCell>
                           <TableCell align="right">Applied</TableCell>
@@ -1471,6 +1573,23 @@ export function BackfillPanel({
                       <TableBody>
                         {summary.entityCounts.map((entity: any) => {
                           const objStatus = entityObjectStatus(entity);
+                          const entityBackfillUnsupported =
+                            connectorType === "close" &&
+                            entity.entity === "custom_objects";
+                          const entityBackfillDisabled =
+                            isTriggering ||
+                            backfillRunning ||
+                            entityBackfillUnsupported ||
+                            (entityBackfillTarget !== null &&
+                              entityBackfillTarget !== entity.entity);
+                          let entityBackfillTooltip = `Backfill only ${formatEntityAsTableName(entity.entity)}`;
+                          if (entityBackfillUnsupported) {
+                            entityBackfillTooltip =
+                              "Close custom_objects backfill is webhook-only";
+                          } else if (backfillRunning) {
+                            entityBackfillTooltip =
+                              "A backfill run is already in progress";
+                          }
                           return (
                             <TableRow
                               key={entity.entity}
@@ -1487,6 +1606,30 @@ export function BackfillPanel({
                                 >
                                   {formatEntityAsTableName(entity.entity)}
                                 </Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Tooltip title={entityBackfillTooltip}>
+                                  <span>
+                                    <Button
+                                      size="small"
+                                      onClick={() =>
+                                        handleEntityBackfill(entity.entity)
+                                      }
+                                      disabled={entityBackfillDisabled}
+                                      sx={{
+                                        textTransform: "none",
+                                        minWidth: 0,
+                                        px: 1,
+                                        fontSize: "0.72rem",
+                                        fontWeight: 500,
+                                      }}
+                                    >
+                                      {entityBackfillTarget === entity.entity
+                                        ? "Starting…"
+                                        : "Backfill"}
+                                    </Button>
+                                  </span>
+                                </Tooltip>
                               </TableCell>
                               <TableCell>
                                 <Chip
@@ -1863,24 +2006,24 @@ export function BackfillPanel({
           )}
         </Box>
 
-        {/* Reset sync dialog */}
+        {/* Restart-from-scratch dialog */}
         <Dialog
           open={resyncDialogOpen}
-          onClose={() => setResyncDialogOpen(false)}
+          onClose={() => {
+            if (!isResyncing) {
+              setResyncDialogOpen(false);
+            }
+          }}
         >
-          <DialogTitle>Reset sync</DialogTitle>
+          <DialogTitle>Restart from scratch</DialogTitle>
           <DialogContent sx={{ display: "grid", gap: 1, minWidth: 420 }}>
             <Typography variant="body2">
-              This will clear CDC state and restart backfill.
+              This clears CDC state and starts a brand-new backfill run for this
+              flow.
             </Typography>
             <FormControlLabel
-              control={
-                <Checkbox
-                  checked={deleteDestination}
-                  onChange={event => setDeleteDestination(event.target.checked)}
-                />
-              }
-              label="Delete destination tables"
+              control={<Checkbox checked={deleteDestination} disabled />}
+              label="Delete destination live + working tables (always on)"
             />
             <FormControlLabel
               control={
@@ -1899,6 +2042,104 @@ export function BackfillPanel({
               onChange={event => setResyncConfirmText(event.target.value)}
               size="small"
             />
+            <Box
+              sx={{
+                border: 1,
+                borderColor: "divider",
+                borderRadius: 1,
+                p: 1,
+                bgcolor: "background.default",
+              }}
+            >
+              <Typography variant="caption" color="text.secondary">
+                Tables to remove
+              </Typography>
+              {isLoadingResyncPreview ? (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  Loading preview...
+                </Typography>
+              ) : sortedRestartPreviewTables.length ? (
+                <>
+                  <Typography
+                    variant="caption"
+                    display="block"
+                    sx={{ mt: 0.5 }}
+                  >
+                    {sortedRestartPreviewTables.length} table
+                    {sortedRestartPreviewTables.length === 1
+                      ? ""
+                      : "s"} across {restartPreviewEntityCount} entit
+                    {restartPreviewEntityCount === 1 ? "y" : "ies"}
+                  </Typography>
+                  <Box
+                    sx={{
+                      mt: 0.75,
+                      maxHeight: 220,
+                      maxWidth: "100%",
+                      border: 1,
+                      borderColor: "divider",
+                      borderRadius: 1,
+                      bgcolor: "background.paper",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <TableContainer
+                      sx={{
+                        maxHeight: 220,
+                        width: "100%",
+                        overflowY: "auto",
+                        overflowX: "hidden",
+                      }}
+                    >
+                      <Table
+                        size="small"
+                        stickyHeader
+                        sx={{ width: "100%", tableLayout: "fixed" }}
+                      >
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Table</TableCell>
+                            <TableCell sx={{ width: 96 }}>Kind</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {sortedRestartPreviewTables.map(table => (
+                            <TableRow
+                              key={`${table.kind}:${table.fullName}`}
+                              hover
+                            >
+                              <TableCell
+                                sx={{
+                                  fontFamily: "monospace",
+                                  whiteSpace: "normal",
+                                  overflowWrap: "anywhere",
+                                  wordBreak: "break-word",
+                                }}
+                              >
+                                {table.fullName}
+                              </TableCell>
+                              <TableCell>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  {table.kind}
+                                </Typography>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </Box>
+                </>
+              ) : (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  Could not load table preview yet. Restart still deletes
+                  flow-owned live + working tables.
+                </Typography>
+              )}
+            </Box>
           </DialogContent>
           <DialogActions>
             <Button
@@ -1913,7 +2154,7 @@ export function BackfillPanel({
               disabled={resyncConfirmText !== "RESET" || isResyncing}
               onClick={handleCdcResync}
             >
-              {isResyncing ? "Resetting…" : "Reset sync"}
+              {isResyncing ? "Restarting…" : "Restart from scratch"}
             </Button>
           </DialogActions>
         </Dialog>
@@ -1959,7 +2200,7 @@ export function BackfillPanel({
           onClick={handleBackfill}
           disabled={isTriggering || status === "running"}
         >
-          {status === "running" ? "Backfill running..." : "Run Backfill"}
+          {status === "running" ? "Backfill running..." : "Start backfill"}
         </Button>
         {status === "running" && (
           <Button
