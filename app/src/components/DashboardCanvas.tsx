@@ -745,7 +745,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         {/* Main content: Canvas or Code */}
         <Box sx={{ flex: 1, overflow: "auto" }}>
           {viewMode === "canvas" ? (
-            <Box ref={gridContainerRef} sx={{ height: "100%", p: 1 }}>
+            <Box ref={gridContainerRef} sx={{ height: "100%" }}>
               {dashboard.widgets.length === 0 ? (
                 <Box
                   sx={{

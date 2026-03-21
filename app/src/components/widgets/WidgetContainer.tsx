@@ -12,10 +12,10 @@ import {
 import {
   GripHorizontal,
   MoreVertical,
+  RefreshCw,
   Trash2,
   Copy,
   Settings,
-  RefreshCw,
 } from "lucide-react";
 
 class WidgetErrorBoundary extends React.Component<

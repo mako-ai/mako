@@ -56,7 +56,7 @@ export function getVegaThemeConfig(
 
   return {
     background: c.background,
-    padding: { left: 16, right: 16, top: 12, bottom: 12 },
+    padding: 10,
 
     title: {
       color: c.textPrimary,

@@ -5,14 +5,7 @@ import React, {
   useCallback,
   useState,
 } from "react";
-import {
-  Box,
-  Typography,
-  IconButton,
-  Tooltip,
-  CircularProgress,
-} from "@mui/material";
-import { Download, Undo2 } from "lucide-react";
+import { Box, Typography, CircularProgress } from "@mui/material";
 import { useTheme } from "../contexts/ThemeContext";
 import { MakoChartSpec } from "../lib/chart-spec";
 import { generateAutoSpec } from "../lib/chart-auto-spec";
@@ -38,6 +31,57 @@ export interface CrossFilterSelection {
 function getMarkType(spec: Record<string, any>): string {
   if (!spec?.mark) return "";
   return typeof spec.mark === "string" ? spec.mark : spec.mark?.type || "";
+}
+
+/**
+ * Ensure the color scale domain is sorted alphabetically so the same
+ * category always maps to the same palette index across charts.
+ * Without this, data-order differences (e.g. by volume vs alphabetical)
+ * cause the same value to get different colors in different charts.
+ */
+function stabilizeColorDomain(
+  spec: Record<string, any>,
+  data: any[],
+): Record<string, any> {
+  if (!spec || data.length === 0) return spec;
+
+  const patchEncoding = (
+    encoding: Record<string, any> | undefined,
+  ): Record<string, any> | undefined => {
+    if (!encoding?.color?.field) return encoding;
+    if (encoding.color.scale?.domain) return encoding;
+
+    const field = encoding.color.field;
+    const unique = Array.from(new Set(data.map(row => row[field])))
+      .filter(v => v != null)
+      .sort((a, b) => String(a).localeCompare(String(b)));
+
+    if (unique.length === 0) return encoding;
+
+    return {
+      ...encoding,
+      color: {
+        ...encoding.color,
+        scale: { ...encoding.color.scale, domain: unique },
+      },
+    };
+  };
+
+  if (spec.layer) {
+    const patchedLayers = spec.layer.map((layer: Record<string, any>) => {
+      const patched = patchEncoding(layer.encoding);
+      return patched !== layer.encoding
+        ? { ...layer, encoding: patched }
+        : layer;
+    });
+    const changed = patchedLayers.some(
+      (l: Record<string, any>, i: number) => l !== spec.layer[i],
+    );
+    return changed ? { ...spec, layer: patchedLayers } : spec;
+  }
+
+  const patched = patchEncoding(spec.encoding);
+  return patched !== spec.encoding ? { ...spec, encoding: patched } : spec;
 }
 
 /**
@@ -181,7 +225,6 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
   data,
   fields,
   spec,
-  onSpecChange,
   onRenderError,
   onRenderSuccess,
   enableSelection,
@@ -217,29 +260,6 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
   }, [data, fields]);
 
   const activeSpec = spec ?? autoSpec;
-  const isCustomSpec = spec != null;
-
-  const handleReset = useCallback(() => {
-    if (autoSpec && onSpecChange) {
-      onSpecChange(null as unknown as MakoChartSpec);
-    }
-  }, [autoSpec, onSpecChange]);
-
-  const handleDownload = useCallback(async (format: "png" | "svg") => {
-    if (!viewRef.current) return;
-    try {
-      const url = await viewRef.current.toImageURL(
-        format,
-        format === "png" ? 2 : undefined,
-      );
-      const link = document.createElement("a");
-      link.download = `chart.${format}`;
-      link.href = url;
-      link.click();
-    } catch {
-      // Silently fail — download is best-effort
-    }
-  }, []);
 
   const dispatchContainerResize = useCallback(() => {
     if (resizeFrameRef.current !== null) {
@@ -279,9 +299,11 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         const themeConfig = getVegaThemeConfig(effectiveMode);
 
-        const baseSpec = enableSelection
+        const withSelection = enableSelection
           ? injectSelectionParams(activeSpec as Record<string, any>)
-          : activeSpec;
+          : (activeSpec as Record<string, any>);
+
+        const baseSpec = stabilizeColorDomain(withSelection, data);
 
         const fullSpec: any = {
           ...baseSpec,
@@ -432,53 +454,6 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
         overflow: "hidden",
       }}
     >
-      {/* Chart toolbar */}
-      <Box
-        sx={{
-          px: 1,
-          py: 0.5,
-          display: "flex",
-          alignItems: "center",
-          gap: 0.5,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          backgroundColor: "background.default",
-          minHeight: 36,
-        }}
-      >
-        <Tooltip title="Download PNG">
-          <IconButton
-            size="small"
-            onClick={() => handleDownload("png")}
-            sx={{ p: 0.5 }}
-          >
-            <Download size={16} />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Download SVG">
-          <IconButton
-            size="small"
-            onClick={() => handleDownload("svg")}
-            sx={{ p: 0.5 }}
-          >
-            <Download size={16} />
-          </IconButton>
-        </Tooltip>
-        {isCustomSpec && (
-          <Tooltip title="Revert to auto-generated chart">
-            <IconButton size="small" onClick={handleReset} sx={{ p: 0.5 }}>
-              <Undo2 size={16} />
-            </IconButton>
-          </Tooltip>
-        )}
-        <Box sx={{ flex: 1 }} />
-        {isCustomSpec && (
-          <Typography variant="caption" color="text.secondary">
-            Custom spec
-          </Typography>
-        )}
-      </Box>
-
       {/* Chart container */}
       <Box
         sx={{
