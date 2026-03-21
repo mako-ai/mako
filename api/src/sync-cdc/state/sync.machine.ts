@@ -38,6 +38,20 @@ export interface CdcMachineContext {
   lastErrorMessage?: string;
 }
 
+export interface CdcStateInvariant {
+  allowBackfillStart: boolean;
+  allowMaterialization: boolean;
+}
+
+export const CDC_STATE_INVARIANTS: Record<SyncState, CdcStateInvariant> = {
+  idle: { allowBackfillStart: true, allowMaterialization: true },
+  backfill: { allowBackfillStart: false, allowMaterialization: true },
+  catchup: { allowBackfillStart: false, allowMaterialization: true },
+  live: { allowBackfillStart: false, allowMaterialization: true },
+  paused: { allowBackfillStart: false, allowMaterialization: false },
+  degraded: { allowBackfillStart: false, allowMaterialization: true },
+};
+
 export const CDC_LEGAL_TRANSITIONS: Record<
   SyncState,
   Partial<Record<CdcSyncEventType, SyncState>>
@@ -75,6 +89,10 @@ export function resolveCdcTransition(
   eventType: CdcSyncEventType,
 ): SyncState | null {
   return CDC_LEGAL_TRANSITIONS[fromState]?.[eventType] || null;
+}
+
+export function getCdcStateInvariant(state: SyncState): CdcStateInvariant {
+  return CDC_STATE_INVARIANTS[state];
 }
 
 export function passesTransitionGuard(

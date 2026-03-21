@@ -11,14 +11,17 @@ import { createDestinationWriter } from "../../services/destination-writer.servi
 import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { Types } from "mongoose";
 import {
-  appendBigQueryChangeEvents,
   isBigQueryCdcEnabledForFlow,
-  mapWebhookEventToChangeInput,
   resolveDestinationTypeForFlow,
   sweepStaleBigQueryCdcPending,
 } from "../../services/bigquery-cdc.service";
 import { cdcMaterializerService } from "../../sync-cdc/materializer.service";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
+import {
+  normalizePayloadKeys,
+  resolveSourceTimestamp,
+} from "../../sync-cdc/normalization";
+import { cdcEngineOrchestratorService } from "../../sync-cdc/engine-orchestrator.service";
 
 /**
  * Process a single webhook event immediately
@@ -142,13 +145,8 @@ export const webhookEventProcessFunction = inngest.createFunction(
 
         // Flatten keys with dots (e.g. Close custom fields "custom.cf_xxx")
         // BigQuery interprets dots as struct field access which breaks queries
-        const flatData: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(data)) {
-          flatData[key.replace(/\./g, "_")] = value;
-        }
-
         const documentData = {
-          ...flatData,
+          ...normalizePayloadKeys(data),
           _dataSourceId: dataSource._id,
           _dataSourceName: dataSource.name,
           _syncedAt: new Date(),
@@ -305,22 +303,25 @@ export const webhookEventProcessFunction = inngest.createFunction(
         }
 
         if (isBigQueryCdcEnabled && flow.tableDestination?.connectionId) {
-          const change = await mapWebhookEventToChangeInput({
-            entity: resolvedEntity,
-            operation: mapping.operation,
-            recordId: String(id),
-            payload: documentData,
-            webhookEvent: {
-              eventId: webhookEvent.eventId,
-              receivedAt: new Date(webhookEvent.receivedAt),
-            },
-          });
-
-          await appendBigQueryChangeEvents({
-            workspaceId: new Types.ObjectId(String(flow.workspaceId)),
-            flowId: new Types.ObjectId(flowId),
-            changes: [change],
+          const sourceTs = resolveSourceTimestamp(
+            documentData,
+            new Date(webhookEvent.receivedAt),
+          );
+          await cdcEngineOrchestratorService.ingestNormalized({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flowId),
             enqueue: true,
+            events: [
+              {
+                entity: resolvedEntity,
+                recordId: String(id),
+                operation: mapping.operation,
+                payload: documentData,
+                sourceTs,
+                source: "webhook",
+                changeId: `webhook:${webhookEvent.eventId}:${resolvedEntity}:${id}:${mapping.operation}`,
+              },
+            ],
           });
 
           await WebhookEvent.updateOne(

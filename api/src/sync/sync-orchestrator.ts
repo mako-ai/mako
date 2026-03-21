@@ -16,11 +16,9 @@ import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
-import {
-  appendBigQueryChangeEvents,
-  isBigQueryCdcEnabledForFlow,
-  mapBackfillRecordsToChanges,
-} from "../services/bigquery-cdc.service";
+import { isBigQueryCdcEnabledForFlow } from "../services/bigquery-cdc.service";
+import { normalizePayloadKeys } from "../sync-cdc/normalization";
+import { cdcEngineOrchestratorService } from "../sync-cdc/engine-orchestrator.service";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
@@ -695,12 +693,8 @@ async function performSyncChunkSql(
           });
 
           const processedRecords = batch.map((record: any) => {
-            const flat: Record<string, unknown> = {};
-            for (const [key, value] of Object.entries(record)) {
-              flat[key.replace(/\./g, "_")] = value;
-            }
             return {
-              ...flat,
+              ...normalizePayloadKeys(record),
               _dataSourceId: dataSource.id,
               _dataSourceName: dataSource.name,
               _syncedAt: new Date(),
@@ -713,15 +707,14 @@ async function performSyncChunkSql(
                 "BigQuery CDC requires flowId and workspaceId on chunk options",
               );
             }
-            const changes = await mapBackfillRecordsToChanges({
+            await cdcEngineOrchestratorService.ingestBackfill({
+              workspaceId: options.workspaceId,
+              flowId: options.flowId,
+              connector,
+              connectorType: dataSource.type,
               entity,
               records: processedRecords,
               runId: options.backfillRunId,
-            });
-            await appendBigQueryChangeEvents({
-              workspaceId: new Types.ObjectId(options.workspaceId),
-              flowId: new Types.ObjectId(options.flowId),
-              changes,
               enqueue: true,
             });
             runningProcessed += processedRecords.length;

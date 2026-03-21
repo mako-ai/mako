@@ -8,14 +8,16 @@ import {
   Flow,
   IBigQueryChangeEvent,
   IFlow,
-  IWebhookEvent,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { createDestinationWriter } from "./destination-writer.service";
 import { inngest } from "../inngest/client";
-import { getEntityTableName } from "../sync/sync-orchestrator";
-import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
-import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
+import {
+  normalizePayloadKeys,
+  resolveSourceTimestamp,
+  sanitizeBackfillPayloadForIdempotency as sanitizeBackfillPayload,
+  selectLatestChangePerRecord as selectLatestPerRecord,
+  stableStringify,
+} from "../sync-cdc/normalization";
 
 const log = loggers.sync("bigquery-cdc");
 
@@ -34,17 +36,6 @@ type ChangeInput = {
   webhookEventId?: string;
 };
 
-const VOLATILE_BACKFILL_IDEMPOTENCY_FIELDS = new Set([
-  "_syncedAt",
-  "_mako_source_ts",
-  "_mako_ingest_seq",
-  "_mako_ingest_ts",
-  "_mako_source_kind",
-  "_mako_run_id",
-  "_mako_entity",
-  "_mako_webhook_event_id",
-]);
-
 export function isBigQueryCdcEnabledForFlow(
   flow: Pick<IFlow, "_id" | "tableDestination" | "syncEngine">,
   destinationType?: string,
@@ -54,92 +45,10 @@ export function isBigQueryCdcEnabledForFlow(
   return destinationType === "bigquery";
 }
 
-function normalizePayload(
-  payload?: Record<string, unknown>,
-): Record<string, unknown> {
-  const normalized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(payload || {})) {
-    normalized[key.replace(/\./g, "_")] = value;
-  }
-  return normalized;
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(item => stableStringify(item)).join(",")}]`;
-  }
-  if (value instanceof Date) {
-    return JSON.stringify(value.toISOString());
-  }
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(
-        ([key, entryValue]) =>
-          `${JSON.stringify(key)}:${stableStringify(entryValue)}`,
-      );
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 export function sanitizeBackfillPayloadForIdempotency(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (
-      VOLATILE_BACKFILL_IDEMPOTENCY_FIELDS.has(key) ||
-      key.startsWith("_mako_")
-    ) {
-      continue;
-    }
-
-    if (Array.isArray(value)) {
-      sanitized[key] = value.map(item =>
-        typeof item === "object" && item !== null
-          ? sanitizeBackfillPayloadForIdempotency(
-              item as Record<string, unknown>,
-            )
-          : item,
-      );
-      continue;
-    }
-
-    if (typeof value === "object" && value !== null) {
-      sanitized[key] = sanitizeBackfillPayloadForIdempotency(
-        value as Record<string, unknown>,
-      );
-      continue;
-    }
-
-    sanitized[key] = value;
-  }
-  return sanitized;
-}
-
-function resolveSourceTs(
-  payload?: Record<string, unknown>,
-  fallback?: Date,
-): Date {
-  const candidates = [
-    payload?.date_updated,
-    payload?.updated_at,
-    payload?.date_created,
-    payload?.created_at,
-    payload?.timestamp,
-    payload?._syncedAt,
-  ];
-  for (const value of candidates) {
-    if (!value) continue;
-    const d = value instanceof Date ? value : new Date(String(value));
-    if (!isNaN(d.getTime())) return d;
-  }
-  return fallback || new Date();
+  return sanitizeBackfillPayload(payload);
 }
 
 function buildIdempotencyKey(input: ChangeInput): string {
@@ -223,6 +132,18 @@ async function maybeEnqueueMaterialization(params: {
   entity: string;
   force?: boolean;
 }) {
+  const flow = await Flow.findById(params.flowId)
+    .select({ syncState: 1, syncEngine: 1 })
+    .lean();
+  if (!flow || flow.syncEngine !== "cdc") return;
+  if (flow.syncState === "paused") {
+    log.info("Skip CDC materialization enqueue while paused", {
+      flowId: String(params.flowId),
+      entity: params.entity,
+    });
+    return;
+  }
+
   const state = await BigQueryCdcState.findOne({
     flowId: params.flowId,
     entity: params.entity,
@@ -251,7 +172,7 @@ async function maybeEnqueueMaterialization(params: {
   });
 }
 
-function toWriteErrors(raw: unknown): any[] {
+function toWriteErrors(raw: unknown): unknown[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
   if (raw instanceof Map) return Array.from(raw.values());
@@ -346,8 +267,8 @@ export async function appendBigQueryChangeEvents(params: {
 
   const docs: Omit<IBigQueryChangeEvent, "_id">[] = [];
   for (const change of params.changes) {
-    const payload = normalizePayload(change.payload);
-    const sourceTs = resolveSourceTs(payload, change.sourceTs);
+    const payload = normalizePayloadKeys(change.payload);
+    const sourceTs = resolveSourceTimestamp(payload, change.sourceTs);
     docs.push({
       workspaceId: params.workspaceId,
       flowId: params.flowId,
@@ -384,11 +305,14 @@ export async function appendBigQueryChangeEvents(params: {
   let inserted = 0;
   let deduped = 0;
   try {
-    const result = await BigQueryChangeEvent.insertMany(docs as any, {
-      ordered: false,
-    });
+    const result = await BigQueryChangeEvent.insertMany(
+      docs as unknown as IBigQueryChangeEvent[],
+      {
+        ordered: false,
+      },
+    );
     inserted = result.length;
-  } catch (error: any) {
+  } catch (error: unknown) {
     const duplicateInfo = extractDuplicateErrorInfo(error);
     deduped = duplicateInfo.duplicateCount;
     inserted = Math.max(docs.length - deduped, 0);
@@ -450,332 +374,10 @@ type ComparableChange = {
 export function selectLatestChangePerRecord<T extends ComparableChange>(
   events: T[],
 ): T[] {
-  const latestByRecord = new Map<string, any>();
-  for (const event of events) {
-    const current = latestByRecord.get(event.recordId);
-    if (!current) {
-      latestByRecord.set(event.recordId, event);
-      continue;
-    }
-    const currentTs = new Date(current.sourceTs).getTime();
-    const nextTs = new Date(event.sourceTs).getTime();
-    if (nextTs > currentTs) {
-      latestByRecord.set(event.recordId, event);
-      continue;
-    }
-    if (
-      nextTs === currentTs &&
-      Number(event.ingestSeq) > Number(current.ingestSeq)
-    ) {
-      latestByRecord.set(event.recordId, event);
-    }
-  }
-  return Array.from(latestByRecord.values()) as T[];
+  return selectLatestPerRecord(events);
 }
 
-async function stageChangeEventsToBigQuery(params: {
-  flow: any;
-  destinationDatabaseId: Types.ObjectId;
-  destinationDatabaseName?: string;
-  tableDestination: any;
-  entity: string;
-  events: any[];
-}): Promise<void> {
-  const entityTableName = getEntityTableName(
-    params.tableDestination.tableName,
-    params.entity,
-  );
-  const stageTableName = `${entityTableName}__stage_changes`;
-
-  const writer = await createDestinationWriter(
-    {
-      destinationDatabaseId: params.destinationDatabaseId,
-      destinationDatabaseName: params.destinationDatabaseName,
-      tableDestination: {
-        ...params.tableDestination,
-        schema: BIGQUERY_WORKING_DATASET,
-        tableName: stageTableName,
-      },
-    },
-    "bigquery-cdc",
-  );
-
-  const rows = params.events.map(event => ({
-    ...(event.payload || {}),
-    _mako_record_id: event.recordId,
-    _mako_op: event.op,
-    _mako_source_ts: event.sourceTs,
-    _mako_ingest_seq: event.ingestSeq,
-    _mako_ingest_ts: event.ingestTs,
-    _mako_source_kind: event.sourceKind,
-    _mako_run_id: event.runId || null,
-    _mako_entity: event.entity,
-    _mako_webhook_event_id: event.webhookEventId || null,
-  }));
-
-  const result = await writer.writeBatch(rows);
-  if (!result.success) {
-    throw new Error(result.error || "Failed to stage BigQuery CDC events");
-  }
-}
-
-export async function materializeBigQueryEntity(params: {
-  workspaceId: string;
-  flowId: string;
-  entity: string;
-  maxEvents?: number;
-}): Promise<{
-  staged: number;
-  applied: number;
-  lastMaterializedSeq: number;
-}> {
-  const maxEvents = Math.max(params.maxEvents || 5000, 100);
-  const flow = await Flow.findById(params.flowId).lean();
-  if (!flow?.tableDestination?.connectionId) {
-    return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
-  }
-  const destination = await DatabaseConnection.findById(
-    flow.tableDestination.connectionId,
-  ).lean();
-  if (!destination || destination.type !== "bigquery") {
-    return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
-  }
-
-  const { entities: configuredEntities, hasExplicitSelection } =
-    resolveConfiguredEntities(flow);
-  const isEntityEnabled =
-    !hasExplicitSelection || configuredEntities.includes(params.entity);
-
-  const pending = await BigQueryChangeEvent.find({
-    flowId: new Types.ObjectId(params.flowId),
-    entity: params.entity,
-    materializationStatus: "pending",
-  })
-    .sort({ ingestSeq: 1 })
-    .limit(maxEvents)
-    .lean();
-
-  if (pending.length === 0) {
-    return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
-  }
-
-  if (!isEntityEnabled) {
-    await BigQueryChangeEvent.updateMany(
-      { _id: { $in: pending.map(event => event._id) } },
-      {
-        $set: {
-          materializationStatus: "dropped",
-          appliedAt: new Date(),
-          materializationError: {
-            code: "ENTITY_DISABLED",
-            message: `Entity ${params.entity} is disabled or not selected in flow configuration`,
-          },
-        },
-        $inc: { materializationAttemptCount: 1 },
-      },
-    );
-
-    const webhookEventIds = pending
-      .map(event => event.webhookEventId)
-      .filter((id): id is string => Boolean(id));
-    if (webhookEventIds.length > 0) {
-      await (
-        await import("../database/workspace-schema")
-      ).WebhookEvent.updateMany(
-        {
-          flowId: new Types.ObjectId(params.flowId),
-          eventId: { $in: webhookEventIds },
-        },
-        {
-          $set: {
-            applyStatus: "applied",
-            appliedAt: new Date(),
-            status: "completed",
-            applyError: {
-              code: "ENTITY_DISABLED",
-              message: `Entity ${params.entity} is disabled or not selected in flow configuration`,
-            },
-          },
-        },
-      );
-    }
-
-    const lastMaterializedSeq = Number(
-      pending[pending.length - 1]?.ingestSeq || 0,
-    );
-    const backlogCount = await BigQueryChangeEvent.countDocuments({
-      flowId: new Types.ObjectId(params.flowId),
-      entity: params.entity,
-      materializationStatus: "pending",
-    });
-    await BigQueryCdcState.updateOne(
-      { flowId: new Types.ObjectId(params.flowId), entity: params.entity },
-      {
-        $set: {
-          workspaceId: new Types.ObjectId(params.workspaceId),
-          flowId: new Types.ObjectId(params.flowId),
-          entity: params.entity,
-          lastMaterializedSeq,
-          lastMaterializedAt: new Date(),
-          backlogCount,
-        },
-      },
-      { upsert: true },
-    );
-
-    log.warn("Discarded CDC events for disabled/unselected entity", {
-      flowId: params.flowId,
-      entity: params.entity,
-      discarded: pending.length,
-      backlogCount,
-    });
-
-    return {
-      staged: pending.length,
-      applied: 0,
-      lastMaterializedSeq,
-    };
-  }
-
-  await stageChangeEventsToBigQuery({
-    flow,
-    destinationDatabaseId: new Types.ObjectId(
-      String(flow.destinationDatabaseId),
-    ),
-    destinationDatabaseName: flow.destinationDatabaseName,
-    tableDestination: flow.tableDestination,
-    entity: params.entity,
-    events: pending,
-  });
-
-  await BigQueryChangeEvent.updateMany(
-    { _id: { $in: pending.map(e => e._id) } },
-    {
-      $set: { stageStatus: "staged", stagedAt: new Date() },
-      $inc: { stageAttemptCount: 1 },
-      $unset: { stageError: "" },
-    },
-  );
-
-  const latest = selectLatestChangePerRecord(pending);
-  const entityTableName = getEntityTableName(
-    flow.tableDestination.tableName,
-    params.entity,
-  );
-  const writer = await createDestinationWriter(
-    {
-      destinationDatabaseId: new Types.ObjectId(
-        String(flow.destinationDatabaseId),
-      ),
-      destinationDatabaseName: flow.destinationDatabaseName,
-      tableDestination: {
-        ...flow.tableDestination,
-        tableName: entityTableName,
-      },
-    },
-    "bigquery-cdc",
-  );
-  (writer as any).config.deleteMode = "soft";
-
-  const rows = latest.map(event => {
-    const payload = normalizePayload(event.payload || {});
-    const sourceTs = resolveSourceTs(payload, new Date(event.sourceTs));
-    return {
-      ...payload,
-      id: event.recordId,
-      _mako_source_ts: sourceTs,
-      _mako_ingest_seq: Number(event.ingestSeq),
-      _mako_deleted_at: event.op === "delete" ? new Date() : null,
-      is_deleted: event.op === "delete",
-      deleted_at: event.op === "delete" ? new Date() : null,
-    };
-  });
-
-  const write = await writer.writeBatch(rows, {
-    keyColumns: ["id", "_dataSourceId"],
-    conflictStrategy: "update",
-  });
-  if (!write.success) {
-    await BigQueryChangeEvent.updateMany(
-      { _id: { $in: pending.map(e => e._id) } },
-      {
-        $set: {
-          materializationStatus: "failed",
-          materializationError: {
-            message: write.error || "Materialization write failed",
-            code: "WRITE_FAILED",
-          },
-        },
-        $inc: { materializationAttemptCount: 1 },
-      },
-    );
-    throw new Error(write.error || "Failed to materialize BigQuery CDC batch");
-  }
-
-  await BigQueryChangeEvent.updateMany(
-    { _id: { $in: pending.map(e => e._id) } },
-    {
-      $set: {
-        materializationStatus: "applied",
-        appliedAt: new Date(),
-      },
-      $inc: { materializationAttemptCount: 1 },
-      $unset: { materializationError: "" },
-    },
-  );
-
-  const webhookEventIds = pending
-    .map(event => event.webhookEventId)
-    .filter((id): id is string => Boolean(id));
-  if (webhookEventIds.length > 0) {
-    await (
-      await import("../database/workspace-schema")
-    ).WebhookEvent.updateMany(
-      {
-        flowId: new Types.ObjectId(params.flowId),
-        eventId: { $in: webhookEventIds },
-      },
-      {
-        $set: {
-          applyStatus: "applied",
-          appliedAt: new Date(),
-          status: "completed",
-        },
-        $unset: { applyError: "" },
-      },
-    );
-  }
-
-  const lastMaterializedSeq = Number(
-    pending[pending.length - 1]?.ingestSeq || 0,
-  );
-  const backlogCount = await BigQueryChangeEvent.countDocuments({
-    flowId: new Types.ObjectId(params.flowId),
-    entity: params.entity,
-    materializationStatus: "pending",
-  });
-
-  await BigQueryCdcState.updateOne(
-    { flowId: new Types.ObjectId(params.flowId), entity: params.entity },
-    {
-      $set: {
-        workspaceId: new Types.ObjectId(params.workspaceId),
-        flowId: new Types.ObjectId(params.flowId),
-        entity: params.entity,
-        lastMaterializedSeq,
-        lastMaterializedAt: new Date(),
-        backlogCount,
-      },
-    },
-    { upsert: true },
-  );
-
-  return {
-    staged: pending.length,
-    applied: latest.length,
-    lastMaterializedSeq,
-  };
-}
+export { materializeBigQueryEntity } from "./bigquery-cdc/materialization";
 
 export async function markBackfillCompletedForFlow(params: {
   flowId: string;
@@ -857,36 +459,15 @@ export async function getBigQueryCdcFlowStats(params: {
   };
 }
 
-export async function mapWebhookEventToChangeInput(params: {
-  entity: string;
-  operation: ChangeOp;
-  recordId: string;
-  payload: Record<string, unknown>;
-  webhookEvent: Pick<IWebhookEvent, "eventId" | "receivedAt">;
-}): Promise<ChangeInput> {
-  const sourceTs = resolveSourceTs(
-    params.payload,
-    params.webhookEvent.receivedAt,
-  );
-  return {
-    entity: params.entity,
-    op: params.operation,
-    recordId: params.recordId,
-    payload: params.payload,
-    sourceTs,
-    sourceKind: "webhook",
-    webhookEventId: params.webhookEvent.eventId,
-    idempotencyKey: `webhook:${params.webhookEvent.eventId}:${params.entity}:${params.recordId}:${params.operation}`,
-  };
-}
-
 export async function mapBackfillRecordsToChanges(params: {
   entity: string;
   records: Array<Record<string, unknown>>;
   runId?: string;
 }): Promise<ChangeInput[]> {
+  // Backward-compatible mapper kept for tests and legacy callers.
+  // Runtime CDC ingestion should use cdcIngestService + source adapters.
   return params.records.map(record => {
-    const payload = normalizePayload(record);
+    const payload = normalizePayloadKeys(record);
     const payloadForId = sanitizeBackfillPayloadForIdempotency(payload);
     const stableRecordHash = crypto
       .createHash("sha1")
@@ -897,7 +478,7 @@ export async function mapBackfillRecordsToChanges(params: {
         payload._id ||
         `missing-id:${stableRecordHash.slice(0, 24)}`,
     );
-    const sourceTs = resolveSourceTs(payloadForId, new Date(0));
+    const sourceTs = resolveSourceTimestamp(payloadForId, new Date(0));
     const hash = crypto
       .createHash("sha1")
       .update(stableStringify(payloadForId))
@@ -991,7 +572,7 @@ export async function sweepStaleBigQueryCdcPending(params?: {
   ).map(id => new Types.ObjectId(id));
 
   const flows = await Flow.find({ _id: { $in: flowIds } })
-    .select({ _id: 1, syncEngine: 1, tableDestination: 1 })
+    .select({ _id: 1, syncEngine: 1, syncState: 1, tableDestination: 1 })
     .lean();
   const flowMap = new Map(flows.map(flow => [String(flow._id), flow]));
 
@@ -1010,6 +591,7 @@ export async function sweepStaleBigQueryCdcPending(params?: {
     const flowId = String(state.flowId);
     const flow = flowMap.get(flowId);
     if (!flow || flow.syncEngine !== "cdc") continue;
+    if (flow.syncState === "paused") continue;
     if (!flow.tableDestination?.connectionId) continue;
 
     const pendingCount = await BigQueryChangeEvent.countDocuments({
@@ -1019,7 +601,7 @@ export async function sweepStaleBigQueryCdcPending(params?: {
     });
 
     // Keep state backlog in sync even when no requeue is needed.
-    if ((state as any).backlogCount !== pendingCount) {
+    if (state.backlogCount !== pendingCount) {
       await BigQueryCdcState.updateOne(
         { _id: state._id },
         { $set: { backlogCount: pendingCount } },
@@ -1145,11 +727,13 @@ export async function retryFailedMaterializationForFlow(params: {
 export async function recordMaterializationFailure(params: {
   flowId: string;
   entity: string;
+  errorCode?: string;
   error: string;
 }) {
   log.error("BigQuery CDC materialization failed", {
     flowId: params.flowId,
     entity: params.entity,
+    errorCode: params.errorCode || "MATERIALIZATION_FAILED",
     error: params.error,
   });
 }

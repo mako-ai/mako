@@ -2,6 +2,7 @@ import { createActor } from "xstate";
 import type { SyncState } from "../../database/workspace-schema";
 import {
   createSyncMachine,
+  getCdcStateInvariant,
   passesTransitionGuard,
   resolveCdcTransition,
   type CdcSyncEventType,
@@ -101,6 +102,19 @@ describe("passesTransitionGuard", () => {
   });
 });
 
+describe("getCdcStateInvariant", () => {
+  it("blocks materialization while paused", () => {
+    expect(getCdcStateInvariant("paused").allowMaterialization).toBe(false);
+  });
+
+  it("blocks duplicate backfill starts outside idle", () => {
+    expect(getCdcStateInvariant("idle").allowBackfillStart).toBe(true);
+    expect(getCdcStateInvariant("backfill").allowBackfillStart).toBe(false);
+    expect(getCdcStateInvariant("catchup").allowBackfillStart).toBe(false);
+    expect(getCdcStateInvariant("live").allowBackfillStart).toBe(false);
+  });
+});
+
 describe("createSyncMachine", () => {
   function startMachine(input?: Parameters<typeof createSyncMachine>[0]) {
     const actor = createActor(createSyncMachine(input)).start();
@@ -194,6 +208,47 @@ describe("createSyncMachine", () => {
     );
 
     actor.send({ type: "RECOVER", reason: "retry ok" });
+    expect(actor.getSnapshot().value).toBe("catchup");
+  });
+
+  it("does not allow RESUME outside paused state", () => {
+    const actor = startMachine();
+    expect(actor.getSnapshot().value).toBe("idle");
+    actor.send({ type: "RESUME", reason: "invalid-from-idle" });
+    expect(actor.getSnapshot().value).toBe("idle");
+  });
+
+  it("returns from live to catchup on lag spike", () => {
+    const actor = startMachine({
+      hasActiveRunLock: false,
+      backfillCursorExhausted: true,
+      backlogCount: 0,
+      lagSeconds: 0,
+      lagThresholdSeconds: 60,
+    });
+    actor.send({ type: "START_BACKFILL" });
+    actor.send({ type: "BACKFILL_COMPLETE" });
+    actor.send({ type: "LAG_CLEARED" });
+    expect(actor.getSnapshot().value).toBe("live");
+
+    actor.send({ type: "LAG_SPIKE", reason: "backlog exceeded threshold" });
+    expect(actor.getSnapshot().value).toBe("catchup");
+  });
+
+  it("keeps catchup when lag is not actually cleared", () => {
+    const actor = startMachine({
+      hasActiveRunLock: false,
+      backfillCursorExhausted: true,
+      backlogCount: 2,
+      lagSeconds: 120,
+      lagThresholdSeconds: 60,
+    });
+
+    actor.send({ type: "START_BACKFILL" });
+    actor.send({ type: "BACKFILL_COMPLETE" });
+    expect(actor.getSnapshot().value).toBe("catchup");
+
+    actor.send({ type: "LAG_CLEARED", reason: "false positive" });
     expect(actor.getSnapshot().value).toBe("catchup");
   });
 });

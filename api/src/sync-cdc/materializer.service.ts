@@ -1,16 +1,21 @@
 import { Types } from "mongoose";
-import { CdcChangeEvent, Flow } from "../database/workspace-schema";
+import {
+  CdcChangeEvent,
+  DatabaseConnection,
+  Flow,
+  IEntityLayout,
+} from "../database/workspace-schema";
 import { loggers } from "../logging";
-import {
-  materializeBigQueryEntity,
-  recordMaterializationFailure,
-} from "../services/bigquery-cdc.service";
-import {
-  buildLeaseOwnerId,
-  cdcLockService,
-  CdcLease,
-} from "./lock.service";
+import { recordMaterializationFailure } from "../services/bigquery-cdc.service";
+import { buildLeaseOwnerId, cdcLockService, CdcLease } from "./lock.service";
 import { syncMachineService } from "./state/sync-machine.service";
+import {
+  buildCdcEntityLayout,
+  resolveCdcDestinationAdapter,
+} from "./adapters/registry";
+import { getEntityTableName } from "../sync/sync-orchestrator";
+import { getCdcStateInvariant } from "./state/sync.machine";
+import { toCdcErrorInfo } from "./error-utils";
 
 const log = loggers.sync("cdc.materializer");
 
@@ -28,6 +33,55 @@ export class CdcMaterializerService {
     if (flow.syncEngine !== "cdc") {
       return { skipped: true, reason: "syncEngine is not cdc" as const };
     }
+    if (!getCdcStateInvariant(flow.syncState || "idle").allowMaterialization) {
+      return { skipped: true, reason: "syncState is paused" as const };
+    }
+    if (!flow.tableDestination?.connectionId) {
+      return { skipped: true, reason: "missing table destination" as const };
+    }
+
+    const destination = await DatabaseConnection.findById(
+      flow.tableDestination.connectionId,
+    ).lean();
+    if (!destination) {
+      throw new Error("Destination connection not found");
+    }
+
+    const entityLayout = (flow.entityLayouts || []).find(
+      (layout: IEntityLayout) =>
+        layout.entity === params.entity ||
+        layout.entity === params.entity.split(":")[0],
+    );
+    const tableName = getEntityTableName(
+      flow.tableDestination.tableName,
+      params.entity,
+    );
+    const adapter = resolveCdcDestinationAdapter({
+      destinationType: destination.type,
+      destinationDatabaseId: String(flow.destinationDatabaseId),
+      destinationDatabaseName: flow.destinationDatabaseName,
+      tableDestination: {
+        connectionId: String(flow.tableDestination.connectionId),
+        schema: flow.tableDestination.schema || "public",
+        tableName,
+      },
+    });
+    await adapter.ensureLiveTable(
+      buildCdcEntityLayout({
+        entity: params.entity,
+        tableName,
+        deleteMode: flow.deleteMode,
+        partitioning: entityLayout?.partitionField
+          ? {
+              field: entityLayout.partitionField,
+              granularity: entityLayout.partitionGranularity || "day",
+            }
+          : undefined,
+        clustering: entityLayout?.clusterFields?.length
+          ? { fields: entityLayout.clusterFields }
+          : undefined,
+      }),
+    );
 
     const ownerId = buildLeaseOwnerId(params.flowId, params.entity);
     const lease = await cdcLockService.acquireLease({
@@ -42,12 +96,15 @@ export class CdcMaterializerService {
 
     try {
       await cdcLockService.assertFencingToken(lease);
-      const result = await materializeBigQueryEntity({
-        workspaceId: params.workspaceId,
-        flowId: params.flowId,
-        entity: params.entity,
-        maxEvents: params.maxEvents,
-      });
+      const result = await adapter.materializeEntity(
+        {
+          workspaceId: params.workspaceId,
+          flowId: params.flowId,
+          entity: params.entity,
+          maxEvents: params.maxEvents,
+        },
+        lease.fencingToken,
+      );
       await cdcLockService.heartbeat(lease);
       await this.updateLifecycleAfterMaterialization(
         params.workspaceId,
@@ -115,18 +172,20 @@ export class CdcMaterializerService {
     lease: CdcLease,
     error: unknown,
   ) {
-    const message = error instanceof Error ? error.message : String(error);
+    const errorInfo = toCdcErrorInfo(error, "MATERIALIZATION_FAILED");
     log.error("CDC materialization failed", {
       flowId: params.flowId,
       entity: params.entity,
-      error: message,
+      errorCode: errorInfo.code,
+      error: errorInfo.message,
       fencingToken: lease.fencingToken,
     });
 
     await recordMaterializationFailure({
       flowId: params.flowId,
       entity: params.entity,
-      error: message,
+      errorCode: errorInfo.code,
+      error: errorInfo.message,
     });
 
     await syncMachineService.applyTransition({
@@ -135,8 +194,8 @@ export class CdcMaterializerService {
       event: {
         type: "FAIL",
         reason: "Materialization failed",
-        errorCode: "MATERIALIZATION_FAILED",
-        errorMessage: message,
+        errorCode: errorInfo.code,
+        errorMessage: errorInfo.message,
       },
     });
   }

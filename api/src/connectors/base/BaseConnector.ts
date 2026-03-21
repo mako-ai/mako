@@ -1,4 +1,6 @@
 import { IConnector } from "../../database/workspace-schema";
+import type { NormalizedCdcEvent } from "../../sync-cdc/contracts/cdc-event";
+import type { CdcSourceAdapter } from "../../sync-cdc/contracts/source-adapter";
 
 export interface SyncLogger {
   log(
@@ -74,15 +76,7 @@ export interface WebhookHandlerOptions {
   secret?: string;
 }
 
-export interface NormalizedCdcRecord {
-  entity: string;
-  recordId: string;
-  operation: "upsert" | "delete";
-  payload?: Record<string, unknown>;
-  sourceTs: Date;
-  source: "webhook" | "backfill";
-  changeId?: string;
-}
+export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
 // Suggested table layout for BigQuery destinations
 export interface TableLayoutSuggestion {
@@ -106,6 +100,14 @@ export abstract class BaseConnector {
 
   constructor(dataSource: IConnector) {
     this.dataSource = dataSource;
+  }
+
+  /**
+   * Optional CDC adapter override for connectors that need custom behavior.
+   * Returning undefined keeps backward-compatible BaseConnector defaults.
+   */
+  getCdcSourceAdapter(): CdcSourceAdapter | undefined {
+    return undefined;
   }
 
   /**

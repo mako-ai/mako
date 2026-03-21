@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import {
-  CdcChangeEvent,
   Flow,
   Connector as DataSource,
   DatabaseConnection,
@@ -22,7 +21,6 @@ import {
 import { getBigQueryCdcFlowStats } from "../services/bigquery-cdc.service";
 import { cdcBackfillService } from "../sync-cdc/backfill.service";
 import { cdcObservabilityService } from "../sync-cdc/observability.service";
-import { syncMachineService } from "../sync-cdc/state/sync-machine.service";
 
 const logger = loggers.inngest("flow");
 
@@ -1292,12 +1290,12 @@ flowRoutes.post("/:flowId/sync-cdc/pause", async c => {
       workspaceId,
     );
     if (authorizationError) return authorizationError;
-    await syncMachineService.applyTransition({
-      workspaceId,
-      flowId,
-      event: { type: "PAUSE", reason: "Paused via API" },
+    const result = await cdcBackfillService.pauseBackfill(workspaceId, flowId);
+    return c.json({
+      success: true,
+      message: "CDC flow paused",
+      data: result,
     });
-    return c.json({ success: true, message: "CDC flow paused" });
   } catch (error) {
     return c.json(
       {
@@ -1319,37 +1317,12 @@ flowRoutes.post("/:flowId/sync-cdc/resume", async c => {
       workspaceId,
     );
     if (authorizationError) return authorizationError;
-    await syncMachineService.applyTransition({
-      workspaceId,
-      flowId,
-      event: { type: "RESUME", reason: "Resumed via API" },
+    const result = await cdcBackfillService.resumeBackfill(workspaceId, flowId);
+    return c.json({
+      success: true,
+      message: "CDC flow resumed",
+      data: result,
     });
-
-    // RESUME transitions paused -> catchup by design. If there is no pending
-    // CDC backlog at resume time, emit LAG_CLEARED immediately so the stream
-    // returns to live without waiting for another materialization tick.
-    const pending = await CdcChangeEvent.countDocuments({
-      workspaceId: new Types.ObjectId(workspaceId),
-      flowId: new Types.ObjectId(flowId),
-      materializationStatus: "pending",
-    });
-    if (pending === 0) {
-      await syncMachineService.applyTransition({
-        workspaceId,
-        flowId,
-        event: {
-          type: "LAG_CLEARED",
-          reason: "Resume with empty backlog",
-        },
-        context: {
-          backlogCount: 0,
-          lagSeconds: 0,
-          lagThresholdSeconds: 60,
-        },
-      });
-    }
-
-    return c.json({ success: true, message: "CDC flow resumed" });
   } catch (error) {
     return c.json(
       {

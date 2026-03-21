@@ -394,7 +394,26 @@ export const flowFunction = inngest.createFunction(
   },
   { event: "flow.execute" },
   async ({ event, step, logger }) => {
-    const { flowId, noJitter, backfill, backfillRunId } = event.data;
+    const { flowId, noJitter, backfill, backfillRunId, backfillEntities } =
+      event.data as {
+        flowId: string;
+        noJitter?: boolean;
+        backfill?: boolean;
+        backfillRunId?: string;
+        backfillEntities?: string[];
+      };
+    const requestedBackfillEntities = Array.isArray(backfillEntities)
+      ? Array.from(
+          new Set(
+            backfillEntities
+              .filter(
+                (entity): entity is string =>
+                  typeof entity === "string" && entity.trim().length > 0,
+              )
+              .map(entity => entity.trim()),
+          ),
+        )
+      : [];
 
     logger.info("Flow function started", {
       flowId,
@@ -1151,6 +1170,14 @@ export const flowFunction = inngest.createFunction(
               .filter(e => typeof e === "string" && e.trim().length > 0);
             const { entities: configuredEntities, hasExplicitSelection } =
               resolveConfiguredEntities(flow);
+            const scopedBackfillEntities =
+              requestedBackfillEntities.length > 0
+                ? requestedBackfillEntities
+                : backfill &&
+                    flow.backfillState?.scope?.mode === "subset" &&
+                    Array.isArray(flow.backfillState.scope.entities)
+                  ? flow.backfillState.scope.entities
+                  : [];
 
             if (hasExplicitSelection) {
               // Validate requested entities
@@ -1162,7 +1189,30 @@ export const flowFunction = inngest.createFunction(
                   `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
                 );
               }
+              if (backfill && scopedBackfillEntities.length > 0) {
+                const invalidScope = scopedBackfillEntities.filter(
+                  entity => !configuredEntities.includes(entity),
+                );
+                if (invalidScope.length > 0) {
+                  throw new Error(
+                    `Invalid backfill scope entities: ${invalidScope.join(", ")}. Configured entities: ${configuredEntities.join(", ")}`,
+                  );
+                }
+                return scopedBackfillEntities;
+              }
               return configuredEntities;
+            }
+
+            if (backfill && scopedBackfillEntities.length > 0) {
+              const invalidScope = scopedBackfillEntities.filter(
+                entity => !availableEntities.includes(entity),
+              );
+              if (invalidScope.length > 0) {
+                throw new Error(
+                  `Invalid backfill scope entities: ${invalidScope.join(", ")}. Available entities: ${availableEntities.join(", ")}`,
+                );
+              }
+              return scopedBackfillEntities;
             }
             return availableEntities;
           },
@@ -1569,6 +1619,14 @@ export const flowFunction = inngest.createFunction(
                 .filter(e => typeof e === "string" && e.trim().length > 0);
               const { entities: configuredEntities, hasExplicitSelection } =
                 resolveConfiguredEntities(flow);
+              const scopedBackfillEntities =
+                requestedBackfillEntities.length > 0
+                  ? requestedBackfillEntities
+                  : backfill &&
+                      flow.backfillState?.scope?.mode === "subset" &&
+                      Array.isArray(flow.backfillState.scope.entities)
+                    ? flow.backfillState.scope.entities
+                    : [];
 
               if (hasExplicitSelection) {
                 const invalidEntities = configuredEntities.filter(
@@ -1579,6 +1637,32 @@ export const flowFunction = inngest.createFunction(
                     `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
                   );
                 }
+
+                if (backfill && scopedBackfillEntities.length > 0) {
+                  const invalidScope = scopedBackfillEntities.filter(
+                    entity => !configuredEntities.includes(entity),
+                  );
+                  if (invalidScope.length > 0) {
+                    throw new Error(
+                      `Invalid backfill scope entities: ${invalidScope.join(", ")}. Configured entities: ${configuredEntities.join(", ")}`,
+                    );
+                  }
+                  syncedEntities = scopedBackfillEntities;
+                  return;
+                }
+              }
+
+              if (backfill && scopedBackfillEntities.length > 0) {
+                const invalidScope = scopedBackfillEntities.filter(
+                  entity => !availableEntities.includes(entity),
+                );
+                if (invalidScope.length > 0) {
+                  throw new Error(
+                    `Invalid backfill scope entities: ${invalidScope.join(", ")}. Available entities: ${availableEntities.join(", ")}`,
+                  );
+                }
+                syncedEntities = scopedBackfillEntities;
+                return;
               }
 
               syncedEntities = hasExplicitSelection

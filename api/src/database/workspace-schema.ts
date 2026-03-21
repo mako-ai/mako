@@ -621,6 +621,10 @@ export interface IFlow extends Document {
     runId?: string;
     startedAt?: Date;
     completedAt?: Date;
+    scope?: {
+      mode: "all" | "subset";
+      entities?: string[];
+    };
   };
 
   lastRunAt?: Date;
@@ -1728,6 +1732,14 @@ const FlowSchema = new Schema<IFlow>(
       runId: String,
       startedAt: Date,
       completedAt: Date,
+      scope: {
+        mode: {
+          type: String,
+          enum: ["all", "subset"],
+          default: "all",
+        },
+        entities: [String],
+      },
     },
     lastRunAt: Date,
     lastSuccessAt: Date,

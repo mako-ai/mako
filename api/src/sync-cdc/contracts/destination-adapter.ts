@@ -34,8 +34,37 @@ export interface CdcApplyResult {
   failedCount: number;
 }
 
+export interface CdcMaterializationRun {
+  workspaceId: string;
+  flowId: string;
+  entity: string;
+  maxEvents?: number;
+}
+
+export interface CdcMaterializationResult {
+  staged: number;
+  applied: number;
+  lastMaterializedSeq: number;
+  skipped?: boolean;
+  reason?: string;
+}
+
 export interface CdcDestinationAdapter {
+  destinationType: string;
   ensureLiveTable(layout: CdcEntityLayout): Promise<void>;
+  ensureStageTable?(
+    layout: CdcEntityLayout,
+    run: CdcMaterializationRun,
+  ): Promise<void>;
+  stageChanges?(
+    layout: CdcEntityLayout,
+    batch: CdcApplyChange[],
+    run: CdcMaterializationRun,
+  ): Promise<{ stagedCount: number; stageRef: string }>;
+  materializeEntity(
+    run: CdcMaterializationRun,
+    fencingToken: number,
+  ): Promise<CdcMaterializationResult>;
   applyChanges(
     layout: CdcEntityLayout,
     batch: CdcApplyChange[],

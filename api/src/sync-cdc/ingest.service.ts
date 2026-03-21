@@ -2,11 +2,9 @@ import { Types } from "mongoose";
 import { CdcChangeEvent } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { BaseConnector } from "../connectors/base/BaseConnector";
-import {
-  NormalizedCdcEvent,
-  normalizeCdcEvent,
-} from "./contracts/cdc-event";
+import { NormalizedCdcEvent, normalizeCdcEvent } from "./contracts/cdc-event";
 import { appendBigQueryChangeEvents } from "../services/bigquery-cdc.service";
+import { resolveCdcSourceAdapter } from "./sources/registry";
 
 const log = loggers.sync("cdc.ingest");
 
@@ -50,22 +48,52 @@ export class CdcIngestService {
     workspaceId: string;
     flowId: string;
     connector: BaseConnector;
+    connectorType?: string;
     event: unknown;
     eventType?: string;
     runId?: string;
   }): Promise<{ inserted: number; deduped: number }> {
-    const records = params.connector.extractWebhookCdcRecords(
-      params.event,
-      params.eventType,
-    );
+    const adapter = resolveCdcSourceAdapter({
+      connector: params.connector,
+      connectorType: params.connectorType,
+    });
+    const records = await adapter.fromWebhook({
+      event: params.event,
+      eventType: params.eventType,
+      runId: params.runId,
+    });
 
     return this.appendNormalizedEvents({
       workspaceId: params.workspaceId,
       flowId: params.flowId,
-      events: records.map(record => ({
-        ...record,
-        runId: params.runId,
-      })),
+      events: records,
+    });
+  }
+
+  async appendBackfillRecords(params: {
+    workspaceId: string;
+    flowId: string;
+    connector: BaseConnector;
+    connectorType?: string;
+    entity: string;
+    records: Array<Record<string, unknown>>;
+    runId?: string;
+    enqueue?: boolean;
+  }): Promise<{ inserted: number; deduped: number }> {
+    const adapter = resolveCdcSourceAdapter({
+      connector: params.connector,
+      connectorType: params.connectorType,
+    });
+    const events = await adapter.fromBackfill({
+      entity: params.entity,
+      records: params.records,
+      runId: params.runId,
+    });
+    return this.appendNormalizedEvents({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      events,
+      enqueue: params.enqueue,
     });
   }
 

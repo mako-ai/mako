@@ -9,6 +9,7 @@ import {
   DatabaseConnection,
   Flow,
   FlowExecution,
+  IFlow,
   WebhookEvent,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
@@ -37,11 +38,26 @@ function createBackfillTriggerEventId(flowId: string, runId: string): string {
   return `cdc-backfill:${flowId}:${runId}:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function normalizeEntities(entities: unknown[] | undefined): string[] {
+  return Array.isArray(entities)
+    ? Array.from(
+        new Set(
+          entities
+            .filter(
+              (entity): entity is string =>
+                typeof entity === "string" && entity.trim().length > 0,
+            )
+            .map(entity => entity.trim()),
+        ),
+      )
+    : [];
+}
+
 export class CdcBackfillService {
   async startBackfill(
     workspaceId: string,
     flowId: string,
-    options?: { reuseExistingRunId?: boolean },
+    options?: { reuseExistingRunId?: boolean; entities?: string[] },
   ): Promise<{ runId: string; reusedRunId: boolean }> {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -56,6 +72,26 @@ export class CdcBackfillService {
     }
 
     const shouldReuseRunId = options?.reuseExistingRunId === true;
+    const requestedEntities = normalizeEntities(options?.entities);
+    const scopeFromFlow =
+      flow.backfillState?.scope?.mode === "subset" &&
+      Array.isArray(flow.backfillState.scope.entities)
+        ? normalizeEntities(flow.backfillState.scope.entities)
+        : [];
+    const effectiveScope =
+      requestedEntities.length > 0
+        ? requestedEntities
+        : shouldReuseRunId
+          ? scopeFromFlow
+          : [];
+
+    const running = await hasActiveExecution(workspaceId, flowId);
+    if (running) {
+      throw new Error(
+        "Backfill already running. Cancel or wait for the active execution before starting another backfill.",
+      );
+    }
+
     const runId =
       shouldReuseRunId && flow.backfillState?.runId
         ? flow.backfillState.runId
@@ -67,10 +103,13 @@ export class CdcBackfillService {
       runId,
       startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
       completedAt: undefined,
+      scope: {
+        mode: effectiveScope.length > 0 ? "subset" : "all",
+        entities: effectiveScope,
+      },
     };
     await flow.save();
 
-    const running = await hasActiveExecution(workspaceId, flowId);
     await syncMachineService.applyTransition({
       workspaceId,
       flowId,
@@ -90,6 +129,9 @@ export class CdcBackfillService {
         noJitter: true,
         backfill: true,
         backfillRunId: runId,
+        ...(effectiveScope.length > 0
+          ? { backfillEntities: effectiveScope }
+          : {}),
       },
     });
 
@@ -149,7 +191,7 @@ export class CdcBackfillService {
     }
 
     if (deleteDestination) {
-      await this.deleteDestinationTables(flow as any);
+      await this.deleteDestinationTables(flow);
     }
 
     flow.syncState = "idle";
@@ -258,7 +300,134 @@ export class CdcBackfillService {
     };
   }
 
-  private async deleteDestinationTables(flow: any) {
+  async pauseBackfill(workspaceId: string, flowId: string) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Pause requires syncEngine=cdc");
+    }
+
+    await syncMachineService.applyTransition({
+      workspaceId,
+      flowId,
+      event: { type: "PAUSE", reason: "Paused via API" },
+    });
+
+    const runningExecution = await FlowExecution.findOne({
+      flowId: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      status: "running",
+    })
+      .sort({ startedAt: -1 })
+      .lean();
+
+    if (runningExecution) {
+      const now = new Date();
+      await FlowExecution.updateOne(
+        { _id: runningExecution._id, status: "running" },
+        {
+          $set: {
+            status: "cancelled",
+            success: false,
+            completedAt: now,
+            lastHeartbeat: now,
+            error: {
+              message: "Flow execution cancelled by pause",
+              code: "USER_CANCELLED",
+            },
+          },
+        },
+      );
+
+      await inngest.send({
+        name: "flow.cancel",
+        data: {
+          flowId: flow._id.toString(),
+          executionId: runningExecution._id.toString(),
+        },
+      });
+    }
+
+    flow.backfillState = {
+      ...flow.backfillState,
+      active: false,
+      completedAt: undefined,
+    };
+    await flow.save();
+
+    return {
+      paused: true,
+      cancelledExecutionId: runningExecution?._id?.toString() || null,
+      runId: flow.backfillState?.runId || null,
+    };
+  }
+
+  async resumeBackfill(workspaceId: string, flowId: string) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Resume requires syncEngine=cdc");
+    }
+
+    await syncMachineService.applyTransition({
+      workspaceId,
+      flowId,
+      event: { type: "RESUME", reason: "Resumed via API" },
+    });
+
+    const running = await hasActiveExecution(workspaceId, flowId);
+    let resumedRun: { runId: string; reusedRunId: boolean } | null = null;
+    if (!running && flow.backfillState?.runId) {
+      resumedRun = await this.startBackfill(workspaceId, flowId, {
+        reuseExistingRunId: true,
+      });
+    }
+
+    const pending = await CdcChangeEvent.countDocuments({
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      materializationStatus: "pending",
+    });
+    if (pending === 0) {
+      await syncMachineService.applyTransition({
+        workspaceId,
+        flowId,
+        event: {
+          type: "LAG_CLEARED",
+          reason: "Resume with empty backlog",
+        },
+        context: {
+          backlogCount: 0,
+          lagSeconds: 0,
+          lagThresholdSeconds: 60,
+        },
+      });
+    }
+
+    return {
+      resumed: true,
+      resumedRunId: resumedRun?.runId || null,
+      reusedRunId: resumedRun?.reusedRunId || false,
+      pendingBacklog: pending,
+    };
+  }
+
+  private async deleteDestinationTables(
+    flow: Pick<
+      IFlow,
+      "_id" | "tableDestination" | "destinationDatabaseId" | "entityLayouts"
+    >,
+  ) {
     if (
       !flow.tableDestination?.connectionId ||
       !flow.tableDestination?.schema
@@ -286,14 +455,10 @@ export class CdcBackfillService {
 
     for (const entity of enabledEntities) {
       const liveTable = getEntityTableName(tablePrefix, entity);
-      await driver.dropTable(destination as any, liveTable, { schema });
-      await driver.dropTable(
-        destination as any,
-        `${liveTable}__stage_changes`,
-        {
-          schema: stageSchema,
-        },
-      );
+      await driver.dropTable(destination, liveTable, { schema });
+      await driver.dropTable(destination, `${liveTable}__stage_changes`, {
+        schema: stageSchema,
+      });
     }
 
     log.info("CDC destination tables dropped during resync", {

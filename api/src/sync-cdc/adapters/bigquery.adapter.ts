@@ -6,7 +6,10 @@ import {
   CdcApplyResult,
   CdcDestinationAdapter,
   CdcEntityLayout,
+  CdcMaterializationResult,
+  CdcMaterializationRun,
 } from "../contracts/destination-adapter";
+import { materializeBigQueryEntity } from "../../services/bigquery-cdc.service";
 
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
@@ -19,10 +22,24 @@ interface BigQueryAdapterConfig {
 }
 
 export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
+  readonly destinationType = "bigquery";
+
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
   async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
     // Table creation is handled lazily in DestinationWriter.writeBatch()
+  }
+
+  async materializeEntity(
+    run: CdcMaterializationRun,
+    _fencingToken: number,
+  ): Promise<CdcMaterializationResult> {
+    return materializeBigQueryEntity({
+      workspaceId: run.workspaceId,
+      flowId: run.flowId,
+      entity: run.entity,
+      maxEvents: run.maxEvents,
+    });
   }
 
   async applyChanges(
@@ -128,7 +145,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   private async createWriter(entityTableName: string) {
     return createDestinationWriter(
       {
-        destinationDatabaseId: new Types.ObjectId(this.config.destinationDatabaseId),
+        destinationDatabaseId: new Types.ObjectId(
+          this.config.destinationDatabaseId,
+        ),
         destinationDatabaseName: this.config.destinationDatabaseName,
         tableDestination: {
           connectionId: new Types.ObjectId(
