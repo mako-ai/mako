@@ -59,12 +59,12 @@ When creating chart widgets:
 
 ## Layout Guidelines
 
-Place widgets on a 12-column grid. Standard sizes:
-- Full width chart: { x: 0, y: 0, w: 12, h: 4 }
-- Half width chart: { x: 0, y: 0, w: 6, h: 4 }
-- Third width chart: { x: 0, y: 0, w: 4, h: 4 }
-- KPI card: { x: 0, y: 0, w: 3, h: 2 }
-- Data table: { x: 0, y: 0, w: 12, h: 5 }
+Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Standard sizes:
+- Full width chart: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+- Half width chart: { lg: { x: 0, y: 0, w: 6, h: 4 } }
+- Third width chart: { lg: { x: 0, y: 0, w: 4, h: 4 } }
+- KPI card: { lg: { x: 0, y: 0, w: 3, h: 2 } }
+- Data table: { lg: { x: 0, y: 0, w: 12, h: 5 } }
 
 Stack widgets vertically by incrementing the y value. Avoid overlapping layouts.
 

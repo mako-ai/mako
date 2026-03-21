@@ -73,26 +73,39 @@ async function createSession(
   let persistent = false;
   let dataSourceVersions = new Map<string, string>();
 
+  console.log(
+    `[opfs-diag] Creating session for dashboard=${dashboardId}, OPFS available=${isOPFSAvailable()}`,
+  );
+
   if (isOPFSAvailable()) {
     try {
-      db = await createPersistentDuckDBInstance(opfsPath(dashboardId));
+      const path = opfsPath(dashboardId);
+      console.log(`[opfs-diag] Opening OPFS database at ${path}`);
+      db = await createPersistentDuckDBInstance(path);
       persistent = true;
       await initMetadataTable(db);
       dataSourceVersions = await loadPersistedVersions(db);
-      console.debug(
-        `[dashboard-session] OPFS session created for ${dashboardId}, ` +
-          `${dataSourceVersions.size} persisted data sources`,
+      console.log(
+        `[opfs-diag] OPFS session ready for ${dashboardId}: ` +
+          `${dataSourceVersions.size} persisted data source(s)`,
       );
+      if (dataSourceVersions.size > 0) {
+        for (const [dsId, hash] of dataSourceVersions) {
+          console.log(
+            `[opfs-diag]   persisted: dataSource=${dsId} versionHash=${hash}`,
+          );
+        }
+      }
     } catch (err) {
       console.warn(
-        `[dashboard-session] OPFS failed for ${dashboardId}, falling back to in-memory:`,
+        `[opfs-diag] OPFS FAILED for ${dashboardId}, falling back to in-memory:`,
         err,
       );
       db = await createDuckDBInstance();
     }
   } else {
-    console.debug(
-      `[dashboard-session] OPFS not available, using in-memory for ${dashboardId}`,
+    console.log(
+      `[opfs-diag] OPFS not available in this browser, using in-memory for ${dashboardId}`,
     );
     db = await createDuckDBInstance();
   }

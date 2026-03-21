@@ -170,10 +170,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     onCreated,
   ]);
 
+  const isDashboardLoaded = !!dashboard;
   useEffect(() => {
-    if (!dashboard || !workspaceId || !dashboardId) return;
+    if (!isDashboardLoaded || !workspaceId || !dashboardId) return;
     void activateDashboardSession(workspaceId, dashboardId);
-  }, [dashboard, workspaceId, dashboardId]);
+  }, [isDashboardLoaded, workspaceId, dashboardId]);
 
   useEffect(() => {
     if (viewMode === "code" && dashboard && !isUserEditingCodeRef.current) {
@@ -258,42 +259,64 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [workspaceId, dashboardId]);
 
   const handleLayoutChange = useCallback(
-    (layout: readonly any[], allLayouts?: Record<string, readonly any[]>) => {
-      if (!dashboard || !dashboardId) return;
+    (_layout: any, allLayouts: Record<string, any>) => {
+      if (!dashboard || !dashboardId || !allLayouts) return;
 
-      const layoutToPersist =
-        allLayouts?.lg ?? (gridWidth >= 1200 ? layout : undefined);
-      if (!layoutToPersist) return;
+      for (const widget of dashboard.widgets) {
+        const currentLayouts =
+          widget.layouts ??
+          ((widget as any).layout
+            ? { lg: (widget as any).layout }
+            : { lg: { x: 0, y: 0, w: 6, h: 4 } });
+        const updatedLayouts: Record<
+          string,
+          { x: number; y: number; w: number; h: number }
+        > = {};
+        let changed = false;
 
-      for (const item of layoutToPersist) {
-        const widget = dashboard.widgets.find(w => w.id === item.i);
-        if (widget) {
-          const newLayout = { x: item.x, y: item.y, w: item.w, h: item.h };
+        for (const [bp, items] of Object.entries(allLayouts)) {
+          if (!Array.isArray(items)) continue;
+          const item = items.find((i: any) => i.i === widget.id);
+          if (!item) continue;
+          const newPos = { x: item.x, y: item.y, w: item.w, h: item.h };
+          const existing = (currentLayouts as any)[bp];
           if (
-            widget.layout.x !== newLayout.x ||
-            widget.layout.y !== newLayout.y ||
-            widget.layout.w !== newLayout.w ||
-            widget.layout.h !== newLayout.h
+            !existing ||
+            existing.x !== newPos.x ||
+            existing.y !== newPos.y ||
+            existing.w !== newPos.w ||
+            existing.h !== newPos.h
           ) {
-            modifyWidget(dashboardId, widget.id, { layout: newLayout });
+            updatedLayouts[bp] = newPos;
+            changed = true;
           }
+        }
+
+        if (changed) {
+          modifyWidget(dashboardId, widget.id, {
+            layouts: { ...currentLayouts, ...updatedLayouts },
+          } as any);
         }
       }
     },
-    [dashboard, dashboardId, gridWidth, modifyWidget],
+    [dashboard, dashboardId, modifyWidget],
   );
 
   const handleDuplicateWidget = useCallback(
     async (widget: DashboardWidget) => {
       if (!dashboardId) return;
       const { nanoid } = await import("nanoid");
+      const lgLayout = widget.layouts?.lg ??
+        (widget as any).layout ?? { x: 0, y: 0, w: 6, h: 4 };
       const newWidget: DashboardWidget = {
         ...widget,
         id: nanoid(),
         title: `${widget.title || "Widget"} (copy)`,
-        layout: {
-          ...widget.layout,
-          y: widget.layout.y + widget.layout.h,
+        layouts: {
+          lg: {
+            ...lgLayout,
+            y: lgLayout.y + lgLayout.h,
+          },
         },
       };
       addWidget(dashboardId, newWidget);
@@ -410,16 +433,49 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     [runtimeSession?.eventLog],
   );
 
-  const gridLayout = useMemo(() => {
-    return widgets.map(w => ({
-      i: w.id,
-      x: w.layout.x,
-      y: w.layout.y,
-      w: w.layout.w,
-      h: w.layout.h,
-      minW: w.layout.minW || 2,
-      minH: w.layout.minH || 2,
-    }));
+  const allGridLayouts = useMemo(() => {
+    const breakpoints = ["lg", "md", "sm", "xs"] as const;
+    type GridItem = {
+      i: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      minW: number;
+      minH: number;
+    };
+    const result: Record<string, GridItem[]> = {};
+    for (const bp of breakpoints) {
+      const items: GridItem[] = [];
+      for (const w of widgets) {
+        const wAny = w as any;
+        const bpLayout =
+          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
+        if (!bpLayout) continue;
+        items.push({
+          i: w.id,
+          x: bpLayout.x ?? 0,
+          y: bpLayout.y ?? 0,
+          w: bpLayout.w ?? 6,
+          h: bpLayout.h ?? 4,
+          minW: bpLayout.minW || 2,
+          minH: bpLayout.minH || 2,
+        });
+      }
+      if (items.length > 0) result[bp] = items;
+    }
+    if (!result.lg) {
+      result.lg = widgets.map(w => ({
+        i: w.id,
+        x: 0,
+        y: 0,
+        w: 6,
+        h: 4,
+        minW: 2,
+        minH: 2,
+      }));
+    }
+    return result;
   }, [widgets]);
 
   if (!dashboard) {
@@ -777,7 +833,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                 <ResponsiveGridLayout
                   className="layout"
                   width={gridWidth || 800}
-                  layouts={{ lg: gridLayout }}
+                  layouts={allGridLayouts}
                   breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480 }}
                   cols={{ lg: 12, md: 10, sm: 6, xs: 4 }}
                   rowHeight={dashboard.layout?.rowHeight || 80}

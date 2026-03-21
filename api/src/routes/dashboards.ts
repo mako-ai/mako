@@ -6,7 +6,10 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { DashboardDefinitionSchema } from "@mako/schemas";
+import {
+  DashboardDefinitionSchema,
+  normalizeWidgetLayouts,
+} from "@mako/schemas";
 
 const logger = loggers.api("dashboards");
 
@@ -147,6 +150,15 @@ async function normalizeDashboardDataSources(
   }
 }
 
+function normalizeDashboardWidgetLayouts(dashboard: Record<string, any>) {
+  if (Array.isArray(dashboard.widgets)) {
+    dashboard.widgets = dashboard.widgets.map((w: Record<string, unknown>) =>
+      normalizeWidgetLayouts(w),
+    );
+  }
+  return dashboard;
+}
+
 app.use("*", unifiedAuthMiddleware);
 
 app.use("*", async (c: AuthenticatedContext, next) => {
@@ -205,7 +217,9 @@ app.get("/", async (c: AuthenticatedContext) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    return c.json({ success: true, data: dashboards });
+    const normalized = dashboards.map(d => normalizeDashboardWidgetLayouts(d));
+
+    return c.json({ success: true, data: normalized });
   } catch (error) {
     logger.error("Error listing dashboards", { error });
     return c.json(
@@ -290,7 +304,10 @@ app.get("/:id", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
-    return c.json({ success: true, data: dashboard });
+    const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
+    normalizeDashboardWidgetLayouts(plain);
+
+    return c.json({ success: true, data: plain });
   } catch (error) {
     logger.error("Error getting dashboard", { error });
     return c.json(

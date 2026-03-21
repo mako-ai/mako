@@ -80,13 +80,17 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
 
   const handleDuplicate = async () => {
     const { nanoid } = await import("nanoid");
+    const lgLayout = widget.layouts?.lg ??
+      (widget as any).layout ?? { x: 0, y: 0, w: 6, h: 4 };
     const newWidget: DashboardWidget = {
       ...widget,
       id: nanoid(),
       title: `${widget.title || "Widget"} (copy)`,
-      layout: {
-        ...widget.layout,
-        y: widget.layout.y + widget.layout.h,
+      layouts: {
+        lg: {
+          ...lgLayout,
+          y: lgLayout.y + lgLayout.h,
+        },
       },
     };
     if (dashboardId) addWidget(dashboardId, newWidget);

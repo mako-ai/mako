@@ -322,7 +322,7 @@ export async function executeDashboardAgentTool(
       kpiConfig: input.kpiConfig as DashboardWidget["kpiConfig"],
       tableConfig: input.tableConfig as DashboardWidget["tableConfig"],
       crossFilter: { enabled: true },
-      layout: input.layout as DashboardWidget["layout"],
+      layouts: input.layouts as DashboardWidget["layouts"],
     };
     const crossFilterValidation = validateCrossFilterWidgetSql({
       sql: widget.localSql,
@@ -380,7 +380,7 @@ export async function executeDashboardAgentTool(
     if (input.tableConfig !== undefined) {
       changes.tableConfig = input.tableConfig;
     }
-    if (input.layout !== undefined) changes.layout = input.layout;
+    if (input.layouts !== undefined) changes.layouts = input.layouts;
     if (changes.vegaLiteSpec !== undefined) {
       const specValidation = validateVegaSpec(changes.vegaLiteSpec);
       if (!specValidation.valid) {
