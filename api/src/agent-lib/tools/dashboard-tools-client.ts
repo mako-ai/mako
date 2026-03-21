@@ -42,14 +42,18 @@ const addWidgetSchema = z.object({
     })
     .optional()
     .describe("Table configuration (for table type)"),
-  layout: z
+  layouts: z
     .object({
-      x: z.number(),
-      y: z.number(),
-      w: z.number(),
-      h: z.number(),
+      lg: z.object({
+        x: z.number(),
+        y: z.number(),
+        w: z.number(),
+        h: z.number(),
+      }),
     })
-    .describe("Grid position and size (12-column grid)"),
+    .describe(
+      "Grid position and size per breakpoint (12-column grid). Provide at least lg.",
+    ),
 });
 
 const modifyWidgetSchema = z.object({
@@ -72,12 +76,14 @@ const modifyWidgetSchema = z.object({
       pageSize: z.number().optional(),
     })
     .optional(),
-  layout: z
+  layouts: z
     .object({
-      x: z.number(),
-      y: z.number(),
-      w: z.number(),
-      h: z.number(),
+      lg: z.object({
+        x: z.number(),
+        y: z.number(),
+        w: z.number(),
+        h: z.number(),
+      }),
     })
     .optional(),
 });

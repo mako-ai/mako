@@ -32,14 +32,18 @@ function hashString(value: string): string {
 }
 
 function buildDataSourceVersion(dataSource: DashboardDataSource): string {
-  return hashString(
-    JSON.stringify({
-      tableRef: dataSource.tableRef,
-      rowLimit: dataSource.rowLimit ?? null,
-      query: dataSource.query,
-      computedColumns: dataSource.computedColumns ?? [],
-    }),
+  const payload = {
+    tableRef: dataSource.tableRef,
+    rowLimit: dataSource.rowLimit ?? null,
+    query: dataSource.query,
+    computedColumns: dataSource.computedColumns ?? [],
+  };
+  const json = JSON.stringify(payload);
+  const hash = hashString(json);
+  console.debug(
+    `[opfs-diag] buildDataSourceVersion("${dataSource.name}"): hash=${hash}, payload keys=${Object.keys(dataSource.query ?? {}).join(",")}`,
   );
+  return hash;
 }
 
 function buildTemporaryTableRef(tableRef: string): string {
@@ -372,8 +376,23 @@ export async function materializeDashboardDataSource(options: {
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
   const version = buildDataSourceVersion(dataSource);
+  const persistedVersion = session.dataSourceVersions.get(dataSource.id);
   const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
   const preserveExistingData = force && existingRuntime?.status === "ready";
+
+  console.log(
+    `[opfs-diag] materialize dataSource="${dataSource.name}" (${dataSource.id})`,
+    {
+      force,
+      persistent: session.persistent,
+      computedVersion: version,
+      persistedVersion: persistedVersion ?? "(none)",
+      versionMatch: persistedVersion === version,
+      runtimeStatus: existingRuntime?.status ?? "(no runtime)",
+      tableRef: dataSource.tableRef,
+    },
+  );
+
   runtimeStore.dispatch(
     dashboardRuntimeEvents.registerDataSource(
       dashboard._id,
@@ -382,25 +401,31 @@ export async function materializeDashboardDataSource(options: {
       version,
     ),
   );
+
   if (
     !force &&
-    session.dataSourceVersions.get(dataSource.id) === version &&
+    persistedVersion === version &&
     existingRuntime?.status === "ready"
   ) {
+    console.log(
+      `[opfs-diag] SKIP (in-memory hit): dataSource="${dataSource.name}" already ready with matching version`,
+    );
     return;
   }
 
   // OPFS recovery: table persisted from a previous browser session
-  if (
-    !force &&
-    session.persistent &&
-    session.dataSourceVersions.get(dataSource.id) === version
-  ) {
+  if (!force && session.persistent && persistedVersion === version) {
+    console.log(
+      `[opfs-diag] OPFS recovery attempt: dataSource="${dataSource.name}", checking persisted table "${dataSource.tableRef}"...`,
+    );
     const rowCount = await getPersistedRowCount(
       session.db,
       dataSource.tableRef,
     );
     if (rowCount !== null) {
+      console.log(
+        `[opfs-diag] OPFS HIT: dataSource="${dataSource.name}" recovered ${rowCount} rows from OPFS, skipping network fetch`,
+      );
       const { schema, sampleRows } = await introspectDataSource(
         dashboard._id,
         dataSource,
@@ -417,7 +442,29 @@ export async function materializeDashboardDataSource(options: {
       );
       return;
     }
+    console.warn(
+      `[opfs-diag] OPFS MISS: dataSource="${dataSource.name}" version matched but table "${dataSource.tableRef}" not found in DB (rowCount=null)`,
+    );
+  } else if (!force && session.persistent && persistedVersion !== version) {
+    console.warn(
+      `[opfs-diag] OPFS VERSION MISMATCH: dataSource="${dataSource.name}"`,
+      {
+        persistedVersion: persistedVersion ?? "(none)",
+        computedVersion: version,
+        queryCode: dataSource.query?.code?.slice(0, 100),
+        rowLimit: dataSource.rowLimit,
+        computedColumns: dataSource.computedColumns?.length ?? 0,
+      },
+    );
+  } else if (force) {
+    console.log(
+      `[opfs-diag] FORCED RELOAD: dataSource="${dataSource.name}", bypassing cache`,
+    );
   }
+
+  console.log(
+    `[opfs-diag] FETCHING FROM SERVER: dataSource="${dataSource.name}" (${dataSource.id})`,
+  );
 
   const inFlight = session.activeLoads.get(dataSource.id);
   if (inFlight) {
@@ -496,6 +543,9 @@ export async function materializeDashboardDataSource(options: {
       rowCount ?? rowsLoaded,
     );
     await checkpointSession(dashboard._id);
+    console.log(
+      `[opfs-diag] PERSISTED: dataSource="${dataSource.name}" version=${version} rows=${rowCount ?? rowsLoaded} tableRef="${dataSource.tableRef}" persistent=${session.persistent}`,
+    );
     resolveLoad();
   } catch (error) {
     session.dataSourceVersions.delete(dataSource.id);

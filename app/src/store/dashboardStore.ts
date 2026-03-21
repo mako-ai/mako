@@ -2,7 +2,10 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
-import { DashboardDefinitionSchema } from "@mako/schemas";
+import {
+  DashboardDefinitionSchema,
+  normalizeWidgetLayouts,
+} from "@mako/schemas";
 import type {
   Dashboard,
   DashboardDataSource,
@@ -232,6 +235,15 @@ export const useDashboardStore = create<DashboardStoreState>()(
         if (existing) {
           set(state => {
             state.activeDashboardId = dashboardId;
+            const d = state.openDashboards[dashboardId];
+            if (d && Array.isArray(d.widgets)) {
+              d.widgets = d.widgets.map(
+                w =>
+                  normalizeWidgetLayouts(
+                    w as Record<string, unknown>,
+                  ) as typeof w,
+              );
+            }
           });
           return;
         }
@@ -243,8 +255,17 @@ export const useDashboardStore = create<DashboardStoreState>()(
           }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`);
 
           if (response.data) {
+            const dashboard = response.data;
+            if (Array.isArray(dashboard.widgets)) {
+              dashboard.widgets = dashboard.widgets.map(
+                w =>
+                  normalizeWidgetLayouts(
+                    w as Record<string, unknown>,
+                  ) as typeof w,
+              );
+            }
             set(state => {
-              state.openDashboards[dashboardId] = response.data;
+              state.openDashboards[dashboardId] = dashboard;
               state.activeDashboardId = dashboardId;
               state.historyMap[dashboardId] = { stack: [], index: -1 };
             });
@@ -508,6 +529,19 @@ export const useDashboardStore = create<DashboardStoreState>()(
         activeDashboardId: state.activeDashboardId,
         autoRefreshInterval: state.autoRefreshInterval,
       }),
+      onRehydrateStorage: () => state => {
+        if (!state) return;
+        for (const dashboard of Object.values(state.openDashboards)) {
+          if (Array.isArray(dashboard.widgets)) {
+            dashboard.widgets = dashboard.widgets.map(
+              w =>
+                normalizeWidgetLayouts(
+                  w as Record<string, unknown>,
+                ) as typeof w,
+            );
+          }
+        }
+      },
     },
   ),
 );

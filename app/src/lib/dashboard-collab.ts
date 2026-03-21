@@ -100,7 +100,9 @@ export class DashboardCollabClient {
     });
   }
 
-  broadcastLayoutChange(layouts: Record<string, unknown>[]): void {
+  broadcastLayoutChange(
+    layouts: Record<string, Array<Record<string, unknown>>>,
+  ): void {
     this.send({
       type: "layout_change",
       userId: "",

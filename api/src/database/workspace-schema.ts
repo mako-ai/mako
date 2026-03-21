@@ -1733,13 +1733,39 @@ export interface IDashboard extends Document {
     };
     tableConfig?: { columns?: string[]; pageSize?: number };
     crossFilter: { enabled: boolean; fields?: string[] };
-    layout: {
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-      minW?: number;
-      minH?: number;
+    layouts: {
+      lg: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        minW?: number;
+        minH?: number;
+      };
+      md?: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        minW?: number;
+        minH?: number;
+      };
+      sm?: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        minW?: number;
+        minH?: number;
+      };
+      xs?: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        minW?: number;
+        minH?: number;
+      };
     };
   }>;
 
@@ -1960,13 +1986,39 @@ const DashboardSchema = new Schema<IDashboard>(
           enabled: { type: Boolean, default: true },
           fields: [{ type: String }],
         },
-        layout: {
-          x: { type: Number, required: true },
-          y: { type: Number, required: true },
-          w: { type: Number, required: true },
-          h: { type: Number, required: true },
-          minW: { type: Number },
-          minH: { type: Number },
+        layouts: {
+          lg: {
+            x: { type: Number, required: true },
+            y: { type: Number, required: true },
+            w: { type: Number, required: true },
+            h: { type: Number, required: true },
+            minW: { type: Number },
+            minH: { type: Number },
+          },
+          md: {
+            x: { type: Number },
+            y: { type: Number },
+            w: { type: Number },
+            h: { type: Number },
+            minW: { type: Number },
+            minH: { type: Number },
+          },
+          sm: {
+            x: { type: Number },
+            y: { type: Number },
+            w: { type: Number },
+            h: { type: Number },
+            minW: { type: Number },
+            minH: { type: Number },
+          },
+          xs: {
+            x: { type: Number },
+            y: { type: Number },
+            w: { type: Number },
+            h: { type: Number },
+            minW: { type: Number },
+            minH: { type: Number },
+          },
         },
       },
     ],
