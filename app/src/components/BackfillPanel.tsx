@@ -126,7 +126,37 @@ function entityBackfillChip(e: {
   return { label: "Done", color: "success" };
 }
 
-type LogEntry = { timestamp: string; level: string; message: string };
+type LogEntry = {
+  timestamp: string;
+  level: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+};
+
+function formatLog(log: LogEntry): string {
+  const m = log.metadata;
+  const entity = typeof m?.entity === "string" ? m.entity : undefined;
+  const rows =
+    typeof m?.totalProcessed === "number"
+      ? m.totalProcessed
+      : typeof m?.rowsWritten === "number"
+        ? m.rowsWritten
+        : undefined;
+  const fetchedCount =
+    typeof m?.fetchedCount === "number" ? m.fetchedCount : undefined;
+
+  const parts: string[] = [];
+  if (entity) {
+    parts.push(`[${entityLabel(entity)}]`);
+  }
+  parts.push(log.message);
+  if (rows !== undefined) {
+    parts.push(`(${rows.toLocaleString()} rows)`);
+  } else if (fetchedCount !== undefined) {
+    parts.push(`(${fetchedCount.toLocaleString()} fetched)`);
+  }
+  return parts.join(" ");
+}
 
 export function BackfillPanel({
   workspaceId,
@@ -773,7 +803,7 @@ export function BackfillPanel({
                     >
                       {new Date(log.timestamp).toLocaleTimeString()}
                     </Typography>{" "}
-                    {log.message}
+                    {formatLog(log)}
                   </Typography>
                 ))
               )}
