@@ -428,9 +428,7 @@ export function BackfillPanel({
                 <Typography sx={kpiLabel}>Backfill</Typography>
                 <Typography sx={{ ...kpiValue, mb: 0.75 }}>{bs}</Typography>
                 <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                  {(state === "idle" ||
-                    state === "paused" ||
-                    state === "degraded") && (
+                  {state !== "backfill" && (
                     <Button
                       size="small"
                       variant="outlined"
