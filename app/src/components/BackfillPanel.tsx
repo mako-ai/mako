@@ -25,17 +25,14 @@ import {
 import {
   Sync as SyncIcon,
   Cancel as CancelIcon,
-  CheckCircle as CheckIcon,
-  Error as ErrorIcon,
-  HourglassEmpty as PendingIcon,
-  Edit as EditIcon,
   Pause as PauseIcon,
   PlayArrow as ResumeIcon,
-  Refresh as RetryIcon,
   RestartAlt as ResyncIcon,
-  BugReport as DiagnosticsIcon,
   Healing as RecoverIcon,
   ContentCopy as CopyIcon,
+  Edit as EditIcon,
+  ExpandMore as ExpandIcon,
+  ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
 import { useFlowStore, type FlowExecutionHistory } from "../store/flowStore";
 
@@ -45,145 +42,51 @@ interface BackfillPanelProps {
   onEdit?: () => void;
 }
 
-type ExecutionLog = {
-  timestamp: string;
-  level: string;
-  message: string;
-  metadata?: unknown;
-};
+type CdcState =
+  | "idle"
+  | "backfill"
+  | "catchup"
+  | "live"
+  | "paused"
+  | "degraded";
 
-function formatExecutionLog(log: ExecutionLog): string {
-  const meta =
-    log.metadata && typeof log.metadata === "object"
-      ? (log.metadata as Record<string, unknown>)
-      : undefined;
-  const entity = typeof meta?.entity === "string" ? meta.entity : undefined;
-
-  if (log.message === "Close API request sent") {
-    const method =
-      typeof meta?.method === "string" ? meta.method.toUpperCase() : "GET";
-    const endpoint = typeof meta?.endpoint === "string" ? meta.endpoint : "";
-    return `-> Close request ${method} ${endpoint}${entity ? ` [${entity}]` : ""}`;
+function formatLag(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
   }
-
-  if (log.message === "Close API response received") {
-    const status = typeof meta?.status === "number" ? meta.status : undefined;
-    const durationMs =
-      typeof meta?.durationMs === "number"
-        ? Math.round(meta.durationMs)
-        : undefined;
-    return `<- Close response${status ? ` ${status}` : ""}${durationMs !== undefined ? ` in ${durationMs}ms` : ""}${entity ? ` [${entity}]` : ""}`;
-  }
-
-  if (log.message === "Close API request failed") {
-    const status = typeof meta?.status === "number" ? meta.status : undefined;
-    const errorText =
-      typeof meta?.error === "string" ? meta.error : "unknown error";
-    return `!! Close request failed${status ? ` (${status})` : ""}: ${errorText}${entity ? ` [${entity}]` : ""}`;
-  }
-
-  if (log.message.includes("SQL chunk done") && entity) {
-    const totalProcessed =
-      typeof meta?.totalProcessed === "number"
-        ? meta.totalProcessed.toLocaleString()
-        : undefined;
-    return `DB write complete for ${entity}${totalProcessed ? `: ${totalProcessed} total rows` : ""}`;
-  }
-
-  if (log.message.includes("sync in progress") && entity) {
-    const totalProcessed =
-      typeof meta?.totalProcessed === "number"
-        ? meta.totalProcessed.toLocaleString()
-        : undefined;
-    return `${entity} syncing${totalProcessed ? `: ${totalProcessed} rows` : ""}`;
-  }
-
-  if (log.message === "SQL batch received from source") {
-    const fetchedCount =
-      typeof meta?.fetchedCount === "number" ? meta.fetchedCount : undefined;
-    return `-> batch fetched${fetchedCount ? ` (${fetchedCount} rows)` : ""}${entity ? ` [${entity}]` : ""}`;
-  }
-
-  if (log.message === "SQL batch write succeeded") {
-    const rowsWritten =
-      typeof meta?.rowsWritten === "number" ? meta.rowsWritten : undefined;
-    return `<- batch written${rowsWritten !== undefined ? ` (${rowsWritten} rows)` : ""}${entity ? ` [${entity}]` : ""}`;
-  }
-
-  if (log.message === "SQL batch write failed") {
-    const errorText =
-      typeof meta?.error === "string" ? meta.error : "unknown error";
-    return `!! batch write failed: ${errorText}${entity ? ` [${entity}]` : ""}`;
-  }
-
-  return log.message;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-function toFiniteNumber(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
+function stateChipColor(
+  state: CdcState,
+): "success" | "info" | "error" | "default" {
+  switch (state) {
+    case "live":
+      return "success";
+    case "backfill":
+    case "catchup":
+      return "info";
+    case "degraded":
+      return "error";
+    default:
+      return "default";
   }
-  return value;
 }
 
-function camelToSnake(value: string): string {
-  return value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+function camelToSnake(v: string): string {
+  return v.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 }
 
-function formatEntityAsTableName(entity: string): string {
+function entityLabel(entity: string): string {
   if (!entity.includes(":")) return entity;
-  const [parent, subEntity] = entity.split(":");
-  if (!parent || !subEntity) return entity;
-  return `${camelToSnake(subEntity)}_${parent}`;
-}
-
-function deriveProgressFromLogs(logs: ExecutionLog[]): {
-  entityStats: Record<string, number>;
-  entityStatus: Record<string, string>;
-} {
-  const entityStats: Record<string, number> = {};
-  const entityStatus: Record<string, string> = {};
-
-  for (const log of logs) {
-    if (!log.metadata || typeof log.metadata !== "object") {
-      continue;
-    }
-
-    const metadata = log.metadata as Record<string, unknown>;
-    const entity =
-      (typeof metadata.entity === "string" && metadata.entity) ||
-      (typeof metadata.table === "string" && metadata.table) ||
-      undefined;
-
-    if (!entity) {
-      continue;
-    }
-
-    const candidates = [
-      toFiniteNumber(metadata.totalProcessed),
-      toFiniteNumber(metadata.rowsWritten),
-      toFiniteNumber(metadata.rowsProcessed),
-      toFiniteNumber(metadata.recordCount),
-    ].filter((value): value is number => value !== null);
-
-    if (candidates.length > 0) {
-      entityStats[entity] = Math.max(entityStats[entity] || 0, ...candidates);
-    }
-
-    if (
-      log.message.toLowerCase().includes("sync completed") ||
-      log.message.toLowerCase().includes("chunk completed")
-    ) {
-      entityStatus[entity] = "completed";
-    } else if (!entityStatus[entity]) {
-      entityStatus[entity] = "syncing";
-    }
-  }
-
-  return {
-    entityStats,
-    entityStatus,
-  };
+  const [parent, sub] = entity.split(":");
+  return parent && sub ? `${camelToSnake(sub)}_${parent}` : entity;
 }
 
 export function BackfillPanel({
@@ -195,1762 +98,174 @@ export function BackfillPanel({
     flows: flowsMap,
     backfillFlow,
     startCdcBackfill,
-    fetchFlowStatus,
     fetchFlowHistory,
-    fetchExecutionDetails,
     cancelFlowExecution,
     fetchCdcStatus,
     pauseCdcFlow,
     resumeCdcFlow,
     resyncCdcFlow,
     recoverCdcFlow,
-    retryFailedCdcMaterialization,
   } = useFlowStore();
 
-  const [isTriggering, setIsTriggering] = useState(false);
-  const [status, setStatus] = useState<
-    null | "running" | "completed" | "failed" | "cancelled"
-  >(null);
-  const [executionId, setExecutionId] = useState<string | null>(null);
-  const [entityStats, setEntityStats] = useState<Record<string, number>>({});
-  const [entityStatus, setEntityStatus] = useState<Record<string, string>>({});
-  const [plannedEntities, setPlannedEntities] = useState<string[]>([]);
-  const [startedAt, setStartedAt] = useState<string | null>(null);
-  const [lastRun, setLastRun] = useState<FlowExecutionHistory | null>(null);
-  const [history, setHistory] = useState<FlowExecutionHistory[]>([]);
+  const [cdc, setCdc] = useState<any | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
-  const [recentLogs, setRecentLogs] = useState<ExecutionLog[]>([]);
-  const [wasCancelled, setWasCancelled] = useState(false);
-  const [cdcStatus, setCdcStatus] = useState<any | null>(null);
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [resyncDialogOpen, setResyncDialogOpen] = useState(false);
-  const [deleteDestination, setDeleteDestination] = useState(false);
-  const [clearWebhookEvents, setClearWebhookEvents] = useState(false);
-  const [resyncConfirmText, setResyncConfirmText] = useState("");
-  const [isResyncing, setIsResyncing] = useState(false);
+  const [history, setHistory] = useState<FlowExecutionHistory[]>([]);
+  const [showTransitions, setShowTransitions] = useState(false);
+  const [resyncOpen, setResyncOpen] = useState(false);
+  const [resyncConfirm, setResyncConfirm] = useState("");
+  const [resyncOpts, setResyncOpts] = useState({
+    deleteDestination: false,
+    clearWebhookEvents: false,
+  });
   const [webhookCopied, setWebhookCopied] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(0);
-  const panelContainerRef = useRef<HTMLDivElement | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
+  const isCdc = flow?.syncEngine === "cdc";
+  const state: CdcState = cdc?.syncState || "idle";
 
-  const kpiColumnCount = panelWidth >= 980 ? 4 : 2;
-
-  const currentFlow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
-  const isCdcFlow = currentFlow?.syncEngine === "cdc";
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  const stopCdcPolling = useCallback(() => {
-    if (cdcPollRef.current) {
-      clearInterval(cdcPollRef.current);
-      cdcPollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isCdcFlow) return;
-
-    const element = panelContainerRef.current;
-    if (!element) return;
-
-    const updatePanelWidth = (width: number) => {
-      const next = Math.round(width);
-      setPanelWidth(prev => (prev === next ? prev : next));
-    };
-
-    updatePanelWidth(element.getBoundingClientRect().width);
-
-    if (typeof ResizeObserver === "undefined") {
-      const onResize = () =>
-        updatePanelWidth(element.getBoundingClientRect().width);
-      window.addEventListener("resize", onResize);
-      return () => window.removeEventListener("resize", onResize);
-    }
-
-    const observer = new ResizeObserver(entries => {
-      const entry = entries[0];
-      if (!entry) return;
-      updatePanelWidth(entry.contentRect.width);
-    });
-    observer.observe(element);
-
-    return () => observer.disconnect();
-  }, [isCdcFlow]);
-
-  const pollCdcOverview = useCallback(async () => {
-    if (!isCdcFlow) return;
+  const poll = useCallback(async () => {
     const status = await fetchCdcStatus(workspaceId, flowId);
-    if (status) {
-      setCdcStatus(status);
-    }
-  }, [isCdcFlow, fetchCdcStatus, workspaceId, flowId]);
+    if (status) setCdc(status);
+  }, [fetchCdcStatus, workspaceId, flowId]);
 
-  const loadHistory = useCallback(async () => {
-    const runs = await fetchFlowHistory(workspaceId, flowId, 10);
-    if (runs) setHistory(runs);
-    if (runs?.[0]) setLastRun(runs[0]);
-  }, [workspaceId, flowId, fetchFlowHistory]);
-
-  const pollExecution = useCallback(async () => {
-    if (!executionId) return;
-    try {
-      const details = await fetchExecutionDetails(
-        workspaceId,
-        flowId,
-        executionId,
-      );
-      if (!details) return;
-      if (wasCancelled) return;
-
-      setLastHeartbeat(details.lastHeartbeat || null);
-
-      const logs = (details.logs || []) as ExecutionLog[];
-      if (logs.length > 0) {
-        setRecentLogs(logs.slice(-8).reverse());
-      }
-
-      // Prefer backend stats when present, but fall back to parsing logs so users
-      // still get feedback while long chunks are running.
-      const statsFromApi =
-        details.stats && typeof details.stats === "object"
-          ? (details.stats as {
-              entityStats?: Record<string, number>;
-              entityStatus?: Record<string, string>;
-              plannedEntities?: string[];
-            })
-          : undefined;
-
-      const contextFromApi =
-        details.context && typeof details.context === "object"
-          ? (details.context as { entityFilter?: string[] })
-          : undefined;
-
-      if (Array.isArray(statsFromApi?.plannedEntities)) {
-        setPlannedEntities(statsFromApi.plannedEntities);
-      } else if (
-        Array.isArray(contextFromApi?.entityFilter) &&
-        contextFromApi.entityFilter.length > 0
-      ) {
-        setPlannedEntities(contextFromApi.entityFilter);
-      }
-
-      const derived =
-        logs.length > 0 ? deriveProgressFromLogs(logs) : undefined;
-
-      const mergedEntityStats: Record<string, number> = {
-        ...(statsFromApi?.entityStats || {}),
-      };
-      if (derived?.entityStats) {
-        for (const [entity, value] of Object.entries(derived.entityStats)) {
-          mergedEntityStats[entity] = Math.max(
-            mergedEntityStats[entity] || 0,
-            value,
-          );
-        }
-      }
-      if (Object.keys(mergedEntityStats).length > 0) {
-        setEntityStats(mergedEntityStats);
-      }
-
-      const mergedEntityStatus: Record<string, string> = {
-        ...(derived?.entityStatus || {}),
-        ...(statsFromApi?.entityStatus || {}),
-      };
-      if (Object.keys(mergedEntityStatus).length > 0) {
-        setEntityStatus(mergedEntityStatus);
-      }
-
-      if (details.status !== "running") {
-        stopPolling();
-        setStatus(details.status === "completed" ? "completed" : "failed");
-        if (details.error) setError(details.error.message);
-        loadHistory();
-      }
-    } catch {
-      // ignore polling errors
-    }
-  }, [
-    executionId,
-    workspaceId,
-    flowId,
-    fetchExecutionDetails,
-    stopPolling,
-    loadHistory,
-    wasCancelled,
-  ]);
-
-  const startPolling = useCallback(() => {
-    stopPolling();
-    pollExecution();
-    pollRef.current = setInterval(pollExecution, 5000);
-  }, [stopPolling, pollExecution]);
-
-  // On mount: check if running + load history
   useEffect(() => {
-    const init = async () => {
-      const statusResp = await fetchFlowStatus(workspaceId, flowId);
-      if (statusResp?.isRunning && statusResp.runningExecution) {
-        setStatus("running");
-        setExecutionId(statusResp.runningExecution.executionId);
-        setStartedAt(statusResp.runningExecution.startedAt);
-      }
-      if (!isCdcFlow) {
-        await loadHistory();
-      }
+    if (!isCdc) return;
+    poll();
+    cdcPollRef.current = setInterval(poll, 5000);
+    return () => {
+      if (cdcPollRef.current) clearInterval(cdcPollRef.current);
     };
-    init();
-    return stopPolling;
-  }, [
-    workspaceId,
-    flowId,
-    isCdcFlow,
-    fetchFlowStatus,
-    loadHistory,
-    stopPolling,
-  ]);
-
-  // Start polling when executionId is set and status is running
-  useEffect(() => {
-    if (status === "running" && executionId) {
-      startPolling();
-    }
-    return stopPolling;
-  }, [status, executionId, startPolling, stopPolling]);
+  }, [isCdc, poll]);
 
   useEffect(() => {
-    if (!isCdcFlow) {
-      stopCdcPolling();
-      return;
-    }
+    if (isCdc) return;
+    fetchFlowHistory(workspaceId, flowId, 10).then(runs => {
+      if (runs) setHistory(runs);
+    });
+  }, [isCdc, workspaceId, flowId, fetchFlowHistory]);
 
-    pollCdcOverview();
-    cdcPollRef.current = setInterval(pollCdcOverview, 5000);
-    return stopCdcPolling;
-  }, [isCdcFlow, pollCdcOverview, stopCdcPolling]);
-
-  const handleBackfill = async () => {
-    if (isCdcFlow) {
-      setIsTriggering(true);
-      setRecentLogs([]);
-      setEntityStats({});
-      setEntityStatus({});
-      setError(null);
-      const ok = await startCdcBackfill(workspaceId, flowId);
-      if (!ok) {
-        setError("Failed to start CDC backfill");
-        setIsTriggering(false);
-        return;
-      }
-      await pollCdcOverview();
-      setIsTriggering(false);
-
-      const detectExecution = async (attempts = 0): Promise<void> => {
-        if (attempts > 8) return;
-        const statusResp = await fetchFlowStatus(workspaceId, flowId);
-        if (statusResp?.isRunning && statusResp.runningExecution) {
-          setStatus("running");
-          setExecutionId(statusResp.runningExecution.executionId);
-          setStartedAt(statusResp.runningExecution.startedAt);
-          return;
-        }
-        await new Promise(r => setTimeout(r, 2000));
-        return detectExecution(attempts + 1);
-      };
-      detectExecution();
-      return;
-    }
-
-    if (
-      !confirm(
-        "Run a full backfill? This will sync all historical data for the enabled entities.",
-      )
-    ) {
-      return;
-    }
-
-    setIsTriggering(true);
+  const withBusy = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
     setError(null);
-    setEntityStats({});
-    setEntityStatus({});
-    setPlannedEntities([]);
-    setRecentLogs([]);
-    setWasCancelled(false);
     try {
-      await backfillFlow(workspaceId, flowId);
-      setStatus("running");
-      // Give Inngest a moment to create the execution, then check status
-      setTimeout(async () => {
-        const statusResp = await fetchFlowStatus(workspaceId, flowId);
-        if (statusResp?.runningExecution) {
-          setExecutionId(statusResp.runningExecution.executionId);
-          setStartedAt(statusResp.runningExecution.startedAt);
-        }
-        setIsTriggering(false);
-      }, 3000);
+      await fn();
+      await poll();
     } catch (err) {
-      setStatus("failed");
-      setError(err instanceof Error ? err.message : "Backfill failed");
-      setIsTriggering(false);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleCancel = async () => {
-    stopPolling();
-    setWasCancelled(true);
-    setExecutionId(null);
-    setEntityStats({});
-    setEntityStatus({});
-    setPlannedEntities([]);
-    setRecentLogs([]);
-    try {
-      await cancelFlowExecution(workspaceId, flowId, executionId);
-      setStatus("cancelled");
-      setError(null);
-    } catch {
-      setStatus("failed");
-      setError("Failed to cancel flow");
-    }
-  };
-
-  const handleCdcPauseResume = async () => {
-    if (!isCdcFlow) return;
-    const currentState = cdcStatus?.syncState;
-    const success =
-      currentState === "paused"
-        ? await resumeCdcFlow(workspaceId, flowId)
-        : await pauseCdcFlow(workspaceId, flowId);
-    if (!success) {
-      setError("Failed to update CDC state");
-      return;
-    }
-    await pollCdcOverview();
-  };
-
-  const handleCdcResync = async () => {
-    if (resyncConfirmText !== "RESET") {
-      return;
-    }
-    setIsResyncing(true);
-    const success = await resyncCdcFlow(workspaceId, flowId, {
-      deleteDestination,
-      clearWebhookEvents,
+  const handleStartBackfill = () =>
+    withBusy(async () => {
+      if (isCdc) {
+        const ok = await startCdcBackfill(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to start backfill");
+      } else {
+        await backfillFlow(workspaceId, flowId);
+      }
     });
-    setIsResyncing(false);
-    if (!success) {
-      setError("Failed to reset CDC flow");
-      return;
-    }
-    setResyncDialogOpen(false);
-    setResyncConfirmText("");
-    await pollCdcOverview();
-  };
 
-  const handleCdcRecover = async () => {
-    if (!isCdcFlow) return;
-    const success = await recoverCdcFlow(workspaceId, flowId, {
-      retryFailedMaterialization: true,
-      resumeBackfill: true,
+  const handleCancel = () =>
+    withBusy(async () => {
+      if (isCdc) {
+        const ok = await pauseCdcFlow(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to pause flow");
+      } else {
+        await cancelFlowExecution(workspaceId, flowId, null);
+      }
     });
-    if (!success) {
-      setError("Failed to recover CDC flow");
+
+  const handlePauseResume = () =>
+    withBusy(async () => {
+      const ok =
+        state === "paused"
+          ? await resumeCdcFlow(workspaceId, flowId)
+          : await pauseCdcFlow(workspaceId, flowId);
+      if (!ok) throw new Error("Failed to update flow state");
+    });
+
+  const handleRecover = () =>
+    withBusy(async () => {
+      const ok = await recoverCdcFlow(workspaceId, flowId, {
+        retryFailedMaterialization: true,
+        resumeBackfill: true,
+      });
+      if (!ok) throw new Error("Failed to recover flow");
+    });
+
+  const handleResync = async () => {
+    if (resyncConfirm !== "RESET") return;
+    setBusy(true);
+    const ok = await resyncCdcFlow(workspaceId, flowId, resyncOpts);
+    setBusy(false);
+    if (!ok) {
+      setError("Failed to reset sync");
       return;
     }
-    await pollCdcOverview();
+    setResyncOpen(false);
+    setResyncConfirm("");
+    setResyncOpts({ deleteDestination: false, clearWebhookEvents: false });
+    await poll();
   };
 
-  const handleRetryFailedMaterialization = async () => {
-    if (!isCdcFlow) return;
-    const success = await retryFailedCdcMaterialization(workspaceId, flowId);
-    if (!success) {
-      setError("Failed to queue failed CDC rows for retry");
-      return;
-    }
-    await pollCdcOverview();
+  const webhookUrl = flow?.webhookConfig?.endpoint;
+  const copyWebhook = async () => {
+    if (!webhookUrl) return;
+    await navigator.clipboard.writeText(webhookUrl);
+    setWebhookCopied(true);
+    setTimeout(() => setWebhookCopied(false), 1500);
   };
 
-  if (isCdcFlow) {
-    const summary = cdcStatus;
-
-    const formatLagDuration = (lagSeconds: number | null) => {
-      if (lagSeconds === null || !Number.isFinite(lagSeconds)) return "n/a";
-      if (lagSeconds < 60) return `${lagSeconds}s`;
-      if (lagSeconds < 3600) {
-        const minutes = Math.floor(lagSeconds / 60);
-        const seconds = lagSeconds % 60;
-        return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-      }
-      const hours = Math.floor(lagSeconds / 3600);
-      const minutes = Math.floor((lagSeconds % 3600) / 60);
-      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-    };
-
-    const stateColor = (state?: string) => {
-      switch (state) {
-        case "live":
-          return "success";
-        case "backfill":
-        case "catchup":
-          return "info";
-        case "paused":
-          return "default";
-        case "degraded":
-          return "error";
-        default:
-          return "default";
-      }
-    };
-
-    const freshnessSummary = (() => {
-      if (!summary) return "unknown";
-      if ((summary.backlogCount ?? 0) === 0) {
-        return "live";
-      }
-      return `lag ${formatLagDuration(summary.lagSeconds)}`;
-    })();
-
-    const entityBackfillStatus = (entity: {
-      backlogCount: number;
-      lastMaterializedAt: string | null;
-    }) => {
-      if (!entity.lastMaterializedAt && entity.backlogCount === 0) {
-        return "Not started";
-      }
-      if (entity.backlogCount > 0) return "In progress";
-      return "Completed";
-    };
-
-    const entityObjectStatus = (entity: {
-      backlogCount: number;
-      lastMaterializedAt: string | null;
-    }) => {
-      if (entity.backlogCount > 0) {
-        return { label: "Syncing", color: "info" as const };
-      }
-      if (entity.lastMaterializedAt) {
-        return { label: "Running", color: "success" as const };
-      }
-      return { label: "Pending", color: "default" as const };
-    };
-
-    const entityLagLabel = (entity: {
-      backlogCount: number;
-      lagSeconds: number | null;
-    }) => {
-      if (entity.lagSeconds === null) return "—";
-      if (entity.backlogCount === 0) return "—";
-      return formatLagDuration(entity.lagSeconds);
-    };
-
-    const connectorName = currentFlow?.dataSourceId
-      ? typeof currentFlow.dataSourceId === "object"
-        ? (currentFlow.dataSourceId as any).name
-        : undefined
+  const connectorName =
+    typeof flow?.dataSourceId === "object"
+      ? (flow.dataSourceId as any).name
       : undefined;
-    const connectorType = currentFlow?.dataSourceId
-      ? typeof currentFlow.dataSourceId === "object"
-        ? (currentFlow.dataSourceId as any).type
-        : undefined
+  const destName =
+    typeof flow?.destinationDatabaseId === "object"
+      ? (flow.destinationDatabaseId as any).name
       : undefined;
-    const destName = currentFlow?.destinationDatabaseId
-      ? typeof currentFlow.destinationDatabaseId === "object"
-        ? (currentFlow.destinationDatabaseId as any).name
-        : undefined
-      : undefined;
-    const destType = currentFlow?.destinationDatabaseId
-      ? typeof currentFlow.destinationDatabaseId === "object"
-        ? (currentFlow.destinationDatabaseId as any).type
-        : undefined
-      : undefined;
-    const dataset = currentFlow?.tableDestination?.schema;
-    const webhookEndpoint = currentFlow?.webhookConfig?.endpoint;
-    const copyWebhookUrl = async () => {
-      if (!webhookEndpoint) return;
-      try {
-        await navigator.clipboard.writeText(webhookEndpoint);
-        setWebhookCopied(true);
-        setTimeout(() => setWebhookCopied(false), 1500);
-      } catch {
-        setWebhookCopied(false);
-      }
-    };
+  const dataset = flow?.tableDestination?.schema;
 
-    const act = {
-      fontSize: "0.8rem",
-      textTransform: "none" as const,
-      fontWeight: 500,
-      color: "primary.main",
-      minWidth: 0,
-      px: { xs: 1, sm: 1.5 },
-      py: 0.5,
-      gap: 0.5,
-      whiteSpace: "nowrap",
-      "&:hover": { bgcolor: "action.hover" },
-      "& .MuiButton-startIcon": { mr: 0.5 },
-    };
-    const actDanger = { ...act, color: "error.main" };
-
-    const state = summary?.syncState;
-    const backfillRunning = status === "running" || state === "backfill";
-    const isPaused = state === "paused" && !backfillRunning;
-    const isDegraded = state === "degraded" && !backfillRunning;
-    const isIdle = (!state || state === "idle") && !backfillRunning;
-    const hasFailed = false;
-    const failedDroppedDetail =
-      summary && (summary.backlogCount ?? 0) > 0
-        ? `Lag ${formatLagDuration(summary.lagSeconds)}`
-        : "No queued events";
-
+  // --- Non-CDC legacy path (simple backfill trigger + history) ---
+  if (!isCdc) {
     return (
-      <Box
-        ref={panelContainerRef}
-        sx={{
-          height: "100%",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "auto",
-        }}
-      >
+      <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
         <Box
           sx={{
             display: "flex",
             alignItems: "center",
-            flexWrap: "wrap",
-            px: { xs: 1, sm: 1.5 },
-            py: 0.75,
+            gap: 1,
+            px: 2,
+            py: 1,
             borderBottom: 1,
             borderColor: "divider",
-            columnGap: 0.5,
-            rowGap: 0.75,
-            minHeight: 40,
           }}
         >
-          <Box
-            sx={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 0.5,
-              minWidth: 0,
-              flex: "1 1 auto",
-            }}
-          >
-            {/* Primary action — changes based on state */}
-            {isIdle && (
-              <Button
-                sx={act}
-                startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                onClick={handleBackfill}
-                disabled={isTriggering}
-              >
-                Start backfill
-              </Button>
-            )}
-            {backfillRunning && (
-              <>
-                <Button
-                  sx={act}
-                  startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                  disabled
-                >
-                  Backfilling…
-                </Button>
-                <Button
-                  sx={actDanger}
-                  startIcon={<CancelIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleCancel}
-                >
-                  Cancel
-                </Button>
-              </>
-            )}
-            {(state === "catchup" || state === "live") && (
-              <Button
-                sx={act}
-                startIcon={<PauseIcon sx={{ fontSize: 18 }} />}
-                onClick={handleCdcPauseResume}
-              >
-                Pause stream
-              </Button>
-            )}
-            {isPaused && (
-              <>
-                <Button
-                  sx={act}
-                  startIcon={<ResumeIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleCdcPauseResume}
-                >
-                  Resume stream
-                </Button>
-                <Button
-                  sx={act}
-                  startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleBackfill}
-                  disabled={isTriggering}
-                >
-                  Start backfill
-                </Button>
-              </>
-            )}
-            {isDegraded && (
-              <>
-                <Button
-                  sx={act}
-                  startIcon={<RecoverIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleCdcRecover}
-                >
-                  Recover
-                </Button>
-                <Button
-                  sx={act}
-                  startIcon={<SyncIcon sx={{ fontSize: 18 }} />}
-                  onClick={handleBackfill}
-                  disabled={isTriggering}
-                >
-                  Start backfill
-                </Button>
-              </>
-            )}
-
-            {/* Secondary actions — contextual */}
-            {hasFailed && (
-              <Button
-                sx={act}
-                startIcon={<RetryIcon sx={{ fontSize: 18 }} />}
-                onClick={handleRetryFailedMaterialization}
-              >
-                Retry failed
-              </Button>
-            )}
-          </Box>
-
-          <Box
-            sx={{
-              ml: "auto",
-              display: "flex",
-              flexWrap: "wrap",
-              justifyContent: "flex-end",
-              gap: 0.5,
-              minWidth: 0,
-            }}
-          >
-            {/* Always-available actions */}
-            <Button
-              sx={actDanger}
-              startIcon={<ResyncIcon sx={{ fontSize: 18 }} />}
-              onClick={() => setResyncDialogOpen(true)}
-            >
-              Reset sync
-            </Button>
-            {onEdit && (
-              <Button
-                sx={act}
-                startIcon={<EditIcon sx={{ fontSize: 18 }} />}
-                onClick={onEdit}
-              >
-                Edit
-              </Button>
-            )}
-            <Button
-              sx={act}
-              startIcon={<DiagnosticsIcon sx={{ fontSize: 18 }} />}
-              onClick={() => setShowDiagnostics(v => !v)}
-            >
-              {showDiagnostics ? "Hide diagnostics" : "Diagnostics"}
-            </Button>
-          </Box>
-        </Box>
-
-        <Box
-          sx={{
-            px: { xs: 1.5, sm: 2, md: 2.5 },
-            py: 2,
-            display: "grid",
-            gap: { xs: 2, md: 2.5 },
-          }}
-        >
-          {/* Properties — compact 2-col key/value */}
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: {
-                xs: "88px minmax(0, 1fr)",
-                sm: "100px minmax(0, 1fr)",
-              },
-              rowGap: 0.5,
-              columnGap: 1.5,
-              "& .lbl": {
-                color: "text.secondary",
-                fontSize: "0.78rem",
-                lineHeight: 1.7,
-              },
-              "& .val": { fontSize: "0.78rem", lineHeight: 1.7, minWidth: 0 },
-            }}
-          >
-            <Typography className="lbl">Engine</Typography>
-            <Typography className="val" fontWeight={600}>
-              CDC
-            </Typography>
-            <Typography className="lbl">Source</Typography>
-            <Typography
-              className="val"
-              sx={{ whiteSpace: { xs: "normal", sm: "nowrap" } }}
-            >
-              {connectorName || "—"}
-              {connectorType ? ` · ${connectorType}` : ""}
-            </Typography>
-            <Typography className="lbl">Destination</Typography>
-            <Typography
-              className="val"
-              sx={{ whiteSpace: { xs: "normal", sm: "nowrap" } }}
-            >
-              {destName || "—"}
-              {destType ? ` · ${destType}` : ""}
-            </Typography>
-            <Typography className="lbl">Dataset</Typography>
-            <Typography className="val" sx={{ fontFamily: "monospace" }}>
-              {dataset || "—"}
-            </Typography>
-            <Typography className="lbl">Webhook</Typography>
-            <Box
-              className="val"
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0.5,
-                width: "min(100%, 680px)",
-                minWidth: 0,
-                maxWidth: "130px",
-              }}
-            >
-              <Typography
-                title={webhookEndpoint || ""}
-                sx={{
-                  fontFamily: "monospace",
-                  fontSize: "0.68rem",
-                  opacity: 0.75,
-                  flex: 1,
-                  minWidth: 0,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {webhookEndpoint || "—"}
-              </Typography>
-              <Tooltip title={webhookCopied ? "Copied" : "Copy URL"}>
-                <span>
-                  <IconButton
-                    size="small"
-                    onClick={copyWebhookUrl}
-                    disabled={!webhookEndpoint}
-                    aria-label="Copy webhook URL"
-                    sx={{ p: 0.25 }}
-                  >
-                    <CopyIcon sx={{ fontSize: 14 }} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-            </Box>
-            <Typography className="lbl">Created</Typography>
-            <Typography className="val">
-              {currentFlow?.createdAt
-                ? new Date(currentFlow.createdAt).toLocaleString()
-                : "—"}
-            </Typography>
-            <Typography className="lbl">Updated</Typography>
-            <Typography className="val">
-              {currentFlow?.updatedAt
-                ? new Date(currentFlow.updatedAt).toLocaleString()
-                : "—"}
-            </Typography>
-          </Box>
-
-          {/* Metric cards */}
-          {summary ? (
-            <>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: `repeat(${kpiColumnCount}, minmax(0, 1fr))`,
-                  gap: { xs: 1, sm: 1.5 },
-                }}
-              >
-                {/* Stream status */}
-                <Box
-                  sx={{
-                    borderRadius: 1.5,
-                    p: 1.5,
-                    bgcolor: "action.hover",
-                    minWidth: 0,
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ letterSpacing: 0.3, fontSize: "0.68rem" }}
-                  >
-                    Stream status
-                  </Typography>
-                  <Box sx={{ mt: 0.5 }}>
-                    <Chip
-                      size="small"
-                      label={
-                        summary.syncState.charAt(0).toUpperCase() +
-                        summary.syncState.slice(1)
-                      }
-                      color={stateColor(summary.syncState)}
-                      icon={
-                        summary.syncState === "live" ? (
-                          <CheckIcon />
-                        ) : summary.syncState === "degraded" ? (
-                          <ErrorIcon />
-                        ) : (
-                          <SyncIcon />
-                        )
-                      }
-                      sx={{ fontWeight: 600, fontSize: "0.72rem" }}
-                    />
-                  </Box>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block", mt: 0.8, fontSize: "0.65rem" }}
-                  >
-                    Freshness: {freshnessSummary}
-                  </Typography>
-                </Box>
-                {/* Backfill status */}
-                <Box
-                  sx={{
-                    borderRadius: 1.5,
-                    p: 1.5,
-                    bgcolor: "action.hover",
-                    minWidth: 0,
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ letterSpacing: 0.3, fontSize: "0.68rem" }}
-                  >
-                    Backfill status
-                  </Typography>
-                  <Typography
-                    fontWeight={700}
-                    sx={{ mt: 0.25, fontSize: "0.95rem" }}
-                  >
-                    {summary.backlogCount > 0
-                      ? `${summary.backlogCount.toLocaleString()} pending`
-                      : summary.syncState === "backfill"
-                        ? "In progress"
-                        : summary.lastMaterializedAt
-                          ? "Completed"
-                          : "Not started"}
-                  </Typography>
-                </Box>
-                {/* Lag */}
-                <Box
-                  sx={{
-                    borderRadius: 1.5,
-                    p: 1.5,
-                    bgcolor:
-                      (summary.backlogCount ?? 0) > 0
-                        ? "warning.50"
-                        : "action.hover",
-                    minWidth: 0,
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ letterSpacing: 0.3, fontSize: "0.68rem" }}
-                  >
-                    Lag
-                  </Typography>
-                  <Typography
-                    fontWeight={700}
-                    sx={{ mt: 0.25, fontSize: "0.95rem" }}
-                  >
-                    {formatLagDuration(summary.lagSeconds)}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block", mt: 0.25, fontSize: "0.65rem" }}
-                  >
-                    {failedDroppedDetail}
-                  </Typography>
-                </Box>
-              </Box>
-
-              {/* Live execution progress */}
-              {status === "running" && (
-                <Box
-                  sx={{
-                    borderRadius: 1.5,
-                    border: 1,
-                    borderColor: "divider",
-                    p: 1.5,
-                  }}
-                >
-                  <Box
-                    sx={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 1,
-                      mb: 1,
-                    }}
-                  >
-                    <SyncIcon
-                      sx={{
-                        fontSize: 16,
-                        animation: "spin 1s linear infinite",
-                        "@keyframes spin": {
-                          from: { transform: "rotate(0deg)" },
-                          to: { transform: "rotate(360deg)" },
-                        },
-                      }}
-                    />
-                    <Typography
-                      variant="caption"
-                      fontWeight={600}
-                      sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}
-                    >
-                      Backfill in progress
-                    </Typography>
-                    {startedAt && (
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ ml: "auto" }}
-                      >
-                        Started {new Date(startedAt).toLocaleTimeString()}
-                        {lastHeartbeat
-                          ? ` · updated ${new Date(lastHeartbeat).toLocaleTimeString()}`
-                          : ""}
-                      </Typography>
-                    )}
-                  </Box>
-                  <LinearProgress sx={{ mb: 1.5, borderRadius: 1 }} />
-
-                  {/* Per-entity progress */}
-                  {Object.keys(entityStats).length > 0 && (
-                    <Box
-                      sx={{
-                        mb: 1.5,
-                        borderRadius: 1,
-                        border: 1,
-                        borderColor: "divider",
-                        minWidth: 0,
-                        maxHeight: 220,
-                        overflowX: "auto",
-                        overflowY: "auto",
-                      }}
-                    >
-                      <TableContainer
-                        sx={{
-                          width: "max-content",
-                          minWidth: "100%",
-                        }}
-                      >
-                        <Table stickyHeader size="small">
-                          <TableHead>
-                            <TableRow
-                              sx={{
-                                bgcolor: "action.hover",
-                                "& th": {
-                                  fontSize: "0.68rem",
-                                  fontWeight: 600,
-                                  color: "text.secondary",
-                                  textTransform: "uppercase",
-                                  letterSpacing: 0.4,
-                                  py: 0.5,
-                                  px: 1,
-                                },
-                              }}
-                            >
-                              <TableCell>Entity</TableCell>
-                              <TableCell align="right">Records</TableCell>
-                              <TableCell align="center">Status</TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {[
-                              ...new Set([
-                                ...plannedEntities,
-                                ...Object.keys(entityStats),
-                                ...Object.keys(entityStatus),
-                              ]),
-                            ]
-                              .map(
-                                entity =>
-                                  [entity, entityStats[entity] || 0] as const,
-                              )
-                              .sort(([, a], [, b]) => b - a)
-                              .map(([entity, count]) => (
-                                <TableRow
-                                  key={entity}
-                                  sx={{
-                                    "&:last-child td": { borderBottom: 0 },
-                                  }}
-                                >
-                                  <TableCell
-                                    sx={{
-                                      fontFamily: "monospace",
-                                      fontSize: "0.75rem",
-                                      py: 0.5,
-                                      px: 1,
-                                    }}
-                                  >
-                                    {formatEntityAsTableName(entity)}
-                                  </TableCell>
-                                  <TableCell
-                                    align="right"
-                                    sx={{
-                                      fontWeight: 600,
-                                      fontSize: "0.78rem",
-                                      py: 0.5,
-                                      px: 1,
-                                    }}
-                                  >
-                                    {count.toLocaleString()}
-                                  </TableCell>
-                                  <TableCell
-                                    align="center"
-                                    sx={{ py: 0.5, px: 1 }}
-                                  >
-                                    <Chip
-                                      size="small"
-                                      label={
-                                        entityStatus[entity] === "completed"
-                                          ? "done"
-                                          : entityStatus[entity] === "failed"
-                                            ? "failed"
-                                            : entityStatus[entity] === "pending"
-                                              ? "pending"
-                                              : "syncing"
-                                      }
-                                      color={
-                                        entityStatus[entity] === "completed"
-                                          ? "success"
-                                          : entityStatus[entity] === "failed"
-                                            ? "error"
-                                            : entityStatus[entity] === "pending"
-                                              ? "default"
-                                              : "info"
-                                      }
-                                      variant="outlined"
-                                      sx={{
-                                        height: 20,
-                                        fontSize: "0.65rem",
-                                        fontWeight: 500,
-                                      }}
-                                    />
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                          </TableBody>
-                        </Table>
-                      </TableContainer>
-                    </Box>
-                  )}
-
-                  {/* Live logs */}
-                  {recentLogs.length > 0 && (
-                    <Box
-                      sx={{
-                        maxHeight: 120,
-                        overflow: "auto",
-                        borderRadius: 1,
-                        bgcolor: "action.hover",
-                        p: 1,
-                        display: "grid",
-                        gap: 0.25,
-                      }}
-                    >
-                      {recentLogs.map((log, idx) => (
-                        <Typography
-                          key={`${log.timestamp}-${idx}`}
-                          variant="caption"
-                          sx={{
-                            fontFamily: "monospace",
-                            fontSize: "0.7rem",
-                            whiteSpace: "pre-wrap",
-                            color:
-                              log.level === "error"
-                                ? "error.main"
-                                : "text.secondary",
-                          }}
-                        >
-                          [{new Date(log.timestamp).toLocaleTimeString()}]{" "}
-                          {formatExecutionLog(log)}
-                        </Typography>
-                      ))}
-                    </Box>
-                  )}
-
-                  {recentLogs.length === 0 &&
-                    Object.keys(entityStats).length === 0 && (
-                      <Typography variant="caption" color="text.secondary">
-                        Waiting for backfill to start producing data...
-                      </Typography>
-                    )}
-                </Box>
-              )}
-
-              {status === "failed" && error && (
-                <Alert
-                  severity="error"
-                  sx={{ borderRadius: 1.5 }}
-                  onClose={() => {
-                    setStatus(null);
-                    setError(null);
-                  }}
-                >
-                  Backfill failed: {error}
-                </Alert>
-              )}
-
-              {/* Entity table */}
-              <Box sx={{ minWidth: 0 }}>
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{
-                    mb: 0.75,
-                    display: "block",
-                    fontWeight: 600,
-                    letterSpacing: 0.5,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {(summary.entities || []).length} entities
-                </Typography>
-                <Box
-                  sx={{
-                    borderRadius: 1.5,
-                    border: 1,
-                    borderColor: "divider",
-                    width: "100%",
-                    maxWidth: "100%",
-                    minWidth: 0,
-                    maxHeight: { xs: 320, sm: 380, lg: 520 },
-                    overflowX: "auto",
-                    overflowY: "auto",
-                  }}
-                >
-                  <TableContainer
-                    sx={{
-                      width: "max-content",
-                      minWidth: "100%",
-                      "& .MuiTable-root": {
-                        width: "max-content",
-                        minWidth: 900,
-                      },
-                      "& .MuiTableCell-root": {
-                        py: { xs: 0.65, sm: 0.75 },
-                        px: { xs: 0.75, sm: 1 },
-                        fontSize: { xs: "0.72rem", sm: "0.78rem" },
-                        whiteSpace: "nowrap",
-                      },
-                    }}
-                  >
-                    <Table stickyHeader size="small">
-                      <TableHead>
-                        <TableRow
-                          sx={{
-                            bgcolor: "action.hover",
-                            "& th": {
-                              fontWeight: 600,
-                              fontSize: "0.7rem",
-                              color: "text.secondary",
-                              textTransform: "uppercase",
-                              letterSpacing: 0.5,
-                              borderBottom: 1,
-                              borderColor: "divider",
-                            },
-                          }}
-                        >
-                          <TableCell>Entity name</TableCell>
-                          <TableCell>Status</TableCell>
-                          <TableCell>Backfill</TableCell>
-                          <TableCell align="right">Queued</TableCell>
-                          <TableCell align="right">Lag</TableCell>
-                          <TableCell align="right">Last materialized</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {(summary.entities || []).map((entity: any) => {
-                          const objStatus = entityObjectStatus(entity);
-                          return (
-                            <TableRow
-                              key={entity.entity}
-                              hover
-                              sx={{ "&:last-child td": { borderBottom: 0 } }}
-                            >
-                              <TableCell>
-                                <Typography
-                                  sx={{
-                                    fontFamily: "monospace",
-                                    fontSize: "0.78rem",
-                                    fontWeight: 500,
-                                  }}
-                                >
-                                  {formatEntityAsTableName(entity.entity)}
-                                </Typography>
-                              </TableCell>
-                              <TableCell>
-                                <Chip
-                                  size="small"
-                                  label={objStatus.label}
-                                  color={objStatus.color}
-                                  variant="outlined"
-                                  sx={{
-                                    height: 22,
-                                    fontSize: "0.7rem",
-                                    fontWeight: 500,
-                                  }}
-                                />
-                              </TableCell>
-                              <TableCell>
-                                <Typography
-                                  fontSize="0.78rem"
-                                  color="text.primary"
-                                >
-                                  {entityBackfillStatus(entity)}
-                                </Typography>
-                              </TableCell>
-                              <TableCell align="right">
-                                {entity.backlogCount}
-                              </TableCell>
-                              <TableCell align="right">
-                                {entityLagLabel(entity)}
-                              </TableCell>
-                              <TableCell align="right">
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  {entity.lastMaterializedAt
-                                    ? new Date(
-                                        entity.lastMaterializedAt,
-                                      ).toLocaleString()
-                                    : "—"}
-                                </Typography>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </Box>
-              </Box>
-
-              {/* Diagnostics */}
-              {showDiagnostics && cdcStatus && (
-                <Box
-                  sx={{
-                    display: "grid",
-                    gap: 2,
-                    borderRadius: 1.5,
-                    border: 1,
-                    borderColor: "divider",
-                    p: 2,
-                    bgcolor: "background.default",
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{
-                      fontWeight: 600,
-                      letterSpacing: 0.5,
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    Diagnostics
-                  </Typography>
-
-                  {/* Transitions */}
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
-                      sx={{ mb: 0.75, fontSize: "0.8rem" }}
-                    >
-                      Transition timeline
-                    </Typography>
-                    <Box
-                      sx={{
-                        maxHeight: 180,
-                        overflow: "auto",
-                        borderRadius: 1,
-                        bgcolor: "action.hover",
-                        p: 1,
-                        display: "grid",
-                        gap: 0.5,
-                      }}
-                    >
-                      {(cdcStatus.transitions || [])
-                        .slice(0, 20)
-                        .map((transition: any, index: number) => (
-                          <Typography
-                            key={`${transition.at}-${index}`}
-                            variant="caption"
-                            sx={{
-                              fontFamily: "monospace",
-                              fontSize: "0.72rem",
-                            }}
-                          >
-                            <Typography
-                              component="span"
-                              variant="caption"
-                              color="text.secondary"
-                              sx={{
-                                fontFamily: "monospace",
-                                fontSize: "0.72rem",
-                              }}
-                            >
-                              {new Date(transition.at).toLocaleString()}
-                            </Typography>
-                            {"  "}
-                            {transition.fromState} →{" "}
-                            <strong>{transition.toState}</strong>
-                            {"  "}
-                            <Typography
-                              component="span"
-                              variant="caption"
-                              color="text.secondary"
-                              sx={{
-                                fontFamily: "monospace",
-                                fontSize: "0.68rem",
-                              }}
-                            >
-                              ({transition.event}
-                              {transition.reason
-                                ? `: ${transition.reason}`
-                                : ""}
-                              )
-                            </Typography>
-                          </Typography>
-                        ))}
-                      {(cdcStatus.transitions || []).length === 0 && (
-                        <Typography variant="caption" color="text.secondary">
-                          No transitions recorded
-                        </Typography>
-                      )}
-                    </Box>
-                  </Box>
-
-                  {/* Cursors */}
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
-                      sx={{ mb: 0.75, fontSize: "0.8rem" }}
-                    >
-                      Entity cursors
-                    </Typography>
-                    <TableContainer
-                      sx={{
-                        borderRadius: 1,
-                        border: 1,
-                        borderColor: "divider",
-                      }}
-                    >
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow
-                            sx={{
-                              bgcolor: "action.hover",
-                              "& th": {
-                                fontSize: "0.68rem",
-                                color: "text.secondary",
-                                textTransform: "uppercase",
-                                letterSpacing: 0.4,
-                                fontWeight: 600,
-                              },
-                            }}
-                          >
-                            <TableCell>Entity</TableCell>
-                            <TableCell align="right">Ingest seq</TableCell>
-                            <TableCell align="right">
-                              Materialized seq
-                            </TableCell>
-                            <TableCell align="right">Backlog</TableCell>
-                            <TableCell align="right">Lag</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {(cdcStatus.entities || []).map((cursor: any) => (
-                            <TableRow
-                              key={cursor.entity}
-                              sx={{ "&:last-child td": { borderBottom: 0 } }}
-                            >
-                              <TableCell
-                                sx={{
-                                  fontFamily: "monospace",
-                                  fontSize: "0.75rem",
-                                }}
-                              >
-                                {cursor.entity}
-                              </TableCell>
-                              <TableCell align="right">
-                                {cursor.lastIngestSeq}
-                              </TableCell>
-                              <TableCell align="right">
-                                {cursor.lastMaterializedSeq}
-                              </TableCell>
-                              <TableCell align="right">
-                                {cursor.backlogCount}
-                              </TableCell>
-                              <TableCell align="right">
-                                {cursor.lagSeconds ?? "—"}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  </Box>
-                </Box>
-              )}
-            </>
-          ) : (
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
-                py: 4,
-                justifyContent: "center",
-              }}
-            >
-              <SyncIcon
-                sx={{
-                  fontSize: 16,
-                  animation: "spin 1s linear infinite",
-                  "@keyframes spin": {
-                    from: { transform: "rotate(0deg)" },
-                    to: { transform: "rotate(360deg)" },
-                  },
-                }}
-              />
-              <Typography variant="body2" color="text.secondary">
-                Loading CDC summary...
-              </Typography>
-            </Box>
-          )}
-        </Box>
-
-        {/* Reset sync dialog */}
-        <Dialog
-          open={resyncDialogOpen}
-          onClose={() => setResyncDialogOpen(false)}
-        >
-          <DialogTitle>Reset sync</DialogTitle>
-          <DialogContent sx={{ display: "grid", gap: 1, minWidth: 420 }}>
-            <Typography variant="body2">
-              This will clear CDC state and restart backfill.
-            </Typography>
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={deleteDestination}
-                  onChange={event => setDeleteDestination(event.target.checked)}
-                />
-              }
-              label="Delete destination tables"
-            />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={clearWebhookEvents}
-                  onChange={event =>
-                    setClearWebhookEvents(event.target.checked)
-                  }
-                />
-              }
-              label="Clear stored webhook events"
-            />
-            <TextField
-              label="Type RESET to confirm"
-              value={resyncConfirmText}
-              onChange={event => setResyncConfirmText(event.target.value)}
-              size="small"
-            />
-          </DialogContent>
-          <DialogActions>
-            <Button
-              onClick={() => setResyncDialogOpen(false)}
-              disabled={isResyncing}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="contained"
-              color="warning"
-              disabled={resyncConfirmText !== "RESET" || isResyncing}
-              onClick={handleCdcResync}
-            >
-              {isResyncing ? "Resetting…" : "Reset sync"}
-            </Button>
-          </DialogActions>
-        </Dialog>
-      </Box>
-    );
-  }
-
-  const entityEntries = Array.from(
-    new Set([
-      ...plannedEntities,
-      ...Object.keys(entityStats),
-      ...Object.keys(entityStatus),
-    ]),
-  )
-    .map(entity => [entity, entityStats[entity] || 0] as const)
-    .sort(([, a], [, b]) => b - a);
-
-  return (
-    <Box
-      sx={{
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "auto",
-      }}
-    >
-      {/* Top bar */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          px: 2,
-          py: 1,
-          borderBottom: 1,
-          borderColor: "divider",
-        }}
-      >
-        <Button
-          size="small"
-          variant="contained"
-          startIcon={<SyncIcon />}
-          onClick={handleBackfill}
-          disabled={isTriggering || status === "running"}
-        >
-          {status === "running" ? "Backfill running..." : "Run Backfill"}
-        </Button>
-        {status === "running" && (
           <Button
             size="small"
-            color="error"
-            startIcon={<CancelIcon />}
-            onClick={handleCancel}
+            variant="contained"
+            startIcon={<SyncIcon />}
+            onClick={handleStartBackfill}
+            disabled={busy}
           >
-            Cancel
+            {busy ? "Running…" : "Run Backfill"}
           </Button>
-        )}
-        <Box sx={{ flex: 1 }} />
-        {startedAt && status === "running" && (
-          <Typography variant="caption" color="text.secondary">
-            Started {new Date(startedAt).toLocaleTimeString()}
-            {lastHeartbeat
-              ? ` · last update ${new Date(lastHeartbeat).toLocaleTimeString()}`
-              : ""}
-          </Typography>
-        )}
-      </Box>
-
-      <Box sx={{ flex: 1, overflow: "auto", p: 2 }}>
-        {/* Status banner */}
-        {status === "running" && (
-          <Box sx={{ mb: 2 }}>
-            <LinearProgress sx={{ mb: 1 }} />
-          </Box>
-        )}
-
-        {status === "completed" && !error && (
-          <Alert
-            severity="success"
-            sx={{ mb: 2 }}
-            onClose={() => setStatus(null)}
-          >
-            Backfill completed
-            {lastRun?.duration != null &&
-              ` in ${Math.round(lastRun.duration / 1000)}s`}
-          </Alert>
-        )}
-
-        {status === "failed" && error && (
-          <Alert
-            severity="error"
-            sx={{ mb: 2 }}
-            onClose={() => {
-              setStatus(null);
-              setError(null);
-            }}
-          >
-            Backfill failed: {error}
-          </Alert>
-        )}
-
-        {status === "cancelled" && (
-          <Alert severity="info" sx={{ mb: 2 }} onClose={() => setStatus(null)}>
-            Backfill cancelled
-          </Alert>
-        )}
-
-        {status === "running" && recentLogs.length > 0 && (
-          <Box sx={{ mb: 3 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Live Activity
-            </Typography>
-            <Box
-              sx={{
-                border: 1,
-                borderColor: "divider",
-                borderRadius: 1,
-                p: 1,
-                bgcolor: "background.paper",
-                maxHeight: 96, // ~4 lines of caption text
-                overflowY: "auto",
-              }}
+        </Box>
+        <Box sx={{ flex: 1, overflow: "auto", p: 2 }}>
+          {error && (
+            <Alert
+              severity="error"
+              sx={{ mb: 2 }}
+              onClose={() => setError(null)}
             >
-              {recentLogs.map((log, idx) => (
-                <Typography
-                  key={`${log.timestamp}-${idx}`}
-                  variant="caption"
-                  sx={{
-                    display: "block",
-                    fontFamily: "monospace",
-                    whiteSpace: "pre-wrap",
-                    color:
-                      log.level === "error" ? "error.main" : "text.secondary",
-                  }}
-                >
-                  [{new Date(log.timestamp).toLocaleTimeString()}]{" "}
-                  {formatExecutionLog(log)}
-                </Typography>
-              ))}
-            </Box>
-          </Box>
-        )}
-
-        {/* Entity progress table */}
-        {(status === "running" ||
-          ((status === "completed" || status === "failed") &&
-            entityEntries.length > 0)) && (
-          <Box sx={{ mb: 3 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Entity Progress
-            </Typography>
-            <TableContainer>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Entity</TableCell>
-                    <TableCell align="right">Records</TableCell>
-                    <TableCell align="center">Status</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {entityEntries.map(([entity, count]) => (
-                    <TableRow key={entity}>
-                      <TableCell>
-                        <Typography variant="body2">
-                          {formatEntityAsTableName(entity)}
-                        </Typography>
-                      </TableCell>
-                      <TableCell align="right">
-                        <Typography variant="body2" fontWeight="bold">
-                          {count.toLocaleString()}
-                        </Typography>
-                      </TableCell>
-                      <TableCell align="center">
-                        {status === "running" &&
-                        entityStatus[entity] === "completed" ? (
-                          <Chip
-                            icon={<CheckIcon />}
-                            label="done"
-                            size="small"
-                            color="success"
-                            variant="outlined"
-                          />
-                        ) : status === "running" ? (
-                          <Chip
-                            icon={<PendingIcon />}
-                            label={
-                              entityStatus[entity] === "pending"
-                                ? "pending"
-                                : entityStatus[entity] === "failed"
-                                  ? "failed"
-                                  : "processing"
-                            }
-                            size="small"
-                            color={
-                              entityStatus[entity] === "failed"
-                                ? "error"
-                                : entityStatus[entity] === "pending"
-                                  ? "default"
-                                  : "info"
-                            }
-                            variant="outlined"
-                          />
-                        ) : entityStatus[entity] === "failed" ? (
-                          <Chip
-                            icon={<ErrorIcon />}
-                            label="failed"
-                            size="small"
-                            color="error"
-                            variant="outlined"
-                          />
-                        ) : entityStatus[entity] === "pending" ? (
-                          <Chip
-                            icon={<PendingIcon />}
-                            label="pending"
-                            size="small"
-                            color="default"
-                            variant="outlined"
-                          />
-                        ) : (
-                          <Chip
-                            icon={<CheckIcon />}
-                            label="done"
-                            size="small"
-                            color="success"
-                            variant="outlined"
-                          />
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {status === "running" && entityEntries.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={3} align="center">
-                        <Typography variant="body2" color="text.secondary">
-                          Waiting for first entity to start syncing...
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Box>
-        )}
-
-        {/* Past runs */}
-        {history.length > 0 && (
-          <Box>
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Run History
-            </Typography>
+              {error}
+            </Alert>
+          )}
+          {history.length > 0 ? (
             <TableContainer>
               <Table size="small">
                 <TableHead>
@@ -1965,23 +280,12 @@ export function BackfillPanel({
                   {history.map(run => (
                     <TableRow key={run.executionId}>
                       <TableCell>
-                        <Typography variant="body2">
-                          {new Date(
-                            run.startedAt || run.executedAt,
-                          ).toLocaleString()}
-                        </Typography>
+                        {new Date(
+                          run.startedAt || run.executedAt,
+                        ).toLocaleString()}
                       </TableCell>
                       <TableCell>
                         <Chip
-                          icon={
-                            run.status === "completed" ? (
-                              <CheckIcon />
-                            ) : run.status === "running" ? (
-                              <SyncIcon />
-                            ) : (
-                              <ErrorIcon />
-                            )
-                          }
                           label={run.status}
                           size="small"
                           color={
@@ -1995,47 +299,430 @@ export function BackfillPanel({
                         />
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2">
-                          {run.duration
-                            ? `${Math.round(run.duration / 1000)}s`
-                            : "—"}
-                        </Typography>
+                        {run.duration
+                          ? `${Math.round(run.duration / 1000)}s`
+                          : "—"}
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2">
-                          {(
-                            run.stats as
-                              | { recordsProcessed?: number }
-                              | undefined
-                          )?.recordsProcessed?.toLocaleString() || "—"}
-                        </Typography>
+                        {(
+                          run.stats as any
+                        )?.recordsProcessed?.toLocaleString() || "—"}
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </TableContainer>
-          </Box>
-        )}
+          ) : (
+            <Typography color="text.secondary" textAlign="center" py={4}>
+              No backfill runs yet
+            </Typography>
+          )}
+        </Box>
+      </Box>
+    );
+  }
 
-        {/* Empty state */}
-        {!status && history.length === 0 && (
+  // --- CDC flow path ---
+  const entities: any[] = cdc?.entities || [];
+  const transitions: any[] = cdc?.transitions || [];
+
+  return (
+    <Box
+      sx={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "auto",
+      }}
+    >
+      {/* Action bar */}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          flexWrap: "wrap",
+          px: 1.5,
+          py: 0.75,
+          borderBottom: 1,
+          borderColor: "divider",
+          gap: 0.5,
+          minHeight: 40,
+        }}
+      >
+        {(state === "idle" || state === "paused" || state === "degraded") && (
+          <Button
+            size="small"
+            startIcon={<SyncIcon />}
+            onClick={handleStartBackfill}
+            disabled={busy}
+          >
+            Start backfill
+          </Button>
+        )}
+        {state === "backfill" && (
+          <>
+            <Chip label="Backfilling…" size="small" color="info" />
+            <Button
+              size="small"
+              color="error"
+              startIcon={<CancelIcon />}
+              onClick={handleCancel}
+              disabled={busy}
+            >
+              Stop
+            </Button>
+          </>
+        )}
+        {(state === "catchup" || state === "live") && (
+          <Button
+            size="small"
+            startIcon={<PauseIcon />}
+            onClick={handlePauseResume}
+            disabled={busy}
+          >
+            Pause
+          </Button>
+        )}
+        {state === "paused" && (
+          <Button
+            size="small"
+            startIcon={<ResumeIcon />}
+            onClick={handlePauseResume}
+            disabled={busy}
+          >
+            Resume
+          </Button>
+        )}
+        {state === "degraded" && (
+          <Button
+            size="small"
+            startIcon={<RecoverIcon />}
+            onClick={handleRecover}
+            disabled={busy}
+          >
+            Recover
+          </Button>
+        )}
+        <Box sx={{ flex: 1 }} />
+        <Button
+          size="small"
+          color="error"
+          startIcon={<ResyncIcon />}
+          onClick={() => setResyncOpen(true)}
+        >
+          Reset
+        </Button>
+        {onEdit && (
+          <Button size="small" startIcon={<EditIcon />} onClick={onEdit}>
+            Edit
+          </Button>
+        )}
+      </Box>
+
+      <Box sx={{ px: 2, py: 2, display: "grid", gap: 2 }}>
+        {error && (
+          <Alert severity="error" onClose={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+        {busy && <LinearProgress />}
+
+        {/* Status header */}
+        {cdc ? (
+          <>
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1.5,
+                flexWrap: "wrap",
+              }}
+            >
+              <Chip
+                label={state.charAt(0).toUpperCase() + state.slice(1)}
+                color={stateChipColor(state)}
+                size="small"
+              />
+              {cdc.backlogCount > 0 && (
+                <Typography variant="body2" color="text.secondary">
+                  {cdc.backlogCount.toLocaleString()} pending
+                </Typography>
+              )}
+              {cdc.lagSeconds !== null && cdc.lagSeconds > 0 && (
+                <Typography variant="body2" color="text.secondary">
+                  Lag {formatLag(cdc.lagSeconds)}
+                </Typography>
+              )}
+              {cdc.lastMaterializedAt && (
+                <Typography variant="caption" color="text.secondary">
+                  Last materialized{" "}
+                  {new Date(cdc.lastMaterializedAt).toLocaleString()}
+                </Typography>
+              )}
+            </Box>
+
+            {/* Flow info */}
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: "90px 1fr",
+                rowGap: 0.25,
+                columnGap: 1.5,
+                fontSize: "0.78rem",
+                "& .lbl": { color: "text.secondary" },
+              }}
+            >
+              {connectorName && (
+                <>
+                  <Typography className="lbl" fontSize="inherit">
+                    Source
+                  </Typography>
+                  <Typography fontSize="inherit" fontWeight={500}>
+                    {connectorName}
+                  </Typography>
+                </>
+              )}
+              {destName && (
+                <>
+                  <Typography className="lbl" fontSize="inherit">
+                    Destination
+                  </Typography>
+                  <Typography fontSize="inherit" fontWeight={500}>
+                    {destName}
+                    {dataset ? ` / ${dataset}` : ""}
+                  </Typography>
+                </>
+              )}
+              {webhookUrl && (
+                <>
+                  <Typography className="lbl" fontSize="inherit">
+                    Webhook
+                  </Typography>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.5,
+                      minWidth: 0,
+                    }}
+                  >
+                    <Typography
+                      fontSize="inherit"
+                      sx={{
+                        fontFamily: "monospace",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {webhookUrl}
+                    </Typography>
+                    <Tooltip title={webhookCopied ? "Copied" : "Copy"}>
+                      <IconButton size="small" onClick={copyWebhook}>
+                        <CopyIcon sx={{ fontSize: 14 }} />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </>
+              )}
+            </Box>
+
+            {/* Entity table */}
+            {entities.length > 0 && (
+              <TableContainer
+                sx={{ borderRadius: 1, border: 1, borderColor: "divider" }}
+              >
+                <Table size="small">
+                  <TableHead>
+                    <TableRow
+                      sx={{
+                        "& th": {
+                          fontSize: "0.72rem",
+                          color: "text.secondary",
+                          fontWeight: 600,
+                        },
+                      }}
+                    >
+                      <TableCell>Entity</TableCell>
+                      <TableCell align="right">Queued</TableCell>
+                      <TableCell align="right">Lag</TableCell>
+                      <TableCell align="right">Last materialized</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {entities.map((e: any) => (
+                      <TableRow
+                        key={e.entity}
+                        sx={{ "&:last-child td": { borderBottom: 0 } }}
+                      >
+                        <TableCell
+                          sx={{ fontFamily: "monospace", fontSize: "0.78rem" }}
+                        >
+                          {entityLabel(e.entity)}
+                        </TableCell>
+                        <TableCell align="right">{e.backlogCount}</TableCell>
+                        <TableCell align="right">
+                          {formatLag(e.lagSeconds)}
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="caption" color="text.secondary">
+                            {e.lastMaterializedAt
+                              ? new Date(e.lastMaterializedAt).toLocaleString()
+                              : "—"}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+
+            {/* Transition history (collapsible) */}
+            {transitions.length > 0 && (
+              <Box>
+                <Button
+                  size="small"
+                  onClick={() => setShowTransitions(v => !v)}
+                  endIcon={showTransitions ? <CollapseIcon /> : <ExpandIcon />}
+                  sx={{
+                    textTransform: "none",
+                    fontSize: "0.78rem",
+                    color: "text.secondary",
+                  }}
+                >
+                  {transitions.length} transitions
+                </Button>
+                {showTransitions && (
+                  <Box
+                    sx={{
+                      mt: 0.5,
+                      maxHeight: 200,
+                      overflow: "auto",
+                      borderRadius: 1,
+                      bgcolor: "action.hover",
+                      p: 1,
+                      display: "grid",
+                      gap: 0.25,
+                    }}
+                  >
+                    {transitions.map((t: any, i: number) => (
+                      <Typography
+                        key={`${t.at}-${i}`}
+                        variant="caption"
+                        sx={{ fontFamily: "monospace", fontSize: "0.72rem" }}
+                      >
+                        <Typography
+                          component="span"
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontFamily: "monospace", fontSize: "0.72rem" }}
+                        >
+                          {new Date(t.at).toLocaleString()}
+                        </Typography>
+                        {"  "}
+                        {t.fromState} → <strong>{t.toState}</strong>
+                        {"  "}
+                        <Typography
+                          component="span"
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontFamily: "monospace", fontSize: "0.68rem" }}
+                        >
+                          ({t.event}
+                          {t.reason ? `: ${t.reason}` : ""})
+                        </Typography>
+                      </Typography>
+                    ))}
+                  </Box>
+                )}
+              </Box>
+            )}
+          </>
+        ) : (
           <Box
             sx={{
-              textAlign: "center",
-              py: 6,
-              color: "text.secondary",
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              py: 4,
+              justifyContent: "center",
             }}
           >
-            <SyncIcon sx={{ fontSize: 48, mb: 1, opacity: 0.3 }} />
-            <Typography variant="body1">No backfill runs yet</Typography>
-            <Typography variant="body2">
-              Click &quot;Run Backfill&quot; to sync historical data from Close
-              to BigQuery
+            <SyncIcon
+              sx={{
+                fontSize: 16,
+                animation: "spin 1s linear infinite",
+                "@keyframes spin": {
+                  from: { transform: "rotate(0deg)" },
+                  to: { transform: "rotate(360deg)" },
+                },
+              }}
+            />
+            <Typography variant="body2" color="text.secondary">
+              Loading…
             </Typography>
           </Box>
         )}
       </Box>
+
+      {/* Reset dialog */}
+      <Dialog open={resyncOpen} onClose={() => setResyncOpen(false)}>
+        <DialogTitle>Reset sync</DialogTitle>
+        <DialogContent sx={{ display: "grid", gap: 1, minWidth: 400 }}>
+          <Typography variant="body2">
+            This will clear all CDC state and restart a full backfill.
+          </Typography>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={resyncOpts.deleteDestination}
+                onChange={e =>
+                  setResyncOpts(o => ({
+                    ...o,
+                    deleteDestination: e.target.checked,
+                  }))
+                }
+              />
+            }
+            label="Delete destination tables"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={resyncOpts.clearWebhookEvents}
+                onChange={e =>
+                  setResyncOpts(o => ({
+                    ...o,
+                    clearWebhookEvents: e.target.checked,
+                  }))
+                }
+              />
+            }
+            label="Clear stored webhook events"
+          />
+          <TextField
+            label="Type RESET to confirm"
+            value={resyncConfirm}
+            onChange={e => setResyncConfirm(e.target.value)}
+            size="small"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResyncOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={resyncConfirm !== "RESET" || busy}
+            onClick={handleResync}
+          >
+            {busy ? "Resetting…" : "Reset sync"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
