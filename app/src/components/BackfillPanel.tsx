@@ -23,7 +23,7 @@ import {
   Tooltip,
 } from "@mui/material";
 import {
-  CloudDownload as BackfillIcon,
+  History as BackfillIcon,
   Cancel as CancelIcon,
   Pause as PauseIcon,
   PlayArrow as ResumeIcon,
