@@ -21,6 +21,8 @@ import {
   FormControlLabel,
   IconButton,
   Tooltip,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import {
   History as BackfillIcon,
@@ -31,8 +33,6 @@ import {
   Healing as RecoverIcon,
   ContentCopy as CopyIcon,
   Edit as EditIcon,
-  ExpandMore as ExpandIcon,
-  ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 
@@ -107,9 +107,8 @@ function backfillStatus(
 
 function entityStreamChip(e: {
   backlogCount: number;
-  lastMaterializedSeq: number;
   lastMaterializedAt: string | null;
-}): { label: string; color: "success" | "info" | "default" | "warning" } {
+}): { label: string; color: "success" | "info" | "default" } {
   if (e.backlogCount > 0) return { label: "Syncing", color: "info" };
   if (e.lastMaterializedAt) return { label: "Live", color: "success" };
   return { label: "Pending", color: "default" };
@@ -127,7 +126,7 @@ function entityBackfillChip(e: {
   return { label: "Done", color: "success" };
 }
 
-// ---------------------------------------------------------------------------
+type LogEntry = { timestamp: string; level: string; message: string };
 
 export function BackfillPanel({
   workspaceId,
@@ -138,6 +137,8 @@ export function BackfillPanel({
     flows: flowsMap,
     startCdcBackfill,
     fetchCdcStatus,
+    fetchFlowStatus,
+    fetchExecutionDetails,
     pauseCdcFlow,
     resumeCdcFlow,
     resyncCdcFlow,
@@ -147,7 +148,9 @@ export function BackfillPanel({
   const [cdc, setCdc] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showTransitions, setShowTransitions] = useState(false);
+  const [tab, setTab] = useState(0);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [executionId, setExecutionId] = useState<string | null>(null);
   const [resyncOpen, setResyncOpen] = useState(false);
   const [resyncConfirm, setResyncConfirm] = useState("");
   const [resyncOpts, setResyncOpts] = useState({
@@ -157,28 +160,69 @@ export function BackfillPanel({
   const [webhookCopied, setWebhookCopied] = useState(false);
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const logsEndRef = useRef<HTMLDivElement | null>(null);
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
   const state: CdcState = cdc?.syncState || "idle";
 
-  const poll = useCallback(async () => {
+  const pollCdc = useCallback(async () => {
     const status = await fetchCdcStatus(workspaceId, flowId);
     if (status) setCdc(status);
   }, [fetchCdcStatus, workspaceId, flowId]);
 
+  const pollLogs = useCallback(async () => {
+    if (!executionId) {
+      const statusResp = await fetchFlowStatus(workspaceId, flowId);
+      if (statusResp?.isRunning && statusResp.runningExecution) {
+        setExecutionId(statusResp.runningExecution.executionId);
+      }
+      return;
+    }
+    const details = await fetchExecutionDetails(
+      workspaceId,
+      flowId,
+      executionId,
+    );
+    if (details?.logs && details.logs.length > 0) {
+      setLogs(details.logs as LogEntry[]);
+    }
+    if (details?.status && details.status !== "running") {
+      setExecutionId(null);
+    }
+  }, [
+    executionId,
+    workspaceId,
+    flowId,
+    fetchFlowStatus,
+    fetchExecutionDetails,
+  ]);
+
   useEffect(() => {
-    poll();
-    cdcPollRef.current = setInterval(poll, 5000);
+    pollCdc();
+    cdcPollRef.current = setInterval(pollCdc, 5000);
     return () => {
       if (cdcPollRef.current) clearInterval(cdcPollRef.current);
     };
-  }, [poll]);
+  }, [pollCdc]);
+
+  useEffect(() => {
+    pollLogs();
+    logPollRef.current = setInterval(pollLogs, 3000);
+    return () => {
+      if (logPollRef.current) clearInterval(logPollRef.current);
+    };
+  }, [pollLogs]);
+
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
 
   const withBusy = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
     try {
       await fn();
-      await poll();
+      await pollCdc();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -190,6 +234,8 @@ export function BackfillPanel({
     withBusy(async () => {
       const ok = await startCdcBackfill(workspaceId, flowId);
       if (!ok) throw new Error("Failed to start backfill");
+      setLogs([]);
+      setTimeout(() => pollLogs(), 3000);
     });
 
   const handleStop = () =>
@@ -228,7 +274,8 @@ export function BackfillPanel({
     setResyncOpen(false);
     setResyncConfirm("");
     setResyncOpts({ deleteDestination: false, clearWebhookEvents: false });
-    await poll();
+    setLogs([]);
+    await pollCdc();
   };
 
   const webhookUrl = flow?.webhookConfig?.endpoint;
@@ -276,14 +323,14 @@ export function BackfillPanel({
     ]),
   );
   const entities = allEntityNames.map(name => {
-    const cdcState = cdcByEntity.get(name);
+    const s = cdcByEntity.get(name);
     return {
       entity: name,
-      backlogCount: cdcState?.backlogCount || 0,
-      lastIngestSeq: cdcState?.lastIngestSeq || 0,
-      lastMaterializedSeq: cdcState?.lastMaterializedSeq || 0,
-      lagSeconds: cdcState?.lagSeconds ?? null,
-      lastMaterializedAt: cdcState?.lastMaterializedAt || null,
+      backlogCount: s?.backlogCount || 0,
+      lastIngestSeq: s?.lastIngestSeq || 0,
+      lastMaterializedSeq: s?.lastMaterializedSeq || 0,
+      lagSeconds: s?.lagSeconds ?? null,
+      lastMaterializedAt: s?.lastMaterializedAt || null,
     };
   });
 
@@ -316,10 +363,10 @@ export function BackfillPanel({
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        overflow: "auto",
+        overflow: "hidden",
       }}
     >
-      {/* Top bar — edit + reset only, actions live in KPI cards */}
+      {/* Top bar */}
       <Box
         sx={{
           display: "flex",
@@ -330,9 +377,9 @@ export function BackfillPanel({
           borderColor: "divider",
           gap: 0.5,
           minHeight: 36,
+          flexShrink: 0,
         }}
       >
-        {/* Flow info chips */}
         {connectorName && (
           <Typography variant="caption" color="text.secondary">
             {connectorName}
@@ -378,171 +425,216 @@ export function BackfillPanel({
         )}
       </Box>
 
-      <Box sx={{ px: 2, py: 2, display: "grid", gap: 2 }}>
+      {/* KPI cards + error — fixed, not scrollable */}
+      <Box sx={{ px: 2, pt: 2, pb: 1, flexShrink: 0 }}>
         {error && (
-          <Alert severity="error" onClose={() => setError(null)}>
+          <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 1 }}>
             {error}
           </Alert>
         )}
-        {busy && <LinearProgress />}
+        {busy && <LinearProgress sx={{ mb: 1 }} />}
 
         {cdc ? (
-          <>
-            {/* KPI cards */}
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 1.5,
-              }}
-            >
-              {/* Stream Status */}
-              <Box sx={kpi}>
-                <Typography sx={kpiLabel}>Stream</Typography>
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    mb: 0.75,
-                  }}
-                >
-                  <Chip
-                    label={ss.label}
-                    color={ss.color}
-                    size="small"
-                    sx={{ fontWeight: 600, fontSize: "0.75rem" }}
-                  />
-                  {cdc.lagSeconds !== null && cdc.lagSeconds > 0 && (
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ fontSize: "0.72rem" }}
-                    >
-                      {formatLag(cdc.lagSeconds)} lag
-                    </Typography>
-                  )}
-                </Box>
-                <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                  {(state === "catchup" || state === "live") && (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<PauseIcon sx={{ fontSize: 14 }} />}
-                      onClick={handlePauseResume}
-                      disabled={busy}
-                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                    >
-                      Pause
-                    </Button>
-                  )}
-                  {state === "paused" && (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                      onClick={handlePauseResume}
-                      disabled={busy}
-                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                    >
-                      Resume
-                    </Button>
-                  )}
-                  {state === "degraded" && (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="error"
-                      startIcon={<RecoverIcon sx={{ fontSize: 14 }} />}
-                      onClick={handleRecover}
-                      disabled={busy}
-                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                    >
-                      Recover
-                    </Button>
-                  )}
-                </Box>
-              </Box>
-
-              {/* Backfill Status */}
-              <Box sx={kpi}>
-                <Typography sx={kpiLabel}>Backfill</Typography>
-                <Box sx={{ mb: 0.75 }}>
-                  <Chip
-                    label={bs.label}
-                    color={bs.color}
-                    size="small"
-                    sx={{ fontWeight: 600, fontSize: "0.75rem" }}
-                  />
-                </Box>
-                <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                  {state !== "backfill" && (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<BackfillIcon sx={{ fontSize: 14 }} />}
-                      onClick={handleStartBackfill}
-                      disabled={busy}
-                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                    >
-                      Start
-                    </Button>
-                  )}
-                  {state === "backfill" && (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="error"
-                      startIcon={<CancelIcon sx={{ fontSize: 14 }} />}
-                      onClick={handleStop}
-                      disabled={busy}
-                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                    >
-                      Stop
-                    </Button>
-                  )}
-                  {cdc.backlogCount > 0 && state !== "backfill" && (
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ alignSelf: "center", fontSize: "0.72rem" }}
-                    >
-                      {cdc.backlogCount.toLocaleString()} pending
-                    </Typography>
-                  )}
-                </Box>
-              </Box>
-
-              {/* Events Processed */}
-              <Box sx={kpi}>
-                <Typography sx={kpiLabel}>Events processed</Typography>
-                <Typography sx={kpiValue}>
-                  {totalProcessed.toLocaleString()}
-                </Typography>
-                {cdc.lastMaterializedAt && (
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, 1fr)",
+              gap: 1.5,
+            }}
+          >
+            {/* Stream */}
+            <Box sx={kpi}>
+              <Typography sx={kpiLabel}>Stream</Typography>
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.75 }}
+              >
+                <Chip
+                  label={ss.label}
+                  color={ss.color}
+                  size="small"
+                  sx={{ fontWeight: 600, fontSize: "0.75rem" }}
+                />
+                {cdc.lagSeconds !== null && cdc.lagSeconds > 0 && (
                   <Typography
                     variant="caption"
                     color="text.secondary"
-                    sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
+                    sx={{ fontSize: "0.72rem" }}
                   >
-                    Last {new Date(cdc.lastMaterializedAt).toLocaleString()}
+                    {formatLag(cdc.lagSeconds)} lag
+                  </Typography>
+                )}
+              </Box>
+              <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                {(state === "catchup" || state === "live") && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<PauseIcon sx={{ fontSize: 14 }} />}
+                    onClick={handlePauseResume}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Pause
+                  </Button>
+                )}
+                {state === "paused" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                    onClick={handlePauseResume}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Resume
+                  </Button>
+                )}
+                {state === "degraded" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    startIcon={<RecoverIcon sx={{ fontSize: 14 }} />}
+                    onClick={handleRecover}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Recover
+                  </Button>
+                )}
+              </Box>
+            </Box>
+
+            {/* Backfill */}
+            <Box sx={kpi}>
+              <Typography sx={kpiLabel}>Backfill</Typography>
+              <Box sx={{ mb: 0.75 }}>
+                <Chip
+                  label={bs.label}
+                  color={bs.color}
+                  size="small"
+                  sx={{ fontWeight: 600, fontSize: "0.75rem" }}
+                />
+              </Box>
+              <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                {state !== "backfill" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<BackfillIcon sx={{ fontSize: 14 }} />}
+                    onClick={handleStartBackfill}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Start
+                  </Button>
+                )}
+                {state === "backfill" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    startIcon={<CancelIcon sx={{ fontSize: 14 }} />}
+                    onClick={handleStop}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Stop
+                  </Button>
+                )}
+                {cdc.backlogCount > 0 && state !== "backfill" && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ alignSelf: "center", fontSize: "0.72rem" }}
+                  >
+                    {cdc.backlogCount.toLocaleString()} pending
                   </Typography>
                 )}
               </Box>
             </Box>
 
-            {/* Entity table */}
-            {entities.length === 0 && (
+            {/* Events processed */}
+            <Box sx={kpi}>
+              <Typography sx={kpiLabel}>Events processed</Typography>
+              <Typography sx={kpiValue}>
+                {totalProcessed.toLocaleString()}
+              </Typography>
+              {cdc.lastMaterializedAt && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
+                >
+                  Last {new Date(cdc.lastMaterializedAt).toLocaleString()}
+                </Typography>
+              )}
+            </Box>
+          </Box>
+        ) : (
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              py: 3,
+              justifyContent: "center",
+            }}
+          >
+            <LinearProgress sx={{ width: 24 }} />
+            <Typography variant="body2" color="text.secondary">
+              Loading…
+            </Typography>
+          </Box>
+        )}
+      </Box>
+
+      {/* Tabs — Objects / Logs */}
+      <Tabs
+        value={tab}
+        onChange={(_, v) => setTab(v)}
+        sx={{
+          borderBottom: 1,
+          borderColor: "divider",
+          minHeight: 36,
+          flexShrink: 0,
+          px: 2,
+        }}
+      >
+        <Tab
+          label="Objects"
+          sx={{
+            minHeight: 36,
+            py: 0.5,
+            textTransform: "none",
+            fontSize: "0.82rem",
+          }}
+        />
+        <Tab
+          label={executionId ? "Logs •" : "Logs"}
+          sx={{
+            minHeight: 36,
+            py: 0.5,
+            textTransform: "none",
+            fontSize: "0.82rem",
+          }}
+        />
+      </Tabs>
+
+      {/* Tab content — scrollable */}
+      <Box sx={{ flex: 1, overflow: "auto" }}>
+        {tab === 0 && (
+          <Box sx={{ p: 2 }}>
+            {entities.length === 0 ? (
               <Typography
                 variant="body2"
                 color="text.secondary"
                 textAlign="center"
                 py={2}
               >
-                No entities synced yet — start a backfill to begin.
+                No entities configured yet.
               </Typography>
-            )}
-            {entities.length > 0 && (
+            ) : (
               <TableContainer
                 sx={{ borderRadius: 1, border: 1, borderColor: "divider" }}
               >
@@ -566,7 +658,7 @@ export function BackfillPanel({
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {entities.map((e: any) => {
+                    {entities.map(e => {
                       const sc = entityStreamChip(e);
                       const bc = entityBackfillChip(e);
                       return (
@@ -624,82 +716,129 @@ export function BackfillPanel({
                 </Table>
               </TableContainer>
             )}
+          </Box>
+        )}
+
+        {tab === 1 && (
+          <Box sx={{ p: 2, display: "grid", gap: 2 }}>
+            {/* Live execution logs */}
+            <Box
+              sx={{
+                borderRadius: 1,
+                border: 1,
+                borderColor: "divider",
+                bgcolor: "grey.950",
+                p: 1.5,
+                maxHeight: 300,
+                overflow: "auto",
+                minHeight: 80,
+              }}
+            >
+              {logs.length === 0 ? (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ fontFamily: "monospace" }}
+                >
+                  {executionId
+                    ? "Waiting for logs…"
+                    : "No active execution. Start a backfill to see logs."}
+                </Typography>
+              ) : (
+                logs.map((log, i) => (
+                  <Typography
+                    key={`${log.timestamp}-${i}`}
+                    variant="caption"
+                    sx={{
+                      display: "block",
+                      fontFamily: "monospace",
+                      fontSize: "0.72rem",
+                      whiteSpace: "pre-wrap",
+                      color:
+                        log.level === "error"
+                          ? "error.main"
+                          : log.level === "warn"
+                            ? "warning.main"
+                            : "text.secondary",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <Typography
+                      component="span"
+                      sx={{
+                        fontFamily: "monospace",
+                        fontSize: "0.68rem",
+                        color: "text.disabled",
+                      }}
+                    >
+                      {new Date(log.timestamp).toLocaleTimeString()}
+                    </Typography>{" "}
+                    {log.message}
+                  </Typography>
+                ))
+              )}
+              <div ref={logsEndRef} />
+            </Box>
 
             {/* Transition history */}
             {transitions.length > 0 && (
               <Box>
-                <Button
-                  size="small"
-                  onClick={() => setShowTransitions(v => !v)}
-                  endIcon={showTransitions ? <CollapseIcon /> : <ExpandIcon />}
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
                   sx={{
-                    textTransform: "none",
-                    fontSize: "0.75rem",
-                    color: "text.secondary",
+                    fontWeight: 600,
+                    fontSize: "0.72rem",
+                    textTransform: "uppercase",
+                    letterSpacing: 0.3,
+                    mb: 0.5,
+                    display: "block",
                   }}
                 >
-                  {transitions.length} state transitions
-                </Button>
-                {showTransitions && (
-                  <Box
-                    sx={{
-                      mt: 0.5,
-                      maxHeight: 180,
-                      overflow: "auto",
-                      borderRadius: 1,
-                      bgcolor: "action.hover",
-                      p: 1,
-                      display: "grid",
-                      gap: 0.25,
-                    }}
-                  >
-                    {transitions.map((t: any, i: number) => (
+                  State transitions
+                </Typography>
+                <Box
+                  sx={{
+                    borderRadius: 1,
+                    bgcolor: "action.hover",
+                    p: 1,
+                    maxHeight: 160,
+                    overflow: "auto",
+                    display: "grid",
+                    gap: 0.25,
+                  }}
+                >
+                  {transitions.map((t: any, i: number) => (
+                    <Typography
+                      key={`${t.at}-${i}`}
+                      variant="caption"
+                      sx={{ fontFamily: "monospace", fontSize: "0.72rem" }}
+                    >
                       <Typography
-                        key={`${t.at}-${i}`}
+                        component="span"
                         variant="caption"
+                        color="text.secondary"
                         sx={{ fontFamily: "monospace", fontSize: "0.72rem" }}
                       >
-                        <Typography
-                          component="span"
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ fontFamily: "monospace", fontSize: "0.72rem" }}
-                        >
-                          {new Date(t.at).toLocaleString()}
-                        </Typography>
-                        {"  "}
-                        {t.fromState} → <strong>{t.toState}</strong>
-                        {"  "}
-                        <Typography
-                          component="span"
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ fontFamily: "monospace", fontSize: "0.68rem" }}
-                        >
-                          ({t.event}
-                          {t.reason ? `: ${t.reason}` : ""})
-                        </Typography>
+                        {new Date(t.at).toLocaleString()}
                       </Typography>
-                    ))}
-                  </Box>
-                )}
+                      {"  "}
+                      {t.fromState} → <strong>{t.toState}</strong>
+                      {"  "}
+                      <Typography
+                        component="span"
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ fontFamily: "monospace", fontSize: "0.68rem" }}
+                      >
+                        ({t.event}
+                        {t.reason ? `: ${t.reason}` : ""})
+                      </Typography>
+                    </Typography>
+                  ))}
+                </Box>
               </Box>
             )}
-          </>
-        ) : (
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-              py: 4,
-              justifyContent: "center",
-            }}
-          >
-            <LinearProgress sx={{ width: 24 }} />
-            <Typography variant="body2" color="text.secondary">
-              Loading…
-            </Typography>
           </Box>
         )}
       </Box>
