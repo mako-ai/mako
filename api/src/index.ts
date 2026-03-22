@@ -41,6 +41,8 @@ import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
+import { startDashboardRefreshPoller } from "./services/dashboard-refresh-runner.service";
+import { getCdcEventStoreConfig } from "./sync-cdc/stores";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -229,9 +231,11 @@ async function main(): Promise<void> {
   logInngestStatus();
 
   // Log server startup info
+  const cdcEventStore = getCdcEventStoreConfig();
   logger.info("Server starting", {
     port,
     environment: process.env.NODE_ENV || "development",
+    cdcEventStore,
     endpoints: {
       api: "/api/*",
       inngest: "/api/inngest",

@@ -12,8 +12,8 @@ import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { Types } from "mongoose";
 import {
   resolveDestinationTypeForFlow,
-  sweepStaleBigQueryCdcPending,
-} from "../../services/bigquery-cdc.service";
+  sweepStaleCdcPending,
+} from "../../sync-cdc/runtime.service";
 import { cdcMaterializerService } from "../../sync-cdc/materializer.service";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
 import {
@@ -884,7 +884,7 @@ export const bigQueryCdcStaleSweepFunction = inngest.createFunction(
     );
 
     const result = await step.run("sweep-stale-bigquery-cdc", async () => {
-      return sweepStaleBigQueryCdcPending({
+      return sweepStaleCdcPending({
         staleSeconds,
         maxEntities,
       });

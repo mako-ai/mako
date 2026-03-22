@@ -2,8 +2,8 @@ import {
   BaseConnector,
   NormalizedCdcRecord,
 } from "../../connectors/base/BaseConnector";
-import { normalizeCdcEvent, NormalizedCdcEvent } from "../contracts/cdc-event";
-import { CdcSourceAdapter } from "../contracts/source-adapter";
+import { normalizeCdcEvent, NormalizedCdcEvent } from "../contracts/events";
+import { CdcSourceAdapter } from "../contracts/adapters";
 
 function toCanonicalEvent(
   record: NormalizedCdcRecord,

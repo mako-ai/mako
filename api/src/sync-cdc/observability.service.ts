@@ -1,13 +1,13 @@
 import { Types } from "mongoose";
 import {
-  CdcChangeEvent,
   CdcEntityState,
   CdcStateTransition,
   Flow,
   SyncState,
 } from "../database/workspace-schema";
-import { CdcSyncDiagnostics, CdcSyncSummary } from "./contracts/sync-summary";
+import { CdcSyncDiagnostics, CdcSyncSummary } from "./contracts/observability";
 import { resolveConfiguredEntities } from "./entity-selection";
+import { getCdcEventStore } from "./stores";
 
 function toLagSeconds(value: Date | null): number | null {
   if (!value) return null;
@@ -31,6 +31,7 @@ export class CdcObservabilityService {
     }
 
     const syncState = (flow.syncState || "idle") as SyncState;
+    const eventStore = getCdcEventStore();
     const [lastTransition, lastIngestedWebhook, states] = await Promise.all([
       CdcStateTransition.findOne({
         workspaceId: workspaceObjectId,
@@ -38,14 +39,11 @@ export class CdcObservabilityService {
       })
         .sort({ at: -1 })
         .lean(),
-      CdcChangeEvent.findOne({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
-        sourceKind: "webhook",
-      })
-        .sort({ ingestTs: -1 })
-        .select({ ingestTs: 1 })
-        .lean(),
+      eventStore.findLatestEvent({
+        workspaceId,
+        flowId,
+        source: "webhook",
+      }),
       CdcEntityState.find({
         workspaceId: workspaceObjectId,
         flowId: flowObjectId,
@@ -69,111 +67,59 @@ export class CdcObservabilityService {
       perEntityFailed,
       perEntityDropped,
     ] = await Promise.all([
-      CdcChangeEvent.countDocuments({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
+      eventStore.countEvents({
+        workspaceId,
+        flowId,
         materializationStatus: "applied",
       }),
-      CdcChangeEvent.countDocuments({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
+      eventStore.countEvents({
+        workspaceId,
+        flowId,
         materializationStatus: "pending",
       }),
-      CdcChangeEvent.countDocuments({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
+      eventStore.countEvents({
+        workspaceId,
+        flowId,
         materializationStatus: "failed",
       }),
-      CdcChangeEvent.countDocuments({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
+      eventStore.countEvents({
+        workspaceId,
+        flowId,
         materializationStatus: "dropped",
       }),
-      CdcChangeEvent.aggregate([
-        {
-          $match: {
-            workspaceId: workspaceObjectId,
-            flowId: flowObjectId,
-            materializationStatus: "applied",
-          },
-        },
-        {
-          $group: {
-            _id: "$entity",
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-      CdcChangeEvent.aggregate([
-        {
-          $match: {
-            workspaceId: workspaceObjectId,
-            flowId: flowObjectId,
-            materializationStatus: "pending",
-          },
-        },
-        {
-          $group: {
-            _id: "$entity",
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-      CdcChangeEvent.aggregate([
-        {
-          $match: {
-            workspaceId: workspaceObjectId,
-            flowId: flowObjectId,
-            materializationStatus: "failed",
-          },
-        },
-        {
-          $group: {
-            _id: "$entity",
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-      CdcChangeEvent.aggregate([
-        {
-          $match: {
-            workspaceId: workspaceObjectId,
-            flowId: flowObjectId,
-            materializationStatus: "dropped",
-          },
-        },
-        {
-          $group: {
-            _id: "$entity",
-            count: { $sum: 1 },
-          },
-        },
-      ]),
+      eventStore.countEventsByEntity({
+        workspaceId,
+        flowId,
+        materializationStatus: "applied",
+      }),
+      eventStore.countEventsByEntity({
+        workspaceId,
+        flowId,
+        materializationStatus: "pending",
+      }),
+      eventStore.countEventsByEntity({
+        workspaceId,
+        flowId,
+        materializationStatus: "failed",
+      }),
+      eventStore.countEventsByEntity({
+        workspaceId,
+        flowId,
+        materializationStatus: "dropped",
+      }),
     ]);
 
     const appliedByEntity = new Map<string, number>(
-      perEntityApplied.map(entry => [
-        entry._id as string,
-        entry.count as number,
-      ]),
+      perEntityApplied.map(entry => [entry.entity, entry.count]),
     );
     const backlogByEntity = new Map<string, number>(
-      perEntityBacklog.map(entry => [
-        entry._id as string,
-        entry.count as number,
-      ]),
+      perEntityBacklog.map(entry => [entry.entity, entry.count]),
     );
     const failedByEntity = new Map<string, number>(
-      perEntityFailed.map(entry => [
-        entry._id as string,
-        entry.count as number,
-      ]),
+      perEntityFailed.map(entry => [entry.entity, entry.count]),
     );
     const droppedByEntity = new Map<string, number>(
-      perEntityDropped.map(entry => [
-        entry._id as string,
-        entry.count as number,
-      ]),
+      perEntityDropped.map(entry => [entry.entity, entry.count]),
     );
     const stateByEntity = new Map(states.map(state => [state.entity, state]));
 
@@ -242,6 +188,7 @@ export class CdcObservabilityService {
       throw new Error("Flow not found");
     }
 
+    const eventStore = getCdcEventStore();
     const [transitions, cursors, recentEvents] = await Promise.all([
       CdcStateTransition.find({
         workspaceId: workspaceObjectId,
@@ -256,13 +203,11 @@ export class CdcObservabilityService {
       })
         .sort({ entity: 1 })
         .lean(),
-      CdcChangeEvent.find({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
-      })
-        .sort({ ingestSeq: -1 })
-        .limit(500)
-        .lean(),
+      eventStore.listRecentEvents({
+        workspaceId,
+        flowId,
+        limit: 500,
+      }),
     ]);
 
     return {
@@ -291,10 +236,10 @@ export class CdcObservabilityService {
       recentEvents: recentEvents.map(event => ({
         entity: event.entity,
         recordId: event.recordId,
-        operation: event.op,
+        operation: event.operation,
         sourceTs: event.sourceTs,
         ingestSeq: event.ingestSeq,
-        source: event.sourceKind,
+        source: event.source,
         materializationStatus: event.materializationStatus,
       })),
     };

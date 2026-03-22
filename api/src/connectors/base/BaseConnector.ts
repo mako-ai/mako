@@ -1,6 +1,5 @@
 import { IConnector } from "../../database/workspace-schema";
-import type { NormalizedCdcEvent } from "../../sync-cdc/contracts/cdc-event";
-import type { CdcSourceAdapter } from "../../sync-cdc/contracts/source-adapter";
+import type { NormalizedCdcEvent } from "../../sync-cdc/contracts/events";
 
 export interface SyncLogger {
   log(
@@ -100,14 +99,6 @@ export abstract class BaseConnector {
 
   constructor(dataSource: IConnector) {
     this.dataSource = dataSource;
-  }
-
-  /**
-   * Optional CDC adapter override for connectors that need custom behavior.
-   * Returning undefined keeps backward-compatible BaseConnector defaults.
-   */
-  getCdcSourceAdapter(): CdcSourceAdapter | undefined {
-    return undefined;
   }
 
   /**

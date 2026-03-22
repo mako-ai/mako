@@ -5,7 +5,6 @@ import {
   Connector as DataSource,
   DatabaseConnection,
   WebhookEvent,
-  CdcChangeEvent,
 } from "../../database/workspace-schema";
 import {
   performSync,
@@ -26,14 +25,15 @@ import * as os from "os";
 import { CronExpressionParser } from "cron-parser";
 import { getExecutionLogger, getSyncLogger } from "../logging";
 import { loggers } from "../../logging";
-import {
-  forceDrainBigQueryCdcFlow,
-  markBackfillCompletedForFlow,
-} from "../../services/bigquery-cdc.service";
 import { cdcBackfillCheckpointService } from "../../sync-cdc/backfill-checkpoint.service";
 import { syncMachineService } from "../../sync-cdc/state/sync-machine.service";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
 import { isCdcEnabledForFlow } from "../../sync-cdc/runtime";
+import { getCdcEventStore } from "../../sync-cdc/stores";
+import {
+  forceDrainCdcFlow,
+  markCdcBackfillCompletedForFlow,
+} from "../../sync-cdc/runtime.service";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -1923,13 +1923,13 @@ export const flowFunction = inngest.createFunction(
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
         await step.run("mark-bigquery-cdc-backfill-complete", async () => {
-          await markBackfillCompletedForFlow({
+          await markCdcBackfillCompletedForFlow({
             flowId: String(flowId),
             workspaceId: String(flow.workspaceId),
           });
         });
         await step.run("drain-bigquery-cdc-pending-events", async () => {
-          await forceDrainBigQueryCdcFlow({
+          await forceDrainCdcFlow({
             workspaceId: String(flow.workspaceId),
             flowId: String(flowId),
           });
@@ -1948,8 +1948,8 @@ export const flowFunction = inngest.createFunction(
           });
         });
         await step.run("cdc-transition-lag-evaluation", async () => {
-          const pending = await CdcChangeEvent.countDocuments({
-            flowId: new Types.ObjectId(String(flow._id)),
+          const pending = await getCdcEventStore().countEvents({
+            flowId: String(flow._id),
             materializationStatus: "pending",
           });
           if (pending === 0) {
@@ -2287,7 +2287,7 @@ export const flowFunction = inngest.createFunction(
             });
           });
           await step.run("drain-bigquery-cdc-on-failure", async () => {
-            await forceDrainBigQueryCdcFlow({
+            await forceDrainCdcFlow({
               workspaceId: String(safeFlowRef.workspaceId),
               flowId: String(flowId),
             });

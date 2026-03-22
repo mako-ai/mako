@@ -1,21 +1,8 @@
 import { BaseConnector } from "../connectors/base/BaseConnector";
-import { NormalizedCdcEvent } from "./contracts/cdc-event";
+import { NormalizedCdcEvent } from "./contracts/events";
 import { cdcIngestService } from "./ingest.service";
-import { cdcMaterializerService } from "./materializer.service";
 
 export class CdcEngineOrchestratorService {
-  async ingestWebhook(params: {
-    workspaceId: string;
-    flowId: string;
-    connector: BaseConnector;
-    connectorType?: string;
-    event: unknown;
-    eventType?: string;
-    runId?: string;
-  }) {
-    return cdcIngestService.appendWebhookPayload(params);
-  }
-
   async ingestBackfill(params: {
     workspaceId: string;
     flowId: string;
@@ -36,15 +23,6 @@ export class CdcEngineOrchestratorService {
     enqueue?: boolean;
   }) {
     return cdcIngestService.appendNormalizedEvents(params);
-  }
-
-  async materializeEntity(params: {
-    workspaceId: string;
-    flowId: string;
-    entity: string;
-    maxEvents?: number;
-  }) {
-    return cdcMaterializerService.materializeEntity(params);
   }
 }
 

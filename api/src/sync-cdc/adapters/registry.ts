@@ -1,7 +1,7 @@
 import type {
   CdcDestinationAdapter,
   CdcEntityLayout,
-} from "../contracts/destination-adapter";
+} from "../contracts/adapters";
 import { BigQueryDestinationAdapter } from "./bigquery.adapter";
 import { PostgreSqlDestinationAdapter } from "./postgresql.adapter";
 
@@ -27,12 +27,8 @@ export function registerCdcDestinationAdapter(
   destinationAdapterFactories.set(destinationType.toLowerCase(), factory);
 }
 
-registerCdcDestinationAdapter("bigquery", params => {
-  return new BigQueryDestinationAdapter({
-    destinationDatabaseId: params.destinationDatabaseId,
-    destinationDatabaseName: params.destinationDatabaseName,
-    tableDestination: params.tableDestination,
-  });
+registerCdcDestinationAdapter("bigquery", _params => {
+  return new BigQueryDestinationAdapter();
 });
 
 registerCdcDestinationAdapter("postgresql", params => {

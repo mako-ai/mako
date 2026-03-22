@@ -2,7 +2,6 @@ import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
 import {
-  CdcChangeEvent,
   CdcBackfillCheckpoint,
   CdcEntityState,
   CdcStateTransition,
@@ -14,11 +13,12 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { databaseRegistry } from "../databases/registry";
-import { retryFailedMaterializationForFlow } from "../services/bigquery-cdc.service";
 import { syncMachineService } from "./state/sync-machine.service";
 import { resolveConfiguredEntities } from "./entity-selection";
 import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 import { cdcLiveTableName, cdcStageTableName } from "./table-names";
+import { getCdcEventStore } from "./stores";
+import { retryFailedCdcMaterializationForFlow } from "./runtime.service";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -166,9 +166,9 @@ export class CdcBackfillService {
       throw new Error("Cannot resync while a CDC execution is active");
     }
 
-    await CdcChangeEvent.deleteMany({
-      workspaceId: workspaceObjectId,
-      flowId: flowObjectId,
+    await getCdcEventStore().deleteFlowEvents({
+      workspaceId,
+      flowId,
     });
     await CdcEntityState.deleteMany({
       workspaceId: workspaceObjectId,
@@ -227,7 +227,7 @@ export class CdcBackfillService {
       throw new Error("Retry failed materialization requires syncEngine=cdc");
     }
 
-    return retryFailedMaterializationForFlow({
+    return retryFailedCdcMaterializationForFlow({
       workspaceId: params.workspaceId,
       flowId: params.flowId,
       entity: params.entity,
@@ -393,9 +393,9 @@ export class CdcBackfillService {
       });
     }
 
-    const pending = await CdcChangeEvent.countDocuments({
-      workspaceId: new Types.ObjectId(workspaceId),
-      flowId: new Types.ObjectId(flowId),
+    const pending = await getCdcEventStore().countEvents({
+      workspaceId,
+      flowId,
       materializationStatus: "pending",
     });
     if (pending === 0) {

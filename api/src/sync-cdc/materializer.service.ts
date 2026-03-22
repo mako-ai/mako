@@ -1,12 +1,9 @@
-import { Types } from "mongoose";
 import {
-  CdcChangeEvent,
   DatabaseConnection,
   Flow,
   IEntityLayout,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { recordMaterializationFailure } from "../services/bigquery-cdc.service";
 import { buildLeaseOwnerId, cdcLockService, CdcLease } from "./lock.service";
 import { syncMachineService } from "./state/sync-machine.service";
 import {
@@ -16,6 +13,8 @@ import {
 import { getCdcStateInvariant } from "./state/sync.machine";
 import { toCdcErrorInfo } from "./error-utils";
 import { cdcLiveTableName } from "./table-names";
+import { getCdcEventStore } from "./stores";
+import { recordCdcMaterializationFailure } from "./runtime.service";
 
 const log = loggers.sync("cdc.materializer");
 
@@ -124,9 +123,9 @@ export class CdcMaterializerService {
     workspaceId: string,
     flowId: string,
   ) {
-    const pending = await CdcChangeEvent.countDocuments({
-      workspaceId: new Types.ObjectId(workspaceId),
-      flowId: new Types.ObjectId(flowId),
+    const pending = await getCdcEventStore().countEvents({
+      workspaceId,
+      flowId,
       materializationStatus: "pending",
     });
 
@@ -182,7 +181,7 @@ export class CdcMaterializerService {
       fencingToken: lease.fencingToken,
     });
 
-    await recordMaterializationFailure({
+    await recordCdcMaterializationFailure({
       flowId: params.flowId,
       entity: params.entity,
       errorCode: errorInfo.code,

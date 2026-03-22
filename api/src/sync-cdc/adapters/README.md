@@ -4,13 +4,10 @@ Phase-1 ships a production BigQuery adapter and keeps other destinations as docu
 
 ## Adapter contract
 
-Every adapter implements `CdcDestinationAdapter` from `../contracts/destination-adapter.ts`:
+Every adapter implements `CdcDestinationAdapter` from `../contracts/adapters.ts`:
 
 - `ensureLiveTable(layout)`
-- `applyChanges(layout, batch, ordering, fencingToken)`
-- `upsertRecords(layout, records, fencingToken)`
-- `applyTombstones(layout, recordIds, fencingToken)`
-- optional `getLagAndBacklog(layout)`
+- `materializeEntity(run, fencingToken)`
 
 The materializer is the only live-writer and passes a fencing token from the `(flowId, entity)` lock lease.
 
@@ -18,12 +15,11 @@ The materializer is the only live-writer and passes a fencing token from the `(f
 
 ```ts
 import type {
-  CdcApplyChange,
-  CdcApplyOrderingKey,
-  CdcApplyResult,
   CdcDestinationAdapter,
   CdcEntityLayout,
-} from "../contracts/destination-adapter";
+  CdcMaterializationResult,
+  CdcMaterializationRun,
+} from "../contracts/adapters";
 
 export class PostgresDestinationAdapter implements CdcDestinationAdapter {
   async ensureLiveTable(layout: CdcEntityLayout): Promise<void> {
@@ -31,33 +27,13 @@ export class PostgresDestinationAdapter implements CdcDestinationAdapter {
     // CREATE INDEX ON key columns
   }
 
-  async applyChanges(
-    layout: CdcEntityLayout,
-    batch: CdcApplyChange[],
-    ordering: CdcApplyOrderingKey,
+  async materializeEntity(
+    run: CdcMaterializationRun,
     fencingToken: number,
-  ): Promise<CdcApplyResult> {
-    // 1) sort by (sourceTs, ingestSeq)
-    // 2) keep latest version per recordId
-    // 3) upsert + tombstones in a single transaction
-    // 4) persist fencing token in apply metadata for split-brain protection
-    return { appliedCount: batch.length, failedCount: 0 };
-  }
-
-  async upsertRecords(
-    layout: CdcEntityLayout,
-    records: Record<string, unknown>[],
-    fencingToken: number,
-  ): Promise<number> {
-    return records.length;
-  }
-
-  async applyTombstones(
-    layout: CdcEntityLayout,
-    recordIds: string[],
-    fencingToken: number,
-  ): Promise<number> {
-    return recordIds.length;
+  ): Promise<CdcMaterializationResult> {
+    // Use the destination's preferred strategy (MERGE/upsert/staging+swap)
+    // while respecting fencing tokens for single-writer guarantees.
+    return { staged: 0, applied: 0, lastMaterializedSeq: 0 };
   }
 }
 ```

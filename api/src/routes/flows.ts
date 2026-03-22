@@ -18,9 +18,9 @@ import {
   checkQuerySafety,
   dryRunDbSync,
 } from "../services/destination-writer.service";
-import { getBigQueryCdcFlowStats } from "../services/bigquery-cdc.service";
 import { cdcBackfillService } from "../sync-cdc/backfill.service";
 import { cdcObservabilityService } from "../sync-cdc/observability.service";
+import { getCdcFlowStats } from "../sync-cdc/runtime.service";
 
 const logger = loggers.inngest("flow");
 
@@ -1671,7 +1671,7 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
       })
         .select({ _id: 1 })
         .lean(),
-      getBigQueryCdcFlowStats({ flowId }),
+      getCdcFlowStats({ flowId }),
     ]);
     // Only use terminal events for success-rate math.
     // Pending/processing events should not be counted as successful.
