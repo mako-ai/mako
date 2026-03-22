@@ -5,13 +5,18 @@ const log = loggers.migration();
 
 const CHECKPOINT_COLLECTION = "cdc_backfill_checkpoints";
 const LOCK_COLLECTION = "cdc_entity_locks";
-const CDC_STATE_COLLECTION = "bigquery_cdc_state";
-const CHANGE_EVENTS_COLLECTION = "bigquery_change_events";
+const CDC_STATE_COLLECTION = "cdc_entity_state";
+const CHANGE_EVENTS_COLLECTION = "cdc_change_events";
 const APPLIED_TTL_INDEX = "cdc_applied_events_ttl_7d";
 const APPLIED_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+const OLD_CHANGE_EVENTS = "bigquery_change_events";
+const OLD_CDC_STATE = "bigquery_cdc_state";
+const OLD_CDC_COUNTERS = "bigquery_cdc_counters";
+const NEW_CDC_COUNTERS = "cdc_counters";
+
 export const description =
-  "Migrate CDC backfill checkpoints into cdc state, drop lock/checkpoint collections, and enforce 7-day applied event TTL";
+  "Rename CDC collections, migrate checkpoints into state, drop lock/checkpoint, and add TTL index";
 
 type CheckpointDoc = {
   workspaceId: ObjectId;
@@ -21,11 +26,43 @@ type CheckpointDoc = {
   updatedAt?: Date;
 };
 
+async function renameIfExists(
+  db: Db,
+  names: Set<string>,
+  oldName: string,
+  newName: string,
+): Promise<void> {
+  if (names.has(newName)) {
+    log.info("Target collection already exists, skipping rename", {
+      oldName,
+      newName,
+    });
+    return;
+  }
+  if (!names.has(oldName)) {
+    log.info("Source collection not found, skipping rename", {
+      oldName,
+      newName,
+    });
+    return;
+  }
+  await db.collection(oldName).rename(newName);
+  log.info("Renamed collection", { oldName, newName });
+}
+
 export async function up(db: Db): Promise<void> {
   const collections = await db.listCollections().toArray();
   const names = new Set(collections.map(c => c.name));
 
-  if (names.has(CHECKPOINT_COLLECTION)) {
+  await renameIfExists(db, names, OLD_CHANGE_EVENTS, CHANGE_EVENTS_COLLECTION);
+  await renameIfExists(db, names, OLD_CDC_STATE, CDC_STATE_COLLECTION);
+  await renameIfExists(db, names, OLD_CDC_COUNTERS, NEW_CDC_COUNTERS);
+
+  const refreshed = new Set(
+    (await db.listCollections().toArray()).map(c => c.name),
+  );
+
+  if (refreshed.has(CHECKPOINT_COLLECTION)) {
     const checkpointCol = db.collection<CheckpointDoc>(CHECKPOINT_COLLECTION);
     const stateCol = db.collection(CDC_STATE_COLLECTION);
 
@@ -71,7 +108,7 @@ export async function up(db: Db): Promise<void> {
     });
   }
 
-  if (names.has(LOCK_COLLECTION)) {
+  if (refreshed.has(LOCK_COLLECTION)) {
     await db.collection(LOCK_COLLECTION).drop();
     log.info("Dropped CDC lock collection", { collection: LOCK_COLLECTION });
   } else {
@@ -80,7 +117,7 @@ export async function up(db: Db): Promise<void> {
     });
   }
 
-  if (!names.has(CHANGE_EVENTS_COLLECTION)) {
+  if (!refreshed.has(CHANGE_EVENTS_COLLECTION)) {
     log.info("CDC change event collection not found, skipping TTL index", {
       collection: CHANGE_EVENTS_COLLECTION,
     });

@@ -703,7 +703,7 @@ export interface IWebhookEvent extends Document {
  * BigQuery CDC change event model interface
  * Canonical append-only change log for webhook + backfill writes.
  */
-export interface IBigQueryChangeEvent extends Document {
+export interface ICdcChangeEvent extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   flowId: Types.ObjectId;
@@ -737,7 +737,7 @@ export interface IBigQueryChangeEvent extends Document {
 /**
  * Per-flow/entity CDC state for observability and adaptive cadence
  */
-export interface IBigQueryCdcState extends Document {
+export interface ICdcEntityState extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   flowId: Types.ObjectId;
@@ -755,8 +755,8 @@ export interface IBigQueryCdcState extends Document {
   backfillCursor?: Record<string, unknown>;
 }
 
-export type ICdcChangeEvent = IBigQueryChangeEvent;
-export type ICdcEntityState = IBigQueryCdcState;
+export type IBigQueryChangeEvent = ICdcChangeEvent;
+export type IBigQueryCdcState = ICdcEntityState;
 
 export interface ICdcStateTransition extends Document {
   _id: Types.ObjectId;
@@ -1859,9 +1859,9 @@ WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 
 /**
- * BigQueryChangeEvent Schema
+ * CdcChangeEvent Schema
  */
-const BigQueryChangeEventSchema = new Schema<IBigQueryChangeEvent>(
+const CdcChangeEventSchema = new Schema<ICdcChangeEvent>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -1910,36 +1910,36 @@ const BigQueryChangeEventSchema = new Schema<IBigQueryChangeEvent>(
     },
   },
   {
-    collection: "bigquery_change_events",
+    collection: "cdc_change_events",
     timestamps: false,
   },
 );
 
-BigQueryChangeEventSchema.index({ idempotencyKey: 1 }, { unique: true });
-BigQueryChangeEventSchema.index({ flowId: 1, entity: 1, ingestSeq: 1 });
-BigQueryChangeEventSchema.index(
+CdcChangeEventSchema.index({ idempotencyKey: 1 }, { unique: true });
+CdcChangeEventSchema.index({ flowId: 1, entity: 1, ingestSeq: 1 });
+CdcChangeEventSchema.index(
   { flowId: 1, entity: 1, recordId: 1, sourceTs: 1, ingestSeq: 1 },
   { unique: true },
 );
-BigQueryChangeEventSchema.index({
+CdcChangeEventSchema.index({
   flowId: 1,
   entity: 1,
   sourceTs: 1,
   ingestSeq: 1,
 });
-BigQueryChangeEventSchema.index({
+CdcChangeEventSchema.index({
   flowId: 1,
   entity: 1,
   materializationStatus: 1,
   ingestSeq: 1,
 });
-BigQueryChangeEventSchema.index({
+CdcChangeEventSchema.index({
   flowId: 1,
   entity: 1,
   stageStatus: 1,
   ingestSeq: 1,
 });
-BigQueryChangeEventSchema.index(
+CdcChangeEventSchema.index(
   { appliedAt: 1 },
   {
     expireAfterSeconds: 7 * 24 * 60 * 60,
@@ -1948,9 +1948,9 @@ BigQueryChangeEventSchema.index(
 );
 
 /**
- * BigQueryCdcState schema
+ * CdcEntityState schema
  */
-const BigQueryCdcStateSchema = new Schema<IBigQueryCdcState>(
+const CdcEntityStateSchema = new Schema<ICdcEntityState>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -1977,13 +1977,13 @@ const BigQueryCdcStateSchema = new Schema<IBigQueryCdcState>(
     backfillCursor: Schema.Types.Mixed,
   },
   {
-    collection: "bigquery_cdc_state",
+    collection: "cdc_entity_state",
     timestamps: false,
   },
 );
 
-BigQueryCdcStateSchema.index({ flowId: 1, entity: 1 }, { unique: true });
-BigQueryCdcStateSchema.index({ workspaceId: 1, flowId: 1 });
+CdcEntityStateSchema.index({ flowId: 1, entity: 1 }, { unique: true });
+CdcEntityStateSchema.index({ workspaceId: 1, flowId: 1 });
 
 const CdcStateTransitionSchema = new Schema<ICdcStateTransition>(
   {
@@ -2646,21 +2646,21 @@ export const WebhookEvent = mongoose.model<IWebhookEvent>(
   "WebhookEvent",
   WebhookEventSchema,
 );
-export const BigQueryChangeEvent = mongoose.model<IBigQueryChangeEvent>(
-  "BigQueryChangeEvent",
-  BigQueryChangeEventSchema,
+export const CdcChangeEvent = mongoose.model<ICdcChangeEvent>(
+  "CdcChangeEvent",
+  CdcChangeEventSchema,
 );
-export const BigQueryCdcState = mongoose.model<IBigQueryCdcState>(
-  "BigQueryCdcState",
-  BigQueryCdcStateSchema,
+export const CdcEntityState = mongoose.model<ICdcEntityState>(
+  "CdcEntityState",
+  CdcEntityStateSchema,
 );
 export const CdcStateTransition = mongoose.model<ICdcStateTransition>(
   "CdcStateTransition",
   CdcStateTransitionSchema,
 );
-// Generic CDC aliases (phase-1 storage remains backed by existing collections)
-export const CdcChangeEvent = BigQueryChangeEvent;
-export const CdcEntityState = BigQueryCdcState;
+// Legacy aliases for backward compatibility
+export const BigQueryChangeEvent = CdcChangeEvent;
+export const BigQueryCdcState = CdcEntityState;
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,

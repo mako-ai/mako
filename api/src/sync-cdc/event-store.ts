@@ -70,7 +70,7 @@ async function reserveIngestSeqRange(
   flowId: Types.ObjectId,
   count: number,
 ): Promise<number> {
-  const counters = Flow.db.collection("bigquery_cdc_counters");
+  const counters = Flow.db.collection("cdc_counters");
   const result = await counters.findOneAndUpdate(
     { flowId: new Types.ObjectId(flowId) },
     { $inc: { seq: count } },
