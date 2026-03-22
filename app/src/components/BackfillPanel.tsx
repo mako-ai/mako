@@ -96,10 +96,12 @@ function streamStatus(state: CdcState): {
 function backfillStatus(
   state: CdcState,
   backlogCount: number,
+  totalProcessed: number,
 ): { label: string; color: "success" | "info" | "warning" | "default" } {
   if (state === "backfill") return { label: "Running", color: "info" };
   if (state === "idle") return { label: "Not started", color: "default" };
   if (backlogCount > 0) return { label: "Catching up", color: "warning" };
+  if (totalProcessed === 0) return { label: "Not started", color: "default" };
   return { label: "Complete", color: "success" };
 }
 
@@ -254,7 +256,7 @@ export function BackfillPanel({
     0,
   );
   const ss = streamStatus(state);
-  const bs = backfillStatus(state, cdc?.backlogCount ?? 0);
+  const bs = backfillStatus(state, cdc?.backlogCount ?? 0, totalProcessed);
 
   const kpi = {
     borderRadius: 1.5,
