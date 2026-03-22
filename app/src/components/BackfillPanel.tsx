@@ -181,6 +181,8 @@ export function BackfillPanel({
   const [tab, setTab] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [executionId, setExecutionId] = useState<string | null>(null);
+  const [execStats, setExecStats] = useState<Record<string, number>>({});
+  const [execStatus, setExecStatus] = useState<Record<string, string>>({});
   const [resyncOpen, setResyncOpen] = useState(false);
   const [resyncConfirm, setResyncConfirm] = useState("");
   const [resyncOpts, setResyncOpts] = useState({
@@ -215,6 +217,16 @@ export function BackfillPanel({
     );
     if (details?.logs && details.logs.length > 0) {
       setLogs(details.logs as LogEntry[]);
+    }
+    if (details?.stats) {
+      const es = details.stats.entityStats as
+        | Record<string, number>
+        | undefined;
+      const est = details.stats.entityStatus as
+        | Record<string, string>
+        | undefined;
+      if (es) setExecStats(es);
+      if (est) setExecStatus(est);
     }
     if (details?.status && details.status !== "running") {
       setExecutionId(null);
@@ -265,6 +277,8 @@ export function BackfillPanel({
       const ok = await startCdcBackfill(workspaceId, flowId);
       if (!ok) throw new Error("Failed to start backfill");
       setLogs([]);
+      setExecStats({});
+      setExecStatus({});
       setTimeout(() => pollLogs(), 3000);
     });
 
@@ -361,11 +375,13 @@ export function BackfillPanel({
       lastMaterializedSeq: s?.lastMaterializedSeq || 0,
       lagSeconds: s?.lagSeconds ?? null,
       lastMaterializedAt: s?.lastMaterializedAt || null,
+      execRows: execStats[name] || 0,
+      execStatus: execStatus[name] || null,
     };
   });
 
   const totalProcessed = entities.reduce(
-    (sum, e) => sum + (e.lastMaterializedSeq || 0),
+    (sum, e) => sum + Math.max(e.execRows || 0, e.lastMaterializedSeq || 0),
     0,
   );
   const ss = streamStatus(state);
@@ -684,13 +700,25 @@ export function BackfillPanel({
                       <TableCell>Entity</TableCell>
                       <TableCell>Stream</TableCell>
                       <TableCell>Backfill</TableCell>
-                      <TableCell align="right">Processed</TableCell>
+                      <TableCell align="right">Rows written</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {entities.map(e => {
                       const sc = entityStreamChip(e);
                       const bc = entityBackfillChip(e);
+                      const backfillChip =
+                        e.execStatus === "syncing"
+                          ? { label: "Syncing…", color: "info" as const }
+                          : e.execStatus === "completed"
+                            ? { label: "Done", color: "success" as const }
+                            : e.execStatus === "pending"
+                              ? { label: "Queued", color: "default" as const }
+                              : bc;
+                      const rowCount = Math.max(
+                        e.execRows || 0,
+                        e.lastMaterializedSeq || 0,
+                      );
                       return (
                         <TableRow
                           key={e.entity}
@@ -720,8 +748,8 @@ export function BackfillPanel({
                           </TableCell>
                           <TableCell>
                             <Chip
-                              label={bc.label}
-                              color={bc.color}
+                              label={backfillChip.label}
+                              color={backfillChip.color}
                               size="small"
                               variant="outlined"
                               sx={{
@@ -734,9 +762,9 @@ export function BackfillPanel({
                           <TableCell align="right">
                             <Typography
                               fontSize="0.8rem"
-                              fontWeight={e.lastMaterializedSeq > 0 ? 600 : 400}
+                              fontWeight={rowCount > 0 ? 600 : 400}
                             >
-                              {(e.lastMaterializedSeq || 0).toLocaleString()}
+                              {rowCount.toLocaleString()}
                             </Typography>
                           </TableCell>
                         </TableRow>
