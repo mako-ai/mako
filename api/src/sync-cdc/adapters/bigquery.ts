@@ -192,6 +192,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           ),
           schema: this.config.tableDestination.schema,
           tableName,
+          createIfNotExists: true,
         } as any,
       },
       "cdc-bigquery-adapter",

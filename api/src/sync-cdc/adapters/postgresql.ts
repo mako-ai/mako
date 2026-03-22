@@ -196,6 +196,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           ),
           schema: this.config.tableDestination.schema,
           tableName,
+          createIfNotExists: true,
         } as any,
       },
       "cdc-postgresql-adapter",
