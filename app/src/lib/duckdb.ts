@@ -1,30 +1,138 @@
+/* eslint-disable no-console */
 import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 
 let dbInstance: AsyncDuckDB | null = null;
 let initPromise: Promise<AsyncDuckDB> | null = null;
+const activeDuckDBInstances = new Set<AsyncDuckDB>();
+const duckDBInstanceIds = new WeakMap<AsyncDuckDB, number>();
+let nextDuckDBInstanceId = 1;
+let unloadHandlerRegistered = false;
+
+function getDuckDBInstanceId(db: AsyncDuckDB): number {
+  const existing = duckDBInstanceIds.get(db);
+  if (existing) {
+    return existing;
+  }
+  const id = nextDuckDBInstanceId++;
+  duckDBInstanceIds.set(db, id);
+  return id;
+}
+
+function trackDuckDBInstance(db: AsyncDuckDB, reason: string): void {
+  const id = getDuckDBInstanceId(db);
+  activeDuckDBInstances.add(db);
+  console.log(
+    `[opfs-diag] DuckDB instance #${id} registered (${reason}); activeInstances=${activeDuckDBInstances.size}`,
+  );
+}
+
+export function untrackDuckDBInstance(db: AsyncDuckDB, reason: string): void {
+  const id = getDuckDBInstanceId(db);
+  activeDuckDBInstances.delete(db);
+  if (dbInstance === db) {
+    dbInstance = null;
+    initPromise = null;
+  }
+  console.log(
+    `[opfs-diag] DuckDB instance #${id} unregistered (${reason}); activeInstances=${activeDuckDBInstances.size}`,
+  );
+}
+
+export async function terminateTrackedDuckDBInstance(
+  db: AsyncDuckDB,
+  reason: string,
+): Promise<void> {
+  const id = getDuckDBInstanceId(db);
+  console.log(`[opfs-diag] Terminating DuckDB instance #${id} (${reason})`);
+  try {
+    await (db as any).terminate?.();
+    console.log(`[opfs-diag] Terminated DuckDB instance #${id} (${reason})`);
+  } catch (error) {
+    console.warn(
+      `[opfs-diag] Failed to terminate DuckDB instance #${id} (${reason})`,
+      error,
+    );
+  } finally {
+    untrackDuckDBInstance(db, `${reason}:post-terminate`);
+  }
+}
+
+function ensureDuckDBUnloadHandler(): void {
+  if (typeof window === "undefined" || unloadHandlerRegistered) {
+    return;
+  }
+
+  window.addEventListener("beforeunload", () => {
+    const instances = Array.from(activeDuckDBInstances);
+    console.log(
+      `[opfs-diag] beforeunload cleanup start; activeInstances=${instances.length}`,
+    );
+    for (const db of instances) {
+      const id = getDuckDBInstanceId(db);
+      try {
+        void (db as any).terminate?.();
+        console.log(
+          `[opfs-diag] beforeunload terminate dispatched for DuckDB instance #${id}`,
+        );
+      } catch (error) {
+        console.warn(
+          `[opfs-diag] beforeunload terminate failed for DuckDB instance #${id}`,
+          error,
+        );
+      } finally {
+        untrackDuckDBInstance(db, "beforeunload");
+      }
+    }
+    console.log("[opfs-diag] beforeunload cleanup end");
+  });
+
+  unloadHandlerRegistered = true;
+  console.log("[opfs-diag] Registered beforeunload DuckDB cleanup handler");
+}
 
 async function createWorkerAndInstantiate(): Promise<AsyncDuckDB> {
+  ensureDuckDBUnloadHandler();
+  console.log(
+    "[opfs-diag] createWorkerAndInstantiate: selecting DuckDB bundle",
+  );
   const duckdb = await import("@duckdb/duckdb-wasm");
   const bundles = duckdb.getJsDelivrBundles();
   const bundle = await duckdb.selectBundle(bundles);
 
-  const workerUrl = bundle.mainWorker!;
+  const workerUrl = bundle.mainWorker;
+  if (!workerUrl) {
+    throw new Error("DuckDB worker URL is unavailable");
+  }
   let worker: Worker;
   try {
     worker = new Worker(workerUrl);
+    console.log(
+      `[opfs-diag] createWorkerAndInstantiate: worker created from ${workerUrl}`,
+    );
   } catch {
+    console.warn(
+      `[opfs-diag] createWorkerAndInstantiate: direct worker creation failed for ${workerUrl}, falling back to blob worker`,
+    );
     const resp = await fetch(workerUrl);
     const blob = new Blob([await resp.text()], { type: "text/javascript" });
     worker = new Worker(URL.createObjectURL(blob));
+    console.log(
+      "[opfs-diag] createWorkerAndInstantiate: blob worker created successfully",
+    );
   }
 
   const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
   const db = new duckdb.AsyncDuckDB(logger, worker);
+  const id = getDuckDBInstanceId(db);
+  console.log(`[opfs-diag] DuckDB instance #${id} instantiating`);
   await db.instantiate(bundle.mainModule);
+  console.log(`[opfs-diag] DuckDB instance #${id} instantiated`);
+  trackDuckDBInstance(db, "createWorkerAndInstantiate");
   return db;
 }
 
 export async function createDuckDBInstance(): Promise<AsyncDuckDB> {
+  console.log("[opfs-diag] createDuckDBInstance: creating in-memory DuckDB");
   return createWorkerAndInstantiate();
 }
 
@@ -44,19 +152,30 @@ export async function createPersistentDuckDBInstance(
 ): Promise<AsyncDuckDB> {
   const duckdb = await import("@duckdb/duckdb-wasm");
   const db = await createWorkerAndInstantiate();
+  const id = getDuckDBInstanceId(db);
+  console.log(
+    `[opfs-diag] DuckDB instance #${id} opening persistent database at ${opfsPath}`,
+  );
   await db.open({
     path: opfsPath,
     accessMode: duckdb.DuckDBAccessMode.READ_WRITE,
   });
+  console.log(
+    `[opfs-diag] DuckDB instance #${id} opened persistent database at ${opfsPath}`,
+  );
   return db;
 }
 
 export async function checkpointDatabase(db: AsyncDuckDB): Promise<void> {
+  const id = getDuckDBInstanceId(db);
+  console.log(`[opfs-diag] CHECKPOINT start for DuckDB instance #${id}`);
   const conn = await db.connect();
   try {
     await conn.query("CHECKPOINT");
+    console.log(`[opfs-diag] CHECKPOINT success for DuckDB instance #${id}`);
   } finally {
     await conn.close();
+    console.log(`[opfs-diag] CHECKPOINT connection closed for #${id}`);
   }
 }
 
@@ -103,6 +222,15 @@ export async function loadArrowTable(
   tableName: string,
   arrowBuffer: Uint8Array,
 ): Promise<void> {
+  console.log(
+    `[opfs-diag] loadArrowTable start: table="${tableName}" bytes=${arrowBuffer.byteLength}`,
+  );
+  if (arrowBuffer.byteLength === 0) {
+    console.warn(
+      `[opfs-diag] loadArrowTable early return: table="${tableName}" received 0-byte Arrow buffer`,
+    );
+    return;
+  }
   await db.registerFileBuffer(`${tableName}.arrow`, arrowBuffer);
   const conn = await db.connect();
   try {
@@ -110,8 +238,14 @@ export async function loadArrowTable(
     await conn.query(
       `CREATE TABLE "${tableName}" AS SELECT * FROM '${tableName}.arrow'`,
     );
+    console.log(
+      `[opfs-diag] loadArrowTable success: table="${tableName}" bytes=${arrowBuffer.byteLength}`,
+    );
   } finally {
     await conn.close();
+    console.log(
+      `[opfs-diag] loadArrowTable connection closed: table="${tableName}"`,
+    );
   }
 }
 
@@ -174,8 +308,12 @@ async function insertArrowStreamWithChunks(
 ): Promise<number> {
   const reader = stream.getReader();
   let bytesReceived = 0;
+  let chunksReceived = 0;
 
   try {
+    console.log(
+      `[opfs-diag] insertArrowStreamWithChunks start: table="${tableName}"`,
+    );
     await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
 
     for (;;) {
@@ -188,9 +326,22 @@ async function insertArrowStreamWithChunks(
         continue;
       }
 
+      chunksReceived += 1;
       bytesReceived += value.byteLength;
+      if (chunksReceived === 1) {
+        console.log(
+          `[opfs-diag] insertArrowStreamWithChunks first chunk: table="${tableName}" bytes=${value.byteLength}`,
+        );
+      }
       onProgress?.(bytesReceived);
       await conn.insertArrowFromIPCStream(value, { name: tableName });
+    }
+
+    if (bytesReceived === 0) {
+      console.warn(
+        `[opfs-diag] insertArrowStreamWithChunks empty stream: table="${tableName}"`,
+      );
+      return 0;
     }
 
     // DuckDB-WASM's chunked insert API requires an explicit end-of-stream marker.
@@ -198,10 +349,27 @@ async function insertArrowStreamWithChunks(
       new Uint8Array([255, 255, 255, 255, 0, 0, 0, 0]),
       { name: tableName },
     );
+    console.log(
+      `[opfs-diag] insertArrowStreamWithChunks success: table="${tableName}" chunks=${chunksReceived} bytes=${bytesReceived}`,
+    );
     return bytesReceived;
+  } catch (error) {
+    console.warn(
+      `[opfs-diag] insertArrowStreamWithChunks failed: table="${tableName}" chunks=${chunksReceived} bytes=${bytesReceived}`,
+      error,
+    );
+    throw error;
   } finally {
     reader.releaseLock();
+    console.log(
+      `[opfs-diag] insertArrowStreamWithChunks reader released: table="${tableName}"`,
+    );
   }
+}
+
+function isZeroColumnArrowError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("at least one column");
 }
 
 /**
@@ -220,36 +388,81 @@ export async function loadArrowStreamTable(
   const conn = await db.connect();
 
   try {
+    console.log(
+      `[opfs-diag] loadArrowStreamTable start: table="${tableName}" streamingApi=${typeof (conn as any).insertArrowFromIPCStream === "function"}`,
+    );
     if (typeof (conn as any).insertArrowFromIPCStream === "function") {
       const [primaryStream, fallbackStream] =
         typeof stream.tee === "function" ? stream.tee() : [stream, null];
 
       try {
-        await insertArrowStreamWithChunks(
+        const bytesLoaded = await insertArrowStreamWithChunks(
           conn,
           tableName,
           primaryStream,
           options?.onProgress,
         );
-        return await countTableRows(db, tableName);
+        console.log(
+          `[opfs-diag] loadArrowStreamTable streaming path finished: table="${tableName}" bytes=${bytesLoaded}`,
+        );
+        const rowCount = await countTableRows(db, tableName);
+        console.log(
+          `[opfs-diag] loadArrowStreamTable streaming row count: table="${tableName}" rows=${rowCount}`,
+        );
+        return rowCount;
       } catch (error) {
-        if (fallbackStream) {
-          const arrowBuffer = await collectStreamBytes(fallbackStream);
-          await loadArrowTable(db, tableName, arrowBuffer);
-          return await countTableRows(db, tableName);
+        if (isZeroColumnArrowError(error)) {
+          console.warn(
+            `[opfs-diag] loadArrowStreamTable treating zero-column Arrow stream as empty result: table="${tableName}"`,
+            error,
+          );
+          return 0;
         }
+        if (fallbackStream) {
+          console.warn(
+            `[opfs-diag] loadArrowStreamTable streaming path failed; starting buffered Arrow fallback for table="${tableName}"`,
+            error,
+          );
+          const arrowBuffer = await collectStreamBytes(fallbackStream);
+          console.log(
+            `[opfs-diag] loadArrowStreamTable buffered fallback collected bytes: table="${tableName}" bytes=${arrowBuffer.byteLength}`,
+          );
+          await loadArrowTable(db, tableName, arrowBuffer);
+          const rowCount = await countTableRows(db, tableName);
+          console.log(
+            `[opfs-diag] loadArrowStreamTable buffered fallback row count: table="${tableName}" rows=${rowCount}`,
+          );
+          return rowCount;
+        }
+        console.warn(
+          `[opfs-diag] loadArrowStreamTable no buffered fallback available for table="${tableName}"`,
+          error,
+        );
         throw error;
       }
     }
 
+    console.log(
+      `[opfs-diag] loadArrowStreamTable streaming API unavailable; buffering full stream for table="${tableName}"`,
+    );
     const arrowBuffer = await collectStreamBytes(stream, options?.onProgress);
     if (arrowBuffer.byteLength === 0) {
+      console.warn(
+        `[opfs-diag] loadArrowStreamTable received 0-byte Arrow buffer after collect: table="${tableName}"`,
+      );
       return 0;
     }
     await loadArrowTable(db, tableName, arrowBuffer);
-    return await countTableRows(db, tableName);
+    const rowCount = await countTableRows(db, tableName);
+    console.log(
+      `[opfs-diag] loadArrowStreamTable buffered-only path row count: table="${tableName}" rows=${rowCount}`,
+    );
+    return rowCount;
   } finally {
     await conn.close();
+    console.log(
+      `[opfs-diag] loadArrowStreamTable connection closed: table="${tableName}"`,
+    );
   }
 }
 

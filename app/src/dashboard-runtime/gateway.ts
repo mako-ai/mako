@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import {
   describeTable,
   dropTable,
@@ -40,7 +41,7 @@ function buildDataSourceVersion(dataSource: DashboardDataSource): string {
   };
   const json = JSON.stringify(payload);
   const hash = hashString(json);
-  console.debug(
+  console.log(
     `[opfs-diag] buildDataSourceVersion("${dataSource.name}"): hash=${hash}, payload keys=${Object.keys(dataSource.query ?? {}).join(",")}`,
   );
   return hash;
@@ -98,6 +99,9 @@ async function fetchDashboardExport(
   dataSource: DashboardDataSource,
   format: "arrow" | "ndjson",
 ): Promise<Response & { body: ReadableStream<Uint8Array> }> {
+  console.log(
+    `[opfs-diag] fetchDashboardExport start: dataSource="${dataSource.name}" format=${format} workspace=${workspaceId}`,
+  );
   const response = await fetch(
     `/api/workspaces/${workspaceId}/execute/export`,
     {
@@ -125,6 +129,10 @@ async function fetchDashboardExport(
   if (!response.body) {
     throw new Error("Dashboard data source export stream is not available");
   }
+
+  console.log(
+    `[opfs-diag] fetchDashboardExport success: dataSource="${dataSource.name}" format=${format} status=${response.status} contentLength=${response.headers.get("Content-Length") ?? "(none)"} rowCount=${response.headers.get("X-Row-Count") ?? "(none)"}`,
+  );
 
   return response as Response & { body: ReadableStream<Uint8Array> };
 }
@@ -170,6 +178,9 @@ async function loadDashboardDataSourceWithFallback(options: {
   } = options;
 
   try {
+    console.log(
+      `[opfs-diag] loadDashboardDataSourceWithFallback arrow start: dataSource="${dataSource.name}" targetTableRef="${targetTableRef}"`,
+    );
     const response = await fetchDashboardExport(
       workspaceId,
       dataSource,
@@ -177,6 +188,9 @@ async function loadDashboardDataSourceWithFallback(options: {
     );
     const totalBytes = parseNumericHeader(response.headers, "Content-Length");
     const totalRows = parseNumericHeader(response.headers, "X-Row-Count");
+    console.log(
+      `[opfs-diag] loadDashboardDataSourceWithFallback arrow headers: dataSource="${dataSource.name}" totalBytes=${totalBytes ?? "(none)"} totalRows=${totalRows ?? "(none)"}`,
+    );
 
     const loadedRowCount = await loadArrowStreamTable(
       session.db,
@@ -205,17 +219,27 @@ async function loadDashboardDataSourceWithFallback(options: {
       },
     );
 
+    console.log(
+      `[opfs-diag] loadDashboardDataSourceWithFallback arrow success: dataSource="${dataSource.name}" loadedRowCount=${loadedRowCount} headerRowCount=${totalRows ?? "(none)"}`,
+    );
     return totalRows ?? loadedRowCount;
-  } catch {
+  } catch (error) {
+    console.warn(
+      `[opfs-diag] loadDashboardDataSourceWithFallback arrow failed: dataSource="${dataSource.name}" targetTableRef="${targetTableRef}" -> falling back to NDJSON`,
+      error,
+    );
     await dropTable(session.db, targetTableRef).catch(() => undefined);
   }
 
+  console.log(
+    `[opfs-diag] loadDashboardDataSourceWithFallback ndjson start: dataSource="${dataSource.name}" targetTableRef="${targetTableRef}"`,
+  );
   const response = await fetchDashboardExport(
     workspaceId,
     dataSource,
     "ndjson",
   );
-  return await loadNdjsonStreamTable(
+  const loadedRows = await loadNdjsonStreamTable(
     session.db,
     targetTableRef,
     response.body,
@@ -232,6 +256,10 @@ async function loadDashboardDataSourceWithFallback(options: {
       },
     },
   );
+  console.log(
+    `[opfs-diag] loadDashboardDataSourceWithFallback ndjson success: dataSource="${dataSource.name}" loadedRows=${loadedRows}`,
+  );
+  return loadedRows;
 }
 
 function resolveSqlBindings(
@@ -280,10 +308,19 @@ async function introspectDataSource(
 }> {
   const session = getDashboardSession(dashboardId);
   if (!session) {
+    console.warn(
+      `[opfs-diag] introspectDataSource skipped: no session for dashboard=${dashboardId} dataSource="${dataSource.name}" tableRef="${tableRef}"`,
+    );
     return { schema: [], sampleRows: [] };
   }
 
+  console.log(
+    `[opfs-diag] introspectDataSource start: dashboard=${dashboardId} dataSource="${dataSource.name}" tableRef="${tableRef}"`,
+  );
   const schemaRows = await describeTable(session.db, tableRef);
+  console.log(
+    `[opfs-diag] introspectDataSource schema rows: dashboard=${dashboardId} dataSource="${dataSource.name}" tableRef="${tableRef}" columns=${schemaRows.length}`,
+  );
   let sampleRows: Record<string, unknown>[] = [];
   try {
     const preview = await queryDuckDB(
@@ -291,7 +328,14 @@ async function introspectDataSource(
       `SELECT * FROM "${tableRef}" LIMIT 5`,
     );
     sampleRows = preview.rows;
-  } catch {
+    console.log(
+      `[opfs-diag] introspectDataSource preview success: dashboard=${dashboardId} dataSource="${dataSource.name}" tableRef="${tableRef}" sampleRows=${sampleRows.length}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[opfs-diag] introspectDataSource preview failed: dashboard=${dashboardId} dataSource="${dataSource.name}" tableRef="${tableRef}"`,
+      error,
+    );
     sampleRows = [];
   }
 
@@ -304,6 +348,9 @@ async function introspectDataSource(
       .slice(0, 3),
   }));
 
+  console.log(
+    `[opfs-diag] introspectDataSource success: dashboard=${dashboardId} dataSource="${dataSource.name}" tableRef="${tableRef}" schema=${schema.length} sampleRows=${sampleRows.length}`,
+  );
   return { schema, sampleRows };
 }
 
@@ -332,16 +379,134 @@ async function getPersistedRowCount(
   db: import("@duckdb/duckdb-wasm").AsyncDuckDB,
   tableRef: string,
 ): Promise<number | null> {
+  console.log(`[opfs-diag] getPersistedRowCount start: tableRef="${tableRef}"`);
   const conn = await db.connect();
   try {
     const result = await conn.query(
       `SELECT count(*) as cnt FROM "${tableRef}"`,
     );
-    return Number(result.getChild("cnt")?.get(0));
-  } catch {
+    const rowCount = Number(result.getChild("cnt")?.get(0));
+    console.log(
+      `[opfs-diag] getPersistedRowCount success: tableRef="${tableRef}" rowCount=${rowCount}`,
+    );
+    return rowCount;
+  } catch (error) {
+    console.warn(
+      `[opfs-diag] getPersistedRowCount failed: tableRef="${tableRef}"`,
+      error,
+    );
     return null;
   } finally {
     await conn.close();
+    console.log(
+      `[opfs-diag] getPersistedRowCount connection closed: tableRef="${tableRef}"`,
+    );
+  }
+}
+
+async function tryRecoverPersistedDataSource(options: {
+  session: Awaited<ReturnType<typeof ensureDashboardSession>>;
+  dashboard: Dashboard;
+  dataSource: DashboardDataSource;
+  version: string;
+  persistedVersion: string | undefined;
+}): Promise<{
+  recovered: boolean;
+  branch:
+    | "metadata-hit"
+    | "metadata-miss-table-hit"
+    | "metadata-exists-table-miss"
+    | "metadata-mismatch"
+    | "table-read-failed";
+  rowCount?: number;
+  schema?: DashboardRuntimeColumn[];
+  sampleRows?: Record<string, unknown>[];
+}> {
+  const { session, dashboard, dataSource, version, persistedVersion } = options;
+
+  if (!session.persistent) {
+    console.log(
+      `[opfs-diag] tryRecoverPersistedDataSource skipped: dataSource="${dataSource.name}" session is not persistent`,
+    );
+    return { recovered: false, branch: "table-read-failed" };
+  }
+
+  console.log(
+    `[opfs-diag] tryRecoverPersistedDataSource metadata evaluation: dataSource="${dataSource.name}" persistedVersion=${persistedVersion ?? "(none)"} computedVersion=${version}`,
+  );
+
+  if (persistedVersion !== undefined && persistedVersion !== version) {
+    console.warn(
+      `[opfs-diag] tryRecoverPersistedDataSource metadata mismatch: dataSource="${dataSource.name}" persistedVersion=${persistedVersion} computedVersion=${version}`,
+    );
+    return { recovered: false, branch: "metadata-mismatch" };
+  }
+
+  const branch =
+    persistedVersion === version ? "metadata-hit" : "metadata-miss-table-hit";
+  console.log(
+    `[opfs-diag] tryRecoverPersistedDataSource probing physical table: dataSource="${dataSource.name}" branch=${branch} tableRef="${dataSource.tableRef}"`,
+  );
+  const rowCount = await getPersistedRowCount(session.db, dataSource.tableRef);
+  if (rowCount === null) {
+    console.warn(
+      `[opfs-diag] tryRecoverPersistedDataSource table probe failed: dataSource="${dataSource.name}" branch=${branch} tableRef="${dataSource.tableRef}"`,
+    );
+    return {
+      recovered: false,
+      branch:
+        persistedVersion === version
+          ? "metadata-exists-table-miss"
+          : "table-read-failed",
+    };
+  }
+
+  console.log(
+    `[opfs-diag] tryRecoverPersistedDataSource introspection start: dataSource="${dataSource.name}" branch=${branch} rowCount=${rowCount}`,
+  );
+  try {
+    const { schema, sampleRows } = await introspectDataSource(
+      dashboard._id,
+      dataSource,
+    );
+    console.log(
+      `[opfs-diag] tryRecoverPersistedDataSource introspection success: dataSource="${dataSource.name}" branch=${branch} schema=${schema.length} sampleRows=${sampleRows.length}`,
+    );
+
+    if (persistedVersion === undefined) {
+      console.log(
+        `[opfs-diag] tryRecoverPersistedDataSource metadata missing; rehydrating for dataSource="${dataSource.name}" version=${version}`,
+      );
+      session.dataSourceVersions.set(dataSource.id, version);
+      await persistDataSourceVersion(
+        dashboard._id,
+        dataSource.id,
+        version,
+        dataSource.tableRef,
+        rowCount,
+      );
+      console.log(
+        `[opfs-diag] tryRecoverPersistedDataSource metadata persisted; checkpointing dashboard=${dashboard._id}`,
+      );
+      await checkpointSession(dashboard._id);
+      console.log(
+        `[opfs-diag] tryRecoverPersistedDataSource checkpoint complete: dashboard=${dashboard._id} dataSource="${dataSource.name}"`,
+      );
+    }
+
+    return {
+      recovered: true,
+      branch,
+      rowCount,
+      schema,
+      sampleRows,
+    };
+  } catch (error) {
+    console.warn(
+      `[opfs-diag] tryRecoverPersistedDataSource introspection failed: dataSource="${dataSource.name}" branch=${branch}`,
+      error,
+    );
+    return { recovered: false, branch: "table-read-failed" };
   }
 }
 
@@ -392,7 +557,9 @@ export async function materializeDashboardDataSource(options: {
       tableRef: dataSource.tableRef,
     },
   );
-
+  console.log(
+    `[opfs-diag] materialize runtime state: dataSource="${dataSource.name}" existingRuntime=${existingRuntime?.status ?? "(none)"} preserveExistingData=${preserveExistingData}`,
+  );
   runtimeStore.dispatch(
     dashboardRuntimeEvents.registerDataSource(
       dashboard._id,
@@ -413,52 +580,57 @@ export async function materializeDashboardDataSource(options: {
     return;
   }
 
-  // OPFS recovery: table persisted from a previous browser session
-  if (!force && session.persistent && persistedVersion === version) {
+  if (!force && session.persistent) {
     console.log(
-      `[opfs-diag] OPFS recovery attempt: dataSource="${dataSource.name}", checking persisted table "${dataSource.tableRef}"...`,
+      `[opfs-diag] materialize evaluating persistent recovery ladder: dataSource="${dataSource.name}"`,
     );
-    const rowCount = await getPersistedRowCount(
-      session.db,
-      dataSource.tableRef,
+    const recovery = await tryRecoverPersistedDataSource({
+      session,
+      dashboard,
+      dataSource,
+      version,
+      persistedVersion,
+    });
+    console.log(
+      `[opfs-diag] materialize recovery result: dataSource="${dataSource.name}" recovered=${recovery.recovered} branch=${recovery.branch}`,
     );
-    if (rowCount !== null) {
-      console.log(
-        `[opfs-diag] OPFS HIT: dataSource="${dataSource.name}" recovered ${rowCount} rows from OPFS, skipping network fetch`,
-      );
-      const { schema, sampleRows } = await introspectDataSource(
-        dashboard._id,
-        dataSource,
-      );
+    if (recovery.recovered) {
       runtimeStore.dispatch(
         dashboardRuntimeEvents.datasourceLoadSucceeded(
           dashboard._id,
           dataSource.id,
-          rowCount,
-          rowCount,
-          schema,
-          sampleRows,
+          recovery.rowCount ?? 0,
+          recovery.rowCount ?? 0,
+          recovery.schema ?? [],
+          recovery.sampleRows ?? [],
         ),
+      );
+      console.log(
+        `[opfs-diag] materialize local recovery success: dataSource="${dataSource.name}" branch=${recovery.branch} rows=${recovery.rowCount ?? 0}`,
       );
       return;
     }
-    console.warn(
-      `[opfs-diag] OPFS MISS: dataSource="${dataSource.name}" version matched but table "${dataSource.tableRef}" not found in DB (rowCount=null)`,
-    );
-  } else if (!force && session.persistent && persistedVersion !== version) {
-    console.warn(
-      `[opfs-diag] OPFS VERSION MISMATCH: dataSource="${dataSource.name}"`,
-      {
-        persistedVersion: persistedVersion ?? "(none)",
-        computedVersion: version,
-        queryCode: dataSource.query?.code?.slice(0, 100),
-        rowLimit: dataSource.rowLimit,
-        computedColumns: dataSource.computedColumns?.length ?? 0,
-      },
-    );
+
+    if (recovery.branch === "metadata-mismatch") {
+      console.warn(
+        `[opfs-diag] OPFS VERSION MISMATCH: dataSource="${dataSource.name}" persistedVersion=${persistedVersion ?? "(none)"} computedVersion=${version} rowLimit=${dataSource.rowLimit ?? "(none)"} computedColumns=${dataSource.computedColumns?.length ?? 0} queryCode=${dataSource.query?.code?.slice(0, 100) ?? "(none)"}`,
+      );
+    } else if (recovery.branch === "metadata-exists-table-miss") {
+      console.warn(
+        `[opfs-diag] OPFS inconsistency: metadata matched but table probe failed for dataSource="${dataSource.name}" tableRef="${dataSource.tableRef}"`,
+      );
+    } else if (recovery.branch === "table-read-failed") {
+      console.warn(
+        `[opfs-diag] OPFS recovery aborted after metadata-miss/table-read failure for dataSource="${dataSource.name}" tableRef="${dataSource.tableRef}"`,
+      );
+    }
   } else if (force) {
     console.log(
       `[opfs-diag] FORCED RELOAD: dataSource="${dataSource.name}", bypassing cache`,
+    );
+  } else {
+    console.log(
+      `[opfs-diag] materialize skipping persistent recovery ladder: dataSource="${dataSource.name}" persistent=${session.persistent} force=${force}`,
     );
   }
 
@@ -468,12 +640,21 @@ export async function materializeDashboardDataSource(options: {
 
   const inFlight = session.activeLoads.get(dataSource.id);
   if (inFlight) {
+    console.log(
+      `[opfs-diag] materialize found in-flight load: dataSource="${dataSource.name}" force=${force}`,
+    );
     if (!force) {
       await inFlight;
+      console.log(
+        `[opfs-diag] materialize returning after awaiting existing in-flight load: dataSource="${dataSource.name}"`,
+      );
       return;
     }
     // When forced, wait for the existing load to settle before starting fresh
     await inFlight.catch(() => {});
+    console.log(
+      `[opfs-diag] materialize force reload continuing after existing in-flight load settled: dataSource="${dataSource.name}"`,
+    );
   }
 
   // Reserve the slot BEFORE creating the promise to prevent concurrent loads
@@ -494,9 +675,15 @@ export async function materializeDashboardDataSource(options: {
       preserveExistingData,
     ),
   );
+  console.log(
+    `[opfs-diag] datasourceLoadStarted dispatched: dataSource="${dataSource.name}" preserveExistingData=${preserveExistingData}`,
+  );
 
   try {
     temporaryTableRef = buildTemporaryTableRef(dataSource.tableRef);
+    console.log(
+      `[opfs-diag] temporary table prepared: dataSource="${dataSource.name}" temporaryTableRef="${temporaryTableRef}"`,
+    );
     await dropTable(session.db, temporaryTableRef).catch(() => undefined);
     const rowCount = await loadDashboardDataSourceWithFallback({
       session,
@@ -516,14 +703,23 @@ export async function materializeDashboardDataSource(options: {
       dataSource,
       temporaryTableRef,
     );
+    console.log(
+      `[opfs-diag] temporary table introspection complete: dataSource="${dataSource.name}" temporaryTableRef="${temporaryTableRef}" schema=${schema.length} sampleRows=${sampleRows.length}`,
+    );
 
     await swapMaterializedTable({
       db: session.db,
       liveTableRef: dataSource.tableRef,
       temporaryTableRef,
     });
+    console.log(
+      `[opfs-diag] swapMaterializedTable success: dataSource="${dataSource.name}" liveTableRef="${dataSource.tableRef}" temporaryTableRef="${temporaryTableRef}"`,
+    );
 
     session.dataSourceVersions.set(dataSource.id, version);
+    console.log(
+      `[opfs-diag] session dataSourceVersions updated: dataSource="${dataSource.name}" version=${version}`,
+    );
     runtimeStore.dispatch(
       dashboardRuntimeEvents.datasourceLoadSucceeded(
         dashboard._id,
@@ -547,10 +743,20 @@ export async function materializeDashboardDataSource(options: {
       `[opfs-diag] PERSISTED: dataSource="${dataSource.name}" version=${version} rows=${rowCount ?? rowsLoaded} tableRef="${dataSource.tableRef}" persistent=${session.persistent}`,
     );
     resolveLoad();
+    console.log(
+      `[opfs-diag] materialize load promise resolved: dataSource="${dataSource.name}"`,
+    );
   } catch (error) {
+    console.warn(
+      `[opfs-diag] materialize failed: dataSource="${dataSource.name}" temporaryTableRef="${temporaryTableRef ?? "(none)"}" rowsLoaded=${rowsLoaded}`,
+      error,
+    );
     session.dataSourceVersions.delete(dataSource.id);
     if (temporaryTableRef) {
       await dropTable(session.db, temporaryTableRef).catch(() => undefined);
+      console.log(
+        `[opfs-diag] temporary table dropped after failure: dataSource="${dataSource.name}" temporaryTableRef="${temporaryTableRef}"`,
+      );
     }
     runtimeStore.dispatch(
       dashboardRuntimeEvents.datasourceLoadFailed(
@@ -565,6 +771,9 @@ export async function materializeDashboardDataSource(options: {
     throw error;
   } finally {
     session.activeLoads.delete(dataSource.id);
+    console.log(
+      `[opfs-diag] active load cleared: dataSource="${dataSource.name}"`,
+    );
   }
 }
 

@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import {
   tableToIPC,
   tableFromArrays,
@@ -205,6 +206,9 @@ export function createArrowIPCStream(
     let resolvedFields = fields;
     let columnTypes = buildColumnTypes(fields, []);
     let emittedRows = 0;
+    console.log(
+      `[opfs-diag] createArrowIPCStream start: initialFields=${fields.length}`,
+    );
 
     const flushRows = async (rows: Record<string, unknown>[]) => {
       if (rows.length === 0) {
@@ -214,6 +218,9 @@ export function createArrowIPCStream(
       resolvedFields = inferFieldsFromFirstBatch(rows, resolvedFields);
       columnTypes = buildColumnTypes(resolvedFields, rows);
       emittedRows += rows.length;
+      console.log(
+        `[opfs-diag] createArrowIPCStream flushRows: batchRows=${rows.length} emittedRows=${emittedRows} resolvedFields=${resolvedFields.length}`,
+      );
       await writer.write(
         buildArrowTable(rows, resolvedFields, columnTypes) as any,
       );
@@ -222,9 +229,15 @@ export function createArrowIPCStream(
     try {
       await streamRows(async rows => {
         if (rows.length === 0) {
+          console.log(
+            "[opfs-diag] createArrowIPCStream received empty row batch",
+          );
           return;
         }
 
+        console.log(
+          `[opfs-diag] createArrowIPCStream received row batch: rows=${rows.length}`,
+        );
         pendingRows.push(...rows);
         while (pendingRows.length >= DEFAULT_ARROW_BATCH_SIZE) {
           const batch = pendingRows.slice(0, DEFAULT_ARROW_BATCH_SIZE);
@@ -237,12 +250,30 @@ export function createArrowIPCStream(
 
       if (emittedRows === 0) {
         const emptyFields = inferFieldsFromFirstBatch([], resolvedFields);
-        const emptyTypes = buildColumnTypes(emptyFields, []);
-        await writer.write(buildArrowTable([], emptyFields, emptyTypes) as any);
+        console.log(
+          `[opfs-diag] createArrowIPCStream zero-row branch: resolvedFields=${emptyFields.length}`,
+        );
+        if (emptyFields.length > 0) {
+          const emptyTypes = buildColumnTypes(emptyFields, []);
+          await writer.write(
+            buildArrowTable([], emptyFields, emptyTypes) as any,
+          );
+          console.log(
+            `[opfs-diag] createArrowIPCStream emitted empty schema batch: fields=${emptyFields.length}`,
+          );
+        } else {
+          console.log(
+            "[opfs-diag] createArrowIPCStream closing cleanly without emitting synthetic empty batch",
+          );
+        }
       }
 
       await writer.close();
+      console.log(
+        `[opfs-diag] createArrowIPCStream close success: emittedRows=${emittedRows} resolvedFields=${resolvedFields.length}`,
+      );
     } catch (error) {
+      console.warn("[opfs-diag] createArrowIPCStream aborting", error);
       await writer.abort(error);
     }
   })();
