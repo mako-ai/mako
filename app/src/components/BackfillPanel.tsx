@@ -169,6 +169,7 @@ export function BackfillPanel({
     fetchCdcStatus,
     fetchFlowStatus,
     fetchExecutionDetails,
+    fetchWebhookEvents,
     pauseCdcFlow,
     resumeCdcFlow,
     resyncCdcFlow,
@@ -190,6 +191,8 @@ export function BackfillPanel({
     clearWebhookEvents: false,
   });
   const [webhookCopied, setWebhookCopied] = useState(false);
+  const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
+  const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -198,9 +201,16 @@ export function BackfillPanel({
   const state: CdcState = cdc?.syncState || "idle";
 
   const pollCdc = useCallback(async () => {
-    const status = await fetchCdcStatus(workspaceId, flowId);
+    const [status, eventsResult] = await Promise.all([
+      fetchCdcStatus(workspaceId, flowId),
+      fetchWebhookEvents(workspaceId, flowId, 50, 0),
+    ]);
     if (status) setCdc(status);
-  }, [fetchCdcStatus, workspaceId, flowId]);
+    if (eventsResult) {
+      setWebhookEvents(eventsResult.events);
+      setWebhookEventsTotal(eventsResult.total);
+    }
+  }, [fetchCdcStatus, fetchWebhookEvents, workspaceId, flowId]);
 
   const pollLogs = useCallback(async () => {
     if (!executionId) {
@@ -272,9 +282,9 @@ export function BackfillPanel({
     }
   };
 
-  const handleStartBackfill = () =>
+  const handleStartBackfill = (entities?: string[]) =>
     withBusy(async () => {
-      const ok = await startCdcBackfill(workspaceId, flowId);
+      const ok = await startCdcBackfill(workspaceId, flowId, entities);
       if (!ok) throw new Error("Failed to start backfill");
       setLogs([]);
       setExecStats({});
@@ -568,7 +578,7 @@ export function BackfillPanel({
                     size="small"
                     variant="outlined"
                     startIcon={<BackfillIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleStartBackfill}
+                    onClick={() => handleStartBackfill()}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >
@@ -665,6 +675,15 @@ export function BackfillPanel({
             fontSize: "0.82rem",
           }}
         />
+        <Tab
+          label={`Events (${webhookEventsTotal})`}
+          sx={{
+            minHeight: 36,
+            py: 0.5,
+            textTransform: "none",
+            fontSize: "0.82rem",
+          }}
+        />
       </Tabs>
 
       {/* Tab content — scrollable */}
@@ -701,6 +720,7 @@ export function BackfillPanel({
                       <TableCell>Stream</TableCell>
                       <TableCell>Backfill</TableCell>
                       <TableCell align="right">Rows written</TableCell>
+                      <TableCell align="right" sx={{ width: 60 }} />
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -766,6 +786,22 @@ export function BackfillPanel({
                             >
                               {rowCount.toLocaleString()}
                             </Typography>
+                          </TableCell>
+                          <TableCell align="right">
+                            {state !== "backfill" && (
+                              <Tooltip title={`Sync ${entityLabel(e.entity)}`}>
+                                <IconButton
+                                  size="small"
+                                  onClick={() =>
+                                    handleStartBackfill([e.entity])
+                                  }
+                                  disabled={busy}
+                                  sx={{ p: 0.25 }}
+                                >
+                                  <BackfillIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              </Tooltip>
+                            )}
                           </TableCell>
                         </TableRow>
                       );
@@ -896,6 +932,118 @@ export function BackfillPanel({
                   ))}
                 </Box>
               </Box>
+            )}
+          </Box>
+        )}
+
+        {tab === 2 && (
+          <Box sx={{ p: 2 }}>
+            {webhookEvents.length === 0 ? (
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                textAlign="center"
+                py={2}
+              >
+                No webhook events received yet.
+              </Typography>
+            ) : (
+              <TableContainer
+                sx={{ borderRadius: 1, border: 1, borderColor: "divider" }}
+              >
+                <Table size="small">
+                  <TableHead>
+                    <TableRow
+                      sx={{
+                        "& th": {
+                          fontSize: "0.72rem",
+                          color: "text.secondary",
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.3,
+                        },
+                      }}
+                    >
+                      <TableCell>Event type</TableCell>
+                      <TableCell>Status</TableCell>
+                      <TableCell>Apply</TableCell>
+                      <TableCell>Received</TableCell>
+                      <TableCell align="right">Duration</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {webhookEvents.map((evt: any) => (
+                      <TableRow
+                        key={evt.eventId || evt.id}
+                        sx={{ "&:last-child td": { borderBottom: 0 } }}
+                      >
+                        <TableCell
+                          sx={{
+                            fontFamily: "monospace",
+                            fontSize: "0.75rem",
+                          }}
+                        >
+                          {evt.eventType}
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={evt.status}
+                            size="small"
+                            variant="outlined"
+                            color={
+                              evt.status === "completed"
+                                ? "success"
+                                : evt.status === "failed"
+                                  ? "error"
+                                  : evt.status === "processing"
+                                    ? "info"
+                                    : "default"
+                            }
+                            sx={{
+                              height: 22,
+                              fontSize: "0.68rem",
+                              fontWeight: 500,
+                            }}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {evt.applyStatus && (
+                            <Chip
+                              label={evt.applyStatus}
+                              size="small"
+                              variant="outlined"
+                              color={
+                                evt.applyStatus === "applied"
+                                  ? "success"
+                                  : evt.applyStatus === "failed"
+                                    ? "error"
+                                    : "default"
+                              }
+                              sx={{
+                                height: 22,
+                                fontSize: "0.68rem",
+                                fontWeight: 500,
+                              }}
+                            />
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="caption" color="text.secondary">
+                            {new Date(evt.receivedAt).toLocaleString()}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="caption" color="text.secondary">
+                            {evt.processingDurationMs != null
+                              ? `${evt.processingDurationMs}ms`
+                              : "—"}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             )}
           </Box>
         )}

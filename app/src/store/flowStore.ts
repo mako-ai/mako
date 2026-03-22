@@ -393,7 +393,11 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     syncEngine: "legacy" | "cdc",
   ) => Promise<boolean>;
-  startCdcBackfill: (workspaceId: string, flowId: string) => Promise<boolean>;
+  startCdcBackfill: (
+    workspaceId: string,
+    flowId: string,
+    entities?: string[],
+  ) => Promise<boolean>;
   pauseCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resumeCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resyncCdcFlow: (
@@ -815,13 +819,14 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      startCdcBackfill: async (workspaceId, flowId) => {
+      startCdcBackfill: async (workspaceId, flowId, entities) => {
         try {
           const response = await apiClient.post<{
             success: boolean;
             error?: string;
           }>(
             `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`,
+            entities?.length ? { entities } : undefined,
           );
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC backfill");

@@ -1163,9 +1163,11 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
       workspaceId,
     );
     if (authorizationError) return authorizationError;
+    const body = await c.req.json().catch(() => ({}));
     const backfill = await cdcBackfillService.startBackfill(
       workspaceId,
       flowId,
+      { entities: body.entities },
     );
     return c.json({
       success: true,
