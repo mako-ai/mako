@@ -198,7 +198,7 @@ function toStoredEvent(
   };
 }
 
-export class MongoCdcEventStore implements CdcEventStore {
+class MongoCdcEventStore implements CdcEventStore {
   async appendEvents(params: {
     workspaceId: string;
     flowId: string;
@@ -583,11 +583,7 @@ export class MongoCdcEventStore implements CdcEventStore {
 
 let cachedStore: CdcEventStore | null = null;
 
-export interface CdcEventStoreRuntimeConfig {
-  primary: "mongo";
-}
-
-export function getCdcEventStoreConfig(): CdcEventStoreRuntimeConfig {
+export function getCdcEventStoreConfig(): { primary: "mongo" } {
   return { primary: "mongo" };
 }
 
@@ -599,8 +595,4 @@ export function getCdcEventStore(): CdcEventStore {
     });
   }
   return cachedStore;
-}
-
-export function resetCdcEventStoreForTests(): void {
-  cachedStore = null;
 }

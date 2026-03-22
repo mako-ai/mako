@@ -1,13 +1,12 @@
 import { loggers } from "../logging";
 import { inngest } from "../inngest/client";
-import { BaseConnector } from "../connectors/base/BaseConnector";
 import { normalizeCdcEvent, type NormalizedCdcEvent } from "./events";
 import { getCdcEventStore } from "./event-store";
 import { cdcSyncStateService } from "./sync-state";
 
 const log = loggers.sync("cdc.ingest");
 
-export class CdcIngestService {
+class CdcIngestService {
   async appendNormalizedEvents(params: {
     workspaceId: string;
     flowId: string;
@@ -67,39 +66,6 @@ export class CdcIngestService {
     });
 
     return result;
-  }
-
-  async appendWebhookEvent(params: {
-    workspaceId: string;
-    flowId: string;
-    connector: BaseConnector;
-    event: unknown;
-    eventType?: string;
-    runId?: string;
-    enqueue?: boolean;
-  }): Promise<{ inserted: number; deduped: number }> {
-    const records = params.connector.extractWebhookCdcRecords(
-      params.event,
-      params.eventType,
-    );
-    const events = records.map(record =>
-      normalizeCdcEvent({
-        entity: record.entity,
-        recordId: record.recordId,
-        operation: record.operation,
-        payload: record.payload,
-        sourceTs: record.sourceTs,
-        source: record.source,
-        changeId: record.changeId,
-        runId: params.runId,
-      }),
-    );
-    return this.appendNormalizedEvents({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-      events,
-      enqueue: params.enqueue,
-    });
   }
 }
 

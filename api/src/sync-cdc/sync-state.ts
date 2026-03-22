@@ -10,7 +10,7 @@ import { loggers } from "../logging";
 
 const log = loggers.sync("cdc.sync-state");
 
-export type CdcSyncEventType =
+type CdcSyncEventType =
   | "START_BACKFILL"
   | "BACKFILL_COMPLETE"
   | "LAG_CLEARED"
@@ -20,7 +20,7 @@ export type CdcSyncEventType =
   | "FAIL"
   | "RECOVER";
 
-export type CdcMachineEvent =
+type CdcMachineEvent =
   | { type: "START_BACKFILL"; reason?: string }
   | { type: "BACKFILL_COMPLETE"; reason?: string }
   | { type: "LAG_CLEARED"; reason?: string }
@@ -69,7 +69,7 @@ const TRANSITIONS: TransitionMap = {
   },
 };
 
-export interface TransitionGuardContext {
+interface TransitionGuardContext {
   hasActiveRunLock?: boolean;
   backfillCursorExhausted?: boolean;
   backlogCount?: number;
@@ -77,14 +77,14 @@ export interface TransitionGuardContext {
   lagThresholdSeconds?: number;
 }
 
-export interface ApplyTransitionInput {
+interface ApplyTransitionInput {
   workspaceId: string;
   flowId: string;
   event: CdcMachineEvent;
   context?: TransitionGuardContext;
 }
 
-export interface ApplyTransitionResult {
+interface ApplyTransitionResult {
   changed: boolean;
   fromState: SyncState;
   toState: SyncState;
@@ -125,7 +125,7 @@ function assertGuards(
   }
 }
 
-export class CdcSyncStateService {
+class CdcSyncStateService {
   async applyTransition(
     input: ApplyTransitionInput,
   ): Promise<ApplyTransitionResult> {
@@ -193,15 +193,6 @@ export class CdcSyncStateService {
     };
   }
 
-  async getLastTransition(workspaceId: string, flowId: string) {
-    return CdcStateTransition.findOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      flowId: new Types.ObjectId(flowId),
-    })
-      .sort({ at: -1 })
-      .lean();
-  }
-
   async saveBackfillCursor(params: {
     workspaceId: string;
     flowId: string;
@@ -238,25 +229,6 @@ export class CdcSyncStateService {
       entity: params.entity,
     }).lean();
     return (state?.backfillCursor || undefined) as FetchState | undefined;
-  }
-
-  async clearBackfillCursor(params: {
-    workspaceId: string;
-    flowId: string;
-    entity: string;
-  }): Promise<void> {
-    await CdcEntityState.updateOne(
-      {
-        workspaceId: new Types.ObjectId(params.workspaceId),
-        flowId: new Types.ObjectId(params.flowId),
-        entity: params.entity,
-      },
-      {
-        $unset: {
-          backfillCursor: "",
-        },
-      },
-    );
   }
 
   async clearBackfillCursorsForFlow(params: {

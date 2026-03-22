@@ -1,6 +1,6 @@
 import type { IFlow } from "../database/workspace-schema";
 
-export type FlowEntitySelectionSource =
+type FlowEntitySelectionSource =
   | Pick<IFlow, "entityFilter" | "entityLayouts">
   | null
   | undefined;

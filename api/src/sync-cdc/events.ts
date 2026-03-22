@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-export const cdcOperationSchema = z.enum(["upsert", "delete"]);
-export const cdcSourceSchema = z.enum(["webhook", "backfill"]);
+const cdcOperationSchema = z.enum(["upsert", "delete"]);
+const cdcSourceSchema = z.enum(["webhook", "backfill"]);
 
-export const normalizedCdcEventSchema = z.object({
+const normalizedCdcEventSchema = z.object({
   entity: z.string().min(1),
   recordId: z.string().min(1),
   operation: cdcOperationSchema,
@@ -14,10 +14,8 @@ export const normalizedCdcEventSchema = z.object({
   runId: z.string().optional(),
 });
 
-export type CdcOperation = z.infer<typeof cdcOperationSchema>;
-export type CdcSource = z.infer<typeof cdcSourceSchema>;
-export type CdcEventSource = CdcSource;
-export type CdcEventOperation = CdcOperation;
+export type CdcEventSource = z.infer<typeof cdcSourceSchema>;
+export type CdcEventOperation = z.infer<typeof cdcOperationSchema>;
 export type CdcMaterializationStatus =
   | "pending"
   | "applied"

@@ -138,7 +138,7 @@ function baseEntityTableName(baseName: string, entity: string): string {
   return baseName ? `${baseName}_${normalized}` : normalized;
 }
 
-export function cdcFlowToken(flowId: string): string {
+function cdcFlowToken(flowId: string): string {
   const normalized = String(flowId || "")
     .trim()
     .toLowerCase();
