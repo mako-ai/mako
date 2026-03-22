@@ -93,11 +93,14 @@ function streamStatus(state: CdcState): {
   }
 }
 
-function backfillStatus(state: CdcState, backlogCount: number): string {
-  if (state === "backfill") return "Running";
-  if (state === "idle") return "Not started";
-  if (backlogCount > 0) return "Catching up";
-  return "Complete";
+function backfillStatus(
+  state: CdcState,
+  backlogCount: number,
+): { label: string; color: "success" | "info" | "warning" | "default" } {
+  if (state === "backfill") return { label: "Running", color: "info" };
+  if (state === "idle") return { label: "Not started", color: "default" };
+  if (backlogCount > 0) return { label: "Catching up", color: "warning" };
+  return { label: "Complete", color: "success" };
 }
 
 function entityStreamChip(e: {
@@ -426,7 +429,14 @@ export function BackfillPanel({
               {/* Backfill Status */}
               <Box sx={kpi}>
                 <Typography sx={kpiLabel}>Backfill</Typography>
-                <Typography sx={{ ...kpiValue, mb: 0.75 }}>{bs}</Typography>
+                <Box sx={{ mb: 0.75 }}>
+                  <Chip
+                    label={bs.label}
+                    color={bs.color}
+                    size="small"
+                    sx={{ fontWeight: 600, fontSize: "0.75rem" }}
+                  />
+                </Box>
                 <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
                   {state !== "backfill" && (
                     <Button
