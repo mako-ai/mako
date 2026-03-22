@@ -199,8 +199,7 @@ export function BackfillPanel({
     fetchFlowHistory,
     fetchExecutionDetails,
     cancelFlowExecution,
-    fetchCdcSummary,
-    fetchCdcDiagnostics,
+    fetchCdcStatus,
     pauseCdcFlow,
     resumeCdcFlow,
     resyncCdcFlow,
@@ -223,8 +222,7 @@ export function BackfillPanel({
   const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
   const [recentLogs, setRecentLogs] = useState<ExecutionLog[]>([]);
   const [wasCancelled, setWasCancelled] = useState(false);
-  const [cdcSummary, setCdcSummary] = useState<any | null>(null);
-  const [cdcDiagnostics, setCdcDiagnostics] = useState<any | null>(null);
+  const [cdcStatus, setCdcStatus] = useState<any | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [resyncDialogOpen, setResyncDialogOpen] = useState(false);
   const [deleteDestination, setDeleteDestination] = useState(false);
@@ -288,24 +286,11 @@ export function BackfillPanel({
 
   const pollCdcOverview = useCallback(async () => {
     if (!isCdcFlow) return;
-    const summary = await fetchCdcSummary(workspaceId, flowId);
-    if (summary) {
-      setCdcSummary(summary);
+    const status = await fetchCdcStatus(workspaceId, flowId);
+    if (status) {
+      setCdcStatus(status);
     }
-    if (showDiagnostics) {
-      const diagnostics = await fetchCdcDiagnostics(workspaceId, flowId);
-      if (diagnostics) {
-        setCdcDiagnostics(diagnostics);
-      }
-    }
-  }, [
-    isCdcFlow,
-    fetchCdcSummary,
-    fetchCdcDiagnostics,
-    workspaceId,
-    flowId,
-    showDiagnostics,
-  ]);
+  }, [isCdcFlow, fetchCdcStatus, workspaceId, flowId]);
 
   const loadHistory = useCallback(async () => {
     const runs = await fetchFlowHistory(workspaceId, flowId, 10);
@@ -536,7 +521,7 @@ export function BackfillPanel({
 
   const handleCdcPauseResume = async () => {
     if (!isCdcFlow) return;
-    const currentState = cdcSummary?.syncState;
+    const currentState = cdcStatus?.syncState;
     const success =
       currentState === "paused"
         ? await resumeCdcFlow(workspaceId, flowId)
@@ -591,7 +576,7 @@ export function BackfillPanel({
   };
 
   if (isCdcFlow) {
-    const summary = cdcSummary;
+    const summary = cdcStatus;
 
     const formatLagDuration = (lagSeconds: number | null) => {
       if (lagSeconds === null || !Number.isFinite(lagSeconds)) return "n/a";
@@ -624,54 +609,29 @@ export function BackfillPanel({
 
     const freshnessSummary = (() => {
       if (!summary) return "unknown";
-      const webhookLagSeconds = (() => {
-        if (!summary.lastWebhookAt) return null;
-        const lastWebhookTs = new Date(summary.lastWebhookAt).getTime();
-        if (!Number.isFinite(lastWebhookTs)) return null;
-        return Math.max(Math.floor((Date.now() - lastWebhookTs) / 1000), 0);
-      })();
-
-      if (
-        (summary.failedCount ?? 0) === 0 &&
-        (summary.backlogCount ?? 0) === 0
-      ) {
+      if ((summary.backlogCount ?? 0) === 0) {
         return "live";
-      }
-      if (webhookLagSeconds !== null) {
-        return `lag ${formatLagDuration(webhookLagSeconds)}`;
       }
       return `lag ${formatLagDuration(summary.lagSeconds)}`;
     })();
 
     const entityBackfillStatus = (entity: {
       backlogCount: number;
-      failedCount: number;
-      droppedCount: number;
       lastMaterializedAt: string | null;
     }) => {
-      if (entity.failedCount > 0) return "Failed";
       if (!entity.lastMaterializedAt && entity.backlogCount === 0) {
         return "Not started";
       }
       if (entity.backlogCount > 0) return "In progress";
-      if (entity.droppedCount > 0) return "Filtered";
       return "Completed";
     };
 
     const entityObjectStatus = (entity: {
       backlogCount: number;
-      failedCount: number;
-      droppedCount: number;
       lastMaterializedAt: string | null;
     }) => {
-      if (entity.failedCount > 0) {
-        return { label: "Error", color: "error" as const };
-      }
       if (entity.backlogCount > 0) {
         return { label: "Syncing", color: "info" as const };
-      }
-      if (entity.droppedCount > 0) {
-        return { label: "Filtered", color: "warning" as const };
       }
       if (entity.lastMaterializedAt) {
         return { label: "Running", color: "success" as const };
@@ -681,13 +641,10 @@ export function BackfillPanel({
 
     const entityLagLabel = (entity: {
       backlogCount: number;
-      failedCount: number;
       lagSeconds: number | null;
     }) => {
       if (entity.lagSeconds === null) return "—";
-      // For entities with no queued/failed events, a growing lag mostly means
-      // "no recent events" rather than "pipeline delay".
-      if (entity.backlogCount === 0 && entity.failedCount === 0) return "—";
+      if (entity.backlogCount === 0) return "—";
       return formatLagDuration(entity.lagSeconds);
     };
 
@@ -744,12 +701,11 @@ export function BackfillPanel({
     const isPaused = state === "paused" && !backfillRunning;
     const isDegraded = state === "degraded" && !backfillRunning;
     const isIdle = (!state || state === "idle") && !backfillRunning;
-    const hasFailed = (summary?.failedCount ?? 0) > 0;
+    const hasFailed = false;
     const failedDroppedDetail =
-      summary &&
-      ((summary.failedCount ?? 0) > 0 || (summary.backlogCount ?? 0) > 0)
+      summary && (summary.backlogCount ?? 0) > 0
         ? `Lag ${formatLagDuration(summary.lagSeconds)}`
-        : "No queued or failed events";
+        : "No queued events";
 
     return (
       <Box
@@ -868,7 +824,7 @@ export function BackfillPanel({
                 startIcon={<RetryIcon sx={{ fontSize: 18 }} />}
                 onClick={handleRetryFailedMaterialization}
               >
-                Retry {summary?.failedCount ?? 0} failed
+                Retry failed
               </Button>
             )}
           </Box>
@@ -1098,45 +1054,15 @@ export function BackfillPanel({
                           : "Not started"}
                   </Typography>
                 </Box>
-                {/* Events processed */}
-                <Box
-                  sx={{
-                    borderRadius: 1.5,
-                    p: 1.5,
-                    bgcolor: "action.hover",
-                    minWidth: 0,
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ letterSpacing: 0.3, fontSize: "0.68rem" }}
-                  >
-                    Events materialized
-                  </Typography>
-                  <Typography
-                    fontWeight={700}
-                    sx={{ mt: 0.25, fontSize: "0.95rem" }}
-                  >
-                    {(summary.appliedCount ?? 0).toLocaleString()}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block", mt: 0.25, fontSize: "0.65rem" }}
-                  >
-                    {summary.lastWebhookAt
-                      ? `Last webhook ${new Date(summary.lastWebhookAt).toLocaleString()}`
-                      : "No events yet"}
-                  </Typography>
-                </Box>
-                {/* Failed */}
+                {/* Lag */}
                 <Box
                   sx={{
                     borderRadius: 1.5,
                     p: 1.5,
                     bgcolor:
-                      summary.failedCount > 0 ? "error.50" : "action.hover",
+                      (summary.backlogCount ?? 0) > 0
+                        ? "warning.50"
+                        : "action.hover",
                     minWidth: 0,
                   }}
                 >
@@ -1145,19 +1071,13 @@ export function BackfillPanel({
                     color="text.secondary"
                     sx={{ letterSpacing: 0.3, fontSize: "0.68rem" }}
                   >
-                    Failed / dropped
+                    Lag
                   </Typography>
                   <Typography
                     fontWeight={700}
-                    sx={{
-                      mt: 0.25,
-                      fontSize: "0.95rem",
-                      color:
-                        summary.failedCount > 0 ? "error.main" : "text.primary",
-                    }}
+                    sx={{ mt: 0.25, fontSize: "0.95rem" }}
                   >
-                    {summary.failedCount.toLocaleString()} /{" "}
-                    {(summary.droppedCount ?? 0).toLocaleString()}
+                    {formatLagDuration(summary.lagSeconds)}
                   </Typography>
                   <Typography
                     variant="caption"
@@ -1410,7 +1330,7 @@ export function BackfillPanel({
                     textTransform: "uppercase",
                   }}
                 >
-                  {summary.entityCounts.length} entities
+                  {(summary.entities || []).length} entities
                 </Typography>
                 <Box
                   sx={{
@@ -1460,16 +1380,13 @@ export function BackfillPanel({
                           <TableCell>Entity name</TableCell>
                           <TableCell>Status</TableCell>
                           <TableCell>Backfill</TableCell>
-                          <TableCell align="right">Applied</TableCell>
                           <TableCell align="right">Queued</TableCell>
-                          <TableCell align="right">Failed</TableCell>
-                          <TableCell align="right">Dropped</TableCell>
                           <TableCell align="right">Lag</TableCell>
                           <TableCell align="right">Last materialized</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {summary.entityCounts.map((entity: any) => {
+                        {(summary.entities || []).map((entity: any) => {
                           const objStatus = entityObjectStatus(entity);
                           return (
                             <TableRow
@@ -1504,62 +1421,13 @@ export function BackfillPanel({
                               <TableCell>
                                 <Typography
                                   fontSize="0.78rem"
-                                  color={
-                                    entityBackfillStatus(entity) === "Failed"
-                                      ? "error.main"
-                                      : "text.primary"
-                                  }
+                                  color="text.primary"
                                 >
                                   {entityBackfillStatus(entity)}
                                 </Typography>
                               </TableCell>
                               <TableCell align="right">
-                                <Typography
-                                  fontWeight={
-                                    entity.appliedCount > 0 ? 600 : 400
-                                  }
-                                  color={
-                                    entity.appliedCount > 0
-                                      ? "success.main"
-                                      : "text.primary"
-                                  }
-                                  fontSize="0.8rem"
-                                >
-                                  {(entity.appliedCount ?? 0).toLocaleString()}
-                                </Typography>
-                              </TableCell>
-                              <TableCell align="right">
                                 {entity.backlogCount}
-                              </TableCell>
-                              <TableCell align="right">
-                                <Typography
-                                  fontWeight={
-                                    entity.failedCount > 0 ? 700 : 400
-                                  }
-                                  color={
-                                    entity.failedCount > 0
-                                      ? "error.main"
-                                      : "text.primary"
-                                  }
-                                  fontSize="0.8rem"
-                                >
-                                  {entity.failedCount}
-                                </Typography>
-                              </TableCell>
-                              <TableCell align="right">
-                                <Typography
-                                  fontWeight={
-                                    entity.droppedCount > 0 ? 700 : 400
-                                  }
-                                  color={
-                                    entity.droppedCount > 0
-                                      ? "warning.main"
-                                      : "text.primary"
-                                  }
-                                  fontSize="0.8rem"
-                                >
-                                  {entity.droppedCount ?? 0}
-                                </Typography>
                               </TableCell>
                               <TableCell align="right">
                                 {entityLagLabel(entity)}
@@ -1586,7 +1454,7 @@ export function BackfillPanel({
               </Box>
 
               {/* Diagnostics */}
-              {showDiagnostics && cdcDiagnostics && (
+              {showDiagnostics && cdcStatus && (
                 <Box
                   sx={{
                     display: "grid",
@@ -1629,7 +1497,7 @@ export function BackfillPanel({
                         gap: 0.5,
                       }}
                     >
-                      {cdcDiagnostics.transitions
+                      {(cdcStatus.transitions || [])
                         .slice(0, 20)
                         .map((transition: any, index: number) => (
                           <Typography
@@ -1672,7 +1540,7 @@ export function BackfillPanel({
                             </Typography>
                           </Typography>
                         ))}
-                      {cdcDiagnostics.transitions.length === 0 && (
+                      {(cdcStatus.transitions || []).length === 0 && (
                         <Typography variant="caption" color="text.secondary">
                           No transitions recorded
                         </Typography>
@@ -1719,7 +1587,7 @@ export function BackfillPanel({
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {cdcDiagnostics.cursors.map((cursor: any) => (
+                          {(cdcStatus.entities || []).map((cursor: any) => (
                             <TableRow
                               key={cursor.entity}
                               sx={{ "&:last-child td": { borderBottom: 0 } }}
@@ -1749,89 +1617,6 @@ export function BackfillPanel({
                         </TableBody>
                       </Table>
                     </TableContainer>
-                  </Box>
-
-                  {/* Recent events */}
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
-                      sx={{ mb: 0.75, fontSize: "0.8rem" }}
-                    >
-                      Recent events
-                    </Typography>
-                    <Box
-                      sx={{
-                        maxHeight: 200,
-                        overflow: "auto",
-                        borderRadius: 1,
-                        bgcolor: "action.hover",
-                        p: 1,
-                        display: "grid",
-                        gap: 0.5,
-                      }}
-                    >
-                      {cdcDiagnostics.recentEvents
-                        .slice(0, 20)
-                        .map((event: any, index: number) => (
-                          <Box
-                            key={`${event.ingestSeq}-${index}`}
-                            sx={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 0.75,
-                            }}
-                          >
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                fontFamily: "monospace",
-                                fontSize: "0.72rem",
-                                color: "text.secondary",
-                                minWidth: 32,
-                              }}
-                            >
-                              #{event.ingestSeq}
-                            </Typography>
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                fontFamily: "monospace",
-                                fontSize: "0.72rem",
-                                flex: 1,
-                              }}
-                            >
-                              {event.entity} <strong>{event.operation}</strong>
-                            </Typography>
-                            <Chip
-                              size="small"
-                              label={event.materializationStatus}
-                              color={
-                                event.materializationStatus === "applied"
-                                  ? "success"
-                                  : event.materializationStatus === "failed"
-                                    ? "error"
-                                    : "default"
-                              }
-                              variant="outlined"
-                              sx={{
-                                height: 18,
-                                fontSize: "0.62rem",
-                                fontWeight: 500,
-                                borderRadius: 0.75,
-                              }}
-                            />
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                fontSize: "0.68rem",
-                                color: "text.secondary",
-                              }}
-                            >
-                              {event.source}
-                            </Typography>
-                          </Box>
-                        ))}
-                    </Box>
                   </Box>
                 </Box>
               )}

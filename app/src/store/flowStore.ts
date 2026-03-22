@@ -277,43 +277,12 @@ interface FlowStatusResponse {
   } | null;
 }
 
-export interface CdcSummary {
+export interface CdcStatus {
   syncState: "idle" | "backfill" | "catchup" | "live" | "paused" | "degraded";
-  lastTransition: {
-    fromState: string;
-    event: string;
-    toState: string;
-    at: string;
-    reason?: string;
-  } | null;
-  lastWebhookAt: string | null;
-  lastMaterializedAt: string | null;
-  appliedCount: number;
   backlogCount: number;
-  failedCount: number;
-  droppedCount: number;
   lagSeconds: number | null;
-  entityCounts: Array<{
-    entity: string;
-    appliedCount: number;
-    backlogCount: number;
-    failedCount: number;
-    droppedCount: number;
-    lagSeconds: number | null;
-    lastMaterializedAt: string | null;
-  }>;
-}
-
-export interface CdcDiagnostics {
-  syncState: "idle" | "backfill" | "catchup" | "live" | "paused" | "degraded";
-  transitions: Array<{
-    fromState: string;
-    event: string;
-    toState: string;
-    at: string;
-    reason?: string;
-  }>;
-  cursors: Array<{
+  lastMaterializedAt: string | null;
+  entities: Array<{
     entity: string;
     lastIngestSeq: number;
     lastMaterializedSeq: number;
@@ -321,16 +290,17 @@ export interface CdcDiagnostics {
     lagSeconds: number | null;
     lastMaterializedAt: string | null;
   }>;
-  recentEvents: Array<{
-    entity: string;
-    recordId: string;
-    operation: "upsert" | "delete";
-    sourceTs: string;
-    ingestSeq: number;
-    source: "webhook" | "backfill";
-    materializationStatus: "pending" | "applied" | "failed" | "dropped";
+  transitions: Array<{
+    fromState: string;
+    event: string;
+    toState: string;
+    at: string;
+    reason?: string;
   }>;
 }
+
+export type CdcSummary = CdcStatus;
+export type CdcDiagnostics = CdcStatus;
 
 // Query validation result
 interface QueryValidationResult {
@@ -448,14 +418,10 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     entity?: string,
   ) => Promise<boolean>;
-  fetchCdcSummary: (
+  fetchCdcStatus: (
     workspaceId: string,
     flowId: string,
-  ) => Promise<CdcSummary | null>;
-  fetchCdcDiagnostics: (
-    workspaceId: string,
-    flowId: string,
-  ) => Promise<CdcDiagnostics | null>;
+  ) => Promise<CdcStatus | null>;
   fetchFlowHistory: (
     workspaceId: string,
     flowId: string,
@@ -980,29 +946,13 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      fetchCdcSummary: async (workspaceId, flowId) => {
+      fetchCdcStatus: async (workspaceId, flowId) => {
         try {
           const response = await apiClient.get<{
             success: boolean;
-            data: CdcSummary;
+            data: CdcStatus;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/summary`);
-          return response.success ? response.data : null;
-        } catch (error) {
-          set(state => {
-            state.error[workspaceId] = normalizeError(error);
-          });
-          return null;
-        }
-      },
-
-      fetchCdcDiagnostics: async (workspaceId, flowId) => {
-        try {
-          const response = await apiClient.get<{
-            success: boolean;
-            data: CdcDiagnostics;
-            error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/diagnostics`);
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/status`);
           return response.success ? response.data : null;
         } catch (error) {
           set(state => {
