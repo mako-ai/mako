@@ -1,5 +1,5 @@
 import { IConnector } from "../../database/workspace-schema";
-import type { NormalizedCdcEvent } from "../../sync-cdc/contracts/events";
+import type { NormalizedCdcEvent } from "../../sync-cdc/events";
 
 export interface SyncLogger {
   log(

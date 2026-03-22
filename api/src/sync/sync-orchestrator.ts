@@ -17,8 +17,11 @@ import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
 import { normalizePayloadKeys } from "../sync-cdc/normalization";
-import { cdcEngineOrchestratorService } from "../sync-cdc/engine-orchestrator.service";
-import { isCdcEnabledForFlow } from "../sync-cdc/runtime";
+import {
+  buildCdcEntityLayout,
+  hasCdcDestinationAdapter,
+  resolveCdcDestinationAdapter,
+} from "../sync-cdc/adapters/registry";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
@@ -536,14 +539,27 @@ async function performSyncChunkSql(
     .lean();
   const isCdcEnabled =
     Boolean(options.flowId && options.workspaceId) &&
-    isCdcEnabledForFlow(
-      {
-        _id: new Types.ObjectId(options.flowId!),
-        tableDestination,
-        syncEngine: options.syncEngine,
-      } as any,
-      destinationConn?.type,
-    );
+    options.syncEngine === "cdc" &&
+    hasCdcDestinationAdapter(destinationConn?.type);
+
+  const cdcAdapter = isCdcEnabled
+    ? resolveCdcDestinationAdapter({
+        destinationType: destinationConn?.type || "",
+        destinationDatabaseId: options.destinationId,
+        destinationDatabaseName: options.destinationDatabaseName,
+        tableDestination: {
+          connectionId: String(tableDestination.connectionId),
+          schema: tableDestination.schema || "public",
+          tableName: entityTableName,
+        },
+      })
+    : undefined;
+  const cdcLayout = isCdcEnabled
+    ? buildCdcEntityLayout({
+        entity,
+        tableName: entityTableName,
+      })
+    : undefined;
 
   const writer = isCdcEnabled
     ? undefined
@@ -707,15 +723,21 @@ async function performSyncChunkSql(
                 "BigQuery CDC requires flowId and workspaceId on chunk options",
               );
             }
-            await cdcEngineOrchestratorService.ingestBackfill({
-              workspaceId: options.workspaceId,
-              flowId: options.flowId,
-              connector,
-              connectorType: dataSource.type,
-              entity,
+            if (!cdcAdapter || !cdcLayout) {
+              throw new Error("CDC adapter not initialized");
+            }
+            await cdcAdapter.applyBatch({
               records: processedRecords,
-              runId: options.backfillRunId,
-              enqueue: true,
+              layout: cdcLayout,
+              flow: {
+                _id: new Types.ObjectId(options.flowId),
+                deleteMode: options.deleteMode,
+                dataSourceId:
+                  typeof dataSource.id === "string" &&
+                  Types.ObjectId.isValid(dataSource.id)
+                    ? new Types.ObjectId(dataSource.id)
+                    : undefined,
+              } as any,
             });
             runningProcessed += processedRecords.length;
             return;

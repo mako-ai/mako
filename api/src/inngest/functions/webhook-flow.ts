@@ -10,18 +10,14 @@ import { connectorRegistry } from "../../connectors/registry";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { Types } from "mongoose";
-import {
-  resolveDestinationTypeForFlow,
-  sweepStaleCdcPending,
-} from "../../sync-cdc/runtime.service";
-import { cdcMaterializerService } from "../../sync-cdc/materializer.service";
+import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
 import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
 } from "../../sync-cdc/normalization";
-import { cdcEngineOrchestratorService } from "../../sync-cdc/engine-orchestrator.service";
-import { isCdcEnabledForFlow } from "../../sync-cdc/runtime";
+import { cdcIngestService } from "../../sync-cdc/ingest";
+import { cdcConsumerService } from "../../sync-cdc/consumer";
 
 /**
  * Process a single webhook event immediately
@@ -37,18 +33,13 @@ export const webhookEventProcessFunction = inngest.createFunction(
   },
   { event: "webhook/event.process" },
   async ({ event, step }) => {
-    const {
-      flowId,
-      eventId,
-      isReplay = false,
-    } = event.data as {
+    const { flowId, eventId } = event.data as {
       flowId: string;
       eventId: string;
-      isReplay?: boolean;
     };
     const logger = getSyncLogger(`webhook.${flowId}`);
 
-    logger.debug("Processing webhook event", { flowId, eventId, isReplay });
+    logger.debug("Processing webhook event", { flowId, eventId });
 
     // Get the webhook event
     const webhookEvent = (await step.run("fetch-webhook-event", async () => {
@@ -153,8 +144,11 @@ export const webhookEventProcessFunction = inngest.createFunction(
           _webhookEventId: webhookEvent.eventId,
         };
 
-        const destinationType = await resolveDestinationTypeForFlow(flow);
-        const isCdcEnabled = isCdcEnabledForFlow(flow, destinationType);
+        const destinationType = database.type;
+        const isCdcEnabled =
+          flow.syncEngine === "cdc" &&
+          Boolean(flow.tableDestination?.connectionId) &&
+          hasCdcDestinationAdapter(destinationType);
 
         // For activity events, resolve sub-type from the data's _type field
         // so we route to the correct per-sub-type table (e.g. activities:Call → call)
@@ -162,106 +156,6 @@ export const webhookEventProcessFunction = inngest.createFunction(
         if (mapping.entity === "activities" && data._type) {
           resolvedEntity = `activities:${data._type}`;
         }
-
-        // IMPORTANT: keep this logic inside the same step block.
-        // Inngest does not support nesting step.run calls.
-        let backfillGate: { active: boolean; staleCleared: boolean } = {
-          active: false,
-          staleCleared: false,
-        };
-        if (flow.tableDestination?.connectionId) {
-          const executionsCollection = Flow.db.collection("flow_executions");
-          const activeBackfillExecution = await executionsCollection.findOne({
-            flowId: new Types.ObjectId(flowId),
-            status: "running",
-            "context.syncMode": "full",
-          });
-
-          // Source of truth: a running full-sync execution means webhook apply
-          // must be deferred, even if backfillState.active drifted to false.
-          if (activeBackfillExecution) {
-            backfillGate = { active: true, staleCleared: false };
-          }
-
-          const latestFlow = await Flow.findById(flowId)
-            .select({ backfillState: 1 })
-            .lean();
-          if (latestFlow?.backfillState?.active) {
-            const activeExecution = activeBackfillExecution;
-
-            // If no running execution exists, the gate may be stale (e.g. abandoned run).
-            // But we need a grace window right after backfill starts, before the
-            // flow execution document is fully initialized.
-            if (!activeExecution) {
-              const startedAt = latestFlow.backfillState.startedAt
-                ? new Date(latestFlow.backfillState.startedAt)
-                : null;
-              const gateAgeMs = startedAt
-                ? Date.now() - startedAt.getTime()
-                : Number.POSITIVE_INFINITY;
-              const withinStartupGrace = gateAgeMs < 5 * 60 * 1000; // 5 minutes
-
-              if (withinStartupGrace) {
-                backfillGate = { active: true, staleCleared: false };
-                logger.info(
-                  "Backfill gate active during startup grace window",
-                  {
-                    flowId,
-                    eventId: webhookEvent.eventId,
-                    gateAgeMs,
-                  },
-                );
-              } else {
-                await Flow.updateOne(
-                  { _id: new Types.ObjectId(flowId) },
-                  {
-                    $set: {
-                      "backfillState.active": false,
-                      "backfillState.completedAt": new Date(),
-                    },
-                  },
-                );
-                backfillGate = { active: false, staleCleared: true };
-              }
-            } else {
-              backfillGate = { active: true, staleCleared: false };
-            }
-          } else if (activeBackfillExecution) {
-            // Self-heal drift: keep flag aligned so UI and downstream checks
-            // reflect the actual running backfill.
-            await Flow.updateOne(
-              { _id: new Types.ObjectId(flowId) },
-              {
-                $set: {
-                  "backfillState.active": true,
-                  "backfillState.startedAt":
-                    activeBackfillExecution.startedAt || new Date(),
-                  "backfillState.completedAt": null,
-                },
-              },
-            );
-
-            logger.warn(
-              "Backfill gate flag drift detected; restored active=true from running execution",
-              {
-                flowId,
-                eventId: webhookEvent.eventId,
-              },
-            );
-          }
-        }
-
-        if (backfillGate.staleCleared) {
-          logger.warn("Cleared stale backfill gate before webhook apply", {
-            flowId,
-            eventId: webhookEvent.eventId,
-          });
-        }
-
-        const shouldDeferApply =
-          !!flow.tableDestination?.connectionId &&
-          backfillGate.active &&
-          !isReplay;
 
         const entityLayout = (flow.entityLayouts || []).find(
           (l: any) =>
@@ -304,7 +198,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
             documentData,
             new Date(webhookEvent.receivedAt),
           );
-          await cdcEngineOrchestratorService.ingestNormalized({
+          await cdcIngestService.appendNormalizedEvents({
             workspaceId: String(flow.workspaceId),
             flowId: String(flowId),
             enqueue: true,
@@ -317,6 +211,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
                 sourceTs,
                 source: "webhook",
                 changeId: `webhook:${webhookEvent.eventId}:${resolvedEntity}:${id}:${mapping.operation}`,
+                webhookEventId: String(webhookEvent._id),
               },
             ],
           });
@@ -349,36 +244,6 @@ export const webhookEventProcessFunction = inngest.createFunction(
           return {
             processed: true,
             reason: "Queued for CDC materialization",
-            entity: resolvedEntity,
-            operation: mapping.operation,
-          };
-        }
-
-        // During backfill, queue webhook apply and defer destination writes.
-        // We'll replay pending webhook events after swap completes.
-        if (shouldDeferApply) {
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "pending",
-                entity: resolvedEntity,
-                operation: mapping.operation,
-                recordId: String(id),
-                applyStatus: "pending",
-              },
-            },
-          );
-
-          logger.info("Deferred webhook apply due to active backfill", {
-            eventId: webhookEvent.eventId,
-            entity: resolvedEntity,
-            operation: mapping.operation,
-          });
-
-          return {
-            processed: false,
-            reason: "Deferred until backfill replay",
             entity: resolvedEntity,
             operation: mapping.operation,
           };
@@ -785,7 +650,7 @@ async function runCdcMaterialization(params: {
   );
 
   const result = await params.step.run("materialize-cdc-entity", async () => {
-    return cdcMaterializerService.materializeEntity({
+    return cdcConsumerService.materializeEntity({
       workspaceId,
       flowId,
       entity,
@@ -797,14 +662,14 @@ async function runCdcMaterialization(params: {
     flowId,
     entity,
     force: Boolean(force),
-    staged: (result as any).staged,
+    processed: (result as any).processed,
     applied: (result as any).applied,
-    lastMaterializedSeq: (result as any).lastMaterializedSeq,
+    latestIngestSeq: (result as any).latestIngestSeq,
     skipped: (result as any).skipped,
     reason: (result as any).reason,
   });
 
-  if ((result as any).staged >= maxEvents) {
+  if ((result as any).processed >= maxEvents) {
     await params.step.sendEvent("continue-materialize", {
       name: params.continuationEventName,
       data: { workspaceId, flowId, entity, force: true },
@@ -835,70 +700,5 @@ export const cdcMaterializeFunction = inngest.createFunction(
       logger,
       continuationEventName: "cdc/materialize",
     });
-  },
-);
-
-/**
- * Backward-compatible materialization trigger for older queued events.
- */
-export const bigQueryCdcMaterializeFunction = inngest.createFunction(
-  {
-    id: "bigquery-cdc-materialize",
-    name: "BigQuery CDC Materialize (compat)",
-    concurrency: {
-      limit: 1,
-      key: "event.data.flowId + ':' + event.data.entity",
-    },
-  },
-  { event: "bigquery/cdc.materialize" },
-  async ({ event, step, logger }) => {
-    return runCdcMaterialization({
-      eventData: event.data,
-      step,
-      logger,
-      continuationEventName: "bigquery/cdc.materialize",
-    });
-  },
-);
-
-/**
- * Auto-heal stale CDC pending queues by re-enqueueing entities
- * that have pending rows but have not been materialized recently.
- */
-export const bigQueryCdcStaleSweepFunction = inngest.createFunction(
-  {
-    id: "bigquery-cdc-stale-sweep",
-    name: "BigQuery CDC Stale Sweep",
-  },
-  { cron: "*/2 * * * *" },
-  async ({ step, logger }) => {
-    const staleSeconds = Math.max(
-      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_SECONDS || "180", 10) ||
-        180,
-      30,
-    );
-    const maxEntities = Math.max(
-      parseInt(process.env.BIGQUERY_CDC_STALE_SWEEP_MAX_ENTITIES || "25", 10) ||
-        25,
-      1,
-    );
-
-    const result = await step.run("sweep-stale-bigquery-cdc", async () => {
-      return sweepStaleCdcPending({
-        staleSeconds,
-        maxEntities,
-      });
-    });
-
-    if ((result as any).reenqueuedEntities > 0) {
-      logger.warn("Re-enqueued stale BigQuery CDC entities", {
-        staleSeconds,
-        maxEntities,
-        reenqueuedEntities: (result as any).reenqueuedEntities,
-        scannedEntities: (result as any).scannedEntities,
-      });
-    }
-
-    return result;
   },
 );

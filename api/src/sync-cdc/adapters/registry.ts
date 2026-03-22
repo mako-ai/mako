@@ -1,9 +1,37 @@
-import type {
-  CdcDestinationAdapter,
-  CdcEntityLayout,
-} from "../contracts/adapters";
-import { BigQueryDestinationAdapter } from "./bigquery.adapter";
-import { PostgreSqlDestinationAdapter } from "./postgresql.adapter";
+import type { IFlow } from "../../database/workspace-schema";
+import type { CdcStoredEvent } from "../events";
+import { BigQueryDestinationAdapter } from "./bigquery";
+import { PostgreSqlDestinationAdapter } from "./postgresql";
+
+export interface CdcEntityLayout {
+  entity: string;
+  tableName: string;
+  keyColumns: string[];
+  deleteMode?: "hard" | "soft";
+  partitioning?: {
+    field: string;
+    granularity?: "day" | "hour" | "month" | "year";
+    requirePartitionFilter?: boolean;
+  };
+  clustering?: {
+    fields: string[];
+  };
+}
+
+export interface CdcDestinationAdapter {
+  destinationType: string;
+  ensureLiveTable(layout: CdcEntityLayout): Promise<void>;
+  applyEvents(params: {
+    events: CdcStoredEvent[];
+    layout: CdcEntityLayout;
+    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+  }): Promise<{ applied: number }>;
+  applyBatch(params: {
+    records: Array<Record<string, unknown>>;
+    layout: CdcEntityLayout;
+    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+  }): Promise<{ written: number }>;
+}
 
 export function resolveCdcDestinationAdapter(params: {
   destinationType: string;
@@ -18,7 +46,11 @@ export function resolveCdcDestinationAdapter(params: {
   const normalizedType = params.destinationType.toLowerCase();
 
   if (normalizedType === "bigquery") {
-    return new BigQueryDestinationAdapter();
+    return new BigQueryDestinationAdapter({
+      destinationDatabaseId: params.destinationDatabaseId,
+      destinationDatabaseName: params.destinationDatabaseName,
+      tableDestination: params.tableDestination,
+    });
   }
 
   if (normalizedType === "postgresql") {

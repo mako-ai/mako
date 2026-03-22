@@ -1222,6 +1222,17 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       nonKeyColumns.length > 0
         ? `UPDATE SET ${nonKeyColumns.map(c => `${escapeIdentifier(c)} = S.${escapeIdentifier(c)}`).join(", ")}`
         : "";
+    const hasSourceOrdering =
+      columns.includes("_mako_source_ts") &&
+      !keyColumns.includes("_mako_source_ts");
+    const hasIngestOrdering =
+      columns.includes("_mako_ingest_seq") &&
+      !keyColumns.includes("_mako_ingest_seq");
+    const matchedGuard = hasSourceOrdering
+      ? ` AND COALESCE(S.${escapeIdentifier("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(T.${escapeIdentifier("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
+      : hasIngestOrdering
+        ? ` AND COALESCE(S.${escapeIdentifier("_mako_ingest_seq")}, -1) >= COALESCE(T.${escapeIdentifier("_mako_ingest_seq")}, -1)`
+        : "";
     const insertColumns = columns.map(escapeIdentifier).join(", ");
     const insertValues = columns
       .map(c => `S.${escapeIdentifier(c)}`)
@@ -1242,7 +1253,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
         MERGE INTO ${fullTableName} T
         USING ${sourceQuery} AS S
         ON ${joinConditions}
-        ${updateClause ? `WHEN MATCHED THEN ${updateClause}` : ""}
+        ${updateClause ? `WHEN MATCHED${matchedGuard} THEN ${updateClause}` : ""}
         WHEN NOT MATCHED THEN
           INSERT (${insertColumns}) VALUES (${insertValues});
       `;

@@ -25,15 +25,17 @@ import * as os from "os";
 import { CronExpressionParser } from "cron-parser";
 import { getExecutionLogger, getSyncLogger } from "../logging";
 import { loggers } from "../../logging";
-import { cdcBackfillCheckpointService } from "../../sync-cdc/backfill-checkpoint.service";
-import { syncMachineService } from "../../sync-cdc/state/sync-machine.service";
+import {
+  cdcBackfillCheckpointService,
+  syncMachineService,
+} from "../../sync-cdc/sync-state";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
-import { isCdcEnabledForFlow } from "../../sync-cdc/runtime";
-import { getCdcEventStore } from "../../sync-cdc/stores";
+import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
+import { getCdcEventStore } from "../../sync-cdc/event-store";
 import {
   forceDrainCdcFlow,
   markCdcBackfillCompletedForFlow,
-} from "../../sync-cdc/runtime.service";
+} from "../../sync-cdc/backfill";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -587,7 +589,10 @@ export const flowFunction = inngest.createFunction(
           return destination?.type || undefined;
         },
       )) as string | undefined;
-      const isCdcEnabled = isCdcEnabledForFlow(flow, destinationType);
+      const isCdcEnabled =
+        flow.syncEngine === "cdc" &&
+        Boolean(flow.tableDestination?.connectionId) &&
+        hasCdcDestinationAdapter(destinationType);
       const requestedBackfillRunId =
         typeof backfillRunId === "string" && backfillRunId.length > 0
           ? backfillRunId
@@ -2254,10 +2259,10 @@ export const flowFunction = inngest.createFunction(
                 .lean()
             )?.type
           : undefined;
-        const isCdcEnabled = isCdcEnabledForFlow(
-          flowRef as IFlow,
-          destinationType,
-        );
+        const isCdcEnabled =
+          (flowRef as IFlow).syncEngine === "cdc" &&
+          Boolean((flowRef as IFlow).tableDestination?.connectionId) &&
+          hasCdcDestinationAdapter(destinationType);
         if (isCdcEnabled) {
           const safeFlowRef = flowRef as IFlow;
           await step.run("cdc-transition-fail", async () => {

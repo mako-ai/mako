@@ -4,13 +4,14 @@ import {
   CdcChangeEvent,
   Flow,
   ICdcChangeEvent,
-} from "../../database/workspace-schema";
+} from "../database/workspace-schema";
+import { loggers } from "../logging";
 import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
   sanitizeBackfillPayloadForIdempotency,
   stableStringify,
-} from "../normalization";
+} from "./normalization";
 import type {
   CdcAppendEntitySummary,
   CdcAppendResult,
@@ -19,7 +20,9 @@ import type {
   CdcEventStore,
   CdcMaterializationStatus,
   CdcStoredEvent,
-} from "../contracts/events";
+} from "./events";
+
+const log = loggers.sync("cdc.event-store");
 
 type DuplicateErrorInfo = {
   duplicateCount: number;
@@ -171,7 +174,6 @@ function toStoredEvent(
     | "idempotencyKey"
     | "payload"
     | "webhookEventId"
-    | "stageStatus"
     | "materializationStatus"
   > & {
     _id: Types.ObjectId;
@@ -192,7 +194,6 @@ function toStoredEvent(
     idempotencyKey: doc.idempotencyKey,
     payload: (doc.payload || undefined) as Record<string, unknown> | undefined,
     webhookEventId: doc.webhookEventId,
-    stageStatus: doc.stageStatus,
     materializationStatus: doc.materializationStatus,
   };
 }
@@ -250,7 +251,6 @@ export class MongoCdcEventStore implements CdcEventStore {
       const previous = byEntity.get(event.entity);
       byEntity.set(event.entity, {
         entity: event.entity,
-        // Preserve backfill mode if any event in this batch is backfill.
         source:
           previous?.source === "backfill" || event.source === "backfill"
             ? "backfill"
@@ -285,15 +285,17 @@ export class MongoCdcEventStore implements CdcEventStore {
     };
   }
 
-  async listPendingEvents(params: {
+  async readAfter(params: {
     flowId: string;
     entity: string;
+    afterIngestSeq: number;
     limit: number;
   }): Promise<CdcStoredEvent[]> {
     const rows = await CdcChangeEvent.find({
       flowId: new Types.ObjectId(params.flowId),
       entity: params.entity,
       materializationStatus: "pending",
+      ingestSeq: { $gt: Math.max(params.afterIngestSeq, 0) },
     })
       .sort({ ingestSeq: 1 })
       .limit(Math.max(params.limit, 1))
@@ -316,25 +318,11 @@ export class MongoCdcEventStore implements CdcEventStore {
           | "idempotencyKey"
           | "payload"
           | "webhookEventId"
-          | "stageStatus"
           | "materializationStatus"
         > & {
           _id: Types.ObjectId;
         },
       ),
-    );
-  }
-
-  async markEventsStaged(eventIds: string[]): Promise<void> {
-    const ids = normalizeIds(eventIds);
-    if (ids.length === 0) return;
-    await CdcChangeEvent.updateMany(
-      { _id: { $in: ids } },
-      {
-        $set: { stageStatus: "staged", stagedAt: new Date() },
-        $inc: { stageAttemptCount: 1 },
-        $unset: { stageError: "" },
-      },
     );
   }
 
@@ -480,7 +468,6 @@ export class MongoCdcEventStore implements CdcEventStore {
         | "idempotencyKey"
         | "payload"
         | "webhookEventId"
-        | "stageStatus"
         | "materializationStatus"
       > & {
         _id: Types.ObjectId;
@@ -518,7 +505,6 @@ export class MongoCdcEventStore implements CdcEventStore {
           | "idempotencyKey"
           | "payload"
           | "webhookEventId"
-          | "stageStatus"
           | "materializationStatus"
         > & {
           _id: Types.ObjectId;
@@ -593,4 +579,28 @@ export class MongoCdcEventStore implements CdcEventStore {
     });
     return result.deletedCount || 0;
   }
+}
+
+let cachedStore: CdcEventStore | null = null;
+
+export interface CdcEventStoreRuntimeConfig {
+  primary: "mongo";
+}
+
+export function getCdcEventStoreConfig(): CdcEventStoreRuntimeConfig {
+  return { primary: "mongo" };
+}
+
+export function getCdcEventStore(): CdcEventStore {
+  if (!cachedStore) {
+    cachedStore = new MongoCdcEventStore();
+    log.info("CDC event store initialized", {
+      primary: "mongo",
+    });
+  }
+  return cachedStore;
+}
+
+export function resetCdcEventStoreForTests(): void {
+  cachedStore = null;
 }

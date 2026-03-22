@@ -18,7 +18,6 @@ export type CdcOperation = z.infer<typeof cdcOperationSchema>;
 export type CdcSource = z.infer<typeof cdcSourceSchema>;
 export type CdcEventSource = CdcSource;
 export type CdcEventOperation = CdcOperation;
-export type CdcStageStatus = "pending" | "staged" | "failed";
 export type CdcMaterializationStatus =
   | "pending"
   | "applied"
@@ -53,7 +52,6 @@ export interface CdcStoredEvent {
   idempotencyKey: string;
   payload?: Record<string, unknown>;
   webhookEventId?: string;
-  stageStatus: CdcStageStatus;
   materializationStatus: CdcMaterializationStatus;
 }
 
@@ -78,13 +76,12 @@ export interface CdcEventStore {
     events: CdcEventInput[];
   }): Promise<CdcAppendResult>;
 
-  listPendingEvents(params: {
+  readAfter(params: {
     flowId: string;
     entity: string;
+    afterIngestSeq: number;
     limit: number;
   }): Promise<CdcStoredEvent[]>;
-
-  markEventsStaged(eventIds: string[]): Promise<void>;
 
   markEventsApplied(eventIds: string[]): Promise<void>;
 

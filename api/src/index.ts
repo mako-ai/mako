@@ -42,7 +42,7 @@ import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
 import { startDashboardRefreshPoller } from "./services/dashboard-refresh-runner.service";
-import { getCdcEventStoreConfig } from "./sync-cdc/stores";
+import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");

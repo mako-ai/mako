@@ -752,6 +752,7 @@ export interface IBigQueryCdcState extends Document {
   backlogCount: number;
   lastEnqueuedAt?: Date;
   mergeIntervalSeconds: number;
+  backfillCursor?: Record<string, unknown>;
 }
 
 export type ICdcChangeEvent = IBigQueryChangeEvent;
@@ -766,29 +767,6 @@ export interface ICdcStateTransition extends Document {
   toState: SyncState;
   at: Date;
   reason?: string;
-}
-
-export interface ICdcEntityLock extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  flowId: Types.ObjectId;
-  entity: string;
-  ownerId: string;
-  leasedUntil: Date;
-  heartbeatAt: Date;
-  fencingToken: number;
-  acquiredAt: Date;
-}
-
-export interface ICdcBackfillCheckpoint extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  flowId: Types.ObjectId;
-  runId: string;
-  entity: string;
-  fetchState: Record<string, unknown>;
-  updatedAt: Date;
-  completedAt?: Date;
 }
 
 /**
@@ -1961,6 +1939,13 @@ BigQueryChangeEventSchema.index({
   stageStatus: 1,
   ingestSeq: 1,
 });
+BigQueryChangeEventSchema.index(
+  { appliedAt: 1 },
+  {
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { appliedAt: { $exists: true } },
+  },
+);
 
 /**
  * BigQueryCdcState schema
@@ -1989,6 +1974,7 @@ const BigQueryCdcStateSchema = new Schema<IBigQueryCdcState>(
     backlogCount: { type: Number, default: 0 },
     lastEnqueuedAt: Date,
     mergeIntervalSeconds: { type: Number, default: 300 },
+    backfillCursor: Schema.Types.Mixed,
   },
   {
     collection: "bigquery_cdc_state",
@@ -2029,56 +2015,6 @@ const CdcStateTransitionSchema = new Schema<ICdcStateTransition>(
 
 CdcStateTransitionSchema.index({ flowId: 1, at: -1 });
 CdcStateTransitionSchema.index({ workspaceId: 1, flowId: 1, at: -1 });
-
-const CdcEntityLockSchema = new Schema<ICdcEntityLock>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
-    entity: { type: String, required: true },
-    ownerId: { type: String, required: true },
-    leasedUntil: { type: Date, required: true },
-    heartbeatAt: { type: Date, required: true },
-    fencingToken: { type: Number, required: true, default: 1 },
-    acquiredAt: { type: Date, required: true, default: Date.now },
-  },
-  {
-    collection: "cdc_entity_locks",
-    timestamps: false,
-  },
-);
-
-CdcEntityLockSchema.index({ flowId: 1, entity: 1 }, { unique: true });
-CdcEntityLockSchema.index({ workspaceId: 1, flowId: 1 });
-
-const CdcBackfillCheckpointSchema = new Schema<ICdcBackfillCheckpoint>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
-    runId: { type: String, required: true },
-    entity: { type: String, required: true },
-    fetchState: { type: Schema.Types.Mixed, required: true, default: {} },
-    updatedAt: { type: Date, required: true, default: Date.now },
-    completedAt: Date,
-  },
-  {
-    collection: "cdc_backfill_checkpoints",
-    timestamps: false,
-  },
-);
-
-CdcBackfillCheckpointSchema.index(
-  { flowId: 1, runId: 1, entity: 1 },
-  { unique: true },
-);
-CdcBackfillCheckpointSchema.index({ workspaceId: 1, flowId: 1, runId: 1 });
 
 /**
  * QueryExecution Schema
@@ -2721,14 +2657,6 @@ export const BigQueryCdcState = mongoose.model<IBigQueryCdcState>(
 export const CdcStateTransition = mongoose.model<ICdcStateTransition>(
   "CdcStateTransition",
   CdcStateTransitionSchema,
-);
-export const CdcEntityLock = mongoose.model<ICdcEntityLock>(
-  "CdcEntityLock",
-  CdcEntityLockSchema,
-);
-export const CdcBackfillCheckpoint = mongoose.model<ICdcBackfillCheckpoint>(
-  "CdcBackfillCheckpoint",
-  CdcBackfillCheckpointSchema,
 );
 // Generic CDC aliases (phase-1 storage remains backed by existing collections)
 export const CdcChangeEvent = BigQueryChangeEvent;

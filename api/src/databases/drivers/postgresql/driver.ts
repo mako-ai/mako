@@ -737,15 +737,23 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     // Build conflict clause
     const keyColumnList = keyColumns.map(escapeIdentifier).join(", ");
     let conflictClause: string;
+    const hasSourceOrdering =
+      columns.includes("_mako_source_ts") &&
+      !keyColumns.includes("_mako_source_ts");
     const hasIngestOrdering =
       columns.includes("_mako_ingest_seq") &&
       !keyColumns.includes("_mako_ingest_seq");
-    const orderingGuard = hasIngestOrdering
+    const orderingGuard = hasSourceOrdering
       ? `
+        WHERE COALESCE(EXCLUDED.${escapeIdentifier("_mako_source_ts")}, '1970-01-01T00:00:00.000Z'::timestamptz) >=
+              COALESCE(${targetAlias}.${escapeIdentifier("_mako_source_ts")}, '1970-01-01T00:00:00.000Z'::timestamptz)
+      `
+      : hasIngestOrdering
+        ? `
         WHERE COALESCE(EXCLUDED.${escapeIdentifier("_mako_ingest_seq")}, -1) >=
               COALESCE(${targetAlias}.${escapeIdentifier("_mako_ingest_seq")}, -1)
       `
-      : "";
+        : "";
 
     if (strategy === "ignore") {
       conflictClause = `ON CONFLICT (${keyColumnList}) DO NOTHING`;
