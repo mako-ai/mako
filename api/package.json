@@ -4,9 +4,9 @@
   "description": "Hono API backend for query execution",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "pnpm run lint && pnpm exec tsc && copyfiles -u 1 'src/**/*.svg' dist",
-    "start": "tsx src/index.ts",
+    "dev": "pnpm --filter @mako/schemas run build && tsx watch src/index.ts",
+    "build": "pnpm --filter @mako/schemas run build && pnpm run lint && pnpm exec tsc && copyfiles -u 1 'src/**/*.svg' dist",
+    "start": "pnpm --filter @mako/schemas run build && tsx src/index.ts",
     "sync": "tsx src/sync/cli.ts",
     "worker": "tsx src/worker.ts",
     "worker:dev": "tsx watch src/worker.ts",
