@@ -51,20 +51,24 @@ const TRANSITIONS: TransitionMap = {
     FAIL: "degraded",
   },
   catchup: {
+    START_BACKFILL: "backfill",
     LAG_CLEARED: "live",
     PAUSE: "paused",
     FAIL: "degraded",
   },
   live: {
+    START_BACKFILL: "backfill",
     LAG_SPIKE: "catchup",
     PAUSE: "paused",
     FAIL: "degraded",
   },
   paused: {
+    START_BACKFILL: "backfill",
     RESUME: "catchup",
     FAIL: "degraded",
   },
   degraded: {
+    START_BACKFILL: "backfill",
     RECOVER: "catchup",
   },
 };

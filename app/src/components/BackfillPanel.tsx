@@ -23,7 +23,7 @@ import {
   Tooltip,
 } from "@mui/material";
 import {
-  Sync as SyncIcon,
+  CloudDownload as BackfillIcon,
   Cancel as CancelIcon,
   Pause as PauseIcon,
   PlayArrow as ResumeIcon,
@@ -444,7 +444,7 @@ export function BackfillPanel({
                     <Button
                       size="small"
                       variant="outlined"
-                      startIcon={<SyncIcon sx={{ fontSize: 14 }} />}
+                      startIcon={<BackfillIcon sx={{ fontSize: 14 }} />}
                       onClick={handleStartBackfill}
                       disabled={busy}
                       sx={{ textTransform: "none", fontSize: "0.72rem" }}
@@ -496,6 +496,16 @@ export function BackfillPanel({
             </Box>
 
             {/* Entity table */}
+            {entities.length === 0 && (
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                textAlign="center"
+                py={2}
+              >
+                No entities synced yet — start a backfill to begin.
+              </Typography>
+            )}
             {entities.length > 0 && (
               <TableContainer
                 sx={{ borderRadius: 1, border: 1, borderColor: "divider" }}
@@ -650,16 +660,7 @@ export function BackfillPanel({
               justifyContent: "center",
             }}
           >
-            <SyncIcon
-              sx={{
-                fontSize: 16,
-                animation: "spin 1s linear infinite",
-                "@keyframes spin": {
-                  from: { transform: "rotate(0deg)" },
-                  to: { transform: "rotate(360deg)" },
-                },
-              }}
-            />
+            <LinearProgress sx={{ width: 24 }} />
             <Typography variant="body2" color="text.secondary">
               Loading…
             </Typography>
