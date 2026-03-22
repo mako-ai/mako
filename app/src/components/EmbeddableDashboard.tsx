@@ -33,7 +33,12 @@ interface EmbedDashboardSpec {
       comparisonLabel?: string;
     };
     tableConfig?: { columns?: string[]; pageSize?: number };
-    layout: { x: number; y: number; w: number; h: number };
+    layouts: {
+      lg: { x: number; y: number; w: number; h: number };
+      md?: { x: number; y: number; w: number; h: number };
+      sm?: { x: number; y: number; w: number; h: number };
+      xs?: { x: number; y: number; w: number; h: number };
+    };
   }>;
   dataSources: Array<{
     id: string;
@@ -130,14 +135,47 @@ const EmbeddableDashboard: React.FC = () => {
 
   const theme = spec.theme === "dark" ? darkTheme : lightTheme;
 
-  const gridLayout = spec.widgets.map(w => ({
-    i: w.id,
-    x: w.layout.x,
-    y: w.layout.y,
-    w: w.layout.w,
-    h: w.layout.h,
-    static: true,
-  }));
+  const allGridLayouts = (() => {
+    const breakpoints = ["lg", "md", "sm", "xs"] as const;
+    type GridItem = {
+      i: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      static: boolean;
+    };
+    const result: Record<string, GridItem[]> = {};
+    for (const bp of breakpoints) {
+      const items: GridItem[] = [];
+      for (const w of spec.widgets) {
+        const wAny = w as any;
+        const bpLayout =
+          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
+        if (!bpLayout) continue;
+        items.push({
+          i: w.id,
+          x: bpLayout.x ?? 0,
+          y: bpLayout.y ?? 0,
+          w: bpLayout.w ?? 6,
+          h: bpLayout.h ?? 4,
+          static: true,
+        });
+      }
+      if (items.length > 0) result[bp] = items;
+    }
+    if (!result.lg) {
+      result.lg = spec.widgets.map(w => ({
+        i: w.id,
+        x: 0,
+        y: 0,
+        w: 6,
+        h: 4,
+        static: true,
+      }));
+    }
+    return result;
+  })();
   const queryExecutor = useMemo(
     () =>
       db
@@ -175,7 +213,7 @@ const EmbeddableDashboard: React.FC = () => {
             <ResponsiveGridLayout
               className="layout"
               width={gridWidth || 800}
-              layouts={{ lg: gridLayout }}
+              layouts={allGridLayouts}
               breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480 }}
               cols={{ lg: spec.layout.columns || 12, md: 10, sm: 6, xs: 4 }}
               rowHeight={spec.layout.rowHeight || 80}
@@ -189,7 +227,7 @@ const EmbeddableDashboard: React.FC = () => {
                         dataSourceId={widget.dataSourceId}
                         localSql={widget.localSql}
                         vegaLiteSpec={widget.vegaLiteSpec}
-                        layoutSignature={`${widget.layout.x}:${widget.layout.y}:${widget.layout.w}:${widget.layout.h}`}
+                        layoutSignature={`${widget.layouts?.lg?.x ?? 0}:${widget.layouts?.lg?.y ?? 0}:${widget.layouts?.lg?.w ?? 6}:${widget.layouts?.lg?.h ?? 4}`}
                       />
                     ) : widget.type === "kpi" && widget.kpiConfig ? (
                       <KpiCard

@@ -158,9 +158,15 @@ async function createSession(
   let persistent = false;
   let dataSourceVersions = new Map<string, string>();
 
+  console.log(
+    `[opfs-diag] Creating session for dashboard=${dashboardId}, OPFS available=${isOPFSAvailable()}`,
+  );
+
   if (isOPFSAvailable()) {
     try {
-      db = await createPersistentDuckDBInstance(opfsPath(dashboardId));
+      const path = opfsPath(dashboardId);
+      console.log(`[opfs-diag] Opening OPFS database at ${path}`);
+      db = await createPersistentDuckDBInstance(path);
       persistent = true;
       console.log(
         `[opfs-diag] Persistent DuckDB open succeeded for dashboard=${dashboardId}`,
@@ -175,6 +181,13 @@ async function createSession(
         `[opfs-diag] OPFS session ready for ${dashboardId}: ` +
           `${dataSourceVersions.size} persisted data source(s)`,
       );
+      if (dataSourceVersions.size > 0) {
+        for (const [dsId, hash] of dataSourceVersions) {
+          console.log(
+            `[opfs-diag]   persisted: dataSource=${dsId} versionHash=${hash}`,
+          );
+        }
+      }
     } catch (err) {
       const isLockConflict =
         err instanceof Error &&
@@ -190,8 +203,8 @@ async function createSession(
       );
     }
   } else {
-    console.debug(
-      `[dashboard-session] OPFS not available, using in-memory for ${dashboardId}`,
+    console.log(
+      `[opfs-diag] OPFS not available in this browser, using in-memory for ${dashboardId}`,
     );
     db = await createDuckDBInstance();
     console.log(

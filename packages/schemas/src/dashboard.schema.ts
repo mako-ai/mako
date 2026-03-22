@@ -65,6 +65,17 @@ export const DashboardDataSourceSchema = z.object({
     .optional(),
 });
 
+export const WidgetLayoutSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+  minW: z.number().optional(),
+  minH: z.number().optional(),
+});
+
+export type WidgetLayout = z.infer<typeof WidgetLayoutSchema>;
+
 export const DashboardWidgetSchema = z.object({
   id: z.string(),
   title: z.string().optional(),
@@ -90,13 +101,11 @@ export const DashboardWidgetSchema = z.object({
     enabled: z.boolean(),
     fields: z.array(z.string()).optional(),
   }),
-  layout: z.object({
-    x: z.number(),
-    y: z.number(),
-    w: z.number(),
-    h: z.number(),
-    minW: z.number().optional(),
-    minH: z.number().optional(),
+  layouts: z.object({
+    lg: WidgetLayoutSchema,
+    md: WidgetLayoutSchema.optional(),
+    sm: WidgetLayoutSchema.optional(),
+    xs: WidgetLayoutSchema.optional(),
   }),
 });
 
@@ -161,3 +170,65 @@ export type DashboardWidget = z.infer<typeof DashboardWidgetSchema>;
 export type TableRelationship = z.infer<typeof TableRelationshipSchema>;
 export type GlobalFilter = z.infer<typeof GlobalFilterSchema>;
 export type DashboardDefinition = z.infer<typeof DashboardDefinitionSchema>;
+
+const DEFAULT_LAYOUT: WidgetLayout = { x: 0, y: 0, w: 6, h: 4 };
+
+function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
+  if (!raw) return { ...DEFAULT_LAYOUT };
+  return {
+    x: typeof raw.x === "number" ? raw.x : 0,
+    y: typeof raw.y === "number" ? raw.y : 0,
+    w: typeof raw.w === "number" ? raw.w : DEFAULT_LAYOUT.w,
+    h: typeof raw.h === "number" ? raw.h : DEFAULT_LAYOUT.h,
+    ...(typeof raw.minW === "number" ? { minW: raw.minW } : {}),
+    ...(typeof raw.minH === "number" ? { minH: raw.minH } : {}),
+  };
+}
+
+/**
+ * Normalize a widget that may have legacy `layout` (single) or new `layouts`
+ * (per-breakpoint). Returns a widget guaranteed to have `layouts.lg`.
+ * Handles missing, partial, and corrupted data gracefully.
+ */
+export function normalizeWidgetLayouts<
+  T extends Record<string, unknown>,
+>(widget: T): T & { layouts: DashboardWidget["layouts"] } {
+  const w = widget as Record<string, unknown>;
+
+  if (
+    w.layouts &&
+    typeof w.layouts === "object" &&
+    !Array.isArray(w.layouts)
+  ) {
+    const raw = w.layouts as Record<string, unknown>;
+    if (raw.lg && typeof raw.lg === "object") {
+      const result: DashboardWidget["layouts"] = {
+        lg: safeLayout(raw.lg as Record<string, unknown>),
+      };
+      if (raw.md && typeof raw.md === "object")
+        result.md = safeLayout(raw.md as Record<string, unknown>);
+      if (raw.sm && typeof raw.sm === "object")
+        result.sm = safeLayout(raw.sm as Record<string, unknown>);
+      if (raw.xs && typeof raw.xs === "object")
+        result.xs = safeLayout(raw.xs as Record<string, unknown>);
+      return { ...widget, layouts: result };
+    }
+    const firstBp = (["md", "sm", "xs"] as const).find(
+      bp => raw[bp] && typeof raw[bp] === "object",
+    );
+    const lg = firstBp
+      ? safeLayout(raw[firstBp] as Record<string, unknown>)
+      : safeLayout(undefined);
+    return { ...widget, layouts: { lg } };
+  }
+
+  if (w.layout && typeof w.layout === "object" && !Array.isArray(w.layout)) {
+    const lg = safeLayout(w.layout as Record<string, unknown>);
+    const { layout: _removed, ...rest } = widget;
+    return { ...rest, layouts: { lg } } as T & {
+      layouts: DashboardWidget["layouts"];
+    };
+  }
+
+  return { ...widget, layouts: { lg: { ...DEFAULT_LAYOUT } } };
+}

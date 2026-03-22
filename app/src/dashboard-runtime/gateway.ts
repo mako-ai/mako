@@ -541,9 +541,9 @@ export async function materializeDashboardDataSource(options: {
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
   const version = buildDataSourceVersion(dataSource);
+  const persistedVersion = session.dataSourceVersions.get(dataSource.id);
   const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
   const preserveExistingData = force && existingRuntime?.status === "ready";
-  const persistedVersion = session.dataSourceVersions.get(dataSource.id);
 
   console.log(
     `[opfs-diag] materialize dataSource="${dataSource.name}" (${dataSource.id})`,
@@ -568,11 +568,15 @@ export async function materializeDashboardDataSource(options: {
       version,
     ),
   );
+
   if (
     !force &&
-    session.dataSourceVersions.get(dataSource.id) === version &&
+    persistedVersion === version &&
     existingRuntime?.status === "ready"
   ) {
+    console.log(
+      `[opfs-diag] SKIP (in-memory hit): dataSource="${dataSource.name}" already ready with matching version`,
+    );
     return;
   }
 
@@ -629,6 +633,10 @@ export async function materializeDashboardDataSource(options: {
       `[opfs-diag] materialize skipping persistent recovery ladder: dataSource="${dataSource.name}" persistent=${session.persistent} force=${force}`,
     );
   }
+
+  console.log(
+    `[opfs-diag] FETCHING FROM SERVER: dataSource="${dataSource.name}" (${dataSource.id})`,
+  );
 
   const inFlight = session.activeLoads.get(dataSource.id);
   if (inFlight) {
@@ -731,6 +739,9 @@ export async function materializeDashboardDataSource(options: {
       rowCount ?? rowsLoaded,
     );
     await checkpointSession(dashboard._id);
+    console.log(
+      `[opfs-diag] PERSISTED: dataSource="${dataSource.name}" version=${version} rows=${rowCount ?? rowsLoaded} tableRef="${dataSource.tableRef}" persistent=${session.persistent}`,
+    );
     resolveLoad();
     console.log(
       `[opfs-diag] materialize load promise resolved: dataSource="${dataSource.name}"`,

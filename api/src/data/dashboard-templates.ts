@@ -20,7 +20,12 @@ export interface DashboardTemplate {
       comparisonLabel?: string;
     };
     tableConfig?: { columns?: string[]; pageSize?: number };
-    layout: { x: number; y: number; w: number; h: number };
+    layouts: {
+      lg: { x: number; y: number; w: number; h: number };
+      md?: { x: number; y: number; w: number; h: number };
+      sm?: { x: number; y: number; w: number; h: number };
+      xs?: { x: number; y: number; w: number; h: number };
+    };
   }>;
   globalFilters: Array<{
     type: "date-range" | "select" | "multi-select" | "search";
@@ -66,28 +71,28 @@ export const dashboardTemplates: DashboardTemplate[] = [
             ],
           },
         },
-        layout: { x: 0, y: 0, w: 8, h: 4 },
+        layouts: { lg: { x: 0, y: 0, w: 8, h: 4 } },
       },
       {
         title: "Total Revenue",
         type: "kpi",
         localSql: 'SELECT SUM(amount) AS total FROM "orders"',
         kpiConfig: { valueField: "total", format: "$,.0f" },
-        layout: { x: 8, y: 0, w: 4, h: 2 },
+        layouts: { lg: { x: 8, y: 0, w: 4, h: 2 } },
       },
       {
         title: "Order Count",
         type: "kpi",
         localSql: 'SELECT COUNT(*) AS count FROM "orders"',
         kpiConfig: { valueField: "count" },
-        layout: { x: 8, y: 2, w: 4, h: 2 },
+        layouts: { lg: { x: 8, y: 2, w: 4, h: 2 } },
       },
       {
         title: "Recent Orders",
         type: "table",
         localSql: 'SELECT * FROM "orders" ORDER BY date DESC LIMIT 100',
         tableConfig: { pageSize: 25 },
-        layout: { x: 0, y: 4, w: 12, h: 5 },
+        layouts: { lg: { x: 0, y: 4, w: 12, h: 5 } },
       },
     ],
     globalFilters: [
@@ -134,14 +139,14 @@ export const dashboardTemplates: DashboardTemplate[] = [
             ],
           },
         },
-        layout: { x: 0, y: 0, w: 12, h: 4 },
+        layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } },
       },
       {
         title: "Total Users",
         type: "kpi",
         localSql: 'SELECT COUNT(*) AS total FROM "users"',
         kpiConfig: { valueField: "total" },
-        layout: { x: 0, y: 4, w: 4, h: 2 },
+        layouts: { lg: { x: 0, y: 4, w: 4, h: 2 } },
       },
     ],
     globalFilters: [],
@@ -178,7 +183,7 @@ export const dashboardTemplates: DashboardTemplate[] = [
             ],
           },
         },
-        layout: { x: 0, y: 0, w: 12, h: 4 },
+        layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } },
       },
       {
         title: "Net Income",
@@ -186,7 +191,7 @@ export const dashboardTemplates: DashboardTemplate[] = [
         localSql:
           "SELECT SUM(CASE WHEN type = 'income' THEN amount ELSE -amount END) AS net FROM \"transactions\"",
         kpiConfig: { valueField: "net", format: "$,.0f" },
-        layout: { x: 0, y: 4, w: 4, h: 2 },
+        layouts: { lg: { x: 0, y: 4, w: 4, h: 2 } },
       },
     ],
     globalFilters: [

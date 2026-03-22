@@ -1,4 +1,5 @@
 export {
+  WidgetLayoutSchema,
   DashboardQueryLanguageSchema,
   DashboardQueryDefinitionSchema,
   DashboardDataSourceOriginSchema,
@@ -7,6 +8,8 @@ export {
   TableRelationshipSchema,
   GlobalFilterSchema,
   DashboardDefinitionSchema,
+  normalizeWidgetLayouts,
+  type WidgetLayout,
   type DashboardQueryLanguage,
   type DashboardQueryDefinition,
   type DashboardDataSourceOrigin,
