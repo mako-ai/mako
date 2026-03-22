@@ -63,22 +63,6 @@ function formatLag(seconds: number | null): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-function stateChipColor(
-  state: CdcState,
-): "success" | "info" | "error" | "default" {
-  switch (state) {
-    case "live":
-      return "success";
-    case "backfill":
-    case "catchup":
-      return "info";
-    case "degraded":
-      return "error";
-    default:
-      return "default";
-  }
-}
-
 function camelToSnake(v: string): string {
   return v.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 }
@@ -88,6 +72,57 @@ function entityLabel(entity: string): string {
   const [parent, sub] = entity.split(":");
   return parent && sub ? `${camelToSnake(sub)}_${parent}` : entity;
 }
+
+function streamStatus(state: CdcState): {
+  label: string;
+  color: "success" | "info" | "error" | "warning" | "default";
+} {
+  switch (state) {
+    case "live":
+      return { label: "Live", color: "success" };
+    case "catchup":
+      return { label: "Catching up", color: "info" };
+    case "backfill":
+      return { label: "Backfilling", color: "info" };
+    case "paused":
+      return { label: "Paused", color: "warning" };
+    case "degraded":
+      return { label: "Degraded", color: "error" };
+    default:
+      return { label: "Idle", color: "default" };
+  }
+}
+
+function backfillStatus(state: CdcState, backlogCount: number): string {
+  if (state === "backfill") return "Running";
+  if (state === "idle") return "Not started";
+  if (backlogCount > 0) return "Catching up";
+  return "Complete";
+}
+
+function entityStreamChip(e: {
+  backlogCount: number;
+  lastMaterializedSeq: number;
+  lastMaterializedAt: string | null;
+}): { label: string; color: "success" | "info" | "default" | "warning" } {
+  if (e.backlogCount > 0) return { label: "Syncing", color: "info" };
+  if (e.lastMaterializedAt) return { label: "Live", color: "success" };
+  return { label: "Pending", color: "default" };
+}
+
+function entityBackfillChip(e: {
+  backlogCount: number;
+  lastMaterializedSeq: number;
+  lastMaterializedAt: string | null;
+}): { label: string; color: "success" | "info" | "default" } {
+  if (!e.lastMaterializedAt && e.lastMaterializedSeq === 0) {
+    return { label: "Not started", color: "default" };
+  }
+  if (e.backlogCount > 0) return { label: "In progress", color: "info" };
+  return { label: "Done", color: "success" };
+}
+
+// ---------------------------------------------------------------------------
 
 export function BackfillPanel({
   workspaceId,
@@ -152,7 +187,7 @@ export function BackfillPanel({
       if (!ok) throw new Error("Failed to start backfill");
     });
 
-  const handleCancel = () =>
+  const handleStop = () =>
     withBusy(async () => {
       const ok = await pauseCdcFlow(workspaceId, flowId);
       if (!ok) throw new Error("Failed to pause flow");
@@ -209,9 +244,30 @@ export function BackfillPanel({
       : undefined;
   const dataset = flow?.tableDestination?.schema;
 
-  // --- CDC flow path ---
   const entities: any[] = cdc?.entities || [];
   const transitions: any[] = cdc?.transitions || [];
+  const totalProcessed = entities.reduce(
+    (sum: number, e: any) => sum + (e.lastMaterializedSeq || 0),
+    0,
+  );
+  const ss = streamStatus(state);
+  const bs = backfillStatus(state, cdc?.backlogCount ?? 0);
+
+  const kpi = {
+    borderRadius: 1.5,
+    p: 1.5,
+    bgcolor: "background.paper",
+    border: 1,
+    borderColor: "divider",
+    minWidth: 0,
+  };
+  const kpiLabel = {
+    fontSize: "0.68rem",
+    letterSpacing: 0.3,
+    color: "text.secondary",
+    mb: 0.25,
+  };
+  const kpiValue = { fontWeight: 700, fontSize: "1rem", lineHeight: 1.3 };
 
   return (
     <Box
@@ -222,85 +278,60 @@ export function BackfillPanel({
         overflow: "auto",
       }}
     >
-      {/* Action bar */}
+      {/* Top bar — edit + reset only, actions live in KPI cards */}
       <Box
         sx={{
           display: "flex",
           alignItems: "center",
-          flexWrap: "wrap",
           px: 1.5,
-          py: 0.75,
+          py: 0.5,
           borderBottom: 1,
           borderColor: "divider",
           gap: 0.5,
-          minHeight: 40,
+          minHeight: 36,
         }}
       >
-        {(state === "idle" || state === "paused" || state === "degraded") && (
-          <Button
-            size="small"
-            startIcon={<SyncIcon />}
-            onClick={handleStartBackfill}
-            disabled={busy}
-          >
-            Start backfill
-          </Button>
+        {/* Flow info chips */}
+        {connectorName && (
+          <Typography variant="caption" color="text.secondary">
+            {connectorName}
+          </Typography>
         )}
-        {state === "backfill" && (
-          <>
-            <Chip label="Backfilling…" size="small" color="info" />
-            <Button
-              size="small"
-              color="error"
-              startIcon={<CancelIcon />}
-              onClick={handleCancel}
-              disabled={busy}
-            >
-              Stop
-            </Button>
-          </>
+        {connectorName && destName && (
+          <Typography variant="caption" color="text.secondary">
+            →
+          </Typography>
         )}
-        {(state === "catchup" || state === "live") && (
-          <Button
-            size="small"
-            startIcon={<PauseIcon />}
-            onClick={handlePauseResume}
-            disabled={busy}
-          >
-            Pause
-          </Button>
+        {destName && (
+          <Typography variant="caption" color="text.secondary">
+            {destName}
+            {dataset ? ` / ${dataset}` : ""}
+          </Typography>
         )}
-        {state === "paused" && (
-          <Button
-            size="small"
-            startIcon={<ResumeIcon />}
-            onClick={handlePauseResume}
-            disabled={busy}
-          >
-            Resume
-          </Button>
-        )}
-        {state === "degraded" && (
-          <Button
-            size="small"
-            startIcon={<RecoverIcon />}
-            onClick={handleRecover}
-            disabled={busy}
-          >
-            Recover
-          </Button>
+        {webhookUrl && (
+          <Tooltip title={webhookCopied ? "Copied!" : webhookUrl}>
+            <IconButton size="small" onClick={copyWebhook} sx={{ ml: 0.5 }}>
+              <CopyIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
         <Button
           size="small"
           color="error"
-          startIcon={<ResyncIcon />}
+          startIcon={<ResyncIcon sx={{ fontSize: 16 }} />}
           onClick={() => setResyncOpen(true)}
+          sx={{ textTransform: "none", fontSize: "0.75rem" }}
         >
           Reset
         </Button>
         {onEdit && (
-          <Button size="small" startIcon={<EditIcon />} onClick={onEdit}>
+          <Button
+            size="small"
+            startIcon={<EditIcon sx={{ fontSize: 16 }} />}
+            onClick={onEdit}
+            sx={{ textTransform: "none", fontSize: "0.75rem" }}
+          >
             Edit
           </Button>
         )}
@@ -314,104 +345,144 @@ export function BackfillPanel({
         )}
         {busy && <LinearProgress />}
 
-        {/* Status header */}
         {cdc ? (
           <>
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 1.5,
-                flexWrap: "wrap",
-              }}
-            >
-              <Chip
-                label={state.charAt(0).toUpperCase() + state.slice(1)}
-                color={stateChipColor(state)}
-                size="small"
-              />
-              {cdc.backlogCount > 0 && (
-                <Typography variant="body2" color="text.secondary">
-                  {cdc.backlogCount.toLocaleString()} pending
-                </Typography>
-              )}
-              {cdc.lagSeconds !== null && cdc.lagSeconds > 0 && (
-                <Typography variant="body2" color="text.secondary">
-                  Lag {formatLag(cdc.lagSeconds)}
-                </Typography>
-              )}
-              {cdc.lastMaterializedAt && (
-                <Typography variant="caption" color="text.secondary">
-                  Last materialized{" "}
-                  {new Date(cdc.lastMaterializedAt).toLocaleString()}
-                </Typography>
-              )}
-            </Box>
-
-            {/* Flow info */}
+            {/* KPI cards */}
             <Box
               sx={{
                 display: "grid",
-                gridTemplateColumns: "90px 1fr",
-                rowGap: 0.25,
-                columnGap: 1.5,
-                fontSize: "0.78rem",
-                "& .lbl": { color: "text.secondary" },
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 1.5,
               }}
             >
-              {connectorName && (
-                <>
-                  <Typography className="lbl" fontSize="inherit">
-                    Source
-                  </Typography>
-                  <Typography fontSize="inherit" fontWeight={500}>
-                    {connectorName}
-                  </Typography>
-                </>
-              )}
-              {destName && (
-                <>
-                  <Typography className="lbl" fontSize="inherit">
-                    Destination
-                  </Typography>
-                  <Typography fontSize="inherit" fontWeight={500}>
-                    {destName}
-                    {dataset ? ` / ${dataset}` : ""}
-                  </Typography>
-                </>
-              )}
-              {webhookUrl && (
-                <>
-                  <Typography className="lbl" fontSize="inherit">
-                    Webhook
-                  </Typography>
-                  <Box
-                    sx={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 0.5,
-                      minWidth: 0,
-                    }}
-                  >
+              {/* Stream Status */}
+              <Box sx={kpi}>
+                <Typography sx={kpiLabel}>Stream</Typography>
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    mb: 0.75,
+                  }}
+                >
+                  <Chip
+                    label={ss.label}
+                    color={ss.color}
+                    size="small"
+                    sx={{ fontWeight: 600, fontSize: "0.75rem" }}
+                  />
+                  {cdc.lagSeconds !== null && cdc.lagSeconds > 0 && (
                     <Typography
-                      fontSize="inherit"
-                      sx={{
-                        fontFamily: "monospace",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ fontSize: "0.72rem" }}
                     >
-                      {webhookUrl}
+                      {formatLag(cdc.lagSeconds)} lag
                     </Typography>
-                    <Tooltip title={webhookCopied ? "Copied" : "Copy"}>
-                      <IconButton size="small" onClick={copyWebhook}>
-                        <CopyIcon sx={{ fontSize: 14 }} />
-                      </IconButton>
-                    </Tooltip>
-                  </Box>
-                </>
-              )}
+                  )}
+                </Box>
+                <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                  {(state === "catchup" || state === "live") && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<PauseIcon sx={{ fontSize: 14 }} />}
+                      onClick={handlePauseResume}
+                      disabled={busy}
+                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                    >
+                      Pause
+                    </Button>
+                  )}
+                  {state === "paused" && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                      onClick={handlePauseResume}
+                      disabled={busy}
+                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                    >
+                      Resume
+                    </Button>
+                  )}
+                  {state === "degraded" && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      startIcon={<RecoverIcon sx={{ fontSize: 14 }} />}
+                      onClick={handleRecover}
+                      disabled={busy}
+                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                    >
+                      Recover
+                    </Button>
+                  )}
+                </Box>
+              </Box>
+
+              {/* Backfill Status */}
+              <Box sx={kpi}>
+                <Typography sx={kpiLabel}>Backfill</Typography>
+                <Typography sx={{ ...kpiValue, mb: 0.75 }}>{bs}</Typography>
+                <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                  {(state === "idle" ||
+                    state === "paused" ||
+                    state === "degraded") && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<SyncIcon sx={{ fontSize: 14 }} />}
+                      onClick={handleStartBackfill}
+                      disabled={busy}
+                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                    >
+                      Start
+                    </Button>
+                  )}
+                  {state === "backfill" && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      startIcon={<CancelIcon sx={{ fontSize: 14 }} />}
+                      onClick={handleStop}
+                      disabled={busy}
+                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                    >
+                      Stop
+                    </Button>
+                  )}
+                  {cdc.backlogCount > 0 && state !== "backfill" && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ alignSelf: "center", fontSize: "0.72rem" }}
+                    >
+                      {cdc.backlogCount.toLocaleString()} pending
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+
+              {/* Events Processed */}
+              <Box sx={kpi}>
+                <Typography sx={kpiLabel}>Events processed</Typography>
+                <Typography sx={kpiValue}>
+                  {totalProcessed.toLocaleString()}
+                </Typography>
+                {cdc.lastMaterializedAt && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
+                  >
+                    Last {new Date(cdc.lastMaterializedAt).toLocaleString()}
+                  </Typography>
+                )}
+              </Box>
             </Box>
 
             {/* Entity table */}
@@ -427,45 +498,78 @@ export function BackfillPanel({
                           fontSize: "0.72rem",
                           color: "text.secondary",
                           fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.3,
                         },
                       }}
                     >
                       <TableCell>Entity</TableCell>
-                      <TableCell align="right">Queued</TableCell>
-                      <TableCell align="right">Lag</TableCell>
-                      <TableCell align="right">Last materialized</TableCell>
+                      <TableCell>Stream</TableCell>
+                      <TableCell>Backfill</TableCell>
+                      <TableCell align="right">Processed</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {entities.map((e: any) => (
-                      <TableRow
-                        key={e.entity}
-                        sx={{ "&:last-child td": { borderBottom: 0 } }}
-                      >
-                        <TableCell
-                          sx={{ fontFamily: "monospace", fontSize: "0.78rem" }}
+                    {entities.map((e: any) => {
+                      const sc = entityStreamChip(e);
+                      const bc = entityBackfillChip(e);
+                      return (
+                        <TableRow
+                          key={e.entity}
+                          sx={{ "&:last-child td": { borderBottom: 0 } }}
                         >
-                          {entityLabel(e.entity)}
-                        </TableCell>
-                        <TableCell align="right">{e.backlogCount}</TableCell>
-                        <TableCell align="right">
-                          {formatLag(e.lagSeconds)}
-                        </TableCell>
-                        <TableCell align="right">
-                          <Typography variant="caption" color="text.secondary">
-                            {e.lastMaterializedAt
-                              ? new Date(e.lastMaterializedAt).toLocaleString()
-                              : "—"}
-                          </Typography>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                          <TableCell
+                            sx={{
+                              fontFamily: "monospace",
+                              fontSize: "0.78rem",
+                              fontWeight: 500,
+                            }}
+                          >
+                            {entityLabel(e.entity)}
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              label={sc.label}
+                              color={sc.color}
+                              size="small"
+                              variant="outlined"
+                              sx={{
+                                height: 22,
+                                fontSize: "0.68rem",
+                                fontWeight: 500,
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              label={bc.label}
+                              color={bc.color}
+                              size="small"
+                              variant="outlined"
+                              sx={{
+                                height: 22,
+                                fontSize: "0.68rem",
+                                fontWeight: 500,
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell align="right">
+                            <Typography
+                              fontSize="0.8rem"
+                              fontWeight={e.lastMaterializedSeq > 0 ? 600 : 400}
+                            >
+                              {(e.lastMaterializedSeq || 0).toLocaleString()}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </TableContainer>
             )}
 
-            {/* Transition history (collapsible) */}
+            {/* Transition history */}
             {transitions.length > 0 && (
               <Box>
                 <Button
@@ -474,17 +578,17 @@ export function BackfillPanel({
                   endIcon={showTransitions ? <CollapseIcon /> : <ExpandIcon />}
                   sx={{
                     textTransform: "none",
-                    fontSize: "0.78rem",
+                    fontSize: "0.75rem",
                     color: "text.secondary",
                   }}
                 >
-                  {transitions.length} transitions
+                  {transitions.length} state transitions
                 </Button>
                 {showTransitions && (
                   <Box
                     sx={{
                       mt: 0.5,
-                      maxHeight: 200,
+                      maxHeight: 180,
                       overflow: "auto",
                       borderRadius: 1,
                       bgcolor: "action.hover",
