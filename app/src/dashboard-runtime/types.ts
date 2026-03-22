@@ -31,6 +31,16 @@ export interface Dashboard extends Omit<DashboardDefinition, "crossFilter"> {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  snapshots?: Record<
+    string,
+    {
+      version: string;
+      generatedAt: string;
+      rowCount: number;
+      rows: Record<string, unknown>[];
+      fields: Array<{ name: string; type: string }>;
+    }
+  >;
 }
 
 export type DashboardRuntimeStatus = "idle" | "loading" | "ready" | "error";

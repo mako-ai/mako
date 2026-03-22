@@ -1,8 +1,7 @@
 import { inngest } from "../client";
-import { Dashboard, DatabaseConnection } from "../../database/workspace-schema";
-import { databaseConnectionService } from "../../services/database-connection.service";
-import { serializeToArrowIPC } from "../../utils/arrow-serializer";
+import { Dashboard } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import { rebuildDashboardArtifacts } from "../../services/dashboard-artifact-rebuild.service";
 
 const logger = loggers.inngest();
 
@@ -18,7 +17,11 @@ export const dashboardRefreshFunction = inngest.createFunction(
   },
   { event: "dashboard.refresh" },
   async ({ event, step }) => {
-    const { dashboardId } = event.data;
+    const { dashboardId, dataSourceIds, force } = event.data as {
+      dashboardId: string;
+      dataSourceIds?: string[];
+      force?: boolean;
+    };
 
     const dashboard = (await step.run("fetch-dashboard", async () => {
       const doc = await Dashboard.findById(dashboardId);
@@ -31,131 +34,24 @@ export const dashboardRefreshFunction = inngest.createFunction(
       dataSourceCount: dashboard.dataSources.length,
     });
 
-    const results: Array<{
-      dataSourceId: string;
-      success: boolean;
-      rowCount?: number;
-      error?: string;
-    }> = [];
-
-    for (const ds of dashboard.dataSources) {
-      const result = await step.run(`export-${ds.id}`, async () => {
-        try {
-          const database = await DatabaseConnection.findById(
-            ds.query?.connectionId,
-          );
-          if (!database) {
-            return {
-              dataSourceId: ds.id,
-              success: false,
-              error: "Database connection not found",
-            };
-          }
-
-          const executableQuery =
-            database.type === "mongodb" &&
-            ds.query?.language === "mongodb" &&
-            ds.query?.mongoOptions?.collection
-              ? {
-                  collection: ds.query.mongoOptions.collection,
-                  operation: ds.query.mongoOptions.operation || "find",
-                  query: ds.query.code,
-                }
-              : ds.query?.code;
-
-          if (!executableQuery) {
-            return {
-              dataSourceId: ds.id,
-              success: false,
-              error: "Dashboard data source query is missing",
-            };
-          }
-
-          const queryResult = await databaseConnectionService.executeQuery(
-            database,
-            executableQuery,
-            {
-              databaseId: ds.query?.databaseId,
-              databaseName: ds.query?.databaseName,
-            },
-          );
-
-          if (!queryResult.success || !queryResult.data) {
-            return {
-              dataSourceId: ds.id,
-              success: false,
-              error: queryResult.error || "Query failed",
-            };
-          }
-
-          const rows = Array.isArray(queryResult.data) ? queryResult.data : [];
-          const limit = ds.rowLimit || 500000;
-          const limitedRows = rows.slice(0, limit);
-
-          const fields = (queryResult.fields || []).map((f: any) => ({
-            name: f.name || f.columnName || String(f),
-            type: f.type || f.dataType,
-          }));
-
-          if (fields.length === 0 && limitedRows.length > 0) {
-            for (const key of Object.keys(limitedRows[0])) {
-              fields.push({ name: key, type: undefined });
-            }
-          }
-
-          const arrowBuffer = serializeToArrowIPC(limitedRows, fields, {
-            limit,
-          });
-
-          return {
-            dataSourceId: ds.id,
-            success: true,
-            rowCount: limitedRows.length,
-            byteSize: arrowBuffer.byteLength,
-          };
-        } catch (error) {
-          return {
-            dataSourceId: ds.id,
-            success: false,
-            error: error instanceof Error ? error.message : "Unknown error",
-          };
-        }
+    const rebuild = await step.run("rebuild-dashboard-artifacts", async () => {
+      return await rebuildDashboardArtifacts({
+        dashboardId,
+        dataSourceIds,
+        force,
       });
-
-      results.push(result as any);
-    }
-
-    await step.run("update-cache-metadata", async () => {
-      const updates: Record<string, any> = {};
-      for (const result of results) {
-        if (result.success) {
-          const dsIndex = dashboard.dataSources.findIndex(
-            (ds: any) => ds.id === result.dataSourceId,
-          );
-          if (dsIndex !== -1) {
-            updates[`dataSources.${dsIndex}.cache.lastRefreshedAt`] =
-              new Date();
-            updates[`dataSources.${dsIndex}.cache.rowCount`] = result.rowCount;
-          }
-        }
-      }
-
-      if (Object.keys(updates).length > 0) {
-        updates["cache.lastRefreshedAt"] = new Date();
-        await Dashboard.findByIdAndUpdate(dashboardId, { $set: updates });
-      }
     });
 
     logger.info("Dashboard refresh complete", {
       dashboardId,
-      results: results.map(r => ({
+      results: rebuild.results.map(r => ({
         dataSourceId: r.dataSourceId,
         success: r.success,
         rowCount: r.rowCount,
       })),
     });
 
-    return { success: true, results };
+    return { success: true, results: rebuild.results };
   },
 );
 

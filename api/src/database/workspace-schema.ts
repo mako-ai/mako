@@ -1785,6 +1785,12 @@ export interface IDashboard extends Document {
     engine?: "mosaic" | "legacy";
   };
 
+  materializationMode?:
+    | "auto"
+    | "local_opfs"
+    | "remote_parquet"
+    | "legacy_streamed";
+
   layout: {
     columns: number;
     rowHeight: number;
@@ -1794,6 +1800,17 @@ export interface IDashboard extends Document {
     ttlSeconds: number;
     lastRefreshedAt?: Date;
   };
+
+  snapshots?: Record<
+    string,
+    {
+      version: string;
+      generatedAt: Date;
+      rowCount: number;
+      rows: Record<string, unknown>[];
+      fields: Array<{ name: string; type: string }>;
+    }
+  >;
 
   version: number;
   versionHistory: Array<{
@@ -1845,6 +1862,11 @@ export interface IDashboardDataSource {
   origin?: IDashboardDataSourceOrigin;
   timeDimension?: string;
   rowLimit?: number;
+  materializationMode?:
+    | "auto"
+    | "local_opfs"
+    | "remote_parquet"
+    | "legacy_streamed";
   computedColumns?: Array<{
     name: string;
     expression: string;
@@ -1855,6 +1877,13 @@ export interface IDashboardDataSource {
     lastRefreshedAt?: Date;
     rowCount?: number;
     byteSize?: number;
+    parquetArtifactKey?: string;
+    parquetVersion?: string;
+    parquetBuiltAt?: Date;
+    parquetExpiresAt?: Date;
+    parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+    parquetLastError?: string;
+    parquetUrl?: string;
   };
 }
 
@@ -1921,6 +1950,10 @@ const DashboardSchema = new Schema<IDashboard>(
         },
         timeDimension: { type: String },
         rowLimit: { type: Number },
+        materializationMode: {
+          type: String,
+          enum: ["auto", "local_opfs", "remote_parquet", "legacy_streamed"],
+        },
         computedColumns: [
           {
             name: { type: String, required: true },
@@ -1937,6 +1970,15 @@ const DashboardSchema = new Schema<IDashboard>(
           lastRefreshedAt: { type: Date },
           rowCount: { type: Number },
           byteSize: { type: Number },
+          parquetArtifactKey: { type: String },
+          parquetVersion: { type: String },
+          parquetBuiltAt: { type: Date },
+          parquetExpiresAt: { type: Date },
+          parquetBuildStatus: {
+            type: String,
+            enum: ["missing", "building", "ready", "error"],
+          },
+          parquetLastError: { type: String },
         },
       },
     ],
@@ -2056,6 +2098,12 @@ const DashboardSchema = new Schema<IDashboard>(
       },
     },
 
+    materializationMode: {
+      type: String,
+      enum: ["auto", "local_opfs", "remote_parquet", "legacy_streamed"],
+      default: "auto",
+    },
+
     layout: {
       columns: { type: Number, default: 12 },
       rowHeight: { type: Number, default: 80 },
@@ -2065,6 +2113,8 @@ const DashboardSchema = new Schema<IDashboard>(
       ttlSeconds: { type: Number, default: 3600 },
       lastRefreshedAt: { type: Date },
     },
+
+    snapshots: { type: Schema.Types.Mixed, default: {} },
 
     version: { type: Number, default: 1 },
     versionHistory: [

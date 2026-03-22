@@ -60,6 +60,9 @@ export default function DashboardSettingsDialog({
   const [crossFilterEngine, setCrossFilterEngine] = useState<
     "mosaic" | "legacy"
   >("mosaic");
+  const [materializationMode, setMaterializationMode] = useState<
+    "auto" | "local_opfs" | "remote_parquet" | "legacy_streamed"
+  >("auto");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
@@ -73,6 +76,7 @@ export default function DashboardSettingsDialog({
       setCrossFilterEnabled(dashboard.crossFilter.enabled);
       setCrossFilterResolution(dashboard.crossFilter.resolution);
       setCrossFilterEngine(dashboard.crossFilter.engine ?? "mosaic");
+      setMaterializationMode(dashboard.materializationMode ?? "auto");
       setConfirmDelete(false);
     }
   }, [dashboard, open]);
@@ -87,6 +91,7 @@ export default function DashboardSettingsDialog({
         access,
         layout: { columns: gridColumns, rowHeight },
         cache: { ttlSeconds: cacheTtl },
+        materializationMode,
         crossFilter: {
           enabled: crossFilterEnabled,
           resolution: crossFilterResolution,
@@ -104,6 +109,7 @@ export default function DashboardSettingsDialog({
             ...state.openDashboards[dashboardId].cache,
             ttlSeconds: cacheTtl,
           },
+          materializationMode,
           crossFilter: {
             enabled: crossFilterEnabled,
             resolution: crossFilterResolution,
@@ -212,6 +218,33 @@ export default function DashboardSettingsDialog({
             ))}
           </Select>
         </FormControl>
+
+        <FormControl size="small" fullWidth>
+          <InputLabel>Performance Mode</InputLabel>
+          <Select
+            value={materializationMode}
+            label="Performance Mode"
+            onChange={e =>
+              setMaterializationMode(
+                e.target.value as
+                  | "auto"
+                  | "local_opfs"
+                  | "remote_parquet"
+                  | "legacy_streamed",
+              )
+            }
+          >
+            <MenuItem value="auto">Auto</MenuItem>
+            <MenuItem value="local_opfs">Cache on this device</MenuItem>
+            <MenuItem value="remote_parquet">Use shared server cache</MenuItem>
+            <MenuItem value="legacy_streamed">Compatibility mode</MenuItem>
+          </Select>
+        </FormControl>
+        <Typography variant="body2" color="text.secondary">
+          Auto balances shared freshness for viewers with fast local iteration
+          for editing. Cache on this device keeps using local OPFS-backed
+          DuckDB.
+        </Typography>
 
         <FormControlLabel
           control={

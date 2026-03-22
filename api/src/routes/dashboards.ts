@@ -10,6 +10,12 @@ import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
 } from "@mako/schemas";
+import { hydrateDashboardArtifactUrls } from "../services/dashboard-cache.service";
+import { buildDashboardDataSourceVersion } from "../services/dashboard-artifact-rebuild.service";
+import {
+  queueDashboardArtifactRefresh,
+  refreshDashboardArtifactsNow,
+} from "../services/dashboard-refresh-runner.service";
 
 const logger = loggers.api("dashboards");
 
@@ -134,6 +140,7 @@ async function normalizeDashboardDataSources(
             : undefined,
           timeDimension: ds.timeDimension,
           rowLimit: ds.rowLimit,
+          materializationMode: ds.materializationMode,
           computedColumns: ds.computedColumns || [],
           cache: ds.cache,
         };
@@ -157,6 +164,38 @@ function normalizeDashboardWidgetLayouts(dashboard: Record<string, any>) {
     );
   }
   return dashboard;
+}
+
+function getDataSourceVersionMap(dataSources: Array<Record<string, any>>) {
+  return new Map(
+    dataSources.map(ds => [
+      String(ds.id),
+      buildDashboardDataSourceVersion(ds as any),
+    ]),
+  );
+}
+
+function didDashboardArtifactInputsChange(
+  beforeDataSources: Array<Record<string, any>>,
+  afterDataSources: Array<Record<string, any>>,
+): boolean {
+  if (beforeDataSources.length !== afterDataSources.length) {
+    return true;
+  }
+
+  const before = getDataSourceVersionMap(beforeDataSources);
+  const after = getDataSourceVersionMap(afterDataSources);
+  if (before.size !== after.size) {
+    return true;
+  }
+
+  for (const [id, version] of before) {
+    if (after.get(id) !== version) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 app.use("*", unifiedAuthMiddleware);
@@ -217,9 +256,15 @@ app.get("/", async (c: AuthenticatedContext) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    const normalized = dashboards.map(d => normalizeDashboardWidgetLayouts(d));
-
-    return c.json({ success: true, data: normalized });
+    const normalizedDashboards = dashboards.map(d =>
+      normalizeDashboardWidgetLayouts(d),
+    );
+    const hydratedDashboards = await Promise.all(
+      normalizedDashboards.map(dashboard =>
+        hydrateDashboardArtifactUrls(dashboard as any),
+      ),
+    );
+    return c.json({ success: true, data: hydratedDashboards });
   } catch (error) {
     logger.error("Error listing dashboards", { error });
     return c.json(
@@ -267,11 +312,20 @@ app.post("/", async (c: AuthenticatedContext) => {
       dataSources: normalizedDataSources.dataSources || [],
       workspaceId: new Types.ObjectId(workspaceId),
       createdBy: userId,
+      materializationMode: body.materializationMode || "auto",
     });
 
     await dashboard.save();
+    if ((dashboard.dataSources || []).length > 0) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+      }).catch(() => undefined);
+    }
 
-    return c.json({ success: true, data: dashboard });
+    return c.json({
+      success: true,
+      data: await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
+    });
   } catch (error) {
     logger.error("Error creating dashboard", { error });
     return c.json(
@@ -307,7 +361,10 @@ app.get("/:id", async (c: AuthenticatedContext) => {
     const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
     normalizeDashboardWidgetLayouts(plain);
 
-    return c.json({ success: true, data: plain });
+    return c.json({
+      success: true,
+      data: await hydrateDashboardArtifactUrls(plain as any),
+    });
   } catch (error) {
     logger.error("Error getting dashboard", { error });
     return c.json(
@@ -353,6 +410,8 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       }
     }
 
+    const previousDataSources = dashboard.toObject().dataSources || [];
+
     if (body.title !== undefined) {
       dashboard.title = body.title;
     }
@@ -387,6 +446,9 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     if (body.crossFilter !== undefined) {
       dashboard.crossFilter = body.crossFilter;
     }
+    if (body.materializationMode !== undefined) {
+      dashboard.materializationMode = body.materializationMode;
+    }
     if (body.cache !== undefined) {
       dashboard.cache = body.cache;
     }
@@ -395,8 +457,21 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     }
 
     await dashboard.save();
+    if (
+      didDashboardArtifactInputsChange(
+        previousDataSources as any[],
+        (dashboard.toObject().dataSources || []) as any[],
+      )
+    ) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+      }).catch(() => undefined);
+    }
 
-    return c.json({ success: true, data: dashboard });
+    return c.json({
+      success: true,
+      data: await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
+    });
   } catch (error) {
     logger.error("Error updating dashboard", { error });
     return c.json(
@@ -474,6 +549,8 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       validatedBody.dataSources = normalizedDataSources.dataSources;
     }
 
+    const previousDataSources = existing.toObject().dataSources || [];
+
     const dashboard = await Dashboard.findOneAndUpdate(
       {
         _id: new Types.ObjectId(id),
@@ -483,13 +560,75 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       { new: true, runValidators: true },
     );
 
-    return c.json({ success: true, data: dashboard });
+    if (
+      dashboard &&
+      didDashboardArtifactInputsChange(
+        previousDataSources as any[],
+        (dashboard.toObject().dataSources || []) as any[],
+      )
+    ) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+      }).catch(() => undefined);
+    }
+
+    return c.json({
+      success: true,
+      data: dashboard
+        ? await hydrateDashboardArtifactUrls(dashboard.toObject() as any)
+        : dashboard,
+    });
   } catch (error) {
     logger.error("Error patching dashboard", { error });
     return c.json(
       {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+app.post("/:id/refresh", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const body = await c.req.json().catch(() => ({}));
+    const blocking = body?.blocking === true;
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
+    if (blocking) {
+      const result = await refreshDashboardArtifactsNow({
+        dashboardId: dashboard._id.toString(),
+        force: true,
+      });
+      return c.json({ success: true, data: result });
+    }
+
+    await queueDashboardArtifactRefresh({
+      dashboardId: dashboard._id.toString(),
+      force: true,
+    });
+
+    return c.json({ success: true, queued: true });
+  } catch (error) {
+    logger.error("Error refreshing dashboard artifacts", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to refresh dashboard artifacts",
       },
       500,
     );
@@ -579,8 +718,16 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
 
     const duplicate = new Dashboard(spec);
     await duplicate.save();
+    if ((duplicate.dataSources || []).length > 0) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: duplicate._id.toString(),
+      }).catch(() => undefined);
+    }
 
-    return c.json({ success: true, data: duplicate });
+    return c.json({
+      success: true,
+      data: await hydrateDashboardArtifactUrls(duplicate.toObject() as any),
+    });
   } catch (error) {
     logger.error("Error duplicating dashboard", { error });
     return c.json(

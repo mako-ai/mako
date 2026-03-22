@@ -14,6 +14,8 @@ interface MosaicKpiCardProps {
   widgetId: string;
   dataSourceId: string;
   localSql: string;
+  initialRows?: Record<string, unknown>[];
+  initialFields?: Array<{ name: string; type: string }>;
   kpiConfig: {
     valueField: string;
     format?: string;
@@ -57,6 +59,8 @@ const MosaicKpiCardComponent: React.FC<MosaicKpiCardProps> = ({
   widgetId,
   dataSourceId,
   localSql,
+  initialRows,
+  initialFields,
   kpiConfig,
   mosaicInstance,
   crossFilterEnabled = true,
@@ -70,6 +74,8 @@ const MosaicKpiCardComponent: React.FC<MosaicKpiCardProps> = ({
     widgetId,
     dataSourceId,
     localSql,
+    initialRows,
+    initialFields,
     mosaicInstance,
     crossFilterEnabled,
     crossFilterResolution,
@@ -110,7 +116,7 @@ const MosaicKpiCardComponent: React.FC<MosaicKpiCardProps> = ({
         ? Number(comparisonRaw)
         : null;
 
-  if (loading) {
+  if (loading && rows.length === 0) {
     return (
       <Box
         sx={{

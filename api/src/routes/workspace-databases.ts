@@ -22,6 +22,10 @@ import { loggers } from "../logging";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
+import { writeParquetTempFile } from "../utils/parquet-serializer";
+import { rebuildDashboardArtifacts } from "../services/dashboard-artifact-rebuild.service";
+import { resolveArtifactUrl } from "../services/dashboard-cache.service";
+import { promises as fsPromises } from "fs";
 
 const logger = loggers.db();
 
@@ -115,6 +119,61 @@ async function parseRequestBody(
   }
 
   return await c.req.json();
+}
+
+async function createAdHocParquetResponse(options: {
+  database: IDatabaseConnection;
+  executableQuery: any;
+  queryDefinition: QueryDefinitionInput;
+  filename: string;
+}) {
+  const queryResult = await databaseConnectionService.executeQuery(
+    options.database,
+    options.executableQuery,
+    {
+      databaseId: options.queryDefinition.databaseId,
+      databaseName: options.queryDefinition.databaseName,
+    },
+  );
+
+  if (!queryResult.success || !queryResult.data) {
+    throw new Error(queryResult.error || "Query failed");
+  }
+
+  const rows = Array.isArray(queryResult.data) ? queryResult.data : [];
+  const fields = (queryResult.fields || []).map((field: any) => ({
+    name: field.name || field.columnName || String(field),
+    type: field.type || field.dataType,
+  }));
+  const normalizedFields =
+    fields.length > 0
+      ? fields
+      : rows.length > 0
+        ? Object.keys(rows[0]).map(name => ({ name, type: undefined }))
+        : [];
+
+  const parquetFile = await writeParquetTempFile({
+    rows,
+    fields: normalizedFields,
+    filenameBase: options.filename,
+  });
+
+  try {
+    const fileBuffer = await fsPromises.readFile(parquetFile.filePath);
+    return new Response(fileBuffer, {
+      headers: {
+        "Content-Type": "application/vnd.apache.parquet",
+        "Content-Disposition": `attachment; filename="${options.filename}.parquet"`,
+        "Content-Length": String(parquetFile.byteSize),
+        "X-Row-Count": String(parquetFile.rowCount),
+        "Cache-Control": "no-store",
+      },
+    });
+  } finally {
+    await fsPromises
+      .rm(parquetFile.filePath, { force: true })
+      .catch(() => undefined);
+  }
 }
 
 /**
@@ -1252,6 +1311,8 @@ workspaceExecuteRoutes.post(
         batchSize,
         executionId,
         filename,
+        dashboardId,
+        dataSourceId,
       } = body;
       const effectiveConnectionId =
         queryDefinition?.connectionId || connectionId;
@@ -1278,14 +1339,18 @@ workspaceExecuteRoutes.post(
       }
 
       const normalizedFormat =
-        format === "ndjson" || format === "csv" || format === "arrow"
+        format === "ndjson" ||
+        format === "csv" ||
+        format === "arrow" ||
+        format === "parquet"
           ? format
           : null;
       if (!normalizedFormat) {
         return c.json(
           {
             success: false,
-            error: "format must be one of 'arrow', 'ndjson', or 'csv'",
+            error:
+              "format must be one of 'arrow', 'ndjson', 'parquet', or 'csv'",
           },
           400,
         );
@@ -1353,6 +1418,47 @@ workspaceExecuteRoutes.post(
         executionId: typeof executionId === "string" ? executionId : undefined,
         signal: c.req.raw.signal,
       };
+
+      if (normalizedFormat === "parquet") {
+        if (
+          typeof dashboardId === "string" &&
+          dashboardId &&
+          typeof dataSourceId === "string" &&
+          dataSourceId
+        ) {
+          const rebuild = await rebuildDashboardArtifacts({
+            dashboardId,
+            dataSourceIds: [dataSourceId],
+          });
+          const artifact = rebuild.results.find(
+            result => result.dataSourceId === dataSourceId && result.success,
+          );
+          if (!artifact) {
+            return c.json(
+              {
+                success: false,
+                error:
+                  rebuild.results.find(
+                    result => result.dataSourceId === dataSourceId,
+                  )?.error || "Failed to build parquet artifact",
+              },
+              500,
+            );
+          }
+
+          return c.redirect(
+            await resolveArtifactUrl(artifact.artifactKey),
+            302,
+          );
+        }
+
+        return await createAdHocParquetResponse({
+          database,
+          executableQuery,
+          queryDefinition,
+          filename: safeBaseName,
+        });
+      }
 
       if (normalizedFormat === "arrow") {
         const fieldsResult =

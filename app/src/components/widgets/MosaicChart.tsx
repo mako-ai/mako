@@ -15,6 +15,8 @@ interface MosaicChartProps {
   widgetId: string;
   dataSourceId: string;
   localSql: string;
+  initialRows?: Record<string, unknown>[];
+  initialFields?: Array<{ name: string; type: string }>;
   vegaLiteSpec?: Record<string, unknown>;
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
@@ -29,6 +31,8 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
   widgetId,
   dataSourceId,
   localSql,
+  initialRows,
+  initialFields,
   vegaLiteSpec,
   mosaicInstance,
   crossFilterEnabled = true,
@@ -42,6 +46,8 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
     widgetId,
     dataSourceId,
     localSql,
+    initialRows,
+    initialFields,
     mosaicInstance,
     crossFilterEnabled,
     crossFilterResolution,

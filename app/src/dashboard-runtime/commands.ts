@@ -51,10 +51,11 @@ function getDashboardOrThrow(dashboardId?: string): Dashboard {
 export async function activateDashboardSession(
   workspaceId: string,
   dashboardId?: string,
+  runtimeContext: "builder" | "viewer" = "builder",
 ): Promise<void> {
   const dashboard = getDashboardOrThrow(dashboardId);
   await activateDashboardRuntime(dashboard);
-  await syncDashboardRuntime({ workspaceId, dashboard });
+  await syncDashboardRuntime({ workspaceId, dashboard, runtimeContext });
 }
 
 export async function closeDashboardSession(

@@ -28,6 +28,21 @@ interface WidgetInspectorProps {
   dashboardId?: string;
 }
 
+function resolveWidgetLayout(widget: DashboardWidget) {
+  const fallback = { x: 0, y: 0, w: 6, h: 4 };
+  const candidate = (widget as any).layout ?? (widget as any).layouts?.lg;
+  if (!candidate || typeof candidate !== "object") {
+    return fallback;
+  }
+
+  return {
+    x: typeof candidate.x === "number" ? candidate.x : fallback.x,
+    y: typeof candidate.y === "number" ? candidate.y : fallback.y,
+    w: typeof candidate.w === "number" ? candidate.w : fallback.w,
+    h: typeof candidate.h === "number" ? candidate.h : fallback.h,
+  };
+}
+
 const WidgetInspector: React.FC<WidgetInspectorProps> = ({
   widget,
   onClose,
@@ -80,13 +95,13 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
 
   const handleDuplicate = async () => {
     const { nanoid } = await import("nanoid");
-    const lgLayout = widget.layouts?.lg ??
-      (widget as any).layout ?? { x: 0, y: 0, w: 6, h: 4 };
+    const lgLayout = widget.layouts?.lg ?? resolveWidgetLayout(widget);
     const newWidget: DashboardWidget = {
       ...widget,
       id: nanoid(),
       title: `${widget.title || "Widget"} (copy)`,
       layouts: {
+        ...(widget.layouts ?? {}),
         lg: {
           ...lgLayout,
           y: lgLayout.y + lgLayout.h,

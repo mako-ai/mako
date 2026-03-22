@@ -7,6 +7,7 @@ const activeDuckDBInstances = new Set<AsyncDuckDB>();
 const duckDBInstanceIds = new WeakMap<AsyncDuckDB, number>();
 let nextDuckDBInstanceId = 1;
 let unloadHandlerRegistered = false;
+const httpfsInitState = new WeakMap<AsyncDuckDB, Promise<boolean>>();
 
 function getDuckDBInstanceId(db: AsyncDuckDB): number {
   const existing = duckDBInstanceIds.get(db);
@@ -133,6 +134,30 @@ async function createWorkerAndInstantiate(): Promise<AsyncDuckDB> {
   return db;
 }
 
+export async function ensureHttpfsLoaded(db: AsyncDuckDB): Promise<boolean> {
+  const existing = httpfsInitState.get(db);
+  if (existing) {
+    return await existing;
+  }
+
+  const init = (async () => {
+    const conn = await db.connect();
+    try {
+      await conn.query("INSTALL httpfs");
+      await conn.query("LOAD httpfs");
+      return true;
+    } catch (error) {
+      console.warn("[opfs-diag] Failed to load DuckDB httpfs extension", error);
+      return false;
+    } finally {
+      await conn.close();
+    }
+  })();
+
+  httpfsInitState.set(db, init);
+  return await init;
+}
+
 export async function createDuckDBInstance(): Promise<AsyncDuckDB> {
   console.log("[opfs-diag] createDuckDBInstance: creating in-memory DuckDB");
   return createWorkerAndInstantiate();
@@ -255,7 +280,7 @@ export async function loadArrowTable(
   }
 }
 
-async function collectStreamBytes(
+export async function collectStreamBytes(
   stream: ReadableStream<Uint8Array>,
   onProgress?: (bytesReceived: number) => void,
 ): Promise<Uint8Array> {
@@ -625,6 +650,45 @@ export async function loadNdjsonStreamTable(
   }
 }
 
+export async function loadParquetTable(
+  db: AsyncDuckDB,
+  tableName: string,
+  buffer: Uint8Array,
+): Promise<number> {
+  await db.registerFileBuffer(`${tableName}.parquet`, buffer);
+  const conn = await db.connect();
+  try {
+    await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
+    await conn.query(
+      `CREATE TABLE "${tableName}" AS SELECT * FROM read_parquet('${tableName}.parquet')`,
+    );
+    const result = await conn.query(
+      `SELECT count(*) as cnt FROM "${tableName}"`,
+    );
+    return Number(result.getChild("cnt")?.get(0) ?? 0);
+  } finally {
+    await conn.close();
+  }
+}
+
+export async function attachRemoteParquetSource(
+  db: AsyncDuckDB,
+  tableName: string,
+  parquetUrl: string,
+): Promise<void> {
+  await ensureHttpfsLoaded(db);
+  const conn = await db.connect();
+  try {
+    await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
+    await conn.query(`DROP VIEW IF EXISTS "${tableName}"`);
+    await conn.query(
+      `CREATE VIEW "${tableName}" AS SELECT * FROM read_parquet('${parquetUrl}')`,
+    );
+  } finally {
+    await conn.close();
+  }
+}
+
 export interface DuckDBQueryResult {
   rows: Record<string, unknown>[];
   fields: Array<{ name: string; type: string }>;
@@ -699,6 +763,7 @@ export async function dropTable(
 ): Promise<void> {
   const conn = await db.connect();
   try {
+    await conn.query(`DROP VIEW IF EXISTS "${tableName}"`);
     await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
   } finally {
     await conn.close();
@@ -750,8 +815,10 @@ export async function listTables(db: AsyncDuckDB): Promise<string[]> {
 // --- OPFS Data Caching ---
 
 const CACHE_DB_NAME = "mako-dashboard-cache";
-const CACHE_STORE_NAME = "arrow-cache";
+const CACHE_STORE_NAME = "dashboard-payload-cache";
 const DEFAULT_TTL_MS = 3600 * 1000; // 1 hour
+
+export type DuckDBPayloadFormat = "arrow" | "parquet" | "ndjson";
 
 interface CacheEntry {
   key: string;
@@ -760,6 +827,7 @@ interface CacheEntry {
   rowCount: number;
   byteSize: number;
   queryHash: string;
+  format: DuckDBPayloadFormat;
 }
 
 function openCacheDB(): Promise<IDBDatabase> {
@@ -799,10 +867,10 @@ export async function getCacheKey(
 /**
  * Check if a cached Arrow buffer exists and is fresh.
  */
-export async function getCachedArrow(
+export async function getCachedPayload(
   cacheKey: string,
   ttlMs: number = DEFAULT_TTL_MS,
-): Promise<Uint8Array | null> {
+): Promise<{ buffer: Uint8Array; format: DuckDBPayloadFormat } | null> {
   try {
     const db = await openCacheDB();
     return new Promise((resolve, reject) => {
@@ -820,7 +888,10 @@ export async function getCachedArrow(
           resolve(null);
           return;
         }
-        resolve(new Uint8Array(entry.buffer));
+        resolve({
+          buffer: new Uint8Array(entry.buffer),
+          format: entry.format || "arrow",
+        });
       };
       request.onerror = () => reject(request.error);
     });
@@ -832,11 +903,12 @@ export async function getCachedArrow(
 /**
  * Store an Arrow buffer in the cache.
  */
-export async function setCachedArrow(
+export async function setCachedPayload(
   cacheKey: string,
   buffer: Uint8Array,
   queryHash: string,
   rowCount: number,
+  format: DuckDBPayloadFormat,
 ): Promise<void> {
   try {
     const db = await openCacheDB();
@@ -850,6 +922,7 @@ export async function setCachedArrow(
         rowCount,
         byteSize: buffer.byteLength,
         queryHash,
+        format,
       };
       const request = store.put(entry);
       request.onsuccess = () => resolve();
@@ -858,6 +931,23 @@ export async function setCachedArrow(
   } catch {
     // Cache write failure is non-critical
   }
+}
+
+export async function getCachedArrow(
+  cacheKey: string,
+  ttlMs: number = DEFAULT_TTL_MS,
+): Promise<Uint8Array | null> {
+  const payload = await getCachedPayload(cacheKey, ttlMs);
+  return payload?.format === "arrow" ? payload.buffer : null;
+}
+
+export async function setCachedArrow(
+  cacheKey: string,
+  buffer: Uint8Array,
+  queryHash: string,
+  rowCount: number,
+): Promise<void> {
+  await setCachedPayload(cacheKey, buffer, queryHash, rowCount, "arrow");
 }
 
 /**

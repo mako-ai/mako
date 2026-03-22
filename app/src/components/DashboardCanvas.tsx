@@ -63,6 +63,23 @@ interface DashboardCanvasProps {
   onCreated?: (dashboardId: string) => void;
 }
 
+function resolveWidgetLayout(widget: DashboardWidget) {
+  const fallback = { x: 0, y: 0, w: 6, h: 4, minW: 2, minH: 2 };
+  const candidate = (widget as any).layout ?? (widget as any).layouts?.lg;
+  if (!candidate || typeof candidate !== "object") {
+    return fallback;
+  }
+
+  return {
+    x: typeof candidate.x === "number" ? candidate.x : fallback.x,
+    y: typeof candidate.y === "number" ? candidate.y : fallback.y,
+    w: typeof candidate.w === "number" ? candidate.w : fallback.w,
+    h: typeof candidate.h === "number" ? candidate.h : fallback.h,
+    minW: typeof candidate.minW === "number" ? candidate.minW : fallback.minW,
+    minH: typeof candidate.minH === "number" ? candidate.minH : fallback.minH,
+  };
+}
+
 function formatZodErrors(error: {
   issues: Array<{ path: PropertyKey[]; message: string }>;
 }): string {
@@ -142,6 +159,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             resolution: "intersect",
             engine: "mosaic",
           },
+          materializationMode: "auto",
           layout: { columns: 12, rowHeight: 80 },
           cache: { ttlSeconds: 3600 },
           access: "private",
@@ -306,13 +324,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     async (widget: DashboardWidget) => {
       if (!dashboardId) return;
       const { nanoid } = await import("nanoid");
-      const lgLayout = widget.layouts?.lg ??
-        (widget as any).layout ?? { x: 0, y: 0, w: 6, h: 4 };
+      const lgLayout = widget.layouts?.lg ?? resolveWidgetLayout(widget);
       const newWidget: DashboardWidget = {
         ...widget,
         id: nanoid(),
         title: `${widget.title || "Widget"} (copy)`,
         layouts: {
+          ...(widget.layouts ?? {}),
           lg: {
             ...lgLayout,
             y: lgLayout.y + lgLayout.h,
@@ -496,23 +514,28 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const hasCodeError = Boolean(codeError);
   const renderWidget = (widget: DashboardWidget) => {
-    if (!runtimeSession) {
+    const snapshot = dashboard.snapshots?.[widget.id];
+    if (!runtimeSession && !snapshot) {
       return null;
     }
 
     const dataSourceRuntime = runtimeSession?.dataSources[widget.dataSourceId];
-    if (!dataSourceRuntime || dataSourceRuntime.status !== "ready") {
+    if (
+      (!dataSourceRuntime || dataSourceRuntime.status !== "ready") &&
+      !snapshot
+    ) {
       return null;
     }
 
     const widgetCrossFilterEnabled =
       isCrossFilterEnabled && (widget.crossFilter?.enabled ?? true);
-    if (!mosaicInstance) {
+    if (!mosaicInstance && !snapshot) {
       return null;
     }
 
-    const widgetRuntime = runtimeSession.widgets[widget.id];
+    const widgetRuntime = runtimeSession?.widgets[widget.id];
     const refreshGeneration = widgetRuntime?.refreshGeneration ?? 0;
+    const widgetLayout = resolveWidgetLayout(widget);
 
     switch (widget.type) {
       case "chart":
@@ -522,12 +545,16 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
+            initialRows={snapshot?.rows}
+            initialFields={snapshot?.fields}
             vegaLiteSpec={widget.vegaLiteSpec}
             mosaicInstance={mosaicInstance}
             crossFilterEnabled={widgetCrossFilterEnabled}
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
+            // Force rerenders when legacy widgets are normalized.
+            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
           />
         );
       case "kpi":
@@ -540,12 +567,15 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
+            initialRows={snapshot?.rows}
+            initialFields={snapshot?.fields}
             kpiConfig={widget.kpiConfig}
             mosaicInstance={mosaicInstance}
             crossFilterEnabled={widgetCrossFilterEnabled}
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
+            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
           />
         );
       case "table":
@@ -555,12 +585,15 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
+            initialRows={snapshot?.rows}
+            initialFields={snapshot?.fields}
             tableConfig={widget.tableConfig}
             mosaicInstance={mosaicInstance}
             crossFilterEnabled={widgetCrossFilterEnabled}
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
+            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
           />
         );
       default:

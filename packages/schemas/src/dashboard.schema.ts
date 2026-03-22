@@ -46,12 +46,24 @@ export const DashboardDataSourceSchema = z.object({
   origin: DashboardDataSourceOriginSchema.optional(),
   timeDimension: z.string().optional(),
   rowLimit: z.number().optional(),
+  materializationMode: z
+    .enum(["auto", "local_opfs", "remote_parquet", "legacy_streamed"])
+    .optional(),
   cache: z
     .object({
       ttlSeconds: z.number().optional(),
       lastRefreshedAt: z.string().optional(),
       rowCount: z.number().optional(),
       byteSize: z.number().optional(),
+      parquetArtifactKey: z.string().optional(),
+      parquetVersion: z.string().optional(),
+      parquetBuiltAt: z.string().optional(),
+      parquetExpiresAt: z.string().optional(),
+      parquetBuildStatus: z
+        .enum(["missing", "building", "ready", "error"])
+        .optional(),
+      parquetLastError: z.string().optional(),
+      parquetUrl: z.string().optional(),
     })
     .optional(),
   computedColumns: z
@@ -146,6 +158,9 @@ export const DashboardDefinitionSchema = z.object({
     resolution: z.enum(["intersect", "union"]),
     engine: z.enum(["mosaic", "legacy"]).optional(),
   }),
+  materializationMode: z
+    .enum(["auto", "local_opfs", "remote_parquet", "legacy_streamed"])
+    .optional(),
   layout: z.object({
     columns: z.number(),
     rowHeight: z.number(),

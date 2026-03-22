@@ -170,18 +170,20 @@ export const useDashboardStore = create<DashboardStoreState>()(
         data: Partial<Dashboard>,
       ) => {
         try {
-          await apiClient.put(
-            `/workspaces/${workspaceId}/dashboards/${id}`,
-            data,
-          );
+          const response = await apiClient.put<{
+            success: boolean;
+            data: Dashboard;
+          }>(`/workspaces/${workspaceId}/dashboards/${id}`, data);
           set(state => {
             const list = state.dashboards[workspaceId];
             if (list) {
               const idx = list.findIndex(d => d._id === id);
-              if (idx !== -1) Object.assign(list[idx], data);
+              if (idx !== -1) {
+                Object.assign(list[idx], response.data || data);
+              }
             }
             if (state.openDashboards[id]) {
-              Object.assign(state.openDashboards[id], data);
+              Object.assign(state.openDashboards[id], response.data || data);
             }
           });
         } catch {
@@ -295,15 +297,21 @@ export const useDashboardStore = create<DashboardStoreState>()(
             relationships: dashboard.relationships,
             globalFilters: dashboard.globalFilters,
             crossFilter: dashboard.crossFilter,
+            materializationMode: dashboard.materializationMode,
             layout: dashboard.layout,
             cache: dashboard.cache,
             title: dashboard.title,
             description: dashboard.description,
           };
-          await apiClient.patch(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}`,
-            payload,
-          );
+          const response = await apiClient.patch<{
+            success: boolean;
+            data: Dashboard;
+          }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`, payload);
+          if (response.data) {
+            set(state => {
+              state.openDashboards[dashboardId] = response.data;
+            });
+          }
         } catch {
           // best-effort save
         }
