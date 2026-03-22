@@ -5,40 +5,6 @@ import type {
 import { BigQueryDestinationAdapter } from "./bigquery.adapter";
 import { PostgreSqlDestinationAdapter } from "./postgresql.adapter";
 
-type DestinationAdapterFactory = (params: {
-  destinationDatabaseId: string;
-  destinationDatabaseName?: string;
-  tableDestination: {
-    connectionId: string;
-    schema: string;
-    tableName: string;
-  };
-}) => CdcDestinationAdapter;
-
-const destinationAdapterFactories = new Map<
-  string,
-  DestinationAdapterFactory
->();
-
-export function registerCdcDestinationAdapter(
-  destinationType: string,
-  factory: DestinationAdapterFactory,
-) {
-  destinationAdapterFactories.set(destinationType.toLowerCase(), factory);
-}
-
-registerCdcDestinationAdapter("bigquery", _params => {
-  return new BigQueryDestinationAdapter();
-});
-
-registerCdcDestinationAdapter("postgresql", params => {
-  return new PostgreSqlDestinationAdapter({
-    destinationDatabaseId: params.destinationDatabaseId,
-    destinationDatabaseName: params.destinationDatabaseName,
-    tableDestination: params.tableDestination,
-  });
-});
-
 export function resolveCdcDestinationAdapter(params: {
   destinationType: string;
   destinationDatabaseId: string;
@@ -49,25 +15,29 @@ export function resolveCdcDestinationAdapter(params: {
     tableName: string;
   };
 }): CdcDestinationAdapter {
-  const factory = destinationAdapterFactories.get(
-    params.destinationType.toLowerCase(),
-  );
-  if (!factory) {
-    throw new Error(
-      `No CDC destination adapter registered for type '${params.destinationType}'`,
-    );
+  const normalizedType = params.destinationType.toLowerCase();
+
+  if (normalizedType === "bigquery") {
+    return new BigQueryDestinationAdapter();
   }
 
-  return factory({
-    destinationDatabaseId: params.destinationDatabaseId,
-    destinationDatabaseName: params.destinationDatabaseName,
-    tableDestination: params.tableDestination,
-  });
+  if (normalizedType === "postgresql") {
+    return new PostgreSqlDestinationAdapter({
+      destinationDatabaseId: params.destinationDatabaseId,
+      destinationDatabaseName: params.destinationDatabaseName,
+      tableDestination: params.tableDestination,
+    });
+  }
+
+  throw new Error(
+    `No CDC destination adapter registered for type '${params.destinationType}'`,
+  );
 }
 
 export function hasCdcDestinationAdapter(destinationType?: string): boolean {
   if (!destinationType) return false;
-  return destinationAdapterFactories.has(destinationType.toLowerCase());
+  const normalizedType = destinationType.toLowerCase();
+  return normalizedType === "bigquery" || normalizedType === "postgresql";
 }
 
 export function buildCdcEntityLayout(params: {

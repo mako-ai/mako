@@ -14,14 +14,11 @@ import {
 } from "../normalization";
 import { resolveConfiguredEntities } from "../entity-selection";
 import {
-  CdcApplyChange,
-  CdcApplyOrderingKey,
-  CdcApplyResult,
   CdcDestinationAdapter,
   CdcEntityLayout,
   CdcMaterializationResult,
   CdcMaterializationRun,
-} from "../contracts/destination-adapter";
+} from "../contracts/adapters";
 
 interface PostgreSqlAdapterConfig {
   destinationDatabaseId: string;
@@ -365,93 +362,6 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
       staged: pending.length,
       applied: latest.length,
       lastMaterializedSeq,
-    };
-  }
-
-  async applyChanges(
-    layout: CdcEntityLayout,
-    batch: CdcApplyChange[],
-    _ordering: CdcApplyOrderingKey,
-    _fencingToken: number,
-  ): Promise<CdcApplyResult> {
-    if (batch.length === 0) {
-      return { appliedCount: 0, failedCount: 0 };
-    }
-
-    const rows = batch.map(change => ({
-      ...(change.payload || {}),
-      id: change.recordId,
-      _mako_source_ts: change.sourceTs,
-      _mako_ingest_seq: change.ingestSeq,
-      is_deleted: change.operation === "delete",
-      deleted_at: change.operation === "delete" ? new Date() : null,
-    }));
-
-    const writer = await this.createWriter(layout.tableName);
-    const result = await writer.writeBatch(rows, {
-      keyColumns: layout.keyColumns,
-      conflictStrategy: "update",
-    });
-    if (!result.success) {
-      throw new Error(result.error || "Failed to apply PostgreSQL CDC batch");
-    }
-
-    return {
-      appliedCount: result.rowsWritten,
-      failedCount: Math.max(batch.length - result.rowsWritten, 0),
-    };
-  }
-
-  async upsertRecords(
-    layout: CdcEntityLayout,
-    records: Record<string, unknown>[],
-    _fencingToken: number,
-  ): Promise<number> {
-    if (records.length === 0) return 0;
-    const writer = await this.createWriter(layout.tableName);
-    const result = await writer.writeBatch(records, {
-      keyColumns: layout.keyColumns,
-      conflictStrategy: "update",
-    });
-    if (!result.success) {
-      throw new Error(
-        result.error || "Failed to upsert PostgreSQL CDC records",
-      );
-    }
-    return result.rowsWritten;
-  }
-
-  async applyTombstones(
-    layout: CdcEntityLayout,
-    recordIds: string[],
-    _fencingToken: number,
-  ): Promise<number> {
-    if (recordIds.length === 0) return 0;
-    const writer = await this.createWriter(layout.tableName);
-    const rows = recordIds.map(recordId => ({
-      id: recordId,
-      is_deleted: true,
-      deleted_at: new Date(),
-    }));
-    const result = await writer.writeBatch(rows, {
-      keyColumns: layout.keyColumns,
-      conflictStrategy: "update",
-    });
-    if (!result.success) {
-      throw new Error(
-        result.error || "Failed to apply PostgreSQL CDC tombstones",
-      );
-    }
-    return result.rowsWritten;
-  }
-
-  async getLagAndBacklog(_layout: CdcEntityLayout): Promise<{
-    lagSeconds: number | null;
-    backlogCount: number;
-  }> {
-    return {
-      lagSeconds: null,
-      backlogCount: 0,
     };
   }
 
