@@ -34,7 +34,7 @@ import {
   ExpandMore as ExpandIcon,
   ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
-import { useFlowStore, type FlowExecutionHistory } from "../store/flowStore";
+import { useFlowStore } from "../store/flowStore";
 
 interface BackfillPanelProps {
   workspaceId: string;
@@ -96,10 +96,7 @@ export function BackfillPanel({
 }: BackfillPanelProps) {
   const {
     flows: flowsMap,
-    backfillFlow,
     startCdcBackfill,
-    fetchFlowHistory,
-    cancelFlowExecution,
     fetchCdcStatus,
     pauseCdcFlow,
     resumeCdcFlow,
@@ -110,7 +107,6 @@ export function BackfillPanel({
   const [cdc, setCdc] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<FlowExecutionHistory[]>([]);
   const [showTransitions, setShowTransitions] = useState(false);
   const [resyncOpen, setResyncOpen] = useState(false);
   const [resyncConfirm, setResyncConfirm] = useState("");
@@ -122,7 +118,6 @@ export function BackfillPanel({
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
-  const isCdc = flow?.syncEngine === "cdc";
   const state: CdcState = cdc?.syncState || "idle";
 
   const poll = useCallback(async () => {
@@ -131,20 +126,12 @@ export function BackfillPanel({
   }, [fetchCdcStatus, workspaceId, flowId]);
 
   useEffect(() => {
-    if (!isCdc) return;
     poll();
     cdcPollRef.current = setInterval(poll, 5000);
     return () => {
       if (cdcPollRef.current) clearInterval(cdcPollRef.current);
     };
-  }, [isCdc, poll]);
-
-  useEffect(() => {
-    if (isCdc) return;
-    fetchFlowHistory(workspaceId, flowId, 10).then(runs => {
-      if (runs) setHistory(runs);
-    });
-  }, [isCdc, workspaceId, flowId, fetchFlowHistory]);
+  }, [poll]);
 
   const withBusy = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -161,22 +148,14 @@ export function BackfillPanel({
 
   const handleStartBackfill = () =>
     withBusy(async () => {
-      if (isCdc) {
-        const ok = await startCdcBackfill(workspaceId, flowId);
-        if (!ok) throw new Error("Failed to start backfill");
-      } else {
-        await backfillFlow(workspaceId, flowId);
-      }
+      const ok = await startCdcBackfill(workspaceId, flowId);
+      if (!ok) throw new Error("Failed to start backfill");
     });
 
   const handleCancel = () =>
     withBusy(async () => {
-      if (isCdc) {
-        const ok = await pauseCdcFlow(workspaceId, flowId);
-        if (!ok) throw new Error("Failed to pause flow");
-      } else {
-        await cancelFlowExecution(workspaceId, flowId, null);
-      }
+      const ok = await pauseCdcFlow(workspaceId, flowId);
+      if (!ok) throw new Error("Failed to pause flow");
     });
 
   const handlePauseResume = () =>
@@ -229,99 +208,6 @@ export function BackfillPanel({
       ? (flow.destinationDatabaseId as any).name
       : undefined;
   const dataset = flow?.tableDestination?.schema;
-
-  // --- Non-CDC legacy path (simple backfill trigger + history) ---
-  if (!isCdc) {
-    return (
-      <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            px: 2,
-            py: 1,
-            borderBottom: 1,
-            borderColor: "divider",
-          }}
-        >
-          <Button
-            size="small"
-            variant="contained"
-            startIcon={<SyncIcon />}
-            onClick={handleStartBackfill}
-            disabled={busy}
-          >
-            {busy ? "Running…" : "Run Backfill"}
-          </Button>
-        </Box>
-        <Box sx={{ flex: 1, overflow: "auto", p: 2 }}>
-          {error && (
-            <Alert
-              severity="error"
-              sx={{ mb: 2 }}
-              onClose={() => setError(null)}
-            >
-              {error}
-            </Alert>
-          )}
-          {history.length > 0 ? (
-            <TableContainer>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Date</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell align="right">Duration</TableCell>
-                    <TableCell align="right">Records</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {history.map(run => (
-                    <TableRow key={run.executionId}>
-                      <TableCell>
-                        {new Date(
-                          run.startedAt || run.executedAt,
-                        ).toLocaleString()}
-                      </TableCell>
-                      <TableCell>
-                        <Chip
-                          label={run.status}
-                          size="small"
-                          color={
-                            run.status === "completed"
-                              ? "success"
-                              : run.status === "running"
-                                ? "info"
-                                : "error"
-                          }
-                          variant="outlined"
-                        />
-                      </TableCell>
-                      <TableCell align="right">
-                        {run.duration
-                          ? `${Math.round(run.duration / 1000)}s`
-                          : "—"}
-                      </TableCell>
-                      <TableCell align="right">
-                        {(
-                          run.stats as any
-                        )?.recordsProcessed?.toLocaleString() || "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          ) : (
-            <Typography color="text.secondary" textAlign="center" py={4}>
-              No backfill runs yet
-            </Typography>
-          )}
-        </Box>
-      </Box>
-    );
-  }
 
   // --- CDC flow path ---
   const entities: any[] = cdc?.entities || [];
