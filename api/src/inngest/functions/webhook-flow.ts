@@ -11,7 +11,6 @@ import { createDestinationWriter } from "../../services/destination-writer.servi
 import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { Types } from "mongoose";
 import {
-  isBigQueryCdcEnabledForFlow,
   resolveDestinationTypeForFlow,
   sweepStaleBigQueryCdcPending,
 } from "../../services/bigquery-cdc.service";
@@ -22,6 +21,7 @@ import {
   resolveSourceTimestamp,
 } from "../../sync-cdc/normalization";
 import { cdcEngineOrchestratorService } from "../../sync-cdc/engine-orchestrator.service";
+import { isCdcEnabledForFlow } from "../../sync-cdc/runtime";
 
 /**
  * Process a single webhook event immediately
@@ -154,10 +154,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
         };
 
         const destinationType = await resolveDestinationTypeForFlow(flow);
-        const isBigQueryCdcEnabled = isBigQueryCdcEnabledForFlow(
-          flow,
-          destinationType,
-        );
+        const isCdcEnabled = isCdcEnabledForFlow(flow, destinationType);
 
         // For activity events, resolve sub-type from the data's _type field
         // so we route to the correct per-sub-type table (e.g. activities:Call → call)
@@ -302,7 +299,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
           };
         }
 
-        if (isBigQueryCdcEnabled && flow.tableDestination?.connectionId) {
+        if (isCdcEnabled && flow.tableDestination?.connectionId) {
           const sourceTs = resolveSourceTimestamp(
             documentData,
             new Date(webhookEvent.receivedAt),
@@ -769,13 +766,85 @@ export const webhookRetryFunction = inngest.createFunction(
   },
 );
 
+async function runCdcMaterialization(params: {
+  eventData: unknown;
+  step: any;
+  logger: any;
+  continuationEventName: string;
+}) {
+  const { workspaceId, flowId, entity, force } = params.eventData as {
+    workspaceId: string;
+    flowId: string;
+    entity: string;
+    force?: boolean;
+  };
+  const maxEvents = Math.max(
+    parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "5000", 10) ||
+      5000,
+    100,
+  );
+
+  const result = await params.step.run("materialize-cdc-entity", async () => {
+    return cdcMaterializerService.materializeEntity({
+      workspaceId,
+      flowId,
+      entity,
+      maxEvents,
+    });
+  });
+
+  params.logger.info("CDC materialization completed", {
+    flowId,
+    entity,
+    force: Boolean(force),
+    staged: (result as any).staged,
+    applied: (result as any).applied,
+    lastMaterializedSeq: (result as any).lastMaterializedSeq,
+    skipped: (result as any).skipped,
+    reason: (result as any).reason,
+  });
+
+  if ((result as any).staged >= maxEvents) {
+    await params.step.sendEvent("continue-materialize", {
+      name: params.continuationEventName,
+      data: { workspaceId, flowId, entity, force: true },
+    });
+  }
+
+  return { success: true, ...result };
+}
+
 /**
- * Materialize staged BigQuery CDC events into live tables.
+ * Materialize staged CDC events into live tables.
+ * Canonical event name for all destination adapters.
+ */
+export const cdcMaterializeFunction = inngest.createFunction(
+  {
+    id: "cdc-materialize",
+    name: "CDC Materialize",
+    concurrency: {
+      limit: 1,
+      key: "event.data.flowId + ':' + event.data.entity",
+    },
+  },
+  { event: "cdc/materialize" },
+  async ({ event, step, logger }) => {
+    return runCdcMaterialization({
+      eventData: event.data,
+      step,
+      logger,
+      continuationEventName: "cdc/materialize",
+    });
+  },
+);
+
+/**
+ * Backward-compatible materialization trigger for older queued events.
  */
 export const bigQueryCdcMaterializeFunction = inngest.createFunction(
   {
     id: "bigquery-cdc-materialize",
-    name: "BigQuery CDC Materialize",
+    name: "BigQuery CDC Materialize (compat)",
     concurrency: {
       limit: 1,
       key: "event.data.flowId + ':' + event.data.entity",
@@ -783,49 +852,12 @@ export const bigQueryCdcMaterializeFunction = inngest.createFunction(
   },
   { event: "bigquery/cdc.materialize" },
   async ({ event, step, logger }) => {
-    const { workspaceId, flowId, entity, force } = event.data as {
-      workspaceId: string;
-      flowId: string;
-      entity: string;
-      force?: boolean;
-    };
-    const maxEvents = Math.max(
-      parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "5000", 10) ||
-        5000,
-      100,
-    );
-
-    const result = await step.run(
-      "materialize-bigquery-cdc-entity",
-      async () => {
-        return cdcMaterializerService.materializeEntity({
-          workspaceId,
-          flowId,
-          entity,
-          maxEvents,
-        });
-      },
-    );
-
-    logger.info("BigQuery CDC materialization completed", {
-      flowId,
-      entity,
-      force: Boolean(force),
-      staged: (result as any).staged,
-      applied: (result as any).applied,
-      lastMaterializedSeq: (result as any).lastMaterializedSeq,
-      skipped: (result as any).skipped,
-      reason: (result as any).reason,
+    return runCdcMaterialization({
+      eventData: event.data,
+      step,
+      logger,
+      continuationEventName: "bigquery/cdc.materialize",
     });
-
-    if ((result as any).staged >= maxEvents) {
-      await step.sendEvent("continue-materialize", {
-        name: "bigquery/cdc.materialize",
-        data: { workspaceId, flowId, entity, force: true },
-      });
-    }
-
-    return { success: true, ...result };
   },
 );
 

@@ -800,14 +800,16 @@ export class DestinationWriter {
       // Ensure destination table has all columns present in this batch.
       // Connector payloads (e.g. Close leads) can introduce new fields in later
       // batches that weren't in the schema when the table was first created.
-      if (
-        this.connection.type === "bigquery" &&
-        (this.driver as any).addMissingColumns
-      ) {
-        await (this.driver as any).addMissingColumns(
+      if (this.driver.addMissingColumns) {
+        const schemaForEvolution =
+          targetSchema ||
+          (this.connection.type === "bigquery"
+            ? this.getWorkingSchema(primarySchema) || BIGQUERY_WORKING_DATASET
+            : "public");
+        await this.driver.addMissingColumns(
           this.connection,
           targetTable,
-          targetSchema,
+          schemaForEvolution,
           rows,
         );
       }

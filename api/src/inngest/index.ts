@@ -10,6 +10,7 @@ import {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  cdcMaterializeFunction,
   bigQueryCdcMaterializeFunction,
   bigQueryCdcStaleSweepFunction,
 } from "./functions/webhook-flow";
@@ -36,6 +37,7 @@ const baseFunctions = [
   webhookRetryFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  cdcMaterializeFunction,
   bigQueryCdcMaterializeFunction,
   bigQueryCdcStaleSweepFunction,
 ];
@@ -69,6 +71,7 @@ export {
   webhookEventProcessFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
+  cdcMaterializeFunction,
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,

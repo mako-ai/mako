@@ -223,6 +223,17 @@ export interface DatabaseDriver {
   ): Promise<BatchWriteResult>;
 
   /**
+   * Add columns that are present in incoming rows but missing from the table.
+   * Used by CDC/event-driven syncs where payload shape can evolve over time.
+   */
+  addMissingColumns?(
+    database: IDatabaseConnection,
+    tableName: string,
+    schemaName: string,
+    rows: Record<string, unknown>[],
+  ): Promise<void>;
+
+  /**
    * Create a staging table (copy of original table structure)
    * Used for full sync with atomic swap
    */

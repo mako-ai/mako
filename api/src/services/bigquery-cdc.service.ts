@@ -172,7 +172,7 @@ async function maybeEnqueueMaterialization(params: {
   );
 
   await inngest.send({
-    name: "bigquery/cdc.materialize",
+    name: "cdc/materialize",
     data: {
       workspaceId: String(params.workspaceId),
       flowId: String(params.flowId),

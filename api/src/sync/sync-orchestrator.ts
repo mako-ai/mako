@@ -16,9 +16,9 @@ import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
-import { isBigQueryCdcEnabledForFlow } from "../services/bigquery-cdc.service";
 import { normalizePayloadKeys } from "../sync-cdc/normalization";
 import { cdcEngineOrchestratorService } from "../sync-cdc/engine-orchestrator.service";
+import { isCdcEnabledForFlow } from "../sync-cdc/runtime";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
@@ -534,9 +534,9 @@ async function performSyncChunkSql(
   )
     .select({ type: 1 })
     .lean();
-  const isBigQueryCdcEnabled =
+  const isCdcEnabled =
     Boolean(options.flowId && options.workspaceId) &&
-    isBigQueryCdcEnabledForFlow(
+    isCdcEnabledForFlow(
       {
         _id: new Types.ObjectId(options.flowId!),
         tableDestination,
@@ -545,7 +545,7 @@ async function performSyncChunkSql(
       destinationConn?.type,
     );
 
-  const writer = isBigQueryCdcEnabled
+  const writer = isCdcEnabled
     ? undefined
     : await createDestinationWriter(
         {
@@ -560,15 +560,15 @@ async function performSyncChunkSql(
   }
 
   // Full sync: prepare staging on first chunk
-  if (!isBigQueryCdcEnabled && syncMode === "full" && !state && writer) {
+  if (!isCdcEnabled && syncMode === "full" && !state && writer) {
     await writer.prepareFullSync();
-  } else if (!isBigQueryCdcEnabled && syncMode === "full" && state && writer) {
+  } else if (!isCdcEnabled && syncMode === "full" && state && writer) {
     (writer as any).stagingActive = true;
   }
 
   // Incremental: get last sync date from destination table
   let lastSyncDate: Date | undefined;
-  if (!isBigQueryCdcEnabled && syncMode === "incremental" && !state) {
+  if (!isCdcEnabled && syncMode === "incremental" && !state) {
     try {
       const { getMaxTrackingValue } = await import(
         "../services/destination-writer.service"
@@ -701,7 +701,7 @@ async function performSyncChunkSql(
             };
           });
 
-          if (isBigQueryCdcEnabled) {
+          if (isCdcEnabled) {
             if (!options.flowId || !options.workspaceId) {
               throw new Error(
                 "BigQuery CDC requires flowId and workspaceId on chunk options",
@@ -742,7 +742,7 @@ async function performSyncChunkSql(
     rateLimitDelay,
   );
 
-  if (!isBigQueryCdcEnabled && syncMode === "full") {
+  if (!isCdcEnabled && syncMode === "full") {
     await flushFullSyncRows("chunk-end");
   }
 
@@ -751,7 +751,7 @@ async function performSyncChunkSql(
   if (completed) {
     progressReporter.reportComplete();
 
-    if (!isBigQueryCdcEnabled && syncMode === "full" && writer) {
+    if (!isCdcEnabled && syncMode === "full" && writer) {
       await writer.finalize();
     }
 

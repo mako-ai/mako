@@ -28,12 +28,12 @@ import { getExecutionLogger, getSyncLogger } from "../logging";
 import { loggers } from "../../logging";
 import {
   forceDrainBigQueryCdcFlow,
-  isBigQueryCdcEnabledForFlow,
   markBackfillCompletedForFlow,
 } from "../../services/bigquery-cdc.service";
 import { cdcBackfillCheckpointService } from "../../sync-cdc/backfill-checkpoint.service";
 import { syncMachineService } from "../../sync-cdc/state/sync-machine.service";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
+import { isCdcEnabledForFlow } from "../../sync-cdc/runtime";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -587,16 +587,13 @@ export const flowFunction = inngest.createFunction(
           return destination?.type || undefined;
         },
       )) as string | undefined;
-      const isBigQueryCdcEnabled = isBigQueryCdcEnabledForFlow(
-        flow,
-        destinationType,
-      );
+      const isCdcEnabled = isCdcEnabledForFlow(flow, destinationType);
       const requestedBackfillRunId =
         typeof backfillRunId === "string" && backfillRunId.length > 0
           ? backfillRunId
           : undefined;
       cdcBackfillRunId =
-        backfill && flow.type === "webhook" && isBigQueryCdcEnabled
+        backfill && flow.type === "webhook" && isCdcEnabled
           ? requestedBackfillRunId || flow.backfillState?.runId
           : undefined;
 
@@ -617,7 +614,7 @@ export const flowFunction = inngest.createFunction(
 
       // Backfill for webhook-triggered flows should run as full sync.
       // This ensures a complete reload instead of incremental upserts.
-      if (backfill && flow.type === "webhook" && !isBigQueryCdcEnabled) {
+      if (backfill && flow.type === "webhook" && !isCdcEnabled) {
         (flow as any).syncMode = "full";
         logger.info("Backfill mode: using full sync for webhook flow", {
           flowId,
@@ -634,7 +631,7 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && isBigQueryCdcEnabled) {
+      if (backfill && flow.type === "webhook" && isCdcEnabled) {
         (flow as any).syncMode = "full";
         logger.info(
           "Backfill mode: BigQuery CDC enabled, no webhook apply gate",
@@ -1166,7 +1163,7 @@ export const flowFunction = inngest.createFunction(
         const checkpointEnabled =
           Boolean(backfill) &&
           flow.type === "webhook" &&
-          isBigQueryCdcEnabled &&
+          isCdcEnabled &&
           Boolean(cdcBackfillRunId);
         let checkpointCompletedEntities = new Set<string>();
         if (checkpointEnabled) {
@@ -1808,7 +1805,7 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && !isBigQueryCdcEnabled) {
+      if (backfill && flow.type === "webhook" && !isCdcEnabled) {
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
@@ -1924,7 +1921,7 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && isBigQueryCdcEnabled) {
+      if (backfill && flow.type === "webhook" && isCdcEnabled) {
         await step.run("mark-bigquery-cdc-backfill-complete", async () => {
           await markBackfillCompletedForFlow({
             flowId: String(flowId),
@@ -2257,11 +2254,11 @@ export const flowFunction = inngest.createFunction(
                 .lean()
             )?.type
           : undefined;
-        const isBigQueryCdcEnabled = isBigQueryCdcEnabledForFlow(
+        const isCdcEnabled = isCdcEnabledForFlow(
           flowRef as IFlow,
           destinationType,
         );
-        if (isBigQueryCdcEnabled) {
+        if (isCdcEnabled) {
           const safeFlowRef = flowRef as IFlow;
           await step.run("cdc-transition-fail", async () => {
             await syncMachineService.applyTransition({
