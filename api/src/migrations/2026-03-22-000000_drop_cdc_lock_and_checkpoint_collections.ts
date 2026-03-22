@@ -26,6 +26,28 @@ type CheckpointDoc = {
   updatedAt?: Date;
 };
 
+type IndexInfo = {
+  name: string;
+  key?: Record<string, unknown>;
+  expireAfterSeconds?: number;
+  partialFilterExpression?: Record<string, unknown>;
+};
+
+function isAppliedAtSingleFieldIndex(index: IndexInfo): boolean {
+  if (!index.key || typeof index.key !== "object") return false;
+  const keys = Object.entries(index.key);
+  return keys.length === 1 && keys[0][0] === "appliedAt" && keys[0][1] === 1;
+}
+
+function isDesiredAppliedAtTtlIndex(index: IndexInfo): boolean {
+  if (index.name !== APPLIED_TTL_INDEX) return false;
+  if ((index.expireAfterSeconds || 0) !== APPLIED_TTL_SECONDS) return false;
+  const partial = index.partialFilterExpression?.appliedAt as
+    | Record<string, unknown>
+    | undefined;
+  return Boolean(partial?.$exists === true);
+}
+
 async function renameIfExists(
   db: Db,
   names: Set<string>,
@@ -125,18 +147,26 @@ export async function up(db: Db): Promise<void> {
   }
 
   const changeEventCol = db.collection(CHANGE_EVENTS_COLLECTION);
-  const existingIndexes = await changeEventCol.indexes();
-  const hasDesiredIndex = existingIndexes.some(
-    index =>
-      index.name === APPLIED_TTL_INDEX &&
-      (index.expireAfterSeconds || 0) === APPLIED_TTL_SECONDS,
-  );
+  const existingIndexes = (await changeEventCol.indexes()) as IndexInfo[];
+  const appliedAtIndexes = existingIndexes.filter(isAppliedAtSingleFieldIndex);
+  const hasDesiredIndex = appliedAtIndexes.some(isDesiredAppliedAtTtlIndex);
 
   if (!hasDesiredIndex) {
-    try {
-      await changeEventCol.dropIndex(APPLIED_TTL_INDEX);
-    } catch {
-      // Ignore if missing.
+    for (const existingIndex of appliedAtIndexes) {
+      try {
+        await changeEventCol.dropIndex(existingIndex.name);
+        log.info("Dropped existing appliedAt index before TTL migration", {
+          collection: CHANGE_EVENTS_COLLECTION,
+          index: existingIndex.name,
+          expireAfterSeconds: existingIndex.expireAfterSeconds ?? null,
+        });
+      } catch (error) {
+        log.warn("Failed to drop existing appliedAt index", {
+          collection: CHANGE_EVENTS_COLLECTION,
+          index: existingIndex.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     await changeEventCol.createIndex(
