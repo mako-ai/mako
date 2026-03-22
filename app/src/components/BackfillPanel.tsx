@@ -249,10 +249,46 @@ export function BackfillPanel({
       : undefined;
   const dataset = flow?.tableDestination?.schema;
 
-  const entities: any[] = cdc?.entities || [];
+  const cdcEntities: any[] = cdc?.entities || [];
   const transitions: any[] = cdc?.transitions || [];
+
+  const configuredEntityNames: string[] = (() => {
+    const layouts = flow?.entityLayouts as
+      | Array<{ entity: string; enabled?: boolean }>
+      | undefined;
+    if (layouts && layouts.length > 0) {
+      return layouts
+        .filter(l => l.enabled !== false && l.entity)
+        .map(l => l.entity);
+    }
+    const filter = flow?.entityFilter as string[] | undefined;
+    if (filter && filter.length > 0) {
+      return filter.filter(e => typeof e === "string" && e.trim().length > 0);
+    }
+    return [];
+  })();
+
+  const cdcByEntity = new Map(cdcEntities.map((e: any) => [e.entity, e]));
+  const allEntityNames = Array.from(
+    new Set([
+      ...configuredEntityNames,
+      ...cdcEntities.map((e: any) => e.entity),
+    ]),
+  );
+  const entities = allEntityNames.map(name => {
+    const cdcState = cdcByEntity.get(name);
+    return {
+      entity: name,
+      backlogCount: cdcState?.backlogCount || 0,
+      lastIngestSeq: cdcState?.lastIngestSeq || 0,
+      lastMaterializedSeq: cdcState?.lastMaterializedSeq || 0,
+      lagSeconds: cdcState?.lagSeconds ?? null,
+      lastMaterializedAt: cdcState?.lastMaterializedAt || null,
+    };
+  });
+
   const totalProcessed = entities.reduce(
-    (sum: number, e: any) => sum + (e.lastMaterializedSeq || 0),
+    (sum, e) => sum + (e.lastMaterializedSeq || 0),
     0,
   );
   const ss = streamStatus(state);
