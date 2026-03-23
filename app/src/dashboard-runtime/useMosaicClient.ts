@@ -10,11 +10,16 @@ import { dashboardRuntimeEvents } from "./events";
 import { classifyDuckDBError } from "./error-kinds";
 import { useDashboardRuntimeStore } from "./store";
 
+const EMPTY_ROWS: Record<string, unknown>[] = [];
+const EMPTY_FIELDS: Array<{ name: string; type: string }> = [];
+
 interface UseMosaicClientConfig {
   dashboardId: string;
   widgetId: string;
   dataSourceId?: string;
   localSql: string;
+  initialRows?: Record<string, unknown>[];
+  initialFields?: Array<{ name: string; type: string }>;
   mosaicInstance?: MosaicInstance | null;
   crossFilterEnabled?: boolean;
   crossFilterResolution?: DashboardCrossFilterResolution;
@@ -50,6 +55,8 @@ export function useMosaicClient({
   widgetId,
   dataSourceId,
   localSql,
+  initialRows = EMPTY_ROWS,
+  initialFields = EMPTY_FIELDS,
   mosaicInstance,
   crossFilterEnabled = true,
   crossFilterResolution = "intersect",
@@ -57,12 +64,11 @@ export function useMosaicClient({
   refreshGeneration = 0,
   onError,
 }: UseMosaicClientConfig) {
-  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
-  const [fields, setFields] = useState<Array<{ name: string; type: string }>>(
-    [],
-  );
+  const [rows, setRows] = useState<Record<string, unknown>[]>(initialRows);
+  const [fields, setFields] =
+    useState<Array<{ name: string; type: string }>>(initialFields);
   const hasSql = Boolean(localSql.trim());
-  const [loading, setLoading] = useState(hasSql);
+  const [loading, setLoading] = useState(hasSql && initialRows.length === 0);
   const clientRef = useRef<any>(null);
   const sourceRef = useRef({ widgetId });
   const sqlRef = useRef(localSql);
@@ -83,6 +89,14 @@ export function useMosaicClient({
   }, [localSql]);
 
   useEffect(() => {
+    if (initialRows.length > 0 || initialFields.length > 0) {
+      setRows(initialRows);
+      setFields(initialFields);
+      setLoading(false);
+    }
+  }, [initialFields, initialRows]);
+
+  useEffect(() => {
     sourceRef.current = { widgetId };
   }, [widgetId]);
 
@@ -93,19 +107,23 @@ export function useMosaicClient({
     selectionRef.current = null;
 
     if (!mosaicInstance || !hasSql) {
-      setRows([]);
-      setFields([]);
+      if (initialRows.length === 0) {
+        setRows([]);
+        setFields(initialFields);
+      }
       setLoading(false);
-      useDashboardRuntimeStore
-        .getState()
-        .dispatch(
-          dashboardRuntimeEvents.widgetQueryFailed(
-            dashboardId,
-            widgetId,
-            "Mosaic runtime is not available",
-            "crossfilter_invalid",
-          ),
-        );
+      if (initialRows.length === 0) {
+        useDashboardRuntimeStore
+          .getState()
+          .dispatch(
+            dashboardRuntimeEvents.widgetQueryFailed(
+              dashboardId,
+              widgetId,
+              "Mosaic runtime is not available",
+              "crossfilter_invalid",
+            ),
+          );
+      }
       return;
     }
 
@@ -212,6 +230,8 @@ export function useMosaicClient({
     onError,
     dashboardId,
     widgetId,
+    initialFields,
+    initialRows,
   ]);
 
   useEffect(() => {

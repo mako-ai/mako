@@ -1700,6 +1700,87 @@ QueryExecutionSchema.index({ apiKeyId: 1, executedAt: -1 }, { sparse: true }); /
 QueryExecutionSchema.index({ workspaceId: 1, status: 1 }); // Error rate monitoring
 QueryExecutionSchema.index({ executedAt: 1 }, { expireAfterSeconds: 7776000 }); // TTL: 90 days
 
+export interface IMaterializationRun extends Document {
+  workspaceId: Types.ObjectId;
+  dashboardId: Types.ObjectId;
+  dataSourceId: string;
+  runId: string;
+  triggerType: "manual" | "schedule" | "dashboard_update";
+  status: "building" | "ready" | "error";
+  requestedAt: Date;
+  startedAt?: Date;
+  finishedAt?: Date;
+  artifactKey?: string;
+  version?: string;
+  rowCount?: number;
+  byteSize?: number;
+  error?: string;
+  events: Array<{
+    type: string;
+    timestamp: Date;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }>;
+}
+
+const MaterializationRunSchema = new Schema<IMaterializationRun>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    dashboardId: {
+      type: Schema.Types.ObjectId,
+      ref: "Dashboard",
+      required: true,
+    },
+    dataSourceId: { type: String, required: true },
+    runId: { type: String, required: true, unique: true },
+    triggerType: {
+      type: String,
+      enum: ["manual", "schedule", "dashboard_update"],
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ["building", "ready", "error"],
+      required: true,
+    },
+    requestedAt: { type: Date, required: true, default: Date.now },
+    startedAt: { type: Date },
+    finishedAt: { type: Date },
+    artifactKey: { type: String },
+    version: { type: String },
+    rowCount: { type: Number },
+    byteSize: { type: Number },
+    error: { type: String },
+    events: [
+      {
+        type: { type: String, required: true },
+        timestamp: { type: Date, required: true },
+        message: { type: String, required: true },
+        metadata: { type: Schema.Types.Mixed },
+      },
+    ],
+  },
+  {
+    collection: "materialization_runs",
+    timestamps: false,
+  },
+);
+
+MaterializationRunSchema.index({
+  dashboardId: 1,
+  dataSourceId: 1,
+  requestedAt: -1,
+});
+MaterializationRunSchema.index({ workspaceId: 1, requestedAt: -1 });
+MaterializationRunSchema.index(
+  { requestedAt: 1 },
+  { expireAfterSeconds: 2592000 },
+);
+
 /**
  * Dashboard model interface (AI-native dashboard engine)
  */
@@ -1785,15 +1866,31 @@ export interface IDashboard extends Document {
     engine?: "mosaic" | "legacy";
   };
 
+  materializationSchedule: {
+    enabled: boolean;
+    cron: string | null;
+    timezone?: string;
+  };
+
   layout: {
     columns: number;
     rowHeight: number;
   };
 
   cache: {
-    ttlSeconds: number;
     lastRefreshedAt?: Date;
   };
+
+  snapshots?: Record<
+    string,
+    {
+      version: string;
+      generatedAt: Date;
+      rowCount: number;
+      rows: Record<string, unknown>[];
+      fields: Array<{ name: string; type: string }>;
+    }
+  >;
 
   version: number;
   versionHistory: Array<{
@@ -1851,10 +1948,15 @@ export interface IDashboardDataSource {
     type: "quantitative" | "temporal" | "nominal" | "ordinal";
   }>;
   cache?: {
-    ttlSeconds?: number;
     lastRefreshedAt?: Date;
     rowCount?: number;
     byteSize?: number;
+    parquetArtifactKey?: string;
+    parquetVersion?: string;
+    parquetBuiltAt?: Date;
+    parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+    parquetLastError?: string;
+    parquetUrl?: string;
   };
 }
 
@@ -1933,10 +2035,17 @@ const DashboardSchema = new Schema<IDashboard>(
           },
         ],
         cache: {
-          ttlSeconds: { type: Number },
           lastRefreshedAt: { type: Date },
           rowCount: { type: Number },
           byteSize: { type: Number },
+          parquetArtifactKey: { type: String },
+          parquetVersion: { type: String },
+          parquetBuiltAt: { type: Date },
+          parquetBuildStatus: {
+            type: String,
+            enum: ["missing", "building", "ready", "error"],
+          },
+          parquetLastError: { type: String },
         },
       },
     ],
@@ -2056,15 +2165,22 @@ const DashboardSchema = new Schema<IDashboard>(
       },
     },
 
+    materializationSchedule: {
+      enabled: { type: Boolean, default: true },
+      cron: { type: String, default: "0 0 * * *" },
+      timezone: { type: String, default: "UTC" },
+    },
+
     layout: {
       columns: { type: Number, default: 12 },
       rowHeight: { type: Number, default: 80 },
     },
 
     cache: {
-      ttlSeconds: { type: Number, default: 3600 },
       lastRefreshedAt: { type: Date },
     },
+
+    snapshots: { type: Schema.Types.Mixed, default: {} },
 
     version: { type: Number, default: 1 },
     versionHistory: [
@@ -2137,6 +2253,10 @@ export const WebhookEvent = mongoose.model<IWebhookEvent>(
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,
+);
+export const MaterializationRun = mongoose.model<IMaterializationRun>(
+  "MaterializationRun",
+  MaterializationRunSchema,
 );
 export const Dashboard = mongoose.model<IDashboard>(
   "Dashboard",

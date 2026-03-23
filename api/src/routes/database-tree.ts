@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { authMiddleware } from "../auth/auth.middleware";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   requireWorkspace,
   AuthenticatedContext,
@@ -16,7 +16,7 @@ export const databaseTreeRoutes = new Hono();
 // GET /api/workspaces/:workspaceId/databases/:id/tree
 databaseTreeRoutes.get(
   "/:id/tree",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     const workspace = c.get("workspace");
@@ -55,7 +55,7 @@ databaseTreeRoutes.get(
 // GET /api/workspaces/:workspaceId/databases/:id/autocomplete
 databaseTreeRoutes.get(
   "/:id/autocomplete",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     const workspace = c.get("workspace");
@@ -188,7 +188,7 @@ databaseTreeRoutes.get(
 // Returns a placeholder query and language for a given database and optional node context
 databaseTreeRoutes.get(
   "/:id/console-template",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     const workspace = c.get("workspace");
@@ -273,7 +273,7 @@ databaseTreeRoutes.get(
 // Check if a table exists and return its schema if it does
 databaseTreeRoutes.get(
   "/:id/table-exists",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     const log = loggers.api("database-tree");

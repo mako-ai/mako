@@ -20,6 +20,10 @@ function ensureSessionState(
       dataSources: {},
       widgets: {},
       eventLog: [],
+      runtimeContext: "builder",
+      persistent: false,
+      materializationPolling: false,
+      freshDataAvailable: false,
     };
   }
 
@@ -38,9 +42,19 @@ function ensureDataSourceState(
       dataVersion: 0,
       status: "idle",
       rowsLoaded: 0,
+      bytesLoaded: 0,
+      totalBytes: null,
       schema: [],
       sampleRows: [],
       error: null,
+      loadPath: null,
+      resolvedMode: undefined,
+      artifactUrl: null,
+      loadDurationMs: null,
+      materializationStatus: undefined,
+      materializationVersion: null,
+      materializedAt: null,
+      storageBackend: null,
     };
   }
 
@@ -93,12 +107,18 @@ export function reduceDashboardRuntimeEvent(
     case "session/activated": {
       const session = ensureSessionState(state, event.dashboardId);
       session.sessionId = event.sessionId;
+      session.runtimeContext = event.runtimeContext;
+      session.persistent = event.persistent;
       state.activeDashboardId = event.dashboardId;
       appendLog(session, {
         timestamp: Date.now(),
         level: "info",
         message: "Dashboard session activated",
-        metadata: { sessionId: event.sessionId },
+        metadata: {
+          sessionId: event.sessionId,
+          runtimeContext: event.runtimeContext,
+          persistent: event.persistent,
+        },
       });
       return;
     }
@@ -108,6 +128,17 @@ export function reduceDashboardRuntimeEvent(
       if (state.activeDashboardId === event.dashboardId) {
         state.activeDashboardId = null;
       }
+      return;
+    }
+
+    case "dashboard/log-appended": {
+      const session = ensureSessionState(state, event.dashboardId);
+      appendLog(session, {
+        timestamp: Date.now(),
+        level: event.level,
+        message: event.message,
+        metadata: event.metadata,
+      });
       return;
     }
 
@@ -140,6 +171,18 @@ export function reduceDashboardRuntimeEvent(
       return;
     }
 
+    case "dashboard/materialization-polling-set": {
+      const session = ensureSessionState(state, event.dashboardId);
+      session.materializationPolling = event.polling;
+      return;
+    }
+
+    case "dashboard/fresh-data-available-set": {
+      const session = ensureSessionState(state, event.dashboardId);
+      session.freshDataAvailable = event.value;
+      return;
+    }
+
     case "dashboard/reset": {
       const session = ensureSessionState(state, event.dashboardId);
       for (const widget of Object.values(session.widgets)) {
@@ -165,9 +208,13 @@ export function reduceDashboardRuntimeEvent(
       const dataSource = ensureDataSourceState(session, event.dataSourceId);
       if (event.preserveExistingData && dataSource.status === "ready") {
         dataSource.rowsLoaded = 0;
+        dataSource.bytesLoaded = 0;
+        dataSource.totalBytes = null;
       } else {
         dataSource.status = "loading";
         dataSource.rowsLoaded = 0;
+        dataSource.bytesLoaded = 0;
+        dataSource.totalBytes = null;
         dataSource.rowCount = undefined;
         dataSource.schema = [];
         dataSource.sampleRows = [];
@@ -189,6 +236,8 @@ export function reduceDashboardRuntimeEvent(
         dataSource.status = "loading";
       }
       dataSource.rowsLoaded = event.rowsLoaded;
+      dataSource.bytesLoaded = event.bytesLoaded;
+      dataSource.totalBytes = event.totalBytes;
       return;
     }
 
@@ -223,6 +272,8 @@ export function reduceDashboardRuntimeEvent(
       }
       dataSource.rowsLoaded = event.rowsLoaded;
       dataSource.error = event.error;
+      dataSource.loadDurationMs =
+        event.loadDurationMs ?? dataSource.loadDurationMs;
       if (!(event.preserveExistingData && dataSource.status === "ready")) {
         dataSource.sampleRows = [];
       }
@@ -232,6 +283,13 @@ export function reduceDashboardRuntimeEvent(
         message: "Data source load failed",
         metadata: { dataSourceId: event.dataSourceId, error: event.error },
       });
+      return;
+    }
+
+    case "datasource/diagnostics-updated": {
+      const session = ensureSessionState(state, event.dashboardId);
+      const dataSource = ensureDataSourceState(session, event.dataSourceId);
+      Object.assign(dataSource, event.diagnostics);
       return;
     }
 

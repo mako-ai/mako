@@ -10,6 +10,17 @@ import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
 } from "@mako/schemas";
+import { hydrateDashboardArtifactUrls } from "../services/dashboard-cache.service";
+import { buildDashboardDataSourceVersion } from "../services/dashboard-artifact-rebuild.service";
+import {
+  isDashboardMaterializationEnabled,
+  normalizeDashboardMaterializationSchedule,
+  validateDashboardMaterializationSchedule,
+} from "../services/dashboard-materialization-schedule.service";
+import {
+  queueDashboardArtifactRefresh,
+  refreshDashboardArtifactsNow,
+} from "../services/dashboard-refresh-runner.service";
 
 const logger = loggers.api("dashboards");
 
@@ -159,6 +170,71 @@ function normalizeDashboardWidgetLayouts(dashboard: Record<string, any>) {
   return dashboard;
 }
 
+function sanitizeDashboardResponse<
+  T extends Record<string, any> & {
+    dataSources?: Array<Record<string, unknown>>;
+    materializationSchedule?: unknown;
+  },
+>(dashboard: T): T {
+  delete dashboard.materializationMode;
+  dashboard.materializationSchedule = normalizeDashboardMaterializationSchedule(
+    dashboard.materializationSchedule as
+      | Record<string, unknown>
+      | null
+      | undefined,
+  );
+  if (dashboard.cache && typeof dashboard.cache === "object") {
+    delete dashboard.cache.ttlSeconds;
+  }
+  if (Array.isArray(dashboard.dataSources)) {
+    dashboard.dataSources = dashboard.dataSources.map(
+      (dataSource: Record<string, unknown>) => {
+        const next = { ...dataSource };
+        delete next.materializationMode;
+        if (next.cache && typeof next.cache === "object") {
+          delete (next.cache as Record<string, unknown>).ttlSeconds;
+          delete (next.cache as Record<string, unknown>).parquetExpiresAt;
+          delete (next.cache as Record<string, unknown>).materializationRuns;
+        }
+        return next;
+      },
+    );
+  }
+  return dashboard;
+}
+
+function getDataSourceVersionMap(dataSources: Array<Record<string, any>>) {
+  return new Map(
+    dataSources.map(ds => [
+      String(ds.id),
+      buildDashboardDataSourceVersion(ds as any),
+    ]),
+  );
+}
+
+function didDashboardArtifactInputsChange(
+  beforeDataSources: Array<Record<string, any>>,
+  afterDataSources: Array<Record<string, any>>,
+): boolean {
+  if (beforeDataSources.length !== afterDataSources.length) {
+    return true;
+  }
+
+  const before = getDataSourceVersionMap(beforeDataSources);
+  const after = getDataSourceVersionMap(afterDataSources);
+  if (before.size !== after.size) {
+    return true;
+  }
+
+  for (const [id, version] of before) {
+    if (after.get(id) !== version) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 app.use("*", unifiedAuthMiddleware);
 
 app.use("*", async (c: AuthenticatedContext, next) => {
@@ -217,9 +293,20 @@ app.get("/", async (c: AuthenticatedContext) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    const normalized = dashboards.map(d => normalizeDashboardWidgetLayouts(d));
-
-    return c.json({ success: true, data: normalized });
+    const normalizedDashboards = dashboards.map(d =>
+      normalizeDashboardWidgetLayouts(d),
+    );
+    const hydratedDashboards = await Promise.all(
+      normalizedDashboards.map(dashboard =>
+        hydrateDashboardArtifactUrls(dashboard as any),
+      ),
+    );
+    return c.json({
+      success: true,
+      data: hydratedDashboards.map(dashboard =>
+        sanitizeDashboardResponse(dashboard as any),
+      ),
+    });
   } catch (error) {
     logger.error("Error listing dashboards", { error });
     return c.json(
@@ -262,16 +349,49 @@ app.post("/", async (c: AuthenticatedContext) => {
       );
     }
 
+    let materializationSchedule;
+    try {
+      materializationSchedule = validateDashboardMaterializationSchedule(
+        body.materializationSchedule,
+      );
+    } catch (error) {
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Invalid materialization schedule",
+        },
+        400,
+      );
+    }
+
     const dashboard = new Dashboard({
       ...body,
       dataSources: normalizedDataSources.dataSources || [],
       workspaceId: new Types.ObjectId(workspaceId),
       createdBy: userId,
+      materializationSchedule,
     });
 
     await dashboard.save();
+    if (
+      (dashboard.dataSources || []).length > 0 &&
+      isDashboardMaterializationEnabled(dashboard.materializationSchedule)
+    ) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+        triggerType: "dashboard_update",
+      }).catch(() => undefined);
+    }
 
-    return c.json({ success: true, data: dashboard });
+    return c.json({
+      success: true,
+      data: sanitizeDashboardResponse(
+        await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
+      ),
+    });
   } catch (error) {
     logger.error("Error creating dashboard", { error });
     return c.json(
@@ -307,7 +427,12 @@ app.get("/:id", async (c: AuthenticatedContext) => {
     const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
     normalizeDashboardWidgetLayouts(plain);
 
-    return c.json({ success: true, data: plain });
+    return c.json({
+      success: true,
+      data: sanitizeDashboardResponse(
+        await hydrateDashboardArtifactUrls(plain as any),
+      ),
+    });
   } catch (error) {
     logger.error("Error getting dashboard", { error });
     return c.json(
@@ -353,6 +478,8 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       }
     }
 
+    const previousDataSources = dashboard.toObject().dataSources || [];
+
     if (body.title !== undefined) {
       dashboard.title = body.title;
     }
@@ -387,6 +514,25 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     if (body.crossFilter !== undefined) {
       dashboard.crossFilter = body.crossFilter;
     }
+    if (body.materializationSchedule !== undefined) {
+      try {
+        dashboard.materializationSchedule =
+          validateDashboardMaterializationSchedule(
+            body.materializationSchedule,
+          ) as any;
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Invalid materialization schedule",
+          },
+          400,
+        );
+      }
+    }
     if (body.cache !== undefined) {
       dashboard.cache = body.cache;
     }
@@ -395,8 +541,25 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     }
 
     await dashboard.save();
+    if (
+      didDashboardArtifactInputsChange(
+        previousDataSources as any[],
+        (dashboard.toObject().dataSources || []) as any[],
+      ) &&
+      isDashboardMaterializationEnabled(dashboard.materializationSchedule)
+    ) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+        triggerType: "dashboard_update",
+      }).catch(() => undefined);
+    }
 
-    return c.json({ success: true, data: dashboard });
+    return c.json({
+      success: true,
+      data: sanitizeDashboardResponse(
+        await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
+      ),
+    });
   } catch (error) {
     logger.error("Error updating dashboard", { error });
     return c.json(
@@ -473,6 +636,27 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       }
       validatedBody.dataSources = normalizedDataSources.dataSources;
     }
+    if (validatedBody.materializationSchedule !== undefined) {
+      try {
+        validatedBody.materializationSchedule =
+          validateDashboardMaterializationSchedule(
+            validatedBody.materializationSchedule as Record<string, unknown>,
+          );
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Invalid materialization schedule",
+          },
+          400,
+        );
+      }
+    }
+
+    const previousDataSources = existing.toObject().dataSources || [];
 
     const dashboard = await Dashboard.findOneAndUpdate(
       {
@@ -483,13 +667,81 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       { new: true, runValidators: true },
     );
 
-    return c.json({ success: true, data: dashboard });
+    if (
+      dashboard &&
+      didDashboardArtifactInputsChange(
+        previousDataSources as any[],
+        (dashboard.toObject().dataSources || []) as any[],
+      ) &&
+      isDashboardMaterializationEnabled(dashboard.materializationSchedule)
+    ) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+        triggerType: "dashboard_update",
+      }).catch(() => undefined);
+    }
+
+    return c.json({
+      success: true,
+      data: dashboard
+        ? sanitizeDashboardResponse(
+            await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
+          )
+        : dashboard,
+    });
   } catch (error) {
     logger.error("Error patching dashboard", { error });
     return c.json(
       {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+app.post("/:id/refresh", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const body = await c.req.json().catch(() => ({}));
+    const blocking = body?.blocking === true;
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
+    if (blocking) {
+      const result = await refreshDashboardArtifactsNow({
+        dashboardId: dashboard._id.toString(),
+        force: true,
+        triggerType: "manual",
+      });
+      return c.json({ success: true, data: result });
+    }
+
+    await queueDashboardArtifactRefresh({
+      dashboardId: dashboard._id.toString(),
+      force: true,
+      triggerType: "manual",
+    });
+
+    return c.json({ success: true, queued: true });
+  } catch (error) {
+    logger.error("Error refreshing dashboard artifacts", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to refresh dashboard artifacts",
       },
       500,
     );
@@ -579,8 +831,22 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
 
     const duplicate = new Dashboard(spec);
     await duplicate.save();
+    if (
+      (duplicate.dataSources || []).length > 0 &&
+      isDashboardMaterializationEnabled(duplicate.materializationSchedule)
+    ) {
+      await queueDashboardArtifactRefresh({
+        dashboardId: duplicate._id.toString(),
+        triggerType: "dashboard_update",
+      }).catch(() => undefined);
+    }
 
-    return c.json({ success: true, data: duplicate });
+    return c.json({
+      success: true,
+      data: sanitizeDashboardResponse(
+        await hydrateDashboardArtifactUrls(duplicate.toObject() as any),
+      ),
+    });
   } catch (error) {
     logger.error("Error duplicating dashboard", { error });
     return c.json(

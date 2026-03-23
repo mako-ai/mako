@@ -30,6 +30,88 @@ interface HistoryEntry {
   index: number;
 }
 
+export interface DashboardDataSourceMaterializationStatus {
+  dataSourceId: string;
+  name: string;
+  status: "missing" | "building" | "ready" | "error";
+  version: string | null;
+  format: "parquet";
+  storageBackend: "filesystem" | "gcs" | "s3";
+  rowCount: number | null;
+  byteSize: number | null;
+  builtAt: string | null;
+  readUrl: string | null;
+  lastError: string | null;
+  artifactKey: string | null;
+  lastMaterializedAt: string | null;
+}
+
+export interface DashboardMaterializationStatus {
+  dashboardId: string;
+  workspaceId: string;
+  status: "missing" | "building" | "ready" | "error";
+  lastRefreshedAt: string | null;
+  allReady: boolean;
+  anyBuilding: boolean;
+  dataSources: DashboardDataSourceMaterializationStatus[];
+}
+
+export interface MaterializationRunRecord {
+  runId: string;
+  workspaceId: string;
+  dashboardId: string;
+  dataSourceId: string;
+  triggerType: "manual" | "schedule" | "dashboard_update";
+  status: "building" | "ready" | "error";
+  requestedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  artifactKey?: string;
+  version?: string;
+  rowCount?: number;
+  byteSize?: number;
+  error?: string;
+  events: Array<{
+    type: string;
+    timestamp: string;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }>;
+}
+
+function applyMaterializationStatusToDashboard(
+  dashboard: Dashboard,
+  status: DashboardMaterializationStatus,
+) {
+  dashboard.cache = {
+    ...dashboard.cache,
+    lastRefreshedAt: status.lastRefreshedAt || dashboard.cache?.lastRefreshedAt,
+  };
+  dashboard.dataSources = dashboard.dataSources.map(dataSource => {
+    const sourceStatus = status.dataSources.find(
+      source => source.dataSourceId === dataSource.id,
+    );
+    if (!sourceStatus) {
+      return dataSource;
+    }
+
+    return {
+      ...dataSource,
+      cache: {
+        ...dataSource.cache,
+        rowCount: sourceStatus.rowCount ?? undefined,
+        byteSize: sourceStatus.byteSize ?? undefined,
+        parquetArtifactKey: sourceStatus.artifactKey ?? undefined,
+        parquetVersion: sourceStatus.version ?? undefined,
+        parquetBuiltAt: sourceStatus.builtAt ?? undefined,
+        parquetBuildStatus: sourceStatus.status,
+        parquetLastError: sourceStatus.lastError ?? undefined,
+        parquetUrl: sourceStatus.readUrl ?? undefined,
+      },
+    };
+  });
+}
+
 interface DashboardStoreState {
   dashboards: Record<string, Dashboard[]>;
   loading: Record<string, boolean>;
@@ -84,6 +166,31 @@ interface DashboardStoreState {
   pushHistory: (dashboardId: string) => void;
   undo: (dashboardId: string) => void;
   redo: (dashboardId: string) => void;
+  fetchDashboardMaterializationStatus: (
+    workspaceId: string,
+    dashboardId: string,
+  ) => Promise<DashboardMaterializationStatus | null>;
+  materializeDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+    input?: { force?: boolean; blocking?: boolean; dataSourceIds?: string[] },
+  ) => Promise<any>;
+  materializeDashboardDataSource: (
+    workspaceId: string,
+    dashboardId: string,
+    dataSourceId: string,
+    input?: { force?: boolean; blocking?: boolean },
+  ) => Promise<any>;
+  fetchMaterializationRuns: (
+    workspaceId: string,
+    dashboardId: string,
+    dataSourceId?: string,
+  ) => Promise<MaterializationRunRecord[]>;
+  fetchMaterializationRunDetail: (
+    workspaceId: string,
+    dashboardId: string,
+    runId: string,
+  ) => Promise<MaterializationRunRecord | null>;
 }
 
 const saveTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
@@ -170,18 +277,20 @@ export const useDashboardStore = create<DashboardStoreState>()(
         data: Partial<Dashboard>,
       ) => {
         try {
-          await apiClient.put(
-            `/workspaces/${workspaceId}/dashboards/${id}`,
-            data,
-          );
+          const response = await apiClient.put<{
+            success: boolean;
+            data: Dashboard;
+          }>(`/workspaces/${workspaceId}/dashboards/${id}`, data);
           set(state => {
             const list = state.dashboards[workspaceId];
             if (list) {
               const idx = list.findIndex(d => d._id === id);
-              if (idx !== -1) Object.assign(list[idx], data);
+              if (idx !== -1) {
+                Object.assign(list[idx], response.data || data);
+              }
             }
             if (state.openDashboards[id]) {
-              Object.assign(state.openDashboards[id], data);
+              Object.assign(state.openDashboards[id], response.data || data);
             }
           });
         } catch {
@@ -295,15 +404,21 @@ export const useDashboardStore = create<DashboardStoreState>()(
             relationships: dashboard.relationships,
             globalFilters: dashboard.globalFilters,
             crossFilter: dashboard.crossFilter,
+            materializationSchedule: dashboard.materializationSchedule,
             layout: dashboard.layout,
             cache: dashboard.cache,
             title: dashboard.title,
             description: dashboard.description,
           };
-          await apiClient.patch(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}`,
-            payload,
-          );
+          const response = await apiClient.patch<{
+            success: boolean;
+            data: Dashboard;
+          }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`, payload);
+          if (response.data) {
+            set(state => {
+              state.openDashboards[dashboardId] = response.data;
+            });
+          }
         } catch {
           // best-effort save
         }
@@ -521,6 +636,103 @@ export const useDashboardStore = create<DashboardStoreState>()(
           );
         });
       },
+
+      fetchDashboardMaterializationStatus: async (
+        workspaceId: string,
+        dashboardId: string,
+      ) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: DashboardMaterializationStatus;
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialization`,
+          );
+          if (!response.data) {
+            return null;
+          }
+          set(state => {
+            const openDashboard = state.openDashboards[dashboardId];
+            if (openDashboard) {
+              applyMaterializationStatusToDashboard(
+                openDashboard,
+                response.data,
+              );
+            }
+            const listDashboard = state.dashboards[workspaceId]?.find(
+              dashboard => dashboard._id === dashboardId,
+            );
+            if (listDashboard) {
+              applyMaterializationStatusToDashboard(
+                listDashboard,
+                response.data,
+              );
+            }
+          });
+          return response.data;
+        } catch {
+          return null;
+        }
+      },
+
+      materializeDashboard: async (
+        workspaceId: string,
+        dashboardId: string,
+        input = {},
+      ) =>
+        await apiClient.post(
+          `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialize`,
+          input,
+        ),
+
+      materializeDashboardDataSource: async (
+        workspaceId: string,
+        dashboardId: string,
+        dataSourceId: string,
+        input = {},
+      ) =>
+        await apiClient.post(
+          `/workspaces/${workspaceId}/dashboards/${dashboardId}/data-sources/${dataSourceId}/materialize`,
+          input,
+        ),
+
+      fetchMaterializationRuns: async (
+        workspaceId: string,
+        dashboardId: string,
+        dataSourceId?: string,
+      ) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: MaterializationRunRecord[];
+          }>(
+            dataSourceId
+              ? `/workspaces/${workspaceId}/dashboards/${dashboardId}/data-sources/${dataSourceId}/materialization/runs`
+              : `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialization/runs`,
+          );
+          return response.data || [];
+        } catch {
+          return [];
+        }
+      },
+
+      fetchMaterializationRunDetail: async (
+        workspaceId: string,
+        dashboardId: string,
+        runId: string,
+      ) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: MaterializationRunRecord;
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialization/runs/${runId}`,
+          );
+          return response.data || null;
+        } catch {
+          return null;
+        }
+      },
     })),
     {
       name: "mako-dashboard-store",
@@ -532,6 +744,13 @@ export const useDashboardStore = create<DashboardStoreState>()(
       onRehydrateStorage: () => state => {
         if (!state) return;
         for (const dashboard of Object.values(state.openDashboards)) {
+          if (!dashboard.materializationSchedule) {
+            dashboard.materializationSchedule = {
+              enabled: true,
+              cron: "0 0 * * *",
+              timezone: "UTC",
+            };
+          }
           if (Array.isArray(dashboard.widgets)) {
             dashboard.widgets = dashboard.widgets.map(
               w =>

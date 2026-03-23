@@ -39,6 +39,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useTheme } from "../contexts/ThemeContext";
 import {
   activateDashboardSession,
+  applyFreshMaterializationCommand,
   getDashboardMosaicInstance,
   refreshDashboardCommand,
   reloadDashboardDataSourcesCommand,
@@ -61,6 +62,33 @@ interface DashboardCanvasProps {
   dashboardId?: string;
   isNew?: boolean;
   onCreated?: (dashboardId: string) => void;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resolveWidgetLayout(widget: DashboardWidget) {
+  const fallback = { x: 0, y: 0, w: 6, h: 4, minW: 1, minH: 1 };
+  const candidate = (widget as any).layout ?? (widget as any).layouts?.lg;
+  if (!candidate || typeof candidate !== "object") {
+    return fallback;
+  }
+
+  return {
+    x: typeof candidate.x === "number" ? candidate.x : fallback.x,
+    y: typeof candidate.y === "number" ? candidate.y : fallback.y,
+    w: typeof candidate.w === "number" ? candidate.w : fallback.w,
+    h: typeof candidate.h === "number" ? candidate.h : fallback.h,
+    minW: typeof candidate.minW === "number" ? candidate.minW : fallback.minW,
+    minH: typeof candidate.minH === "number" ? candidate.minH : fallback.minH,
+  };
 }
 
 function formatZodErrors(error: {
@@ -142,8 +170,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             resolution: "intersect",
             engine: "mosaic",
           },
+          materializationSchedule: {
+            enabled: true,
+            cron: "0 0 * * *",
+            timezone: "UTC",
+          },
           layout: { columns: 12, rowHeight: 80 },
-          cache: { ttlSeconds: 3600 },
+          cache: {},
           access: "private",
         } as any);
         if (created) {
@@ -173,7 +206,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const isDashboardLoaded = !!dashboard;
   useEffect(() => {
     if (!isDashboardLoaded || !workspaceId || !dashboardId) return;
-    void activateDashboardSession(workspaceId, dashboardId);
+    void activateDashboardSession(workspaceId, dashboardId, "viewer");
   }, [isDashboardLoaded, workspaceId, dashboardId]);
 
   useEffect(() => {
@@ -306,13 +339,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     async (widget: DashboardWidget) => {
       if (!dashboardId) return;
       const { nanoid } = await import("nanoid");
-      const lgLayout = widget.layouts?.lg ??
-        (widget as any).layout ?? { x: 0, y: 0, w: 6, h: 4 };
+      const lgLayout = widget.layouts?.lg ?? resolveWidgetLayout(widget);
       const newWidget: DashboardWidget = {
         ...widget,
         id: nanoid(),
         title: `${widget.title || "Widget"} (copy)`,
         layouts: {
+          ...(widget.layouts ?? {}),
           lg: {
             ...lgLayout,
             y: lgLayout.y + lgLayout.h,
@@ -383,6 +416,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       return {
         label: "Initializing dashboard runtime",
         rowsLoaded: 0,
+        bytesLoaded: 0,
+        totalBytes: null,
+        progress: null,
       };
     }
 
@@ -392,6 +428,19 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     if (loadingSources.length === 0) {
       return null;
+    }
+
+    let bytesLoaded = 0;
+    let totalBytes = 0;
+    let hasKnownByteSize = true;
+    for (const dataSource of loadingSources) {
+      const runtime = runtimeSession?.dataSources[dataSource.id];
+      bytesLoaded += runtime?.bytesLoaded ?? 0;
+      if (runtime?.totalBytes == null) {
+        hasKnownByteSize = false;
+        continue;
+      }
+      totalBytes += runtime.totalBytes;
     }
 
     return {
@@ -404,6 +453,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           sum + (runtimeSession?.dataSources[ds.id]?.rowsLoaded || 0),
         0,
       ),
+      bytesLoaded,
+      totalBytes: hasKnownByteSize ? totalBytes : null,
+      progress:
+        hasKnownByteSize && totalBytes > 0
+          ? (bytesLoaded / totalBytes) * 100
+          : null,
     };
   }, [dashboard, isRuntimeInitializing, runtimeSession]);
 
@@ -458,8 +513,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           y: bpLayout.y ?? 0,
           w: bpLayout.w ?? 6,
           h: bpLayout.h ?? 4,
-          minW: bpLayout.minW || 2,
-          minH: bpLayout.minH || 2,
+          minW: bpLayout.minW || 1,
+          minH: bpLayout.minH || 1,
         });
       }
       if (items.length > 0) result[bp] = items;
@@ -471,8 +526,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         y: 0,
         w: 6,
         h: 4,
-        minW: 2,
-        minH: 2,
+        minW: 1,
+        minH: 1,
       }));
     }
     return result;
@@ -496,23 +551,28 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const hasCodeError = Boolean(codeError);
   const renderWidget = (widget: DashboardWidget) => {
-    if (!runtimeSession) {
+    const snapshot = dashboard.snapshots?.[widget.id];
+    if (!runtimeSession && !snapshot) {
       return null;
     }
 
     const dataSourceRuntime = runtimeSession?.dataSources[widget.dataSourceId];
-    if (!dataSourceRuntime || dataSourceRuntime.status !== "ready") {
+    if (
+      (!dataSourceRuntime || dataSourceRuntime.status !== "ready") &&
+      !snapshot
+    ) {
       return null;
     }
 
     const widgetCrossFilterEnabled =
       isCrossFilterEnabled && (widget.crossFilter?.enabled ?? true);
-    if (!mosaicInstance) {
+    if (!mosaicInstance && !snapshot) {
       return null;
     }
 
-    const widgetRuntime = runtimeSession.widgets[widget.id];
+    const widgetRuntime = runtimeSession?.widgets[widget.id];
     const refreshGeneration = widgetRuntime?.refreshGeneration ?? 0;
+    const widgetLayout = resolveWidgetLayout(widget);
 
     switch (widget.type) {
       case "chart":
@@ -522,12 +582,16 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
+            initialRows={snapshot?.rows}
+            initialFields={snapshot?.fields}
             vegaLiteSpec={widget.vegaLiteSpec}
             mosaicInstance={mosaicInstance}
             crossFilterEnabled={widgetCrossFilterEnabled}
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
+            // Force rerenders when legacy widgets are normalized.
+            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
           />
         );
       case "kpi":
@@ -540,12 +604,15 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
+            initialRows={snapshot?.rows}
+            initialFields={snapshot?.fields}
             kpiConfig={widget.kpiConfig}
             mosaicInstance={mosaicInstance}
             crossFilterEnabled={widgetCrossFilterEnabled}
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
+            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
           />
         );
       case "table":
@@ -555,12 +622,15 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             widgetId={widget.id}
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
+            initialRows={snapshot?.rows}
+            initialFields={snapshot?.fields}
             tableConfig={widget.tableConfig}
             mosaicInstance={mosaicInstance}
             crossFilterEnabled={widgetCrossFilterEnabled}
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
+            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
           />
         );
       default:
@@ -723,7 +793,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       {/* Loading bar */}
       {someSourcesLoading && (
         <Box sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
-          <LinearProgress />
+          <LinearProgress
+            variant={
+              loadingSummary?.progress != null ? "determinate" : "indeterminate"
+            }
+            value={loadingSummary?.progress ?? undefined}
+          />
           {loadingSummary && (
             <Typography
               variant="caption"
@@ -731,6 +806,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               sx={{ display: "block", px: 1.5, py: 0.5 }}
             >
               {loadingSummary.label}
+              {loadingSummary.progress != null &&
+                ` · ${Math.round(loadingSummary.progress)}%`}
+              {loadingSummary.totalBytes != null &&
+                ` · ${formatBytes(loadingSummary.bytesLoaded)} / ${formatBytes(loadingSummary.totalBytes)}`}
               {loadingSummary.rowsLoaded > 0 &&
                 ` · ${loadingSummary.rowsLoaded.toLocaleString()} rows loaded`}
             </Typography>
@@ -754,6 +833,54 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               : "Data source failed."}{" "}
             {errorSummary.message}
           </Typography>
+        </Box>
+      )}
+      {runtimeSession?.materializationPolling && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            backgroundColor: "warning.light",
+            color: "warning.contrastText",
+          }}
+        >
+          <Typography variant="caption" sx={{ display: "block" }}>
+            Refreshing data sources in the background. The dashboard is using
+            the previous materialized snapshot until fresh data is ready.
+          </Typography>
+        </Box>
+      )}
+      {runtimeSession?.freshDataAvailable && workspaceId && dashboardId && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            backgroundColor: "success.light",
+            color: "success.contrastText",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+          }}
+        >
+          <Typography variant="caption" sx={{ display: "block" }}>
+            Fresh materialized data is available.
+          </Typography>
+          <Chip
+            size="small"
+            label="Update now"
+            onClick={() =>
+              void applyFreshMaterializationCommand({
+                workspaceId,
+                dashboardId,
+              })
+            }
+            sx={{ cursor: "pointer", backgroundColor: "background.paper" }}
+          />
         </Box>
       )}
       {showEventLog && recentEventLog.length > 0 && (

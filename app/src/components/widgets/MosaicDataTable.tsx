@@ -14,6 +14,8 @@ interface MosaicDataTableProps {
   widgetId: string;
   dataSourceId: string;
   localSql: string;
+  initialRows?: Record<string, unknown>[];
+  initialFields?: Array<{ name: string; type: string }>;
   tableConfig?: {
     columns?: string[];
     pageSize?: number;
@@ -31,6 +33,8 @@ const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
   widgetId,
   dataSourceId,
   localSql,
+  initialRows,
+  initialFields,
   tableConfig,
   mosaicInstance,
   crossFilterEnabled = true,
@@ -48,6 +52,8 @@ const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
     widgetId,
     dataSourceId,
     localSql,
+    initialRows,
+    initialFields,
     mosaicInstance,
     crossFilterEnabled,
     crossFilterResolution,
@@ -89,7 +95,7 @@ const MosaicDataTableComponent: React.FC<MosaicDataTableProps> = ({
     _id: idx,
   }));
 
-  if (loading) {
+  if (loading && rows.length === 0) {
     return (
       <Box
         sx={{

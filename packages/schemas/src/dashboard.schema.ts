@@ -38,6 +38,12 @@ export const DashboardDataSourceOriginSchema = z.object({
   importedAt: z.string().optional(),
 });
 
+export const DashboardMaterializationScheduleSchema = z.object({
+  enabled: z.boolean(),
+  cron: z.string().nullable(),
+  timezone: z.string().optional(),
+});
+
 export const DashboardDataSourceSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -48,10 +54,17 @@ export const DashboardDataSourceSchema = z.object({
   rowLimit: z.number().optional(),
   cache: z
     .object({
-      ttlSeconds: z.number().optional(),
       lastRefreshedAt: z.string().optional(),
       rowCount: z.number().optional(),
       byteSize: z.number().optional(),
+      parquetArtifactKey: z.string().optional(),
+      parquetVersion: z.string().optional(),
+      parquetBuiltAt: z.string().optional(),
+      parquetBuildStatus: z
+        .enum(["missing", "building", "ready", "error"])
+        .optional(),
+      parquetLastError: z.string().optional(),
+      parquetUrl: z.string().optional(),
     })
     .optional(),
   computedColumns: z
@@ -146,12 +159,12 @@ export const DashboardDefinitionSchema = z.object({
     resolution: z.enum(["intersect", "union"]),
     engine: z.enum(["mosaic", "legacy"]).optional(),
   }),
+  materializationSchedule: DashboardMaterializationScheduleSchema,
   layout: z.object({
     columns: z.number(),
     rowHeight: z.number(),
   }),
   cache: z.object({
-    ttlSeconds: z.number(),
     lastRefreshedAt: z.string().optional(),
   }),
 });
@@ -164,6 +177,9 @@ export type DashboardQueryDefinition = z.infer<
 >;
 export type DashboardDataSourceOrigin = z.infer<
   typeof DashboardDataSourceOriginSchema
+>;
+export type DashboardMaterializationSchedule = z.infer<
+  typeof DashboardMaterializationScheduleSchema
 >;
 export type DashboardDataSource = z.infer<typeof DashboardDataSourceSchema>;
 export type DashboardWidget = z.infer<typeof DashboardWidgetSchema>;
@@ -190,16 +206,12 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
  * (per-breakpoint). Returns a widget guaranteed to have `layouts.lg`.
  * Handles missing, partial, and corrupted data gracefully.
  */
-export function normalizeWidgetLayouts<
-  T extends Record<string, unknown>,
->(widget: T): T & { layouts: DashboardWidget["layouts"] } {
+export function normalizeWidgetLayouts<T extends Record<string, unknown>>(
+  widget: T,
+): T & { layouts: DashboardWidget["layouts"] } {
   const w = widget as Record<string, unknown>;
 
-  if (
-    w.layouts &&
-    typeof w.layouts === "object" &&
-    !Array.isArray(w.layouts)
-  ) {
+  if (w.layouts && typeof w.layouts === "object" && !Array.isArray(w.layouts)) {
     const raw = w.layouts as Record<string, unknown>;
     if (raw.lg && typeof raw.lg === "object") {
       const result: DashboardWidget["layouts"] = {

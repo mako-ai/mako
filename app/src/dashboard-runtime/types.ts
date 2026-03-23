@@ -2,11 +2,9 @@ export type {
   DashboardQueryLanguage,
   DashboardQueryDefinition,
   DashboardDataSourceOrigin,
-  DashboardDataSource,
   DashboardWidget,
   TableRelationship,
   GlobalFilter,
-  DashboardDefinition,
 } from "@mako/schemas";
 
 export {
@@ -17,20 +15,54 @@ export {
   GlobalFilterSchema,
 } from "@mako/schemas";
 
-import type { DashboardDefinition } from "@mako/schemas";
+import type {
+  DashboardDataSource as SchemaDashboardDataSource,
+  DashboardDefinition,
+} from "@mako/schemas";
 
-export interface Dashboard extends Omit<DashboardDefinition, "crossFilter"> {
+export interface DashboardDataSource
+  extends Omit<SchemaDashboardDataSource, "cache"> {
+  cache?:
+    | (SchemaDashboardDataSource["cache"] & {
+        parquetArtifactKey?: string;
+        parquetVersion?: string;
+        parquetBuiltAt?: string;
+        parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+        parquetLastError?: string;
+        parquetUrl?: string;
+      })
+    | null;
+}
+
+export interface Dashboard
+  extends Omit<DashboardDefinition, "crossFilter" | "dataSources"> {
   _id: string;
   workspaceId: string;
+  dataSources: DashboardDataSource[];
   crossFilter: {
     enabled: DashboardDefinition["crossFilter"]["enabled"];
     resolution: DashboardDefinition["crossFilter"]["resolution"];
     engine?: "mosaic";
   };
+  materializationSchedule: {
+    enabled: boolean;
+    cron: string | null;
+    timezone?: string;
+  };
   access: "private" | "workspace";
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  snapshots?: Record<
+    string,
+    {
+      version: string;
+      generatedAt: string;
+      rowCount: number;
+      rows: Record<string, unknown>[];
+      fields: Array<{ name: string; type: string }>;
+    }
+  >;
 }
 
 export type DashboardRuntimeStatus = "idle" | "loading" | "ready" | "error";
@@ -48,10 +80,20 @@ export interface DashboardDataSourceRuntimeState {
   dataVersion: number;
   status: DashboardRuntimeStatus;
   rowsLoaded: number;
+  bytesLoaded: number;
+  totalBytes: number | null;
   rowCount?: number;
   schema: DashboardRuntimeColumn[];
   sampleRows: Record<string, unknown>[];
   error: string | null;
+  loadPath?: "memory" | "arrow_stream" | "ndjson_stream" | null;
+  resolvedMode?: "builder" | "viewer";
+  artifactUrl?: string | null;
+  loadDurationMs?: number | null;
+  materializationStatus?: "missing" | "building" | "ready" | "error";
+  materializationVersion?: string | null;
+  materializedAt?: string | null;
+  storageBackend?: "filesystem" | "gcs" | "s3" | null;
 }
 
 export interface DashboardLogEntry {
@@ -84,6 +126,10 @@ export interface DashboardSessionRuntimeState {
   dataSources: Record<string, DashboardDataSourceRuntimeState>;
   widgets: Record<string, DashboardWidgetRuntimeState>;
   eventLog: DashboardLogEntry[];
+  runtimeContext: "builder" | "viewer";
+  persistent: boolean;
+  materializationPolling: boolean;
+  freshDataAvailable: boolean;
 }
 
 export interface DashboardRuntimeState {
@@ -96,6 +142,8 @@ export type DashboardRuntimeEvent =
       type: "session/activated";
       dashboardId: string;
       sessionId: string;
+      runtimeContext: "builder" | "viewer";
+      persistent: boolean;
     }
   | {
       type: "session/disposed";
@@ -109,8 +157,25 @@ export type DashboardRuntimeEvent =
       version: string;
     }
   | {
+      type: "dashboard/log-appended";
+      dashboardId: string;
+      level: "info" | "warn" | "error";
+      message: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
       type: "dashboard/query-generation-bumped";
       dashboardId: string;
+    }
+  | {
+      type: "dashboard/materialization-polling-set";
+      dashboardId: string;
+      polling: boolean;
+    }
+  | {
+      type: "dashboard/fresh-data-available-set";
+      dashboardId: string;
+      value: boolean;
     }
   | {
       type: "dashboard/reset";
@@ -168,6 +233,8 @@ export type DashboardRuntimeEvent =
       dashboardId: string;
       dataSourceId: string;
       rowsLoaded: number;
+      bytesLoaded: number;
+      totalBytes: number | null;
       preserveExistingData?: boolean;
     }
   | {
@@ -186,6 +253,25 @@ export type DashboardRuntimeEvent =
       rowsLoaded: number;
       error: string;
       preserveExistingData?: boolean;
+      loadDurationMs?: number;
+    }
+  | {
+      type: "datasource/diagnostics-updated";
+      dashboardId: string;
+      dataSourceId: string;
+      diagnostics: Partial<
+        Pick<
+          DashboardDataSourceRuntimeState,
+          | "loadPath"
+          | "resolvedMode"
+          | "artifactUrl"
+          | "loadDurationMs"
+          | "materializationStatus"
+          | "materializationVersion"
+          | "materializedAt"
+          | "storageBackend"
+        >
+      >;
     }
   | {
       type: "datasource/removed";

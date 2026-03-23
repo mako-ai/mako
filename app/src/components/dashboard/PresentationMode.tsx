@@ -20,6 +20,21 @@ interface PresentationModeProps {
   onExit: () => void;
 }
 
+function resolveWidgetLayout(widget: DashboardWidget) {
+  const fallback = { x: 0, y: 0, w: 6, h: 4 };
+  const candidate = (widget as any).layout ?? (widget as any).layouts?.lg;
+  if (!candidate || typeof candidate !== "object") {
+    return fallback;
+  }
+
+  return {
+    x: typeof candidate.x === "number" ? candidate.x : fallback.x,
+    y: typeof candidate.y === "number" ? candidate.y : fallback.y,
+    w: typeof candidate.w === "number" ? candidate.w : fallback.w,
+    h: typeof candidate.h === "number" ? candidate.h : fallback.h,
+  };
+}
+
 const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
   const activeDashboardId = useDashboardStore(state => state.activeDashboardId);
   const activeDashboard = useDashboardStore(state =>
@@ -103,6 +118,7 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
 
   const renderWidget = (widget: DashboardWidget) => {
     if (!allSourcesReady) return null;
+    const widgetLayout = resolveWidgetLayout(widget);
     switch (widget.type) {
       case "chart":
         return (
@@ -111,7 +127,7 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
             dataSourceId={widget.dataSourceId}
             localSql={widget.localSql}
             vegaLiteSpec={widget.vegaLiteSpec}
-            layoutSignature={`${widget.layouts?.lg?.x ?? 0}:${widget.layouts?.lg?.y ?? 0}:${widget.layouts?.lg?.w ?? 6}:${widget.layouts?.lg?.h ?? 4}`}
+            layoutSignature={`${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
           />
         );
       case "kpi":

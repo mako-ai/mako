@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
+import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { serve as serveInngest } from "inngest/hono";
 import dotenv from "dotenv";
@@ -34,11 +35,13 @@ import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
 import { dashboardRoutes } from "./routes/dashboards";
+import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
+import { startDashboardRefreshPoller } from "./services/dashboard-refresh-runner.service";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -63,6 +66,9 @@ app.use(
     credentials: true,
   }),
 );
+
+// Compress API responses, including streaming export responses.
+app.use("*", compress());
 
 // Logging middleware - must be before other middleware to capture all requests
 // Skip logging for noisy routes (Inngest polling, health checks) in development
@@ -104,6 +110,10 @@ app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
+app.route(
+  "/api/workspaces/:workspaceId/dashboards/:dashboardId",
+  dashboardMaterializationRoutes,
+);
 app.route("/api/run", executeRoutes);
 app.route("/api/execute", executeRoutes);
 app.route("/api/database", databaseRoutes);
@@ -218,6 +228,7 @@ async function main(): Promise<void> {
 
   // Log Inngest configuration status (after logging is initialized)
   logInngestStatus();
+  startDashboardRefreshPoller();
 
   // Log server startup info
   logger.info("Server starting", {

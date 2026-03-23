@@ -26,6 +26,7 @@ env:
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   GCP_REGION: ${{ vars.GCP_REGION }}
   GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
+  GCS_DASHBOARD_BUCKET: revops-462013-dashboard-artifacts
 
 permissions:
   contents: read
@@ -178,6 +179,7 @@ jobs:
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+      DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
     steps:
       - name: Set PR-specific variables
         id: pr-vars
@@ -439,7 +441,10 @@ jobs:
             --set-env-vars BASE_URL=${BASE_URL} \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
+            --set-env-vars DASHBOARD_ARTIFACT_PREFIX=${DASHBOARD_ARTIFACT_PREFIX} \
+            --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
             --set-env-vars DATABASE_URL=${{ steps.db-url.outputs.db_url }} \
+            --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
             --set-env-vars DISABLE_OAUTH=true \
             --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
             --set-env-vars GH_CLIENT_ID=${GH_CLIENT_ID} \
@@ -635,13 +640,14 @@ jobs:
       SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
       SENDGRID_PASSWORD_RESET_TEMPLATE_ID: ${{ vars.SENDGRID_PASSWORD_RESET_TEMPLATE_ID }}
       SENDGRID_VERIFICATION_TEMPLATE_ID: ${{ vars.SENDGRID_VERIFICATION_TEMPLATE_ID }}
-      SERVICE_NAME: mako
+      SERVICE_NAME: revops-fullstack
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       VITE_API_URL: https://app.mako.ai/api
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+      DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -735,7 +741,10 @@ jobs:
             --set-env-vars BASE_URL=${BASE_URL} \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
+            --set-env-vars DASHBOARD_ARTIFACT_PREFIX=${DASHBOARD_ARTIFACT_PREFIX} \
+            --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
             --set-env-vars DATABASE_URL=${DATABASE_URL} \
+            --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
             --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
             --set-env-vars GH_CLIENT_ID=${GH_CLIENT_ID} \
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \

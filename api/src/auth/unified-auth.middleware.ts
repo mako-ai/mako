@@ -3,6 +3,7 @@ import { sessionManager } from "./session";
 import { getCookie } from "hono/cookie";
 import { hashApiKey } from "./api-key.middleware";
 import { Workspace } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import {
   loggers,
   enrichContextWithUser,
@@ -32,6 +33,25 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
         });
 
         if (workspace) {
+          const workspaceApiKey = workspace.apiKeys?.find(
+            k => k.keyHash === keyHash,
+          );
+          if (!workspaceApiKey?.createdBy) {
+            logger.warn("API key is missing creator metadata", {
+              workspaceId: workspace._id.toString(),
+            });
+            return c.json({ error: "Invalid API key" }, 401);
+          }
+
+          const creator = await User.findById(workspaceApiKey.createdBy).lean();
+          if (!creator) {
+            logger.warn("API key creator not found", {
+              workspaceId: workspace._id.toString(),
+              createdBy: workspaceApiKey.createdBy,
+            });
+            return c.json({ error: "Invalid API key owner" }, 401);
+          }
+
           // Update last used timestamp
           await Workspace.updateOne(
             {
@@ -45,15 +65,18 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
             },
           );
 
-          // Store workspace and auth type in context
+          // API keys are workspace-scoped, but they also act on behalf of
+          // the user who created them so private resources remain visible.
+          c.set("user", {
+            id: creator._id,
+            email: creator.email,
+          });
           c.set("workspace", workspace);
-          c.set(
-            "apiKey",
-            workspace.apiKeys?.find(k => k.keyHash === keyHash),
-          );
+          c.set("apiKey", workspaceApiKey);
           c.set("authType", "apiKey");
           c.set("workspaceId", workspace._id.toString());
 
+          enrichContextWithUser(creator._id);
           // Enrich logging context with workspace ID (API key auth)
           enrichContextWithWorkspace(workspace._id.toString());
 

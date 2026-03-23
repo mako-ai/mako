@@ -100,7 +100,6 @@ export function createDashboardServerTools(workspaceId: string) {
                 importedAt: new Date(),
               },
               timeDimension: ds.timeDimension,
-              cache: { ttlSeconds: 3600 },
             });
           }
 
@@ -113,8 +112,13 @@ export function createDashboardServerTools(workspaceId: string) {
             relationships: [],
             globalFilters: [],
             crossFilter: { enabled: true, resolution: "intersect" },
+            materializationSchedule: {
+              enabled: true,
+              cron: "0 0 * * *",
+              timezone: "UTC",
+            },
             layout: { columns: 12, rowHeight: 80 },
-            cache: { ttlSeconds: 3600 },
+            cache: {},
             access: "private",
             createdBy: "agent",
           });

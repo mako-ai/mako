@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { authMiddleware } from "../auth/auth.middleware";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   requireWorkspace,
   requireWorkspaceRole,
@@ -22,6 +22,10 @@ import { loggers } from "../logging";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
+import { writeParquetTempFile } from "../utils/parquet-serializer";
+import { rebuildDashboardArtifacts } from "../services/dashboard-artifact-rebuild.service";
+import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
+import { promises as fsPromises } from "fs";
 
 const logger = loggers.db();
 
@@ -117,6 +121,61 @@ async function parseRequestBody(
   return await c.req.json();
 }
 
+async function createAdHocParquetResponse(options: {
+  database: IDatabaseConnection;
+  executableQuery: any;
+  queryDefinition: QueryDefinitionInput;
+  filename: string;
+}) {
+  const queryResult = await databaseConnectionService.executeQuery(
+    options.database,
+    options.executableQuery,
+    {
+      databaseId: options.queryDefinition.databaseId,
+      databaseName: options.queryDefinition.databaseName,
+    },
+  );
+
+  if (!queryResult.success || !queryResult.data) {
+    throw new Error(queryResult.error || "Query failed");
+  }
+
+  const rows = Array.isArray(queryResult.data) ? queryResult.data : [];
+  const fields = (queryResult.fields || []).map((field: any) => ({
+    name: field.name || field.columnName || String(field),
+    type: field.type || field.dataType,
+  }));
+  const normalizedFields =
+    fields.length > 0
+      ? fields
+      : rows.length > 0
+        ? Object.keys(rows[0]).map(name => ({ name, type: undefined }))
+        : [];
+
+  const parquetFile = await writeParquetTempFile({
+    rows,
+    fields: normalizedFields,
+    filenameBase: options.filename,
+  });
+
+  try {
+    const fileBuffer = await fsPromises.readFile(parquetFile.filePath);
+    return new Response(new Uint8Array(fileBuffer), {
+      headers: {
+        "Content-Type": "application/vnd.apache.parquet",
+        "Content-Disposition": `attachment; filename="${options.filename}.parquet"`,
+        "Content-Length": String(parquetFile.byteSize),
+        "X-Row-Count": String(parquetFile.rowCount),
+        "Cache-Control": "no-store",
+      },
+    });
+  } finally {
+    await fsPromises
+      .rm(parquetFile.filePath, { force: true })
+      .catch(() => undefined);
+  }
+}
+
 /**
  * Determine query language from database type
  */
@@ -160,7 +219,7 @@ function maskPasswordInConnectionString(connectionString: string): string {
 // Create demo database for workspace (onboarding)
 workspaceDatabaseRoutes.post(
   "/demo",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -238,7 +297,7 @@ workspaceDatabaseRoutes.post(
 // Get all databases for workspace
 workspaceDatabaseRoutes.get(
   "/",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -313,7 +372,7 @@ workspaceDatabaseRoutes.get(
 // Get specific database
 workspaceDatabaseRoutes.get(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -369,7 +428,7 @@ workspaceDatabaseRoutes.get(
 // This allows testing a connection before creating the database
 workspaceDatabaseRoutes.post(
   "/test-connection",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -421,7 +480,7 @@ workspaceDatabaseRoutes.post(
 // Create new database
 workspaceDatabaseRoutes.post(
   "/",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -518,7 +577,7 @@ workspaceDatabaseRoutes.post(
 // Update database
 workspaceDatabaseRoutes.put(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -601,7 +660,7 @@ workspaceDatabaseRoutes.put(
 // Delete database
 workspaceDatabaseRoutes.delete(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -665,7 +724,7 @@ workspaceDatabaseRoutes.delete(
 // Test database connection
 workspaceDatabaseRoutes.post(
   "/:id/test",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -713,7 +772,7 @@ workspaceDatabaseRoutes.post(
 // Execute query on database
 workspaceDatabaseRoutes.post(
   "/:id/execute",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -762,7 +821,7 @@ workspaceDatabaseRoutes.post(
 // Get collections for MongoDB database
 workspaceDatabaseRoutes.get(
   "/:id/collections",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -843,7 +902,7 @@ workspaceDatabaseRoutes.get(
 // Get collection info for MongoDB
 workspaceDatabaseRoutes.get(
   "/:id/collections/:name",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -932,7 +991,7 @@ workspaceDatabaseRoutes.get(
 // Get views for MongoDB database
 workspaceDatabaseRoutes.get(
   "/:id/views",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -999,7 +1058,7 @@ export const workspaceExecuteRoutes = new Hono();
 // POST /api/workspaces/:workspaceId/execute - Execute query with explicit connection/database params
 workspaceExecuteRoutes.post(
   "/",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     const startTime = Date.now();
@@ -1237,7 +1296,7 @@ workspaceExecuteRoutes.post(
 
 workspaceExecuteRoutes.post(
   "/export",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -1252,6 +1311,8 @@ workspaceExecuteRoutes.post(
         batchSize,
         executionId,
         filename,
+        dashboardId,
+        dataSourceId,
       } = body;
       const effectiveConnectionId =
         queryDefinition?.connectionId || connectionId;
@@ -1278,14 +1339,18 @@ workspaceExecuteRoutes.post(
       }
 
       const normalizedFormat =
-        format === "ndjson" || format === "csv" || format === "arrow"
+        format === "ndjson" ||
+        format === "csv" ||
+        format === "arrow" ||
+        format === "parquet"
           ? format
           : null;
       if (!normalizedFormat) {
         return c.json(
           {
             success: false,
-            error: "format must be one of 'arrow', 'ndjson', or 'csv'",
+            error:
+              "format must be one of 'arrow', 'ndjson', 'parquet', or 'csv'",
           },
           400,
         );
@@ -1354,6 +1419,51 @@ workspaceExecuteRoutes.post(
         signal: c.req.raw.signal,
       };
 
+      if (normalizedFormat === "parquet") {
+        if (
+          typeof dashboardId === "string" &&
+          dashboardId &&
+          typeof dataSourceId === "string" &&
+          dataSourceId
+        ) {
+          const rebuild = await rebuildDashboardArtifacts({
+            dashboardId,
+            dataSourceIds: [dataSourceId],
+          });
+          const artifact = rebuild.results.find(
+            result => result.dataSourceId === dataSourceId && result.success,
+          );
+          if (!artifact) {
+            return c.json(
+              {
+                success: false,
+                error:
+                  rebuild.results.find(
+                    result => result.dataSourceId === dataSourceId,
+                  )?.error || "Failed to build parquet artifact",
+              },
+              500,
+            );
+          }
+
+          return c.redirect(
+            buildDashboardMaterializationArtifactPath({
+              workspaceId: workspace._id.toString(),
+              dashboardId,
+              dataSourceId,
+            }),
+            303,
+          );
+        }
+
+        return await createAdHocParquetResponse({
+          database,
+          executableQuery,
+          queryDefinition,
+          filename: safeBaseName,
+        });
+      }
+
       if (normalizedFormat === "arrow") {
         const fieldsResult =
           await databaseConnectionService.getStreamingQueryFields(
@@ -1418,7 +1528,7 @@ workspaceExecuteRoutes.post(
 // POST /api/workspaces/:workspaceId/execute/cancel - Cancel a running query
 workspaceExecuteRoutes.post(
   "/cancel",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {

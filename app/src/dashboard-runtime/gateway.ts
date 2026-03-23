@@ -1,7 +1,9 @@
 import {
+  collectStreamBytes,
   describeTable,
   dropTable,
   loadArrowStreamTable,
+  loadParquetTable,
   loadNdjsonStreamTable,
   queryDuckDB,
 } from "../lib/duckdb";
@@ -9,7 +11,6 @@ import { dashboardRuntimeEvents } from "./events";
 import { selectDataSourceRuntime } from "./selectors";
 import {
   ensureDashboardSession,
-  ensureWritableDashboardSession,
   getDashboardSession,
   checkpointSession,
   persistDataSourceVersion,
@@ -39,12 +40,7 @@ function buildDataSourceVersion(dataSource: DashboardDataSource): string {
     query: dataSource.query,
     computedColumns: dataSource.computedColumns ?? [],
   };
-  const json = JSON.stringify(payload);
-  const hash = hashString(json);
-  console.debug(
-    `[opfs-diag] buildDataSourceVersion("${dataSource.name}"): hash=${hash}, payload keys=${Object.keys(dataSource.query ?? {}).join(",")}`,
-  );
-  return hash;
+  return hashString(JSON.stringify(payload));
 }
 
 function buildTemporaryTableRef(tableRef: string): string {
@@ -53,44 +49,32 @@ function buildTemporaryTableRef(tableRef: string): string {
     .slice(2, 8)}`;
 }
 
-function buildReloadRequiredMessage(
-  dataSource: DashboardDataSource,
-  reason: "missing" | "stale" | "locked" | "open-failed" | "unsupported",
-): string {
-  switch (reason) {
-    case "missing":
-      return `Cached data for "${dataSource.name}" is unavailable. Click Reload data to fetch it from the source database.`;
-    case "stale":
-      return `Cached data for "${dataSource.name}" is stale. Click Reload data to fetch the latest source data.`;
-    case "locked":
-      return `Cached data for "${dataSource.name}" is currently locked by another dashboard tab. Close the other tab or click Reload data to fetch it from the source database in this tab.`;
-    case "open-failed":
-      return `Cached data for "${dataSource.name}" could not be opened from OPFS in this browser session. Click Reload data to fetch it from the source database.`;
-    default:
-      return `This browser does not support OPFS-backed dashboard cache for "${dataSource.name}". Click Reload data to fetch it from the source database.`;
-  }
-}
-
-function isOPFSLockError(message: string | null | undefined): boolean {
-  const normalized = message?.toLowerCase() || "";
-  return (
-    normalized.includes("createsyncaccesshandle") &&
-    (normalized.includes("another open access handle") ||
-      normalized.includes("writable stream associated with the same file"))
-  );
-}
-
 function buildDashboardExportPayload(
+  dashboardId: string,
   dataSource: DashboardDataSource,
-  format: "arrow" | "ndjson" = "arrow",
+  format: "arrow" | "ndjson" | "parquet" = "arrow",
 ) {
   return {
+    dashboardId,
+    dataSourceId: dataSource.id,
     connectionId: dataSource.query.connectionId,
     format,
     batchSize: format === "arrow" ? 5000 : 2000,
     filename: dataSource.name,
     queryDefinition: dataSource.query,
   };
+}
+
+type DashboardRuntimeContext = "builder" | "viewer";
+
+function getParquetArtifactUrl(
+  dataSource: DashboardDataSource,
+): string | undefined {
+  return (
+    dataSource.cache as
+      | (DashboardDataSource["cache"] & { parquetUrl?: string })
+      | undefined
+  )?.parquetUrl;
 }
 
 function parseNumericHeader(
@@ -104,6 +88,19 @@ function parseNumericHeader(
 
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function appendRuntimeLog(
+  dashboardId: string,
+  level: "info" | "warn" | "error",
+  message: string,
+  metadata?: Record<string, unknown>,
+) {
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(
+      dashboardRuntimeEvents.appendLog(dashboardId, level, message, metadata),
+    );
 }
 
 function estimateRowsFromBytes(
@@ -123,8 +120,9 @@ function estimateRowsFromBytes(
 
 async function fetchDashboardExport(
   workspaceId: string,
+  dashboardId: string,
   dataSource: DashboardDataSource,
-  format: "arrow" | "ndjson",
+  format: "arrow" | "ndjson" | "parquet",
 ): Promise<Response & { body: ReadableStream<Uint8Array> }> {
   const response = await fetch(
     `/api/workspaces/${workspaceId}/execute/export`,
@@ -132,7 +130,9 @@ async function fetchDashboardExport(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildDashboardExportPayload(dataSource, format)),
+      body: JSON.stringify(
+        buildDashboardExportPayload(dashboardId, dataSource, format),
+      ),
     },
   );
 
@@ -157,12 +157,75 @@ async function fetchDashboardExport(
   return response as Response & { body: ReadableStream<Uint8Array> };
 }
 
+async function loadParquetArtifactIntoTable(options: {
+  session: Awaited<ReturnType<typeof ensureDashboardSession>>;
+  parquetUrl: string;
+  targetTableRef: string;
+  onProgress?: (progress: {
+    rowsLoaded: number;
+    bytesLoaded: number;
+    totalBytes: number | null;
+  }) => void;
+}): Promise<number> {
+  const response = await fetch(options.parquetUrl, {
+    credentials: "include",
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(response.statusText || "Failed to fetch parquet artifact");
+  }
+
+  const totalBytes = parseNumericHeader(response.headers, "Content-Length");
+  const totalRows = parseNumericHeader(response.headers, "X-Row-Count");
+  const parquetBuffer = await collectStreamBytes(response.body, bytesLoaded => {
+    const estimatedRows = estimateRowsFromBytes(
+      bytesLoaded,
+      totalBytes,
+      totalRows,
+    );
+    options.onProgress?.({
+      rowsLoaded: estimatedRows ?? 0,
+      bytesLoaded,
+      totalBytes: totalBytes ?? null,
+    });
+  });
+
+  const loadedRowCount = await loadParquetTable(
+    options.session.db,
+    options.targetTableRef,
+    parquetBuffer,
+  );
+  options.onProgress?.({
+    rowsLoaded: totalRows ?? loadedRowCount,
+    bytesLoaded: parquetBuffer.byteLength,
+    totalBytes: totalBytes ?? null,
+  });
+  return totalRows ?? loadedRowCount;
+}
+
+function trackStreamProgress(
+  stream: ReadableStream<Uint8Array>,
+  onProgress: (bytesLoaded: number) => void,
+): ReadableStream<Uint8Array> {
+  let bytesLoaded = 0;
+  return stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        bytesLoaded += chunk.byteLength;
+        onProgress(bytesLoaded);
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+}
+
 function dispatchLoadProgress(options: {
   runtimeStore: ReturnType<typeof useDashboardRuntimeStore.getState>;
   dashboardId: string;
   dataSourceId: string;
   onRowsLoaded: (loaded: number) => void;
   rowsLoaded: number;
+  bytesLoaded: number;
+  totalBytes: number | null;
   preserveExistingData?: boolean;
 }) {
   options.onRowsLoaded(options.rowsLoaded);
@@ -171,21 +234,30 @@ function dispatchLoadProgress(options: {
       options.dashboardId,
       options.dataSourceId,
       options.rowsLoaded,
+      options.bytesLoaded,
+      options.totalBytes,
       options.preserveExistingData,
     ),
   );
 }
 
+/**
+ * Load a data source into DuckDB, trying parquet artifact first,
+ * then Arrow stream, then NDJSON as final fallback.
+ * Always materializes into an in-memory TABLE (never a remote VIEW).
+ */
 async function loadDashboardDataSourceWithFallback(options: {
   session: Awaited<ReturnType<typeof ensureDashboardSession>>;
   runtimeStore: ReturnType<typeof useDashboardRuntimeStore.getState>;
   workspaceId: string;
   dashboardId: string;
+  dashboard: Dashboard;
   dataSource: DashboardDataSource;
   targetTableRef: string;
   preserveExistingData?: boolean;
   onRowsLoaded: (loaded: number) => void;
-}): Promise<number | null> {
+  runtimeContext?: DashboardRuntimeContext;
+}): Promise<number> {
   const {
     session,
     runtimeStore,
@@ -193,13 +265,68 @@ async function loadDashboardDataSourceWithFallback(options: {
     dashboardId,
     dataSource,
     targetTableRef,
-    preserveExistingData = false,
     onRowsLoaded,
+    runtimeContext = "builder",
   } = options;
 
+  const parquetUrl = getParquetArtifactUrl(dataSource);
+
+  // Try parquet artifact first (download into in-memory table).
+  if (parquetUrl) {
+    try {
+      runtimeStore.dispatch(
+        dashboardRuntimeEvents.updateDatasourceDiagnostics(
+          dashboardId,
+          dataSource.id,
+          {
+            loadPath: "memory",
+            resolvedMode: runtimeContext,
+            artifactUrl: parquetUrl,
+          },
+        ),
+      );
+      const parquetRows = await loadParquetArtifactIntoTable({
+        session,
+        parquetUrl,
+        targetTableRef,
+        onProgress: progress => {
+          dispatchLoadProgress({
+            runtimeStore,
+            dashboardId,
+            dataSourceId: dataSource.id,
+            onRowsLoaded,
+            rowsLoaded: progress.rowsLoaded,
+            bytesLoaded: progress.bytesLoaded,
+            totalBytes: progress.totalBytes,
+            preserveExistingData: options.preserveExistingData,
+          });
+        },
+      });
+      return parquetRows;
+    } catch (error) {
+      console.warn(
+        `Parquet artifact load failed for "${dataSource.name}", falling back to streamed export`,
+        error,
+      );
+      await dropTable(session.db, targetTableRef).catch(() => undefined);
+    }
+  }
+
+  // Try Arrow IPC stream.
   try {
+    runtimeStore.dispatch(
+      dashboardRuntimeEvents.updateDatasourceDiagnostics(
+        dashboardId,
+        dataSource.id,
+        {
+          loadPath: "arrow_stream",
+          resolvedMode: runtimeContext,
+        },
+      ),
+    );
     const response = await fetchDashboardExport(
       workspaceId,
+      dashboardId,
       dataSource,
       "arrow",
     );
@@ -226,40 +353,78 @@ async function loadDashboardDataSourceWithFallback(options: {
             dashboardId,
             dataSourceId: dataSource.id,
             onRowsLoaded,
-            rowsLoaded: estimatedRows,
-            preserveExistingData,
+            rowsLoaded: estimatedRows ?? 0,
+            bytesLoaded,
+            totalBytes: totalBytes ?? null,
+            preserveExistingData: options.preserveExistingData,
           });
         },
       },
     );
 
     return totalRows ?? loadedRowCount;
-  } catch {
+  } catch (error) {
+    console.warn(
+      `Arrow stream failed for "${dataSource.name}", falling back to NDJSON`,
+      error,
+    );
     await dropTable(session.db, targetTableRef).catch(() => undefined);
   }
 
+  // Final fallback: NDJSON stream.
+  runtimeStore.dispatch(
+    dashboardRuntimeEvents.updateDatasourceDiagnostics(
+      dashboardId,
+      dataSource.id,
+      {
+        loadPath: "ndjson_stream",
+        resolvedMode: runtimeContext,
+      },
+    ),
+  );
   const response = await fetchDashboardExport(
     workspaceId,
+    dashboardId,
     dataSource,
     "ndjson",
   );
-  return await loadNdjsonStreamTable(
+  const totalBytes = parseNumericHeader(response.headers, "Content-Length");
+  let ndjsonBytesLoaded = 0;
+  let ndjsonRowsLoaded = 0;
+  const trackedBody = trackStreamProgress(response.body, bytesLoaded => {
+    ndjsonBytesLoaded = bytesLoaded;
+    dispatchLoadProgress({
+      runtimeStore,
+      dashboardId,
+      dataSourceId: dataSource.id,
+      onRowsLoaded,
+      rowsLoaded: ndjsonRowsLoaded,
+      bytesLoaded,
+      totalBytes: totalBytes ?? null,
+      preserveExistingData: options.preserveExistingData,
+    });
+  });
+  const loadedRows = await loadNdjsonStreamTable(
     session.db,
     targetTableRef,
-    response.body,
+    trackedBody,
     {
       onProgress: loaded => {
+        ndjsonRowsLoaded = loaded;
         dispatchLoadProgress({
           runtimeStore,
           dashboardId,
           dataSourceId: dataSource.id,
           onRowsLoaded,
           rowsLoaded: loaded,
-          preserveExistingData,
+          bytesLoaded: ndjsonBytesLoaded,
+          totalBytes: totalBytes ?? null,
+          preserveExistingData: options.preserveExistingData,
         });
       },
     },
   );
+  return loadedRows;
 }
 
 function resolveSqlBindings(
@@ -356,7 +521,7 @@ async function swapMaterializedTable(options: {
   }
 }
 
-async function getPersistedRowCount(
+async function countTableRows(
   db: import("@duckdb/duckdb-wasm").AsyncDuckDB,
   tableRef: string,
 ): Promise<number | null> {
@@ -375,12 +540,18 @@ async function getPersistedRowCount(
 
 export async function activateDashboardRuntime(
   dashboard: Dashboard,
+  runtimeContext: DashboardRuntimeContext = "builder",
 ): Promise<void> {
   const session = await ensureDashboardSession(dashboard._id);
   useDashboardRuntimeStore
     .getState()
     .dispatch(
-      dashboardRuntimeEvents.activateSession(dashboard._id, session.sessionId),
+      dashboardRuntimeEvents.activateSession(
+        dashboard._id,
+        session.sessionId,
+        runtimeContext,
+        false,
+      ),
     );
 }
 
@@ -399,30 +570,28 @@ export async function materializeDashboardDataSource(options: {
   dashboard: Dashboard;
   dataSource: DashboardDataSource;
   force?: boolean;
+  runtimeContext?: DashboardRuntimeContext;
 }): Promise<void> {
-  const { workspaceId, dashboard, dataSource, force = false } = options;
-  let session = await ensureDashboardSession(dashboard._id);
-  if (force) {
-    session = await ensureWritableDashboardSession(dashboard._id);
-  }
+  const {
+    workspaceId,
+    dashboard,
+    dataSource,
+    force = false,
+    runtimeContext = "builder",
+  } = options;
+  const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
   const version = buildDataSourceVersion(dataSource);
-  const persistedVersion = session.dataSourceVersions.get(dataSource.id);
+  const cachedVersion = session.dataSourceVersions.get(dataSource.id);
+  const cache = (dataSource.cache || {}) as {
+    parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+    parquetVersion?: string;
+    parquetBuiltAt?: string;
+  };
+  const parquetUrl = getParquetArtifactUrl(dataSource);
   const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
   const preserveExistingData = force && existingRuntime?.status === "ready";
-
-  console.log(
-    `[opfs-diag] materialize dataSource="${dataSource.name}" (${dataSource.id})`,
-    {
-      force,
-      persistent: session.persistent,
-      computedVersion: version,
-      persistedVersion: persistedVersion ?? "(none)",
-      versionMatch: persistedVersion === version,
-      runtimeStatus: existingRuntime?.status ?? "(no runtime)",
-      tableRef: dataSource.tableRef,
-    },
-  );
+  const loadStartedAt = Date.now();
 
   runtimeStore.dispatch(
     dashboardRuntimeEvents.registerDataSource(
@@ -432,120 +601,39 @@ export async function materializeDashboardDataSource(options: {
       version,
     ),
   );
-
-  if (
-    !force &&
-    persistedVersion === version &&
-    existingRuntime?.status === "ready"
-  ) {
-    console.log(
-      `[opfs-diag] SKIP (in-memory hit): dataSource="${dataSource.name}" already ready with matching version`,
-    );
-    return;
-  }
-
-  // OPFS recovery: table persisted from a previous browser session
-  if (!force && session.persistent && persistedVersion === version) {
-    console.log(
-      `[opfs-diag] OPFS recovery attempt: dataSource="${dataSource.name}", checking persisted table "${dataSource.tableRef}"...`,
-    );
-    const rowCount = await getPersistedRowCount(
-      session.db,
-      dataSource.tableRef,
-    );
-    if (rowCount !== null) {
-      console.log(
-        `[opfs-diag] OPFS HIT: dataSource="${dataSource.name}" recovered ${rowCount} rows from OPFS, skipping network fetch`,
-      );
-      const { schema, sampleRows } = await introspectDataSource(
-        dashboard._id,
-        dataSource,
-      );
-      runtimeStore.dispatch(
-        dashboardRuntimeEvents.datasourceLoadSucceeded(
-          dashboard._id,
-          dataSource.id,
-          rowCount,
-          rowCount,
-          schema,
-          sampleRows,
-        ),
-      );
-      return;
-    }
-    console.warn(
-      `[opfs-diag] OPFS MISS: dataSource="${dataSource.name}" version matched but table "${dataSource.tableRef}" not found in DB (rowCount=null)`,
-    );
-  } else if (!force && session.persistent && persistedVersion !== version) {
-    console.warn(
-      `[opfs-diag] OPFS VERSION MISMATCH: dataSource="${dataSource.name}"`,
+  runtimeStore.dispatch(
+    dashboardRuntimeEvents.updateDatasourceDiagnostics(
+      dashboard._id,
+      dataSource.id,
       {
-        persistedVersion: persistedVersion ?? "(none)",
-        computedVersion: version,
-        queryCode: dataSource.query?.code?.slice(0, 100),
-        rowLimit: dataSource.rowLimit,
-        computedColumns: dataSource.computedColumns?.length ?? 0,
+        resolvedMode: runtimeContext,
+        artifactUrl: parquetUrl || null,
+        materializationStatus: cache.parquetBuildStatus,
+        materializationVersion: cache.parquetVersion || version,
+        materializedAt: cache.parquetBuiltAt || null,
       },
-    );
-  } else if (force) {
-    console.log(
-      `[opfs-diag] FORCED RELOAD: dataSource="${dataSource.name}", bypassing cache`,
-    );
-  }
-
-  if (!force) {
-    const errorReason:
-      | "missing"
-      | "stale"
-      | "locked"
-      | "open-failed"
-      | "unsupported" =
-      session.persistent && persistedVersion !== version
-        ? "stale"
-        : session.persistent
-          ? "missing"
-          : isOPFSLockError(session.persistenceError)
-            ? "locked"
-            : session.opfsAvailable
-              ? "open-failed"
-              : "unsupported";
-    const message = buildReloadRequiredMessage(dataSource, errorReason);
-    console.log(
-      `[opfs-diag] STARTUP CACHE-ONLY MODE: dataSource="${dataSource.name}" not fetching from source`,
-      {
-        reason: errorReason,
-        persistenceError: session.persistenceError,
-        persistent: session.persistent,
-        accessMode: session.accessMode,
-      },
-    );
-    runtimeStore.dispatch(
-      dashboardRuntimeEvents.datasourceLoadFailed(
-        dashboard._id,
-        dataSource.id,
-        0,
-        message,
-        false,
-      ),
-    );
-    return;
-  }
-
-  console.log(
-    `[opfs-diag] FETCHING FROM SERVER: dataSource="${dataSource.name}" (${dataSource.id})`,
+    ),
   );
 
+  // Skip if already loaded with the same version.
+  if (
+    !force &&
+    cachedVersion === version &&
+    existingRuntime?.status === "ready"
+  ) {
+    return;
+  }
+
+  // Await any in-flight load.
   const inFlight = session.activeLoads.get(dataSource.id);
   if (inFlight) {
     if (!force) {
       await inFlight;
       return;
     }
-    // When forced, wait for the existing load to settle before starting fresh
     await inFlight.catch(() => {});
   }
 
-  // Reserve the slot BEFORE creating the promise to prevent concurrent loads
   let resolveLoad: () => void = () => {};
   let rejectLoad: (err: unknown) => void = () => {};
   const loadPromise = new Promise<void>((resolve, reject) => {
@@ -563,6 +651,16 @@ export async function materializeDashboardDataSource(options: {
       preserveExistingData,
     ),
   );
+  appendRuntimeLog(
+    dashboard._id,
+    "info",
+    "Data source materialization started",
+    {
+      dataSourceId: dataSource.id,
+      dataSourceName: dataSource.name,
+      runtimeContext,
+    },
+  );
 
   try {
     temporaryTableRef = buildTemporaryTableRef(dataSource.tableRef);
@@ -572,12 +670,14 @@ export async function materializeDashboardDataSource(options: {
       runtimeStore,
       workspaceId,
       dashboardId: dashboard._id,
+      dashboard,
       dataSource,
       targetTableRef: temporaryTableRef,
       preserveExistingData,
       onRowsLoaded: loaded => {
         rowsLoaded = loaded;
       },
+      runtimeContext,
     });
 
     const { schema, sampleRows } = await introspectDataSource(
@@ -592,16 +692,43 @@ export async function materializeDashboardDataSource(options: {
       temporaryTableRef,
     });
 
+    const resolvedRowCount =
+      rowCount ??
+      (await countTableRows(session.db, dataSource.tableRef)) ??
+      rowsLoaded;
+
     session.dataSourceVersions.set(dataSource.id, version);
     runtimeStore.dispatch(
       dashboardRuntimeEvents.datasourceLoadSucceeded(
         dashboard._id,
         dataSource.id,
-        rowCount ?? rowsLoaded,
-        rowCount ?? rowsLoaded,
+        resolvedRowCount,
+        resolvedRowCount,
         schema,
         sampleRows,
       ),
+    );
+    runtimeStore.dispatch(
+      dashboardRuntimeEvents.updateDatasourceDiagnostics(
+        dashboard._id,
+        dataSource.id,
+        {
+          loadPath: "memory",
+          resolvedMode: runtimeContext,
+          artifactUrl: parquetUrl || null,
+          loadDurationMs: Date.now() - loadStartedAt,
+        },
+      ),
+    );
+    appendRuntimeLog(
+      dashboard._id,
+      "info",
+      "Data source materialization succeeded",
+      {
+        dataSourceId: dataSource.id,
+        loadDurationMs: Date.now() - loadStartedAt,
+        rowCount: resolvedRowCount,
+      },
     );
 
     await persistDataSourceVersion(
@@ -609,14 +736,12 @@ export async function materializeDashboardDataSource(options: {
       dataSource.id,
       version,
       dataSource.tableRef,
-      rowCount ?? rowsLoaded,
+      resolvedRowCount,
     );
     await checkpointSession(dashboard._id);
-    console.log(
-      `[opfs-diag] PERSISTED: dataSource="${dataSource.name}" version=${version} rows=${rowCount ?? rowsLoaded} tableRef="${dataSource.tableRef}" persistent=${session.persistent}`,
-    );
     resolveLoad();
   } catch (error) {
+    console.warn(`Materialization failed for "${dataSource.name}"`, error);
     session.dataSourceVersions.delete(dataSource.id);
     if (temporaryTableRef) {
       await dropTable(session.db, temporaryTableRef).catch(() => undefined);
@@ -628,7 +753,19 @@ export async function materializeDashboardDataSource(options: {
         rowsLoaded,
         error instanceof Error ? error.message : "Failed to load data source",
         preserveExistingData,
+        Date.now() - loadStartedAt,
       ),
+    );
+    appendRuntimeLog(
+      dashboard._id,
+      "error",
+      "Data source materialization failed",
+      {
+        dataSourceId: dataSource.id,
+        error:
+          error instanceof Error ? error.message : "Failed to load data source",
+        loadDurationMs: Date.now() - loadStartedAt,
+      },
     );
     rejectLoad(error);
     throw error;
@@ -640,8 +777,9 @@ export async function materializeDashboardDataSource(options: {
 export async function syncDashboardRuntime(options: {
   workspaceId: string;
   dashboard: Dashboard;
+  runtimeContext?: DashboardRuntimeContext;
 }): Promise<void> {
-  const { workspaceId, dashboard } = options;
+  const { workspaceId, dashboard, runtimeContext = "builder" } = options;
   const session = await ensureDashboardSession(dashboard._id);
   const currentIds = new Set(dashboard.dataSources.map(ds => ds.id));
 
@@ -650,11 +788,7 @@ export async function syncDashboardRuntime(options: {
       {},
   )) {
     if (!currentIds.has(dataSourceId)) {
-      if (session.accessMode === "read-write") {
-        await dropTable(session.db, runtimeState.tableRef).catch(
-          () => undefined,
-        );
-      }
+      await dropTable(session.db, runtimeState.tableRef).catch(() => undefined);
       session.dataSourceVersions.delete(dataSourceId);
       await removePersistedDataSource(dashboard._id, dataSourceId);
       useDashboardRuntimeStore
@@ -667,7 +801,12 @@ export async function syncDashboardRuntime(options: {
 
   await Promise.allSettled(
     dashboard.dataSources.map(dataSource =>
-      materializeDashboardDataSource({ workspaceId, dashboard, dataSource }),
+      materializeDashboardDataSource({
+        workspaceId,
+        dashboard,
+        dataSource,
+        runtimeContext,
+      }),
     ),
   );
 }
@@ -676,6 +815,7 @@ export async function refreshDashboardDataSource(options: {
   workspaceId: string;
   dashboard: Dashboard;
   dataSourceId: string;
+  runtimeContext?: DashboardRuntimeContext;
 }): Promise<void> {
   const dataSource = options.dashboard.dataSources.find(
     ds => ds.id === options.dataSourceId,
@@ -689,12 +829,14 @@ export async function refreshDashboardDataSource(options: {
     dashboard: options.dashboard,
     dataSource,
     force: true,
+    runtimeContext: options.runtimeContext,
   });
 }
 
 export async function refreshAllDashboardDataSources(options: {
   workspaceId: string;
   dashboard: Dashboard;
+  runtimeContext?: DashboardRuntimeContext;
 }): Promise<void> {
   await Promise.allSettled(
     options.dashboard.dataSources.map(dataSource =>
@@ -703,6 +845,7 @@ export async function refreshAllDashboardDataSources(options: {
         dashboard: options.dashboard,
         dataSource,
         force: true,
+        runtimeContext: options.runtimeContext,
       }),
     ),
   );
@@ -713,10 +856,7 @@ export async function removeDashboardDataSourceRuntime(options: {
   dataSourceId: string;
   tableRef: string;
 }): Promise<void> {
-  let session = getDashboardSession(options.dashboardId);
-  if (session?.persistent && session.accessMode !== "read-write") {
-    session = await ensureWritableDashboardSession(options.dashboardId);
-  }
+  const session = getDashboardSession(options.dashboardId);
   if (session) {
     await dropTable(session.db, options.tableRef).catch(() => undefined);
     session.dataSourceVersions.delete(options.dataSourceId);

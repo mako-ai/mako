@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Drawer,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Box,
   Typography,
   TextField,
@@ -26,8 +29,14 @@ import {
   Search,
   X,
   Pencil,
+  CheckCircle2,
+  XCircle,
+  LoaderCircle,
 } from "lucide-react";
-import { useDashboardStore } from "../../store/dashboardStore";
+import {
+  useDashboardStore,
+  type MaterializationRunRecord,
+} from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { apiClient } from "../../lib/api-client";
 import {
@@ -64,6 +73,58 @@ const STATUS_CHIP_PROPS: Record<
   error: { label: "Error", color: "error" },
 };
 
+function formatRelativeTime(value?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.round(diffMs / 60000);
+  if (diffMinutes < 1) return "just now";
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+}
+
+function formatBytes(value?: number): string | null {
+  if (!value || value <= 0) return null;
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (value >= 1024) {
+    return `${Math.round(value / 1024)} KB`;
+  }
+  return `${value} B`;
+}
+
+function formatAbsoluteTime(value?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString();
+}
+
+function formatDurationMs(
+  startedAt?: string,
+  finishedAt?: string,
+): string | null {
+  if (!startedAt || !finishedAt) return null;
+  const startMs = new Date(startedAt).getTime();
+  const endMs = new Date(finishedAt).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return null;
+  }
+
+  const totalSeconds = Math.round((endMs - startMs) / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
 const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   open,
   onClose,
@@ -82,6 +143,12 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   const availableConnections = useSchemaStore(state =>
     workspaceId ? state.connections[workspaceId] || [] : [],
   );
+  const fetchMaterializationRuns = useDashboardStore(
+    state => state.fetchMaterializationRuns,
+  );
+  const fetchMaterializationRunDetail = useDashboardStore(
+    state => state.fetchMaterializationRunDetail,
+  );
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<ConsoleResult[]>([]);
@@ -99,6 +166,16 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   const [editingDataSourceId, setEditingDataSourceId] = useState<string | null>(
     null,
   );
+  const [historyDataSourceId, setHistoryDataSourceId] = useState<string | null>(
+    null,
+  );
+  const [historyRuns, setHistoryRuns] = useState<MaterializationRunRecord[]>(
+    [],
+  );
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunDetail, setSelectedRunDetail] =
+    useState<MaterializationRunRecord | null>(null);
 
   const loadAllConsoles = useCallback(async () => {
     if (!workspaceId) return;
@@ -200,6 +277,50 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
       workspaceId,
       dataSourceId: dsId,
     });
+  };
+
+  const openHistory = async (dataSourceId: string) => {
+    if (!workspaceId || !dashboardId) return;
+    setHistoryDataSourceId(dataSourceId);
+    setHistoryLoading(true);
+    try {
+      const runs = await fetchMaterializationRuns(
+        workspaceId,
+        dashboardId,
+        dataSourceId,
+      );
+      setHistoryRuns(runs);
+      const firstRunId = runs[0]?.runId ?? null;
+      setSelectedRunId(firstRunId);
+      if (firstRunId) {
+        const detail = await fetchMaterializationRunDetail(
+          workspaceId,
+          dashboardId,
+          firstRunId,
+        );
+        setSelectedRunDetail(detail);
+      } else {
+        setSelectedRunDetail(null);
+      }
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const handleSelectRun = async (runId: string) => {
+    if (!workspaceId || !dashboardId) return;
+    setSelectedRunId(runId);
+    setHistoryLoading(true);
+    try {
+      const detail = await fetchMaterializationRunDetail(
+        workspaceId,
+        dashboardId,
+        runId,
+      );
+      setSelectedRunDetail(detail);
+    } finally {
+      setHistoryLoading(false);
+    }
   };
 
   const handleCreateDirectDataSource = async () => {
@@ -526,14 +647,64 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
         ) : (
           <List dense disablePadding>
             {dataSources.map(ds => {
-              const status = runtimeSession?.dataSources[ds.id]?.status;
+              const runtimeDataSource = runtimeSession?.dataSources[ds.id];
+              const status = runtimeDataSource?.status;
               const loadedRows =
-                runtimeSession?.dataSources[ds.id]?.rowsLoaded ||
-                runtimeSession?.dataSources[ds.id]?.rowCount ||
+                runtimeDataSource?.rowsLoaded ||
+                runtimeDataSource?.rowCount ||
                 ds.cache?.rowCount ||
                 0;
-              const errorMessage = runtimeSession?.dataSources[ds.id]?.error;
+              const errorMessage = runtimeDataSource?.error;
               const chipProps = status ? STATUS_CHIP_PROPS[status] : null;
+              const materializationStatus =
+                ds.cache?.parquetBuildStatus || "missing";
+              const materializedAt = formatRelativeTime(
+                ds.cache?.parquetBuiltAt,
+              );
+              const sizeLabel = formatBytes(ds.cache?.byteSize);
+              const diagnostics = [
+                runtimeDataSource?.resolvedMode
+                  ? `mode: ${runtimeDataSource.resolvedMode}`
+                  : null,
+                runtimeDataSource?.loadPath
+                  ? `path: ${runtimeDataSource.loadPath}`
+                  : null,
+                runtimeDataSource?.loadDurationMs
+                  ? `load: ${Math.round(runtimeDataSource.loadDurationMs)} ms`
+                  : null,
+                runtimeDataSource?.storageBackend
+                  ? `store: ${runtimeDataSource.storageBackend}`
+                  : null,
+              ].filter(Boolean);
+              const materializationChip =
+                materializationStatus === "ready" ? (
+                  <Chip
+                    icon={<CheckCircle2 size={14} />}
+                    label="Materialized"
+                    color="success"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                ) : materializationStatus === "building" ? (
+                  <Chip
+                    icon={<LoaderCircle size={14} />}
+                    label="Materializing..."
+                    color="warning"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                ) : (
+                  <Chip
+                    icon={<XCircle size={14} />}
+                    label="Not materialized"
+                    color="error"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                );
 
               return (
                 <ListItem
@@ -551,22 +722,18 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                       fontFamily: "monospace",
                     }}
                     secondary={
-                      status === "loading" ? (
-                        <Box sx={{ mt: 0.25 }}>
+                      <Box sx={{ mt: 0.25 }}>
+                        {status === "loading" ? (
                           <Typography variant="caption" color="text.secondary">
                             {loadedRows > 0
                               ? `${loadedRows.toLocaleString()} rows loaded...`
                               : "Starting stream..."}
                           </Typography>
-                        </Box>
-                      ) : status === "ready" && loadedRows > 0 ? (
-                        <Box sx={{ mt: 0.25 }}>
+                        ) : status === "ready" && loadedRows > 0 ? (
                           <Typography variant="caption" color="text.secondary">
                             {loadedRows.toLocaleString()} rows loaded
                           </Typography>
-                        </Box>
-                      ) : status === "error" ? (
-                        <Box sx={{ mt: 0.25 }}>
+                        ) : status === "error" ? (
                           <Typography
                             variant="caption"
                             color="error.main"
@@ -574,14 +741,52 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                           >
                             {errorMessage || "Failed to load data source"}
                           </Typography>
-                        </Box>
-                      ) : undefined
+                        ) : null}
+                        <Typography
+                          variant="caption"
+                          color={
+                            materializationStatus === "ready"
+                              ? "success.main"
+                              : materializationStatus === "building"
+                                ? "warning.main"
+                                : "text.secondary"
+                          }
+                          sx={{ display: "block", mt: 0.25 }}
+                        >
+                          {materializationStatus === "ready"
+                            ? "Materialized"
+                            : materializationStatus === "building"
+                              ? "Materializing..."
+                              : "Not materialized"}
+                          {materializedAt
+                            ? ` · Last materialized ${materializedAt}`
+                            : ""}
+                          {ds.cache?.rowCount
+                            ? ` · ${ds.cache.rowCount.toLocaleString()} rows`
+                            : ""}
+                          {sizeLabel ? ` · ${sizeLabel}` : ""}
+                        </Typography>
+                        {diagnostics.length > 0 && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{
+                              display: "block",
+                              mt: 0.25,
+                              fontFamily: "monospace",
+                            }}
+                          >
+                            {diagnostics.join(" · ")}
+                          </Typography>
+                        )}
+                      </Box>
                     }
                     secondaryTypographyProps={{ component: "div" }}
                   />
                   <ListItemSecondaryAction
                     sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
                   >
+                    {materializationChip}
                     {chipProps && (
                       <Chip
                         label={chipProps.label}
@@ -602,6 +807,12 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                         <RefreshCw size={15} />
                       )}
                     </IconButton>
+                    <Button
+                      size="small"
+                      onClick={() => void openHistory(ds.id)}
+                    >
+                      History
+                    </Button>
                     <IconButton
                       size="small"
                       onClick={() => handleEditDataSource(ds.id)}
@@ -649,6 +860,181 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
           </Box>
         </>
       )}
+
+      <Dialog
+        open={Boolean(historyDataSourceId)}
+        onClose={() => {
+          setHistoryDataSourceId(null);
+          setHistoryRuns([]);
+          setSelectedRunId(null);
+          setSelectedRunDetail(null);
+        }}
+        fullWidth
+        maxWidth="lg"
+      >
+        <DialogTitle>Materialization History</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: "flex", gap: 2, minHeight: 420, pt: 1 }}>
+            <Box
+              sx={{
+                width: 280,
+                borderRight: theme => `1px solid ${theme.palette.divider}`,
+                pr: 2,
+              }}
+            >
+              {historyLoading && historyRuns.length === 0 ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+                  <CircularProgress size={24} />
+                </Box>
+              ) : historyRuns.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No materialization runs yet.
+                </Typography>
+              ) : (
+                <List dense disablePadding>
+                  {historyRuns.map(run => (
+                    <ListItem
+                      key={run.runId}
+                      disablePadding
+                      sx={{ mb: 0.5, display: "block" }}
+                    >
+                      <Button
+                        fullWidth
+                        variant={
+                          selectedRunId === run.runId ? "contained" : "text"
+                        }
+                        color={
+                          run.status === "error"
+                            ? "error"
+                            : run.status === "ready"
+                              ? "success"
+                              : "warning"
+                        }
+                        onClick={() => void handleSelectRun(run.runId)}
+                        sx={{ justifyContent: "flex-start" }}
+                      >
+                        <Box sx={{ textAlign: "left" }}>
+                          <Typography variant="caption" display="block">
+                            {run.triggerType}
+                          </Typography>
+                          <Typography variant="body2">
+                            {formatAbsoluteTime(run.requestedAt) || run.runId}
+                          </Typography>
+                        </Box>
+                      </Button>
+                    </ListItem>
+                  ))}
+                </List>
+              )}
+            </Box>
+
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              {!selectedRunDetail ? (
+                <Typography variant="body2" color="text.secondary">
+                  Select a run to inspect details.
+                </Typography>
+              ) : (
+                <Box
+                  sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}
+                >
+                  <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+                    <Chip
+                      label={selectedRunDetail.status}
+                      color={
+                        selectedRunDetail.status === "error"
+                          ? "error"
+                          : selectedRunDetail.status === "ready"
+                            ? "success"
+                            : "warning"
+                      }
+                      size="small"
+                    />
+                    <Chip
+                      label={selectedRunDetail.triggerType}
+                      variant="outlined"
+                      size="small"
+                    />
+                  </Box>
+                  <Typography variant="body2">
+                    Requested:{" "}
+                    {formatAbsoluteTime(selectedRunDetail.requestedAt) || "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    Started:{" "}
+                    {formatAbsoluteTime(selectedRunDetail.startedAt) || "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    Finished:{" "}
+                    {formatAbsoluteTime(selectedRunDetail.finishedAt) || "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    Duration:{" "}
+                    {formatDurationMs(
+                      selectedRunDetail.startedAt,
+                      selectedRunDetail.finishedAt,
+                    ) || "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    Version: {selectedRunDetail.version || "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    Rows:{" "}
+                    {selectedRunDetail.rowCount?.toLocaleString() || "unknown"}
+                  </Typography>
+                  <Typography variant="body2">
+                    Size: {formatBytes(selectedRunDetail.byteSize) || "unknown"}
+                  </Typography>
+                  {selectedRunDetail.error && (
+                    <Typography variant="body2" color="error.main">
+                      Error: {selectedRunDetail.error}
+                    </Typography>
+                  )}
+
+                  <Divider />
+
+                  <Typography variant="subtitle2">Events</Typography>
+                  <List dense disablePadding>
+                    {selectedRunDetail.events.map((event, index) => (
+                      <ListItem
+                        key={`${event.timestamp}-${event.type}-${index}`}
+                        sx={{ px: 0, alignItems: "flex-start" }}
+                      >
+                        <ListItemText
+                          primary={event.message}
+                          primaryTypographyProps={{ variant: "body2" }}
+                          secondary={
+                            <>
+                              <Typography variant="caption" display="block">
+                                {event.type} ·{" "}
+                                {formatAbsoluteTime(event.timestamp) || "N/A"}
+                              </Typography>
+                              {event.metadata && (
+                                <Typography
+                                  variant="caption"
+                                  component="pre"
+                                  sx={{
+                                    mt: 0.5,
+                                    mb: 0,
+                                    whiteSpace: "pre-wrap",
+                                    fontFamily: "monospace",
+                                  }}
+                                >
+                                  {JSON.stringify(event.metadata, null, 2)}
+                                </Typography>
+                              )}
+                            </>
+                          }
+                          secondaryTypographyProps={{ component: "div" }}
+                        />
+                      </ListItem>
+                    ))}
+                  </List>
+                </Box>
+              )}
+            </Box>
+          </Box>
+        </DialogContent>
+      </Dialog>
     </Drawer>
   );
 };
