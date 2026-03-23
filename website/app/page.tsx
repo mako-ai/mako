@@ -80,6 +80,12 @@ export default function Home() {
                 Blog
               </Link>
               <Link
+                href="/guides"
+                className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+              >
+                Guides
+              </Link>
+              <Link
                 href="https://docs.mako.ai"
                 className="hover:text-zinc-900 dark:hover:text-white transition-colors"
               >
@@ -759,6 +765,12 @@ export default function Home() {
               className="hover:text-zinc-900 dark:hover:text-white transition-colors"
             >
               Blog
+            </Link>
+            <Link
+              href="/guides"
+              className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+            >
+              Guides
             </Link>
             <a
               href="#"
