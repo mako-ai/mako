@@ -26,7 +26,6 @@ import {
 } from "@mui/material";
 import {
   History as BackfillIcon,
-  Cancel as CancelIcon,
   Pause as PauseIcon,
   PlayArrow as ResumeIcon,
   RestartAlt as ResyncIcon,
