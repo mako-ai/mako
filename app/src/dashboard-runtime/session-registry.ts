@@ -6,6 +6,7 @@ import {
   checkpointDatabase,
   deleteOPFSFiles,
   isOPFSAvailable,
+  type PersistentDuckDBAccessMode,
 } from "../lib/duckdb";
 import { createMosaicInstance, type MosaicInstance } from "../lib/mosaic";
 
@@ -13,7 +14,10 @@ export interface DashboardSessionHandle {
   dashboardId: string;
   sessionId: string;
   db: AsyncDuckDB;
+  opfsAvailable: boolean;
   persistent: boolean;
+  accessMode: PersistentDuckDBAccessMode;
+  persistenceError: string | null;
   dataSourceVersions: Map<string, string>;
   activeLoads: Map<string, Promise<void>>;
   mosaic: MosaicInstance | null;
@@ -66,28 +70,49 @@ async function loadPersistedVersions(
   return versions;
 }
 
+async function destroyMosaic(session: DashboardSessionHandle): Promise<void> {
+  if (!session.mosaic) {
+    return;
+  }
+  try {
+    session.mosaic.destroy();
+  } catch {
+    // Best-effort cleanup when coordinator teardown fails.
+  }
+  session.mosaic = null;
+}
+
 async function createSession(
   dashboardId: string,
+  requestedAccessMode: PersistentDuckDBAccessMode = "read-only",
 ): Promise<DashboardSessionHandle> {
   let db: AsyncDuckDB;
+  const opfsAvailable = isOPFSAvailable();
   let persistent = false;
+  let accessMode: PersistentDuckDBAccessMode = "read-write";
+  let persistenceError: string | null = null;
   let dataSourceVersions = new Map<string, string>();
 
   console.log(
-    `[opfs-diag] Creating session for dashboard=${dashboardId}, OPFS available=${isOPFSAvailable()}`,
+    `[opfs-diag] Creating session for dashboard=${dashboardId}, OPFS available=${opfsAvailable}, requestedAccessMode=${requestedAccessMode}`,
   );
 
-  if (isOPFSAvailable()) {
+  if (opfsAvailable) {
     try {
       const path = opfsPath(dashboardId);
-      console.log(`[opfs-diag] Opening OPFS database at ${path}`);
-      db = await createPersistentDuckDBInstance(path);
+      console.log(
+        `[opfs-diag] Opening OPFS database at ${path} with accessMode=${requestedAccessMode}`,
+      );
+      db = await createPersistentDuckDBInstance(path, requestedAccessMode);
       persistent = true;
-      await initMetadataTable(db);
+      accessMode = requestedAccessMode;
+      if (requestedAccessMode === "read-write") {
+        await initMetadataTable(db);
+      }
       dataSourceVersions = await loadPersistedVersions(db);
       console.log(
         `[opfs-diag] OPFS session ready for ${dashboardId}: ` +
-          `${dataSourceVersions.size} persisted data source(s)`,
+          `${dataSourceVersions.size} persisted data source(s), accessMode=${accessMode}`,
       );
       if (dataSourceVersions.size > 0) {
         for (const [dsId, hash] of dataSourceVersions) {
@@ -97,24 +122,31 @@ async function createSession(
         }
       }
     } catch (err) {
+      persistenceError =
+        err instanceof Error ? err.message : "Unknown OPFS open failure";
       console.warn(
         `[opfs-diag] OPFS FAILED for ${dashboardId}, falling back to in-memory:`,
         err,
       );
       db = await createDuckDBInstance();
+      accessMode = "read-write";
     }
   } else {
     console.log(
       `[opfs-diag] OPFS not available in this browser, using in-memory for ${dashboardId}`,
     );
     db = await createDuckDBInstance();
+    accessMode = "read-write";
   }
 
   const session: DashboardSessionHandle = {
     dashboardId,
     sessionId: crypto.randomUUID(),
     db,
+    opfsAvailable,
     persistent,
+    accessMode,
+    persistenceError,
     dataSourceVersions,
     activeLoads: new Map(),
     mosaic: null,
@@ -139,6 +171,35 @@ export async function ensureDashboardSession(
   return creation;
 }
 
+export async function ensureWritableDashboardSession(
+  dashboardId: string,
+): Promise<DashboardSessionHandle> {
+  const session = await ensureDashboardSession(dashboardId);
+  if (!session.persistent || session.accessMode === "read-write") {
+    return session;
+  }
+
+  console.log(
+    `[opfs-diag] Promoting dashboard=${dashboardId} session from read-only to read-write`,
+  );
+  await destroyMosaic(session);
+  await (session.db as any).terminate?.();
+
+  const writableSession = await createSession(dashboardId, "read-write");
+  session.db = writableSession.db;
+  session.opfsAvailable = writableSession.opfsAvailable;
+  session.persistent = writableSession.persistent;
+  session.accessMode = writableSession.accessMode;
+  session.persistenceError = writableSession.persistenceError;
+  session.dataSourceVersions = writableSession.dataSourceVersions;
+  sessions.set(dashboardId, session);
+
+  console.log(
+    `[opfs-diag] Dashboard=${dashboardId} session promotion complete, accessMode=${session.accessMode}, persistent=${session.persistent}`,
+  );
+  return session;
+}
+
 export function getDashboardSession(
   dashboardId: string,
 ): DashboardSessionHandle | null {
@@ -147,7 +208,7 @@ export function getDashboardSession(
 
 export async function checkpointSession(dashboardId: string): Promise<void> {
   const session = sessions.get(dashboardId);
-  if (!session?.persistent) return;
+  if (!session?.persistent || session.accessMode !== "read-write") return;
   await checkpointDatabase(session.db);
 }
 
@@ -175,7 +236,7 @@ export async function persistDataSourceVersion(
   rowCount: number,
 ): Promise<void> {
   const session = sessions.get(dashboardId);
-  if (!session?.persistent) return;
+  if (!session?.persistent || session.accessMode !== "read-write") return;
 
   const conn = await session.db.connect();
   try {
@@ -194,7 +255,7 @@ export async function removePersistedDataSource(
   dataSourceId: string,
 ): Promise<void> {
   const session = sessions.get(dashboardId);
-  if (!session?.persistent) return;
+  if (!session?.persistent || session.accessMode !== "read-write") return;
 
   const conn = await session.db.connect();
   try {
@@ -216,15 +277,8 @@ export async function disposeDashboardSession(
     return;
   }
 
-  if (session.mosaic) {
-    try {
-      session.mosaic.destroy();
-    } catch {
-      // Best-effort cleanup when coordinator teardown fails.
-    }
-    session.mosaic = null;
-  }
-  if (session.persistent) {
+  await destroyMosaic(session);
+  if (session.persistent && session.accessMode === "read-write") {
     await checkpointDatabase(session.db).catch(() => {});
   }
 

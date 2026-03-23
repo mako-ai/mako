@@ -3,6 +3,8 @@ import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 let dbInstance: AsyncDuckDB | null = null;
 let initPromise: Promise<AsyncDuckDB> | null = null;
 
+export type PersistentDuckDBAccessMode = "read-only" | "read-write";
+
 async function createWorkerAndInstantiate(): Promise<AsyncDuckDB> {
   const duckdb = await import("@duckdb/duckdb-wasm");
   const bundles = duckdb.getJsDelivrBundles();
@@ -41,12 +43,16 @@ export function isOPFSAvailable(): boolean {
  */
 export async function createPersistentDuckDBInstance(
   opfsPath: string,
+  accessMode: PersistentDuckDBAccessMode = "read-write",
 ): Promise<AsyncDuckDB> {
   const duckdb = await import("@duckdb/duckdb-wasm");
   const db = await createWorkerAndInstantiate();
   await db.open({
     path: opfsPath,
-    accessMode: duckdb.DuckDBAccessMode.READ_WRITE,
+    accessMode:
+      accessMode === "read-only"
+        ? duckdb.DuckDBAccessMode.READ_ONLY
+        : duckdb.DuckDBAccessMode.READ_WRITE,
   });
   return db;
 }
