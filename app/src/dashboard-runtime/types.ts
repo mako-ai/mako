@@ -80,6 +80,8 @@ export interface DashboardDataSourceRuntimeState {
   dataVersion: number;
   status: DashboardRuntimeStatus;
   rowsLoaded: number;
+  bytesLoaded: number;
+  totalBytes: number | null;
   rowCount?: number;
   schema: DashboardRuntimeColumn[];
   sampleRows: Record<string, unknown>[];
@@ -231,6 +233,8 @@ export type DashboardRuntimeEvent =
       dashboardId: string;
       dataSourceId: string;
       rowsLoaded: number;
+      bytesLoaded: number;
+      totalBytes: number | null;
       preserveExistingData?: boolean;
     }
   | {

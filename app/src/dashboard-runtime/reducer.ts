@@ -42,6 +42,8 @@ function ensureDataSourceState(
       dataVersion: 0,
       status: "idle",
       rowsLoaded: 0,
+      bytesLoaded: 0,
+      totalBytes: null,
       schema: [],
       sampleRows: [],
       error: null,
@@ -206,9 +208,13 @@ export function reduceDashboardRuntimeEvent(
       const dataSource = ensureDataSourceState(session, event.dataSourceId);
       if (event.preserveExistingData && dataSource.status === "ready") {
         dataSource.rowsLoaded = 0;
+        dataSource.bytesLoaded = 0;
+        dataSource.totalBytes = null;
       } else {
         dataSource.status = "loading";
         dataSource.rowsLoaded = 0;
+        dataSource.bytesLoaded = 0;
+        dataSource.totalBytes = null;
         dataSource.rowCount = undefined;
         dataSource.schema = [];
         dataSource.sampleRows = [];
@@ -230,6 +236,8 @@ export function reduceDashboardRuntimeEvent(
         dataSource.status = "loading";
       }
       dataSource.rowsLoaded = event.rowsLoaded;
+      dataSource.bytesLoaded = event.bytesLoaded;
+      dataSource.totalBytes = event.totalBytes;
       return;
     }
 

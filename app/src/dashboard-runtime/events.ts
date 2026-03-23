@@ -92,12 +92,16 @@ export const dashboardRuntimeEvents = {
     dashboardId: string,
     dataSourceId: string,
     rowsLoaded: number,
+    bytesLoaded: number,
+    totalBytes: number | null,
     preserveExistingData = false,
   ): DashboardRuntimeEvent => ({
     type: "datasource/load-progress",
     dashboardId,
     dataSourceId,
     rowsLoaded,
+    bytesLoaded,
+    totalBytes,
     preserveExistingData,
   }),
 

@@ -161,7 +161,11 @@ async function loadParquetArtifactIntoTable(options: {
   session: Awaited<ReturnType<typeof ensureDashboardSession>>;
   parquetUrl: string;
   targetTableRef: string;
-  onRowsLoaded: (loaded: number) => void;
+  onProgress?: (progress: {
+    rowsLoaded: number;
+    bytesLoaded: number;
+    totalBytes: number | null;
+  }) => void;
 }): Promise<number> {
   const response = await fetch(options.parquetUrl, {
     credentials: "include",
@@ -178,9 +182,11 @@ async function loadParquetArtifactIntoTable(options: {
       totalBytes,
       totalRows,
     );
-    if (estimatedRows != null) {
-      options.onRowsLoaded(estimatedRows);
-    }
+    options.onProgress?.({
+      rowsLoaded: estimatedRows ?? 0,
+      bytesLoaded,
+      totalBytes: totalBytes ?? null,
+    });
   });
 
   const loadedRowCount = await loadParquetTable(
@@ -188,8 +194,28 @@ async function loadParquetArtifactIntoTable(options: {
     options.targetTableRef,
     parquetBuffer,
   );
-  options.onRowsLoaded(totalRows ?? loadedRowCount);
+  options.onProgress?.({
+    rowsLoaded: totalRows ?? loadedRowCount,
+    bytesLoaded: parquetBuffer.byteLength,
+    totalBytes: totalBytes ?? null,
+  });
   return totalRows ?? loadedRowCount;
+}
+
+function trackStreamProgress(
+  stream: ReadableStream<Uint8Array>,
+  onProgress: (bytesLoaded: number) => void,
+): ReadableStream<Uint8Array> {
+  let bytesLoaded = 0;
+  return stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        bytesLoaded += chunk.byteLength;
+        onProgress(bytesLoaded);
+        controller.enqueue(chunk);
+      },
+    }),
+  );
 }
 
 function dispatchLoadProgress(options: {
@@ -198,6 +224,8 @@ function dispatchLoadProgress(options: {
   dataSourceId: string;
   onRowsLoaded: (loaded: number) => void;
   rowsLoaded: number;
+  bytesLoaded: number;
+  totalBytes: number | null;
   preserveExistingData?: boolean;
 }) {
   options.onRowsLoaded(options.rowsLoaded);
@@ -206,6 +234,8 @@ function dispatchLoadProgress(options: {
       options.dashboardId,
       options.dataSourceId,
       options.rowsLoaded,
+      options.bytesLoaded,
+      options.totalBytes,
       options.preserveExistingData,
     ),
   );
@@ -259,7 +289,18 @@ async function loadDashboardDataSourceWithFallback(options: {
         session,
         parquetUrl,
         targetTableRef,
-        onRowsLoaded,
+        onProgress: progress => {
+          dispatchLoadProgress({
+            runtimeStore,
+            dashboardId,
+            dataSourceId: dataSource.id,
+            onRowsLoaded,
+            rowsLoaded: progress.rowsLoaded,
+            bytesLoaded: progress.bytesLoaded,
+            totalBytes: progress.totalBytes,
+            preserveExistingData: options.preserveExistingData,
+          });
+        },
       });
       return parquetRows;
     } catch (error) {
@@ -312,7 +353,9 @@ async function loadDashboardDataSourceWithFallback(options: {
             dashboardId,
             dataSourceId: dataSource.id,
             onRowsLoaded,
-            rowsLoaded: estimatedRows,
+            rowsLoaded: estimatedRows ?? 0,
+            bytesLoaded,
+            totalBytes: totalBytes ?? null,
             preserveExistingData: options.preserveExistingData,
           });
         },
@@ -345,18 +388,37 @@ async function loadDashboardDataSourceWithFallback(options: {
     dataSource,
     "ndjson",
   );
+  const totalBytes = parseNumericHeader(response.headers, "Content-Length");
+  let ndjsonBytesLoaded = 0;
+  let ndjsonRowsLoaded = 0;
+  const trackedBody = trackStreamProgress(response.body, bytesLoaded => {
+    ndjsonBytesLoaded = bytesLoaded;
+    dispatchLoadProgress({
+      runtimeStore,
+      dashboardId,
+      dataSourceId: dataSource.id,
+      onRowsLoaded,
+      rowsLoaded: ndjsonRowsLoaded,
+      bytesLoaded,
+      totalBytes: totalBytes ?? null,
+      preserveExistingData: options.preserveExistingData,
+    });
+  });
   const loadedRows = await loadNdjsonStreamTable(
     session.db,
     targetTableRef,
-    response.body,
+    trackedBody,
     {
       onProgress: loaded => {
+        ndjsonRowsLoaded = loaded;
         dispatchLoadProgress({
           runtimeStore,
           dashboardId,
           dataSourceId: dataSource.id,
           onRowsLoaded,
           rowsLoaded: loaded,
+          bytesLoaded: ndjsonBytesLoaded,
+          totalBytes: totalBytes ?? null,
           preserveExistingData: options.preserveExistingData,
         });
       },

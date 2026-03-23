@@ -64,6 +64,16 @@ interface DashboardCanvasProps {
   onCreated?: (dashboardId: string) => void;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function resolveWidgetLayout(widget: DashboardWidget) {
   const fallback = { x: 0, y: 0, w: 6, h: 4, minW: 2, minH: 2 };
   const candidate = (widget as any).layout ?? (widget as any).layouts?.lg;
@@ -406,6 +416,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       return {
         label: "Initializing dashboard runtime",
         rowsLoaded: 0,
+        bytesLoaded: 0,
+        totalBytes: null,
+        progress: null,
       };
     }
 
@@ -415,6 +428,19 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     if (loadingSources.length === 0) {
       return null;
+    }
+
+    let bytesLoaded = 0;
+    let totalBytes = 0;
+    let hasKnownByteSize = true;
+    for (const dataSource of loadingSources) {
+      const runtime = runtimeSession?.dataSources[dataSource.id];
+      bytesLoaded += runtime?.bytesLoaded ?? 0;
+      if (runtime?.totalBytes == null) {
+        hasKnownByteSize = false;
+        continue;
+      }
+      totalBytes += runtime.totalBytes;
     }
 
     return {
@@ -427,6 +453,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           sum + (runtimeSession?.dataSources[ds.id]?.rowsLoaded || 0),
         0,
       ),
+      bytesLoaded,
+      totalBytes: hasKnownByteSize ? totalBytes : null,
+      progress:
+        hasKnownByteSize && totalBytes > 0
+          ? (bytesLoaded / totalBytes) * 100
+          : null,
     };
   }, [dashboard, isRuntimeInitializing, runtimeSession]);
 
@@ -761,7 +793,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       {/* Loading bar */}
       {someSourcesLoading && (
         <Box sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
-          <LinearProgress />
+          <LinearProgress
+            variant={
+              loadingSummary?.progress != null ? "determinate" : "indeterminate"
+            }
+            value={loadingSummary?.progress ?? undefined}
+          />
           {loadingSummary && (
             <Typography
               variant="caption"
@@ -769,6 +806,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               sx={{ display: "block", px: 1.5, py: 0.5 }}
             >
               {loadingSummary.label}
+              {loadingSummary.progress != null &&
+                ` · ${Math.round(loadingSummary.progress)}%`}
+              {loadingSummary.totalBytes != null &&
+                ` · ${formatBytes(loadingSummary.bytesLoaded)} / ${formatBytes(loadingSummary.totalBytes)}`}
               {loadingSummary.rowsLoaded > 0 &&
                 ` · ${loadingSummary.rowsLoaded.toLocaleString()} rows loaded`}
             </Typography>
