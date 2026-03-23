@@ -192,7 +192,7 @@ docker push $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest
 } > env.yaml
 
 # Update Cloud Run service
-gcloud run deploy revops-fullstack \
+gcloud run deploy mako \
   --image $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest \
   --region $REGION \
   --env-vars-file env.yaml \
