@@ -14,6 +14,7 @@ import {
 import {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
+  cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
 import { loggers } from "../logging";
 
@@ -32,6 +33,7 @@ const baseFunctions = [
   webhookCleanupFunction,
   webhookRetryFunction,
   dashboardRefreshFunction,
+  cleanupAbandonedMaterializationRunsFunction,
 ];
 
 // Conditionally add schedulers (only in production)
@@ -65,4 +67,5 @@ export {
   webhookRetryFunction,
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
+  cleanupAbandonedMaterializationRunsFunction,
 };

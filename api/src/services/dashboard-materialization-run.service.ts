@@ -13,16 +13,28 @@ export interface MaterializationRunEventRecord {
   metadata?: Record<string, unknown>;
 }
 
+export type MaterializationRunStatus =
+  | "queued"
+  | "building"
+  | "ready"
+  | "error"
+  | "abandoned"
+  | "cancelled";
+
 export interface MaterializationRunRecord {
   runId: string;
   workspaceId: string;
   dashboardId: string;
   dataSourceId: string;
   triggerType: DashboardMaterializationTriggerType;
-  status: "building" | "ready" | "error";
+  status: MaterializationRunStatus;
   requestedAt: Date;
   startedAt?: Date;
   finishedAt?: Date;
+  lastHeartbeat?: Date;
+  workerId?: string;
+  stage?: string;
+  attempt?: number;
   artifactKey?: string;
   version?: string;
   rowCount?: number;
@@ -43,6 +55,12 @@ function toMaterializationRunRecord(run: any): MaterializationRunRecord {
     requestedAt: new Date(plain.requestedAt),
     startedAt: plain.startedAt ? new Date(plain.startedAt) : undefined,
     finishedAt: plain.finishedAt ? new Date(plain.finishedAt) : undefined,
+    lastHeartbeat: plain.lastHeartbeat
+      ? new Date(plain.lastHeartbeat)
+      : undefined,
+    workerId: plain.workerId,
+    stage: plain.stage,
+    attempt: plain.attempt,
     artifactKey: plain.artifactKey,
     version: plain.version,
     rowCount: plain.rowCount,
@@ -63,9 +81,10 @@ export async function createMaterializationRun(input: {
   dataSourceId: string;
   runId: string;
   triggerType: DashboardMaterializationTriggerType;
-  status: "building" | "ready" | "error";
+  status: MaterializationRunStatus;
   requestedAt: Date;
   startedAt?: Date;
+  workerId?: string;
   artifactKey?: string;
   version?: string;
   events?: MaterializationRunEventRecord[];
@@ -79,6 +98,9 @@ export async function createMaterializationRun(input: {
     status: input.status,
     requestedAt: input.requestedAt,
     startedAt: input.startedAt,
+    lastHeartbeat: new Date(),
+    workerId: input.workerId,
+    attempt: 1,
     artifactKey: input.artifactKey,
     version: input.version,
     events: input.events || [],
@@ -101,7 +123,7 @@ export async function appendMaterializationRunEvent(input: {
 
 export async function finalizeMaterializationRun(input: {
   runId: string;
-  status: "building" | "ready" | "error";
+  status: MaterializationRunStatus;
   finishedAt?: Date;
   rowCount?: number;
   byteSize?: number;
@@ -115,6 +137,7 @@ export async function finalizeMaterializationRun(input: {
       $set: {
         status: input.status,
         finishedAt: input.finishedAt,
+        lastHeartbeat: new Date(),
         rowCount: input.rowCount,
         byteSize: input.byteSize,
         error: input.error,
@@ -123,6 +146,61 @@ export async function finalizeMaterializationRun(input: {
       },
     },
   ).catch(() => undefined);
+}
+
+export async function updateMaterializationRunHeartbeat(input: {
+  runId: string;
+  stage?: string;
+}): Promise<void> {
+  const update: Record<string, unknown> = { lastHeartbeat: new Date() };
+  if (input.stage) {
+    update.stage = input.stage;
+  }
+  await MaterializationRun.updateOne(
+    { runId: input.runId },
+    { $set: update },
+  ).catch(() => undefined);
+}
+
+export async function markStaleRunsAbandoned(options: {
+  heartbeatTimeoutMs?: number;
+  queuedTimeoutMs?: number;
+}): Promise<number> {
+  const heartbeatTimeout = options.heartbeatTimeoutMs ?? 2 * 60 * 1000;
+  const queuedTimeout = options.queuedTimeoutMs ?? 5 * 60 * 1000;
+  const now = new Date();
+  const heartbeatCutoff = new Date(now.getTime() - heartbeatTimeout);
+  const queuedCutoff = new Date(now.getTime() - queuedTimeout);
+
+  const result = await MaterializationRun.updateMany(
+    {
+      $or: [
+        {
+          status: "building",
+          $or: [
+            { lastHeartbeat: { $lt: heartbeatCutoff } },
+            {
+              lastHeartbeat: { $exists: false },
+              startedAt: { $lt: heartbeatCutoff },
+            },
+          ],
+        },
+        {
+          status: "queued",
+          requestedAt: { $lt: queuedCutoff },
+        },
+      ],
+    },
+    {
+      $set: {
+        status: "abandoned",
+        finishedAt: now,
+        error: "Worker lost heartbeat or run was abandoned",
+      },
+    },
+  );
+
+  return result.modifiedCount;
 }
 
 export async function trimMaterializationRuns(input: {

@@ -23,7 +23,6 @@ import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 import { writeParquetTempFile } from "../utils/parquet-serializer";
-import { rebuildDashboardArtifacts } from "../services/dashboard-artifact-rebuild.service";
 import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
 import { promises as fsPromises } from "fs";
 
@@ -1426,26 +1425,6 @@ workspaceExecuteRoutes.post(
           typeof dataSourceId === "string" &&
           dataSourceId
         ) {
-          const rebuild = await rebuildDashboardArtifacts({
-            dashboardId,
-            dataSourceIds: [dataSourceId],
-          });
-          const artifact = rebuild.results.find(
-            result => result.dataSourceId === dataSourceId && result.success,
-          );
-          if (!artifact) {
-            return c.json(
-              {
-                success: false,
-                error:
-                  rebuild.results.find(
-                    result => result.dataSourceId === dataSourceId,
-                  )?.error || "Failed to build parquet artifact",
-              },
-              500,
-            );
-          }
-
           return c.redirect(
             buildDashboardMaterializationArtifactPath({
               workspaceId: workspace._id.toString(),

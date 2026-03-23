@@ -1,10 +1,17 @@
+import * as os from "os";
 import { inngest } from "../client";
 import { Dashboard } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { rebuildDashboardArtifacts } from "../../services/dashboard-artifact-rebuild.service";
 import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
+import {
+  markStaleRunsAbandoned,
+  updateMaterializationRunHeartbeat,
+} from "../../services/dashboard-materialization-run.service";
 
 const logger = loggers.inngest();
+
+const WORKER_ID = `inngest-${os.hostname()}-${process.pid}`;
 
 export const dashboardRefreshFunction = inngest.createFunction(
   {
@@ -31,9 +38,14 @@ export const dashboardRefreshFunction = inngest.createFunction(
       return doc.toObject();
     })) as any;
 
+    const filteredDataSources = dashboard.dataSources.filter(
+      (ds: any) => !dataSourceIds?.length || dataSourceIds.includes(ds.id),
+    );
+
     logger.info("Refreshing dashboard data sources", {
       dashboardId,
-      dataSourceCount: dashboard.dataSources.length,
+      dataSourceCount: filteredDataSources.length,
+      workerId: WORKER_ID,
     });
 
     const rebuild = await step.run("rebuild-dashboard-artifacts", async () => {
@@ -42,6 +54,10 @@ export const dashboardRefreshFunction = inngest.createFunction(
         dataSourceIds,
         force,
         triggerType,
+        workerId: WORKER_ID,
+        onProgress: async (runId: string, stage: string) => {
+          await updateMaterializationRunHeartbeat({ runId, stage });
+        },
       });
     });
 
@@ -112,3 +128,57 @@ export const dashboardSchedulerFunction = inngest.createFunction(
     return { total: dashboards.length, triggered };
   },
 );
+
+export const cleanupAbandonedMaterializationRunsFunction =
+  inngest.createFunction(
+    {
+      id: "cleanup-abandoned-materialization-runs",
+      name: "Cleanup Abandoned Materialization Runs",
+    },
+    { cron: "*/5 * * * *" },
+    async ({ step }) => {
+      const abandonedCount = await step.run(
+        "mark-stale-runs-abandoned",
+        async () => {
+          const count = await markStaleRunsAbandoned({
+            heartbeatTimeoutMs: 2 * 60 * 1000,
+            queuedTimeoutMs: 5 * 60 * 1000,
+          });
+          return count;
+        },
+      );
+
+      if (abandonedCount > 0) {
+        await step.run("fix-dashboard-build-status", async () => {
+          const staleDashboards = await Dashboard.find({
+            "dataSources.cache.parquetBuildStatus": "building",
+          }).select("_id dataSources");
+
+          for (const dashboard of staleDashboards) {
+            const updates: Record<string, unknown> = {};
+            dashboard.dataSources.forEach((ds, index) => {
+              if (ds.cache?.parquetBuildStatus === "building") {
+                updates[`dataSources.${index}.cache.parquetBuildStatus`] =
+                  "error";
+                updates[`dataSources.${index}.cache.parquetLastError`] =
+                  "Worker lost heartbeat";
+              }
+            });
+            if (Object.keys(updates).length > 0) {
+              await Dashboard.findByIdAndUpdate(dashboard._id, {
+                $set: updates,
+              }).catch(() => undefined);
+            }
+          }
+        });
+      }
+
+      if (abandonedCount > 0) {
+        logger.warn("Marked stale materialization runs as abandoned", {
+          abandonedCount,
+        });
+      }
+
+      return { abandonedCount };
+    },
+  );
