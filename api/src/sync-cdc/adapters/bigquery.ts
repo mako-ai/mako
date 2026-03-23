@@ -40,7 +40,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       return { applied: 0 };
     }
 
-    const writer = await this.createWriter(params.layout.tableName);
+    const writer = await this.createWriter(params.layout);
     (writer as any).config.deleteMode = params.flow.deleteMode;
 
     const latest = selectLatestChangePerRecord(params.events);
@@ -142,7 +142,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       return { written: 0 };
     }
 
-    const writer = await this.createWriter(params.layout.tableName);
+    const writer = await this.createWriter(params.layout);
     (writer as any).config.deleteMode = params.flow.deleteMode;
     const fallbackDataSourceId = params.flow.dataSourceId
       ? String(params.flow.dataSourceId)
@@ -179,7 +179,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     };
   }
 
-  private async createWriter(tableName: string) {
+  private async createWriter(layout: CdcEntityLayout) {
     return createDestinationWriter(
       {
         destinationDatabaseId: new Types.ObjectId(
@@ -191,8 +191,24 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             this.config.tableDestination.connectionId,
           ),
           schema: this.config.tableDestination.schema,
-          tableName,
+          tableName: layout.tableName,
           createIfNotExists: true,
+          partitioning: layout.partitioning
+            ? {
+                enabled: true,
+                type: layout.partitioning.type || "time",
+                field: layout.partitioning.field,
+                granularity: layout.partitioning.granularity || "day",
+                requirePartitionFilter:
+                  layout.partitioning.requirePartitionFilter,
+              }
+            : undefined,
+          clustering: layout.clustering?.fields?.length
+            ? {
+                enabled: true,
+                fields: layout.clustering.fields,
+              }
+            : undefined,
         } as any,
       },
       "cdc-bigquery-adapter",

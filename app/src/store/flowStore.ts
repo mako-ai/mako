@@ -245,7 +245,7 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt?: string;
   status: "pending" | "processing" | "completed" | "failed";
-  applyStatus?: "pending" | "applied" | "failed";
+  applyStatus?: "pending" | "applied" | "failed" | "dropped";
   attempts: number;
   error?: unknown;
   processingDurationMs?: number;

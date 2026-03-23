@@ -48,7 +48,7 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt?: string;
   status: "pending" | "processing" | "completed" | "failed";
-  applyStatus?: "pending" | "applied" | "failed";
+  applyStatus?: "pending" | "applied" | "failed" | "dropped";
   attempts: number;
   error?: any;
   processingDurationMs?: number;
@@ -171,6 +171,9 @@ export function WebhookStats({
     applyStatus?: string,
     backfillActive?: boolean,
   ) => {
+    if (status === "completed" && applyStatus === "dropped") {
+      return <Chip size="small" color="warning" label="Dropped" />;
+    }
     if (backfillActive && status === "pending" && applyStatus === "pending") {
       return <Chip size="small" color="warning" label="Deferred" />;
     }

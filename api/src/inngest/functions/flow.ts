@@ -1519,7 +1519,17 @@ export const flowFunction = inngest.createFunction(
                 // Track per-entity progress — use $set with dot-path so
                 // each entity writes independently (survives Inngest step replay)
                 // Keep in-memory aggregate so we can expose global recordsProcessed in UI.
-                entityStatsMap[entity] = result.state.totalProcessed;
+                const totalWrittenForEntity = Number.isFinite(
+                  result.totalWritten,
+                )
+                  ? result.totalWritten
+                  : result.state.totalProcessed;
+                const totalFetchedForEntity = Number.isFinite(
+                  result.totalFetched,
+                )
+                  ? result.totalFetched
+                  : result.state.totalProcessed;
+                entityStatsMap[entity] = totalWrittenForEntity;
 
                 if (executionId) {
                   try {
@@ -1540,7 +1550,7 @@ export const flowFunction = inngest.createFunction(
                             ? "completed"
                             : "syncing",
                           [`stats.entityStats.${entity}`]:
-                            result.state.totalProcessed,
+                            totalWrittenForEntity,
                         },
                         ...(result.completed
                           ? {
@@ -1556,14 +1566,16 @@ export const flowFunction = inngest.createFunction(
                                 timestamp: new Date(),
                                 level: "info",
                                 message: result.completed
-                                  ? `${entity} sync completed (${result.state.totalProcessed} records)`
-                                  : `${entity} sync in progress (${result.state.totalProcessed} records)`,
+                                  ? `${entity} sync completed (${totalWrittenForEntity} written, ${totalFetchedForEntity} fetched)`
+                                  : `${entity} sync in progress (${totalWrittenForEntity} written, ${totalFetchedForEntity} fetched)`,
                                 metadata: {
                                   flowId,
                                   executionId,
                                   entity,
                                   chunkIndex,
-                                  totalProcessed: result.state.totalProcessed,
+                                  totalProcessed: totalWrittenForEntity,
+                                  totalWritten: totalWrittenForEntity,
+                                  totalFetched: totalFetchedForEntity,
                                   hasMore: !result.completed,
                                 },
                               },
@@ -1586,19 +1598,23 @@ export const flowFunction = inngest.createFunction(
                   flowId,
                   entity,
                   chunkIndex,
-                  totalProcessed: result.state.totalProcessed,
+                  totalProcessed: totalWrittenForEntity,
+                  totalWritten: totalWrittenForEntity,
+                  totalFetched: totalFetchedForEntity,
                   hasMore: !result.completed,
                 });
 
                 // Log completion message when entity sync is done
                 if (result.completed) {
                   logger.info(
-                    `✅ ${entity} sync completed (${result.state.totalProcessed} records)`,
+                    `✅ ${entity} sync completed (${totalWrittenForEntity} written, ${totalFetchedForEntity} fetched)`,
                     {
                       flowId,
                       entity,
                       chunkIndex,
                       executionId,
+                      totalWritten: totalWrittenForEntity,
+                      totalFetched: totalFetchedForEntity,
                     },
                   );
                 }

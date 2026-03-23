@@ -690,7 +690,7 @@ export interface IWebhookEvent extends Document {
   entity?: string;
   operation?: "upsert" | "delete";
   recordId?: string;
-  applyStatus?: "pending" | "applied" | "failed";
+  applyStatus?: "pending" | "applied" | "failed" | "dropped";
   appliedAt?: Date;
   applyAttempts?: number;
   applyError?: {
@@ -1838,7 +1838,7 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     recordId: String,
     applyStatus: {
       type: String,
-      enum: ["pending", "applied", "failed"],
+      enum: ["pending", "applied", "failed", "dropped"],
       default: "pending",
       required: true,
     },

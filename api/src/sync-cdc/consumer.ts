@@ -51,6 +51,8 @@ export class CdcConsumerService {
         layout.entity === params.entity ||
         layout.entity === params.entity.split(":")[0],
     );
+    const tableDestinationPartitioning = flow.tableDestination?.partitioning;
+    const tableDestinationClustering = flow.tableDestination?.clustering;
     const tableName = cdcLiveTableName(
       flow.tableDestination.tableName,
       params.entity,
@@ -72,13 +74,30 @@ export class CdcConsumerService {
       deleteMode: flow.deleteMode,
       partitioning: entityLayout?.partitionField
         ? {
+            type: "time",
             field: entityLayout.partitionField,
             granularity: entityLayout.partitionGranularity || "day",
+            requirePartitionFilter:
+              tableDestinationPartitioning?.requirePartitionFilter,
           }
-        : undefined,
+        : tableDestinationPartitioning?.enabled
+          ? {
+              type: tableDestinationPartitioning.type || "time",
+              field:
+                tableDestinationPartitioning.type === "ingestion"
+                  ? "_syncedAt"
+                  : tableDestinationPartitioning.field || "_syncedAt",
+              granularity: tableDestinationPartitioning.granularity || "day",
+              requirePartitionFilter:
+                tableDestinationPartitioning.requirePartitionFilter,
+            }
+          : undefined,
       clustering: entityLayout?.clusterFields?.length
         ? { fields: entityLayout.clusterFields }
-        : undefined,
+        : tableDestinationClustering?.enabled &&
+            tableDestinationClustering.fields?.length
+          ? { fields: tableDestinationClustering.fields }
+          : undefined,
     });
 
     await adapter.ensureLiveTable(layout);
@@ -119,6 +138,13 @@ export class CdcConsumerService {
         errorCode: "ENTITY_DISABLED",
         errorMessage: `Entity '${params.entity}' disabled for this flow`,
       });
+      await this.syncWebhookApplyDroppedStatus(
+        pending.map(event => event.webhookEventId),
+        {
+          code: "ENTITY_DISABLED",
+          message: `Entity '${params.entity}' is disabled for this flow`,
+        },
+      );
       await cdcSyncStateService.advanceConsumerCursor({
         workspaceId: params.workspaceId,
         flowId: params.flowId,
@@ -269,6 +295,34 @@ export class CdcConsumerService {
           applyStatus: "applied",
           applyError: null,
         },
+      },
+    );
+  }
+
+  private async syncWebhookApplyDroppedStatus(
+    webhookEventIds: Array<string | undefined>,
+    failure: { code: string; message: string },
+  ): Promise<void> {
+    const ids = Array.from(
+      new Set(
+        webhookEventIds.filter(
+          (eventId): eventId is string =>
+            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
+        ),
+      ),
+    );
+    if (ids.length === 0) {
+      return;
+    }
+
+    await WebhookEvent.updateMany(
+      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
+      {
+        $set: {
+          applyStatus: "dropped",
+          applyError: failure,
+        },
+        $unset: { appliedAt: "" },
       },
     );
   }

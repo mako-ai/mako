@@ -175,8 +175,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
             {
               $set: {
                 status: "completed",
-                applyStatus: "applied",
-                appliedAt: new Date(),
+                applyStatus: "dropped",
                 applyError: {
                   code: "ENTITY_DISABLED",
                   message: `Entity ${resolvedEntity} is disabled or not selected in flow configuration`,
@@ -185,6 +184,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
                 processingDurationMs:
                   Date.now() - new Date(webhookEvent.receivedAt).getTime(),
               },
+              $unset: { appliedAt: "" },
             },
           );
           return {

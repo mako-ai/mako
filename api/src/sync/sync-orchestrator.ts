@@ -47,6 +47,9 @@ export interface SyncChunkResult {
   entity: string;
   collectionName: string;
   completed: boolean;
+  // Cumulative counts for this entity within the current execution
+  totalFetched: number;
+  totalWritten: number;
 }
 
 export interface SyncChunkOptions {
@@ -487,6 +490,8 @@ export async function performSyncChunk(
       entity,
       collectionName,
       completed,
+      totalFetched: fetchState.totalProcessed,
+      totalWritten: fetchState.totalProcessed,
     };
   } catch (error) {
     const errorMsg = `Sync chunk failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -620,7 +625,13 @@ async function performSyncChunkSql(
   }
 
   const progressReporter = new ProgressReporter(entity, undefined, logger);
-  let runningProcessed = state?.totalProcessed || 0;
+  const previousRowsWritten = (() => {
+    const raw = (state?.metadata as Record<string, unknown> | undefined)
+      ?.rowsWrittenTotal;
+    const parsed = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  })();
+  let runningRowsWritten = previousRowsWritten;
   const fullSyncWriteBatchSize = 1000;
   let pendingFullSyncRows: Record<string, unknown>[] = [];
 
@@ -653,13 +664,14 @@ async function performSyncChunkSql(
       throw new Error(`SQL write failed: ${result.error}`);
     }
 
-    runningProcessed += result.rowsWritten;
+    runningRowsWritten += result.rowsWritten;
 
     logger?.log("info", "SQL batch write succeeded", {
       entity,
       fetchedCount: fetchedCountForLog,
       rowsWritten: result.rowsWritten,
-      totalProcessed: runningProcessed,
+      totalProcessed: runningRowsWritten,
+      totalRowsWritten: runningRowsWritten,
       syncMode,
     });
 
@@ -726,7 +738,7 @@ async function performSyncChunkSql(
             if (!cdcAdapter || !cdcLayout) {
               throw new Error("CDC adapter not initialized");
             }
-            await cdcAdapter.applyBatch({
+            const applyResult = await cdcAdapter.applyBatch({
               records: processedRecords,
               layout: cdcLayout,
               flow: {
@@ -739,7 +751,16 @@ async function performSyncChunkSql(
                     : undefined,
               } as any,
             });
-            runningProcessed += processedRecords.length;
+            runningRowsWritten += applyResult.written;
+            logger?.log("info", "SQL batch write succeeded", {
+              entity,
+              fetchedCount: batch.length,
+              rowsWritten: applyResult.written,
+              totalProcessed: runningRowsWritten,
+              totalRowsWritten: runningRowsWritten,
+              syncMode,
+              writeMode: "cdc",
+            });
             return;
           }
 
@@ -768,6 +789,13 @@ async function performSyncChunkSql(
     await flushFullSyncRows("chunk-end");
   }
 
+  const nextMetadata =
+    fetchState.metadata && typeof fetchState.metadata === "object"
+      ? { ...(fetchState.metadata as Record<string, unknown>) }
+      : {};
+  nextMetadata.rowsWrittenTotal = runningRowsWritten;
+  fetchState.metadata = nextMetadata;
+
   const completed = !fetchState.hasMore;
 
   if (completed) {
@@ -779,12 +807,12 @@ async function performSyncChunkSql(
 
     logger?.log(
       "info",
-      `✅ ${entity} SQL sync completed (${fetchState.totalProcessed} records)`,
+      `✅ ${entity} SQL sync completed (${runningRowsWritten} written, ${fetchState.totalProcessed} fetched)`,
     );
   } else {
     logger?.log(
       "info",
-      `📊 ${entity} SQL chunk done (${fetchState.totalProcessed} so far)`,
+      `📊 ${entity} SQL chunk done (${runningRowsWritten} written, ${fetchState.totalProcessed} fetched so far)`,
     );
   }
 
@@ -793,6 +821,8 @@ async function performSyncChunkSql(
     entity,
     collectionName: entityTableName,
     completed,
+    totalFetched: fetchState.totalProcessed,
+    totalWritten: runningRowsWritten,
   };
 }
 

@@ -24,6 +24,7 @@ import { cdcBackfillService } from "../sync-cdc/backfill";
 import { getCdcFlowStats } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
 import { cdcLiveTableName } from "../sync-cdc/normalization";
+import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { connectorRegistry } from "../connectors/registry";
 
 const logger = loggers.inngest("flow");
@@ -73,12 +74,16 @@ function buildDestinationCountQuery(params: {
   destinationType?: string;
   schema: string;
   tableName: string;
+  projectId?: string;
 }): string | null {
   const type = (params.destinationType || "").toLowerCase();
   if (type === "bigquery") {
-    return `SELECT COUNT(*) AS total_count FROM \`${params.schema}.${params.tableName}\``;
+    const tableRef = params.projectId
+      ? `${params.projectId}.${params.schema}.${params.tableName}`
+      : `${params.schema}.${params.tableName}`;
+    return `SELECT COUNT(*) AS total_count FROM \`${tableRef}\``;
   }
-  if (type === "postgresql") {
+  if (type.includes("postgres")) {
     return `SELECT COUNT(*)::bigint AS total_count FROM ${escapePostgresIdentifier(params.schema)}.${escapePostgresIdentifier(params.tableName)}`;
   }
   return null;
@@ -128,6 +133,7 @@ async function getDestinationEntityRowCount(params: {
     params.destinationType || "",
     params.schema,
     params.baseTablePrefix || "",
+    String((params.destination as any)?.connection?.project_id || ""),
   ].join(":");
   const cached = destinationCountCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
@@ -143,6 +149,7 @@ async function getDestinationEntityRowCount(params: {
     destinationType: params.destinationType,
     schema: params.schema,
     tableName,
+    projectId: (params.destination as any)?.connection?.project_id,
   });
   if (!query) {
     destinationCountCache.set(cacheKey, {
@@ -1658,6 +1665,24 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     if (!flow) {
       throw new Error("Flow not found");
     }
+    const { entities: configuredEntities } = resolveConfiguredEntities(
+      flow as any,
+    );
+    const stateByEntity = new Map(
+      states
+        .filter(
+          state => typeof state.entity === "string" && state.entity.length > 0,
+        )
+        .map(state => [state.entity, state] as const),
+    );
+    const uniqueEntities = Array.from(
+      new Set([
+        ...configuredEntities,
+        ...states
+          .map(state => (typeof state.entity === "string" ? state.entity : ""))
+          .filter(Boolean),
+      ]),
+    );
 
     let destinationByEntity = new Map<string, number | null>();
     if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
@@ -1666,9 +1691,6 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       ).lean();
 
       if (destination) {
-        const uniqueEntities = Array.from(
-          new Set(states.map(state => state.entity).filter(Boolean)),
-        );
         const counts = await Promise.all(
           uniqueEntities.map(async entity => {
             const value = await getDestinationEntityRowCount({
@@ -1687,28 +1709,29 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       }
     }
 
-    const entities = states.map(state => {
-      const lastMaterializedAt = state.lastMaterializedAt
+    const entities = uniqueEntities.map(entity => {
+      const state = stateByEntity.get(entity);
+      const lastMaterializedAt = state?.lastMaterializedAt
         ? new Date(state.lastMaterializedAt)
         : null;
       const lifetimeEventsProcessed =
-        typeof (state as any).lifetimeEventsProcessed === "number"
+        typeof (state as any)?.lifetimeEventsProcessed === "number"
           ? (state as any).lifetimeEventsProcessed
-          : state.lastMaterializedSeq || 0;
+          : state?.lastMaterializedSeq || 0;
       const lifetimeRowsApplied =
-        typeof (state as any).lifetimeRowsApplied === "number"
+        typeof (state as any)?.lifetimeRowsApplied === "number"
           ? (state as any).lifetimeRowsApplied
-          : state.lastMaterializedSeq || 0;
+          : state?.lastMaterializedSeq || 0;
       return {
-        entity: state.entity,
-        lastIngestSeq: state.lastIngestSeq || 0,
-        lastMaterializedSeq: state.lastMaterializedSeq || 0,
-        backlogCount: state.backlogCount || 0,
+        entity,
+        lastIngestSeq: state?.lastIngestSeq || 0,
+        lastMaterializedSeq: state?.lastMaterializedSeq || 0,
+        backlogCount: state?.backlogCount || 0,
         lagSeconds: toLagSeconds(lastMaterializedAt),
         lastMaterializedAt,
         destinationRowCount:
-          destinationByEntity.get(state.entity) ??
-          (state as any).destinationRowCount ??
+          destinationByEntity.get(entity) ??
+          (state as any)?.destinationRowCount ??
           null,
         lifetimeEventsProcessed,
         lifetimeRowsApplied,

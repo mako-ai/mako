@@ -9,6 +9,7 @@ export interface CdcEntityLayout {
   keyColumns: string[];
   deleteMode?: "hard" | "soft";
   partitioning?: {
+    type?: "time" | "ingestion";
     field: string;
     granularity?: "day" | "hour" | "month" | "year";
     requirePartitionFilter?: boolean;

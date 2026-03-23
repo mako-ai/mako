@@ -168,6 +168,10 @@ function readMetadataValue(
 function formatLog(log: LogEntry): string {
   const m = log.metadata;
   const entity = typeof m?.entity === "string" ? m.entity : undefined;
+  const totalWritten =
+    typeof m?.totalWritten === "number" ? m.totalWritten : undefined;
+  const totalFetched =
+    typeof m?.totalFetched === "number" ? m.totalFetched : undefined;
   const rows =
     typeof m?.totalProcessed === "number"
       ? m.totalProcessed
@@ -182,7 +186,11 @@ function formatLog(log: LogEntry): string {
     parts.push(`[${entityLabel(entity)}]`);
   }
   parts.push(log.message);
-  if (rows !== undefined) {
+  if (totalWritten !== undefined && totalFetched !== undefined) {
+    parts.push(
+      `(${totalWritten.toLocaleString()} written / ${totalFetched.toLocaleString()} fetched)`,
+    );
+  } else if (rows !== undefined) {
     parts.push(`(${rows.toLocaleString()} rows)`);
   } else if (fetchedCount !== undefined) {
     parts.push(`(${fetchedCount.toLocaleString()} fetched)`);
@@ -313,8 +321,12 @@ export function BackfillPanel({
       const est = details.stats.entityStatus as
         | Record<string, string>
         | undefined;
-      if (es) setExecStats(es);
-      if (est) setExecStatus(est);
+      if (es) {
+        setExecStats(prev => ({ ...prev, ...es }));
+      }
+      if (est) {
+        setExecStatus(prev => ({ ...prev, ...est }));
+      }
     }
     if (details?.status && details.status !== "running") {
       setExecutionId(null);
@@ -365,8 +377,25 @@ export function BackfillPanel({
       const ok = await startCdcBackfill(workspaceId, flowId, entities);
       if (!ok) throw new Error("Failed to start backfill");
       setLogs([]);
-      setExecStats({});
-      setExecStatus({});
+      if (entities?.length) {
+        setExecStats(prev => {
+          const next = { ...prev };
+          for (const entity of entities) {
+            next[entity] = 0;
+          }
+          return next;
+        });
+        setExecStatus(prev => {
+          const next = { ...prev };
+          for (const entity of entities) {
+            next[entity] = "pending";
+          }
+          return next;
+        });
+      } else {
+        setExecStats({});
+        setExecStatus({});
+      }
       setTimeout(() => pollLogs(), 3000);
     });
 
@@ -779,7 +808,7 @@ export function BackfillPanel({
           }}
         />
         <Tab
-          label={executionId ? "Logs •" : "Logs"}
+          label="Logs"
           sx={{
             minHeight: 36,
             py: 0.5,
@@ -852,6 +881,7 @@ export function BackfillPanel({
                         e.destinationRowCount || 0,
                         0,
                       );
+                      const syncingRowsWritten = Math.max(e.execRows || 0, 0);
                       const eventCount = Math.max(
                         e.lifetimeEventsProcessed || 0,
                         e.lastMaterializedSeq || 0,
@@ -884,17 +914,37 @@ export function BackfillPanel({
                             />
                           </TableCell>
                           <TableCell>
-                            <Chip
-                              label={backfillChip.label}
-                              color={backfillChip.color}
-                              size="small"
-                              variant="outlined"
+                            <Box
                               sx={{
-                                height: 22,
-                                fontSize: "0.68rem",
-                                fontWeight: 500,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 0.75,
                               }}
-                            />
+                            >
+                              <Chip
+                                label={backfillChip.label}
+                                color={backfillChip.color}
+                                size="small"
+                                variant="outlined"
+                                sx={{
+                                  height: 22,
+                                  fontSize: "0.68rem",
+                                  fontWeight: 500,
+                                }}
+                              />
+                              {e.execStatus === "syncing" && (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{
+                                    fontSize: "0.68rem",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {syncingRowsWritten.toLocaleString()} written
+                                </Typography>
+                              )}
+                            </Box>
                           </TableCell>
                           <TableCell align="right">
                             <Typography
@@ -1142,7 +1192,9 @@ export function BackfillPanel({
                                   ? "success"
                                   : evt.applyStatus === "failed"
                                     ? "error"
-                                    : "default"
+                                    : evt.applyStatus === "dropped"
+                                      ? "warning"
+                                      : "default"
                               }
                               sx={{
                                 height: 22,
