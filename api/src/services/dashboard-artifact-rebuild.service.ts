@@ -14,6 +14,7 @@ import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";
 import { generateSnapshotsForDataSource } from "./dashboard-snapshot.service";
 import {
   appendMaterializationRunEvent,
+  claimMaterializationRun,
   createMaterializationRun,
   finalizeMaterializationRun,
   trimMaterializationRuns,
@@ -89,6 +90,7 @@ export interface RebuildDashboardArtifactsInput {
   dashboardId: string;
   workspaceId?: string;
   dataSourceIds?: string[];
+  queuedRunIdsByDataSourceId?: Record<string, string>;
   force?: boolean;
   triggerType?: DashboardMaterializationTriggerType;
   workerId?: string;
@@ -141,8 +143,10 @@ export async function rebuildDashboardArtifacts(
       ds => ds.id === dataSource.id,
     );
     const requestedAt = new Date();
-    const currentRun: MaterializationRunRecord = {
-      runId: crypto.randomUUID(),
+    let currentRun: MaterializationRunRecord = {
+      runId:
+        input.queuedRunIdsByDataSourceId?.[dataSource.id] ||
+        crypto.randomUUID(),
       workspaceId,
       dashboardId: dashboard._id.toString(),
       dataSourceId: dataSource.id,
@@ -160,24 +164,46 @@ export async function rebuildDashboardArtifacts(
     };
 
     try {
-      const requestedEvent = pushRunEvent(currentRun, {
-        type: "materialization_requested",
-        message: "Materialization requested",
-      });
-      await createMaterializationRun({
-        workspaceId,
-        dashboardId: dashboard._id.toString(),
-        dataSourceId: dataSource.id,
-        runId: currentRun.runId,
-        triggerType: currentRun.triggerType,
-        status: currentRun.status,
-        requestedAt,
-        startedAt: currentRun.startedAt,
-        workerId: input.workerId,
-        artifactKey,
-        version,
-        events: [requestedEvent],
-      });
+      const claimedRun = input.queuedRunIdsByDataSourceId?.[dataSource.id]
+        ? await claimMaterializationRun({
+            runId: currentRun.runId,
+            workerId: input.workerId,
+            artifactKey,
+            version,
+            stage: "started",
+          })
+        : null;
+
+      if (claimedRun) {
+        currentRun = {
+          ...currentRun,
+          ...claimedRun,
+          artifactKey,
+          version,
+          workerId: input.workerId,
+          stage: "started",
+          status: "building",
+        };
+      } else {
+        const requestedEvent = pushRunEvent(currentRun, {
+          type: "materialization_requested",
+          message: "Materialization requested",
+        });
+        await createMaterializationRun({
+          workspaceId,
+          dashboardId: dashboard._id.toString(),
+          dataSourceId: dataSource.id,
+          runId: currentRun.runId,
+          triggerType: currentRun.triggerType,
+          status: currentRun.status,
+          requestedAt,
+          startedAt: currentRun.startedAt,
+          workerId: input.workerId,
+          artifactKey,
+          version,
+          events: [requestedEvent],
+        });
+      }
 
       const result = await withArtifactBuildLock(artifactKey, async () => {
         const cachedReady =

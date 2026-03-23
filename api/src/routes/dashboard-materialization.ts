@@ -5,7 +5,6 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
-import { Dashboard } from "../database/workspace-schema";
 import {
   buildDashboardMaterializationStatus,
   getDashboardForMaterialization,
@@ -98,31 +97,6 @@ async function getScopedDashboardOrResponse(c: AuthenticatedContext) {
   return dashboard;
 }
 
-async function markDashboardDataSourcesBuilding(options: {
-  dashboardId: string;
-  dashboard: Awaited<ReturnType<typeof getDashboardForMaterialization>>;
-  dataSourceIds?: string[];
-}) {
-  if (!options.dashboard) return;
-  const targetedIds =
-    options.dataSourceIds && options.dataSourceIds.length > 0
-      ? new Set(options.dataSourceIds)
-      : null;
-  const updates: Record<string, unknown> = {};
-  options.dashboard.dataSources.forEach((dataSource, index) => {
-    if (targetedIds && !targetedIds.has(dataSource.id)) {
-      return;
-    }
-    updates[`dataSources.${index}.cache.parquetBuildStatus`] = "building";
-    updates[`dataSources.${index}.cache.parquetLastError`] = null;
-  });
-  if (Object.keys(updates).length > 0) {
-    await Dashboard.findByIdAndUpdate(options.dashboardId, {
-      $set: updates,
-    }).catch(() => undefined);
-  }
-}
-
 app.get("/materialization", async (c: AuthenticatedContext) => {
   try {
     const dashboard = await getScopedDashboardOrResponse(c);
@@ -162,12 +136,7 @@ app.post("/materialize", async (c: AuthenticatedContext) => {
       ? body.dataSourceIds.filter((value: unknown) => typeof value === "string")
       : undefined;
 
-    await markDashboardDataSourcesBuilding({
-      dashboardId: dashboard._id.toString(),
-      dashboard,
-      dataSourceIds,
-    });
-    await queueDashboardArtifactRefresh({
+    const queueResult = await queueDashboardArtifactRefresh({
       dashboardId: dashboard._id.toString(),
       workspaceId: dashboard.workspaceId.toString(),
       dataSourceIds,
@@ -176,8 +145,10 @@ app.post("/materialize", async (c: AuthenticatedContext) => {
     });
     return c.json({
       success: true,
-      queued: true,
-      dataSourceIds: dataSourceIds || dashboard.dataSources.map(ds => ds.id),
+      queued: queueResult.queued,
+      alreadyRunning: !queueResult.queued,
+      dataSourceIds: queueResult.dataSourceIds,
+      activeRunIds: queueResult.activeRunIds || [],
     });
   } catch (error) {
     logger.error("Failed to materialize dashboard", { error });
@@ -247,19 +218,20 @@ app.post(
       const body = await c.req.json().catch(() => ({}));
       const force = body?.force === true;
 
-      await markDashboardDataSourcesBuilding({
-        dashboardId: dashboard._id.toString(),
-        dashboard,
-        dataSourceIds: [dataSourceId],
-      });
-      await queueDashboardArtifactRefresh({
+      const queueResult = await queueDashboardArtifactRefresh({
         dashboardId: dashboard._id.toString(),
         workspaceId: dashboard.workspaceId.toString(),
         dataSourceIds: [dataSourceId],
         force,
         triggerType: "manual",
       });
-      return c.json({ success: true, queued: true, dataSourceId });
+      return c.json({
+        success: true,
+        queued: queueResult.queued,
+        alreadyRunning: !queueResult.queued,
+        dataSourceId,
+        activeRunIds: queueResult.activeRunIds || [],
+      });
     } catch (error) {
       logger.error("Failed to materialize dashboard data source", { error });
       return c.json(

@@ -107,6 +107,36 @@ export async function createMaterializationRun(input: {
   });
 }
 
+export async function claimMaterializationRun(input: {
+  runId: string;
+  workerId?: string;
+  artifactKey?: string;
+  version?: string;
+  stage?: string;
+}): Promise<MaterializationRunRecord | null> {
+  const now = new Date();
+  const run = await MaterializationRun.findOneAndUpdate(
+    {
+      runId: input.runId,
+      status: "queued",
+    },
+    {
+      $set: {
+        status: "building",
+        startedAt: now,
+        lastHeartbeat: now,
+        workerId: input.workerId,
+        artifactKey: input.artifactKey,
+        version: input.version,
+        stage: input.stage || "started",
+      },
+    },
+    { new: true },
+  );
+
+  return run ? toMaterializationRunRecord(run) : null;
+}
+
 export async function appendMaterializationRunEvent(input: {
   runId: string;
   event: MaterializationRunEventRecord;
@@ -201,6 +231,25 @@ export async function markStaleRunsAbandoned(options: {
   );
 
   return result.modifiedCount;
+}
+
+export async function listActiveMaterializationRuns(input: {
+  workspaceId: string;
+  dashboardId: string;
+  dataSourceIds?: string[];
+}): Promise<MaterializationRunRecord[]> {
+  const query: Record<string, unknown> = {
+    workspaceId: new Types.ObjectId(input.workspaceId),
+    dashboardId: new Types.ObjectId(input.dashboardId),
+    status: { $in: ["queued", "building"] },
+  };
+
+  if (input.dataSourceIds?.length) {
+    query.dataSourceId = { $in: input.dataSourceIds };
+  }
+
+  const runs = await MaterializationRun.find(query).sort({ requestedAt: -1 });
+  return runs.map(toMaterializationRunRecord);
 }
 
 export async function trimMaterializationRuns(input: {

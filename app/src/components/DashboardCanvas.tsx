@@ -122,6 +122,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const historyEntry = useDashboardStore(state =>
     dashboardId ? state.historyMap[dashboardId] : undefined,
   );
+  const isMaterializationBuilding = (dashboard?.dataSources || []).some(
+    dataSource => dataSource.cache?.parquetBuildStatus === "building",
+  );
   const historyIndex = historyEntry?.index ?? -1;
   const historyLength = historyEntry?.stack.length ?? 0;
   const runtimeSession = useDashboardRuntimeStore(state =>
@@ -692,8 +695,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             label="Reload data"
             size="small"
             variant="outlined"
-            onClick={handleReloadData}
-            sx={{ cursor: "pointer" }}
+            onClick={isMaterializationBuilding ? undefined : handleReloadData}
+            sx={{ cursor: isMaterializationBuilding ? "default" : "pointer" }}
+            disabled={isMaterializationBuilding}
           />
         </Tooltip>
 
