@@ -64,6 +64,33 @@ export const DashboardDataSourceSchema = z.object({
         .optional(),
       parquetLastError: z.string().optional(),
       parquetUrl: z.string().optional(),
+      materializationRuns: z
+        .array(
+          z.object({
+            runId: z.string(),
+            status: z.enum(["building", "ready", "error"]),
+            requestedAt: z.string(),
+            startedAt: z.string().optional(),
+            finishedAt: z.string().optional(),
+            version: z.string().optional(),
+            artifactKey: z.string().optional(),
+            storageBackend: z.enum(["filesystem", "gcs", "s3"]).optional(),
+            rowCount: z.number().optional(),
+            byteSize: z.number().optional(),
+            error: z.string().optional(),
+            events: z
+              .array(
+                z.object({
+                  type: z.string(),
+                  timestamp: z.string(),
+                  message: z.string(),
+                  metadata: z.record(z.string(), z.unknown()).optional(),
+                }),
+              )
+              .optional(),
+          }),
+        )
+        .optional(),
     })
     .optional(),
   computedColumns: z
@@ -205,16 +232,12 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
  * (per-breakpoint). Returns a widget guaranteed to have `layouts.lg`.
  * Handles missing, partial, and corrupted data gracefully.
  */
-export function normalizeWidgetLayouts<
-  T extends Record<string, unknown>,
->(widget: T): T & { layouts: DashboardWidget["layouts"] } {
+export function normalizeWidgetLayouts<T extends Record<string, unknown>>(
+  widget: T,
+): T & { layouts: DashboardWidget["layouts"] } {
   const w = widget as Record<string, unknown>;
 
-  if (
-    w.layouts &&
-    typeof w.layouts === "object" &&
-    !Array.isArray(w.layouts)
-  ) {
+  if (w.layouts && typeof w.layouts === "object" && !Array.isArray(w.layouts)) {
     const raw = w.layouts as Record<string, unknown>;
     if (raw.lg && typeof raw.lg === "object") {
       const result: DashboardWidget["layouts"] = {

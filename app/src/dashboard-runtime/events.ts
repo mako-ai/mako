@@ -1,13 +1,21 @@
-import type { DashboardRuntimeColumn, DashboardRuntimeEvent } from "./types";
+import type {
+  DashboardDataSourceRuntimeState,
+  DashboardRuntimeColumn,
+  DashboardRuntimeEvent,
+} from "./types";
 
 export const dashboardRuntimeEvents = {
   activateSession: (
     dashboardId: string,
     sessionId: string,
+    runtimeContext: "builder" | "viewer",
+    persistent: boolean,
   ): DashboardRuntimeEvent => ({
     type: "session/activated",
     dashboardId,
     sessionId,
+    runtimeContext,
+    persistent,
   }),
 
   disposeSession: (dashboardId: string): DashboardRuntimeEvent => ({
@@ -28,9 +36,40 @@ export const dashboardRuntimeEvents = {
     version,
   }),
 
+  appendLog: (
+    dashboardId: string,
+    level: "info" | "warn" | "error",
+    message: string,
+    metadata?: Record<string, unknown>,
+  ): DashboardRuntimeEvent => ({
+    type: "dashboard/log-appended",
+    dashboardId,
+    level,
+    message,
+    metadata,
+  }),
+
   bumpQueryGeneration: (dashboardId: string): DashboardRuntimeEvent => ({
     type: "dashboard/query-generation-bumped",
     dashboardId,
+  }),
+
+  setMaterializationPolling: (
+    dashboardId: string,
+    polling: boolean,
+  ): DashboardRuntimeEvent => ({
+    type: "dashboard/materialization-polling-set",
+    dashboardId,
+    polling,
+  }),
+
+  setFreshDataAvailable: (
+    dashboardId: string,
+    value: boolean,
+  ): DashboardRuntimeEvent => ({
+    type: "dashboard/fresh-data-available-set",
+    dashboardId,
+    value,
   }),
 
   resetDashboard: (dashboardId: string): DashboardRuntimeEvent => ({
@@ -85,6 +124,7 @@ export const dashboardRuntimeEvents = {
     rowsLoaded: number,
     error: string,
     preserveExistingData = false,
+    loadDurationMs?: number,
   ): DashboardRuntimeEvent => ({
     type: "datasource/load-failed",
     dashboardId,
@@ -92,6 +132,30 @@ export const dashboardRuntimeEvents = {
     rowsLoaded,
     error,
     preserveExistingData,
+    loadDurationMs,
+  }),
+
+  updateDatasourceDiagnostics: (
+    dashboardId: string,
+    dataSourceId: string,
+    diagnostics: Partial<
+      Pick<
+        DashboardDataSourceRuntimeState,
+        | "loadPath"
+        | "resolvedMode"
+        | "artifactUrl"
+        | "loadDurationMs"
+        | "materializationStatus"
+        | "materializationVersion"
+        | "materializedAt"
+        | "storageBackend"
+      >
+    >,
+  ): DashboardRuntimeEvent => ({
+    type: "datasource/diagnostics-updated",
+    dashboardId,
+    dataSourceId,
+    diagnostics,
   }),
 
   datasourceRemoved: (

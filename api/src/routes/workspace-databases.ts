@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { authMiddleware } from "../auth/auth.middleware";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   requireWorkspace,
   requireWorkspaceRole,
@@ -24,7 +24,7 @@ import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 import { writeParquetTempFile } from "../utils/parquet-serializer";
 import { rebuildDashboardArtifacts } from "../services/dashboard-artifact-rebuild.service";
-import { resolveArtifactUrl } from "../services/dashboard-cache.service";
+import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
 import { promises as fsPromises } from "fs";
 
 const logger = loggers.db();
@@ -160,7 +160,7 @@ async function createAdHocParquetResponse(options: {
 
   try {
     const fileBuffer = await fsPromises.readFile(parquetFile.filePath);
-    return new Response(fileBuffer, {
+    return new Response(new Uint8Array(fileBuffer), {
       headers: {
         "Content-Type": "application/vnd.apache.parquet",
         "Content-Disposition": `attachment; filename="${options.filename}.parquet"`,
@@ -219,7 +219,7 @@ function maskPasswordInConnectionString(connectionString: string): string {
 // Create demo database for workspace (onboarding)
 workspaceDatabaseRoutes.post(
   "/demo",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -297,7 +297,7 @@ workspaceDatabaseRoutes.post(
 // Get all databases for workspace
 workspaceDatabaseRoutes.get(
   "/",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -372,7 +372,7 @@ workspaceDatabaseRoutes.get(
 // Get specific database
 workspaceDatabaseRoutes.get(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -428,7 +428,7 @@ workspaceDatabaseRoutes.get(
 // This allows testing a connection before creating the database
 workspaceDatabaseRoutes.post(
   "/test-connection",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -480,7 +480,7 @@ workspaceDatabaseRoutes.post(
 // Create new database
 workspaceDatabaseRoutes.post(
   "/",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -577,7 +577,7 @@ workspaceDatabaseRoutes.post(
 // Update database
 workspaceDatabaseRoutes.put(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin", "member"]),
   async (c: AuthenticatedContext) => {
@@ -660,7 +660,7 @@ workspaceDatabaseRoutes.put(
 // Delete database
 workspaceDatabaseRoutes.delete(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -724,7 +724,7 @@ workspaceDatabaseRoutes.delete(
 // Test database connection
 workspaceDatabaseRoutes.post(
   "/:id/test",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -772,7 +772,7 @@ workspaceDatabaseRoutes.post(
 // Execute query on database
 workspaceDatabaseRoutes.post(
   "/:id/execute",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -821,7 +821,7 @@ workspaceDatabaseRoutes.post(
 // Get collections for MongoDB database
 workspaceDatabaseRoutes.get(
   "/:id/collections",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -902,7 +902,7 @@ workspaceDatabaseRoutes.get(
 // Get collection info for MongoDB
 workspaceDatabaseRoutes.get(
   "/:id/collections/:name",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -991,7 +991,7 @@ workspaceDatabaseRoutes.get(
 // Get views for MongoDB database
 workspaceDatabaseRoutes.get(
   "/:id/views",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -1058,7 +1058,7 @@ export const workspaceExecuteRoutes = new Hono();
 // POST /api/workspaces/:workspaceId/execute - Execute query with explicit connection/database params
 workspaceExecuteRoutes.post(
   "/",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     const startTime = Date.now();
@@ -1296,7 +1296,7 @@ workspaceExecuteRoutes.post(
 
 workspaceExecuteRoutes.post(
   "/export",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -1447,8 +1447,12 @@ workspaceExecuteRoutes.post(
           }
 
           return c.redirect(
-            await resolveArtifactUrl(artifact.artifactKey),
-            302,
+            buildDashboardMaterializationArtifactPath({
+              workspaceId: workspace._id.toString(),
+              dashboardId,
+              dataSourceId,
+            }),
+            303,
           );
         }
 
@@ -1524,7 +1528,7 @@ workspaceExecuteRoutes.post(
 // POST /api/workspaces/:workspaceId/execute/cancel - Cancel a running query
 workspaceExecuteRoutes.post(
   "/cancel",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {

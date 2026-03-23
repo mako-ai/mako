@@ -39,6 +39,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useTheme } from "../contexts/ThemeContext";
 import {
   activateDashboardSession,
+  applyFreshMaterializationCommand,
   getDashboardMosaicInstance,
   refreshDashboardCommand,
   reloadDashboardDataSourcesCommand,
@@ -191,7 +192,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const isDashboardLoaded = !!dashboard;
   useEffect(() => {
     if (!isDashboardLoaded || !workspaceId || !dashboardId) return;
-    void activateDashboardSession(workspaceId, dashboardId);
+    void activateDashboardSession(workspaceId, dashboardId, "viewer");
   }, [isDashboardLoaded, workspaceId, dashboardId]);
 
   useEffect(() => {
@@ -787,6 +788,54 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               : "Data source failed."}{" "}
             {errorSummary.message}
           </Typography>
+        </Box>
+      )}
+      {runtimeSession?.materializationPolling && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            backgroundColor: "warning.light",
+            color: "warning.contrastText",
+          }}
+        >
+          <Typography variant="caption" sx={{ display: "block" }}>
+            Refreshing data sources in the background. The dashboard is using
+            the previous materialized snapshot until fresh data is ready.
+          </Typography>
+        </Box>
+      )}
+      {runtimeSession?.freshDataAvailable && workspaceId && dashboardId && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            backgroundColor: "success.light",
+            color: "success.contrastText",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+          }}
+        >
+          <Typography variant="caption" sx={{ display: "block" }}>
+            Fresh materialized data is available.
+          </Typography>
+          <Chip
+            size="small"
+            label="Update now"
+            onClick={() =>
+              void applyFreshMaterializationCommand({
+                workspaceId,
+                dashboardId,
+              })
+            }
+            sx={{ cursor: "pointer", backgroundColor: "background.paper" }}
+          />
         </Box>
       )}
       {showEventLog && recentEventLog.length > 0 && (

@@ -305,13 +305,18 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         const baseSpec = stabilizeColorDomain(withSelection, data);
 
+        // Shallow-clone each row so Vega can attach its internal
+        // Symbol(vega_id) property.  Data arriving from Zustand/Immer
+        // stores is frozen and would throw "object is not extensible".
+        const clonedData = data.map(d => ({ ...d }));
+
         const fullSpec: any = {
           ...baseSpec,
           $schema: "https://vega.github.io/schema/vega-lite/v6.json",
           width: "container",
           height: "container",
           autosize: { type: "fit", contains: "padding" },
-          data: { values: data },
+          data: { values: clonedData },
         };
 
         if (viewRef.current) {

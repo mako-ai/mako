@@ -26,6 +26,9 @@ import {
   Search,
   X,
   Pencil,
+  CheckCircle2,
+  XCircle,
+  LoaderCircle,
 } from "lucide-react";
 import { useDashboardStore } from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
@@ -63,6 +66,31 @@ const STATUS_CHIP_PROPS: Record<
   ready: { label: "Ready", color: "success" },
   error: { label: "Error", color: "error" },
 };
+
+function formatRelativeTime(value?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.round(diffMs / 60000);
+  if (diffMinutes < 1) return "just now";
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+}
+
+function formatBytes(value?: number): string | null {
+  if (!value || value <= 0) return null;
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (value >= 1024) {
+    return `${Math.round(value / 1024)} KB`;
+  }
+  return `${value} B`;
+}
 
 const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   open,
@@ -526,14 +554,64 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
         ) : (
           <List dense disablePadding>
             {dataSources.map(ds => {
-              const status = runtimeSession?.dataSources[ds.id]?.status;
+              const runtimeDataSource = runtimeSession?.dataSources[ds.id];
+              const status = runtimeDataSource?.status;
               const loadedRows =
-                runtimeSession?.dataSources[ds.id]?.rowsLoaded ||
-                runtimeSession?.dataSources[ds.id]?.rowCount ||
+                runtimeDataSource?.rowsLoaded ||
+                runtimeDataSource?.rowCount ||
                 ds.cache?.rowCount ||
                 0;
-              const errorMessage = runtimeSession?.dataSources[ds.id]?.error;
+              const errorMessage = runtimeDataSource?.error;
               const chipProps = status ? STATUS_CHIP_PROPS[status] : null;
+              const materializationStatus =
+                ds.cache?.parquetBuildStatus || "missing";
+              const materializedAt = formatRelativeTime(
+                ds.cache?.parquetBuiltAt,
+              );
+              const sizeLabel = formatBytes(ds.cache?.byteSize);
+              const diagnostics = [
+                runtimeDataSource?.resolvedMode
+                  ? `mode: ${runtimeDataSource.resolvedMode}`
+                  : null,
+                runtimeDataSource?.loadPath
+                  ? `path: ${runtimeDataSource.loadPath}`
+                  : null,
+                runtimeDataSource?.loadDurationMs
+                  ? `load: ${Math.round(runtimeDataSource.loadDurationMs)} ms`
+                  : null,
+                runtimeDataSource?.storageBackend
+                  ? `store: ${runtimeDataSource.storageBackend}`
+                  : null,
+              ].filter(Boolean);
+              const materializationChip =
+                materializationStatus === "ready" ? (
+                  <Chip
+                    icon={<CheckCircle2 size={14} />}
+                    label="Materialized"
+                    color="success"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                ) : materializationStatus === "building" ? (
+                  <Chip
+                    icon={<LoaderCircle size={14} />}
+                    label="Materializing..."
+                    color="warning"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                ) : (
+                  <Chip
+                    icon={<XCircle size={14} />}
+                    label="Not materialized"
+                    color="error"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                );
 
               return (
                 <ListItem
@@ -551,22 +629,18 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                       fontFamily: "monospace",
                     }}
                     secondary={
-                      status === "loading" ? (
-                        <Box sx={{ mt: 0.25 }}>
+                      <Box sx={{ mt: 0.25 }}>
+                        {status === "loading" ? (
                           <Typography variant="caption" color="text.secondary">
                             {loadedRows > 0
                               ? `${loadedRows.toLocaleString()} rows loaded...`
                               : "Starting stream..."}
                           </Typography>
-                        </Box>
-                      ) : status === "ready" && loadedRows > 0 ? (
-                        <Box sx={{ mt: 0.25 }}>
+                        ) : status === "ready" && loadedRows > 0 ? (
                           <Typography variant="caption" color="text.secondary">
                             {loadedRows.toLocaleString()} rows loaded
                           </Typography>
-                        </Box>
-                      ) : status === "error" ? (
-                        <Box sx={{ mt: 0.25 }}>
+                        ) : status === "error" ? (
                           <Typography
                             variant="caption"
                             color="error.main"
@@ -574,14 +648,52 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                           >
                             {errorMessage || "Failed to load data source"}
                           </Typography>
-                        </Box>
-                      ) : undefined
+                        ) : null}
+                        <Typography
+                          variant="caption"
+                          color={
+                            materializationStatus === "ready"
+                              ? "success.main"
+                              : materializationStatus === "building"
+                                ? "warning.main"
+                                : "text.secondary"
+                          }
+                          sx={{ display: "block", mt: 0.25 }}
+                        >
+                          {materializationStatus === "ready"
+                            ? "Materialized"
+                            : materializationStatus === "building"
+                              ? "Materializing..."
+                              : "Not materialized"}
+                          {materializedAt
+                            ? ` · Last materialized ${materializedAt}`
+                            : ""}
+                          {ds.cache?.rowCount
+                            ? ` · ${ds.cache.rowCount.toLocaleString()} rows`
+                            : ""}
+                          {sizeLabel ? ` · ${sizeLabel}` : ""}
+                        </Typography>
+                        {diagnostics.length > 0 && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{
+                              display: "block",
+                              mt: 0.25,
+                              fontFamily: "monospace",
+                            }}
+                          >
+                            {diagnostics.join(" · ")}
+                          </Typography>
+                        )}
+                      </Box>
                     }
                     secondaryTypographyProps={{ component: "div" }}
                   />
                   <ListItemSecondaryAction
                     sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
                   >
+                    {materializationChip}
                     {chipProps && (
                       <Chip
                         label={chipProps.label}

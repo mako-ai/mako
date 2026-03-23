@@ -1884,6 +1884,25 @@ export interface IDashboardDataSource {
     parquetBuildStatus?: "missing" | "building" | "ready" | "error";
     parquetLastError?: string;
     parquetUrl?: string;
+    materializationRuns?: Array<{
+      runId: string;
+      status: "building" | "ready" | "error";
+      requestedAt: Date;
+      startedAt?: Date;
+      finishedAt?: Date;
+      version?: string;
+      artifactKey?: string;
+      storageBackend?: "filesystem" | "gcs" | "s3";
+      rowCount?: number;
+      byteSize?: number;
+      error?: string;
+      events?: Array<{
+        type: string;
+        timestamp: Date;
+        message: string;
+        metadata?: Record<string, unknown>;
+      }>;
+    }>;
   };
 }
 
@@ -1979,6 +1998,36 @@ const DashboardSchema = new Schema<IDashboard>(
             enum: ["missing", "building", "ready", "error"],
           },
           parquetLastError: { type: String },
+          materializationRuns: [
+            {
+              runId: { type: String, required: true },
+              status: {
+                type: String,
+                enum: ["building", "ready", "error"],
+                required: true,
+              },
+              requestedAt: { type: Date, required: true },
+              startedAt: { type: Date },
+              finishedAt: { type: Date },
+              version: { type: String },
+              artifactKey: { type: String },
+              storageBackend: {
+                type: String,
+                enum: ["filesystem", "gcs", "s3"],
+              },
+              rowCount: { type: Number },
+              byteSize: { type: Number },
+              error: { type: String },
+              events: [
+                {
+                  type: { type: String, required: true },
+                  timestamp: { type: Date, required: true },
+                  message: { type: String, required: true },
+                  metadata: { type: Schema.Types.Mixed },
+                },
+              ],
+            },
+          ],
         },
       },
     ],

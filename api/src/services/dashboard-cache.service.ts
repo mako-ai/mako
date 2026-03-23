@@ -27,6 +27,14 @@ export function buildDashboardArtifactKey(input: {
   return `${prefix}/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/dataSources/${input.dataSourceId}/${input.version}.parquet`;
 }
 
+export function buildDashboardMaterializationArtifactPath(input: {
+  workspaceId: string;
+  dashboardId: string;
+  dataSourceId: string;
+}): string {
+  return `/api/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/data-sources/${input.dataSourceId}/materialization/artifact`;
+}
+
 export function buildSnapshotArtifactKey(input: {
   workspaceId: string;
   dashboardId: string;
@@ -88,8 +96,10 @@ export async function withArtifactBuildLock<T>(
 }
 
 export async function hydrateDashboardArtifactUrls<
-  T extends Pick<IDashboard, "dataSources">,
+  T extends Pick<IDashboard, "dataSources" | "workspaceId" | "_id">,
 >(dashboard: T): Promise<T> {
+  const workspaceId = dashboard.workspaceId.toString();
+  const dashboardId = dashboard._id.toString();
   const dataSources = await Promise.all(
     dashboard.dataSources.map(async ds => {
       const artifactKey = ds.cache?.parquetArtifactKey;
@@ -101,7 +111,11 @@ export async function hydrateDashboardArtifactUrls<
         ...ds,
         cache: {
           ...ds.cache,
-          parquetUrl: await resolveArtifactUrl(artifactKey),
+          parquetUrl: buildDashboardMaterializationArtifactPath({
+            workspaceId,
+            dashboardId,
+            dataSourceId: String(ds.id),
+          }),
         },
       };
     }),

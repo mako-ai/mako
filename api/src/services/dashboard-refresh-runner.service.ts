@@ -19,6 +19,7 @@ export function getDashboardRefreshRunner(): DashboardRefreshRunner {
 
 export async function queueDashboardArtifactRefresh(input: {
   dashboardId: string;
+  workspaceId?: string;
   dataSourceIds?: string[];
   force?: boolean;
 }): Promise<void> {
@@ -44,6 +45,7 @@ export async function queueDashboardArtifactRefresh(input: {
 
 export async function refreshDashboardArtifactsNow(input: {
   dashboardId: string;
+  workspaceId?: string;
   dataSourceIds?: string[];
   force?: boolean;
 }) {

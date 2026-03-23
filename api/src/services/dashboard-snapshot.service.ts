@@ -1,4 +1,7 @@
 import { DuckDBInstance } from "@duckdb/node-api";
+import { loggers } from "../logging";
+
+const logger = loggers.api("dashboard-snapshot");
 
 export interface DashboardWidgetSnapshot {
   version: string;
@@ -78,8 +81,12 @@ export async function generateSnapshotsForDataSource(options: {
           rows: rowObjects,
           fields: inferFields(rowObjects),
         };
-      } catch {
-        // Ignore snapshot failures per widget; the live path still works.
+      } catch (error) {
+        logger.warn("Dashboard widget snapshot generation failed", {
+          error,
+          widgetId: widget.id,
+          dataSourceId: options.dataSource.id,
+        });
       }
     }
 

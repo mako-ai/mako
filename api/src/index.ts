@@ -36,6 +36,7 @@ import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardArtifactRoutes } from "./routes/dashboard-artifacts";
+import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -110,6 +111,10 @@ app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
+app.route(
+  "/api/workspaces/:workspaceId/dashboards/:dashboardId",
+  dashboardMaterializationRoutes,
+);
 app.route("/api/dashboard-artifacts", dashboardArtifactRoutes);
 app.route("/api/run", executeRoutes);
 app.route("/api/execute", executeRoutes);

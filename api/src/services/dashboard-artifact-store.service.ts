@@ -1,7 +1,8 @@
-import { promises as fsPromises } from "fs";
+import fs, { promises as fsPromises } from "fs";
 import crypto from "crypto";
 import path from "path";
 import { Storage } from "@google-cloud/storage";
+import { loggers } from "../logging";
 
 export type DashboardArtifactStoreType = "filesystem" | "gcs" | "s3";
 
@@ -14,8 +15,12 @@ export interface DashboardArtifactStore {
     metadata?: Record<string, string>,
   ): Promise<void>;
   getUrl(key: string): Promise<string>;
+  getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
+  openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   delete(key: string): Promise<void>;
 }
+
+const logger = loggers.api("dashboard-artifact-store");
 
 function getStoreType(): DashboardArtifactStoreType {
   const raw = process.env.DASHBOARD_ARTIFACT_STORE;
@@ -31,7 +36,15 @@ function ensureSafeKey(key: string): string {
 }
 
 function getFilesystemRoot(): string {
-  return process.env.DASHBOARD_ARTIFACT_DIR || "/data/dashboard-artifacts";
+  if (process.env.DASHBOARD_ARTIFACT_DIR) {
+    return process.env.DASHBOARD_ARTIFACT_DIR;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    return "/data/dashboard-artifacts";
+  }
+
+  return path.resolve(process.cwd(), ".data", "dashboard-artifacts");
 }
 
 class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
@@ -43,10 +56,23 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
 
   async exists(key: string): Promise<boolean> {
     const filePath = this.resolvePath(key);
+    const startedAt = Date.now();
     try {
       const stat = await fsPromises.stat(filePath);
+      logger.debug("Checked filesystem artifact existence", {
+        key,
+        exists: stat.isFile(),
+        durationMs: Date.now() - startedAt,
+        storeType: this.type,
+      });
       return stat.isFile();
     } catch {
+      logger.debug("Filesystem artifact missing", {
+        key,
+        exists: false,
+        durationMs: Date.now() - startedAt,
+        storeType: this.type,
+      });
       return false;
     }
   }
@@ -56,6 +82,7 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
     key: string,
     metadata?: Record<string, string>,
   ): Promise<void> {
+    const startedAt = Date.now();
     const targetPath = this.resolvePath(key);
     await fsPromises.mkdir(path.dirname(targetPath), { recursive: true });
     await fsPromises.copyFile(localPath, targetPath);
@@ -66,10 +93,31 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
         "utf8",
       );
     }
+    const stat = await fsPromises.stat(targetPath);
+    logger.info("Stored dashboard artifact in filesystem", {
+      key,
+      bytes: stat.size,
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
   }
 
   async getUrl(key: string): Promise<string> {
-    return `/api/dashboard-artifacts/${encodeURIComponent(ensureSafeKey(key))}`;
+    const url = `/api/dashboard-artifacts/${encodeURIComponent(ensureSafeKey(key))}`;
+    logger.debug("Resolved filesystem artifact URL", {
+      key,
+      url,
+      storeType: this.type,
+    });
+    return url;
+  }
+
+  async getSignedUrl(): Promise<string | null> {
+    return null;
+  }
+
+  async openReadStream(key: string): Promise<NodeJS.ReadableStream | null> {
+    return fs.createReadStream(this.resolvePath(key));
   }
 
   async delete(key: string): Promise<void> {
@@ -96,7 +144,14 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
   }
 
   async exists(key: string): Promise<boolean> {
+    const startedAt = Date.now();
     const [exists] = await this.file(key).exists();
+    logger.debug("Checked GCS artifact existence", {
+      key,
+      exists,
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
     return exists;
   }
 
@@ -105,6 +160,7 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
     key: string,
     metadata?: Record<string, string>,
   ): Promise<void> {
+    const startedAt = Date.now();
     await this.storage.bucket(this.bucketName).upload(localPath, {
       destination: ensureSafeKey(key),
       metadata: {
@@ -113,15 +169,40 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
       },
       resumable: false,
     });
+    const [metadataResult] = await this.file(key).getMetadata();
+    logger.info("Stored dashboard artifact in GCS", {
+      key,
+      bytes: Number(metadataResult.size || 0),
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
   }
 
   async getUrl(key: string): Promise<string> {
+    const startedAt = Date.now();
     const file = this.file(key);
     const [signedUrl] = await file.getSignedUrl({
       action: "read",
       expires: Date.now() + 1000 * 60 * 60,
     });
+    logger.debug("Resolved GCS artifact URL", {
+      key,
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
     return signedUrl;
+  }
+
+  async getSignedUrl(key: string, ttlSeconds = 3600): Promise<string | null> {
+    const [signedUrl] = await this.file(key).getSignedUrl({
+      action: "read",
+      expires: Date.now() + ttlSeconds * 1000,
+    });
+    return signedUrl;
+  }
+
+  async openReadStream(): Promise<NodeJS.ReadableStream | null> {
+    return null;
   }
 
   async delete(key: string): Promise<void> {
@@ -336,7 +417,14 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
 
   async exists(key: string): Promise<boolean> {
     try {
+      const startedAt = Date.now();
       const response = await this.signedRequest("HEAD", key);
+      logger.debug("Checked S3 artifact existence", {
+        key,
+        exists: response.ok,
+        durationMs: Date.now() - startedAt,
+        storeType: this.type,
+      });
       return response.ok;
     } catch {
       return false;
@@ -348,6 +436,7 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
     key: string,
     metadata?: Record<string, string>,
   ): Promise<void> {
+    const startedAt = Date.now();
     const body = await fsPromises.readFile(localPath);
     const response = await this.signedRequest("PUT", key, {
       body,
@@ -358,15 +447,42 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
         `S3 PUT failed with ${response.status} ${response.statusText}`,
       );
     }
+    logger.info("Stored dashboard artifact in S3", {
+      key,
+      bytes: body.byteLength,
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
     void metadata;
   }
 
   async getUrl(key: string): Promise<string> {
+    const startedAt = Date.now();
     if (this.publicBaseUrl) {
       const base = this.publicBaseUrl.replace(/\/+$/, "");
-      return `${base}/${ensureSafeKey(key)}`;
+      const url = `${base}/${ensureSafeKey(key)}`;
+      logger.debug("Resolved S3 public artifact URL", {
+        key,
+        durationMs: Date.now() - startedAt,
+        storeType: this.type,
+      });
+      return url;
     }
+    const url = await this.createSignedGetUrl(key);
+    logger.debug("Resolved S3 signed artifact URL", {
+      key,
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
+    return url;
+  }
+
+  async getSignedUrl(key: string): Promise<string | null> {
     return await this.createSignedGetUrl(key);
+  }
+
+  async openReadStream(): Promise<NodeJS.ReadableStream | null> {
+    return null;
   }
 
   async delete(key: string): Promise<void> {

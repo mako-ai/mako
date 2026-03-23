@@ -6,6 +6,15 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 
 const logger = loggers.workspace();
 
+function getRequestedWorkspaceId(c: Context): string | undefined {
+  return (
+    c.req.param("workspaceId") ||
+    c.req.param("id") ||
+    c.req.header("x-workspace-id") ||
+    c.get("session")?.activeWorkspaceId
+  );
+}
+
 export interface AuthenticatedContext extends Context {
   get(key: "user"): ValidatedUser | undefined;
   get(key: "session"): ValidatedSession | undefined;
@@ -31,14 +40,46 @@ export async function requireWorkspace(c: Context, next: Next) {
   try {
     const user = c.get("user");
     const session = c.get("session");
+    const authenticatedWorkspace = c.get("workspace");
+    const workspaceId = getRequestedWorkspaceId(c);
+
+    if (authenticatedWorkspace) {
+      const resolvedWorkspaceId =
+        workspaceId || authenticatedWorkspace._id.toString();
+
+      if (!Types.ObjectId.isValid(resolvedWorkspaceId)) {
+        return c.json({ error: "Invalid workspace ID format" }, 400);
+      }
+
+      if (authenticatedWorkspace._id.toString() !== resolvedWorkspaceId) {
+        return c.json(
+          { error: "API key not authorized for this workspace" },
+          403,
+        );
+      }
+
+      if (user) {
+        const member = await workspaceService.getMember(
+          resolvedWorkspaceId,
+          user.id,
+        );
+        if (!member) {
+          return c.json(
+            { error: "API key owner no longer has access to workspace" },
+            403,
+          );
+        }
+        c.set("memberRole", member.role);
+      }
+
+      enrichContextWithWorkspace(resolvedWorkspaceId);
+      await next();
+      return;
+    }
 
     if (!user || !session) {
       return c.json({ error: "Unauthorized" }, 401);
     }
-
-    // Get workspace ID from header or session
-    const workspaceId =
-      c.req.header("x-workspace-id") || session.activeWorkspaceId;
 
     if (!workspaceId) {
       // If no workspace is selected, get the first workspace for the user
@@ -148,13 +189,34 @@ export async function optionalWorkspace(c: Context, next: Next) {
   try {
     const user = c.get("user");
     const session = c.get("session");
+    const authenticatedWorkspace = c.get("workspace");
+    const workspaceId = getRequestedWorkspaceId(c);
+
+    if (authenticatedWorkspace) {
+      const resolvedWorkspaceId =
+        workspaceId || authenticatedWorkspace._id.toString();
+
+      if (
+        !workspaceId ||
+        authenticatedWorkspace._id.toString() === resolvedWorkspaceId
+      ) {
+        if (user) {
+          const member = await workspaceService.getMember(
+            resolvedWorkspaceId,
+            user.id,
+          );
+          if (member) {
+            c.set("memberRole", member.role);
+          }
+        }
+        enrichContextWithWorkspace(resolvedWorkspaceId);
+      }
+      return await next();
+    }
 
     if (!user || !session) {
       return await next();
     }
-
-    const workspaceId =
-      c.req.header("x-workspace-id") || session.activeWorkspaceId;
 
     if (workspaceId && Types.ObjectId.isValid(workspaceId)) {
       const member = await workspaceService.getMember(workspaceId, user.id);

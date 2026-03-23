@@ -1,22 +1,13 @@
 import os from "os";
 import path from "path";
 import { promises as fsPromises } from "fs";
-import initWasm, {
+import {
   Compression,
   Table,
   WriterPropertiesBuilder,
   writeParquet,
 } from "parquet-wasm/node";
 import { serializeToArrowIPC, type FieldMeta } from "./arrow-serializer";
-
-let parquetInitPromise: Promise<void> | null = null;
-
-async function ensureParquetWasm(): Promise<void> {
-  if (!parquetInitPromise) {
-    parquetInitPromise = initWasm();
-  }
-  await parquetInitPromise;
-}
 
 export interface ParquetTempFileResult {
   filePath: string;
@@ -29,8 +20,6 @@ export async function writeParquetTempFile(options: {
   fields: FieldMeta[];
   filenameBase?: string;
 }): Promise<ParquetTempFileResult> {
-  await ensureParquetWasm();
-
   const arrowBuffer = serializeToArrowIPC(options.rows, options.fields);
   const table = Table.fromIPCStream(arrowBuffer);
   const writerProps = new WriterPropertiesBuilder()

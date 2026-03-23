@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { authMiddleware } from "../auth/auth.middleware";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import {
   requireWorkspace,
@@ -19,7 +19,7 @@ export const workspaceRoutes = new Hono();
 // Get pending invitations for current user's email
 workspaceRoutes.get(
   "/pending-invites",
-  authMiddleware,
+  unifiedAuthMiddleware,
   async (c: AuthenticatedContext) => {
     try {
       const user = c.get("user");
@@ -57,92 +57,125 @@ workspaceRoutes.get(
 );
 
 // Get all workspaces for current user
-workspaceRoutes.get("/", authMiddleware, async (c: AuthenticatedContext) => {
-  try {
-    const user = c.get("user");
-    if (!user) {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-    const workspaces = await workspaceService.getWorkspacesForUser(user.id);
-    return c.json({
-      success: true,
-      data: workspaces.map(({ workspace, role }) => ({
-        id: workspace._id,
-        name: workspace.name,
-        slug: workspace.slug,
-        role,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-        settings: workspace.settings,
-      })),
-    });
-  } catch (error) {
-    logger.error("Error getting workspaces", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to get workspaces",
-      },
-      500,
-    );
-  }
-});
+workspaceRoutes.get(
+  "/",
+  unifiedAuthMiddleware,
+  async (c: AuthenticatedContext) => {
+    try {
+      const user = c.get("user");
+      const workspace = c.get("workspace");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
 
-// Create new workspace
-workspaceRoutes.post("/", authMiddleware, async (c: AuthenticatedContext) => {
-  try {
-    const user = c.get("user");
-    const body = await c.req.json();
-    const { name, slug } = body;
+      if (workspace) {
+        const member = await workspaceService.getMember(
+          workspace._id.toString(),
+          user.id,
+        );
+        return c.json({
+          success: true,
+          data: [
+            {
+              id: workspace._id,
+              name: workspace.name,
+              slug: workspace.slug,
+              role: member?.role,
+              createdAt: workspace.createdAt,
+              updatedAt: workspace.updatedAt,
+              settings: workspace.settings,
+            },
+          ],
+        });
+      }
 
-    if (!name || typeof name !== "string") {
-      return c.json(
-        { success: false, error: "Workspace name is required" },
-        400,
-      );
-    }
-
-    if (!user) {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-
-    const workspace = await workspaceService.createWorkspace(
-      user.id,
-      name,
-      slug,
-    );
-
-    return c.json(
-      {
+      const workspaces = await workspaceService.getWorkspacesForUser(user.id);
+      return c.json({
         success: true,
-        data: {
+        data: workspaces.map(({ workspace, role }) => ({
           id: workspace._id,
           name: workspace.name,
           slug: workspace.slug,
+          role,
           createdAt: workspace.createdAt,
+          updatedAt: workspace.updatedAt,
           settings: workspace.settings,
+        })),
+      });
+    } catch (error) {
+      logger.error("Error getting workspaces", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to get workspaces",
         },
-      },
-      201,
-    );
-  } catch (error) {
-    logger.error("Error creating workspace", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to create workspace",
-      },
-      500,
-    );
-  }
-});
+        500,
+      );
+    }
+  },
+);
+
+// Create new workspace
+workspaceRoutes.post(
+  "/",
+  unifiedAuthMiddleware,
+  async (c: AuthenticatedContext) => {
+    try {
+      const user = c.get("user");
+      const body = await c.req.json();
+      const { name, slug } = body;
+
+      if (!name || typeof name !== "string") {
+        return c.json(
+          { success: false, error: "Workspace name is required" },
+          400,
+        );
+      }
+
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+
+      const workspace = await workspaceService.createWorkspace(
+        user.id,
+        name,
+        slug,
+      );
+
+      return c.json(
+        {
+          success: true,
+          data: {
+            id: workspace._id,
+            name: workspace.name,
+            slug: workspace.slug,
+            createdAt: workspace.createdAt,
+            settings: workspace.settings,
+          },
+        },
+        201,
+      );
+    } catch (error) {
+      logger.error("Error creating workspace", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to create workspace",
+        },
+        500,
+      );
+    }
+  },
+);
 
 // Get current workspace
 workspaceRoutes.get(
   "/current",
-  authMiddleware,
+  unifiedAuthMiddleware,
   optionalWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -243,7 +276,7 @@ workspaceRoutes.get("/invites/:token", async c => {
 // NOTE: This route MUST be defined before /:id to avoid being matched as a workspace ID
 workspaceRoutes.post(
   "/invites/:token/accept",
-  authMiddleware,
+  unifiedAuthMiddleware,
   async (c: AuthenticatedContext) => {
     try {
       const user = c.get("user");
@@ -314,60 +347,85 @@ workspaceRoutes.post(
 );
 
 // Get specific workspace
-workspaceRoutes.get("/:id", authMiddleware, async (c: AuthenticatedContext) => {
-  try {
-    const user = c.get("user");
-    if (!user) {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
+workspaceRoutes.get(
+  "/:id",
+  unifiedAuthMiddleware,
+  async (c: AuthenticatedContext) => {
+    try {
+      const user = c.get("user");
+      const authenticatedWorkspace = c.get("workspace");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      const workspaceId = c.req.param("id");
+
+      if (!Types.ObjectId.isValid(workspaceId)) {
+        return c.json({ success: false, error: "Invalid workspace ID" }, 400);
+      }
+
+      if (authenticatedWorkspace) {
+        if (authenticatedWorkspace._id.toString() !== workspaceId) {
+          return c.json({ success: false, error: "Access denied" }, 403);
+        }
+
+        const member = await workspaceService.getMember(workspaceId, user.id);
+        return c.json({
+          success: true,
+          data: {
+            id: authenticatedWorkspace._id,
+            name: authenticatedWorkspace.name,
+            slug: authenticatedWorkspace.slug,
+            role: member?.role,
+            createdAt: authenticatedWorkspace.createdAt,
+            updatedAt: authenticatedWorkspace.updatedAt,
+            settings: authenticatedWorkspace.settings,
+          },
+        });
+      }
+
+      // Check if user has access
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const workspace = await workspaceService.getWorkspaceById(workspaceId);
+      if (!workspace) {
+        return c.json({ success: false, error: "Workspace not found" }, 404);
+      }
+
+      const member = await workspaceService.getMember(workspaceId, user.id);
+
+      return c.json({
+        success: true,
+        data: {
+          id: workspace._id,
+          name: workspace.name,
+          slug: workspace.slug,
+          role: member?.role,
+          createdAt: workspace.createdAt,
+          updatedAt: workspace.updatedAt,
+          settings: workspace.settings,
+        },
+      });
+    } catch (error) {
+      logger.error("Error getting workspace", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to get workspace",
+        },
+        500,
+      );
     }
-    const workspaceId = c.req.param("id");
-
-    if (!Types.ObjectId.isValid(workspaceId)) {
-      return c.json({ success: false, error: "Invalid workspace ID" }, 400);
-    }
-
-    // Check if user has access
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-    if (!hasAccess) {
-      return c.json({ success: false, error: "Access denied" }, 403);
-    }
-
-    const workspace = await workspaceService.getWorkspaceById(workspaceId);
-    if (!workspace) {
-      return c.json({ success: false, error: "Workspace not found" }, 404);
-    }
-
-    const member = await workspaceService.getMember(workspaceId, user.id);
-
-    return c.json({
-      success: true,
-      data: {
-        id: workspace._id,
-        name: workspace.name,
-        slug: workspace.slug,
-        role: member?.role,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-        settings: workspace.settings,
-      },
-    });
-  } catch (error) {
-    logger.error("Error getting workspace", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to get workspace",
-      },
-      500,
-    );
-  }
-});
+  },
+);
 
 // Update workspace
 workspaceRoutes.put(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -424,7 +482,7 @@ workspaceRoutes.put(
 // Delete workspace
 workspaceRoutes.delete(
   "/:id",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner"]),
   async (c: AuthenticatedContext) => {
@@ -461,10 +519,11 @@ workspaceRoutes.delete(
 // Switch active workspace
 workspaceRoutes.post(
   "/:id/switch",
-  authMiddleware,
+  unifiedAuthMiddleware,
   async (c: AuthenticatedContext) => {
     try {
       const user = c.get("user");
+      const authenticatedWorkspace = c.get("workspace");
       if (!user) {
         return c.json({ success: false, error: "Unauthorized" }, 401);
       }
@@ -472,6 +531,17 @@ workspaceRoutes.post(
 
       if (!Types.ObjectId.isValid(workspaceId)) {
         return c.json({ success: false, error: "Invalid workspace ID" }, 400);
+      }
+
+      if (authenticatedWorkspace) {
+        if (authenticatedWorkspace._id.toString() !== workspaceId) {
+          return c.json({ success: false, error: "Access denied" }, 403);
+        }
+
+        return c.json({
+          success: true,
+          message: "API key is already scoped to this workspace",
+        });
       }
 
       await workspaceService.switchWorkspace(user.id, workspaceId);
@@ -499,7 +569,7 @@ workspaceRoutes.post(
 // Get workspace members
 workspaceRoutes.get(
   "/:id/members",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   async (c: AuthenticatedContext) => {
     try {
@@ -539,7 +609,7 @@ workspaceRoutes.get(
 // Add member to workspace
 workspaceRoutes.post(
   "/:id/members",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -605,7 +675,7 @@ workspaceRoutes.post(
 // Update member role
 workspaceRoutes.put(
   "/:id/members/:userId",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -680,7 +750,7 @@ workspaceRoutes.put(
 // Remove member from workspace
 workspaceRoutes.delete(
   "/:id/members/:userId",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -729,7 +799,7 @@ workspaceRoutes.delete(
 // Create workspace invite
 workspaceRoutes.post(
   "/:id/invites",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -799,7 +869,7 @@ workspaceRoutes.post(
 // Get pending invites
 workspaceRoutes.get(
   "/:id/invites",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -840,7 +910,7 @@ workspaceRoutes.get(
 // Cancel invite
 workspaceRoutes.delete(
   "/:id/invites/:inviteId",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -882,7 +952,7 @@ workspaceRoutes.delete(
 // GET /api/workspaces/:id/api-keys - List API keys
 workspaceRoutes.get(
   "/:id/api-keys",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -926,7 +996,7 @@ workspaceRoutes.get(
 // POST /api/workspaces/:id/api-keys - Create new API key
 workspaceRoutes.post(
   "/:id/api-keys",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {
@@ -1007,7 +1077,7 @@ workspaceRoutes.post(
 // DELETE /api/workspaces/:id/api-keys/:keyId - Delete API key
 workspaceRoutes.delete(
   "/:id/api-keys/:keyId",
-  authMiddleware,
+  unifiedAuthMiddleware,
   requireWorkspace,
   requireWorkspaceRole(["owner", "admin"]),
   async (c: AuthenticatedContext) => {

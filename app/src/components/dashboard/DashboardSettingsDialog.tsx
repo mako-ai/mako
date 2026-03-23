@@ -61,7 +61,7 @@ export default function DashboardSettingsDialog({
     "mosaic" | "legacy"
   >("mosaic");
   const [materializationMode, setMaterializationMode] = useState<
-    "auto" | "local_opfs" | "remote_parquet" | "legacy_streamed"
+    "auto" | "remote_parquet"
   >("auto");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -76,7 +76,10 @@ export default function DashboardSettingsDialog({
       setCrossFilterEnabled(dashboard.crossFilter.enabled);
       setCrossFilterResolution(dashboard.crossFilter.resolution);
       setCrossFilterEngine(dashboard.crossFilter.engine ?? "mosaic");
-      setMaterializationMode(dashboard.materializationMode ?? "auto");
+      const storedMode = dashboard.materializationMode as string | undefined;
+      setMaterializationMode(
+        storedMode === "remote_parquet" ? "remote_parquet" : "auto",
+      );
       setConfirmDelete(false);
     }
   }, [dashboard, open]);
@@ -226,24 +229,18 @@ export default function DashboardSettingsDialog({
             label="Performance Mode"
             onChange={e =>
               setMaterializationMode(
-                e.target.value as
-                  | "auto"
-                  | "local_opfs"
-                  | "remote_parquet"
-                  | "legacy_streamed",
+                e.target.value as "auto" | "remote_parquet",
               )
             }
           >
             <MenuItem value="auto">Auto</MenuItem>
-            <MenuItem value="local_opfs">Cache on this device</MenuItem>
             <MenuItem value="remote_parquet">Use shared server cache</MenuItem>
-            <MenuItem value="legacy_streamed">Compatibility mode</MenuItem>
           </Select>
         </FormControl>
         <Typography variant="body2" color="text.secondary">
-          Auto balances shared freshness for viewers with fast local iteration
-          for editing. Cache on this device keeps using local OPFS-backed
-          DuckDB.
+          Auto favors shared remote Parquet for viewing and fast streamed data
+          for editing. Cache on this device keeps using local OPFS-backed DuckDB
+          during local work.
         </Typography>
 
         <FormControlLabel

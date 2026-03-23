@@ -676,13 +676,17 @@ export async function attachRemoteParquetSource(
   tableName: string,
   parquetUrl: string,
 ): Promise<void> {
+  const resolvedParquetUrl =
+    typeof window !== "undefined"
+      ? new URL(parquetUrl, window.location.origin).toString()
+      : parquetUrl;
   await ensureHttpfsLoaded(db);
   const conn = await db.connect();
   try {
     await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
     await conn.query(`DROP VIEW IF EXISTS "${tableName}"`);
     await conn.query(
-      `CREATE VIEW "${tableName}" AS SELECT * FROM read_parquet('${parquetUrl}')`,
+      `CREATE VIEW "${tableName}" AS SELECT * FROM read_parquet('${resolvedParquetUrl}')`,
     );
   } finally {
     await conn.close();
