@@ -5,6 +5,7 @@
   "installCommand": "npm install",
   "framework": "nextjs",
   "regions": ["iad1"],
+  "ignoreCommand": "git diff HEAD^ HEAD --quiet -- . ../content/",
   "git": {
     "deploymentEnabled": {
       "main": true

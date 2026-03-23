@@ -76,6 +76,19 @@ const flowSchema = z.object({
   entityFilter: z.array(z.string()).nullable().optional(),
   queries: z.array(flowQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
+  syncEngine: z.enum(["legacy", "cdc"]).optional(),
+  syncState: z
+    .enum(["idle", "backfill", "catchup", "live", "paused", "degraded"])
+    .optional(),
+  syncStateUpdatedAt: z.string().nullable().optional(),
+  syncStateMeta: z
+    .object({
+      lastEvent: z.string().optional(),
+      lastReason: z.string().optional(),
+      lastErrorCode: z.string().optional(),
+      lastErrorMessage: z.string().optional(),
+    })
+    .optional(),
   lastRunAt: z.string().nullable().optional(),
   lastSuccessAt: z.string().nullable().optional(),
   lastError: z.string().nullable().optional(),
@@ -101,7 +114,35 @@ const flowSchema = z.object({
       schema: z.string().optional(),
       tableName: z.string(),
       createIfNotExists: z.boolean().optional(),
+      partitioning: z
+        .object({
+          enabled: z.boolean().optional(),
+          type: z.enum(["time", "ingestion"]).optional(),
+          field: z.string().optional(),
+          granularity: z.enum(["day", "hour", "month", "year"]).optional(),
+          requirePartitionFilter: z.boolean().optional(),
+        })
+        .optional(),
+      clustering: z
+        .object({
+          enabled: z.boolean().optional(),
+          fields: z.array(z.string()).optional(),
+        })
+        .optional(),
     })
+    .optional(),
+  deleteMode: z.enum(["hard", "soft"]).optional(),
+  entityLayouts: z
+    .array(
+      z.object({
+        entity: z.string(),
+        label: z.string().optional(),
+        partitionField: z.string(),
+        partitionGranularity: z.enum(["day", "hour", "month", "year"]),
+        clusterFields: z.array(z.string()),
+        enabled: z.boolean().optional(),
+      }),
+    )
     .optional(),
   incrementalConfig: z
     .object({
@@ -204,6 +245,7 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt?: string;
   status: "pending" | "processing" | "completed" | "failed";
+  applyStatus?: "pending" | "applied" | "failed" | "dropped";
   attempts: number;
   error?: unknown;
   processingDurationMs?: number;
@@ -214,8 +256,24 @@ interface WebhookStats {
   lastReceived: string | null;
   totalReceived: number;
   eventsToday: number;
+  deferredCount?: number;
+  backfillActive?: boolean;
+  cdc?: {
+    enabled: boolean;
+    mode: "steady" | "backfill";
+    entities: number;
+    backlogCount: number;
+    lagSeconds: number | null;
+  };
   successRate: number;
   recentEvents: WebhookEvent[];
+}
+
+interface ProvisionedWebhook {
+  endpoint: string;
+  webhookSecret: string | null;
+  providerWebhookId: string;
+  connectorType: string;
 }
 
 interface FlowStatusResponse {
@@ -226,6 +284,39 @@ interface FlowStatusResponse {
     lastHeartbeat: string;
   } | null;
 }
+
+export interface CdcStatus {
+  /** @deprecated Use streamState + backfillStatus */
+  syncState?: string;
+  streamState: "idle" | "active" | "paused" | "error";
+  backfillStatus: "idle" | "running" | "paused" | "completed" | "error";
+  backlogCount: number;
+  lagSeconds: number | null;
+  lastMaterializedAt: string | null;
+  entities: Array<{
+    entity: string;
+    lastIngestSeq: number;
+    lastMaterializedSeq: number;
+    backlogCount: number;
+    lagSeconds: number | null;
+    lastMaterializedAt: string | null;
+    destinationRowCount?: number | null;
+    lifetimeEventsProcessed?: number;
+    lifetimeRowsApplied?: number;
+    backfillDone?: boolean;
+  }>;
+  transitions: Array<{
+    machine?: string;
+    fromState: string;
+    event: string;
+    toState: string;
+    at: string;
+    reason?: string;
+  }>;
+}
+
+export type CdcSummary = CdcStatus;
+export type CdcDiagnostics = CdcStatus;
 
 // Query validation result
 interface QueryValidationResult {
@@ -276,6 +367,15 @@ interface ExecutionDetails {
     message: string;
     metadata?: unknown;
   }>;
+  stats?: {
+    recordsProcessed?: number;
+    entityStats?: Record<string, unknown>;
+    entityStatus?: Record<string, unknown>;
+    plannedEntities?: string[];
+    completedEntities?: string[];
+    failedEntities?: string[];
+    [key: string]: unknown;
+  };
 }
 
 // Store state schema for validation
@@ -303,6 +403,60 @@ interface FlowStore extends FlowStoreState {
   deleteFlow: (workspaceId: string, flowId: string) => Promise<void>;
   toggleFlow: (workspaceId: string, flowId: string) => Promise<void>;
   runFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  backfillFlow: (workspaceId: string, flowId: string) => Promise<void>;
+  setSyncEngine: (
+    workspaceId: string,
+    flowId: string,
+    syncEngine: "legacy" | "cdc",
+  ) => Promise<boolean>;
+  startCdcBackfill: (
+    workspaceId: string,
+    flowId: string,
+    entities?: string[],
+  ) => Promise<boolean>;
+  resetCdcEntityColumn: (
+    workspaceId: string,
+    flowId: string,
+    params: {
+      entity: string;
+      column: string;
+      forceReplay?: boolean;
+      startBackfill?: boolean;
+    },
+  ) => Promise<boolean>;
+  resetCdcEntityTable: (
+    workspaceId: string,
+    flowId: string,
+    entity: string,
+  ) => Promise<boolean>;
+  pauseCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
+  resumeCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
+  resyncCdcFlow: (
+    workspaceId: string,
+    flowId: string,
+    options?: {
+      deleteDestination?: boolean;
+      clearWebhookEvents?: boolean;
+    },
+  ) => Promise<boolean>;
+  recoverCdcFlow: (
+    workspaceId: string,
+    flowId: string,
+    options?: {
+      retryFailedMaterialization?: boolean;
+      resumeBackfill?: boolean;
+      entity?: string;
+    },
+  ) => Promise<boolean>;
+  retryFailedCdcMaterialization: (
+    workspaceId: string,
+    flowId: string,
+    entity?: string,
+  ) => Promise<boolean>;
+  fetchCdcStatus: (
+    workspaceId: string,
+    flowId: string,
+  ) => Promise<CdcStatus | null>;
   fetchFlowHistory: (
     workspaceId: string,
     flowId: string,
@@ -335,6 +489,15 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     eventId: string,
   ) => Promise<boolean>;
+  provisionFlowWebhook: (
+    workspaceId: string,
+    flowId: string,
+    options?: {
+      verifySsl?: boolean;
+      events?: string[];
+      publicBaseUrl?: string;
+    },
+  ) => Promise<ProvisionedWebhook | null>;
 
   // Flow logs and status
   fetchFlowDetails: (
@@ -641,6 +804,258 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
+      backfillFlow: async (workspaceId: string, flowId: string) => {
+        set(state => {
+          state.loading[workspaceId] = true;
+          state.error[workspaceId] = null;
+        });
+
+        try {
+          const flow = get().flows[workspaceId]?.find(f => f._id === flowId);
+          const endpoint =
+            flow?.syncEngine === "cdc"
+              ? `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`
+              : `/workspaces/${workspaceId}/flows/${flowId}/backfill`;
+          const response = await apiClient.post<{
+            success: boolean;
+            message?: string;
+            error?: string;
+          }>(endpoint);
+
+          if (response.success) {
+            await get().refresh(workspaceId);
+          } else {
+            throw new Error(response.error || "Failed to start backfill");
+          }
+        } catch (error: any) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+        } finally {
+          set(state => {
+            delete state.loading[workspaceId];
+          });
+        }
+      },
+
+      setSyncEngine: async (workspaceId, flowId, syncEngine) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-engine`, {
+            syncEngine,
+          });
+          if (!response.success) {
+            throw new Error(response.error || "Failed to update sync engine");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      startCdcBackfill: async (workspaceId, flowId, entities) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`,
+            entities?.length ? { entities } : undefined,
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to start CDC backfill");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      resetCdcEntityColumn: async (workspaceId, flowId, params) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reset-column`,
+            {
+              entity: params.entity,
+              column: params.column,
+              forceReplay: params.forceReplay !== false,
+              startBackfill: params.startBackfill !== false,
+            },
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to reset column");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      resetCdcEntityTable: async (workspaceId, flowId, entity) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reset-entity`,
+            { entity },
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to reset entity table");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      pauseCdcFlow: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/pause`);
+          if (!response.success) {
+            throw new Error(response.error || "Failed to pause CDC flow");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      resumeCdcFlow: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/resume`);
+          if (!response.success) {
+            throw new Error(response.error || "Failed to resume CDC flow");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      resyncCdcFlow: async (workspaceId, flowId, options) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/resync`, {
+            deleteDestination: options?.deleteDestination === true,
+            clearWebhookEvents: options?.clearWebhookEvents === true,
+          });
+          if (!response.success) {
+            throw new Error(response.error || "Failed to resync CDC flow");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      recoverCdcFlow: async (workspaceId, flowId, options) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover`, {
+            retryFailedMaterialization:
+              options?.retryFailedMaterialization !== false,
+            resumeBackfill: options?.resumeBackfill !== false,
+            entity: options?.entity,
+          });
+          if (!response.success) {
+            throw new Error(response.error || "Failed to recover CDC flow");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      retryFailedCdcMaterialization: async (workspaceId, flowId, entity) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/materialize/retry-failed`,
+            {
+              entity,
+            },
+          );
+          if (!response.success) {
+            throw new Error(
+              response.error || "Failed to retry failed CDC materialization",
+            );
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      fetchCdcStatus: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: CdcStatus;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/status`);
+          return response.success ? response.data : null;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return null;
+        }
+      },
+
       fetchFlowHistory: async (workspaceId: string, flowId: string, limit) => {
         try {
           const params = limit ? { limit: String(limit) } : undefined;
@@ -765,6 +1180,27 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
+      provisionFlowWebhook: async (workspaceId, flowId, options) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: ProvisionedWebhook;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/provision`, {
+            verifySsl: options?.verifySsl,
+            events: options?.events,
+            publicBaseUrl: options?.publicBaseUrl,
+          });
+          if (!response.success) {
+            throw new Error(response.error || "Failed to provision webhook");
+          }
+          return response.data;
+        } catch (error) {
+          console.error("Failed to provision webhook:", error);
+          throw new Error(normalizeError(error));
+        }
+      },
+
       fetchFlowDetails: async (workspaceId, flowId) => {
         try {
           const response = await apiClient.get<{
@@ -886,17 +1322,16 @@ export const useFlowStore = create<FlowStore>()(
       },
     })),
     {
-      name: "flow-store-v1", // New storage key for fresh start
+      name: "flow-store-v2",
       storage: createValidatedStorage(
         flowStoreStateSchema,
-        "flow-store-v1",
+        "flow-store-v2",
         initialState,
       ),
       partialize: state => ({
         flows: state.flows,
         selectedFlowId: state.selectedFlowId,
         executionHistory: state.executionHistory,
-        // Don't persist loading or error states
       }),
     },
   ),

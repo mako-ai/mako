@@ -6,7 +6,7 @@ import {
   FetchState,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
-import crypto from "crypto";
+import * as crypto from "crypto";
 
 type JsonRecord = Record<string, any>;
 
@@ -483,7 +483,10 @@ export class BigQueryConnector extends BaseConnector {
         // Convert to ISO 8601 string for human-readable display.
         const num = Number(value);
         if (!isNaN(num)) {
-          return new Date(num * 1000).toISOString().replace("T", " ").replace("Z", " UTC");
+          return new Date(num * 1000)
+            .toISOString()
+            .replace("T", " ")
+            .replace("Z", " UTC");
         }
         return value;
       }

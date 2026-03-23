@@ -472,14 +472,47 @@ export interface IDatabaseSource {
 }
 
 /**
+ * BigQuery partitioning configuration for table destination
+ */
+export interface ITablePartitioning {
+  enabled: boolean;
+  type?: "time" | "ingestion";
+  field?: string;
+  granularity?: "day" | "hour" | "month" | "year";
+  requirePartitionFilter?: boolean;
+}
+
+/**
+ * BigQuery clustering configuration for table destination
+ */
+export interface ITableClustering {
+  enabled: boolean;
+  fields?: string[];
+}
+
+/**
+ * Per-entity table layout config for connector -> BigQuery flows
+ */
+export interface IEntityLayout {
+  entity: string;
+  label?: string;
+  partitionField: string;
+  partitionGranularity: "day" | "hour" | "month" | "year";
+  clusterFields: string[];
+  enabled?: boolean;
+}
+
+/**
  * Table destination configuration for writing to SQL tables
  */
 export interface ITableDestination {
   connectionId: Types.ObjectId;
-  database?: string; // Database name within the connection
-  schema?: string; // Schema name (PostgreSQL) or dataset (BigQuery)
-  tableName: string; // Target table name
-  createIfNotExists?: boolean; // Auto-create table if it doesn't exist
+  database?: string;
+  schema?: string;
+  tableName: string;
+  createIfNotExists?: boolean;
+  partitioning?: ITablePartitioning;
+  clustering?: ITableClustering;
 }
 
 /**
@@ -521,6 +554,32 @@ export interface ITypeCoercion {
   transformer?: string; // Optional transformation: 'lowercase' | 'uppercase' | 'trim' | 'json_parse' | 'json_stringify'
 }
 
+export type SyncEngine = "legacy" | "cdc";
+
+/** @deprecated Use StreamState + BackfillStatus instead */
+export type SyncState =
+  | "idle"
+  | "backfill"
+  | "catchup"
+  | "live"
+  | "paused"
+  | "degraded";
+
+export type StreamState = "idle" | "active" | "paused" | "error";
+export type BackfillStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "completed"
+  | "error";
+
+export interface ISyncStateMeta {
+  lastEvent?: string;
+  lastReason?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+}
+
 /**
  * Flow model interface (data sync flow configuration)
  */
@@ -554,13 +613,33 @@ export interface IFlow extends Document {
   entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
+  syncEngine: SyncEngine;
+  /** @deprecated Use streamState + backfillState.status instead */
+  syncState?: SyncState;
+  syncStateUpdatedAt?: Date;
+  syncStateMeta?: ISyncStateMeta;
+  streamState?: StreamState;
+  deleteMode?: "hard" | "soft";
+  entityLayouts?: IEntityLayout[];
 
   // Incremental and conflict config (for database sources)
   incrementalConfig?: IIncrementalConfig;
   conflictConfig?: IConflictConfig;
-  paginationConfig?: IPaginationConfig; // Pagination mode for database syncs
-  typeCoercions?: ITypeCoercion[]; // Type coercion rules for column mapping
-  batchSize?: number; // Batch size for processing (default: 2000)
+  paginationConfig?: IPaginationConfig;
+  typeCoercions?: ITypeCoercion[];
+  batchSize?: number;
+  backfillState?: {
+    /** @deprecated Use status instead */
+    active: boolean;
+    status?: BackfillStatus;
+    runId?: string;
+    startedAt?: Date;
+    completedAt?: Date;
+    scope?: {
+      mode: "all" | "subset";
+      entities?: string[];
+    };
+  };
 
   lastRunAt?: Date;
   lastSuccessAt?: Date;
@@ -622,6 +701,89 @@ export interface IWebhookEvent extends Document {
   rawPayload: any;
   signature?: string; // For verification
   processingDurationMs?: number;
+  entity?: string;
+  operation?: "upsert" | "delete";
+  recordId?: string;
+  applyStatus?: "pending" | "applied" | "failed" | "dropped";
+  appliedAt?: Date;
+  applyAttempts?: number;
+  applyError?: {
+    message: string;
+    code?: string;
+  };
+}
+
+/**
+ * BigQuery CDC change event model interface
+ * Canonical append-only change log for webhook + backfill writes.
+ */
+export interface ICdcChangeEvent extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  flowId: Types.ObjectId;
+  runId?: string;
+  sourceKind: "webhook" | "backfill";
+  entity: string;
+  recordId: string;
+  op: "upsert" | "delete";
+  sourceTs: Date;
+  ingestTs: Date;
+  ingestSeq: number;
+  idempotencyKey: string;
+  payload?: any;
+  webhookEventId?: string;
+  stageStatus: "pending" | "staged" | "failed";
+  stageAttemptCount: number;
+  stagedAt?: Date;
+  stageError?: {
+    message: string;
+    code?: string;
+  };
+  materializationStatus: "pending" | "applied" | "failed" | "dropped";
+  materializationAttemptCount: number;
+  appliedAt?: Date;
+  materializationError?: {
+    message: string;
+    code?: string;
+  };
+}
+
+/**
+ * Per-flow/entity CDC state for observability and adaptive cadence
+ */
+export interface ICdcEntityState extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  flowId: Types.ObjectId;
+  entity: string;
+  mode: "steady" | "backfill";
+  runId?: string;
+  backfillStartedAt?: Date;
+  backfillCompletedAt?: Date;
+  lastIngestSeq: number;
+  lastMaterializedSeq: number;
+  lastMaterializedAt?: Date;
+  backlogCount: number;
+  lifetimeEventsProcessed: number;
+  lifetimeRowsApplied: number;
+  lastEnqueuedAt?: Date;
+  mergeIntervalSeconds: number;
+  backfillCursor?: Record<string, unknown>;
+}
+
+export type IBigQueryChangeEvent = ICdcChangeEvent;
+export type IBigQueryCdcState = ICdcEntityState;
+
+export interface ICdcStateTransition extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  flowId: Types.ObjectId;
+  machine?: "stream" | "backfill";
+  fromState: string;
+  event: string;
+  toState: string;
+  at: Date;
+  reason?: string;
 }
 
 /**
@@ -1381,6 +1543,17 @@ const FlowSchema = new Schema<IFlow>(
         type: Boolean,
         default: true,
       },
+      partitioning: {
+        enabled: { type: Boolean, default: false },
+        type: { type: String, enum: ["time", "ingestion"] },
+        field: String,
+        granularity: { type: String, enum: ["day", "hour", "month", "year"] },
+        requirePartitionFilter: { type: Boolean, default: false },
+      },
+      clustering: {
+        enabled: { type: Boolean, default: false },
+        fields: [String],
+      },
     },
     schedule: {
       enabled: {
@@ -1451,6 +1624,50 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["full", "incremental"],
       default: "full",
     },
+    syncEngine: {
+      type: String,
+      enum: ["legacy", "cdc"],
+      default: "legacy",
+      required: true,
+    },
+    syncState: {
+      type: String,
+      enum: ["idle", "backfill", "catchup", "live", "paused", "degraded"],
+      default: "idle",
+    },
+    syncStateUpdatedAt: {
+      type: Date,
+      default: Date.now,
+    },
+    syncStateMeta: {
+      lastEvent: String,
+      lastReason: String,
+      lastErrorCode: String,
+      lastErrorMessage: String,
+    },
+    streamState: {
+      type: String,
+      enum: ["idle", "active", "paused", "error"],
+      default: "idle",
+    },
+    deleteMode: {
+      type: String,
+      enum: ["hard", "soft"],
+    },
+    entityLayouts: [
+      {
+        entity: { type: String, required: true },
+        label: String,
+        partitionField: { type: String, required: true },
+        partitionGranularity: {
+          type: String,
+          enum: ["day", "hour", "month", "year"],
+          default: "day",
+        },
+        clusterFields: [String],
+        enabled: { type: Boolean, default: true },
+      },
+    ],
     // Incremental config for database sources
     incrementalConfig: {
       trackingColumn: String,
@@ -1510,6 +1727,25 @@ const FlowSchema = new Schema<IFlow>(
       min: 100,
       max: 50000,
     },
+    backfillState: {
+      active: { type: Boolean, default: false },
+      status: {
+        type: String,
+        enum: ["idle", "running", "paused", "completed", "error"],
+        default: "idle",
+      },
+      runId: String,
+      startedAt: Date,
+      completedAt: Date,
+      scope: {
+        mode: {
+          type: String,
+          enum: ["all", "subset"],
+          default: "all",
+        },
+        entities: [String],
+      },
+    },
     lastRunAt: Date,
     lastSuccessAt: Date,
     lastError: String,
@@ -1541,6 +1777,7 @@ FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ destinationDatabaseId: 1 });
 FlowSchema.index({ "tableDestination.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ nextRunAt: 1 });
+FlowSchema.index({ workspaceId: 1, syncEngine: 1 });
 
 /**
  * FlowExecution Schema (binds to 'flow_executions' collection)
@@ -1618,6 +1855,24 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     rawPayload: { type: Schema.Types.Mixed, required: true },
     signature: String,
     processingDurationMs: Number,
+    entity: String,
+    operation: {
+      type: String,
+      enum: ["upsert", "delete"],
+    },
+    recordId: String,
+    applyStatus: {
+      type: String,
+      enum: ["pending", "applied", "failed", "dropped"],
+      default: "pending",
+      required: true,
+    },
+    appliedAt: Date,
+    applyAttempts: { type: Number, default: 0 },
+    applyError: {
+      message: String,
+      code: String,
+    },
   },
   {
     timestamps: false,
@@ -1627,7 +1882,170 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
 // Indexes
 WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
+WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
+
+/**
+ * CdcChangeEvent Schema
+ */
+const CdcChangeEventSchema = new Schema<ICdcChangeEvent>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
+    runId: String,
+    sourceKind: {
+      type: String,
+      enum: ["webhook", "backfill"],
+      required: true,
+    },
+    entity: { type: String, required: true },
+    recordId: { type: String, required: true },
+    op: { type: String, enum: ["upsert", "delete"], required: true },
+    sourceTs: { type: Date, required: true },
+    ingestTs: { type: Date, required: true, default: Date.now },
+    ingestSeq: { type: Number, required: true },
+    idempotencyKey: { type: String, required: true },
+    payload: Schema.Types.Mixed,
+    webhookEventId: String,
+    stageStatus: {
+      type: String,
+      enum: ["pending", "staged", "failed"],
+      default: "pending",
+      required: true,
+    },
+    stageAttemptCount: { type: Number, default: 0 },
+    stagedAt: Date,
+    stageError: {
+      message: String,
+      code: String,
+    },
+    materializationStatus: {
+      type: String,
+      enum: ["pending", "applied", "failed", "dropped"],
+      default: "pending",
+      required: true,
+    },
+    materializationAttemptCount: { type: Number, default: 0 },
+    appliedAt: Date,
+    materializationError: {
+      message: String,
+      code: String,
+    },
+  },
+  {
+    collection: "cdc_change_events",
+    timestamps: false,
+  },
+);
+
+CdcChangeEventSchema.index({ idempotencyKey: 1 }, { unique: true });
+CdcChangeEventSchema.index({ flowId: 1, entity: 1, ingestSeq: 1 });
+CdcChangeEventSchema.index(
+  { flowId: 1, entity: 1, recordId: 1, sourceTs: 1, ingestSeq: 1 },
+  { unique: true },
+);
+CdcChangeEventSchema.index({
+  flowId: 1,
+  entity: 1,
+  sourceTs: 1,
+  ingestSeq: 1,
+});
+CdcChangeEventSchema.index({
+  flowId: 1,
+  entity: 1,
+  materializationStatus: 1,
+  ingestSeq: 1,
+});
+CdcChangeEventSchema.index({
+  flowId: 1,
+  entity: 1,
+  stageStatus: 1,
+  ingestSeq: 1,
+});
+CdcChangeEventSchema.index(
+  { appliedAt: 1 },
+  {
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { appliedAt: { $exists: true } },
+  },
+);
+
+/**
+ * CdcEntityState schema
+ */
+const CdcEntityStateSchema = new Schema<ICdcEntityState>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
+    entity: { type: String, required: true },
+    mode: {
+      type: String,
+      enum: ["steady", "backfill"],
+      default: "steady",
+      required: true,
+    },
+    runId: String,
+    backfillStartedAt: Date,
+    backfillCompletedAt: Date,
+    lastIngestSeq: { type: Number, default: 0 },
+    lastMaterializedSeq: { type: Number, default: 0 },
+    lastMaterializedAt: Date,
+    backlogCount: { type: Number, default: 0 },
+    lifetimeEventsProcessed: { type: Number, default: 0 },
+    lifetimeRowsApplied: { type: Number, default: 0 },
+    lastEnqueuedAt: Date,
+    mergeIntervalSeconds: { type: Number, default: 300 },
+    backfillCursor: Schema.Types.Mixed,
+  },
+  {
+    collection: "cdc_entity_state",
+    timestamps: false,
+  },
+);
+
+CdcEntityStateSchema.index({ flowId: 1, entity: 1 }, { unique: true });
+CdcEntityStateSchema.index({ workspaceId: 1, flowId: 1 });
+
+const CdcStateTransitionSchema = new Schema<ICdcStateTransition>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
+    machine: {
+      type: String,
+      enum: ["stream", "backfill"],
+    },
+    fromState: {
+      type: String,
+      required: true,
+    },
+    event: { type: String, required: true },
+    toState: {
+      type: String,
+      required: true,
+    },
+    at: { type: Date, required: true, default: Date.now },
+    reason: String,
+  },
+  {
+    collection: "cdc_state_transitions",
+    timestamps: false,
+  },
+);
+
+CdcStateTransitionSchema.index({ flowId: 1, at: -1 });
+CdcStateTransitionSchema.index({ workspaceId: 1, flowId: 1, at: -1 });
 
 /**
  * QueryExecution Schema
@@ -2259,6 +2677,21 @@ export const WebhookEvent = mongoose.model<IWebhookEvent>(
   "WebhookEvent",
   WebhookEventSchema,
 );
+export const CdcChangeEvent = mongoose.model<ICdcChangeEvent>(
+  "CdcChangeEvent",
+  CdcChangeEventSchema,
+);
+export const CdcEntityState = mongoose.model<ICdcEntityState>(
+  "CdcEntityState",
+  CdcEntityStateSchema,
+);
+export const CdcStateTransition = mongoose.model<ICdcStateTransition>(
+  "CdcStateTransition",
+  CdcStateTransitionSchema,
+);
+// Legacy aliases for backward compatibility
+export const BigQueryChangeEvent = CdcChangeEvent;
+export const BigQueryCdcState = CdcEntityState;
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,

@@ -4,6 +4,7 @@ import {
   IFlow,
   Connector as DataSource,
   DatabaseConnection,
+  WebhookEvent,
 } from "../../database/workspace-schema";
 import {
   performSync,
@@ -24,6 +25,17 @@ import * as os from "os";
 import { CronExpressionParser } from "cron-parser";
 import { getExecutionLogger, getSyncLogger } from "../logging";
 import { loggers } from "../../logging";
+import {
+  cdcBackfillCheckpointService,
+  syncMachineService,
+} from "../../sync-cdc/sync-state";
+import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
+import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
+import {
+  forceDrainCdcFlow,
+  markCdcBackfillCompletedForFlow,
+  purgeSoftDeletesAfterBackfill,
+} from "../../sync-cdc/backfill";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -129,6 +141,7 @@ class FlowExecutionLogger implements SyncLogger {
   private logger;
   private totalRecordsProcessed = 0;
   private syncedEntities: Set<string> = new Set();
+  private entityStats: Map<string, number> = new Map();
 
   constructor(
     private flowId: Types.ObjectId,
@@ -227,10 +240,17 @@ class FlowExecutionLogger implements SyncLogger {
   // Track sync progress
   trackProgress(entity: string, recordsProcessed: number): void {
     this.syncedEntities.add(entity);
-    // Only add positive record counts (handle -1 case from custom_fields)
     if (recordsProcessed > 0) {
       this.totalRecordsProcessed += recordsProcessed;
+      this.entityStats.set(
+        entity,
+        (this.entityStats.get(entity) || 0) + recordsProcessed,
+      );
     }
+  }
+
+  getEntityStats(): Record<string, number> {
+    return Object.fromEntries(this.entityStats);
   }
 
   async complete(
@@ -241,14 +261,14 @@ class FlowExecutionLogger implements SyncLogger {
     const completedAt = new Date();
     const duration = completedAt.getTime() - this.startTime.getTime();
 
-    // Use tracked stats if not provided
     const finalStats = stats || {
       recordsProcessed: this.totalRecordsProcessed,
-      recordsCreated: this.totalRecordsProcessed, // Approximate for now
+      recordsCreated: this.totalRecordsProcessed,
       recordsUpdated: 0,
       recordsDeleted: 0,
       recordsFailed: 0,
       syncedEntities: Array.from(this.syncedEntities),
+      entityStats: Object.fromEntries(this.entityStats),
     };
 
     const updates: Partial<FlowExecutionData> = {
@@ -376,7 +396,26 @@ export const flowFunction = inngest.createFunction(
   },
   { event: "flow.execute" },
   async ({ event, step, logger }) => {
-    const { flowId, noJitter } = event.data;
+    const { flowId, noJitter, backfill, backfillRunId, backfillEntities } =
+      event.data as {
+        flowId: string;
+        noJitter?: boolean;
+        backfill?: boolean;
+        backfillRunId?: string;
+        backfillEntities?: string[];
+      };
+    const requestedBackfillEntities = Array.isArray(backfillEntities)
+      ? Array.from(
+          new Set(
+            backfillEntities
+              .filter(
+                (entity): entity is string =>
+                  typeof entity === "string" && entity.trim().length > 0,
+              )
+              .map(entity => entity.trim()),
+          ),
+        )
+      : [];
 
     logger.info("Flow function started", {
       flowId,
@@ -387,6 +426,7 @@ export const flowFunction = inngest.createFunction(
     let executionId: string | undefined;
     // Store flow ref for use in error handler
     let flowRef: IFlow | undefined;
+    let cdcBackfillRunId: string | undefined;
 
     // Helper to create the execution logger
     const createExecutionLogger = (flow: IFlow): FlowExecutionLogger => {
@@ -398,12 +438,103 @@ export const flowFunction = inngest.createFunction(
           destinationDatabaseId: new Types.ObjectId(flow.destinationDatabaseId),
           destinationDatabaseName: flow.destinationDatabaseName,
           syncMode: flow.syncMode === "incremental" ? "incremental" : "full",
-          entityFilter: flow.entityFilter,
+          entityFilter: resolveConfiguredEntities(flow).entities,
           cronExpression: flow.schedule?.cron || "N/A",
           timezone: flow.schedule?.timezone || "UTC",
         },
       );
       return execLogger;
+    };
+
+    // Persist log lines to the execution document so the UI can show live activity.
+    // This complements terminal logs from Inngest logger.
+    const appendExecutionLog = (
+      level: "debug" | "info" | "warn" | "error",
+      message: string,
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (!executionId) return;
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
+      const entity =
+        metadata && typeof metadata.entity === "string"
+          ? metadata.entity
+          : undefined;
+      const totalProcessed =
+        metadata && typeof metadata.totalProcessed === "number"
+          ? metadata.totalProcessed
+          : undefined;
+
+      const updateDoc: Record<string, unknown> = {
+        $set: { lastHeartbeat: new Date() },
+        $push: {
+          logs: {
+            $each: [
+              {
+                timestamp: new Date(),
+                level,
+                message,
+                metadata: {
+                  flowId,
+                  executionId,
+                  ...metadata,
+                },
+              },
+            ],
+            $slice: -200,
+          },
+        },
+      };
+
+      if (entity) {
+        (updateDoc.$set as Record<string, unknown>)["stats.currentEntity"] =
+          entity;
+      }
+
+      // Persist per-batch progress immediately so UI counters move while chunk is running.
+      if (entity && totalProcessed !== undefined) {
+        updateDoc.$max = {
+          [`stats.entityStats.${entity}`]: totalProcessed,
+        };
+        (updateDoc.$set as Record<string, unknown>)[
+          `stats.entityStatus.${entity}`
+        ] = "syncing";
+      }
+
+      void collection
+        .updateOne({ _id: new Types.ObjectId(executionId) }, updateDoc)
+        .catch(error => {
+          logger.warn("Failed to append execution log", {
+            flowId,
+            executionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    };
+
+    const throwIfExecutionCancelled = async (
+      scope: string,
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (!executionId) return;
+      const db = Flow.db;
+      const collection = db.collection("flow_executions");
+      const execution = await collection.findOne(
+        { _id: new Types.ObjectId(executionId) },
+        { projection: { status: 1 } },
+      );
+
+      if (execution?.status === "cancelled") {
+        logger.warn("Detected cancelled flow execution; stopping run", {
+          flowId,
+          executionId,
+          scope,
+          ...metadata,
+        });
+        const cancelError = new Error("Flow execution cancelled by user");
+        (cancelError as Error & { code?: string }).code = "USER_CANCELLED";
+        throw cancelError;
+      }
     };
 
     try {
@@ -430,8 +561,14 @@ export const flowFunction = inngest.createFunction(
         return jitter;
       });
 
+      // Use a unique step ID when backfilling to prevent Inngest from replaying
+      // stale flow data cached by earlier (possibly pre-CDC) runs.
+      const fetchStepSuffix = backfillRunId
+        ? `:${backfillRunId.slice(-12)}`
+        : "";
+
       // Get flow details
-      const flow = (await step.run("fetch-flow", async () => {
+      const flow = (await step.run(`fetch-flow${fetchStepSuffix}`, async () => {
         const found = await Flow.findById(flowId);
         if (!found) {
           throw new Error(`Flow ${flowId} not found`);
@@ -440,8 +577,33 @@ export const flowFunction = inngest.createFunction(
       })) as IFlow;
       flowRef = flow; // Store for error handler
 
-      // Webhook flows should not be executed by the flow function
-      if (flow.type === "webhook") {
+      const destinationType = (await step.run(
+        `detect-destination-type${fetchStepSuffix}`,
+        async () => {
+          if (!flow.tableDestination?.connectionId) return undefined;
+          const destination = await DatabaseConnection.findById(
+            flow.tableDestination.connectionId,
+          )
+            .select({ type: 1 })
+            .lean();
+          return destination?.type || undefined;
+        },
+      )) as string | undefined;
+      const isCdcEnabled =
+        flow.syncEngine === "cdc" &&
+        Boolean(flow.tableDestination?.connectionId) &&
+        hasCdcDestinationAdapter(destinationType);
+      const requestedBackfillRunId =
+        typeof backfillRunId === "string" && backfillRunId.length > 0
+          ? backfillRunId
+          : undefined;
+      cdcBackfillRunId =
+        backfill && flow.type === "webhook" && isCdcEnabled
+          ? requestedBackfillRunId || flow.backfillState?.runId
+          : undefined;
+
+      // Webhook flows should not be executed unless it's a backfill
+      if (flow.type === "webhook" && !backfill) {
         logger.error("CRITICAL: Webhook flow reached flow executor!", {
           flowId,
           flowType: flow.type,
@@ -453,6 +615,63 @@ export const flowFunction = inngest.createFunction(
           success: false,
           message: "Webhook flows cannot be executed as scheduled flows",
         };
+      }
+
+      // Backfill for webhook-triggered flows should run as full sync.
+      // This ensures a complete reload instead of incremental upserts.
+      if (backfill && flow.type === "webhook" && !isCdcEnabled) {
+        (flow as any).syncMode = "full";
+        logger.info("Backfill mode: using full sync for webhook flow", {
+          flowId,
+        });
+
+        await step.run("enable-webhook-backfill-gate", async () => {
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": true,
+              "backfillState.startedAt": new Date(),
+              "backfillState.completedAt": null,
+            },
+          });
+        });
+      }
+
+      if (backfill && flow.type === "webhook" && isCdcEnabled) {
+        (flow as any).syncMode = "full";
+        logger.info(
+          "Backfill mode: BigQuery CDC enabled, no webhook apply gate",
+          {
+            flowId,
+          },
+        );
+        await step.run("cdc-transition-start-backfill", async () => {
+          await syncMachineService.applyBackfillTransition({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flow._id),
+            event: {
+              type: "START",
+              reason: "Backfill execution started",
+            },
+            context: {
+              hasActiveRunLock: false,
+            },
+          });
+        });
+        await step.run("mark-cdc-backfill-active", async () => {
+          const now = new Date();
+          const update: Record<string, unknown> = {
+            "backfillState.active": true,
+            "backfillState.status": "running",
+            "backfillState.startedAt": flow.backfillState?.startedAt || now,
+            "backfillState.completedAt": null,
+          };
+          if (cdcBackfillRunId) {
+            update["backfillState.runId"] = cdcBackfillRunId;
+          }
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: update,
+          });
+        });
       }
 
       // Initialize logger and get execution ID
@@ -494,6 +713,7 @@ export const flowFunction = inngest.createFunction(
         flowId,
         runCount: currentRunCount,
       });
+      await throwIfExecutionCancelled("post-flow-status-update");
 
       // Validate sync configuration
       await step.run("validate-sync-config", async () => {
@@ -506,13 +726,14 @@ export const flowFunction = inngest.createFunction(
             flow.databaseSource?.connectionId?.toString(),
           destinationDatabaseId: flow.destinationDatabaseId.toString(),
           tableDestination: flow.tableDestination?.tableName,
-          entityFilter: flow.entityFilter,
+          entityFilter: resolveConfiguredEntities(flow).entities,
         });
         return true;
       });
 
       // Variable to track entities synced
       let syncedEntities: string[] = [];
+      const entityStatsMap: Record<string, number> = {};
 
       // ============ DATABASE SOURCE EXECUTION ============
       // For database-to-database flows, use chunked execution for resumability
@@ -589,6 +810,10 @@ export const flowFunction = inngest.createFunction(
         let totalRowsProcessed = 0;
 
         while (!completed) {
+          await throwIfExecutionCancelled("db-sync-before-chunk", {
+            chunkIndex,
+            totalRowsProcessed,
+          });
           const chunkResult = await step.run(
             `db-sync-chunk-${chunkIndex}`,
             async () => {
@@ -655,6 +880,10 @@ export const flowFunction = inngest.createFunction(
               return result;
             },
           );
+          await throwIfExecutionCancelled("db-sync-after-chunk", {
+            chunkIndex,
+            rowsProcessed: chunkResult.rowsProcessed,
+          });
 
           // Update state for next iteration
           chunkState = chunkResult.state;
@@ -670,10 +899,59 @@ export const flowFunction = inngest.createFunction(
             estimatedTotal: chunkState.estimatedTotal,
             completed,
           });
+
+          // Persist heartbeat and progress for live UI updates while running.
+          if (executionId) {
+            await step.run(`update-db-progress-${chunkIndex - 1}`, async () => {
+              const db = Flow.db;
+              const collection = db.collection("flow_executions");
+              await collection.updateOne(
+                { _id: new Types.ObjectId(executionId) },
+                {
+                  $set: {
+                    lastHeartbeat: new Date(),
+                    "stats.recordsProcessed": totalRowsProcessed,
+                    "stats.entityStats.database_query": totalRowsProcessed,
+                    "stats.entityStatus.database_query": completed
+                      ? "completed"
+                      : "syncing",
+                  },
+                  ...(completed
+                    ? {
+                        $addToSet: {
+                          "stats.syncedEntities": "database_query",
+                        },
+                      }
+                    : {}),
+                  $push: {
+                    logs: {
+                      $each: [
+                        {
+                          timestamp: new Date(),
+                          level: "info",
+                          message: `Database chunk ${chunkIndex - 1} processed (${totalRowsProcessed} total rows)`,
+                          metadata: {
+                            flowId,
+                            executionId,
+                            entity: "database_query",
+                            chunkIndex: chunkIndex - 1,
+                            rowsProcessed: chunkResult.rowsProcessed,
+                            totalProcessed: totalRowsProcessed,
+                          },
+                        },
+                      ],
+                      $slice: -200,
+                    },
+                  },
+                } as any,
+              );
+            });
+          }
         }
 
         // Finalize staging table swap for full sync
         if (flow.syncMode === "full") {
+          await throwIfExecutionCancelled("db-sync-before-finalize-staging");
           await step.run("finalize-staging-swap", async () => {
             logger.info("Finalizing full sync (staging table swap)", {
               flowId,
@@ -762,6 +1040,7 @@ export const flowFunction = inngest.createFunction(
         syncedEntities = ["database_query"];
 
         // Update success status
+        await throwIfExecutionCancelled("db-sync-before-success-mark");
         await step.run("update-success-status", async () => {
           logger.info("Updating flow success status", { flowId });
           await Flow.findByIdAndUpdate(flowId, {
@@ -779,8 +1058,8 @@ export const flowFunction = inngest.createFunction(
             const collection = db.collection("flow_executions");
             const completedAt = new Date();
 
-            await collection.updateOne(
-              { _id: new Types.ObjectId(executionId) },
+            const updateResult = await collection.updateOne(
+              { _id: new Types.ObjectId(executionId), status: "running" },
               {
                 $set: {
                   completedAt,
@@ -800,6 +1079,23 @@ export const flowFunction = inngest.createFunction(
                 },
               },
             );
+
+            if (updateResult.matchedCount === 0) {
+              const current = await collection.findOne(
+                { _id: new Types.ObjectId(executionId) },
+                { projection: { status: 1 } },
+              );
+              if (current?.status === "cancelled") {
+                logger.info(
+                  "Skipping completion update because execution is cancelled",
+                  {
+                    flowId,
+                    executionId,
+                  },
+                );
+                return;
+              }
+            }
 
             const execution = await collection.findOne({
               _id: new Types.ObjectId(executionId),
@@ -870,6 +1166,31 @@ export const flowFunction = inngest.createFunction(
       );
 
       if (supportsChunking) {
+        const checkpointEnabled =
+          Boolean(backfill) &&
+          flow.type === "webhook" &&
+          isCdcEnabled &&
+          Boolean(cdcBackfillRunId);
+        let checkpointCompletedEntities = new Set<string>();
+        if (checkpointEnabled) {
+          const completedEntities = (await step.run(
+            "load-cdc-backfill-completed-entities",
+            async () => {
+              return cdcBackfillCheckpointService.listCompletedEntities({
+                workspaceId: String(flow.workspaceId),
+                flowId: String(flow._id),
+                runId: cdcBackfillRunId!,
+              });
+            },
+          )) as string[];
+          checkpointCompletedEntities = new Set(completedEntities);
+          logger.info("Loaded CDC backfill checkpoints", {
+            flowId,
+            runId: cdcBackfillRunId,
+            completedEntities: completedEntities.length,
+          });
+        }
+
         // Get entities to sync
         const entitiesToSync = await step.run(
           "get-entities-to-sync",
@@ -903,10 +1224,20 @@ export const flowFunction = inngest.createFunction(
             const availableEntities = connector
               .getAvailableEntities()
               .filter(e => typeof e === "string" && e.trim().length > 0);
+            const { entities: configuredEntities, hasExplicitSelection } =
+              resolveConfiguredEntities(flow);
+            const scopedBackfillEntities =
+              requestedBackfillEntities.length > 0
+                ? requestedBackfillEntities
+                : backfill &&
+                    flow.backfillState?.scope?.mode === "subset" &&
+                    Array.isArray(flow.backfillState.scope.entities)
+                  ? flow.backfillState.scope.entities
+                  : [];
 
-            if (flow.entityFilter && flow.entityFilter.length > 0) {
+            if (hasExplicitSelection) {
               // Validate requested entities
-              const invalidEntities = flow.entityFilter.filter(
+              const invalidEntities = configuredEntities.filter(
                 e => !availableEntities.includes(e),
               );
               if (invalidEntities.length > 0) {
@@ -914,31 +1245,182 @@ export const flowFunction = inngest.createFunction(
                   `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
                 );
               }
-              // Also filter requested list against non-empty names
-              return flow.entityFilter.filter(
-                e => typeof e === "string" && e.trim().length > 0,
-              );
-            } else {
-              return availableEntities;
+              if (backfill && scopedBackfillEntities.length > 0) {
+                const invalidScope = scopedBackfillEntities.filter(
+                  entity => !configuredEntities.includes(entity),
+                );
+                if (invalidScope.length > 0) {
+                  throw new Error(
+                    `Invalid backfill scope entities: ${invalidScope.join(", ")}. Configured entities: ${configuredEntities.join(", ")}`,
+                  );
+                }
+                return scopedBackfillEntities;
+              }
+              return configuredEntities;
             }
+
+            if (backfill && scopedBackfillEntities.length > 0) {
+              const invalidScope = scopedBackfillEntities.filter(
+                entity => !availableEntities.includes(entity),
+              );
+              if (invalidScope.length > 0) {
+                throw new Error(
+                  `Invalid backfill scope entities: ${invalidScope.join(", ")}. Available entities: ${availableEntities.join(", ")}`,
+                );
+              }
+              return scopedBackfillEntities;
+            }
+            return availableEntities;
           },
         );
 
         // Track the entities we're syncing
         syncedEntities = entitiesToSync;
 
+        // Initialize entity progress so UI can render all entities immediately
+        // with "pending" before each entity actually starts.
+        if (executionId) {
+          await step.run("initialize-entity-progress", async () => {
+            const db = Flow.db;
+            const collection = db.collection("flow_executions");
+            const pendingEntityStatus = Object.fromEntries(
+              entitiesToSync.map(entity => [entity, "pending"]),
+            );
+            const initialEntityStats = Object.fromEntries(
+              entitiesToSync.map(entity => [entity, 0]),
+            );
+
+            await collection.updateOne(
+              { _id: new Types.ObjectId(executionId) },
+              {
+                $set: {
+                  lastHeartbeat: new Date(),
+                  "stats.plannedEntities": entitiesToSync,
+                  "stats.entityStatus": pendingEntityStatus,
+                  "stats.entityStats": initialEntityStats,
+                  "stats.recordsProcessed": 0,
+                },
+              },
+            );
+          });
+        }
+
         // Process each entity with chunked execution
         for (const entity of entitiesToSync) {
+          const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
+          await throwIfExecutionCancelled("connector-before-entity", {
+            entity,
+          });
+          if (checkpointEnabled && checkpointCompletedEntities.has(entity)) {
+            logger.info(
+              "Skipping entity already completed in checkpointed run",
+              {
+                flowId,
+                entity,
+                runId: cdcBackfillRunId,
+              },
+            );
+            entityStatsMap[entity] = Math.max(entityStatsMap[entity] || 0, 1);
+            if (executionId) {
+              await step.run(
+                `mark-entity-skipped-${safeEntityStepId}`,
+                async () => {
+                  const db = Flow.db;
+                  const collection = db.collection("flow_executions");
+                  await collection.updateOne(
+                    { _id: new Types.ObjectId(executionId) },
+                    {
+                      $set: {
+                        lastHeartbeat: new Date(),
+                        "stats.currentEntity": entity,
+                        [`stats.entityStatus.${entity}`]: "completed",
+                      },
+                      $addToSet: {
+                        "stats.syncedEntities": entity,
+                      },
+                    } as any,
+                  );
+                },
+              );
+            }
+            continue;
+          }
+
           logger.info("Starting chunked sync for entity", {
             flowId,
             entity,
           });
 
+          if (executionId) {
+            await step.run(
+              `mark-entity-started-${safeEntityStepId}`,
+              async () => {
+                const db = Flow.db;
+                const collection = db.collection("flow_executions");
+                await collection.updateOne(
+                  { _id: new Types.ObjectId(executionId) },
+                  {
+                    $set: {
+                      lastHeartbeat: new Date(),
+                      "stats.currentEntity": entity,
+                      [`stats.entityStatus.${entity}`]: "syncing",
+                      [`stats.entityStats.${entity}`]: 0,
+                    },
+                    $push: {
+                      logs: {
+                        $each: [
+                          {
+                            timestamp: new Date(),
+                            level: "info",
+                            message: `Starting sync for ${entity}`,
+                            metadata: {
+                              flowId,
+                              executionId,
+                              entity,
+                            },
+                          },
+                        ],
+                        $slice: -200,
+                      },
+                    },
+                  } as any,
+                );
+              },
+            );
+          }
+
           let state: FetchState | undefined;
+          if (checkpointEnabled) {
+            const checkpointState = (await step.run(
+              `load-cdc-backfill-checkpoint-${safeEntityStepId}`,
+              async () => {
+                return cdcBackfillCheckpointService.loadEntityCheckpoint({
+                  workspaceId: String(flow.workspaceId),
+                  flowId: String(flow._id),
+                  runId: cdcBackfillRunId!,
+                  entity,
+                });
+              },
+            )) as FetchState | undefined;
+            if (checkpointState) {
+              state = checkpointState;
+              logger.info("Resuming entity from checkpoint", {
+                flowId,
+                entity,
+                runId: cdcBackfillRunId,
+                totalProcessed: checkpointState.totalProcessed,
+                hasMore: checkpointState.hasMore,
+              });
+            }
+          }
           let chunkIndex = 0;
           let completed = false;
 
           while (!completed) {
+            await throwIfExecutionCancelled("connector-before-chunk", {
+              entity,
+              chunkIndex,
+            });
             const chunkResult = await step.run(
               `sync-${entity}-chunk-${chunkIndex}`,
               async () => {
@@ -962,18 +1444,23 @@ export const flowFunction = inngest.createFunction(
                     switch (level) {
                       case "debug":
                         logger.debug(message, logData);
+                        appendExecutionLog("debug", message, logData);
                         break;
                       case "info":
                         logger.info(message, logData);
+                        appendExecutionLog("info", message, logData);
                         break;
                       case "warn":
                         logger.warn(message, logData);
+                        appendExecutionLog("warn", message, logData);
                         break;
                       case "error":
                         logger.error(message, logData);
+                        appendExecutionLog("error", message, logData);
                         break;
                       default:
                         logger.info(message, logData);
+                        appendExecutionLog("info", message, logData);
                         break;
                     }
                     // Log to execution logger is handled by LogTape database sink
@@ -981,27 +1468,122 @@ export const flowFunction = inngest.createFunction(
                   },
                 };
 
+                // Resolve per-entity layout from entityLayouts
+                const flowTableDest = (flow as any).tableDestination;
+                let resolvedTableDest = flowTableDest;
+                if (flowTableDest && (flow as any).entityLayouts) {
+                  const entityLayout = ((flow as any).entityLayouts || []).find(
+                    (l: any) =>
+                      l.entity === entity || l.entity === entity.split(":")[0],
+                  );
+                  if (entityLayout) {
+                    resolvedTableDest = {
+                      ...flowTableDest,
+                      partitioning: {
+                        enabled: true,
+                        type: "time",
+                        field: entityLayout.partitionField,
+                        granularity: entityLayout.partitionGranularity || "day",
+                      },
+                      clustering: entityLayout.clusterFields?.length
+                        ? {
+                            enabled: true,
+                            fields: entityLayout.clusterFields,
+                          }
+                        : undefined,
+                    };
+                  }
+                }
+
                 const result = await performSyncChunk({
                   dataSourceId: dataSourceId.toString(),
                   destinationId: flow.destinationDatabaseId.toString(),
                   destinationDatabaseName: flow.destinationDatabaseName,
+                  flowId: flowId.toString(),
+                  workspaceId: flow.workspaceId.toString(),
+                  syncEngine: (flow as any).syncEngine,
+                  backfillRunId: backfill
+                    ? cdcBackfillRunId || executionId
+                    : undefined,
                   entity,
                   isIncremental: flow.syncMode === "incremental",
                   state,
-                  maxIterations: 10, // Run 10 API calls per chunk
+                  maxIterations: 10,
                   logger: syncLogger,
-                  step, // Pass Inngest step for serverless-friendly retries
-                  queries: (flow as any).queries, // Pass flow queries for GraphQL/PostHog
+                  step,
+                  queries: (flow as any).queries,
+                  tableDestination: resolvedTableDest,
+                  deleteMode: (flow as any).deleteMode,
                 });
 
-                // Update heartbeat after chunk completes (not during)
+                // Track per-entity progress — use $set with dot-path so
+                // each entity writes independently (survives Inngest step replay)
+                // Keep in-memory aggregate so we can expose global recordsProcessed in UI.
+                const totalWrittenForEntity = Number.isFinite(
+                  result.totalWritten,
+                )
+                  ? result.totalWritten
+                  : result.state.totalProcessed;
+                const totalFetchedForEntity = Number.isFinite(
+                  result.totalFetched,
+                )
+                  ? result.totalFetched
+                  : result.state.totalProcessed;
+                entityStatsMap[entity] = totalWrittenForEntity;
+
                 if (executionId) {
                   try {
                     const db = Flow.db;
                     const collection = db.collection("flow_executions");
+                    const totalProcessedAcrossEntities = Object.values(
+                      entityStatsMap,
+                    ).reduce((sum, value) => sum + value, 0);
                     await collection.updateOne(
                       { _id: new Types.ObjectId(executionId) },
-                      { $set: { lastHeartbeat: new Date() } },
+                      {
+                        $set: {
+                          lastHeartbeat: new Date(),
+                          "stats.recordsProcessed":
+                            totalProcessedAcrossEntities,
+                          "stats.currentEntity": entity,
+                          [`stats.entityStatus.${entity}`]: result.completed
+                            ? "completed"
+                            : "syncing",
+                          [`stats.entityStats.${entity}`]:
+                            totalWrittenForEntity,
+                        },
+                        ...(result.completed
+                          ? {
+                              $addToSet: {
+                                "stats.syncedEntities": entity,
+                              },
+                            }
+                          : {}),
+                        $push: {
+                          logs: {
+                            $each: [
+                              {
+                                timestamp: new Date(),
+                                level: "info",
+                                message: result.completed
+                                  ? `${entity} sync completed (${totalWrittenForEntity} written, ${totalFetchedForEntity} fetched)`
+                                  : `${entity} sync in progress (${totalWrittenForEntity} written, ${totalFetchedForEntity} fetched)`,
+                                metadata: {
+                                  flowId,
+                                  executionId,
+                                  entity,
+                                  chunkIndex,
+                                  totalProcessed: totalWrittenForEntity,
+                                  totalWritten: totalWrittenForEntity,
+                                  totalFetched: totalFetchedForEntity,
+                                  hasMore: !result.completed,
+                                },
+                              },
+                            ],
+                            $slice: -200,
+                          },
+                        },
+                      } as any,
                     );
                   } catch (error) {
                     logger.warn("Failed to update heartbeat", {
@@ -1016,19 +1598,23 @@ export const flowFunction = inngest.createFunction(
                   flowId,
                   entity,
                   chunkIndex,
-                  totalProcessed: result.state.totalProcessed,
+                  totalProcessed: totalWrittenForEntity,
+                  totalWritten: totalWrittenForEntity,
+                  totalFetched: totalFetchedForEntity,
                   hasMore: !result.completed,
                 });
 
                 // Log completion message when entity sync is done
                 if (result.completed) {
                   logger.info(
-                    `✅ ${entity} sync completed (${result.state.totalProcessed} records)`,
+                    `✅ ${entity} sync completed (${totalWrittenForEntity} written, ${totalFetchedForEntity} fetched)`,
                     {
                       flowId,
                       entity,
                       chunkIndex,
                       executionId,
+                      totalWritten: totalWrittenForEntity,
+                      totalFetched: totalFetchedForEntity,
                     },
                   );
                 }
@@ -1036,9 +1622,28 @@ export const flowFunction = inngest.createFunction(
                 return result;
               },
             );
+            await throwIfExecutionCancelled("connector-after-chunk", {
+              entity,
+              chunkIndex,
+            });
 
             state = chunkResult.state;
             completed = chunkResult.completed;
+
+            if (checkpointEnabled) {
+              await step.run(
+                `save-cdc-backfill-checkpoint-${safeEntityStepId}-${chunkIndex}`,
+                async () => {
+                  await cdcBackfillCheckpointService.saveEntityCheckpoint({
+                    workspaceId: String(flow.workspaceId),
+                    flowId: String(flow._id),
+                    runId: cdcBackfillRunId!,
+                    entity,
+                    fetchState: chunkResult.state,
+                  });
+                },
+              );
+            }
             chunkIndex++;
 
             if (chunkIndex > 1000) {
@@ -1054,9 +1659,26 @@ export const flowFunction = inngest.createFunction(
             entity,
             totalChunks: chunkIndex,
           });
+
+          if (checkpointEnabled && state) {
+            await step.run(
+              `complete-cdc-backfill-checkpoint-${safeEntityStepId}`,
+              async () => {
+                await cdcBackfillCheckpointService.markEntityCompleted({
+                  workspaceId: String(flow.workspaceId),
+                  flowId: String(flow._id),
+                  runId: cdcBackfillRunId!,
+                  entity,
+                  fetchState: state,
+                });
+              },
+            );
+            checkpointCompletedEntities.add(entity);
+          }
         }
       } else {
         // Fall back to non-chunked execution for connectors that don't support it
+        await throwIfExecutionCancelled("connector-before-non-chunked-sync");
         await step.run("execute-sync", async () => {
           // For non-chunked sync, we need to get the entities
           const dataSource = await databaseDataSourceManager.getDataSource(
@@ -1076,16 +1698,77 @@ export const flowFunction = inngest.createFunction(
             const connector =
               await syncConnectorRegistry.getConnector(dataSource);
             if (connector) {
-              syncedEntities =
-                flow.entityFilter && flow.entityFilter.length > 0
-                  ? flow.entityFilter
-                  : connector.getAvailableEntities();
+              const availableEntities = connector
+                .getAvailableEntities()
+                .filter(e => typeof e === "string" && e.trim().length > 0);
+              const { entities: configuredEntities, hasExplicitSelection } =
+                resolveConfiguredEntities(flow);
+              const scopedBackfillEntities =
+                requestedBackfillEntities.length > 0
+                  ? requestedBackfillEntities
+                  : backfill &&
+                      flow.backfillState?.scope?.mode === "subset" &&
+                      Array.isArray(flow.backfillState.scope.entities)
+                    ? flow.backfillState.scope.entities
+                    : [];
+
+              if (hasExplicitSelection) {
+                const invalidEntities = configuredEntities.filter(
+                  e => !availableEntities.includes(e),
+                );
+                if (invalidEntities.length > 0) {
+                  throw new Error(
+                    `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
+                  );
+                }
+
+                if (backfill && scopedBackfillEntities.length > 0) {
+                  const invalidScope = scopedBackfillEntities.filter(
+                    entity => !configuredEntities.includes(entity),
+                  );
+                  if (invalidScope.length > 0) {
+                    throw new Error(
+                      `Invalid backfill scope entities: ${invalidScope.join(", ")}. Configured entities: ${configuredEntities.join(", ")}`,
+                    );
+                  }
+                  syncedEntities = scopedBackfillEntities;
+                  return;
+                }
+              }
+
+              if (backfill && scopedBackfillEntities.length > 0) {
+                const invalidScope = scopedBackfillEntities.filter(
+                  entity => !availableEntities.includes(entity),
+                );
+                if (invalidScope.length > 0) {
+                  throw new Error(
+                    `Invalid backfill scope entities: ${invalidScope.join(", ")}. Available entities: ${availableEntities.join(", ")}`,
+                  );
+                }
+                syncedEntities = scopedBackfillEntities;
+                return;
+              }
+
+              syncedEntities = hasExplicitSelection
+                ? configuredEntities
+                : availableEntities;
             }
           }
           logger.info("Starting non-chunked sync operation", {
             flowId,
             syncMode: flow.syncMode,
+            entitiesToSync: syncedEntities,
           });
+
+          if (syncedEntities.length === 0) {
+            logger.info(
+              "No enabled entities selected; skipping sync execution",
+              {
+                flowId,
+              },
+            );
+            return { success: true, skipped: true };
+          }
 
           try {
             // Create a sync logger that wraps Inngest's logger
@@ -1124,7 +1807,7 @@ export const flowFunction = inngest.createFunction(
               dataSourceId.toString(),
               flow.destinationDatabaseId.toString(),
               flow.destinationDatabaseName,
-              flow.entityFilter,
+              syncedEntities,
               flow.syncMode === "incremental",
               syncLogger,
               step, // Pass Inngest step for serverless-friendly retries
@@ -1144,7 +1827,185 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
+      if (backfill && flow.type === "webhook" && !isCdcEnabled) {
+        const replayResult = await step.run(
+          "trigger-webhook-replay",
+          async () => {
+            const flowObjectId = new Types.ObjectId(flowId);
+            const replayBatchSize = Math.max(
+              parseInt(process.env.WEBHOOK_REPLAY_BATCH_SIZE || "1000", 10) ||
+                1000,
+              100,
+            );
+            // 0 (default) means unbounded replay in this completion pass.
+            const maxReplayEvents = Math.max(
+              parseInt(process.env.WEBHOOK_REPLAY_MAX_EVENTS || "0", 10) || 0,
+              0,
+            );
+            const replayCutoff = new Date();
+
+            const totalPending = await WebhookEvent.countDocuments({
+              flowId: flowObjectId,
+              applyStatus: "pending",
+              receivedAt: { $lte: replayCutoff },
+            });
+
+            let queued = 0;
+            let batches = 0;
+            let lastReceivedAt: Date | null = null;
+            let lastEventId: string | null = null;
+
+            while (maxReplayEvents === 0 || queued < maxReplayEvents) {
+              await throwIfExecutionCancelled("webhook-replay-loop", {
+                queued,
+                totalPending,
+              });
+              const cursorClause: Record<string, unknown> =
+                lastReceivedAt && lastEventId
+                  ? {
+                      $or: [
+                        { receivedAt: { $gt: lastReceivedAt } },
+                        {
+                          receivedAt: lastReceivedAt,
+                          eventId: { $gt: lastEventId },
+                        },
+                      ],
+                    }
+                  : {};
+
+              const pendingBatch = (await WebhookEvent.find({
+                flowId: flowObjectId,
+                applyStatus: "pending",
+                receivedAt: { $lte: replayCutoff },
+                ...cursorClause,
+              })
+                .sort({ receivedAt: 1, eventId: 1 })
+                .limit(replayBatchSize)
+                .select({ eventId: 1, receivedAt: 1 })
+                .lean()) as Array<{ eventId: string; receivedAt?: Date }>;
+
+              if (pendingBatch.length === 0) {
+                break;
+              }
+
+              for (const pendingEvent of pendingBatch) {
+                if (maxReplayEvents > 0 && queued >= maxReplayEvents) break;
+                await inngest.send({
+                  name: "webhook/event.process",
+                  data: {
+                    flowId,
+                    eventId: pendingEvent.eventId,
+                    isReplay: true,
+                  },
+                });
+                queued += 1;
+              }
+
+              const tail: { eventId: string; receivedAt?: Date } =
+                pendingBatch[pendingBatch.length - 1];
+              lastReceivedAt = tail.receivedAt
+                ? new Date(tail.receivedAt)
+                : lastReceivedAt;
+              lastEventId = tail.eventId || lastEventId;
+              batches += 1;
+            }
+
+            return {
+              queued,
+              totalPending,
+              replayCutoff: replayCutoff.toISOString(),
+              batches,
+              capped: maxReplayEvents > 0 ? queued >= maxReplayEvents : false,
+              maxReplayEvents: maxReplayEvents > 0 ? maxReplayEvents : null,
+              remainingEstimate: Math.max(totalPending - queued, 0),
+            };
+          },
+        );
+
+        logger.info("Triggered deferred webhook replay", {
+          flowId,
+          queued: replayResult.queued,
+          totalPending: replayResult.totalPending,
+          replayCutoff: replayResult.replayCutoff,
+          batches: replayResult.batches,
+          capped: replayResult.capped,
+          maxReplayEvents: replayResult.maxReplayEvents,
+          remainingEstimate: replayResult.remainingEstimate,
+        });
+
+        await step.run("disable-webhook-backfill-gate", async () => {
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": false,
+              "backfillState.completedAt": new Date(),
+            },
+          });
+        });
+      }
+
+      if (backfill && flow.type === "webhook" && isCdcEnabled) {
+        await step.run("mark-bigquery-cdc-backfill-complete", async () => {
+          await markCdcBackfillCompletedForFlow({
+            flowId: String(flowId),
+            workspaceId: String(flow.workspaceId),
+          });
+        });
+        await step.run("drain-bigquery-cdc-pending-events", async () => {
+          await forceDrainCdcFlow({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flowId),
+          });
+        });
+        await step.run("cdc-transition-backfill-complete", async () => {
+          await syncMachineService.applyBackfillTransition({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flow._id),
+            event: {
+              type: "COMPLETE",
+              reason: "Backfill cursor exhausted",
+            },
+            context: {
+              backfillCursorExhausted: true,
+            },
+          });
+          await syncMachineService.applyStreamTransition({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flow._id),
+            event: {
+              type: "START",
+              reason: "Stream activated after backfill",
+            },
+          });
+        });
+        await step.run("purge-soft-deletes-after-backfill", async () => {
+          await purgeSoftDeletesAfterBackfill({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flowId),
+          });
+        });
+        await step.run("finalize-cdc-backfill-run", async () => {
+          const now = new Date();
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": false,
+              "backfillState.completedAt": now,
+            },
+            $unset: {
+              "backfillState.runId": "",
+            },
+          });
+          if (cdcBackfillRunId) {
+            await cdcBackfillCheckpointService.clearRun({
+              workspaceId: String(flow.workspaceId),
+              flowId: String(flow._id),
+              runId: cdcBackfillRunId,
+            });
+          }
+        });
+      }
+
       // Update flow success status
+      await throwIfExecutionCancelled("connector-before-success-mark");
       await step.run("update-success-status", async () => {
         logger.info("Updating flow success status", { flowId });
         await Flow.findByIdAndUpdate(flowId, {
@@ -1167,7 +2028,7 @@ export const flowFunction = inngest.createFunction(
 
             // Update the execution to completed
             const result = await collection.updateOne(
-              { _id: new Types.ObjectId(executionId) },
+              { _id: new Types.ObjectId(executionId), status: "running" },
               {
                 $set: {
                   completedAt,
@@ -1175,21 +2036,43 @@ export const flowFunction = inngest.createFunction(
                   status: "completed",
                   success: true,
                   stats: {
-                    recordsProcessed: 0, // This would need to be calculated from chunks
+                    recordsProcessed: Object.values(entityStatsMap).reduce(
+                      (sum, value) => sum + value,
+                      0,
+                    ),
                     recordsCreated: 0,
                     recordsUpdated: 0,
                     recordsDeleted: 0,
                     recordsFailed: 0,
                     syncedEntities: syncedEntities || [],
+                    entityStats: entityStatsMap,
+                    entityStatus: Object.fromEntries(
+                      Object.keys(entityStatsMap).map(entity => [
+                        entity,
+                        "completed",
+                      ]),
+                    ),
                   },
                 },
               },
             );
 
             if (result.matchedCount === 0) {
-              throw new Error(
-                `Failed to update execution to completed: ${executionId}`,
+              const current = await collection.findOne(
+                { _id: new Types.ObjectId(executionId) },
+                { projection: { status: 1 } },
               );
+              if (current?.status === "cancelled") {
+                logger.info(
+                  "Skipping completion update because execution is cancelled",
+                  {
+                    flowId,
+                    executionId,
+                  },
+                );
+                return;
+              }
+              throw new Error(`Failed to update execution: ${executionId}`);
             }
 
             // Calculate duration after update
@@ -1227,6 +2110,13 @@ export const flowFunction = inngest.createFunction(
 
       return { success: true, message: "Sync completed successfully" };
     } catch (error: any) {
+      appendExecutionLog("error", "Flow execution failed", {
+        flowId,
+        error: error?.message || String(error),
+        errorName: error?.name,
+        errorCode: error?.code,
+      });
+
       logger.error("Flow failed", {
         flowId,
         error: error.message,
@@ -1365,6 +2255,69 @@ export const flowFunction = inngest.createFunction(
       if (!isCancelled) {
         await Flow.findByIdAndUpdate(flowId, {
           lastError: error.message || "Unknown error",
+        });
+      }
+
+      // Safety: ensure webhook backfill gate is not left active after failures.
+      if (backfill && flowRef?.type === "webhook") {
+        const destinationType = flowRef.tableDestination?.connectionId
+          ? (
+              await DatabaseConnection.findById(
+                flowRef.tableDestination.connectionId,
+              )
+                .select({ type: 1 })
+                .lean()
+            )?.type
+          : undefined;
+        const isCdcEnabled =
+          (flowRef as IFlow).syncEngine === "cdc" &&
+          Boolean((flowRef as IFlow).tableDestination?.connectionId) &&
+          hasCdcDestinationAdapter(destinationType);
+        if (isCdcEnabled) {
+          const safeFlowRef = flowRef as IFlow;
+          await step.run("cdc-transition-fail", async () => {
+            await syncMachineService.applyBackfillTransition({
+              workspaceId: String(safeFlowRef.workspaceId),
+              flowId: String(flowId),
+              event: {
+                type: "FAIL",
+                reason: "Backfill execution failed",
+                errorCode: (error as any)?.code
+                  ? String((error as any).code)
+                  : "FLOW_EXECUTION_FAILED",
+                errorMessage: error.message,
+              },
+            });
+          });
+          await step.run("mark-cdc-backfill-interrupted", async () => {
+            const update: Record<string, unknown> = {
+              "backfillState.active": false,
+              "backfillState.status": "error",
+              "backfillState.completedAt": null,
+            };
+            if (cdcBackfillRunId) {
+              update["backfillState.runId"] = cdcBackfillRunId;
+            }
+            await Flow.findByIdAndUpdate(flowId, {
+              $set: update,
+            });
+          });
+          await step.run("drain-bigquery-cdc-on-failure", async () => {
+            await forceDrainCdcFlow({
+              workspaceId: String(safeFlowRef.workspaceId),
+              flowId: String(flowId),
+            });
+          });
+          throw error;
+        }
+        await step.run("disable-webhook-backfill-gate-on-failure", async () => {
+          await Flow.findByIdAndUpdate(flowId, {
+            $set: {
+              "backfillState.active": false,
+              "backfillState.status": "error",
+              "backfillState.completedAt": new Date(),
+            },
+          });
         });
       }
 
@@ -1714,6 +2667,60 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           count: abandonedCount,
           executionIds: abandonedExecutions.map(e => e._id.toString()),
         });
+
+        // If a webhook backfill execution is abandoned, do not leave
+        // backfillState.active stuck forever. Clear the gate for flows that
+        // no longer have any running execution.
+        const abandonedFlowIds = Array.from(
+          new Set(
+            abandonedExecutions
+              .map(e =>
+                e.flowId instanceof Types.ObjectId
+                  ? e.flowId
+                  : new Types.ObjectId(String(e.flowId)),
+              )
+              .filter(Boolean),
+          ),
+        );
+
+        if (abandonedFlowIds.length > 0) {
+          const stillRunningFlowIds = (await executionsCollection.distinct(
+            "flowId",
+            {
+              flowId: { $in: abandonedFlowIds },
+              status: "running",
+            },
+          )) as Types.ObjectId[];
+
+          const runningSet = new Set(
+            stillRunningFlowIds.map(id => id.toString()),
+          );
+          const staleGateFlowIds = abandonedFlowIds.filter(
+            id => !runningSet.has(id.toString()),
+          );
+
+          if (staleGateFlowIds.length > 0) {
+            const gateResetResult = await Flow.updateMany(
+              {
+                _id: { $in: staleGateFlowIds },
+                type: "webhook",
+                "backfillState.active": true,
+              },
+              {
+                $set: {
+                  "backfillState.active": false,
+                  "backfillState.completedAt": now,
+                },
+              },
+            );
+
+            logger.warn("Reset stale webhook backfill gates", {
+              matched: gateResetResult.matchedCount,
+              modified: gateResetResult.modifiedCount,
+              flowIds: staleGateFlowIds.map(id => id.toString()),
+            });
+          }
+        }
       }
 
       // 2. Clean up stale flow locks

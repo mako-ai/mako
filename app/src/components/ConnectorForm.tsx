@@ -300,6 +300,27 @@ function ConnectorForm({
     }));
   };
 
+  const getDisplayValue = (fieldName: string, fieldValue: unknown): unknown => {
+    if (!showDecryptedFields[fieldName] || !decryptedValues[fieldName]) {
+      return fieldValue;
+    }
+
+    const persistedEncryptedValue =
+      connector?.config &&
+      typeof connector.config === "object" &&
+      connector.config !== null
+        ? (connector.config as Record<string, unknown>)[fieldName]
+        : undefined;
+
+    // Show decrypted text only while value is still the persisted encrypted blob.
+    // Once user edits, keep showing the live RHF value so the field remains editable.
+    if (fieldValue !== persistedEncryptedValue) {
+      return fieldValue;
+    }
+
+    return decryptedValues[fieldName];
+  };
+
   const onSubmitInternal = (values: Record<string, unknown>) => {
     // form submitted
     const { dirtyFields } = form.formState;
@@ -523,11 +544,7 @@ function ConnectorForm({
                   fieldState.error ? "This field is required" : helperText
                 }
                 type={showDecryptedFields[name] ? "text" : fieldType}
-                value={
-                  showDecryptedFields[name] && decryptedValues[name]
-                    ? decryptedValues[name]
-                    : field.value
-                }
+                value={getDisplayValue(name, field.value)}
                 autoComplete="false"
                 name={`config_${name}`}
                 slotProps={{
@@ -603,11 +620,7 @@ function ConnectorForm({
               fullWidth
               margin="normal"
               type={showDecryptedFields[name] ? "text" : fieldType}
-              value={
-                showDecryptedFields[name] && decryptedValues[name]
-                  ? decryptedValues[name]
-                  : field.value
-              }
+              value={getDisplayValue(name, field.value)}
               label={label}
               placeholder={placeholder}
               error={!!fieldState.error}

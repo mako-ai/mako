@@ -321,6 +321,85 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     return true;
   }
 
+  async ensureSchema(
+    database: IDatabaseConnection,
+    schemaName: string,
+  ): Promise<{ success: boolean; created?: boolean; error?: string }> {
+    const query = `CREATE SCHEMA IF NOT EXISTS ${escapeIdentifier(schemaName)};`;
+    const result = await this.executeQuery(database, query);
+    return {
+      success: result.success,
+      created: result.success ? true : undefined,
+      error: result.error,
+    };
+  }
+
+  async addMissingColumns(
+    database: IDatabaseConnection,
+    tableName: string,
+    schemaName: string,
+    rows: Record<string, unknown>[],
+  ): Promise<void> {
+    if (rows.length === 0) return;
+
+    const schema = schemaName || "public";
+    const existingColumnsQuery = `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = '${schema.replace(/'/g, "''")}'
+      AND table_name = '${tableName.replace(/'/g, "''")}';
+    `;
+    const existingColumnsResult = await this.executeQuery(
+      database,
+      existingColumnsQuery,
+    );
+    if (!existingColumnsResult.success) {
+      throw new Error(
+        existingColumnsResult.error ||
+          "Failed to inspect PostgreSQL table columns",
+      );
+    }
+
+    const existingColumns = new Set<string>(
+      (existingColumnsResult.data || []).map((row: any) =>
+        String(row.column_name).toLowerCase(),
+      ),
+    );
+
+    const allKeys = new Set<string>();
+    for (const row of rows) {
+      Object.keys(row).forEach(key => allKeys.add(key));
+    }
+
+    const missingColumns: Array<{ key: string; colType: string }> = [];
+    for (const key of allKeys) {
+      if (!key || key.includes(".")) continue;
+      if (!existingColumns.has(key.toLowerCase())) {
+        const sampleValue = rows.find(
+          row => row[key] !== null && row[key] !== undefined,
+        )?.[key];
+        missingColumns.push({
+          key,
+          colType: inferPostgresType(sampleValue),
+        });
+      }
+    }
+
+    if (missingColumns.length === 0) return;
+
+    const fullTableName = `${escapeIdentifier(schema)}.${escapeIdentifier(tableName)}`;
+    for (const { key, colType } of missingColumns) {
+      const alterQuery = `ALTER TABLE ${fullTableName} ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType};`;
+      const alterResult = await this.executeQuery(database, alterQuery);
+      if (!alterResult.success) {
+        throw new Error(
+          alterResult.error ||
+            `Failed to add missing PostgreSQL column: ${String(key)}`,
+        );
+      }
+    }
+  }
+
   /**
    * Get the schema (column types) for a query using PostgreSQL's metadata.
    *
@@ -565,6 +644,55 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     };
   }
 
+  private async ensureConflictTargetIndex(
+    database: IDatabaseConnection,
+    schema: string,
+    tableName: string,
+    keyColumns: string[],
+  ): Promise<void> {
+    const fullTableName = `${escapeIdentifier(schema)}.${escapeIdentifier(tableName)}`;
+    const indexExistsQuery = `
+      SELECT 1
+      FROM pg_indexes
+      WHERE schemaname = '${schema.replace(/'/g, "''")}'
+        AND tablename = '${tableName.replace(/'/g, "''")}'
+        AND indexdef ILIKE '%UNIQUE%'
+        ${keyColumns
+          .map(
+            column => `AND indexdef ILIKE '%"${column.replace(/"/g, '""')}"%'`,
+          )
+          .join("\n        ")}
+      LIMIT 1;
+    `;
+
+    const existsResult = await this.executeQuery(database, indexExistsQuery);
+    if (!existsResult.success) {
+      throw new Error(
+        existsResult.error || "Failed to verify PostgreSQL conflict index",
+      );
+    }
+    if ((existsResult.data || []).length > 0) return;
+
+    const rawIndexName = `${tableName}_${keyColumns.join("_")}_cdc_uidx`
+      .replace(/[^a-zA-Z0-9_]/g, "_")
+      .toLowerCase();
+    const indexName = rawIndexName.slice(0, 63);
+    const createIndexQuery = `
+      CREATE UNIQUE INDEX IF NOT EXISTS ${escapeIdentifier(indexName)}
+      ON ${fullTableName} (${keyColumns.map(escapeIdentifier).join(", ")});
+    `;
+    const createIndexResult = await this.executeQuery(
+      database,
+      createIndexQuery,
+    );
+    if (!createIndexResult.success) {
+      throw new Error(
+        createIndexResult.error ||
+          `Failed to create PostgreSQL conflict index (${indexName})`,
+      );
+    }
+  }
+
   /**
    * Upsert a batch of rows into a table
    */
@@ -590,6 +718,7 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     const schema = options?.schema || "public";
     const fullTableName = `${escapeIdentifier(schema)}.${escapeIdentifier(tableName)}`;
     const strategy = options?.conflictStrategy || "update";
+    const targetAlias = "target";
 
     // Get all unique column names from all rows
     const allColumns = new Set<string>();
@@ -608,6 +737,23 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     // Build conflict clause
     const keyColumnList = keyColumns.map(escapeIdentifier).join(", ");
     let conflictClause: string;
+    const hasSourceOrdering =
+      columns.includes("_mako_source_ts") &&
+      !keyColumns.includes("_mako_source_ts");
+    const hasIngestOrdering =
+      columns.includes("_mako_ingest_seq") &&
+      !keyColumns.includes("_mako_ingest_seq");
+    const orderingGuard = hasSourceOrdering
+      ? `
+        WHERE COALESCE(EXCLUDED.${escapeIdentifier("_mako_source_ts")}, '1970-01-01T00:00:00.000Z'::timestamptz) >=
+              COALESCE(${targetAlias}.${escapeIdentifier("_mako_source_ts")}, '1970-01-01T00:00:00.000Z'::timestamptz)
+      `
+      : hasIngestOrdering
+        ? `
+        WHERE COALESCE(EXCLUDED.${escapeIdentifier("_mako_ingest_seq")}, -1) >=
+              COALESCE(${targetAlias}.${escapeIdentifier("_mako_ingest_seq")}, -1)
+      `
+        : "";
 
     if (strategy === "ignore") {
       conflictClause = `ON CONFLICT (${keyColumnList}) DO NOTHING`;
@@ -618,7 +764,7 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
         .map(c => `${escapeIdentifier(c)} = EXCLUDED.${escapeIdentifier(c)}`)
         .join(", ");
       conflictClause = updateCols
-        ? `ON CONFLICT (${keyColumnList}) DO UPDATE SET ${updateCols}`
+        ? `ON CONFLICT (${keyColumnList}) DO UPDATE SET ${updateCols}${orderingGuard}`
         : "ON CONFLICT DO NOTHING";
     } else {
       // Default: update
@@ -627,11 +773,20 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
         .map(c => `${escapeIdentifier(c)} = EXCLUDED.${escapeIdentifier(c)}`)
         .join(", ");
       conflictClause = updateCols
-        ? `ON CONFLICT (${keyColumnList}) DO UPDATE SET ${updateCols}`
+        ? `ON CONFLICT (${keyColumnList}) DO UPDATE SET ${updateCols}${orderingGuard}`
         : "ON CONFLICT DO NOTHING";
     }
 
-    const query = `INSERT INTO ${fullTableName} (${columnList}) VALUES\n${valueRows.join(",\n")}\n${conflictClause};`;
+    if (strategy !== "ignore") {
+      await this.ensureConflictTargetIndex(
+        database,
+        schema,
+        tableName,
+        keyColumns,
+      );
+    }
+
+    const query = `INSERT INTO ${fullTableName} AS ${targetAlias} (${columnList}) VALUES\n${valueRows.join(",\n")}\n${conflictClause};`;
 
     const result = await this.executeQuery(database, query);
 
@@ -711,6 +866,43 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     const result = await this.executeQuery(database, query);
 
     return { success: result.success, error: result.error };
+  }
+
+  async deleteBatch(
+    database: IDatabaseConnection,
+    tableName: string,
+    keyFilters: Record<string, unknown>,
+    options?: InsertOptions,
+  ): Promise<BatchWriteResult> {
+    const schema = options?.schema || "public";
+    const fullTableName = `${escapeIdentifier(schema)}.${escapeIdentifier(tableName)}`;
+    const filterEntries = Object.entries(keyFilters || {}).filter(
+      ([, value]) => value !== undefined,
+    );
+
+    if (filterEntries.length === 0) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "deleteBatch requires at least one key filter",
+      };
+    }
+
+    const whereClause = filterEntries
+      .map(([column, value]) =>
+        value === null
+          ? `${escapeIdentifier(column)} IS NULL`
+          : `${escapeIdentifier(column)} = ${formatValue(value)}`,
+      )
+      .join(" AND ");
+    const query = `DELETE FROM ${fullTableName} WHERE ${whereClause};`;
+    const result = await this.executeQuery(database, query);
+
+    return {
+      success: result.success,
+      rowsWritten: result.success ? (result.rowCount ?? 0) : 0,
+      error: result.error,
+    };
   }
 
   /**

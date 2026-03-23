@@ -40,7 +40,6 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       _id: flowId,
       workspaceId: workspaceId,
       type: "webhook",
-      enabled: true,
     });
 
     if (!flow) {
@@ -111,7 +110,13 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       flowId,
       workspaceId,
       eventId: event.id || uuidv4(),
-      eventType: event.type || event.event_type || event.action || "unknown",
+      eventType:
+        event.type ||
+        event.event_type ||
+        event.action ||
+        (event.event?.object_type && event.event?.action
+          ? `${event.event.object_type}.${event.event.action}`
+          : "unknown"),
       receivedAt: new Date(),
       status: "pending",
       attempts: 0,
@@ -131,17 +136,64 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
     );
 
     // 6. Trigger immediate processing via Inngest
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
+    try {
+      await inngest.send({
+        name: "webhook/event.process",
+        data: {
+          flowId,
+          workspaceId,
+          eventId: webhookEvent.eventId,
+        },
+      });
+    } catch (enqueueError) {
+      await WebhookEvent.updateOne(
+        { _id: webhookEvent._id },
+        {
+          $set: {
+            status: "failed",
+            applyStatus: "failed",
+            processedAt: new Date(),
+            applyError: {
+              code: "ENQUEUE_FAILED",
+              message:
+                enqueueError instanceof Error
+                  ? enqueueError.message
+                  : String(enqueueError),
+            },
+            error: {
+              message:
+                enqueueError instanceof Error
+                  ? enqueueError.message
+                  : String(enqueueError),
+            },
+          },
+        },
+      );
+
+      logger.error("Failed to enqueue webhook event for processing", {
         flowId,
         workspaceId,
         eventId: webhookEvent.eventId,
-      },
-    });
+        error:
+          enqueueError instanceof Error
+            ? enqueueError.message
+            : String(enqueueError),
+      });
+
+      return c.json(
+        {
+          received: false,
+          eventId: webhookEvent.eventId,
+          error: "Failed to enqueue webhook event for processing",
+        },
+        200,
+      );
+    }
 
     // 8. Return success immediately
-    logger.info("Webhook processed successfully", { eventId: webhookEvent.eventId });
+    logger.info("Webhook processed successfully", {
+      eventId: webhookEvent.eventId,
+    });
     return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
   } catch (error) {
     logger.error("Webhook handler error", { error });

@@ -151,6 +151,10 @@ jobs:
       BASE_URL: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai
       CLIENT_URL: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai
       VITE_API_URL: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai/api
+      # Isolate Inngest runs per PR (branch environments)
+      INNGEST_ENV: pr-${{ needs.detect-changes.outputs.pr_number }}
+      # Keep preview costs predictable; manual/webhook triggers still work
+      DISABLE_SCHEDULED_SYNC: "true"
       # PR previews disable OAuth since redirect URLs can't be dynamically registered
       DISABLE_OAUTH: "true"
       # Staging secrets (from staging environment)
@@ -471,9 +475,13 @@ jobs:
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_ENV=pr-${PR_NUMBER} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
+            --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
+            --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
+            --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
             --set-env-vars NODE_ENV=production \
+            --set-env-vars DISABLE_SCHEDULED_SYNC=${DISABLE_SCHEDULED_SYNC} \
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
