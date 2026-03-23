@@ -12,6 +12,9 @@ TEST_PORT=8090
 export BASE_URL="https://app.mako.ai"
 export CLIENT_URL="https://app.mako.ai"  
 export VITE_API_URL="https://app.mako.ai/api"
+export DASHBOARD_ARTIFACT_STORE="gcs"
+export GCS_DASHBOARD_BUCKET="revops-462013-dashboard-artifacts"
+export DASHBOARD_ARTIFACT_PREFIX="dashboard-artifacts/prod"
 
 # Install dependencies
 echo "Installing dependencies..."
@@ -111,6 +114,35 @@ echo "API startup verification succeeded."
 #     --region=$REGION \
 #     --format="get(address)"
 # -------------------------------------------------------------
+#
+# -------------------------------------------------------------
+# Dashboard Artifact Storage (ONE-TIME - commented out)
+# This provisions a GCS bucket for server-side dashboard parquet artifacts.
+# Runtime service account:
+#   813928377715-compute@developer.gserviceaccount.com
+# Bucket:
+#   gs://revops-462013-dashboard-artifacts
+# -------------------------------------------------------------
+#
+# # 1. Create the artifact bucket in the same region as Cloud Run
+# gcloud storage buckets create gs://revops-462013-dashboard-artifacts \
+#     --project=$PROJECT_ID \
+#     --location=$REGION \
+#     --uniform-bucket-level-access
+#
+# # 2. Grant the Cloud Run runtime service account object access
+# gcloud storage buckets add-iam-policy-binding gs://revops-462013-dashboard-artifacts \
+#     --project=$PROJECT_ID \
+#     --member="serviceAccount:813928377715-compute@developer.gserviceaccount.com" \
+#     --role="roles/storage.objectAdmin"
+#
+# # 3. Grant signed URL capability to the runtime service account
+# gcloud iam service-accounts add-iam-policy-binding \
+#     813928377715-compute@developer.gserviceaccount.com \
+#     --project=$PROJECT_ID \
+#     --member="serviceAccount:813928377715-compute@developer.gserviceaccount.com" \
+#     --role="roles/iam.serviceAccountTokenCreator"
+# -------------------------------------------------------------
 
 # Rebuild and redeploy (explicitly build for linux/amd64 platform)
 echo "Building Docker image..."
@@ -153,11 +185,14 @@ docker push $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest
   echo "BASE_URL: \"$BASE_URL\""
   echo "CLIENT_URL: \"$CLIENT_URL\""
   echo "VITE_API_URL: \"$VITE_API_URL\""
-  awk -F= '/^[^#]/ && NF==2 && $1!="NODE_ENV" && $1!="BASE_URL" && $1!="CLIENT_URL" && $1!="VITE_API_URL" {print $1": \""$2"\""}' .env
+  echo "DASHBOARD_ARTIFACT_STORE: \"$DASHBOARD_ARTIFACT_STORE\""
+  echo "GCS_DASHBOARD_BUCKET: \"$GCS_DASHBOARD_BUCKET\""
+  echo "DASHBOARD_ARTIFACT_PREFIX: \"$DASHBOARD_ARTIFACT_PREFIX\""
+  awk -F= '/^[^#]/ && NF==2 && $1!="NODE_ENV" && $1!="BASE_URL" && $1!="CLIENT_URL" && $1!="VITE_API_URL" && $1!="DASHBOARD_ARTIFACT_STORE" && $1!="GCS_DASHBOARD_BUCKET" && $1!="DASHBOARD_ARTIFACT_PREFIX" {print $1": \""$2"\""}' .env
 } > env.yaml
 
 # Update Cloud Run service
-gcloud run deploy mako \
+gcloud run deploy revops-fullstack \
   --image $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest \
   --region $REGION \
   --env-vars-file env.yaml \

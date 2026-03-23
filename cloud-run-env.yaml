@@ -4,4 +4,21 @@ NODE_ENV: production
 PORT: "3001"
 DATABASE_URL: "mongodb://localhost:27017/mako"
 ENCRYPTION_KEY: "your_32_character_hex_key_for_encryption"
+# Dashboard artifact storage backend:
+# - filesystem (default)
+# - gcs
+# - s3
+DASHBOARD_ARTIFACT_STORE: "filesystem"
+
+# Optional key prefix / directory prefix for dashboard parquet artifacts.
+# Example values:
+# - dashboards
+# - dashboard-artifacts/prod
+DASHBOARD_ARTIFACT_PREFIX: "dashboards"
+
+# GCS backend only:
+# GCS_DASHBOARD_BUCKET: "your-gcs-bucket"
+
+# Filesystem backend only:
+# DASHBOARD_ARTIFACT_DIR: "/data/dashboard-artifacts"
 # Add any other variables from your .env file here

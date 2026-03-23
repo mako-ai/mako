@@ -75,7 +75,7 @@ function formatBytes(bytes: number): string {
 }
 
 function resolveWidgetLayout(widget: DashboardWidget) {
-  const fallback = { x: 0, y: 0, w: 6, h: 4, minW: 2, minH: 2 };
+  const fallback = { x: 0, y: 0, w: 6, h: 4, minW: 1, minH: 1 };
   const candidate = (widget as any).layout ?? (widget as any).layouts?.lg;
   if (!candidate || typeof candidate !== "object") {
     return fallback;
@@ -513,8 +513,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           y: bpLayout.y ?? 0,
           w: bpLayout.w ?? 6,
           h: bpLayout.h ?? 4,
-          minW: bpLayout.minW || 2,
-          minH: bpLayout.minH || 2,
+          minW: bpLayout.minW || 1,
+          minH: bpLayout.minH || 1,
         });
       }
       if (items.length > 0) result[bp] = items;
@@ -526,8 +526,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         y: 0,
         w: 6,
         h: 4,
-        minW: 2,
-        minH: 2,
+        minW: 1,
+        minH: 1,
       }));
     }
     return result;
