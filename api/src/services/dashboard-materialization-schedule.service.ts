@@ -55,7 +55,6 @@ export function validateDashboardMaterializationSchedule(
   CronExpressionParser.parse(cron, {
     currentDate: new Date(),
     tz: schedule.timezone,
-    strict: true,
   });
 
   return {
@@ -88,7 +87,6 @@ export function isDashboardMaterializationDue(input: {
   const interval = CronExpressionParser.parse(schedule.cron, {
     currentDate: input.lastRefreshedAt,
     tz: schedule.timezone,
-    strict: true,
   });
   const nextRunAt = interval.next().toDate();
   return nextRunAt.getTime() <= (input.now ?? new Date()).getTime();
