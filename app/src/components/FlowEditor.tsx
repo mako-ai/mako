@@ -40,16 +40,17 @@ export function FlowEditor({
     ? flows.find(f => f._id === currentFlowId)
     : null;
 
+  const isNewMode = Boolean(isNew && !currentFlowId);
+
   // Determine flow type - for new flows, use the prop; for existing, check the flow
-  const isWebhookFlow = isNew
-    ? flowType === "webhook"
-    : currentFlow?.type === "webhook";
-  const isCdcFlow = !isNew && currentFlow?.syncEngine === "cdc";
+  const isWebhookFlow =
+    currentFlow?.type === "webhook" || (!currentFlow && flowType === "webhook");
+  const isCdcFlow = currentFlow?.syncEngine === "cdc";
 
   // Check if this is a database-to-database flow
-  const isDbFlow = isNew
-    ? flowType === "db-scheduled"
-    : currentFlow?.sourceType === "database";
+  const isDbFlow =
+    currentFlow?.sourceType === "database" ||
+    (!currentFlow && flowType === "db-scheduled");
 
   const handleSaved = (newFlowId: string) => {
     setCurrentFlowId(newFlowId);
@@ -69,7 +70,7 @@ export function FlowEditor({
   };
 
   const handleCancelEdit = () => {
-    if (isNew && !currentFlowId) {
+    if (isNewMode) {
       // For new flows, use the onCancel callback to close the editor
       onCancel?.();
     } else {
@@ -91,7 +92,7 @@ export function FlowEditor({
         isWebhookFlow ? (
           <WebhookFlowForm
             flowId={currentFlowId}
-            isNew={isNew && !currentFlowId}
+            isNew={isNewMode}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}
@@ -100,7 +101,7 @@ export function FlowEditor({
           <DbFlowForm
             ref={dbFlowFormRef as React.Ref<DbFlowFormRef>}
             flowId={currentFlowId}
-            isNew={isNew && !currentFlowId}
+            isNew={isNewMode}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}
@@ -108,7 +109,7 @@ export function FlowEditor({
         ) : (
           <ScheduledFlowForm
             flowId={currentFlowId}
-            isNew={isNew && !currentFlowId}
+            isNew={isNewMode}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}

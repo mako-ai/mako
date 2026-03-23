@@ -844,10 +844,12 @@ export function WebhookFlowForm({
     setIsProvisioningWebhook(true);
     setError(null);
     try {
+      const publicBaseUrl =
+        typeof window !== "undefined" ? window.location.origin : undefined;
       const provisioned = await provisionFlowWebhook(
         currentWorkspace.id,
         currentFlowId,
-        { verifySsl: true },
+        { verifySsl: true, publicBaseUrl },
       );
       if (!provisioned) {
         throw new Error("Webhook provisioning returned no data");

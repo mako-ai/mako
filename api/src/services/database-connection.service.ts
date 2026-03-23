@@ -1288,6 +1288,18 @@ export class DatabaseConnectionService {
 
     return out;
   }
+
+  private getBigQueryPollIntervalMs(): number {
+    const configured = Number.parseInt(
+      process.env.BIGQUERY_QUERY_POLL_INTERVAL_MS || "",
+      10,
+    );
+    if (!Number.isFinite(configured)) {
+      return 1000;
+    }
+    return Math.max(100, configured);
+  }
+
   private async testBigQueryConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
@@ -1399,7 +1411,7 @@ export class DatabaseConnectionService {
 
       // Wait for job completion
       const maxWaitMs = 5 * 60 * 1000;
-      const pollIntervalMs = 1000;
+      const pollIntervalMs = this.getBigQueryPollIntervalMs();
       let waitedMs = 0;
 
       while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
@@ -1575,7 +1587,7 @@ export class DatabaseConnectionService {
       }
 
       const maxWaitMs = 5 * 60 * 1000;
-      const pollIntervalMs = 1000;
+      const pollIntervalMs = this.getBigQueryPollIntervalMs();
       let waitedMs = 0;
 
       while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
@@ -1739,7 +1751,7 @@ export class DatabaseConnectionService {
       }
 
       const maxWaitMs = 5 * 60 * 1000;
-      const pollIntervalMs = 1000;
+      const pollIntervalMs = this.getBigQueryPollIntervalMs();
       let waitedMs = 0;
 
       while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {

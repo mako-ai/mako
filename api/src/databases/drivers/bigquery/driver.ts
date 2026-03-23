@@ -654,7 +654,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     dataset: string,
     rows: Record<string, unknown>[],
   ): Promise<void> {
-    const existingColumns = await this.getTableColumnTypes(
+    const existingColumns = await this.getCachedTableColumnTypes(
       database,
       tableName,
       dataset,
@@ -701,7 +701,54 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const addedColumns: string[] = [];
     const unresolved: Array<{ key: string; error?: string }> = [];
 
+    // Fast path: add all missing columns in one DDL statement.
+    // This avoids N round-trips when payloads contain many new fields.
+    const batchAlterQuery = `ALTER TABLE ${fullTableName} ${missing
+      .map(
+        ({ key, colType }) =>
+          `ADD COLUMN IF NOT EXISTS ${escapeIdentifier(key)} ${colType}`,
+      )
+      .join(", ")}`;
+    const batchResult = await this.executeQuery(database, batchAlterQuery);
+    if (batchResult.success) {
+      for (const { key, colType } of missing) {
+        existingColumns.set(key.toLowerCase(), colType);
+        addedColumns.push(key);
+      }
+    } else {
+      const batchError =
+        typeof batchResult.error === "string"
+          ? batchResult.error
+          : JSON.stringify(batchResult.error);
+
+      if (this.isSchemaContainerMissingError(batchError)) {
+        throw new Error(
+          `BIGQUERY_SCHEMA_UPDATE_FAILED: Unable to add ${missing.length} columns for ${dataset}.${tableName}. First error: ${batchError}`,
+        );
+      }
+
+      this.logger.warn("Batched schema update failed; retrying per column", {
+        table: tableName,
+        missingColumns: missing.length,
+        error: batchError,
+      });
+    }
+
+    if (addedColumns.length === missing.length) {
+      this.logger.info("Schema evolution: added columns", {
+        table: tableName,
+        columns: addedColumns,
+        count: addedColumns.length,
+      });
+      const cacheKey = this.getTableCacheKey(database, dataset, tableName);
+      this.tableColumnTypeCache.set(cacheKey, existingColumns);
+      return;
+    }
+
     for (const { key, colType } of missing) {
+      if (existingColumns.has(key.toLowerCase())) {
+        continue;
+      }
       let added = false;
       let lastError: string | undefined;
 
@@ -719,6 +766,11 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
           typeof result.error === "string"
             ? result.error
             : JSON.stringify(result.error);
+        if (this.isSchemaContainerMissingError(lastError)) {
+          throw new Error(
+            `BIGQUERY_SCHEMA_UPDATE_FAILED: Unable to add ${missing.length} columns for ${dataset}.${tableName}. First error: ${lastError}`,
+          );
+        }
         const quotaExceeded = this.isTableUpdateQuotaExceededError(lastError);
         this.logger.warn("Failed to add column", {
           table: tableName,
@@ -779,6 +831,15 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       normalized.includes("table exceeded quota for table update operations") ||
       normalized.includes("job exceeded rate limits") ||
       normalized.includes("rate limit exceeded")
+    );
+  }
+
+  private isSchemaContainerMissingError(error?: string): boolean {
+    if (!error) return false;
+    const normalized = error.toLowerCase();
+    return (
+      normalized.includes("not found: dataset") ||
+      normalized.includes("was not found in location")
     );
   }
 

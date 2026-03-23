@@ -24,6 +24,10 @@ interface BigQueryAdapterConfig {
 
 export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   readonly destinationType = "bigquery";
+  private readonly writerCache = new Map<
+    string,
+    Awaited<ReturnType<typeof createDestinationWriter>>
+  >();
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
@@ -180,7 +184,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }
 
   private async createWriter(layout: CdcEntityLayout) {
-    return createDestinationWriter(
+    const cacheKey = layout.tableName;
+    const cached = this.writerCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const writer = await createDestinationWriter(
       {
         destinationDatabaseId: new Types.ObjectId(
           this.config.destinationDatabaseId,
@@ -213,5 +223,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       },
       "cdc-bigquery-adapter",
     );
+
+    this.writerCache.set(cacheKey, writer);
+    return writer;
   }
 }

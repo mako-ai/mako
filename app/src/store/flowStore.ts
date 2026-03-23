@@ -475,6 +475,7 @@ interface FlowStore extends FlowStoreState {
     options?: {
       verifySsl?: boolean;
       events?: string[];
+      publicBaseUrl?: string;
     },
   ) => Promise<ProvisionedWebhook | null>;
 
@@ -1119,6 +1120,7 @@ export const useFlowStore = create<FlowStore>()(
           }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/provision`, {
             verifySsl: options?.verifySsl,
             events: options?.events,
+            publicBaseUrl: options?.publicBaseUrl,
           });
           if (!response.success) {
             throw new Error(response.error || "Failed to provision webhook");

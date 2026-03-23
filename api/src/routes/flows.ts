@@ -25,7 +25,8 @@ import { getCdcFlowStats } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
 import { cdcLiveTableName } from "../sync-cdc/normalization";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
-import { connectorRegistry } from "../connectors/registry";
+import { syncConnectorRegistry } from "../sync/connector-registry";
+import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 
 const logger = loggers.inngest("flow");
 
@@ -53,6 +54,75 @@ function getRequestBaseUrl(c: RequestContextLike): string {
   }
 
   return requestUrl.origin;
+}
+
+function isLoopbackOrPrivateHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.endsWith(".localhost")
+  ) {
+    return true;
+  }
+
+  if (/^10\./.test(host) || /^192\.168\./.test(host)) {
+    return true;
+  }
+
+  const match172 = host.match(/^172\.(\d{1,3})\./);
+  if (match172) {
+    const secondOctet = Number(match172[1]);
+    if (secondOctet >= 16 && secondOctet <= 31) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function resolveWebhookBaseUrl(
+  c: RequestContextLike,
+  preferredBaseUrl?: string,
+): string {
+  if (preferredBaseUrl) {
+    try {
+      return new URL(preferredBaseUrl).origin;
+    } catch {
+      // Ignore invalid preferred URL and fall back to inferred values.
+    }
+  }
+
+  const requestBaseUrl = getRequestBaseUrl(c);
+  try {
+    const parsedRequestBase = new URL(requestBaseUrl);
+    if (!isLoopbackOrPrivateHostname(parsedRequestBase.hostname)) {
+      return parsedRequestBase.origin;
+    }
+  } catch {
+    // Fall through to env candidates.
+  }
+
+  const envCandidates = [
+    process.env.WEBHOOK_PUBLIC_BASE_URL,
+    process.env.PUBLIC_URL,
+    process.env.API_BASE_URL,
+    process.env.BASE_URL,
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of envCandidates) {
+    try {
+      const parsed = new URL(candidate);
+      if (!isLoopbackOrPrivateHostname(parsed.hostname)) {
+        return parsed.origin;
+      }
+    } catch {
+      // Ignore invalid env URL candidate and keep checking.
+    }
+  }
+
+  return requestBaseUrl;
 }
 
 function toLagSeconds(value: Date | null): number | null {
@@ -1464,7 +1534,23 @@ flowRoutes.post("/:flowId/webhook/provision", async c => {
       return c.json({ success: false, error: "Connector not found" }, 404);
     }
 
-    const connector = connectorRegistry.getConnector(connectorSource as any);
+    const decryptedConnectorSource =
+      await databaseDataSourceManager.getDataSource(
+        connectorSource._id.toString(),
+      );
+    if (!decryptedConnectorSource) {
+      return c.json(
+        {
+          success: false,
+          error: "Connector configuration could not be loaded",
+        },
+        404,
+      );
+    }
+
+    const connector = await syncConnectorRegistry.getConnector(
+      decryptedConnectorSource,
+    );
     if (!connector || !connector.supportsWebhooks()) {
       return c.json(
         {
@@ -1485,11 +1571,38 @@ flowRoutes.post("/:flowId/webhook/provision", async c => {
       );
     }
 
+    const requestedPublicBaseUrl =
+      typeof body.publicBaseUrl === "string" && body.publicBaseUrl.trim()
+        ? body.publicBaseUrl.trim()
+        : undefined;
+
     const endpoint = generateWebhookEndpoint(
       workspaceId,
       flow._id.toString(),
-      getRequestBaseUrl(c),
+      resolveWebhookBaseUrl(c, requestedPublicBaseUrl),
     );
+    let parsedEndpoint: URL;
+    try {
+      parsedEndpoint = new URL(endpoint);
+    } catch {
+      return c.json(
+        {
+          success: false,
+          error: `Generated webhook endpoint is invalid: ${endpoint}`,
+        },
+        400,
+      );
+    }
+
+    if (isLoopbackOrPrivateHostname(parsedEndpoint.hostname)) {
+      return c.json(
+        {
+          success: false,
+          error: `Generated webhook endpoint is not publicly reachable: ${endpoint}. Open the app through your public tunnel URL before provisioning, or set PUBLIC_URL/BASE_URL to a public HTTPS origin.`,
+        },
+        400,
+      );
+    }
     const requestedEvents = Array.isArray(body.events)
       ? body.events
           .filter(
@@ -1686,9 +1799,10 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
 
     let destinationByEntity = new Map<string, number | null>();
     if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
-      const destination = await DatabaseConnection.findById(
+      const destinationDoc = await DatabaseConnection.findById(
         flow.tableDestination.connectionId,
-      ).lean();
+      );
+      const destination = destinationDoc?.toObject();
 
       if (destination) {
         const counts = await Promise.all(

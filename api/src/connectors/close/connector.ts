@@ -52,6 +52,87 @@ const CLOSE_ACTIVITY_TYPES = [
   },
 ];
 
+type CloseWebhookSelector = {
+  object_type: string;
+  action: string;
+};
+
+// Close webhook selectors from official event list.
+const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
+  { object_type: "lead", action: "created" },
+  { object_type: "lead", action: "updated" },
+  { object_type: "lead", action: "deleted" },
+  { object_type: "lead", action: "merged" },
+  { object_type: "contact", action: "updated" },
+  { object_type: "opportunity", action: "created" },
+  { object_type: "opportunity", action: "updated" },
+  { object_type: "opportunity", action: "deleted" },
+  { object_type: "activity.call", action: "created" },
+  { object_type: "activity.email", action: "created" },
+  { object_type: "activity.email", action: "updated" },
+  { object_type: "activity.email", action: "deleted" },
+  { object_type: "activity.email", action: "sent" },
+  { object_type: "activity.email_thread", action: "created" },
+  { object_type: "activity.email_thread", action: "updated" },
+  { object_type: "activity.email_thread", action: "deleted" },
+  { object_type: "activity.sms", action: "created" },
+  { object_type: "activity.sms", action: "updated" },
+  { object_type: "activity.sms", action: "deleted" },
+  { object_type: "activity.sms", action: "sent" },
+  { object_type: "activity.note", action: "created" },
+  { object_type: "activity.note", action: "updated" },
+  { object_type: "activity.note", action: "deleted" },
+  { object_type: "activity.meeting", action: "created" },
+  { object_type: "activity.meeting", action: "updated" },
+  { object_type: "activity.meeting", action: "deleted" },
+  { object_type: "activity.meeting", action: "scheduled" },
+  { object_type: "activity.meeting", action: "started" },
+  { object_type: "activity.meeting", action: "completed" },
+  { object_type: "activity.meeting", action: "canceled" },
+  { object_type: "activity.lead_status_change", action: "created" },
+  { object_type: "activity.lead_status_change", action: "updated" },
+  { object_type: "activity.lead_status_change", action: "deleted" },
+  { object_type: "activity.opportunity_status_change", action: "created" },
+  { object_type: "activity.opportunity_status_change", action: "updated" },
+  { object_type: "activity.opportunity_status_change", action: "deleted" },
+  { object_type: "activity.task_completed", action: "created" },
+  { object_type: "activity.task_completed", action: "deleted" },
+  { object_type: "activity.custom_activity", action: "created" },
+  { object_type: "activity.custom_activity", action: "updated" },
+  { object_type: "activity.custom_activity", action: "deleted" },
+  { object_type: "custom_fields.lead", action: "created" },
+  { object_type: "custom_fields.lead", action: "updated" },
+  { object_type: "custom_fields.lead", action: "deleted" },
+  { object_type: "custom_fields.contact", action: "created" },
+  { object_type: "custom_fields.contact", action: "updated" },
+  { object_type: "custom_fields.contact", action: "deleted" },
+  { object_type: "custom_fields.opportunity", action: "created" },
+  { object_type: "custom_fields.opportunity", action: "updated" },
+  { object_type: "custom_fields.opportunity", action: "deleted" },
+  { object_type: "custom_fields.activity", action: "deleted" },
+  { object_type: "custom_fields.custom_object", action: "deleted" },
+  { object_type: "custom_fields.shared", action: "created" },
+  { object_type: "custom_fields.shared", action: "updated" },
+  { object_type: "custom_fields.shared", action: "deleted" },
+  { object_type: "custom_activity_type", action: "updated" },
+  { object_type: "custom_object_type", action: "updated" },
+  { object_type: "custom_object", action: "created" },
+  { object_type: "custom_object", action: "updated" },
+  { object_type: "custom_object", action: "deleted" },
+  { object_type: "status.lead", action: "created" },
+  { object_type: "status.lead", action: "updated" },
+  { object_type: "status.lead", action: "deleted" },
+  { object_type: "status.opportunity", action: "created" },
+  { object_type: "status.opportunity", action: "updated" },
+  { object_type: "status.opportunity", action: "deleted" },
+];
+
+const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
+  CLOSE_SUPPORTED_WEBHOOK_SELECTORS.map(
+    selector => `${selector.object_type}:${selector.action}`,
+  ),
+);
+
 export class CloseConnector extends BaseConnector {
   private closeApi: AxiosInstance | null = null;
   private activeLogCallback?: (
@@ -1346,15 +1427,71 @@ export class CloseConnector extends BaseConnector {
     options: ProvisionWebhookOptions,
   ): Promise<ProvisionWebhookResult> {
     const api = this.getCloseClient();
+    const parseEventSelector = (
+      eventType: string,
+    ): CloseWebhookSelector | null => {
+      const value = eventType.trim();
+      if (!value) return null;
+      const separator = value.lastIndexOf(".");
+      if (separator <= 0 || separator >= value.length - 1) return null;
+
+      const objectType = value.slice(0, separator).trim();
+      const action = value.slice(separator + 1).trim();
+      if (!objectType || !action) return null;
+
+      return { object_type: objectType, action };
+    };
+
+    const normalizeEventSelectors = (eventTypes: string[]) => {
+      const unique = new Map<string, CloseWebhookSelector>();
+      const unsupported: string[] = [];
+      for (const eventType of eventTypes) {
+        const parsed = parseEventSelector(eventType);
+        if (!parsed) {
+          unsupported.push(eventType);
+          continue;
+        }
+
+        const key = `${parsed.object_type}:${parsed.action}`;
+        if (!CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS.has(key)) {
+          unsupported.push(eventType);
+          continue;
+        }
+
+        unique.set(key, parsed);
+      }
+      return { selectors: Array.from(unique.values()), unsupported };
+    };
+
+    const requestedEvents = Array.isArray(options.events)
+      ? options.events
+          .map(event => event.trim())
+          .filter((event): event is string => event.length > 0)
+      : [];
+    const normalized = normalizeEventSelectors(
+      requestedEvents.length > 0
+        ? requestedEvents
+        : this.getSupportedWebhookEvents(),
+    );
+    if (requestedEvents.length > 0 && normalized.unsupported.length > 0) {
+      logger.warn("Ignoring unsupported Close webhook events", {
+        unsupportedEvents: normalized.unsupported,
+      });
+    }
+
+    if (normalized.selectors.length === 0) {
+      throw new Error(
+        requestedEvents.length > 0
+          ? `No valid Close webhook events configured. Unsupported events: ${normalized.unsupported.join(", ")}`
+          : "No valid Close webhook events configured",
+      );
+    }
+
     const payload: Record<string, unknown> = {
       url: options.endpointUrl,
       verify_ssl: options.verifySsl !== false,
+      events: normalized.selectors,
     };
-
-    // Keep optional and conservative to avoid API incompatibilities.
-    if (Array.isArray(options.events) && options.events.length > 0) {
-      payload.event_types = options.events;
-    }
 
     try {
       // Avoid creating duplicates when the flow already has a provider webhook.
@@ -1409,13 +1546,31 @@ export class CloseConnector extends BaseConnector {
             : undefined,
       };
     } catch (error) {
-      const message = axios.isAxiosError(error)
-        ? error.response?.data?.error ||
-          error.response?.data?.message ||
-          error.message
-        : error instanceof Error
-          ? error.message
-          : String(error);
+      const message = (() => {
+        if (axios.isAxiosError(error)) {
+          const status = error.response?.status;
+          const data = error.response?.data;
+
+          const directError =
+            typeof data?.error === "string"
+              ? data.error
+              : typeof data?.message === "string"
+                ? data.message
+                : typeof data === "string"
+                  ? data
+                  : undefined;
+
+          const serialized =
+            !directError && data && typeof data === "object"
+              ? JSON.stringify(data)
+              : undefined;
+
+          const detail = directError || serialized || error.message;
+          return status ? `HTTP ${status}: ${detail}` : detail;
+        }
+
+        return error instanceof Error ? error.message : String(error);
+      })();
       throw new Error(
         `Failed to create Close webhook subscription: ${message}`,
       );
@@ -1487,10 +1642,7 @@ export class CloseConnector extends BaseConnector {
       "lead.merged": { entity: "leads", operation: "upsert" },
 
       // Contacts
-      "contact.created": { entity: "contacts", operation: "upsert" },
       "contact.updated": { entity: "contacts", operation: "upsert" },
-      "contact.deleted": { entity: "contacts", operation: "delete" },
-      "contact.merged": { entity: "contacts", operation: "upsert" },
 
       // Opportunities
       "opportunity.created": { entity: "opportunities", operation: "upsert" },
@@ -1551,7 +1703,7 @@ export class CloseConnector extends BaseConnector {
 
     // Custom object/activity type events
     const typeMatch = eventType.match(
-      /^(custom_activity_type|custom_object_type)\.(created|updated|deleted)$/,
+      /^(custom_activity_type|custom_object_type)\.(updated)$/,
     );
     if (typeMatch) {
       const entityMap: Record<string, string> = {
@@ -1560,7 +1712,7 @@ export class CloseConnector extends BaseConnector {
       };
       return {
         entity: entityMap[typeMatch[1]],
-        operation: typeMatch[2] === "deleted" ? "delete" : "upsert",
+        operation: "upsert",
       };
     }
 
@@ -1582,74 +1734,9 @@ export class CloseConnector extends BaseConnector {
    * Get supported webhook event types
    */
   getSupportedWebhookEvents(): string[] {
-    return [
-      "lead.created",
-      "lead.updated",
-      "lead.deleted",
-      "lead.merged",
-      "contact.created",
-      "contact.updated",
-      "contact.deleted",
-      "contact.merged",
-      "opportunity.created",
-      "opportunity.updated",
-      "opportunity.deleted",
-      "activity.call.created",
-      "activity.email.created",
-      "activity.email.sent",
-      "activity.email_thread.created",
-      "activity.email_thread.updated",
-      "activity.sms.created",
-      "activity.sms.sent",
-      "activity.note.created",
-      "activity.note.updated",
-      "activity.note.deleted",
-      "activity.meeting.created",
-      "activity.meeting.updated",
-      "activity.meeting.scheduled",
-      "activity.meeting.started",
-      "activity.meeting.completed",
-      "activity.meeting.canceled",
-      "activity.lead_status_change.created",
-      "activity.opportunity_status_change.created",
-      "activity.task_completed.created",
-      "activity.custom_activity.created",
-      "activity.custom_activity.updated",
-      "activity.custom_activity.deleted",
-      "custom_fields.lead.created",
-      "custom_fields.lead.updated",
-      "custom_fields.lead.deleted",
-      "custom_fields.contact.created",
-      "custom_fields.contact.updated",
-      "custom_fields.contact.deleted",
-      "custom_fields.opportunity.created",
-      "custom_fields.opportunity.updated",
-      "custom_fields.opportunity.deleted",
-      "custom_fields.activity.created",
-      "custom_fields.activity.updated",
-      "custom_fields.activity.deleted",
-      "custom_fields.custom_object.created",
-      "custom_fields.custom_object.updated",
-      "custom_fields.custom_object.deleted",
-      "custom_fields.shared.created",
-      "custom_fields.shared.updated",
-      "custom_fields.shared.deleted",
-      "custom_activity_type.created",
-      "custom_activity_type.updated",
-      "custom_activity_type.deleted",
-      "custom_object_type.created",
-      "custom_object_type.updated",
-      "custom_object_type.deleted",
-      "custom_object.created",
-      "custom_object.updated",
-      "custom_object.deleted",
-      "status.lead.created",
-      "status.lead.updated",
-      "status.lead.deleted",
-      "status.opportunity.created",
-      "status.opportunity.updated",
-      "status.opportunity.deleted",
-    ];
+    return CLOSE_SUPPORTED_WEBHOOK_SELECTORS.map(
+      selector => `${selector.object_type}.${selector.action}`,
+    );
   }
 
   /**

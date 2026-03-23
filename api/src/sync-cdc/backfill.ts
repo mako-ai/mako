@@ -401,19 +401,28 @@ export class CdcBackfillService {
       event: { type: "RESUME", reason: "Resumed via API" },
     });
 
-    const running = await hasActiveExecution(workspaceId, flowId);
-    let resumedRun: { runId: string; reusedRunId: boolean } | null = null;
-    if (!running && flow.backfillState?.runId) {
-      resumedRun = await this.startBackfill(workspaceId, flowId, {
-        reuseExistingRunId: true,
-      });
-    }
-
     const pending = await getCdcEventStore().countEvents({
       workspaceId,
       flowId,
       materializationStatus: "pending",
     });
+    if (pending > 0) {
+      try {
+        // Resume should restart CDC materialization only.
+        // Backfill start remains an explicit user action.
+        await forceDrainCdcFlow({
+          workspaceId,
+          flowId,
+        });
+      } catch (error) {
+        log.warn("Failed to schedule CDC drain after resume", {
+          flowId,
+          workspaceId,
+          pendingBacklog: pending,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     if (pending === 0) {
       await cdcSyncStateService.applyTransition({
         workspaceId,
@@ -432,9 +441,11 @@ export class CdcBackfillService {
 
     return {
       resumed: true,
-      resumedRunId: resumedRun?.runId || null,
-      reusedRunId: resumedRun?.reusedRunId || false,
+      resumedRunId: null,
+      reusedRunId: false,
+      resumedBackfill: false,
       pendingBacklog: pending,
+      drainQueued: pending > 0,
     };
   }
 

@@ -93,16 +93,30 @@ function streamStatus(state: CdcState): {
   }
 }
 
-function backfillStatus(
-  state: CdcState,
-  backlogCount: number,
-  totalProcessed: number,
-): { label: string; color: "success" | "info" | "warning" | "default" } {
-  if (state === "backfill") return { label: "Running", color: "info" };
-  if (state === "idle") return { label: "Not started", color: "default" };
-  if (backlogCount > 0) return { label: "Catching up", color: "warning" };
-  if (totalProcessed === 0) return { label: "Not started", color: "default" };
-  return { label: "Complete", color: "success" };
+function backfillStatus(params: {
+  state: CdcState;
+  backlogCount: number;
+  totalProcessed: number;
+  hasBackfillStarted: boolean;
+  hasBackfillCompleted: boolean;
+}): { label: string; color: "success" | "info" | "warning" | "default" } {
+  if (params.state === "backfill") return { label: "Running", color: "info" };
+  if (!params.hasBackfillStarted) {
+    return { label: "Not started", color: "default" };
+  }
+  if (params.state === "paused" && !params.hasBackfillCompleted) {
+    return { label: "Stopped", color: "warning" };
+  }
+  if (params.state === "degraded" && !params.hasBackfillCompleted) {
+    return { label: "Interrupted", color: "warning" };
+  }
+  if (params.backlogCount > 0) {
+    return { label: "Catching up", color: "warning" };
+  }
+  if (params.hasBackfillCompleted || params.totalProcessed > 0) {
+    return { label: "Complete", color: "success" };
+  }
+  return { label: "Not started", color: "default" };
 }
 
 function entityStreamChip(e: {
@@ -114,16 +128,65 @@ function entityStreamChip(e: {
   return { label: "Pending", color: "default" };
 }
 
-function entityBackfillChip(e: {
-  backlogCount: number;
-  lastMaterializedSeq: number;
-  lastMaterializedAt: string | null;
-}): { label: string; color: "success" | "info" | "default" } {
-  if (!e.lastMaterializedAt && e.lastMaterializedSeq === 0) {
+function entityBackfillChip(
+  e: {
+    backlogCount: number;
+    lastMaterializedSeq: number;
+    lastMaterializedAt: string | null;
+  },
+  hasBackfillStarted: boolean,
+): {
+  label: string;
+  color: "success" | "info" | "default";
+} {
+  if (!hasBackfillStarted) {
     return { label: "Not started", color: "default" };
   }
   if (e.backlogCount > 0) return { label: "In progress", color: "info" };
+  if (!e.lastMaterializedAt && e.lastMaterializedSeq === 0) {
+    return { label: "Not started", color: "default" };
+  }
   return { label: "Done", color: "success" };
+}
+
+function hasBackfillStartedForFlow(params: {
+  state: CdcState;
+  transitions: Array<{
+    event?: string;
+    fromState?: string;
+    toState?: string;
+  }>;
+}): boolean {
+  if (params.state === "backfill") {
+    return true;
+  }
+  return params.transitions.some(transition => {
+    const event = String(transition.event || "").toUpperCase();
+    if (event === "START_BACKFILL" || event === "BACKFILL_COMPLETE") {
+      return true;
+    }
+    const fromState = String(transition.fromState || "").toLowerCase();
+    const toState = String(transition.toState || "").toLowerCase();
+    return fromState === "backfill" || toState === "backfill";
+  });
+}
+
+function hasBackfillCompletedForFlow(params: {
+  transitions: Array<{
+    event?: string;
+    fromState?: string;
+    toState?: string;
+  }>;
+}): boolean {
+  return params.transitions.some(transition => {
+    const event = String(transition.event || "").toUpperCase();
+    if (event === "BACKFILL_COMPLETE") {
+      return true;
+    }
+    const fromState = String(transition.fromState || "").toLowerCase();
+    const toState = String(transition.toState || "").toLowerCase();
+    return fromState === "backfill" && toState === "catchup";
+  });
 }
 
 type LogEntry = {
@@ -521,8 +584,16 @@ export function BackfillPanel({
     (sum, e) => sum + Math.max(e.destinationRowCount || 0, 0),
     0,
   );
+  const backfillStarted = hasBackfillStartedForFlow({ state, transitions });
+  const backfillCompleted = hasBackfillCompletedForFlow({ transitions });
   const ss = streamStatus(state);
-  const bs = backfillStatus(state, cdc?.backlogCount ?? 0, totalRowsApplied);
+  const bs = backfillStatus({
+    state,
+    backlogCount: cdc?.backlogCount ?? 0,
+    totalProcessed: totalRowsApplied,
+    hasBackfillStarted: backfillStarted,
+    hasBackfillCompleted: backfillCompleted,
+  });
 
   const kpi = {
     borderRadius: 1.5,
@@ -868,7 +939,7 @@ export function BackfillPanel({
                   <TableBody>
                     {entities.map(e => {
                       const sc = entityStreamChip(e);
-                      const bc = entityBackfillChip(e);
+                      const bc = entityBackfillChip(e, backfillStarted);
                       const backfillChip =
                         e.execStatus === "syncing"
                           ? { label: "Syncing…", color: "info" as const }

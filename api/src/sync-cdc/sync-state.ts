@@ -306,21 +306,21 @@ class CdcSyncStateService {
     processedEventsDelta?: number;
     rowsAppliedDelta?: number;
   }): Promise<void> {
-    const increments: Record<string, number> = {};
-    if (
+    const processedEventsDelta =
       typeof params.processedEventsDelta === "number" &&
-      Number.isFinite(params.processedEventsDelta) &&
-      params.processedEventsDelta !== 0
-    ) {
-      increments.lifetimeEventsProcessed = params.processedEventsDelta;
-    }
-    if (
+      Number.isFinite(params.processedEventsDelta)
+        ? params.processedEventsDelta
+        : 0;
+    const rowsAppliedDelta =
       typeof params.rowsAppliedDelta === "number" &&
-      Number.isFinite(params.rowsAppliedDelta) &&
-      params.rowsAppliedDelta !== 0
-    ) {
-      increments.lifetimeRowsApplied = params.rowsAppliedDelta;
-    }
+      Number.isFinite(params.rowsAppliedDelta)
+        ? params.rowsAppliedDelta
+        : 0;
+    const increments: Record<string, number> = {
+      // Always include both counters so missing legacy fields are initialized.
+      lifetimeEventsProcessed: processedEventsDelta,
+      lifetimeRowsApplied: rowsAppliedDelta,
+    };
 
     const updateDoc: Record<string, unknown> = {
       $set: {
@@ -336,9 +336,7 @@ class CdcSyncStateService {
         lastMaterializedSeq: params.lastIngestSeq,
       },
     };
-    if (Object.keys(increments).length > 0) {
-      updateDoc.$inc = increments;
-    }
+    updateDoc.$inc = increments;
 
     await CdcEntityState.updateOne(
       {

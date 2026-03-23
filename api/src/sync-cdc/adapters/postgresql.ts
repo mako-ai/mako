@@ -24,6 +24,10 @@ interface PostgreSqlAdapterConfig {
 
 export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
   readonly destinationType = "postgresql";
+  private readonly writerCache = new Map<
+    string,
+    Awaited<ReturnType<typeof createDestinationWriter>>
+  >();
 
   constructor(private readonly config: PostgreSqlAdapterConfig) {}
 
@@ -184,7 +188,12 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
   }
 
   private async createWriter(tableName: string) {
-    return createDestinationWriter(
+    const cached = this.writerCache.get(tableName);
+    if (cached) {
+      return cached;
+    }
+
+    const writer = await createDestinationWriter(
       {
         destinationDatabaseId: new Types.ObjectId(
           this.config.destinationDatabaseId,
@@ -201,5 +210,8 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
       },
       "cdc-postgresql-adapter",
     );
+
+    this.writerCache.set(tableName, writer);
+    return writer;
   }
 }
