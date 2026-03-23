@@ -511,6 +511,55 @@ export async function markCdcBackfillCompletedForFlow(params: {
   );
 }
 
+export async function purgeSoftDeletesAfterBackfill(params: {
+  workspaceId: string;
+  flowId: string;
+}) {
+  const flow = await Flow.findOne({
+    _id: new Types.ObjectId(params.flowId),
+    workspaceId: new Types.ObjectId(params.workspaceId),
+  }).lean();
+  if (!flow || flow.deleteMode !== "hard") return;
+  if (!flow.tableDestination?.connectionId || !flow.tableDestination?.schema) {
+    return;
+  }
+
+  const destination = await DatabaseConnection.findById(
+    flow.tableDestination.connectionId,
+  );
+  if (!destination) return;
+
+  const driver = databaseRegistry.getDriver(destination.type);
+  if (!driver?.executeQuery) return;
+
+  const enabledEntities = resolveConfiguredEntities(flow).entities;
+  const tablePrefix = flow.tableDestination.tableName || "sync";
+  const schema = flow.tableDestination.schema;
+
+  for (const entity of enabledEntities) {
+    const tableName = cdcLiveTableName(tablePrefix, entity);
+    const fullTable =
+      destination.type === "bigquery"
+        ? `\`${schema}\`.${tableName}`
+        : `"${schema}"."${tableName}"`;
+    const query = `DELETE FROM ${fullTable} WHERE is_deleted = true`;
+    try {
+      await driver.executeQuery(destination, query);
+      log.info("Purged soft-deleted rows after backfill", {
+        flowId: params.flowId,
+        entity,
+        table: tableName,
+      });
+    } catch (err) {
+      log.warn("Failed to purge soft-deleted rows", {
+        flowId: params.flowId,
+        entity,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
 export async function forceDrainCdcFlow(params: {
   workspaceId: string;
   flowId: string;

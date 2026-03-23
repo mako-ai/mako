@@ -35,6 +35,7 @@ import { getCdcEventStore } from "../../sync-cdc/event-store";
 import {
   forceDrainCdcFlow,
   markCdcBackfillCompletedForFlow,
+  purgeSoftDeletesAfterBackfill,
 } from "../../sync-cdc/backfill";
 
 const flowLogger = loggers.inngest("flow");
@@ -1972,6 +1973,12 @@ export const flowFunction = inngest.createFunction(
               },
             });
           }
+        });
+        await step.run("purge-soft-deletes-after-backfill", async () => {
+          await purgeSoftDeletesAfterBackfill({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flowId),
+          });
         });
         await step.run("finalize-cdc-backfill-run", async () => {
           const now = new Date();

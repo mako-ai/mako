@@ -135,12 +135,17 @@ export class CdcConsumerService {
     }
 
     try {
+      const effectiveDeleteMode =
+        flow.deleteMode === "hard" && flow.syncState === "backfill"
+          ? "soft"
+          : flow.deleteMode;
+
       const apply = await adapter.applyEvents({
         events: pending,
         layout,
         flow: {
           _id: flow._id,
-          deleteMode: flow.deleteMode,
+          deleteMode: effectiveDeleteMode,
           dataSourceId: flow.dataSourceId,
         },
       });
