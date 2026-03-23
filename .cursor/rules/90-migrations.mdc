@@ -38,7 +38,8 @@ export async function up(db: Db): Promise<void> {
 
 - **Naming**: Files must match `yyyy-mm-dd-hhmmss_snake_case_name.ts`
 - **One change per migration**: Keep migrations focused and small
-- **Idempotent when possible**: Use `$exists` checks, `{ upsert: true }` options
+- **Always idempotent**: Migrations MUST be safe to re-run. Use `$exists` checks, `{ upsert: true }` options
+- **Index idempotency**: When creating indexes, check by **key pattern** not by index name. An index may already exist with an auto-generated name (e.g. from Mongoose or a partial run). Checking by name will miss it and `createIndex` will throw `IndexOptionsConflict`. Use a helper like `hasIndexOnKeys(indexes, keyPattern)` that compares `JSON.stringify(idx.key)` against the target.
 - **Never edit old migrations**: Create a new migration to fix issues
 - **No down migrations**: This system is up-only by design
 - **Test locally**: Run against dev database before production

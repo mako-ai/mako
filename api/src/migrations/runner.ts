@@ -376,8 +376,17 @@ export const description = "${description}";
 
 export async function up(db: Db): Promise<void> {
   // TODO: Implement migration
-  // Example:
-  // await db.collection("users").createIndex({ email: 1 });
+  //
+  // IMPORTANT: Migrations must be idempotent (safe to re-run).
+  // When creating indexes, always check by key pattern, not by name:
+  //
+  //   const indexes = await collection.listIndexes().toArray();
+  //   const hasKeys = (kp: Record<string, number>) =>
+  //     indexes.some(i => JSON.stringify(i.key) === JSON.stringify(kp));
+  //
+  //   if (!hasKeys({ email: 1 })) {
+  //     await collection.createIndex({ email: 1 }, { unique: true });
+  //   }
 }
 `;
 }
