@@ -380,7 +380,8 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       options?.location || (database.connection as any).location || "US";
 
     const checkQuery = `
-      SELECT 1 FROM ${escapeIdentifier(projectId)}.INFORMATION_SCHEMA.SCHEMATA
+      SELECT schema_name, location
+      FROM ${escapeIdentifier(projectId)}.INFORMATION_SCHEMA.SCHEMATA
       WHERE schema_name = '${schemaName.replace(/'/g, "''")}'
     `;
     const checkResult = await this.executeQuery(database, checkQuery);
@@ -389,6 +390,22 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       checkResult.data &&
       checkResult.data.length > 0
     ) {
+      const existingLocationRaw = String(checkResult.data[0]?.location || "")
+        .trim()
+        .toLowerCase();
+      const requestedLocationRaw = String(location || "")
+        .trim()
+        .toLowerCase();
+      if (
+        existingLocationRaw &&
+        requestedLocationRaw &&
+        existingLocationRaw !== requestedLocationRaw
+      ) {
+        return {
+          success: false,
+          error: `Dataset ${schemaName} exists in location ${checkResult.data[0]?.location}, but connection is configured for ${location}.`,
+        };
+      }
       return { success: true, created: false };
     }
 
