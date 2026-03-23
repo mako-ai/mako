@@ -133,6 +133,38 @@ type LogEntry = {
   metadata?: Record<string, unknown>;
 };
 
+function formatMetadataValue(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : undefined;
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized || serialized === "{}" || serialized === "[]") {
+      return undefined;
+    }
+    return serialized.length > 220
+      ? `${serialized.slice(0, 217)}...`
+      : serialized;
+  } catch {
+    return undefined;
+  }
+}
+
+function readMetadataValue(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  return formatMetadataValue(metadata?.[key]);
+}
+
 function formatLog(log: LogEntry): string {
   const m = log.metadata;
   const entity = typeof m?.entity === "string" ? m.entity : undefined;
@@ -155,6 +187,52 @@ function formatLog(log: LogEntry): string {
   } else if (fetchedCount !== undefined) {
     parts.push(`(${fetchedCount.toLocaleString()} fetched)`);
   }
+
+  const level = log.level.toLowerCase();
+  if ((level === "warn" || level === "error") && m) {
+    const details: string[] = [];
+    const status = readMetadataValue(m, "status");
+    const method = readMetadataValue(m, "method");
+    const endpoint = readMetadataValue(m, "endpoint");
+    const error = readMetadataValue(m, "error");
+    const errorCode = readMetadataValue(m, "errorCode");
+    const errorName = readMetadataValue(m, "errorName");
+    const requestId = readMetadataValue(m, "requestId");
+    const chunkIndex = readMetadataValue(m, "chunkIndex");
+    const syncMode = readMetadataValue(m, "syncMode");
+
+    if (status) {
+      details.push(`status=${status}`);
+    }
+    if (method && endpoint) {
+      details.push(`${method} ${endpoint}`);
+    } else if (endpoint) {
+      details.push(endpoint);
+    }
+    if (error && !log.message.toLowerCase().includes(error.toLowerCase())) {
+      details.push(`error=${error}`);
+    }
+    if (errorCode) {
+      details.push(`code=${errorCode}`);
+    }
+    if (errorName) {
+      details.push(`name=${errorName}`);
+    }
+    if (requestId) {
+      details.push(`requestId=${requestId}`);
+    }
+    if (chunkIndex) {
+      details.push(`chunk=${chunkIndex}`);
+    }
+    if (syncMode) {
+      details.push(`mode=${syncMode}`);
+    }
+
+    if (details.length > 0) {
+      parts.push(`- ${details.join(" | ")}`);
+    }
+  }
+
   return parts.join(" ");
 }
 

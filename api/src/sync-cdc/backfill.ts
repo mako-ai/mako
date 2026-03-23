@@ -366,12 +366,15 @@ export class CdcBackfillService {
       });
     }
 
-    flow.backfillState = {
-      ...flow.backfillState,
-      active: false,
-      completedAt: undefined,
-    };
-    await flow.save();
+    await Flow.updateOne(
+      { _id: flow._id, workspaceId: new Types.ObjectId(workspaceId) },
+      {
+        $set: {
+          "backfillState.active": false,
+          "backfillState.completedAt": null,
+        },
+      },
+    );
 
     return {
       paused: true,

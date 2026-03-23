@@ -140,6 +140,7 @@ const flowSchema = z.object({
         partitionField: z.string(),
         partitionGranularity: z.enum(["day", "hour", "month", "year"]),
         clusterFields: z.array(z.string()),
+        enabled: z.boolean().optional(),
       }),
     )
     .optional(),
