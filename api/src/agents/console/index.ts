@@ -154,6 +154,7 @@ export const consoleAgentFactory: AgentFactory = (
 ): AgentConfig => {
   const {
     workspaceId,
+    userId,
     consoles = [],
     consoleId,
     databases = [],
@@ -199,7 +200,12 @@ export const consoleAgentFactory: AgentFactory = (
   );
 
   // Create tools
-  const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
+  const tools = createUniversalTools(
+    workspaceId,
+    enrichedConsoles,
+    consoleId,
+    userId,
+  );
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
 

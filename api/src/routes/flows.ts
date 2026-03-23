@@ -21,6 +21,10 @@ import {
   checkQuerySafety,
   dryRunDbSync,
 } from "../services/destination-writer.service";
+import {
+  canUserWriteDatabase,
+  canUserSeeDatabase,
+} from "../services/database-access.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { getCdcFlowStats } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
@@ -524,14 +528,15 @@ flowRoutes.get("/", async c => {
 });
 
 // POST /api/workspaces/:workspaceId/flows - Create a new flow
-flowRoutes.post("/", async c => {
+flowRoutes.post("/", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     if (!workspaceId) {
       return c.json({ success: false, error: "Workspace ID is required" }, 400);
     }
-    // TODO: Get userId from authentication
-    const userId = "system";
+    const user = c.get("user");
+    const apiKey = c.get("apiKey");
+    const userId = user?.id || apiKey?.createdBy || "system";
     const body = await c.req.json();
 
     // Validate required fields based on flow type and source type
@@ -591,6 +596,16 @@ flowRoutes.post("/", async c => {
           404,
         );
       }
+
+      if (!canUserSeeDatabase(sourceDb, userId)) {
+        return c.json(
+          {
+            success: false,
+            error: "You do not have access to the source database",
+          },
+          403,
+        );
+      }
     } else {
       // Connector source validation (default)
       if (!body.dataSourceId) {
@@ -632,6 +647,17 @@ flowRoutes.post("/", async c => {
         );
       }
 
+      if (!canUserWriteDatabase(destDb, userId)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "You do not have write access to the destination database. Only owners of shared_write or private databases can use them as flow destinations.",
+          },
+          403,
+        );
+      }
+
       // Use the table destination connection as the destinationDatabaseId
       destinationDatabaseId = new Types.ObjectId(
         body.tableDestination.connectionId,
@@ -648,6 +674,17 @@ flowRoutes.post("/", async c => {
         return c.json(
           { success: false, error: "Destination database not found" },
           404,
+        );
+      }
+
+      if (!canUserWriteDatabase(database, userId)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "You do not have write access to the destination database. Only owners of shared_write or private databases can use them as flow destinations.",
+          },
+          403,
         );
       }
 

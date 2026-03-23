@@ -13,6 +13,7 @@ import {
 import { User } from "../database/schema";
 import { workspaceService } from "../services/workspace.service";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { checkQueryAccess } from "../services/database-access.service";
 import {
   queryExecutionService,
   QueryLanguage,
@@ -1453,6 +1454,20 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
         },
         400,
       );
+    }
+
+    // Enforce database access controls
+    const dbUserId = user?.id || apiKey?.createdBy;
+    const accessCheck = checkQueryAccess(
+      database,
+      dbUserId,
+      savedConsole.code || "",
+      {
+        mongoOperation: savedConsole.mongoOptions?.operation,
+      },
+    );
+    if (!accessCheck.allowed) {
+      return c.json({ success: false, error: accessCheck.error }, 403);
     }
 
     // Pass explicit databaseId and databaseName for cluster mode (D1, etc.)
