@@ -711,14 +711,19 @@ app.post("/:id/refresh", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
 
-    await queueDashboardArtifactRefresh({
+    const queueResult = await queueDashboardArtifactRefresh({
       dashboardId: dashboard._id.toString(),
       workspaceId: dashboard.workspaceId.toString(),
       force: true,
       triggerType: "manual",
     });
 
-    return c.json({ success: true, queued: true });
+    return c.json({
+      success: true,
+      queued: queueResult.queued,
+      alreadyRunning: !queueResult.queued,
+      activeRunIds: queueResult.activeRunIds || [],
+    });
   } catch (error) {
     logger.error("Error refreshing dashboard artifacts", { error });
     return c.json(

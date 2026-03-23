@@ -18,16 +18,23 @@ export const dashboardRefreshFunction = inngest.createFunction(
     id: "dashboard-refresh",
     name: "Refresh Dashboard Data Sources",
     concurrency: {
-      limit: 3,
+      limit: 1,
       key: "event.data.dashboardId",
     },
     retries: 2,
   },
   { event: "dashboard.refresh" },
   async ({ event, step }) => {
-    const { dashboardId, dataSourceIds, force, triggerType } = event.data as {
+    const {
+      dashboardId,
+      dataSourceIds,
+      force,
+      triggerType,
+      queuedRunIdsByDataSourceId,
+    } = event.data as {
       dashboardId: string;
       dataSourceIds?: string[];
+      queuedRunIdsByDataSourceId?: Record<string, string>;
       force?: boolean;
       triggerType?: "manual" | "schedule" | "dashboard_update";
     };
@@ -52,6 +59,7 @@ export const dashboardRefreshFunction = inngest.createFunction(
       return await rebuildDashboardArtifacts({
         dashboardId,
         dataSourceIds,
+        queuedRunIdsByDataSourceId,
         force,
         triggerType,
         workerId: WORKER_ID,

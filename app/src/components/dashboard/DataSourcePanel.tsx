@@ -398,6 +398,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   };
 
   const dataSources = dashboard?.dataSources ?? [];
+  const hasBuildingMaterialization = dataSources.some(
+    dataSource => dataSource.cache?.parquetBuildStatus === "building",
+  );
 
   return (
     <Drawer
@@ -799,7 +802,10 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     <IconButton
                       size="small"
                       onClick={() => handleRefreshDataSource(ds.id)}
-                      disabled={status === "loading"}
+                      disabled={
+                        status === "loading" ||
+                        materializationStatus === "building"
+                      }
                     >
                       {status === "loading" ? (
                         <CircularProgress size={16} />
@@ -849,6 +855,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               fullWidth
               variant="outlined"
               startIcon={<RefreshCw size={14} />}
+              disabled={hasBuildingMaterialization}
               onClick={() => {
                 if (workspaceId) {
                   void reloadDashboardDataSourcesCommand(workspaceId);
