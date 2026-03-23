@@ -15,6 +15,12 @@ export VITE_API_URL="https://app.mako.ai/api"
 export DASHBOARD_ARTIFACT_STORE="gcs"
 export GCS_DASHBOARD_BUCKET="revops-462013-dashboard-artifacts"
 export DASHBOARD_ARTIFACT_PREFIX="dashboard-artifacts/prod"
+export INNGEST_SERVE_ORIGIN="$BASE_URL"
+export DISABLE_SCHEDULED_SYNC="false"
+export INNGEST_ENV="${INNGEST_ENV:-}"
+# Leave INNGEST_ENV unset for production deploys. Set it explicitly only for
+# non-production branch environments that should register with Inngest Cloud
+# under a branch-specific environment name.
 
 # Install dependencies
 echo "Installing dependencies..."
@@ -188,7 +194,12 @@ docker push $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest
   echo "DASHBOARD_ARTIFACT_STORE: \"$DASHBOARD_ARTIFACT_STORE\""
   echo "GCS_DASHBOARD_BUCKET: \"$GCS_DASHBOARD_BUCKET\""
   echo "DASHBOARD_ARTIFACT_PREFIX: \"$DASHBOARD_ARTIFACT_PREFIX\""
-  awk -F= '/^[^#]/ && NF==2 && $1!="NODE_ENV" && $1!="BASE_URL" && $1!="CLIENT_URL" && $1!="VITE_API_URL" && $1!="DASHBOARD_ARTIFACT_STORE" && $1!="GCS_DASHBOARD_BUCKET" && $1!="DASHBOARD_ARTIFACT_PREFIX" {print $1": \""$2"\""}' .env
+  echo "INNGEST_SERVE_ORIGIN: \"$INNGEST_SERVE_ORIGIN\""
+  echo "DISABLE_SCHEDULED_SYNC: \"$DISABLE_SCHEDULED_SYNC\""
+  if [ -n "${INNGEST_ENV:-}" ]; then
+    echo "INNGEST_ENV: \"$INNGEST_ENV\""
+  fi
+  awk -F= '/^[^#]/ && NF==2 && $1!="NODE_ENV" && $1!="BASE_URL" && $1!="CLIENT_URL" && $1!="VITE_API_URL" && $1!="DASHBOARD_ARTIFACT_STORE" && $1!="GCS_DASHBOARD_BUCKET" && $1!="DASHBOARD_ARTIFACT_PREFIX" && $1!="INNGEST_SERVE_ORIGIN" && $1!="DISABLE_SCHEDULED_SYNC" && $1!="INNGEST_ENV" {print $1": \""$2"\""}' .env
 } > env.yaml
 
 # Update Cloud Run service

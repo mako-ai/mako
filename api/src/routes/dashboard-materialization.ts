@@ -13,6 +13,7 @@ import {
 } from "../services/dashboard-materialization.service";
 import {
   getMaterializationRunByRunId,
+  listActiveMaterializationRuns,
   listMaterializationRuns,
 } from "../services/dashboard-materialization-run.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
@@ -178,12 +179,29 @@ app.get(
         dashboard,
         c.req.param("dataSourceId"),
       );
+      const workspaceId = dashboard.workspaceId.toString();
+      const dashboardId = dashboard._id.toString();
+
+      let activeRunDataSourceIds: Set<string> | undefined;
+      if (
+        dataSource.cache?.parquetBuildStatus === "building" ||
+        dataSource.cache?.parquetBuildStatus === "queued"
+      ) {
+        const activeRuns = await listActiveMaterializationRuns({
+          workspaceId,
+          dashboardId,
+          dataSourceIds: [dataSource.id],
+        });
+        activeRunDataSourceIds = new Set(activeRuns.map(r => r.dataSourceId));
+      }
+
       return c.json({
         success: true,
         data: await buildDataSourceMaterializationStatus({
-          workspaceId: dashboard.workspaceId.toString(),
-          dashboardId: dashboard._id.toString(),
+          workspaceId,
+          dashboardId,
           dataSource,
+          activeRunDataSourceIds,
         }),
       });
     } catch (error) {

@@ -5,6 +5,7 @@ import { loggers } from "../../logging";
 import { rebuildDashboardArtifacts } from "../../services/dashboard-artifact-rebuild.service";
 import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
 import {
+  listActiveMaterializationRuns,
   markStaleRunsAbandoned,
   updateMaterializationRunHeartbeat,
 } from "../../services/dashboard-materialization-run.service";
@@ -157,36 +158,74 @@ export const cleanupAbandonedMaterializationRunsFunction =
       );
 
       if (abandonedCount > 0) {
-        await step.run("fix-dashboard-build-status", async () => {
-          const staleDashboards = await Dashboard.find({
-            "dataSources.cache.parquetBuildStatus": "building",
-          }).select("_id dataSources");
-
-          for (const dashboard of staleDashboards) {
-            const updates: Record<string, unknown> = {};
-            dashboard.dataSources.forEach((ds, index) => {
-              if (ds.cache?.parquetBuildStatus === "building") {
-                updates[`dataSources.${index}.cache.parquetBuildStatus`] =
-                  "error";
-                updates[`dataSources.${index}.cache.parquetLastError`] =
-                  "Worker lost heartbeat";
-              }
-            });
-            if (Object.keys(updates).length > 0) {
-              await Dashboard.findByIdAndUpdate(dashboard._id, {
-                $set: updates,
-              }).catch(() => undefined);
-            }
-          }
-        });
-      }
-
-      if (abandonedCount > 0) {
         logger.warn("Marked stale materialization runs as abandoned", {
           abandonedCount,
         });
       }
 
-      return { abandonedCount };
+      const orphanedCount = await step.run(
+        "fix-orphaned-building-status",
+        async () => {
+          const staleDashboards = await Dashboard.find({
+            "dataSources.cache.parquetBuildStatus": {
+              $in: ["building", "queued"],
+            },
+          }).select("_id workspaceId dataSources");
+
+          let fixed = 0;
+
+          for (const dashboard of staleDashboards) {
+            const buildingDsIds = dashboard.dataSources
+              .filter(
+                ds =>
+                  ds.cache?.parquetBuildStatus === "building" ||
+                  ds.cache?.parquetBuildStatus === "queued",
+              )
+              .map(ds => ds.id);
+
+            if (buildingDsIds.length === 0) continue;
+
+            const activeRuns = await listActiveMaterializationRuns({
+              workspaceId: dashboard.workspaceId.toString(),
+              dashboardId: dashboard._id.toString(),
+              dataSourceIds: buildingDsIds,
+            });
+
+            const coveredDsIds = new Set(activeRuns.map(r => r.dataSourceId));
+            const orphanedDsIds = buildingDsIds.filter(
+              id => !coveredDsIds.has(id),
+            );
+
+            if (orphanedDsIds.length === 0) continue;
+
+            const updates: Record<string, unknown> = {};
+            dashboard.dataSources.forEach((ds, index) => {
+              if (orphanedDsIds.includes(ds.id)) {
+                updates[`dataSources.${index}.cache.parquetBuildStatus`] =
+                  "error";
+                updates[`dataSources.${index}.cache.parquetLastError`] =
+                  "Orphaned build status reset (no active materialization run found)";
+              }
+            });
+
+            if (Object.keys(updates).length > 0) {
+              await Dashboard.findByIdAndUpdate(dashboard._id, {
+                $set: updates,
+              }).catch(() => undefined);
+              fixed += orphanedDsIds.length;
+            }
+          }
+
+          return fixed;
+        },
+      );
+
+      if (orphanedCount > 0) {
+        logger.warn("Reset orphaned dashboard build statuses", {
+          orphanedCount,
+        });
+      }
+
+      return { abandonedCount, orphanedCount };
     },
   );
