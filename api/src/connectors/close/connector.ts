@@ -9,6 +9,8 @@ import {
   WebhookEventMapping,
   EntityMetadata,
   NormalizedCdcRecord,
+  ProvisionWebhookOptions,
+  ProvisionWebhookResult,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
@@ -1334,6 +1336,90 @@ export class CloseConnector extends BaseConnector {
    */
   supportsWebhooks(): boolean {
     return true;
+  }
+
+  supportsWebhookProvisioning(): boolean {
+    return true;
+  }
+
+  async createWebhookSubscription(
+    options: ProvisionWebhookOptions,
+  ): Promise<ProvisionWebhookResult> {
+    const api = this.getCloseClient();
+    const payload: Record<string, unknown> = {
+      url: options.endpointUrl,
+      verify_ssl: options.verifySsl !== false,
+    };
+
+    // Keep optional and conservative to avoid API incompatibilities.
+    if (Array.isArray(options.events) && options.events.length > 0) {
+      payload.event_types = options.events;
+    }
+
+    try {
+      // Avoid creating duplicates when the flow already has a provider webhook.
+      const existingResponse = await api.get("/webhook/");
+      const existingList = Array.isArray(existingResponse?.data)
+        ? existingResponse.data
+        : Array.isArray(existingResponse?.data?.data)
+          ? existingResponse.data.data
+          : [];
+      const existing = existingList.find((item: any) => {
+        const candidateUrl =
+          typeof item?.url === "string"
+            ? item.url
+            : typeof item?.endpoint === "string"
+              ? item.endpoint
+              : "";
+        return candidateUrl === options.endpointUrl;
+      });
+      if (existing) {
+        const existingId =
+          existing.id ||
+          existing._id ||
+          existing.subscription_id ||
+          existing.webhook_id;
+        if (existingId) {
+          return {
+            providerWebhookId: String(existingId),
+            endpointUrl: options.endpointUrl,
+          };
+        }
+      }
+
+      const response = await api.post("/webhook/", payload);
+      const data = response?.data || {};
+      const providerWebhookId =
+        data.id || data._id || data.subscription_id || data.webhook_id;
+      if (!providerWebhookId) {
+        throw new Error(
+          "Close webhook created but no subscription id returned by API",
+        );
+      }
+
+      const signingSecret =
+        data.signature_key || data.signing_secret || data.secret;
+
+      return {
+        providerWebhookId: String(providerWebhookId),
+        endpointUrl: options.endpointUrl,
+        signingSecret:
+          typeof signingSecret === "string" && signingSecret.length > 0
+            ? signingSecret
+            : undefined,
+      };
+    } catch (error) {
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.error ||
+          error.response?.data?.message ||
+          error.message
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      throw new Error(
+        `Failed to create Close webhook subscription: ${message}`,
+      );
+    }
   }
 
   /**

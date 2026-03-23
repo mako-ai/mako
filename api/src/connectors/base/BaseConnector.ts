@@ -75,6 +75,18 @@ export interface WebhookHandlerOptions {
   secret?: string;
 }
 
+export interface ProvisionWebhookOptions {
+  endpointUrl: string;
+  verifySsl?: boolean;
+  events?: string[];
+}
+
+export interface ProvisionWebhookResult {
+  providerWebhookId: string;
+  endpointUrl: string;
+  signingSecret?: string;
+}
+
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
 // Suggested table layout for BigQuery destinations
@@ -220,6 +232,23 @@ export abstract class BaseConnector {
   supportsWebhooks(): boolean {
     // Connectors that support webhooks should override this
     return false;
+  }
+
+  /**
+   * Check if connector can provision provider webhooks automatically.
+   */
+  supportsWebhookProvisioning(): boolean {
+    // Connectors that can create provider-side subscriptions should override.
+    return false;
+  }
+
+  /**
+   * Create a provider-side webhook subscription.
+   */
+  async createWebhookSubscription(
+    _options: ProvisionWebhookOptions,
+  ): Promise<ProvisionWebhookResult> {
+    throw new Error("Webhook provisioning not supported by this connector");
   }
 
   /**

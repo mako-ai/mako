@@ -308,6 +308,7 @@ export function WebhookFlowForm({
     clearError,
     deleteFlow,
     fetchConnectors,
+    provisionFlowWebhook,
   } = useFlowStore();
 
   // Get workspace-specific data
@@ -329,6 +330,7 @@ export function WebhookFlowForm({
   const [isLoadingConnectors, setIsLoadingConnectors] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isProvisioningWebhook, setIsProvisioningWebhook] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [_copySuccess, setCopySuccess] = useState(false);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
@@ -363,6 +365,10 @@ export function WebhookFlowForm({
   const watchSyncEngine = watch("syncEngine") || "legacy";
   const watchEntityLayouts = watch("entityLayouts") || [];
   const watchDeleteMode = watch("deleteMode");
+  const selectedConnector = connectors.find(ds => ds._id === watchDataSourceId);
+  const selectedConnectorType = selectedConnector?.type;
+  const canProvisionWebhook =
+    !isNewMode && Boolean(currentFlowId) && selectedConnectorType === "close";
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -826,6 +832,46 @@ export function WebhookFlowForm({
       setError(error instanceof Error ? error.message : "Failed to save flow");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleProvisionWebhook = async () => {
+    if (!currentWorkspace?.id || !currentFlowId) {
+      setError("Save the flow first before creating provider webhook");
+      return;
+    }
+
+    setIsProvisioningWebhook(true);
+    setError(null);
+    try {
+      const provisioned = await provisionFlowWebhook(
+        currentWorkspace.id,
+        currentFlowId,
+        { verifySsl: true },
+      );
+      if (!provisioned) {
+        throw new Error("Failed to provision webhook");
+      }
+
+      if (provisioned.endpoint) {
+        setWebhookUrl(provisioned.endpoint);
+      }
+      if (provisioned.webhookSecret) {
+        setValue("webhookSecret", provisioned.webhookSecret, {
+          shouldDirty: true,
+          shouldValidate: true,
+        });
+      }
+
+      await useFlowStore.getState().fetchFlows(currentWorkspace.id);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to create provider webhook",
+      );
+    } finally {
+      setIsProvisioningWebhook(false);
     }
   };
 
@@ -1399,6 +1445,32 @@ export function WebhookFlowForm({
                       <Typography variant="caption" color="text.secondary">
                         Copy this URL to your Stripe/Close webhook settings
                       </Typography>
+                      {canProvisionWebhook && (
+                        <Box
+                          sx={{
+                            mt: 1,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 1,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={handleProvisionWebhook}
+                            disabled={isSubmitting || isProvisioningWebhook}
+                          >
+                            {isProvisioningWebhook
+                              ? "Creating in Close..."
+                              : "Create in Close"}
+                          </Button>
+                          <Typography variant="caption" color="text.secondary">
+                            One click creates the Close webhook and stores its
+                            signing secret.
+                          </Typography>
+                        </Box>
+                      )}
                     </Box>
 
                     <Box>
@@ -1442,8 +1514,7 @@ export function WebhookFlowForm({
                         )}
                       />
                       <Typography variant="caption" color="text.secondary">
-                        {connectors.find(ds => ds._id === watchDataSourceId)
-                          ?.type === "stripe"
+                        {selectedConnectorType === "stripe"
                           ? "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret"
                           : "Enter the webhook signing secret from your provider"}
                       </Typography>

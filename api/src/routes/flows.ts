@@ -24,6 +24,7 @@ import { cdcBackfillService } from "../sync-cdc/backfill";
 import { getCdcFlowStats } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
 import { cdcLiveTableName } from "../sync-cdc/normalization";
+import { connectorRegistry } from "../connectors/registry";
 
 const logger = loggers.inngest("flow");
 
@@ -1311,7 +1312,9 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
       workspaceId,
     );
     if (authorizationError) return authorizationError;
-    const body = await c.req.json().catch(() => ({}));
+    const body = (await c.req.json().catch(() => ({}))) as {
+      entities?: string[];
+    };
     const backfill = await cdcBackfillService.startBackfill(
       workspaceId,
       flowId,
@@ -1347,7 +1350,11 @@ flowRoutes.post("/:flowId/sync-cdc/recover", async c => {
     );
     if (authorizationError) return authorizationError;
 
-    const body = await c.req.json().catch(() => ({}));
+    const body = (await c.req.json().catch(() => ({}))) as {
+      retryFailedMaterialization?: boolean;
+      resumeBackfill?: boolean;
+      entity?: string;
+    };
     const result = await cdcBackfillService.recoverFlow({
       workspaceId,
       flowId,
@@ -1382,7 +1389,9 @@ flowRoutes.post("/:flowId/sync-cdc/materialize/retry-failed", async c => {
     );
     if (authorizationError) return authorizationError;
 
-    const body = await c.req.json().catch(() => ({}));
+    const body = (await c.req.json().catch(() => ({}))) as {
+      entity?: string;
+    };
     const result = await cdcBackfillService.retryFailedMaterialization({
       workspaceId,
       flowId,
@@ -1392,6 +1401,132 @@ flowRoutes.post("/:flowId/sync-cdc/materialize/retry-failed", async c => {
       success: true,
       message: "Queued failed CDC rows for materialization retry",
       data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/webhook/provision
+flowRoutes.post("/:flowId/webhook/provision", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const body = await c.req.json().catch(() => ({}));
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+    if (flow.type !== "webhook") {
+      return c.json(
+        { success: false, error: "Webhook provisioning requires webhook flow" },
+        400,
+      );
+    }
+    if (!flow.dataSourceId) {
+      return c.json(
+        {
+          success: false,
+          error: "Webhook provisioning requires a connector data source",
+        },
+        400,
+      );
+    }
+
+    const connectorSource = await DataSource.findOne({
+      _id: new Types.ObjectId(String(flow.dataSourceId)),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!connectorSource) {
+      return c.json({ success: false, error: "Connector not found" }, 404);
+    }
+
+    const connector = connectorRegistry.getConnector(connectorSource as any);
+    if (!connector || !connector.supportsWebhooks()) {
+      return c.json(
+        {
+          success: false,
+          error: "Selected connector does not support webhooks",
+        },
+        400,
+      );
+    }
+    if (!connector.supportsWebhookProvisioning()) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Selected connector does not support automatic webhook provisioning",
+        },
+        400,
+      );
+    }
+
+    const endpoint = generateWebhookEndpoint(
+      workspaceId,
+      flow._id.toString(),
+      getRequestBaseUrl(c),
+    );
+    const requestedEvents = Array.isArray(body.events)
+      ? body.events
+          .filter(
+            (event: unknown): event is string => typeof event === "string",
+          )
+          .map((event: string) => event.trim())
+          .filter(Boolean)
+      : undefined;
+
+    const created = await connector.createWebhookSubscription({
+      endpointUrl: endpoint,
+      verifySsl: body.verifySsl !== false,
+      events: requestedEvents,
+    });
+
+    if (!flow.webhookConfig) {
+      flow.webhookConfig = {
+        endpoint,
+        secret: "",
+        totalReceived: 0,
+        enabled: true,
+      };
+    }
+    const webhookConfig = flow.webhookConfig;
+    if (!webhookConfig) {
+      throw new Error("Failed to initialize webhook configuration");
+    }
+    webhookConfig.endpoint = endpoint;
+    if (webhookConfig.enabled === undefined) {
+      webhookConfig.enabled = true;
+    }
+    if (created.signingSecret) {
+      webhookConfig.secret = created.signingSecret;
+    }
+    await flow.save();
+
+    return c.json({
+      success: true,
+      data: {
+        endpoint,
+        providerWebhookId: created.providerWebhookId,
+        webhookSecret: created.signingSecret || null,
+        connectorType: connectorSource.type,
+      },
     });
   } catch (error) {
     return c.json(

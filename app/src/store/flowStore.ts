@@ -269,6 +269,13 @@ interface WebhookStats {
   recentEvents: WebhookEvent[];
 }
 
+interface ProvisionedWebhook {
+  endpoint: string;
+  webhookSecret: string | null;
+  providerWebhookId: string;
+  connectorType: string;
+}
+
 interface FlowStatusResponse {
   isRunning: boolean;
   runningExecution: {
@@ -462,6 +469,14 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     eventId: string,
   ) => Promise<boolean>;
+  provisionFlowWebhook: (
+    workspaceId: string,
+    flowId: string,
+    options?: {
+      verifySsl?: boolean;
+      events?: string[];
+    },
+  ) => Promise<ProvisionedWebhook | null>;
 
   // Flow logs and status
   fetchFlowDetails: (
@@ -1092,6 +1107,26 @@ export const useFlowStore = create<FlowStore>()(
         } catch (error) {
           console.error("Failed to retry webhook event:", error);
           return false;
+        }
+      },
+
+      provisionFlowWebhook: async (workspaceId, flowId, options) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: ProvisionedWebhook;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/provision`, {
+            verifySsl: options?.verifySsl,
+            events: options?.events,
+          });
+          if (!response.success) {
+            throw new Error(response.error || "Failed to provision webhook");
+          }
+          return response.data;
+        } catch (error) {
+          console.error("Failed to provision webhook:", error);
+          return null;
         }
       },
 
