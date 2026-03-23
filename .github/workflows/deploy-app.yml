@@ -163,7 +163,7 @@ jobs:
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
-      INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
+      INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -493,6 +493,33 @@ jobs:
           # Get the Cloud Run URL
           CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --region ${GCP_REGION} --format='value(status.url)')
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync Inngest branch environment
+        run: |
+          set -euo pipefail
+
+          INNGEST_URL="${BASE_URL}/api/inngest"
+
+          echo "Waiting for preview endpoint to become ready at ${INNGEST_URL}..."
+          for attempt in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${INNGEST_URL}" 2>/dev/null || true)
+            if [ "${STATUS}" = "200" ]; then
+              echo "Preview endpoint is ready"
+              break
+            fi
+
+            if [ "${attempt}" = "5" ]; then
+              echo "❌ Preview endpoint never became ready for Inngest sync"
+              exit 1
+            fi
+
+            echo "Attempt ${attempt}/5 returned HTTP ${STATUS:-unknown}; retrying in 10s..."
+            sleep 10
+          done
+
+          echo "Syncing Inngest app for branch environment pr-${PR_NUMBER}..."
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 5 -X PUT "${INNGEST_URL}"
+          echo "Inngest sync complete"
 
       - name: Run migrations (ephemeral DB only)
         if: needs.detect-changes.outputs.migrations_changed == 'true' || needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'

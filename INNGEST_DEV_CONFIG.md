@@ -30,11 +30,20 @@ PR previews should register against their own Inngest branch environment:
 
 - `INNGEST_ENV=pr-<number>`
 - `INNGEST_EVENT_KEY=<shared project event key>`
-- `INNGEST_SIGNING_KEY=<shared project signing key>`
+- `INNGEST_SIGNING_KEY=<shared branch signing key>`
 - `INNGEST_SERVE_ORIGIN=https://pr-<number>.mako.ai`
 - `DISABLE_SCHEDULED_SYNC=true`
 
-This gives each preview its own event routing, logs, and function registrations while still using the same Inngest project keys.
+This gives each preview its own event routing, logs, and function registrations while still using the same Inngest project event key.
+
+Branch environments do not get a unique signing key per PR. Instead, Inngest uses one shared branch signing key across all branch environments, distinct from the production signing key.
+
+Recommended GitHub secrets:
+
+- `INNGEST_SIGNING_KEY`: production signing key (`signkey-prod-...`)
+- `INNGEST_BRANCH_SIGNING_KEY`: shared branch signing key (`signkey-branch-...`)
+
+The deploy workflow should set `INNGEST_SIGNING_KEY` from `INNGEST_BRANCH_SIGNING_KEY` for PR previews, then call `PUT /api/inngest` after deploy to register the preview app automatically.
 
 ### Production
 
