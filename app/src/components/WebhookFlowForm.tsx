@@ -850,7 +850,7 @@ export function WebhookFlowForm({
         { verifySsl: true },
       );
       if (!provisioned) {
-        throw new Error("Failed to provision webhook");
+        throw new Error("Webhook provisioning returned no data");
       }
 
       if (provisioned.endpoint) {
@@ -866,9 +866,7 @@ export function WebhookFlowForm({
       await useFlowStore.getState().fetchFlows(currentWorkspace.id);
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to create provider webhook",
+        err instanceof Error ? err.message : "Failed to create in Close",
       );
     } finally {
       setIsProvisioningWebhook(false);

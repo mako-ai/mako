@@ -1126,7 +1126,7 @@ export const useFlowStore = create<FlowStore>()(
           return response.data;
         } catch (error) {
           console.error("Failed to provision webhook:", error);
-          return null;
+          throw new Error(normalizeError(error));
         }
       },
 
