@@ -308,6 +308,15 @@ async function loadDashboardDataSourceWithFallback(options: {
         `Parquet artifact load failed for "${dataSource.name}", falling back to streamed export`,
         error,
       );
+      appendRuntimeLog(
+        dashboardId,
+        "warn",
+        `Parquet artifact load failed for "${dataSource.name}", falling back to streamed export`,
+        {
+          dataSourceId: dataSource.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
       await dropTable(session.db, targetTableRef).catch(() => undefined);
     }
   }
@@ -367,6 +376,15 @@ async function loadDashboardDataSourceWithFallback(options: {
     console.warn(
       `Arrow stream failed for "${dataSource.name}", falling back to NDJSON`,
       error,
+    );
+    appendRuntimeLog(
+      dashboardId,
+      "warn",
+      `Arrow stream failed for "${dataSource.name}", falling back to NDJSON`,
+      {
+        dataSourceId: dataSource.id,
+        error: error instanceof Error ? error.message : String(error),
+      },
     );
     await dropTable(session.db, targetTableRef).catch(() => undefined);
   }

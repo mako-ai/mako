@@ -1,5 +1,5 @@
-import React, { useEffect, useCallback } from "react";
-import { Box, IconButton, Tooltip } from "@mui/material";
+import React, { useEffect, useCallback, useMemo } from "react";
+import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import { Minimize2 } from "lucide-react";
 import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
@@ -73,6 +73,21 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
   const allSourcesReady = activeDashboard.dataSources.every(
     ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
   );
+
+  const errorSummary = useMemo(() => {
+    if (!activeDashboard) return null;
+    const failingSources = activeDashboard.dataSources.filter(
+      ds => runtimeSession?.dataSources[ds.id]?.status === "error",
+    );
+    if (failingSources.length === 0) return null;
+    const first = failingSources[0];
+    return {
+      count: failingSources.length,
+      message:
+        runtimeSession?.dataSources[first.id]?.error ||
+        "Failed to load one or more data sources",
+    };
+  }, [activeDashboard, runtimeSession]);
 
   const allGridLayouts = (() => {
     const breakpoints = ["lg", "md", "sm", "xs"] as const;
@@ -187,6 +202,23 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
         </Tooltip>
       </Box>
 
+      {errorSummary && (
+        <Box
+          sx={{
+            px: 2,
+            py: 1,
+            backgroundColor: "error.light",
+            color: "error.contrastText",
+          }}
+        >
+          <Typography variant="body2">
+            {errorSummary.count > 1
+              ? `${errorSummary.count} data sources failed to load.`
+              : "Data source failed to load."}{" "}
+            {errorSummary.message}
+          </Typography>
+        </Box>
+      )}
       <Box ref={gridContainerRef} sx={{ flex: 1, overflow: "auto", p: 2 }}>
         <ResponsiveGridLayout
           className="layout"

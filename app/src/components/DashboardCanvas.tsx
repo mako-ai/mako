@@ -829,14 +829,37 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             borderColor: "divider",
             backgroundColor: "error.light",
             color: "error.contrastText",
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
           }}
         >
-          <Typography variant="caption" sx={{ display: "block" }}>
+          <Typography variant="caption" sx={{ flex: 1 }}>
             {errorSummary.count > 1
-              ? `${errorSummary.count} data sources failed.`
-              : "Data source failed."}{" "}
+              ? `${errorSummary.count} data sources failed to load.`
+              : "Data source failed to load."}{" "}
             {errorSummary.message}
           </Typography>
+          <Tooltip title="Retry loading data sources">
+            <IconButton
+              size="small"
+              onClick={() => {
+                if (workspaceId) {
+                  void reloadDashboardDataSourcesCommand(
+                    workspaceId,
+                    dashboardId,
+                  );
+                }
+              }}
+              sx={{
+                color: "error.contrastText",
+                p: 0.5,
+                "&:hover": { backgroundColor: "error.dark" },
+              }}
+            >
+              <RefreshCw size={14} />
+            </IconButton>
+          </Tooltip>
         </Box>
       )}
       {runtimeSession?.materializationPolling && (
