@@ -1,6 +1,61 @@
-import mongoose, { Schema, Document } from "mongoose";
+import mongoose, { type ConnectOptions, Schema, Document } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 import { loggers } from "../logging";
+
+const mongooseLogger = loggers.db("mongodb");
+
+// Keep the main app connection fail-fast and allow the driver to recycle stale
+// sockets after topology changes such as Atlas/cluster migrations.
+const mongooseConnectOptions: ConnectOptions = {
+  maxPoolSize: 10,
+  minPoolSize: 0,
+  maxIdleTimeMS: 30000,
+  serverSelectionTimeoutMS: 10000,
+  connectTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+  heartbeatFrequencyMS: 10000,
+  retryWrites: true,
+  retryReads: true,
+  serverMonitoringMode: "poll",
+};
+
+let mongooseListenersRegistered = false;
+
+function registerMongooseConnectionListeners(): void {
+  if (mongooseListenersRegistered) {
+    return;
+  }
+
+  mongoose.connection.on("connected", () => {
+    mongooseLogger.info("Mongoose connected to MongoDB", {
+      readyState: mongoose.connection.readyState,
+    });
+  });
+
+  mongoose.connection.on("reconnected", () => {
+    mongooseLogger.warn("Mongoose reconnected to MongoDB", {
+      readyState: mongoose.connection.readyState,
+    });
+  });
+
+  mongoose.connection.on("disconnected", () => {
+    mongooseLogger.warn("Mongoose disconnected from MongoDB", {
+      readyState: mongoose.connection.readyState,
+    });
+  });
+
+  mongoose.connection.on("close", () => {
+    mongooseLogger.warn("Mongoose MongoDB connection closed", {
+      readyState: mongoose.connection.readyState,
+    });
+  });
+
+  mongoose.connection.on("error", error => {
+    mongooseLogger.error("Mongoose MongoDB connection error", { error });
+  });
+
+  mongooseListenersRegistered = true;
+}
 
 /**
  * Onboarding data interface
@@ -234,17 +289,42 @@ export const EmailVerification =
  * Database connection helper
  */
 export async function connectDatabase(): Promise<void> {
-  const logger = loggers.db("mongodb");
   const mongoUri = process.env.DATABASE_URL;
   if (!mongoUri) {
     throw new Error("DATABASE_URL is not set");
   }
 
+  registerMongooseConnectionListeners();
+
+  if (mongoose.connection.readyState === 1) {
+    mongooseLogger.info("MongoDB already connected", {
+      readyState: mongoose.connection.readyState,
+    });
+    return;
+  }
+
+  if (mongoose.connection.readyState === 2) {
+    mongooseLogger.info("MongoDB connection already in progress", {
+      readyState: mongoose.connection.readyState,
+    });
+    await mongoose.connection.asPromise();
+    return;
+  }
+
   try {
-    await mongoose.connect(mongoUri);
-    logger.info("Connected to MongoDB");
+    await mongoose.connect(mongoUri, mongooseConnectOptions);
+    mongooseLogger.info("Connected to MongoDB", {
+      readyState: mongoose.connection.readyState,
+      maxPoolSize: mongooseConnectOptions.maxPoolSize,
+      maxIdleTimeMS: mongooseConnectOptions.maxIdleTimeMS,
+      serverSelectionTimeoutMS: mongooseConnectOptions.serverSelectionTimeoutMS,
+      serverMonitoringMode: mongooseConnectOptions.serverMonitoringMode,
+    });
   } catch (error) {
-    logger.error("MongoDB connection error", { error });
+    mongooseLogger.error("MongoDB connection error", {
+      error,
+      readyState: mongoose.connection.readyState,
+    });
     throw error;
   }
 }
