@@ -22,17 +22,14 @@ import type {
 
 export interface DashboardDataSource
   extends Omit<SchemaDashboardDataSource, "cache"> {
-  materializationMode?: "auto" | "remote_parquet" | "legacy_streamed";
   cache?:
     | (SchemaDashboardDataSource["cache"] & {
         parquetArtifactKey?: string;
         parquetVersion?: string;
         parquetBuiltAt?: string;
-        parquetExpiresAt?: string;
         parquetBuildStatus?: "missing" | "building" | "ready" | "error";
         parquetLastError?: string;
         parquetUrl?: string;
-        materializationRuns?: Array<Record<string, unknown>>;
       })
     | null;
 }
@@ -47,7 +44,11 @@ export interface Dashboard
     resolution: DashboardDefinition["crossFilter"]["resolution"];
     engine?: "mosaic";
   };
-  materializationMode?: "auto" | "remote_parquet" | "legacy_streamed";
+  materializationSchedule: {
+    enabled: boolean;
+    cron: string | null;
+    timezone?: string;
+  };
   access: "private" | "workspace";
   createdBy: string;
   createdAt: string;
@@ -83,12 +84,7 @@ export interface DashboardDataSourceRuntimeState {
   schema: DashboardRuntimeColumn[];
   sampleRows: Record<string, unknown>[];
   error: string | null;
-  loadPath?:
-    | "remote_parquet"
-    | "memory"
-    | "arrow_stream"
-    | "ndjson_stream"
-    | null;
+  loadPath?: "memory" | "arrow_stream" | "ndjson_stream" | null;
   resolvedMode?: "builder" | "viewer";
   artifactUrl?: string | null;
   loadDurationMs?: number | null;

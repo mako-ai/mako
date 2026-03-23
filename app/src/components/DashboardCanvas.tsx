@@ -160,9 +160,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             resolution: "intersect",
             engine: "mosaic",
           },
-          materializationMode: "auto",
+          materializationSchedule: {
+            enabled: true,
+            cron: "0 0 * * *",
+            timezone: "UTC",
+          },
           layout: { columns: 12, rowHeight: 80 },
-          cache: { ttlSeconds: 3600 },
+          cache: {},
           access: "private",
         } as any);
         if (created) {

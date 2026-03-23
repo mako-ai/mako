@@ -38,6 +38,12 @@ export const DashboardDataSourceOriginSchema = z.object({
   importedAt: z.string().optional(),
 });
 
+export const DashboardMaterializationScheduleSchema = z.object({
+  enabled: z.boolean(),
+  cron: z.string().nullable(),
+  timezone: z.string().optional(),
+});
+
 export const DashboardDataSourceSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -46,51 +52,19 @@ export const DashboardDataSourceSchema = z.object({
   origin: DashboardDataSourceOriginSchema.optional(),
   timeDimension: z.string().optional(),
   rowLimit: z.number().optional(),
-  materializationMode: z
-    .enum(["auto", "local_opfs", "remote_parquet", "legacy_streamed"])
-    .optional(),
   cache: z
     .object({
-      ttlSeconds: z.number().optional(),
       lastRefreshedAt: z.string().optional(),
       rowCount: z.number().optional(),
       byteSize: z.number().optional(),
       parquetArtifactKey: z.string().optional(),
       parquetVersion: z.string().optional(),
       parquetBuiltAt: z.string().optional(),
-      parquetExpiresAt: z.string().optional(),
       parquetBuildStatus: z
         .enum(["missing", "building", "ready", "error"])
         .optional(),
       parquetLastError: z.string().optional(),
       parquetUrl: z.string().optional(),
-      materializationRuns: z
-        .array(
-          z.object({
-            runId: z.string(),
-            status: z.enum(["building", "ready", "error"]),
-            requestedAt: z.string(),
-            startedAt: z.string().optional(),
-            finishedAt: z.string().optional(),
-            version: z.string().optional(),
-            artifactKey: z.string().optional(),
-            storageBackend: z.enum(["filesystem", "gcs", "s3"]).optional(),
-            rowCount: z.number().optional(),
-            byteSize: z.number().optional(),
-            error: z.string().optional(),
-            events: z
-              .array(
-                z.object({
-                  type: z.string(),
-                  timestamp: z.string(),
-                  message: z.string(),
-                  metadata: z.record(z.string(), z.unknown()).optional(),
-                }),
-              )
-              .optional(),
-          }),
-        )
-        .optional(),
     })
     .optional(),
   computedColumns: z
@@ -185,15 +159,12 @@ export const DashboardDefinitionSchema = z.object({
     resolution: z.enum(["intersect", "union"]),
     engine: z.enum(["mosaic", "legacy"]).optional(),
   }),
-  materializationMode: z
-    .enum(["auto", "local_opfs", "remote_parquet", "legacy_streamed"])
-    .optional(),
+  materializationSchedule: DashboardMaterializationScheduleSchema,
   layout: z.object({
     columns: z.number(),
     rowHeight: z.number(),
   }),
   cache: z.object({
-    ttlSeconds: z.number(),
     lastRefreshedAt: z.string().optional(),
   }),
 });
@@ -206,6 +177,9 @@ export type DashboardQueryDefinition = z.infer<
 >;
 export type DashboardDataSourceOrigin = z.infer<
   typeof DashboardDataSourceOriginSchema
+>;
+export type DashboardMaterializationSchedule = z.infer<
+  typeof DashboardMaterializationScheduleSchema
 >;
 export type DashboardDataSource = z.infer<typeof DashboardDataSourceSchema>;
 export type DashboardWidget = z.infer<typeof DashboardWidgetSchema>;

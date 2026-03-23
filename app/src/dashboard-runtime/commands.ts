@@ -220,7 +220,6 @@ export function buildDashboardDataSource(input: {
   query: DashboardQueryDefinition;
   timeDimension?: string;
   rowLimit?: number;
-  cacheTtlSeconds?: number;
   origin?: DashboardDataSourceOrigin;
 }): DashboardDataSource {
   return {
@@ -231,9 +230,6 @@ export function buildDashboardDataSource(input: {
     origin: input.origin,
     timeDimension: input.timeDimension,
     rowLimit: input.rowLimit,
-    cache: {
-      ttlSeconds: input.cacheTtlSeconds ?? 3600,
-    },
     computedColumns: [],
   };
 }
@@ -244,7 +240,6 @@ export async function createDashboardDataSource(options: {
   query: DashboardQueryDefinition;
   timeDimension?: string;
   rowLimit?: number;
-  cacheTtlSeconds?: number;
   dashboardId?: string;
 }): Promise<DashboardDataSource> {
   const store = useDashboardStore.getState();
@@ -254,7 +249,6 @@ export async function createDashboardDataSource(options: {
     query: options.query,
     timeDimension: options.timeDimension,
     rowLimit: options.rowLimit,
-    cacheTtlSeconds: options.cacheTtlSeconds,
     origin: { type: "local" },
   });
 

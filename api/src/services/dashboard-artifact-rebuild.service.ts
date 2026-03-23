@@ -10,13 +10,17 @@ import {
   storeArtifact,
   withArtifactBuildLock,
 } from "./dashboard-cache.service";
-import { getDashboardArtifactStoreType } from "./dashboard-artifact-store.service";
 import { writeParquetTempFile } from "../utils/parquet-serializer";
 import { generateSnapshotsForDataSource } from "./dashboard-snapshot.service";
-import type {
-  MaterializationRunEvent,
-  MaterializationRunRecord,
-} from "./dashboard-materialization.service";
+import {
+  appendMaterializationRunEvent,
+  createMaterializationRun,
+  finalizeMaterializationRun,
+  trimMaterializationRuns,
+  type DashboardMaterializationTriggerType,
+  type MaterializationRunEventRecord,
+  type MaterializationRunRecord,
+} from "./dashboard-materialization-run.service";
 
 const logger = loggers.api("dashboard-artifact-rebuild");
 
@@ -96,26 +100,14 @@ function normalizeFields(
 
 function pushRunEvent(
   run: MaterializationRunRecord,
-  event: Omit<MaterializationRunEvent, "timestamp">,
-) {
-  run.events = run.events || [];
-  run.events.push({
+  event: Omit<MaterializationRunEventRecord, "timestamp">,
+): MaterializationRunEventRecord {
+  const materializedEvent = {
     ...event,
     timestamp: new Date(),
-  });
-}
-
-async function persistMaterializationRuns(options: {
-  dashboardId: string;
-  dsIndex: number;
-  runs: MaterializationRunRecord[];
-}) {
-  await Dashboard.findByIdAndUpdate(options.dashboardId, {
-    $set: {
-      [`dataSources.${options.dsIndex}.cache.materializationRuns`]:
-        options.runs,
-    },
-  }).catch(() => undefined);
+  };
+  run.events.push(materializedEvent);
+  return materializedEvent;
 }
 
 export interface RebuildDashboardArtifactsInput {
@@ -123,6 +115,7 @@ export interface RebuildDashboardArtifactsInput {
   workspaceId?: string;
   dataSourceIds?: string[];
   force?: boolean;
+  triggerType?: DashboardMaterializationTriggerType;
 }
 
 export interface RebuildDashboardArtifactsResult {
@@ -170,37 +163,38 @@ export async function rebuildDashboardArtifacts(
     const dsIndex = dashboard.dataSources.findIndex(
       ds => ds.id === dataSource.id,
     );
-    const existingRuns = (
-      (dataSource.cache?.materializationRuns as MaterializationRunRecord[]) ||
-      []
-    )
-      .map(run => ({
-        ...run,
-        requestedAt: new Date(run.requestedAt),
-        startedAt: run.startedAt ? new Date(run.startedAt) : undefined,
-        finishedAt: run.finishedAt ? new Date(run.finishedAt) : undefined,
-        events: (run.events || []).map(event => ({
-          ...event,
-          timestamp: new Date(event.timestamp),
-        })),
-      }))
-      .slice(0, 9);
+    const requestedAt = new Date();
     const currentRun: MaterializationRunRecord = {
       runId: crypto.randomUUID(),
+      workspaceId,
+      dashboardId: dashboard._id.toString(),
+      dataSourceId: dataSource.id,
+      triggerType: input.triggerType || "dashboard_update",
       status: "building",
-      requestedAt: new Date(),
-      startedAt: new Date(),
+      requestedAt,
+      startedAt: requestedAt,
       version,
       artifactKey,
-      storageBackend: getDashboardArtifactStoreType(),
       events: [],
     };
-    const materializationRuns = [currentRun, ...existingRuns];
 
     try {
-      pushRunEvent(currentRun, {
+      const requestedEvent = pushRunEvent(currentRun, {
         type: "materialization_requested",
         message: "Materialization requested",
+      });
+      await createMaterializationRun({
+        workspaceId,
+        dashboardId: dashboard._id.toString(),
+        dataSourceId: dataSource.id,
+        runId: currentRun.runId,
+        triggerType: currentRun.triggerType,
+        status: currentRun.status,
+        requestedAt,
+        startedAt: currentRun.startedAt,
+        artifactKey,
+        version,
+        events: [requestedEvent],
       });
 
       const result = await withArtifactBuildLock(artifactKey, async () => {
@@ -212,24 +206,30 @@ export async function rebuildDashboardArtifacts(
           (await artifactExists(artifactKey));
 
         if (cachedReady) {
-          pushRunEvent(currentRun, {
+          const reusedEvent = pushRunEvent(currentRun, {
             type: "materialization_reused",
             message: "Reused existing parquet artifact",
             metadata: {
               artifactKey,
             },
           });
+          await appendMaterializationRunEvent({
+            runId: currentRun.runId,
+            event: reusedEvent,
+          });
           currentRun.status = "ready";
           currentRun.finishedAt = new Date();
           currentRun.rowCount = dataSource.cache?.rowCount;
           currentRun.byteSize = dataSource.cache?.byteSize;
-          if (dsIndex !== -1) {
-            await persistMaterializationRuns({
-              dashboardId: dashboard._id.toString(),
-              dsIndex,
-              runs: materializationRuns,
-            });
-          }
+          await finalizeMaterializationRun({
+            runId: currentRun.runId,
+            status: currentRun.status,
+            finishedAt: currentRun.finishedAt,
+            rowCount: currentRun.rowCount,
+            byteSize: currentRun.byteSize,
+            artifactKey,
+            version,
+          });
 
           return {
             dataSourceId: dataSource.id,
@@ -247,15 +247,17 @@ export async function rebuildDashboardArtifacts(
             $set: {
               [`dataSources.${dsIndex}.cache.parquetBuildStatus`]: "building",
               [`dataSources.${dsIndex}.cache.parquetLastError`]: null,
-              [`dataSources.${dsIndex}.cache.materializationRuns`]:
-                materializationRuns,
             },
           });
         }
 
-        pushRunEvent(currentRun, {
+        const sourceQueryStartedEvent = pushRunEvent(currentRun, {
           type: "source_query_started",
           message: "Started source query execution",
+        });
+        await appendMaterializationRunEvent({
+          runId: currentRun.runId,
+          event: sourceQueryStartedEvent,
         });
         const connectionId = String(dataSource.query.connectionId || "");
         if (!Types.ObjectId.isValid(connectionId)) {
@@ -292,12 +294,16 @@ export async function rebuildDashboardArtifacts(
         const rows = Array.isArray(queryResult.data) ? queryResult.data : [];
         const limit = dataSource.rowLimit || 500000;
         const limitedRows = rows.slice(0, limit);
-        pushRunEvent(currentRun, {
+        const sourceQueryFinishedEvent = pushRunEvent(currentRun, {
           type: "source_query_finished",
           message: "Finished source query execution",
           metadata: {
             rowCount: limitedRows.length,
           },
+        });
+        await appendMaterializationRunEvent({
+          runId: currentRun.runId,
+          event: sourceQueryFinishedEvent,
         });
 
         const normalizedFields = normalizeFields(
@@ -310,9 +316,13 @@ export async function rebuildDashboardArtifacts(
           }>,
         );
 
-        pushRunEvent(currentRun, {
+        const parquetWriteStartedEvent = pushRunEvent(currentRun, {
           type: "parquet_write_started",
           message: "Started parquet serialization",
+        });
+        await appendMaterializationRunEvent({
+          runId: currentRun.runId,
+          event: parquetWriteStartedEvent,
         });
         const parquetFile = await writeParquetTempFile({
           rows: limitedRows,
@@ -321,13 +331,17 @@ export async function rebuildDashboardArtifacts(
         });
         currentRun.rowCount = parquetFile.rowCount;
         currentRun.byteSize = parquetFile.byteSize;
-        pushRunEvent(currentRun, {
+        const parquetWriteFinishedEvent = pushRunEvent(currentRun, {
           type: "parquet_write_finished",
           message: "Finished parquet serialization",
           metadata: {
             rowCount: parquetFile.rowCount,
             byteSize: parquetFile.byteSize,
           },
+        });
+        await appendMaterializationRunEvent({
+          runId: currentRun.runId,
+          event: parquetWriteFinishedEvent,
         });
 
         const snapshots = await generateSnapshotsForDataSource({
@@ -346,12 +360,16 @@ export async function rebuildDashboardArtifacts(
           parquetFilePath: parquetFile.filePath,
         });
 
-        pushRunEvent(currentRun, {
+        const artifactStorePutStartedEvent = pushRunEvent(currentRun, {
           type: "artifact_store_put_started",
           message: "Started artifact store upload",
           metadata: {
             artifactKey,
           },
+        });
+        await appendMaterializationRunEvent({
+          runId: currentRun.runId,
+          event: artifactStorePutStartedEvent,
         });
         try {
           await storeArtifact(parquetFile.filePath, artifactKey, {
@@ -364,35 +382,40 @@ export async function rebuildDashboardArtifacts(
             .rm(parquetFile.filePath, { force: true })
             .catch(() => undefined);
         }
-        pushRunEvent(currentRun, {
+        const artifactStorePutFinishedEvent = pushRunEvent(currentRun, {
           type: "artifact_store_put_finished",
           message: "Stored artifact successfully",
           metadata: {
             artifactKey,
           },
         });
+        await appendMaterializationRunEvent({
+          runId: currentRun.runId,
+          event: artifactStorePutFinishedEvent,
+        });
+
+        const refreshedAt = new Date();
+        currentRun.status = "ready";
+        currentRun.finishedAt = refreshedAt;
+        const readyEvent = pushRunEvent(currentRun, {
+          type: "materialization_ready",
+          message: "Materialization completed successfully",
+          metadata: {
+            artifactKey,
+          },
+        });
+        await appendMaterializationRunEvent({
+          runId: currentRun.runId,
+          event: readyEvent,
+        });
 
         if (dsIndex !== -1) {
-          const refreshedAt = new Date();
-          const expiresAt =
-            dataSource.cache?.ttlSeconds && dataSource.cache.ttlSeconds > 0
-              ? new Date(Date.now() + dataSource.cache.ttlSeconds * 1000)
-              : undefined;
           const snapshotUpdates = Object.fromEntries(
             Object.entries(snapshots).map(([widgetId, snapshot]) => [
               `snapshots.${widgetId}`,
               snapshot,
             ]),
           );
-          currentRun.status = "ready";
-          currentRun.finishedAt = refreshedAt;
-          pushRunEvent(currentRun, {
-            type: "materialization_ready",
-            message: "Materialization completed successfully",
-            metadata: {
-              artifactKey,
-            },
-          });
           await Dashboard.findByIdAndUpdate(dashboard._id, {
             $set: {
               [`dataSources.${dsIndex}.cache.lastRefreshedAt`]: refreshedAt,
@@ -401,16 +424,23 @@ export async function rebuildDashboardArtifacts(
               [`dataSources.${dsIndex}.cache.parquetArtifactKey`]: artifactKey,
               [`dataSources.${dsIndex}.cache.parquetVersion`]: version,
               [`dataSources.${dsIndex}.cache.parquetBuiltAt`]: refreshedAt,
-              [`dataSources.${dsIndex}.cache.parquetExpiresAt`]: expiresAt,
               [`dataSources.${dsIndex}.cache.parquetBuildStatus`]: "ready",
               [`dataSources.${dsIndex}.cache.parquetLastError`]: null,
-              [`dataSources.${dsIndex}.cache.materializationRuns`]:
-                materializationRuns,
               "cache.lastRefreshedAt": refreshedAt,
               ...snapshotUpdates,
             },
           });
         }
+
+        await finalizeMaterializationRun({
+          runId: currentRun.runId,
+          status: currentRun.status,
+          finishedAt: currentRun.finishedAt,
+          rowCount: currentRun.rowCount,
+          byteSize: currentRun.byteSize,
+          artifactKey,
+          version,
+        });
 
         return {
           dataSourceId: dataSource.id,
@@ -431,28 +461,40 @@ export async function rebuildDashboardArtifacts(
         dataSourceId: dataSource.id,
       });
 
+      currentRun.status = "error";
+      currentRun.error =
+        error instanceof Error ? error.message : "Unknown error";
+      currentRun.finishedAt = new Date();
+      const failedEvent = pushRunEvent(currentRun, {
+        type: "materialization_failed",
+        message: "Materialization failed",
+        metadata: {
+          error: currentRun.error,
+        },
+      });
+      await appendMaterializationRunEvent({
+        runId: currentRun.runId,
+        event: failedEvent,
+      });
+
       if (dsIndex !== -1) {
-        currentRun.status = "error";
-        currentRun.error =
-          error instanceof Error ? error.message : "Unknown error";
-        currentRun.finishedAt = new Date();
-        pushRunEvent(currentRun, {
-          type: "materialization_failed",
-          message: "Materialization failed",
-          metadata: {
-            error: currentRun.error,
-          },
-        });
         await Dashboard.findByIdAndUpdate(dashboard._id, {
           $set: {
             [`dataSources.${dsIndex}.cache.parquetBuildStatus`]: "error",
             [`dataSources.${dsIndex}.cache.parquetLastError`]:
               error instanceof Error ? error.message : "Unknown error",
-            [`dataSources.${dsIndex}.cache.materializationRuns`]:
-              materializationRuns,
           },
         }).catch(() => undefined);
       }
+
+      await finalizeMaterializationRun({
+        runId: currentRun.runId,
+        status: "error",
+        finishedAt: currentRun.finishedAt,
+        error: currentRun.error,
+        artifactKey,
+        version,
+      });
 
       results.push({
         dataSourceId: dataSource.id,
@@ -463,6 +505,12 @@ export async function rebuildDashboardArtifacts(
         error: error instanceof Error ? error.message : "Unknown error",
       });
     }
+
+    await trimMaterializationRuns({
+      dashboardId: dashboard._id.toString(),
+      dataSourceId: dataSource.id,
+      keep: 100,
+    }).catch(() => undefined);
   }
 
   return {

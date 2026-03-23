@@ -2,10 +2,15 @@ import { Dashboard } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { inngest } from "../inngest/client";
 import { rebuildDashboardArtifacts } from "./dashboard-artifact-rebuild.service";
+import { isDashboardMaterializationDue } from "./dashboard-materialization-schedule.service";
 
 const logger = loggers.api("dashboard-refresh-runner");
 
 export type DashboardRefreshRunner = "none" | "inngest" | "poller";
+export type DashboardRefreshTriggerType =
+  | "manual"
+  | "schedule"
+  | "dashboard_update";
 
 let pollerStarted = false;
 
@@ -22,6 +27,7 @@ export async function queueDashboardArtifactRefresh(input: {
   workspaceId?: string;
   dataSourceIds?: string[];
   force?: boolean;
+  triggerType?: DashboardRefreshTriggerType;
 }): Promise<void> {
   const runner = getDashboardRefreshRunner();
   if (runner === "inngest") {
@@ -48,6 +54,7 @@ export async function refreshDashboardArtifactsNow(input: {
   workspaceId?: string;
   dataSourceIds?: string[];
   force?: boolean;
+  triggerType?: DashboardRefreshTriggerType;
 }) {
   return await rebuildDashboardArtifacts(input);
 }
@@ -59,24 +66,38 @@ export function startDashboardRefreshPoller(): void {
 
   pollerStarted = true;
   const intervalMs = Number(
-    process.env.DASHBOARD_REFRESH_INTERVAL_MS || 15 * 60 * 1000,
+    process.env.DASHBOARD_REFRESH_INTERVAL_MS || 60 * 1000,
   );
 
   setInterval(() => {
     void (async () => {
       const dashboards = await Dashboard.find({
-        "cache.ttlSeconds": { $gt: 0 },
-      }).select("_id cache dataSources");
+        "materializationSchedule.enabled": true,
+        "materializationSchedule.cron": { $type: "string", $ne: "" },
+      }).select("_id cache dataSources materializationSchedule");
 
       for (const dashboard of dashboards) {
-        const ttlMs = (dashboard.cache?.ttlSeconds || 3600) * 1000;
-        const lastRefresh = dashboard.cache?.lastRefreshedAt;
-        const isStale =
-          !lastRefresh || Date.now() - new Date(lastRefresh).getTime() > ttlMs;
+        let isDue = false;
+        try {
+          isDue = isDashboardMaterializationDue({
+            schedule: dashboard.materializationSchedule,
+            lastRefreshedAt: dashboard.cache?.lastRefreshedAt ?? null,
+          });
+        } catch (error) {
+          logger.warn(
+            "Skipping dashboard with invalid materialization schedule",
+            {
+              error,
+              dashboardId: dashboard._id.toString(),
+            },
+          );
+          continue;
+        }
 
-        if (isStale && dashboard.dataSources?.length > 0) {
+        if (isDue && dashboard.dataSources?.length > 0) {
           await rebuildDashboardArtifacts({
             dashboardId: dashboard._id.toString(),
+            triggerType: "schedule",
           }).catch(error => {
             logger.error("Dashboard refresh poller rebuild failed", {
               error,

@@ -28,13 +28,39 @@ interface DashboardSettingsDialogProps {
   dashboardId?: string;
 }
 
-const CACHE_TTL_OPTIONS = [
-  { label: "5 min", value: 300 },
-  { label: "15 min", value: 900 },
-  { label: "1 hour", value: 3600 },
-  { label: "6 hours", value: 21600 },
-  { label: "24 hours", value: 86400 },
-];
+const MATERIALIZATION_SCHEDULE_PRESETS = [
+  { key: "hourly", label: "Every hour", cron: "0 * * * *" },
+  { key: "every-6-hours", label: "Every 6 hours", cron: "0 */6 * * *" },
+  { key: "daily", label: "Daily", cron: "0 0 * * *" },
+  { key: "weekly", label: "Weekly", cron: "0 0 * * 0" },
+] as const;
+
+function resolveSchedulePresetKey(cron: string | null | undefined): string {
+  const preset = MATERIALIZATION_SCHEDULE_PRESETS.find(
+    item => item.cron === cron,
+  );
+  return preset?.key ?? "custom";
+}
+
+function describeMaterializationSchedule(
+  enabled: boolean,
+  cron: string,
+): string {
+  if (!enabled) {
+    return "Automatic materialization is disabled. Refresh manually when needed.";
+  }
+
+  const preset = MATERIALIZATION_SCHEDULE_PRESETS.find(
+    item => item.cron === cron,
+  );
+  if (preset) {
+    return `${preset.label} in UTC.`;
+  }
+
+  return cron.trim()
+    ? `Runs on cron "${cron}" in UTC.`
+    : "Enter a cron expression in UTC.";
+}
 
 export default function DashboardSettingsDialog({
   open,
@@ -52,7 +78,9 @@ export default function DashboardSettingsDialog({
   const [access, setAccess] = useState<"private" | "workspace">("private");
   const [gridColumns, setGridColumns] = useState(12);
   const [rowHeight, setRowHeight] = useState(80);
-  const [cacheTtl, setCacheTtl] = useState(900);
+  const [materializationEnabled, setMaterializationEnabled] = useState(true);
+  const [materializationPreset, setMaterializationPreset] = useState("daily");
+  const [materializationCron, setMaterializationCron] = useState("0 0 * * *");
   const [crossFilterEnabled, setCrossFilterEnabled] = useState(false);
   const [crossFilterResolution, setCrossFilterResolution] = useState<
     "intersect" | "union"
@@ -60,9 +88,6 @@ export default function DashboardSettingsDialog({
   const [crossFilterEngine, setCrossFilterEngine] = useState<
     "mosaic" | "legacy"
   >("mosaic");
-  const [materializationMode, setMaterializationMode] = useState<
-    "auto" | "remote_parquet"
-  >("auto");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
@@ -72,14 +97,17 @@ export default function DashboardSettingsDialog({
       setAccess(dashboard.access);
       setGridColumns(dashboard.layout.columns);
       setRowHeight(dashboard.layout.rowHeight);
-      setCacheTtl(dashboard.cache.ttlSeconds);
+      const schedule = dashboard.materializationSchedule ?? {
+        enabled: true,
+        cron: "0 0 * * *",
+        timezone: "UTC",
+      };
+      setMaterializationEnabled(schedule.enabled);
+      setMaterializationCron(schedule.cron ?? "0 0 * * *");
+      setMaterializationPreset(resolveSchedulePresetKey(schedule.cron));
       setCrossFilterEnabled(dashboard.crossFilter.enabled);
       setCrossFilterResolution(dashboard.crossFilter.resolution);
       setCrossFilterEngine(dashboard.crossFilter.engine ?? "mosaic");
-      const storedMode = dashboard.materializationMode as string | undefined;
-      setMaterializationMode(
-        storedMode === "remote_parquet" ? "remote_parquet" : "auto",
-      );
       setConfirmDelete(false);
     }
   }, [dashboard, open]);
@@ -93,8 +121,11 @@ export default function DashboardSettingsDialog({
         description,
         access,
         layout: { columns: gridColumns, rowHeight },
-        cache: { ttlSeconds: cacheTtl },
-        materializationMode,
+        materializationSchedule: {
+          enabled: materializationEnabled,
+          cron: materializationEnabled ? materializationCron.trim() : null,
+          timezone: "UTC",
+        },
         crossFilter: {
           enabled: crossFilterEnabled,
           resolution: crossFilterResolution,
@@ -108,11 +139,11 @@ export default function DashboardSettingsDialog({
           description,
           access,
           layout: { columns: gridColumns, rowHeight },
-          cache: {
-            ...state.openDashboards[dashboardId].cache,
-            ttlSeconds: cacheTtl,
+          materializationSchedule: {
+            enabled: materializationEnabled,
+            cron: materializationEnabled ? materializationCron.trim() : null,
+            timezone: "UTC",
           },
-          materializationMode,
           crossFilter: {
             enabled: crossFilterEnabled,
             resolution: crossFilterResolution,
@@ -207,41 +238,59 @@ export default function DashboardSettingsDialog({
           />
         </Box>
 
-        <FormControl size="small" fullWidth>
-          <InputLabel>Cache TTL</InputLabel>
-          <Select
-            value={cacheTtl}
-            label="Cache TTL"
-            onChange={e => setCacheTtl(Number(e.target.value))}
-          >
-            {CACHE_TTL_OPTIONS.map(opt => (
-              <MenuItem key={opt.value} value={opt.value}>
-                {opt.label}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={materializationEnabled}
+              onChange={e => setMaterializationEnabled(e.target.checked)}
+            />
+          }
+          label="Automatic materialization"
+        />
 
-        <FormControl size="small" fullWidth>
-          <InputLabel>Performance Mode</InputLabel>
-          <Select
-            value={materializationMode}
-            label="Performance Mode"
-            onChange={e =>
-              setMaterializationMode(
-                e.target.value as "auto" | "remote_parquet",
-              )
-            }
-          >
-            <MenuItem value="auto">Auto</MenuItem>
-            <MenuItem value="remote_parquet">Use shared server cache</MenuItem>
-          </Select>
-        </FormControl>
-        <Typography variant="body2" color="text.secondary">
-          Auto favors shared remote Parquet for viewing and fast streamed data
-          for editing. Cache on this device keeps using local OPFS-backed DuckDB
-          during local work.
-        </Typography>
+        {materializationEnabled && (
+          <>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Materialization Schedule</InputLabel>
+              <Select
+                value={materializationPreset}
+                label="Materialization Schedule"
+                onChange={e => {
+                  const nextPreset = e.target.value;
+                  setMaterializationPreset(nextPreset);
+                  const preset = MATERIALIZATION_SCHEDULE_PRESETS.find(
+                    item => item.key === nextPreset,
+                  );
+                  if (preset) {
+                    setMaterializationCron(preset.cron);
+                  }
+                }}
+              >
+                {MATERIALIZATION_SCHEDULE_PRESETS.map(preset => (
+                  <MenuItem key={preset.key} value={preset.key}>
+                    {preset.label}
+                  </MenuItem>
+                ))}
+                <MenuItem value="custom">Custom</MenuItem>
+              </Select>
+            </FormControl>
+
+            <TextField
+              label="Cron Expression"
+              value={materializationCron}
+              onChange={e => {
+                setMaterializationPreset("custom");
+                setMaterializationCron(e.target.value);
+              }}
+              fullWidth
+              size="small"
+              helperText={describeMaterializationSchedule(
+                materializationEnabled,
+                materializationCron,
+              )}
+            />
+          </>
+        )}
 
         <FormControlLabel
           control={

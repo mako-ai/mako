@@ -2,6 +2,7 @@ import { inngest } from "../client";
 import { Dashboard } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { rebuildDashboardArtifacts } from "../../services/dashboard-artifact-rebuild.service";
+import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
 
 const logger = loggers.inngest();
 
@@ -17,10 +18,11 @@ export const dashboardRefreshFunction = inngest.createFunction(
   },
   { event: "dashboard.refresh" },
   async ({ event, step }) => {
-    const { dashboardId, dataSourceIds, force } = event.data as {
+    const { dashboardId, dataSourceIds, force, triggerType } = event.data as {
       dashboardId: string;
       dataSourceIds?: string[];
       force?: boolean;
+      triggerType?: "manual" | "schedule" | "dashboard_update";
     };
 
     const dashboard = (await step.run("fetch-dashboard", async () => {
@@ -39,6 +41,7 @@ export const dashboardRefreshFunction = inngest.createFunction(
         dashboardId,
         dataSourceIds,
         force,
+        triggerType,
       });
     });
 
@@ -60,26 +63,42 @@ export const dashboardSchedulerFunction = inngest.createFunction(
     id: "scheduled-dashboard-refresh",
     name: "Scheduled Dashboard Refresh",
   },
-  { cron: "*/15 * * * *" },
+  { cron: "* * * * *" },
   async ({ step }) => {
     const dashboards = (await step.run("find-stale-dashboards", async () => {
       return Dashboard.find({
-        "cache.ttlSeconds": { $gt: 0 },
-      }).select("_id cache dataSources");
+        "materializationSchedule.enabled": true,
+        "materializationSchedule.cron": { $type: "string", $ne: "" },
+      }).select("_id cache dataSources materializationSchedule");
     })) as any[];
 
     let triggered = 0;
 
     for (const dashboard of dashboards) {
-      const ttlMs = (dashboard.cache?.ttlSeconds || 3600) * 1000;
-      const lastRefresh = dashboard.cache?.lastRefreshedAt;
-      const isStale =
-        !lastRefresh || Date.now() - new Date(lastRefresh).getTime() > ttlMs;
+      let isDue = false;
+      try {
+        isDue = isDashboardMaterializationDue({
+          schedule: dashboard.materializationSchedule,
+          lastRefreshedAt: dashboard.cache?.lastRefreshedAt ?? null,
+        });
+      } catch (error) {
+        logger.warn(
+          "Skipping dashboard with invalid materialization schedule",
+          {
+            error,
+            dashboardId: dashboard._id.toString(),
+          },
+        );
+        continue;
+      }
 
-      if (isStale && dashboard.dataSources?.length > 0) {
+      if (isDue && dashboard.dataSources?.length > 0) {
         await step.sendEvent("trigger-refresh", {
           name: "dashboard.refresh",
-          data: { dashboardId: dashboard._id.toString() },
+          data: {
+            dashboardId: dashboard._id.toString(),
+            triggerType: "schedule",
+          },
         });
         triggered++;
       }

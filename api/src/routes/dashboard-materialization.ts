@@ -13,6 +13,10 @@ import {
   buildDataSourceMaterializationStatus,
 } from "../services/dashboard-materialization.service";
 import {
+  getMaterializationRunByRunId,
+  listMaterializationRuns,
+} from "../services/dashboard-materialization-run.service";
+import {
   queueDashboardArtifactRefresh,
   refreshDashboardArtifactsNow,
 } from "../services/dashboard-refresh-runner.service";
@@ -168,6 +172,7 @@ app.post("/materialize", async (c: AuthenticatedContext) => {
         dashboardId: dashboard._id.toString(),
         dataSourceIds,
         force,
+        triggerType: "manual",
       });
       const refreshedDashboard = await getDashboardForMaterialization({
         workspaceId: dashboard.workspaceId.toString(),
@@ -193,6 +198,7 @@ app.post("/materialize", async (c: AuthenticatedContext) => {
       dashboardId: dashboard._id.toString(),
       dataSourceIds,
       force,
+      triggerType: "manual",
     });
     return c.json({
       success: true,
@@ -274,6 +280,7 @@ app.post(
           dashboardId: dashboard._id.toString(),
           dataSourceIds: [dataSourceId],
           force,
+          triggerType: "manual",
         });
         const refreshedDashboard = await getDashboardForMaterialization({
           workspaceId: dashboard.workspaceId.toString(),
@@ -306,6 +313,7 @@ app.post(
         dashboardId: dashboard._id.toString(),
         dataSourceIds: [dataSourceId],
         force,
+        triggerType: "manual",
       });
       return c.json({ success: true, queued: true, dataSourceId });
     } catch (error) {
@@ -324,8 +332,75 @@ app.post(
   },
 );
 
+app.get("/materialization/runs", async (c: AuthenticatedContext) => {
+  try {
+    const dashboard = await getScopedDashboardOrResponse(c);
+    if (dashboard instanceof Response) {
+      return dashboard;
+    }
+
+    const limit = Number(c.req.query("limit") || 100);
+    return c.json({
+      success: true,
+      data: await listMaterializationRuns({
+        workspaceId: dashboard.workspaceId.toString(),
+        dashboardId: dashboard._id.toString(),
+        limit: Number.isFinite(limit) ? limit : 100,
+      }),
+    });
+  } catch (error) {
+    logger.error("Failed to get materialization runs", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to get materialization runs",
+      },
+      500,
+    );
+  }
+});
+
+app.get("/materialization/runs/:runId", async (c: AuthenticatedContext) => {
+  try {
+    const dashboard = await getScopedDashboardOrResponse(c);
+    if (dashboard instanceof Response) {
+      return dashboard;
+    }
+
+    const run = await getMaterializationRunByRunId({
+      workspaceId: dashboard.workspaceId.toString(),
+      dashboardId: dashboard._id.toString(),
+      runId: c.req.param("runId"),
+    });
+
+    if (!run) {
+      return c.json(
+        { success: false, error: "Materialization run not found" },
+        404,
+      );
+    }
+
+    return c.json({ success: true, data: run });
+  } catch (error) {
+    logger.error("Failed to get materialization run", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to get materialization run",
+      },
+      500,
+    );
+  }
+});
+
 app.get(
-  "/data-sources/:dataSourceId/materialization/log",
+  "/data-sources/:dataSourceId/materialization/runs",
   async (c: AuthenticatedContext) => {
     try {
       const dashboard = await getScopedDashboardOrResponse(c);
@@ -333,40 +408,28 @@ app.get(
         return dashboard;
       }
 
-      const dataSource = getDataSourceOrThrow(
-        dashboard,
-        c.req.param("dataSourceId"),
-      );
+      const dataSourceId = c.req.param("dataSourceId");
+      getDataSourceOrThrow(dashboard, dataSourceId);
+      const limit = Number(c.req.query("limit") || 100);
+
       return c.json({
         success: true,
-        data: JSON.parse(
-          JSON.stringify(
-            (dataSource.cache?.materializationRuns || []).map(run => ({
-              ...(typeof (run as any).toObject === "function"
-                ? (run as any).toObject()
-                : run),
-              requestedAt: run.requestedAt?.toISOString?.() || run.requestedAt,
-              startedAt: run.startedAt?.toISOString?.() || run.startedAt,
-              finishedAt: run.finishedAt?.toISOString?.() || run.finishedAt,
-              events: (run.events || []).map(event => ({
-                ...(typeof (event as any).toObject === "function"
-                  ? (event as any).toObject()
-                  : event),
-                timestamp: event.timestamp?.toISOString?.() || event.timestamp,
-              })),
-            })),
-          ),
-        ),
+        data: await listMaterializationRuns({
+          workspaceId: dashboard.workspaceId.toString(),
+          dashboardId: dashboard._id.toString(),
+          dataSourceId,
+          limit: Number.isFinite(limit) ? limit : 100,
+        }),
       });
     } catch (error) {
-      logger.error("Failed to get materialization log", { error });
+      logger.error("Failed to get data source materialization runs", { error });
       return c.json(
         {
           success: false,
           error:
             error instanceof Error
               ? error.message
-              : "Failed to get materialization log",
+              : "Failed to get data source materialization runs",
         },
         500,
       );

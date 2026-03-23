@@ -14,7 +14,6 @@ export interface DashboardArtifactStore {
     key: string,
     metadata?: Record<string, string>,
   ): Promise<void>;
-  getUrl(key: string): Promise<string>;
   getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   delete(key: string): Promise<void>;
@@ -102,16 +101,6 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
     });
   }
 
-  async getUrl(key: string): Promise<string> {
-    const url = `/api/dashboard-artifacts/${encodeURIComponent(ensureSafeKey(key))}`;
-    logger.debug("Resolved filesystem artifact URL", {
-      key,
-      url,
-      storeType: this.type,
-    });
-    return url;
-  }
-
   async getSignedUrl(): Promise<string | null> {
     return null;
   }
@@ -176,21 +165,6 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
       durationMs: Date.now() - startedAt,
       storeType: this.type,
     });
-  }
-
-  async getUrl(key: string): Promise<string> {
-    const startedAt = Date.now();
-    const file = this.file(key);
-    const [signedUrl] = await file.getSignedUrl({
-      action: "read",
-      expires: Date.now() + 1000 * 60 * 60,
-    });
-    logger.debug("Resolved GCS artifact URL", {
-      key,
-      durationMs: Date.now() - startedAt,
-      storeType: this.type,
-    });
-    return signedUrl;
   }
 
   async getSignedUrl(key: string, ttlSeconds = 3600): Promise<string | null> {
@@ -454,27 +428,6 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
       storeType: this.type,
     });
     void metadata;
-  }
-
-  async getUrl(key: string): Promise<string> {
-    const startedAt = Date.now();
-    if (this.publicBaseUrl) {
-      const base = this.publicBaseUrl.replace(/\/+$/, "");
-      const url = `${base}/${ensureSafeKey(key)}`;
-      logger.debug("Resolved S3 public artifact URL", {
-        key,
-        durationMs: Date.now() - startedAt,
-        storeType: this.type,
-      });
-      return url;
-    }
-    const url = await this.createSignedGetUrl(key);
-    logger.debug("Resolved S3 signed artifact URL", {
-      key,
-      durationMs: Date.now() - startedAt,
-      storeType: this.type,
-    });
-    return url;
   }
 
   async getSignedUrl(key: string): Promise<string | null> {

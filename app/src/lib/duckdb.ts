@@ -91,8 +91,6 @@ function ensureDuckDBUnloadHandler(): void {
   console.log("[opfs-diag] Registered beforeunload DuckDB cleanup handler");
 }
 
-export type PersistentDuckDBAccessMode = "read-only" | "read-write";
-
 async function createWorkerAndInstantiate(): Promise<AsyncDuckDB> {
   ensureDuckDBUnloadHandler();
   console.log(
@@ -161,64 +159,6 @@ export async function ensureHttpfsLoaded(db: AsyncDuckDB): Promise<boolean> {
 export async function createDuckDBInstance(): Promise<AsyncDuckDB> {
   console.log("[opfs-diag] createDuckDBInstance: creating in-memory DuckDB");
   return createWorkerAndInstantiate();
-}
-
-export function isOPFSAvailable(): boolean {
-  return (
-    typeof navigator !== "undefined" &&
-    "storage" in navigator &&
-    typeof navigator.storage.getDirectory === "function"
-  );
-}
-
-/**
- * Create a DuckDB instance backed by OPFS so data persists across page reloads.
- */
-export async function createPersistentDuckDBInstance(
-  opfsPath: string,
-  accessMode: PersistentDuckDBAccessMode = "read-write",
-): Promise<AsyncDuckDB> {
-  const duckdb = await import("@duckdb/duckdb-wasm");
-  const db = await createWorkerAndInstantiate();
-  const id = getDuckDBInstanceId(db);
-  console.log(
-    `[opfs-diag] DuckDB instance #${id} opening persistent database at ${opfsPath}`,
-  );
-  await db.open({
-    path: opfsPath,
-    accessMode:
-      accessMode === "read-only"
-        ? duckdb.DuckDBAccessMode.READ_ONLY
-        : duckdb.DuckDBAccessMode.READ_WRITE,
-  });
-  console.log(
-    `[opfs-diag] DuckDB instance #${id} opened persistent database at ${opfsPath}`,
-  );
-  return db;
-}
-
-export async function checkpointDatabase(db: AsyncDuckDB): Promise<void> {
-  const id = getDuckDBInstanceId(db);
-  console.log(`[opfs-diag] CHECKPOINT start for DuckDB instance #${id}`);
-  const conn = await db.connect();
-  try {
-    await conn.query("CHECKPOINT");
-    console.log(`[opfs-diag] CHECKPOINT success for DuckDB instance #${id}`);
-  } finally {
-    await conn.close();
-    console.log(`[opfs-diag] CHECKPOINT connection closed for #${id}`);
-  }
-}
-
-export async function deleteOPFSFiles(dashboardId: string): Promise<void> {
-  try {
-    const root = await navigator.storage.getDirectory();
-    const name = `mako_dashboard_${dashboardId}.db`;
-    await root.removeEntry(name).catch(() => {});
-    await root.removeEntry(`${name}.wal`).catch(() => {});
-  } catch {
-    // OPFS not available or file doesn't exist
-  }
 }
 
 /**
@@ -816,7 +756,7 @@ export async function listTables(db: AsyncDuckDB): Promise<string[]> {
   }
 }
 
-// --- OPFS Data Caching ---
+// --- IndexedDB payload caching ---
 
 const CACHE_DB_NAME = "mako-dashboard-cache";
 const CACHE_STORE_NAME = "dashboard-payload-cache";

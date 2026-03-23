@@ -67,10 +67,6 @@ export async function deleteArtifact(key: string): Promise<void> {
   await getArtifactStore().delete(key);
 }
 
-export async function resolveArtifactUrl(key: string): Promise<string> {
-  return await getArtifactStore().getUrl(key);
-}
-
 export async function withArtifactBuildLock<T>(
   key: string,
   fn: () => Promise<T>,

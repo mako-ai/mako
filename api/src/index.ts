@@ -35,7 +35,6 @@ import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
 import { dashboardRoutes } from "./routes/dashboards";
-import { dashboardArtifactRoutes } from "./routes/dashboard-artifacts";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
@@ -115,7 +114,6 @@ app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",
   dashboardMaterializationRoutes,
 );
-app.route("/api/dashboard-artifacts", dashboardArtifactRoutes);
 app.route("/api/run", executeRoutes);
 app.route("/api/execute", executeRoutes);
 app.route("/api/database", databaseRoutes);

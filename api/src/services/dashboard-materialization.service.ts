@@ -18,28 +18,6 @@ export type MaterializationStatusValue =
   | "ready"
   | "error";
 
-export interface MaterializationRunEvent {
-  type: string;
-  timestamp: Date;
-  message: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface MaterializationRunRecord {
-  runId: string;
-  status: "building" | "ready" | "error";
-  requestedAt: Date;
-  startedAt?: Date;
-  finishedAt?: Date;
-  version?: string;
-  artifactKey?: string;
-  storageBackend?: "filesystem" | "gcs" | "s3";
-  rowCount?: number;
-  byteSize?: number;
-  error?: string;
-  events?: MaterializationRunEvent[];
-}
-
 export interface DashboardDataSourceMaterializationStatus {
   dataSourceId: string;
   name: string;
@@ -50,12 +28,10 @@ export interface DashboardDataSourceMaterializationStatus {
   rowCount: number | null;
   byteSize: number | null;
   builtAt: string | null;
-  expiresAt: string | null;
   readUrl: string | null;
   lastError: string | null;
   artifactKey: string | null;
   lastMaterializedAt: string | null;
-  runs: MaterializationRunRecord[];
 }
 
 export interface DashboardMaterializationStatus {
@@ -66,21 +42,6 @@ export interface DashboardMaterializationStatus {
   allReady: boolean;
   anyBuilding: boolean;
   dataSources: DashboardDataSourceMaterializationStatus[];
-}
-
-function normalizeRuns(runs: unknown): MaterializationRunRecord[] {
-  return (
-    ((runs as MaterializationRunRecord[]) || []) as MaterializationRunRecord[]
-  ).map(run => ({
-    ...run,
-    requestedAt: new Date(run.requestedAt),
-    startedAt: run.startedAt ? new Date(run.startedAt) : undefined,
-    finishedAt: run.finishedAt ? new Date(run.finishedAt) : undefined,
-    events: (run.events || []).map(event => ({
-      ...event,
-      timestamp: new Date(event.timestamp),
-    })),
-  }));
 }
 
 export async function buildDataSourceMaterializationStatus(input: {
@@ -119,9 +80,6 @@ export async function buildDataSourceMaterializationStatus(input: {
     rowCount: cache?.rowCount ?? null,
     byteSize: cache?.byteSize ?? null,
     builtAt: cache?.parquetBuiltAt ? cache.parquetBuiltAt.toISOString() : null,
-    expiresAt: cache?.parquetExpiresAt
-      ? cache.parquetExpiresAt.toISOString()
-      : null,
     readUrl:
       artifactKey || cache?.parquetBuildStatus === "building"
         ? buildDashboardMaterializationArtifactPath({
@@ -135,7 +93,6 @@ export async function buildDataSourceMaterializationStatus(input: {
     lastMaterializedAt: cache?.parquetBuiltAt
       ? cache.parquetBuiltAt.toISOString()
       : null,
-    runs: normalizeRuns(cache?.materializationRuns),
   };
 }
 
