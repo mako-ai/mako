@@ -33,7 +33,7 @@ import {
   Healing as RecoverIcon,
   ContentCopy as CopyIcon,
   Edit as EditIcon,
-  AutoFixHigh as ResetColumnIcon,
+  DeleteSweep as ResetTableIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 
@@ -112,25 +112,16 @@ function entityStreamChip(e: {
   return { label: "Pending", color: "default" };
 }
 
-function entityBackfillChip(
-  e: {
-    backlogCount: number;
-    lastMaterializedSeq: number;
-    lastMaterializedAt: string | null;
-  },
-  flowBackfillStatus: BackfillStatus,
-): {
+function entityBackfillChip(e: {
+  backlogCount: number;
+  backfillDone?: boolean;
+}): {
   label: string;
   color: "success" | "info" | "default";
 } {
-  if (flowBackfillStatus === "idle") {
-    return { label: "Not started", color: "default" };
-  }
   if (e.backlogCount > 0) return { label: "In progress", color: "info" };
-  if (!e.lastMaterializedAt && e.lastMaterializedSeq === 0) {
-    return { label: "Not started", color: "default" };
-  }
-  return { label: "Done", color: "success" };
+  if (e.backfillDone) return { label: "Done", color: "success" };
+  return { label: "Not started", color: "default" };
 }
 
 type LogEntry = {
@@ -265,7 +256,7 @@ export function BackfillPanel({
     fetchWebhookEvents,
     pauseCdcFlow,
     resumeCdcFlow,
-    resetCdcEntityColumn,
+    resetCdcEntityTable,
     resyncCdcFlow,
     recoverCdcFlow,
   } = useFlowStore();
@@ -287,10 +278,8 @@ export function BackfillPanel({
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
   const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
-  const [columnResetOpen, setColumnResetOpen] = useState(false);
-  const [columnResetEntity, setColumnResetEntity] = useState("");
-  const [columnResetName, setColumnResetName] = useState("");
-  const [columnResetForceReplay, setColumnResetForceReplay] = useState(true);
+  const [entityResetOpen, setEntityResetOpen] = useState(false);
+  const [entityResetEntity, setEntityResetEntity] = useState("");
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -465,36 +454,23 @@ export function BackfillPanel({
     await pollCdc();
   };
 
-  const openColumnResetDialog = (entity: string) => {
-    setColumnResetEntity(entity);
-    setColumnResetName("");
-    setColumnResetForceReplay(true);
-    setColumnResetOpen(true);
+  const openEntityResetDialog = (entity: string) => {
+    setEntityResetEntity(entity);
+    setEntityResetOpen(true);
   };
 
-  const handleResetColumnAndBackfill = () =>
+  const handleResetEntityTable = () =>
     withBusy(async () => {
-      const column = columnResetName.trim();
-      if (!column) {
-        throw new Error("Column name is required");
-      }
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) {
-        throw new Error(
-          "Column must be a valid identifier (letters, numbers, underscore)",
-        );
-      }
-      const ok = await resetCdcEntityColumn(workspaceId, flowId, {
-        entity: columnResetEntity,
-        column,
-        forceReplay: columnResetForceReplay,
-        startBackfill: true,
-      });
+      const ok = await resetCdcEntityTable(
+        workspaceId,
+        flowId,
+        entityResetEntity,
+      );
       if (!ok) {
-        throw new Error("Failed to reset column and start entity backfill");
+        throw new Error("Failed to reset table and start backfill");
       }
-      setColumnResetOpen(false);
-      setColumnResetEntity("");
-      setColumnResetName("");
+      setEntityResetOpen(false);
+      setEntityResetEntity("");
       setLogs([]);
       setTimeout(() => pollLogs(), 3000);
     });
@@ -562,6 +538,7 @@ export function BackfillPanel({
           : 0,
       lifetimeRowsApplied:
         typeof s?.lifetimeRowsApplied === "number" ? s.lifetimeRowsApplied : 0,
+      backfillDone: s?.backfillDone === true,
       execRows: execStats[name] || 0,
       execStatus: execStatus[name] || null,
     };
@@ -954,7 +931,7 @@ export function BackfillPanel({
                   <TableBody>
                     {entities.map(e => {
                       const sc = entityStreamChip(e);
-                      const bc = entityBackfillChip(e, bfStatus);
+                      const bc = entityBackfillChip(e);
                       const backfillChip =
                         e.execStatus === "syncing"
                           ? { label: "Syncing…", color: "info" as const }
@@ -1060,17 +1037,17 @@ export function BackfillPanel({
                               {bfStatus !== "running" && (
                                 <>
                                   <Tooltip
-                                    title={`Reset column and rebackfill ${entityLabel(e.entity)}`}
+                                    title={`Reset table and rebackfill ${entityLabel(e.entity)}`}
                                   >
                                     <IconButton
                                       size="small"
                                       onClick={() =>
-                                        openColumnResetDialog(e.entity)
+                                        openEntityResetDialog(e.entity)
                                       }
                                       disabled={busy}
                                       sx={{ p: 0.25 }}
                                     >
-                                      <ResetColumnIcon sx={{ fontSize: 16 }} />
+                                      <ResetTableIcon sx={{ fontSize: 16 }} />
                                     </IconButton>
                                   </Tooltip>
                                   <Tooltip
@@ -1349,12 +1326,12 @@ export function BackfillPanel({
         )}
       </Box>
 
-      {/* Reset column dialog */}
+      {/* Reset entity table dialog */}
       <Dialog
-        open={columnResetOpen}
-        onClose={() => !busy && setColumnResetOpen(false)}
+        open={entityResetOpen}
+        onClose={() => !busy && setEntityResetOpen(false)}
       >
-        <DialogTitle>Reset column and rebackfill</DialogTitle>
+        <DialogTitle>Reset table and rebackfill</DialogTitle>
         <DialogContent sx={{ display: "grid", gap: 1, minWidth: 420 }}>
           <Typography variant="body2">
             Entity:{" "}
@@ -1362,44 +1339,25 @@ export function BackfillPanel({
               component="span"
               sx={{ fontFamily: "monospace", fontWeight: 600 }}
             >
-              {columnResetEntity ? entityLabel(columnResetEntity) : "—"}
+              {entityResetEntity ? entityLabel(entityResetEntity) : "—"}
             </Box>
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            This sets the destination column to NULL for the entity table, then
-            starts a scoped backfill for this entity.
+            This drops the destination table for this entity, clears its CDC
+            state, and starts a fresh backfill.
           </Typography>
-          <TextField
-            label="Column name"
-            value={columnResetName}
-            onChange={e => setColumnResetName(e.target.value)}
-            size="small"
-            placeholder="e.g. opportunity_status"
-            autoFocus
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={columnResetForceReplay}
-                onChange={e => setColumnResetForceReplay(e.target.checked)}
-              />
-            }
-            label="Force replay by resetting source ordering guards"
-          />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setColumnResetOpen(false)} disabled={busy}>
+          <Button onClick={() => setEntityResetOpen(false)} disabled={busy}>
             Cancel
           </Button>
           <Button
             variant="contained"
             color="warning"
-            disabled={
-              !columnResetEntity || columnResetName.trim().length === 0 || busy
-            }
-            onClick={handleResetColumnAndBackfill}
+            disabled={!entityResetEntity || busy}
+            onClick={handleResetEntityTable}
           >
-            {busy ? "Applying…" : "Reset + rebackfill"}
+            {busy ? "Resetting…" : "Reset + rebackfill"}
           </Button>
         </DialogActions>
       </Dialog>

@@ -303,6 +303,7 @@ export interface CdcStatus {
     destinationRowCount?: number | null;
     lifetimeEventsProcessed?: number;
     lifetimeRowsApplied?: number;
+    backfillDone?: boolean;
   }>;
   transitions: Array<{
     machine?: string;
@@ -422,6 +423,11 @@ interface FlowStore extends FlowStoreState {
       forceReplay?: boolean;
       startBackfill?: boolean;
     },
+  ) => Promise<boolean>;
+  resetCdcEntityTable: (
+    workspaceId: string,
+    flowId: string,
+    entity: string,
   ) => Promise<boolean>;
   pauseCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resumeCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
@@ -891,6 +897,28 @@ export const useFlowStore = create<FlowStore>()(
           );
           if (!response.success) {
             throw new Error(response.error || "Failed to reset column");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      resetCdcEntityTable: async (workspaceId, flowId, entity) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reset-entity`,
+            { entity },
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to reset entity table");
           }
           await get().refresh(workspaceId);
           return true;

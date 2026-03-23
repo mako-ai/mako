@@ -487,6 +487,14 @@ export const cdcBackfillCheckpointService = {
       entity: params.entity,
       cursor,
     });
+
+    await CdcEntityState.updateOne(
+      {
+        flowId: new Types.ObjectId(params.flowId),
+        entity: params.entity,
+      },
+      { $set: { backfillCompletedAt: new Date() } },
+    );
   },
   clearRun: async (params: {
     workspaceId: string;

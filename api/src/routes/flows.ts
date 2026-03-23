@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import {
   Flow,
+  CdcChangeEvent,
   CdcEntityState,
   CdcStateTransition,
   Connector as DataSource,
@@ -1426,6 +1427,117 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
   }
 });
 
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/reset-entity
+// Drop destination table for one entity, clear its CDC state, and start a fresh backfill.
+flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const body = (await c.req.json().catch(() => ({}))) as {
+      entity?: string;
+    };
+    const entity =
+      typeof body.entity === "string" ? body.entity.trim() : undefined;
+    if (!entity) {
+      return c.json({ success: false, error: "entity is required" }, 400);
+    }
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+    if (flow.syncEngine !== "cdc") {
+      return c.json(
+        { success: false, error: "Entity reset requires syncEngine=cdc" },
+        400,
+      );
+    }
+
+    const running = await FlowExecution.exists({
+      flowId: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      status: "running",
+    });
+    if (running) {
+      return c.json(
+        {
+          success: false,
+          error: "Cannot reset while a flow execution is running",
+        },
+        400,
+      );
+    }
+
+    if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
+      const destination = await DatabaseConnection.findById(
+        flow.tableDestination.connectionId,
+      );
+      if (destination) {
+        const driver = databaseRegistry.getDriver(destination.type);
+        if (driver?.dropTable) {
+          const schema = flow.tableDestination.schema;
+          const liveTable = cdcLiveTableName(
+            flow.tableDestination.tableName,
+            entity,
+            flowId,
+          );
+          await driver.dropTable(destination, liveTable, { schema });
+        }
+      }
+    }
+
+    await CdcEntityState.deleteMany({
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      entity,
+    });
+
+    await CdcChangeEvent.deleteMany({
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      entity,
+    });
+
+    for (const key of destinationCountCache.keys()) {
+      if (key.startsWith(`${workspaceId}:${flowId}:${entity}:`)) {
+        destinationCountCache.delete(key);
+      }
+    }
+
+    const backfill = await cdcBackfillService.startBackfill(
+      workspaceId,
+      flowId,
+      { entities: [entity] },
+    );
+
+    return c.json({
+      success: true,
+      message: "Entity table reset and backfill started",
+      data: {
+        entity,
+        runId: backfill.runId,
+      },
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/reset-column
 // Reset one destination column for an entity and optionally start entity backfill.
 flowRoutes.post("/:flowId/sync-cdc/reset-column", async c => {
@@ -1525,15 +1637,16 @@ flowRoutes.post("/:flowId/sync-cdc/reset-column", async c => {
       }
     }
 
-    const destinationDoc = await DatabaseConnection.findById(
+    const destinationRaw = await DatabaseConnection.findById(
       flow.tableDestination.connectionId,
-    ).lean();
-    if (!destinationDoc) {
+    );
+    if (!destinationRaw) {
       return c.json(
         { success: false, error: "Destination connection not found" },
         404,
       );
     }
+    const destinationDoc = destinationRaw.toObject();
 
     const destinationType = String(destinationDoc.type || "").toLowerCase();
     const schema = flow.tableDestination.schema;
@@ -2086,6 +2199,9 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         typeof (state as any)?.lifetimeRowsApplied === "number"
           ? (state as any).lifetimeRowsApplied
           : state?.lastMaterializedSeq || 0;
+      const backfillDone =
+        state?.backfillCompletedAt != null ||
+        (state?.backfillCursor as any)?.hasMore === false;
       return {
         entity,
         lastIngestSeq: state?.lastIngestSeq || 0,
@@ -2099,6 +2215,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
           null,
         lifetimeEventsProcessed,
         lifetimeRowsApplied,
+        backfillDone,
       };
     });
 
