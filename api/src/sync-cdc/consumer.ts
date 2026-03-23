@@ -32,8 +32,8 @@ export class CdcConsumerService {
     if (flow.syncEngine !== "cdc") {
       return { skipped: true, reason: "syncEngine is not cdc" as const };
     }
-    if (flow.syncState === "paused") {
-      return { skipped: true, reason: "syncState is paused" as const };
+    if (flow.streamState === "paused") {
+      return { skipped: true, reason: "streamState is paused" as const };
     }
     if (!flow.tableDestination?.connectionId) {
       return { skipped: true, reason: "missing table destination" as const };
@@ -116,10 +116,6 @@ export class CdcConsumerService {
     });
 
     if (pending.length === 0) {
-      await this.updateLifecycleAfterMaterialization(
-        params.workspaceId,
-        params.flowId,
-      );
       return {
         processed: 0,
         applied: 0,
@@ -163,10 +159,9 @@ export class CdcConsumerService {
     }
 
     try {
+      const isBackfilling = flow.backfillState?.status === "running";
       const effectiveDeleteMode =
-        flow.deleteMode === "hard" && flow.syncState === "backfill"
-          ? "soft"
-          : flow.deleteMode;
+        flow.deleteMode === "hard" && isBackfilling ? "soft" : flow.deleteMode;
 
       const apply = await adapter.applyEvents({
         events: pending,
@@ -190,10 +185,6 @@ export class CdcConsumerService {
         processedEventsDelta: pending.length,
         rowsAppliedDelta: apply.applied,
       });
-      await this.updateLifecycleAfterMaterialization(
-        params.workspaceId,
-        params.flowId,
-      );
 
       return {
         processed: pending.length,
@@ -210,7 +201,7 @@ export class CdcConsumerService {
         errorCode: "MATERIALIZATION_FAILED",
         errorMessage,
       });
-      await cdcSyncStateService.applyTransition({
+      await cdcSyncStateService.applyStreamTransition({
         workspaceId: params.workspaceId,
         flowId: params.flowId,
         event: {
@@ -226,50 +217,6 @@ export class CdcConsumerService {
         error: errorMessage,
       });
       throw error;
-    }
-  }
-
-  private async updateLifecycleAfterMaterialization(
-    workspaceId: string,
-    flowId: string,
-  ) {
-    const pending = await getCdcEventStore().countEvents({
-      workspaceId,
-      flowId,
-      materializationStatus: "pending",
-    });
-
-    const flow = await Flow.findById(flowId).lean();
-    if (!flow || flow.syncEngine !== "cdc") {
-      return;
-    }
-
-    if (pending === 0) {
-      await cdcSyncStateService.applyTransition({
-        workspaceId,
-        flowId,
-        event: {
-          type: "LAG_CLEARED",
-          reason: "Backlog drained",
-        },
-        context: {
-          backlogCount: 0,
-          lagSeconds: 0,
-          lagThresholdSeconds: 60,
-        },
-      });
-      return;
-    }
-
-    if (flow.syncState === "live") {
-      await cdcSyncStateService.applyTransition({
-        workspaceId,
-        flowId,
-        event: {
-          type: "LAG_SPIKE",
-          reason: `Backlog increased to ${pending}`,
-        },
-      });
     }
   }
 

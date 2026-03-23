@@ -31,7 +31,6 @@ import {
 } from "../../sync-cdc/sync-state";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
-import { getCdcEventStore } from "../../sync-cdc/event-store";
 import {
   forceDrainCdcFlow,
   markCdcBackfillCompletedForFlow,
@@ -646,11 +645,11 @@ export const flowFunction = inngest.createFunction(
           },
         );
         await step.run("cdc-transition-start-backfill", async () => {
-          await syncMachineService.applyTransition({
+          await syncMachineService.applyBackfillTransition({
             workspaceId: String(flow.workspaceId),
             flowId: String(flow._id),
             event: {
-              type: "START_BACKFILL",
+              type: "START",
               reason: "Backfill execution started",
             },
             context: {
@@ -662,6 +661,7 @@ export const flowFunction = inngest.createFunction(
           const now = new Date();
           const update: Record<string, unknown> = {
             "backfillState.active": true,
+            "backfillState.status": "running",
             "backfillState.startedAt": flow.backfillState?.startedAt || now,
             "backfillState.completedAt": null,
           };
@@ -1957,38 +1957,25 @@ export const flowFunction = inngest.createFunction(
           });
         });
         await step.run("cdc-transition-backfill-complete", async () => {
-          await syncMachineService.applyTransition({
+          await syncMachineService.applyBackfillTransition({
             workspaceId: String(flow.workspaceId),
             flowId: String(flow._id),
             event: {
-              type: "BACKFILL_COMPLETE",
+              type: "COMPLETE",
               reason: "Backfill cursor exhausted",
             },
             context: {
               backfillCursorExhausted: true,
             },
           });
-        });
-        await step.run("cdc-transition-lag-evaluation", async () => {
-          const pending = await getCdcEventStore().countEvents({
+          await syncMachineService.applyStreamTransition({
+            workspaceId: String(flow.workspaceId),
             flowId: String(flow._id),
-            materializationStatus: "pending",
+            event: {
+              type: "START",
+              reason: "Stream activated after backfill",
+            },
           });
-          if (pending === 0) {
-            await syncMachineService.applyTransition({
-              workspaceId: String(flow.workspaceId),
-              flowId: String(flow._id),
-              event: {
-                type: "LAG_CLEARED",
-                reason: "Backfill catchup drained",
-              },
-              context: {
-                backlogCount: 0,
-                lagSeconds: 0,
-                lagThresholdSeconds: 60,
-              },
-            });
-          }
         });
         await step.run("purge-soft-deletes-after-backfill", async () => {
           await purgeSoftDeletesAfterBackfill({
@@ -2289,7 +2276,7 @@ export const flowFunction = inngest.createFunction(
         if (isCdcEnabled) {
           const safeFlowRef = flowRef as IFlow;
           await step.run("cdc-transition-fail", async () => {
-            await syncMachineService.applyTransition({
+            await syncMachineService.applyBackfillTransition({
               workspaceId: String(safeFlowRef.workspaceId),
               flowId: String(flowId),
               event: {
@@ -2305,6 +2292,7 @@ export const flowFunction = inngest.createFunction(
           await step.run("mark-cdc-backfill-interrupted", async () => {
             const update: Record<string, unknown> = {
               "backfillState.active": false,
+              "backfillState.status": "error",
               "backfillState.completedAt": null,
             };
             if (cdcBackfillRunId) {
@@ -2326,6 +2314,7 @@ export const flowFunction = inngest.createFunction(
           await Flow.findByIdAndUpdate(flowId, {
             $set: {
               "backfillState.active": false,
+              "backfillState.status": "error",
               "backfillState.completedAt": new Date(),
             },
           });

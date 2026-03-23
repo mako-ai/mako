@@ -1352,6 +1352,7 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
     flow.syncEngine = syncEngine;
     if (syncEngine === "legacy") {
       flow.syncState = "idle";
+      flow.streamState = "idle";
       flow.syncStateUpdatedAt = new Date();
       flow.syncStateMeta = {
         lastEvent: "ENGINE_SWITCH",
@@ -1359,6 +1360,7 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
       };
     } else {
       flow.syncState = flow.syncState || "idle";
+      flow.streamState = flow.streamState || "idle";
       flow.syncStateUpdatedAt = new Date();
       flow.syncStateMeta = {
         lastEvent: "ENGINE_SWITCH",
@@ -2111,6 +2113,8 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       success: true,
       data: {
         syncState: flow.syncState || "idle",
+        streamState: flow.streamState || "idle",
+        backfillStatus: flow.backfillState?.status || "idle",
         backlogCount: totalBacklog,
         lagSeconds: toLagSeconds(oldestMaterialized),
         lastMaterializedAt:
@@ -2118,6 +2122,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
           null,
         entities,
         transitions: transitions.map(t => ({
+          machine: t.machine,
           fromState: t.fromState,
           event: t.event,
           toState: t.toState,

@@ -43,13 +43,8 @@ interface BackfillPanelProps {
   onEdit?: () => void;
 }
 
-type CdcState =
-  | "idle"
-  | "backfill"
-  | "catchup"
-  | "live"
-  | "paused"
-  | "degraded";
+type StreamState = "idle" | "active" | "paused" | "error";
+type BackfillStatus = "idle" | "running" | "paused" | "completed" | "error";
 
 function formatLag(seconds: number | null): string {
   if (seconds === null || !Number.isFinite(seconds)) return "—";
@@ -74,50 +69,38 @@ function entityLabel(entity: string): string {
   return parent && sub ? `${camelToSnake(sub)}_${parent}` : entity;
 }
 
-function streamStatus(state: CdcState): {
+function streamChipProps(state: StreamState): {
   label: string;
   color: "success" | "info" | "error" | "warning" | "default";
 } {
   switch (state) {
-    case "live":
-      return { label: "Live", color: "success" };
-    case "catchup":
-      return { label: "Catching up", color: "info" };
-    case "backfill":
-      return { label: "Backfilling", color: "info" };
+    case "active":
+      return { label: "Active", color: "success" };
     case "paused":
       return { label: "Paused", color: "warning" };
-    case "degraded":
-      return { label: "Degraded", color: "error" };
+    case "error":
+      return { label: "Error", color: "error" };
     default:
       return { label: "Idle", color: "default" };
   }
 }
 
-function backfillStatus(params: {
-  state: CdcState;
-  backlogCount: number;
-  totalProcessed: number;
-  hasBackfillStarted: boolean;
-  hasBackfillCompleted: boolean;
-}): { label: string; color: "success" | "info" | "warning" | "default" } {
-  if (params.state === "backfill") return { label: "Running", color: "info" };
-  if (!params.hasBackfillStarted) {
-    return { label: "Not started", color: "default" };
+function backfillChipProps(status: BackfillStatus): {
+  label: string;
+  color: "success" | "info" | "error" | "warning" | "default";
+} {
+  switch (status) {
+    case "running":
+      return { label: "Running", color: "info" };
+    case "paused":
+      return { label: "Paused", color: "warning" };
+    case "completed":
+      return { label: "Complete", color: "success" };
+    case "error":
+      return { label: "Error", color: "error" };
+    default:
+      return { label: "Not started", color: "default" };
   }
-  if (params.state === "paused" && !params.hasBackfillCompleted) {
-    return { label: "Stopped", color: "warning" };
-  }
-  if (params.state === "degraded" && !params.hasBackfillCompleted) {
-    return { label: "Interrupted", color: "warning" };
-  }
-  if (params.backlogCount > 0) {
-    return { label: "Catching up", color: "warning" };
-  }
-  if (params.hasBackfillCompleted || params.totalProcessed > 0) {
-    return { label: "Complete", color: "success" };
-  }
-  return { label: "Not started", color: "default" };
 }
 
 function entityStreamChip(e: {
@@ -135,12 +118,12 @@ function entityBackfillChip(
     lastMaterializedSeq: number;
     lastMaterializedAt: string | null;
   },
-  hasBackfillStarted: boolean,
+  flowBackfillStatus: BackfillStatus,
 ): {
   label: string;
   color: "success" | "info" | "default";
 } {
-  if (!hasBackfillStarted) {
+  if (flowBackfillStatus === "idle") {
     return { label: "Not started", color: "default" };
   }
   if (e.backlogCount > 0) return { label: "In progress", color: "info" };
@@ -148,46 +131,6 @@ function entityBackfillChip(
     return { label: "Not started", color: "default" };
   }
   return { label: "Done", color: "success" };
-}
-
-function hasBackfillStartedForFlow(params: {
-  state: CdcState;
-  transitions: Array<{
-    event?: string;
-    fromState?: string;
-    toState?: string;
-  }>;
-}): boolean {
-  if (params.state === "backfill") {
-    return true;
-  }
-  return params.transitions.some(transition => {
-    const event = String(transition.event || "").toUpperCase();
-    if (event === "START_BACKFILL" || event === "BACKFILL_COMPLETE") {
-      return true;
-    }
-    const fromState = String(transition.fromState || "").toLowerCase();
-    const toState = String(transition.toState || "").toLowerCase();
-    return fromState === "backfill" || toState === "backfill";
-  });
-}
-
-function hasBackfillCompletedForFlow(params: {
-  transitions: Array<{
-    event?: string;
-    fromState?: string;
-    toState?: string;
-  }>;
-}): boolean {
-  return params.transitions.some(transition => {
-    const event = String(transition.event || "").toUpperCase();
-    if (event === "BACKFILL_COMPLETE") {
-      return true;
-    }
-    const fromState = String(transition.fromState || "").toLowerCase();
-    const toState = String(transition.toState || "").toLowerCase();
-    return fromState === "backfill" && toState === "catchup";
-  });
 }
 
 type LogEntry = {
@@ -353,7 +296,9 @@ export function BackfillPanel({
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
-  const state: CdcState = cdc?.syncState || "idle";
+
+  const streamState: StreamState = cdc?.streamState || "idle";
+  const bfStatus: BackfillStatus = cdc?.backfillStatus || "idle";
 
   const pollCdc = useCallback(async () => {
     const [status, eventsResult] = await Promise.all([
@@ -468,28 +413,40 @@ export function BackfillPanel({
       setTimeout(() => pollLogs(), 3000);
     });
 
-  const handleStop = () =>
+  const handlePauseStream = () =>
     withBusy(async () => {
       const ok = await pauseCdcFlow(workspaceId, flowId);
-      if (!ok) throw new Error("Failed to pause flow");
+      if (!ok) throw new Error("Failed to pause stream");
     });
 
-  const handlePauseResume = () =>
+  const handleResumeStream = () =>
     withBusy(async () => {
-      const ok =
-        state === "paused"
-          ? await resumeCdcFlow(workspaceId, flowId)
-          : await pauseCdcFlow(workspaceId, flowId);
-      if (!ok) throw new Error("Failed to update flow state");
+      const ok = await resumeCdcFlow(workspaceId, flowId);
+      if (!ok) throw new Error("Failed to resume stream");
     });
 
-  const handleRecover = () =>
+  const handleRecoverStream = () =>
+    withBusy(async () => {
+      const ok = await recoverCdcFlow(workspaceId, flowId, {
+        retryFailedMaterialization: true,
+        resumeBackfill: false,
+      });
+      if (!ok) throw new Error("Failed to recover stream");
+    });
+
+  const handlePauseBackfill = () =>
+    withBusy(async () => {
+      const ok = await pauseCdcFlow(workspaceId, flowId);
+      if (!ok) throw new Error("Failed to pause backfill");
+    });
+
+  const handleRecoverBackfill = () =>
     withBusy(async () => {
       const ok = await recoverCdcFlow(workspaceId, flowId, {
         retryFailedMaterialization: true,
         resumeBackfill: true,
       });
-      if (!ok) throw new Error("Failed to recover flow");
+      if (!ok) throw new Error("Failed to recover backfill");
     });
 
   const handleResync = async () => {
@@ -624,16 +581,9 @@ export function BackfillPanel({
     (sum, e) => sum + Math.max(e.destinationRowCount || 0, 0),
     0,
   );
-  const backfillStarted = hasBackfillStartedForFlow({ state, transitions });
-  const backfillCompleted = hasBackfillCompletedForFlow({ transitions });
-  const ss = streamStatus(state);
-  const bs = backfillStatus({
-    state,
-    backlogCount: cdc?.backlogCount ?? 0,
-    totalProcessed: totalRowsApplied,
-    hasBackfillStarted: backfillStarted,
-    hasBackfillCompleted: backfillCompleted,
-  });
+
+  const ss = streamChipProps(streamState);
+  const bs = backfillChipProps(bfStatus);
 
   const kpi = {
     borderRadius: 1.5,
@@ -719,7 +669,7 @@ export function BackfillPanel({
         )}
       </Box>
 
-      {/* KPI cards + error — fixed, not scrollable */}
+      {/* KPI cards + error */}
       <Box sx={{ px: 2, pt: 2, pb: 1, flexShrink: 0 }}>
         {error && (
           <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 1 }}>
@@ -759,37 +709,37 @@ export function BackfillPanel({
                 )}
               </Box>
               <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                {(state === "catchup" || state === "live") && (
+                {streamState === "active" && (
                   <Button
                     size="small"
                     variant="outlined"
                     startIcon={<PauseIcon sx={{ fontSize: 14 }} />}
-                    onClick={handlePauseResume}
+                    onClick={handlePauseStream}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >
                     Pause
                   </Button>
                 )}
-                {state === "paused" && (
+                {streamState === "paused" && (
                   <Button
                     size="small"
                     variant="outlined"
                     startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                    onClick={handlePauseResume}
+                    onClick={handleResumeStream}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >
                     Resume
                   </Button>
                 )}
-                {state === "degraded" && (
+                {streamState === "error" && (
                   <Button
                     size="small"
                     variant="outlined"
                     color="error"
                     startIcon={<RecoverIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleRecover}
+                    onClick={handleRecoverStream}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >
@@ -811,7 +761,7 @@ export function BackfillPanel({
                 />
               </Box>
               <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                {state !== "backfill" && (
+                {(bfStatus === "idle" || bfStatus === "completed") && (
                   <Button
                     size="small"
                     variant="outlined"
@@ -820,23 +770,48 @@ export function BackfillPanel({
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >
-                    Start
+                    {bfStatus === "completed" ? "Re-run" : "Start"}
                   </Button>
                 )}
-                {state === "backfill" && (
+                {bfStatus === "running" && (
                   <Button
                     size="small"
                     variant="outlined"
                     color="error"
-                    startIcon={<CancelIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleStop}
+                    startIcon={<PauseIcon sx={{ fontSize: 14 }} />}
+                    onClick={handlePauseBackfill}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >
-                    Stop
+                    Pause
                   </Button>
                 )}
-                {cdc.backlogCount > 0 && state !== "backfill" && (
+                {bfStatus === "paused" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                    onClick={() => handleStartBackfill()}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Resume
+                  </Button>
+                )}
+                {bfStatus === "error" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    startIcon={<RecoverIcon sx={{ fontSize: 14 }} />}
+                    onClick={handleRecoverBackfill}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Recover
+                  </Button>
+                )}
+                {cdc.backlogCount > 0 && bfStatus !== "running" && (
                   <Typography
                     variant="caption"
                     color="text.secondary"
@@ -979,7 +954,7 @@ export function BackfillPanel({
                   <TableBody>
                     {entities.map(e => {
                       const sc = entityStreamChip(e);
-                      const bc = entityBackfillChip(e, backfillStarted);
+                      const bc = entityBackfillChip(e, bfStatus);
                       const backfillChip =
                         e.execStatus === "syncing"
                           ? { label: "Syncing…", color: "info" as const }
@@ -1082,7 +1057,7 @@ export function BackfillPanel({
                                 gap: 0.25,
                               }}
                             >
-                              {state !== "backfill" && (
+                              {bfStatus !== "running" && (
                                 <>
                                   <Tooltip
                                     title={`Reset column and rebackfill ${entityLabel(e.entity)}`}
@@ -1230,6 +1205,16 @@ export function BackfillPanel({
                         {new Date(t.at).toLocaleString()}
                       </Typography>
                       {"  "}
+                      {t.machine && (
+                        <Typography
+                          component="span"
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontFamily: "monospace", fontSize: "0.68rem" }}
+                        >
+                          [{t.machine}]{" "}
+                        </Typography>
+                      )}
                       {t.fromState} → <strong>{t.toState}</strong>
                       {"  "}
                       <Typography

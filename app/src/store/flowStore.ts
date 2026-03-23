@@ -286,7 +286,10 @@ interface FlowStatusResponse {
 }
 
 export interface CdcStatus {
-  syncState: "idle" | "backfill" | "catchup" | "live" | "paused" | "degraded";
+  /** @deprecated Use streamState + backfillStatus */
+  syncState?: string;
+  streamState: "idle" | "active" | "paused" | "error";
+  backfillStatus: "idle" | "running" | "paused" | "completed" | "error";
   backlogCount: number;
   lagSeconds: number | null;
   lastMaterializedAt: string | null;
@@ -302,6 +305,7 @@ export interface CdcStatus {
     lifetimeRowsApplied?: number;
   }>;
   transitions: Array<{
+    machine?: string;
     fromState: string;
     event: string;
     toState: string;

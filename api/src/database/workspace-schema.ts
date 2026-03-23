@@ -555,6 +555,8 @@ export interface ITypeCoercion {
 }
 
 export type SyncEngine = "legacy" | "cdc";
+
+/** @deprecated Use StreamState + BackfillStatus instead */
 export type SyncState =
   | "idle"
   | "backfill"
@@ -562,6 +564,14 @@ export type SyncState =
   | "live"
   | "paused"
   | "degraded";
+
+export type StreamState = "idle" | "active" | "paused" | "error";
+export type BackfillStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "completed"
+  | "error";
 
 export interface ISyncStateMeta {
   lastEvent?: string;
@@ -604,20 +614,24 @@ export interface IFlow extends Document {
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
   syncEngine: SyncEngine;
+  /** @deprecated Use streamState + backfillState.status instead */
   syncState?: SyncState;
   syncStateUpdatedAt?: Date;
   syncStateMeta?: ISyncStateMeta;
+  streamState?: StreamState;
   deleteMode?: "hard" | "soft";
   entityLayouts?: IEntityLayout[];
 
   // Incremental and conflict config (for database sources)
   incrementalConfig?: IIncrementalConfig;
   conflictConfig?: IConflictConfig;
-  paginationConfig?: IPaginationConfig; // Pagination mode for database syncs
-  typeCoercions?: ITypeCoercion[]; // Type coercion rules for column mapping
-  batchSize?: number; // Batch size for processing (default: 2000)
+  paginationConfig?: IPaginationConfig;
+  typeCoercions?: ITypeCoercion[];
+  batchSize?: number;
   backfillState?: {
+    /** @deprecated Use status instead */
     active: boolean;
+    status?: BackfillStatus;
     runId?: string;
     startedAt?: Date;
     completedAt?: Date;
@@ -764,9 +778,10 @@ export interface ICdcStateTransition extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   flowId: Types.ObjectId;
-  fromState: SyncState;
+  machine?: "stream" | "backfill";
+  fromState: string;
   event: string;
-  toState: SyncState;
+  toState: string;
   at: Date;
   reason?: string;
 }
@@ -1630,6 +1645,11 @@ const FlowSchema = new Schema<IFlow>(
       lastErrorCode: String,
       lastErrorMessage: String,
     },
+    streamState: {
+      type: String,
+      enum: ["idle", "active", "paused", "error"],
+      default: "idle",
+    },
     deleteMode: {
       type: String,
       enum: ["hard", "soft"],
@@ -1709,6 +1729,11 @@ const FlowSchema = new Schema<IFlow>(
     },
     backfillState: {
       active: { type: Boolean, default: false },
+      status: {
+        type: String,
+        enum: ["idle", "running", "paused", "completed", "error"],
+        default: "idle",
+      },
       runId: String,
       startedAt: Date,
       completedAt: Date,
@@ -1997,15 +2022,17 @@ const CdcStateTransitionSchema = new Schema<ICdcStateTransition>(
       required: true,
     },
     flowId: { type: Schema.Types.ObjectId, ref: "Flow", required: true },
+    machine: {
+      type: String,
+      enum: ["stream", "backfill"],
+    },
     fromState: {
       type: String,
-      enum: ["idle", "backfill", "catchup", "live", "paused", "degraded"],
       required: true,
     },
     event: { type: String, required: true },
     toState: {
       type: String,
-      enum: ["idle", "backfill", "catchup", "live", "paused", "degraded"],
       required: true,
     },
     at: { type: Date, required: true, default: Date.now },

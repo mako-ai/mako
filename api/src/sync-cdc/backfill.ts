@@ -108,10 +108,10 @@ export class CdcBackfillService {
     };
     await flow.save();
 
-    await cdcSyncStateService.applyTransition({
+    await cdcSyncStateService.applyBackfillTransition({
       workspaceId,
       flowId,
-      event: { type: "START_BACKFILL" },
+      event: { type: "START", reason: "Backfill started via API" },
       context: { hasActiveRunLock: Boolean(running) },
     });
 
@@ -180,6 +180,7 @@ export class CdcBackfillService {
       await this.deleteDestinationTables(flow);
     }
 
+    flow.streamState = "idle";
     flow.syncState = "idle";
     flow.syncStateUpdatedAt = new Date();
     flow.syncStateMeta = {
@@ -188,6 +189,7 @@ export class CdcBackfillService {
     };
     flow.backfillState = {
       active: false,
+      status: "idle",
       runId: undefined,
       startedAt: undefined,
       completedAt: undefined,
@@ -277,7 +279,12 @@ export class CdcBackfillService {
       throw new Error("Cannot recover while a CDC execution is active");
     }
 
-    await cdcSyncStateService.applyTransition({
+    await cdcSyncStateService.applyStreamTransition({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      event: { type: "RECOVER", reason: "Recovered via API" },
+    });
+    await cdcSyncStateService.applyBackfillTransition({
       workspaceId: params.workspaceId,
       flowId: params.flowId,
       event: { type: "RECOVER", reason: "Recovered via API" },
@@ -325,10 +332,15 @@ export class CdcBackfillService {
       throw new Error("Pause requires syncEngine=cdc");
     }
 
-    await cdcSyncStateService.applyTransition({
+    await cdcSyncStateService.applyBackfillTransition({
       workspaceId,
       flowId,
       event: { type: "PAUSE", reason: "Paused via API" },
+    });
+    await cdcSyncStateService.applyStreamTransition({
+      workspaceId,
+      flowId,
+      event: { type: "PAUSE", reason: "Paused via API (backfill pause)" },
     });
 
     const runningExecution = await FlowExecution.findOne({
@@ -395,7 +407,7 @@ export class CdcBackfillService {
       throw new Error("Resume requires syncEngine=cdc");
     }
 
-    await cdcSyncStateService.applyTransition({
+    await cdcSyncStateService.applyStreamTransition({
       workspaceId,
       flowId,
       event: { type: "RESUME", reason: "Resumed via API" },
@@ -408,8 +420,6 @@ export class CdcBackfillService {
     });
     if (pending > 0) {
       try {
-        // Resume should restart CDC materialization only.
-        // Backfill start remains an explicit user action.
         await forceDrainCdcFlow({
           workspaceId,
           flowId,
@@ -422,21 +432,6 @@ export class CdcBackfillService {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
-    if (pending === 0) {
-      await cdcSyncStateService.applyTransition({
-        workspaceId,
-        flowId,
-        event: {
-          type: "LAG_CLEARED",
-          reason: "Resume with empty backlog",
-        },
-        context: {
-          backlogCount: 0,
-          lagSeconds: 0,
-          lagThresholdSeconds: 60,
-        },
-      });
     }
 
     return {
@@ -516,6 +511,7 @@ export async function markCdcBackfillCompletedForFlow(params: {
     {
       $set: {
         "backfillState.active": false,
+        "backfillState.status": "completed",
         "backfillState.completedAt": new Date(),
       },
       $unset: {
