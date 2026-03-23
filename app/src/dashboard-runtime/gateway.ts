@@ -9,6 +9,7 @@ import { dashboardRuntimeEvents } from "./events";
 import { selectDataSourceRuntime } from "./selectors";
 import {
   ensureDashboardSession,
+  ensureWritableDashboardSession,
   getDashboardSession,
   checkpointSession,
   persistDataSourceVersion,
@@ -50,6 +51,33 @@ function buildTemporaryTableRef(tableRef: string): string {
   return `${tableRef}__tmp__${Date.now()}_${Math.random()
     .toString(36)
     .slice(2, 8)}`;
+}
+
+function buildReloadRequiredMessage(
+  dataSource: DashboardDataSource,
+  reason: "missing" | "stale" | "locked" | "open-failed" | "unsupported",
+): string {
+  switch (reason) {
+    case "missing":
+      return `Cached data for "${dataSource.name}" is unavailable. Click Reload data to fetch it from the source database.`;
+    case "stale":
+      return `Cached data for "${dataSource.name}" is stale. Click Reload data to fetch the latest source data.`;
+    case "locked":
+      return `Cached data for "${dataSource.name}" is currently locked by another dashboard tab. Close the other tab or click Reload data to fetch it from the source database in this tab.`;
+    case "open-failed":
+      return `Cached data for "${dataSource.name}" could not be opened from OPFS in this browser session. Click Reload data to fetch it from the source database.`;
+    default:
+      return `This browser does not support OPFS-backed dashboard cache for "${dataSource.name}". Click Reload data to fetch it from the source database.`;
+  }
+}
+
+function isOPFSLockError(message: string | null | undefined): boolean {
+  const normalized = message?.toLowerCase() || "";
+  return (
+    normalized.includes("createsyncaccesshandle") &&
+    (normalized.includes("another open access handle") ||
+      normalized.includes("writable stream associated with the same file"))
+  );
 }
 
 function buildDashboardExportPayload(
@@ -373,7 +401,10 @@ export async function materializeDashboardDataSource(options: {
   force?: boolean;
 }): Promise<void> {
   const { workspaceId, dashboard, dataSource, force = false } = options;
-  const session = await ensureDashboardSession(dashboard._id);
+  let session = await ensureDashboardSession(dashboard._id);
+  if (force) {
+    session = await ensureWritableDashboardSession(dashboard._id);
+  }
   const runtimeStore = useDashboardRuntimeStore.getState();
   const version = buildDataSourceVersion(dataSource);
   const persistedVersion = session.dataSourceVersions.get(dataSource.id);
@@ -460,6 +491,44 @@ export async function materializeDashboardDataSource(options: {
     console.log(
       `[opfs-diag] FORCED RELOAD: dataSource="${dataSource.name}", bypassing cache`,
     );
+  }
+
+  if (!force) {
+    const errorReason:
+      | "missing"
+      | "stale"
+      | "locked"
+      | "open-failed"
+      | "unsupported" =
+      session.persistent && persistedVersion !== version
+        ? "stale"
+        : session.persistent
+          ? "missing"
+          : isOPFSLockError(session.persistenceError)
+            ? "locked"
+            : session.opfsAvailable
+              ? "open-failed"
+              : "unsupported";
+    const message = buildReloadRequiredMessage(dataSource, errorReason);
+    console.log(
+      `[opfs-diag] STARTUP CACHE-ONLY MODE: dataSource="${dataSource.name}" not fetching from source`,
+      {
+        reason: errorReason,
+        persistenceError: session.persistenceError,
+        persistent: session.persistent,
+        accessMode: session.accessMode,
+      },
+    );
+    runtimeStore.dispatch(
+      dashboardRuntimeEvents.datasourceLoadFailed(
+        dashboard._id,
+        dataSource.id,
+        0,
+        message,
+        false,
+      ),
+    );
+    return;
   }
 
   console.log(
@@ -581,7 +650,11 @@ export async function syncDashboardRuntime(options: {
       {},
   )) {
     if (!currentIds.has(dataSourceId)) {
-      await dropTable(session.db, runtimeState.tableRef).catch(() => undefined);
+      if (session.accessMode === "read-write") {
+        await dropTable(session.db, runtimeState.tableRef).catch(
+          () => undefined,
+        );
+      }
       session.dataSourceVersions.delete(dataSourceId);
       await removePersistedDataSource(dashboard._id, dataSourceId);
       useDashboardRuntimeStore
@@ -640,7 +713,10 @@ export async function removeDashboardDataSourceRuntime(options: {
   dataSourceId: string;
   tableRef: string;
 }): Promise<void> {
-  const session = getDashboardSession(options.dashboardId);
+  let session = getDashboardSession(options.dashboardId);
+  if (session?.persistent && session.accessMode !== "read-write") {
+    session = await ensureWritableDashboardSession(options.dashboardId);
+  }
   if (session) {
     await dropTable(session.db, options.tableRef).catch(() => undefined);
     session.dataSourceVersions.delete(options.dataSourceId);
