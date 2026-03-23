@@ -16,10 +16,7 @@ import {
   getMaterializationRunByRunId,
   listMaterializationRuns,
 } from "../services/dashboard-materialization-run.service";
-import {
-  queueDashboardArtifactRefresh,
-  refreshDashboardArtifactsNow,
-} from "../services/dashboard-refresh-runner.service";
+import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import {
   getDashboardArtifactStore,
   getDashboardArtifactStoreType,
@@ -160,34 +157,10 @@ app.post("/materialize", async (c: AuthenticatedContext) => {
     }
 
     const body = await c.req.json().catch(() => ({}));
-    const blocking = body?.blocking === true;
     const force = body?.force === true;
     const dataSourceIds = Array.isArray(body?.dataSourceIds)
       ? body.dataSourceIds.filter((value: unknown) => typeof value === "string")
       : undefined;
-
-    if (blocking) {
-      const result = await refreshDashboardArtifactsNow({
-        workspaceId: dashboard.workspaceId.toString(),
-        dashboardId: dashboard._id.toString(),
-        dataSourceIds,
-        force,
-        triggerType: "manual",
-      });
-      const refreshedDashboard = await getDashboardForMaterialization({
-        workspaceId: dashboard.workspaceId.toString(),
-        dashboardId: dashboard._id.toString(),
-      });
-      return c.json({
-        success: true,
-        data: {
-          result,
-          status: refreshedDashboard
-            ? await buildDashboardMaterializationStatus(refreshedDashboard)
-            : null,
-        },
-      });
-    }
 
     await markDashboardDataSourcesBuilding({
       dashboardId: dashboard._id.toString(),
@@ -196,6 +169,7 @@ app.post("/materialize", async (c: AuthenticatedContext) => {
     });
     await queueDashboardArtifactRefresh({
       dashboardId: dashboard._id.toString(),
+      workspaceId: dashboard.workspaceId.toString(),
       dataSourceIds,
       force,
       triggerType: "manual",
@@ -271,38 +245,7 @@ app.post(
       const dataSourceId = c.req.param("dataSourceId");
       getDataSourceOrThrow(dashboard, dataSourceId);
       const body = await c.req.json().catch(() => ({}));
-      const blocking = body?.blocking === true;
       const force = body?.force === true;
-
-      if (blocking) {
-        const result = await refreshDashboardArtifactsNow({
-          workspaceId: dashboard.workspaceId.toString(),
-          dashboardId: dashboard._id.toString(),
-          dataSourceIds: [dataSourceId],
-          force,
-          triggerType: "manual",
-        });
-        const refreshedDashboard = await getDashboardForMaterialization({
-          workspaceId: dashboard.workspaceId.toString(),
-          dashboardId: dashboard._id.toString(),
-        });
-        const refreshedSource = refreshedDashboard
-          ? getDataSourceOrThrow(refreshedDashboard, dataSourceId)
-          : null;
-        return c.json({
-          success: true,
-          data: {
-            result,
-            status: refreshedSource
-              ? await buildDataSourceMaterializationStatus({
-                  workspaceId: dashboard.workspaceId.toString(),
-                  dashboardId: dashboard._id.toString(),
-                  dataSource: refreshedSource,
-                })
-              : null,
-          },
-        });
-      }
 
       await markDashboardDataSourcesBuilding({
         dashboardId: dashboard._id.toString(),
@@ -311,6 +254,7 @@ app.post(
       });
       await queueDashboardArtifactRefresh({
         dashboardId: dashboard._id.toString(),
+        workspaceId: dashboard.workspaceId.toString(),
         dataSourceIds: [dataSourceId],
         force,
         triggerType: "manual",

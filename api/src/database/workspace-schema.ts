@@ -1706,7 +1706,11 @@ export interface IMaterializationRun extends Document {
   dataSourceId: string;
   runId: string;
   triggerType: "manual" | "schedule" | "dashboard_update";
-  status: "building" | "ready" | "error";
+  lastHeartbeat?: Date;
+  workerId?: string;
+  stage?: string;
+  attempt?: number;
+  status: "queued" | "building" | "ready" | "error" | "abandoned" | "cancelled";
   requestedAt: Date;
   startedAt?: Date;
   finishedAt?: Date;
@@ -1744,12 +1748,16 @@ const MaterializationRunSchema = new Schema<IMaterializationRun>(
     },
     status: {
       type: String,
-      enum: ["building", "ready", "error"],
+      enum: ["queued", "building", "ready", "error", "abandoned", "cancelled"],
       required: true,
     },
     requestedAt: { type: Date, required: true, default: Date.now },
     startedAt: { type: Date },
     finishedAt: { type: Date },
+    lastHeartbeat: { type: Date },
+    workerId: { type: String },
+    stage: { type: String },
+    attempt: { type: Number, default: 1 },
     artifactKey: { type: String },
     version: { type: String },
     rowCount: { type: Number },
@@ -1776,6 +1784,7 @@ MaterializationRunSchema.index({
   requestedAt: -1,
 });
 MaterializationRunSchema.index({ workspaceId: 1, requestedAt: -1 });
+MaterializationRunSchema.index({ status: 1, lastHeartbeat: 1 });
 MaterializationRunSchema.index(
   { requestedAt: 1 },
   { expireAfterSeconds: 2592000 },
@@ -1954,7 +1963,7 @@ export interface IDashboardDataSource {
     parquetArtifactKey?: string;
     parquetVersion?: string;
     parquetBuiltAt?: Date;
-    parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+    parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
     parquetLastError?: string;
     parquetUrl?: string;
   };
@@ -2043,7 +2052,7 @@ const DashboardSchema = new Schema<IDashboard>(
           parquetBuiltAt: { type: Date },
           parquetBuildStatus: {
             type: String,
-            enum: ["missing", "building", "ready", "error"],
+            enum: ["missing", "queued", "building", "ready", "error"],
           },
           parquetLastError: { type: String },
         },

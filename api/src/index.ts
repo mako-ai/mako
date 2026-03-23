@@ -41,7 +41,6 @@ import { functions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
-import { startDashboardRefreshPoller } from "./services/dashboard-refresh-runner.service";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -228,7 +227,6 @@ async function main(): Promise<void> {
 
   // Log Inngest configuration status (after logging is initialized)
   logInngestStatus();
-  startDashboardRefreshPoller();
 
   // Log server startup info
   logger.info("Server starting", {

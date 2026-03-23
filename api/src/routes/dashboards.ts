@@ -17,10 +17,7 @@ import {
   normalizeDashboardMaterializationSchedule,
   validateDashboardMaterializationSchedule,
 } from "../services/dashboard-materialization-schedule.service";
-import {
-  queueDashboardArtifactRefresh,
-  refreshDashboardArtifactsNow,
-} from "../services/dashboard-refresh-runner.service";
+import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 
 const logger = loggers.api("dashboards");
 
@@ -705,9 +702,6 @@ app.post("/:id/refresh", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
-    const body = await c.req.json().catch(() => ({}));
-    const blocking = body?.blocking === true;
-
     const dashboard = await Dashboard.findOne({
       _id: new Types.ObjectId(id),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -717,17 +711,9 @@ app.post("/:id/refresh", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
 
-    if (blocking) {
-      const result = await refreshDashboardArtifactsNow({
-        dashboardId: dashboard._id.toString(),
-        force: true,
-        triggerType: "manual",
-      });
-      return c.json({ success: true, data: result });
-    }
-
     await queueDashboardArtifactRefresh({
       dashboardId: dashboard._id.toString(),
+      workspaceId: dashboard.workspaceId.toString(),
       force: true,
       triggerType: "manual",
     });

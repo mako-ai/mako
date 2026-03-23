@@ -14,6 +14,7 @@ import { buildDashboardDataSourceVersion } from "./dashboard-artifact-rebuild.se
 
 export type MaterializationStatusValue =
   | "missing"
+  | "queued"
   | "building"
   | "ready"
   | "error";
@@ -63,12 +64,15 @@ export async function buildDataSourceMaterializationStatus(input: {
   const canReadArtifact = artifactKey
     ? await artifactExists(artifactKey)
     : false;
+  const rawStatus = cache?.parquetBuildStatus;
   const status: MaterializationStatusValue =
-    cache?.parquetBuildStatus === "building"
+    rawStatus === "building" || rawStatus === "queued"
       ? "building"
-      : canReadArtifact && cache?.parquetBuildStatus !== "error"
+      : canReadArtifact && rawStatus !== "error"
         ? "ready"
-        : cache?.parquetBuildStatus || "missing";
+        : rawStatus === "error"
+          ? "error"
+          : "missing";
 
   return {
     dataSourceId: dataSource.id,

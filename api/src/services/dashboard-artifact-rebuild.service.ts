@@ -10,13 +10,14 @@ import {
   storeArtifact,
   withArtifactBuildLock,
 } from "./dashboard-cache.service";
-import { writeParquetTempFile } from "../utils/parquet-serializer";
+import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";
 import { generateSnapshotsForDataSource } from "./dashboard-snapshot.service";
 import {
   appendMaterializationRunEvent,
   createMaterializationRun,
   finalizeMaterializationRun,
   trimMaterializationRuns,
+  updateMaterializationRunHeartbeat,
   type DashboardMaterializationTriggerType,
   type MaterializationRunEventRecord,
   type MaterializationRunRecord,
@@ -72,32 +73,6 @@ function buildExecutableQuery(dataSource: {
   return dataSource.query?.code;
 }
 
-function normalizeFields(
-  rows: Record<string, unknown>[],
-  fields: Array<{
-    name?: string;
-    columnName?: string;
-    type?: string;
-    dataType?: string;
-  }> = [],
-) {
-  const normalized = fields
-    .map(field => ({
-      name: field.name || field.columnName || "",
-      type: field.type || field.dataType,
-    }))
-    .filter(field => field.name);
-
-  if (normalized.length > 0 || rows.length === 0) {
-    return normalized;
-  }
-
-  return Object.keys(rows[0]).map(name => ({
-    name,
-    type: undefined,
-  }));
-}
-
 function pushRunEvent(
   run: MaterializationRunRecord,
   event: Omit<MaterializationRunEventRecord, "timestamp">,
@@ -116,6 +91,8 @@ export interface RebuildDashboardArtifactsInput {
   dataSourceIds?: string[];
   force?: boolean;
   triggerType?: DashboardMaterializationTriggerType;
+  workerId?: string;
+  onProgress?: (runId: string, stage: string) => Promise<void>;
 }
 
 export interface RebuildDashboardArtifactsResult {
@@ -173,6 +150,10 @@ export async function rebuildDashboardArtifacts(
       status: "building",
       requestedAt,
       startedAt: requestedAt,
+      lastHeartbeat: requestedAt,
+      workerId: input.workerId,
+      stage: "started",
+      attempt: 1,
       version,
       artifactKey,
       events: [],
@@ -192,6 +173,7 @@ export async function rebuildDashboardArtifacts(
         status: currentRun.status,
         requestedAt,
         startedAt: currentRun.startedAt,
+        workerId: input.workerId,
         artifactKey,
         version,
         events: [requestedEvent],
@@ -209,9 +191,7 @@ export async function rebuildDashboardArtifacts(
           const reusedEvent = pushRunEvent(currentRun, {
             type: "materialization_reused",
             message: "Reused existing parquet artifact",
-            metadata: {
-              artifactKey,
-            },
+            metadata: { artifactKey },
           });
           await appendMaterializationRunEvent({
             runId: currentRun.runId,
@@ -259,6 +239,11 @@ export async function rebuildDashboardArtifacts(
           runId: currentRun.runId,
           event: sourceQueryStartedEvent,
         });
+        await updateMaterializationRunHeartbeat({
+          runId: currentRun.runId,
+          stage: "source_query",
+        });
+
         const connectionId = String(dataSource.query.connectionId || "");
         if (!Types.ObjectId.isValid(connectionId)) {
           throw new Error(
@@ -278,62 +263,56 @@ export async function rebuildDashboardArtifacts(
           );
         }
 
-        const queryResult = await databaseConnectionService.executeQuery(
-          database,
-          executableQuery,
-          {
-            databaseId: dataSource.query.databaseId,
-            databaseName: dataSource.query.databaseName,
-          },
-        );
-
-        if (!queryResult.success || !queryResult.data) {
-          throw new Error(queryResult.error || "Query failed");
-        }
-
-        const rows = Array.isArray(queryResult.data) ? queryResult.data : [];
-        const limit = dataSource.rowLimit || 500000;
-        const limitedRows = rows.slice(0, limit);
-        const sourceQueryFinishedEvent = pushRunEvent(currentRun, {
-          type: "source_query_finished",
-          message: "Finished source query execution",
-          metadata: {
-            rowCount: limitedRows.length,
-          },
-        });
-        await appendMaterializationRunEvent({
-          runId: currentRun.runId,
-          event: sourceQueryFinishedEvent,
-        });
-
-        const normalizedFields = normalizeFields(
-          limitedRows,
-          (queryResult.fields || []) as Array<{
-            name?: string;
-            columnName?: string;
-            type?: string;
-            dataType?: string;
-          }>,
-        );
-
         const parquetWriteStartedEvent = pushRunEvent(currentRun, {
           type: "parquet_write_started",
-          message: "Started parquet serialization",
+          message: "Started streaming parquet build",
         });
         await appendMaterializationRunEvent({
           runId: currentRun.runId,
           event: parquetWriteStartedEvent,
         });
-        const parquetFile = await writeParquetTempFile({
-          rows: limitedRows,
-          fields: normalizedFields,
-          filenameBase: `${dashboard._id}-${dataSource.id}`,
+        await updateMaterializationRunHeartbeat({
+          runId: currentRun.runId,
+          stage: "parquet_streaming",
         });
+
+        const rowLimit = dataSource.rowLimit || 500000;
+        const parquetFile = await buildParquetFromBatches({
+          filenameBase: `${dashboard._id}-${dataSource.id}`,
+          rowLimit,
+          onBatchInserted: async (totalRows: number) => {
+            await updateMaterializationRunHeartbeat({
+              runId: currentRun.runId,
+              stage: `parquet_streaming:${totalRows}_rows`,
+            });
+            if (input.onProgress) {
+              await input.onProgress(
+                currentRun.runId,
+                `parquet_streaming:${totalRows}_rows`,
+              );
+            }
+          },
+          streamBatches: async insertBatch => {
+            await databaseConnectionService.executeStreamingQuery(
+              database,
+              executableQuery,
+              {
+                batchSize: 5000,
+                databaseId: dataSource.query.databaseId as string | undefined,
+                databaseName: dataSource.query.databaseName as
+                  | string
+                  | undefined,
+                onBatch: insertBatch,
+              },
+            );
+          },
+        });
+
         currentRun.rowCount = parquetFile.rowCount;
         currentRun.byteSize = parquetFile.byteSize;
         const parquetWriteFinishedEvent = pushRunEvent(currentRun, {
           type: "parquet_write_finished",
-          message: "Finished parquet serialization",
+          message: "Finished streaming parquet build",
           metadata: {
             rowCount: parquetFile.rowCount,
             byteSize: parquetFile.byteSize,
@@ -363,14 +342,17 @@ export async function rebuildDashboardArtifacts(
         const artifactStorePutStartedEvent = pushRunEvent(currentRun, {
           type: "artifact_store_put_started",
           message: "Started artifact store upload",
-          metadata: {
-            artifactKey,
-          },
+          metadata: { artifactKey },
         });
         await appendMaterializationRunEvent({
           runId: currentRun.runId,
           event: artifactStorePutStartedEvent,
         });
+        await updateMaterializationRunHeartbeat({
+          runId: currentRun.runId,
+          stage: "artifact_upload",
+        });
+
         try {
           await storeArtifact(parquetFile.filePath, artifactKey, {
             dashboardId: dashboard._id.toString(),
@@ -385,9 +367,7 @@ export async function rebuildDashboardArtifacts(
         const artifactStorePutFinishedEvent = pushRunEvent(currentRun, {
           type: "artifact_store_put_finished",
           message: "Stored artifact successfully",
-          metadata: {
-            artifactKey,
-          },
+          metadata: { artifactKey },
         });
         await appendMaterializationRunEvent({
           runId: currentRun.runId,
@@ -400,9 +380,7 @@ export async function rebuildDashboardArtifacts(
         const readyEvent = pushRunEvent(currentRun, {
           type: "materialization_ready",
           message: "Materialization completed successfully",
-          metadata: {
-            artifactKey,
-          },
+          metadata: { artifactKey },
         });
         await appendMaterializationRunEvent({
           runId: currentRun.runId,

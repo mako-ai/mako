@@ -67,10 +67,12 @@ export async function generateSnapshotsForDataSource(options: {
       `CREATE VIEW "${options.dataSource.tableRef}" AS SELECT * FROM read_parquet('${options.parquetFilePath.replace(/'/g, "''")}')`,
     );
 
+    const MAX_SNAPSHOT_ROWS = 500;
     const snapshots: Record<string, DashboardWidgetSnapshot> = {};
     for (const widget of relevantWidgets) {
       try {
-        const result = await connection.run(widget.localSql);
+        const cappedSql = `SELECT * FROM (${widget.localSql}) AS _snap LIMIT ${MAX_SNAPSHOT_ROWS}`;
+        const result = await connection.run(cappedSql);
         const rowObjects = (await result.getRowObjectsJson()) as Array<
           Record<string, unknown>
         >;

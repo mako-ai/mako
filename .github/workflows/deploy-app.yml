@@ -432,6 +432,7 @@ jobs:
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
             --timeout=600 \
+            --memory=1Gi \
             --min-instances=0 \
             --max-instances=2 \
             --allow-unauthenticated \
@@ -734,6 +735,7 @@ jobs:
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
             --timeout=600 \
+            --memory=1Gi \
             --min-instances=1 \
             --network=mako-vpc \
             --subnet=mako-subnet \
