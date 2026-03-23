@@ -15,15 +15,30 @@ export interface DashboardArtifactDescriptor {
   rowCount?: number;
 }
 
+function getDashboardArtifactPrefix(): string {
+  const rawPrefix = process.env.DASHBOARD_ARTIFACT_PREFIX;
+  if (rawPrefix) {
+    return rawPrefix.replace(/^\/+|\/+$/g, "");
+  }
+
+  if (process.env.PR_NUMBER) {
+    return `dashboard-artifacts/pr-${process.env.PR_NUMBER}`;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    return "dashboard-artifacts/prod";
+  }
+
+  return "dashboards";
+}
+
 export function buildDashboardArtifactKey(input: {
   workspaceId: string;
   dashboardId: string;
   dataSourceId: string;
   version: string;
 }): string {
-  const prefix = (
-    process.env.DASHBOARD_ARTIFACT_PREFIX || "dashboards"
-  ).replace(/^\/+|\/+$/g, "");
+  const prefix = getDashboardArtifactPrefix();
   return `${prefix}/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/dataSources/${input.dataSourceId}/${input.version}.parquet`;
 }
 
@@ -41,9 +56,7 @@ export function buildSnapshotArtifactKey(input: {
   widgetId: string;
   version: string;
 }): string {
-  const prefix = (
-    process.env.DASHBOARD_ARTIFACT_PREFIX || "dashboards"
-  ).replace(/^\/+|\/+$/g, "");
+  const prefix = getDashboardArtifactPrefix();
   return `${prefix}/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/widgets/${input.widgetId}/${input.version}.json`;
 }
 

@@ -11,6 +11,7 @@ import {
 } from "./dashboard-cache.service";
 import { getDashboardArtifactStoreType } from "./dashboard-artifact-store.service";
 import { buildDashboardDataSourceVersion } from "./dashboard-artifact-rebuild.service";
+import { listActiveMaterializationRuns } from "./dashboard-materialization-run.service";
 
 export type MaterializationStatusValue =
   | "missing"
@@ -49,6 +50,7 @@ export async function buildDataSourceMaterializationStatus(input: {
   workspaceId: string;
   dashboardId: string;
   dataSource: IDashboardDataSource;
+  activeRunDataSourceIds?: Set<string>;
 }): Promise<DashboardDataSourceMaterializationStatus> {
   const { workspaceId, dashboardId, dataSource } = input;
   const version = buildDashboardDataSourceVersion(dataSource as any);
@@ -65,14 +67,28 @@ export async function buildDataSourceMaterializationStatus(input: {
     ? await artifactExists(artifactKey)
     : false;
   const rawStatus = cache?.parquetBuildStatus;
-  const status: MaterializationStatusValue =
-    rawStatus === "building" || rawStatus === "queued"
-      ? "building"
-      : canReadArtifact && rawStatus !== "error"
-        ? "ready"
-        : rawStatus === "error"
-          ? "error"
-          : "missing";
+
+  let status: MaterializationStatusValue;
+  let lastError = cache?.parquetLastError || null;
+
+  if (rawStatus === "building" || rawStatus === "queued") {
+    const hasActiveRun =
+      input.activeRunDataSourceIds?.has(dataSource.id) ?? true;
+    if (hasActiveRun) {
+      status = "building";
+    } else {
+      status = "error";
+      lastError =
+        lastError ||
+        "Materialization was interrupted (no active run). Please re-trigger.";
+    }
+  } else if (canReadArtifact && rawStatus !== "error") {
+    status = "ready";
+  } else if (rawStatus === "error") {
+    status = "error";
+  } else {
+    status = "missing";
+  }
 
   return {
     dataSourceId: dataSource.id,
@@ -85,14 +101,14 @@ export async function buildDataSourceMaterializationStatus(input: {
     byteSize: cache?.byteSize ?? null,
     builtAt: cache?.parquetBuiltAt ? cache.parquetBuiltAt.toISOString() : null,
     readUrl:
-      artifactKey || cache?.parquetBuildStatus === "building"
+      artifactKey || status === "building"
         ? buildDashboardMaterializationArtifactPath({
             workspaceId,
             dashboardId,
             dataSourceId: dataSource.id,
           })
         : null,
-    lastError: cache?.parquetLastError || null,
+    lastError,
     artifactKey,
     lastMaterializedAt: cache?.parquetBuiltAt
       ? cache.parquetBuiltAt.toISOString()
@@ -105,12 +121,29 @@ export async function buildDashboardMaterializationStatus(
 ): Promise<DashboardMaterializationStatus> {
   const workspaceId = dashboard.workspaceId.toString();
   const dashboardId = dashboard._id.toString();
+
+  const hasBuildingDs = dashboard.dataSources.some(
+    ds =>
+      ds.cache?.parquetBuildStatus === "building" ||
+      ds.cache?.parquetBuildStatus === "queued",
+  );
+
+  let activeRunDataSourceIds: Set<string> | undefined;
+  if (hasBuildingDs) {
+    const activeRuns = await listActiveMaterializationRuns({
+      workspaceId,
+      dashboardId,
+    });
+    activeRunDataSourceIds = new Set(activeRuns.map(r => r.dataSourceId));
+  }
+
   const dataSources = await Promise.all(
     dashboard.dataSources.map(dataSource =>
       buildDataSourceMaterializationStatus({
         workspaceId,
         dashboardId,
         dataSource,
+        activeRunDataSourceIds,
       }),
     ),
   );

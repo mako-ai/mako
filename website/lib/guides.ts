@@ -66,10 +66,10 @@ function parseMdxFile(filePath: string): Guide | null {
 export function getAllGuides(): GuideMeta[] {
   if (!fs.existsSync(CONTENT_DIR)) return [];
 
-  const files = fs.readdirSync(CONTENT_DIR).filter((f) => f.endsWith(".mdx"));
+  const files = fs.readdirSync(CONTENT_DIR).filter(f => f.endsWith(".mdx"));
 
   const guides = files
-    .map((file) => parseMdxFile(path.join(CONTENT_DIR, file)))
+    .map(file => parseMdxFile(path.join(CONTENT_DIR, file)))
     .filter((guide): guide is Guide => guide !== null)
     .map(({ content: _, ...meta }) => meta)
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -80,7 +80,7 @@ export function getAllGuides(): GuideMeta[] {
 export function getGuideBySlug(slug: string): Guide | null {
   if (!fs.existsSync(CONTENT_DIR)) return null;
 
-  const files = fs.readdirSync(CONTENT_DIR).filter((f) => f.endsWith(".mdx"));
+  const files = fs.readdirSync(CONTENT_DIR).filter(f => f.endsWith(".mdx"));
 
   for (const file of files) {
     const guide = parseMdxFile(path.join(CONTENT_DIR, file));
@@ -93,18 +93,18 @@ export function getGuideBySlug(slug: string): Guide | null {
 }
 
 export function getAllGuideSlugs(): string[] {
-  return getAllGuides().map((guide) => guide.slug);
+  return getAllGuides().map(guide => guide.slug);
 }
 
 export function getGuidesByDatabase(database: string): GuideMeta[] {
   return getAllGuides().filter(
-    (g) => g.database?.toLowerCase() === database.toLowerCase()
+    g => g.database?.toLowerCase() === database.toLowerCase(),
   );
 }
 
 export function getGuidesByCategory(category: string): GuideMeta[] {
   return getAllGuides().filter(
-    (g) => g.category?.toLowerCase() === category.toLowerCase()
+    g => g.category?.toLowerCase() === category.toLowerCase(),
   );
 }
 
@@ -112,11 +112,11 @@ export function getRelatedGuides(slug: string, limit = 3): GuideMeta[] {
   const current = getGuideBySlug(slug);
   if (!current) return [];
 
-  const all = getAllGuides().filter((g) => g.slug !== slug);
+  const all = getAllGuides().filter(g => g.slug !== slug);
 
-  const scored = all.map((guide) => {
+  const scored = all.map(guide => {
     let score = 0;
-    score += guide.tags.filter((t) => current.tags.includes(t)).length * 2;
+    score += guide.tags.filter(t => current.tags.includes(t)).length * 2;
     if (guide.database === current.database) score += 3;
     if (guide.category === current.category) score += 1;
     return { guide, score };
@@ -124,5 +124,5 @@ export function getRelatedGuides(slug: string, limit = 3): GuideMeta[] {
 
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, limit).map((s) => s.guide);
+  return scored.slice(0, limit).map(s => s.guide);
 }

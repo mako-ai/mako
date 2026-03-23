@@ -62,18 +62,49 @@ export async function queueDashboardArtifactRefresh(input: {
     dataSourceIds,
   });
 
-  if (activeRuns.length > 0) {
+  const STALE_THRESHOLD_MS = 3 * 60 * 1000;
+  const now = Date.now();
+  const genuinelyActiveRuns = activeRuns.filter(run => {
+    const heartbeat = run.lastHeartbeat
+      ? new Date(run.lastHeartbeat).getTime()
+      : 0;
+    const requested = new Date(run.requestedAt).getTime();
+    const latestSignal = Math.max(heartbeat, requested);
+    return now - latestSignal < STALE_THRESHOLD_MS;
+  });
+
+  if (genuinelyActiveRuns.length > 0) {
     logger.info("Skipping duplicate dashboard artifact refresh", {
       dashboardId: input.dashboardId,
       dataSourceIds,
-      activeRunIds: activeRuns.map(run => run.runId),
+      activeRunIds: genuinelyActiveRuns.map(run => run.runId),
     });
 
     return {
       queued: false,
       dataSourceIds,
-      activeRunIds: activeRuns.map(run => run.runId),
+      activeRunIds: genuinelyActiveRuns.map(run => run.runId),
     };
+  }
+
+  if (activeRuns.length > genuinelyActiveRuns.length) {
+    const staleRunIds = activeRuns
+      .filter(run => !genuinelyActiveRuns.includes(run))
+      .map(run => run.runId);
+    logger.info("Abandoning stale materialization runs before requeueing", {
+      dashboardId: input.dashboardId,
+      staleRunIds,
+    });
+    await Promise.all(
+      staleRunIds.map(runId =>
+        finalizeMaterializationRun({
+          runId,
+          status: "abandoned",
+          finishedAt: new Date(),
+          error: "Stale run abandoned on new materialization request",
+        }),
+      ),
+    );
   }
 
   const updates: Record<string, unknown> = {};
@@ -112,18 +143,45 @@ export async function queueDashboardArtifactRefresh(input: {
         dashboardId: dashboard._id.toString(),
         dataSourceIds,
       });
-
-      logger.info("Dashboard materialization already in progress", {
-        dashboardId: input.dashboardId,
-        dataSourceIds,
-        activeRunIds: refreshedActiveRuns.map(run => run.runId),
+      const refreshedGenuine = refreshedActiveRuns.filter(run => {
+        const heartbeat = run.lastHeartbeat
+          ? new Date(run.lastHeartbeat).getTime()
+          : 0;
+        const requested = new Date(run.requestedAt).getTime();
+        return now - Math.max(heartbeat, requested) < STALE_THRESHOLD_MS;
       });
 
-      return {
-        queued: false,
+      if (refreshedGenuine.length > 0) {
+        logger.info("Dashboard materialization already in progress", {
+          dashboardId: input.dashboardId,
+          dataSourceIds,
+          activeRunIds: refreshedGenuine.map(run => run.runId),
+        });
+
+        return {
+          queued: false,
+          dataSourceIds,
+          activeRunIds: refreshedGenuine.map(run => run.runId),
+        };
+      }
+
+      logger.info("Resetting stuck dashboard build status", {
+        dashboardId: input.dashboardId,
         dataSourceIds,
-        activeRunIds: refreshedActiveRuns.map(run => run.runId),
-      };
+      });
+      await Promise.all(
+        refreshedActiveRuns.map(run =>
+          finalizeMaterializationRun({
+            runId: run.runId,
+            status: "abandoned",
+            finishedAt: new Date(),
+            error: "Stale run abandoned on new materialization request",
+          }),
+        ),
+      );
+      await Dashboard.findByIdAndUpdate(dashboard._id, {
+        $set: updates,
+      });
     }
   }
 

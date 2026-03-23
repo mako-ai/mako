@@ -167,7 +167,7 @@ jobs:
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
-      INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
+      INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -418,6 +418,22 @@ jobs:
 
           echo "✅ Production database successfully copied to ephemeral database: ${EPHEMERAL_DB_NAME}"
 
+          # Reset stale materialization statuses inherited from production.
+          # Without this, dashboards stuck in "building" state from prod remain
+          # permanently stuck since the PR has no matching materialization runs.
+          echo "Resetting stale materialization statuses..."
+          mongosh "$EPHEMERAL_DB_URL" --quiet --eval "
+            const result = db.dashboards.updateMany(
+              { 'dataSources.cache.parquetBuildStatus': { \$in: ['building', 'queued'] } },
+              { \$set: {
+                'dataSources.\$[ds].cache.parquetBuildStatus': null,
+                'dataSources.\$[ds].cache.parquetLastError': null
+              }},
+              { arrayFilters: [{ 'ds.cache.parquetBuildStatus': { \$in: ['building', 'queued'] } }] }
+            );
+            print('Reset ' + result.modifiedCount + ' dashboard(s) with stale materialization status');
+          " || echo "⚠️ Failed to reset materialization statuses (non-fatal)"
+
       - name: Set database URL
         id: db-url
         run: |
@@ -451,18 +467,18 @@ jobs:
             --set-env-vars DATABASE_URL=${{ steps.db-url.outputs.db_url }} \
             --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
             --set-env-vars DISABLE_OAUTH=true \
+            --set-env-vars DISABLE_SCHEDULED_SYNC=true \
             --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
             --set-env-vars GH_CLIENT_ID=${GH_CLIENT_ID} \
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
-            --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
+            --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
-            --set-env-vars DISABLE_SCHEDULED_SYNC=${DISABLE_SCHEDULED_SYNC} \
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
@@ -483,19 +499,32 @@ jobs:
           CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --region ${GCP_REGION} --format='value(status.url)')
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
-      - name: Sync Inngest app for PR environment
+      - name: Sync Inngest branch environment
         run: |
-          echo "Syncing Inngest app for ${INNGEST_ENV} at ${BASE_URL}/api/inngest"
+          set -euo pipefail
+
+          INNGEST_URL="${BASE_URL}/api/inngest"
+
+          echo "Waiting for preview endpoint to become ready at ${INNGEST_URL}..."
           for attempt in 1 2 3 4 5; do
-            if curl -X PUT "${BASE_URL}/api/inngest" --fail-with-body --silent --show-error; then
-              echo "Inngest sync succeeded"
-              exit 0
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${INNGEST_URL}" 2>/dev/null || true)
+            if [ "${STATUS}" = "200" ]; then
+              echo "Preview endpoint is ready"
+              break
             fi
-            echo "Sync attempt ${attempt} failed; retrying..."
-            sleep $((attempt * 2))
+
+            if [ "${attempt}" = "5" ]; then
+              echo "❌ Preview endpoint never became ready for Inngest sync"
+              exit 1
+            fi
+
+            echo "Attempt ${attempt}/5 returned HTTP ${STATUS:-unknown}; retrying in 10s..."
+            sleep 10
           done
-          echo "Inngest sync failed after retries"
-          exit 1
+
+          echo "Syncing Inngest app for branch environment pr-${PR_NUMBER}..."
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 5 -X PUT "${INNGEST_URL}"
+          echo "Inngest sync complete"
 
       - name: Run migrations (ephemeral DB only)
         if: needs.detect-changes.outputs.migrations_changed == 'true' || needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'

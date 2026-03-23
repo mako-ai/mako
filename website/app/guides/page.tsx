@@ -56,7 +56,7 @@ export default function GuidesIndex() {
             </p>
           ) : (
             <div className="grid gap-6">
-              {guides.map((guide) => (
+              {guides.map(guide => (
                 <Link
                   key={guide.slug}
                   href={`/guides/${guide.slug}`}
@@ -80,7 +80,7 @@ export default function GuidesIndex() {
                             </span>
                           </>
                         )}
-                        {guide.tags.slice(0, 3).map((tag) => (
+                        {guide.tags.slice(0, 3).map(tag => (
                           <span
                             key={tag}
                             className="px-2 py-0.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 text-xs"

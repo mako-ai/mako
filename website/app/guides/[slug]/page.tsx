@@ -13,7 +13,7 @@ interface PageProps {
 }
 
 export function generateStaticParams() {
-  return getAllGuideSlugs().map((slug) => ({ slug }));
+  return getAllGuideSlugs().map(slug => ({ slug }));
 }
 
 export function generateMetadata({ params }: PageProps): Metadata {
@@ -67,9 +67,7 @@ export default function GuidePage({ params }: PageProps) {
           </Link>
 
           {/* Title */}
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">
-            {guide.title}
-          </h1>
+          <h1 className="text-4xl md:text-5xl font-bold mb-4">{guide.title}</h1>
 
           {/* Meta */}
           <div className="flex items-center gap-4 text-sm text-zinc-400 dark:text-zinc-500 mb-10">
@@ -126,7 +124,7 @@ export default function GuidePage({ params }: PageProps) {
           <div className="max-w-3xl mx-auto">
             <h2 className="text-xl font-bold mb-6">Related Guides</h2>
             <div className="grid gap-4">
-              {related.map((r) => (
+              {related.map(r => (
                 <Link
                   key={r.slug}
                   href={`/guides/${r.slug}`}
