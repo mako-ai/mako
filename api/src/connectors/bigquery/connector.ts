@@ -6,7 +6,7 @@ import {
   FetchState,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
-import crypto from "crypto";
+import * as crypto from "crypto";
 
 type JsonRecord = Record<string, any>;
 

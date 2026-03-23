@@ -42,6 +42,8 @@ import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
 
+import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
+
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
 
@@ -229,9 +231,11 @@ async function main(): Promise<void> {
   logInngestStatus();
 
   // Log server startup info
+  const cdcEventStore = getCdcEventStoreConfig();
   logger.info("Server starting", {
     port,
     environment: process.env.NODE_ENV || "development",
+    cdcEventStore,
     endpoints: {
       api: "/api/*",
       inngest: "/api/inngest",
@@ -246,11 +250,22 @@ async function main(): Promise<void> {
   });
 }
 
+let isShuttingDown = false;
+
+function terminateProcess(signal: NodeJS.Signals, exitCode: number): void {
+  process.exitCode = exitCode;
+  process.removeAllListeners("SIGTERM");
+  process.removeAllListeners("SIGINT");
+  process.removeAllListeners("uncaughtException");
+  process.removeAllListeners("unhandledRejection");
+  process.kill(process.pid, signal);
+}
+
 // Start the application
 main().catch(error => {
   // Use console.error here since logging might not be initialized
   console.error("Fatal error during startup:", error);
-  throw error;
+  void gracefulShutdown("SIGTERM", 1);
 });
 
 // Graceful shutdown handling
@@ -264,11 +279,18 @@ process.on("unhandledRejection", reason => {
 
 process.on("uncaughtException", err => {
   logger.error("Uncaught Exception", { error: err });
+  void gracefulShutdown("SIGTERM", 1);
 });
 
-async function gracefulShutdown(signal: string): Promise<never> {
+async function gracefulShutdown(
+  signal: NodeJS.Signals,
+  forcedExitCode?: number,
+): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   logger.info("Graceful shutdown initiated", { signal });
 
+  let exitCode = forcedExitCode ?? 0;
   try {
     // Close unified MongoDB connection pool
     logger.info("Closing MongoDB connection pool");
@@ -280,11 +302,11 @@ async function gracefulShutdown(signal: string): Promise<never> {
       await mongoose.connection.close();
       logger.info("Mongoose connection closed");
     }
-
-    logger.info("Graceful shutdown complete");
-    throw new Error(`Process terminated by ${signal}`);
   } catch (error) {
     logger.error("Error during graceful shutdown", { error });
-    throw error;
+    exitCode = 1;
+  } finally {
+    logger.info("Graceful shutdown complete");
+    terminateProcess(signal, exitCode);
   }
 }

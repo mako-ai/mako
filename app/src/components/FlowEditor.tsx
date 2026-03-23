@@ -5,6 +5,7 @@ import { WebhookFlowForm } from "./WebhookFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
 import { FlowLogs } from "./FlowLogs";
 import { WebhookStats } from "./WebhookStats";
+import { BackfillPanel } from "./BackfillPanel";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 
@@ -29,6 +30,7 @@ export function FlowEditor({
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );
+
   const { currentWorkspace } = useWorkspace();
   const { flows: flowsMap, runFlow } = useFlowStore();
 
@@ -38,15 +40,17 @@ export function FlowEditor({
     ? flows.find(f => f._id === currentFlowId)
     : null;
 
+  const isNewMode = Boolean(isNew && !currentFlowId);
+
   // Determine flow type - for new flows, use the prop; for existing, check the flow
-  const isWebhookFlow = isNew
-    ? flowType === "webhook"
-    : currentFlow?.type === "webhook";
+  const isWebhookFlow =
+    currentFlow?.type === "webhook" || (!currentFlow && flowType === "webhook");
+  const isCdcFlow = currentFlow?.syncEngine === "cdc";
 
   // Check if this is a database-to-database flow
-  const isDbFlow = isNew
-    ? flowType === "db-scheduled"
-    : currentFlow?.sourceType === "database";
+  const isDbFlow =
+    currentFlow?.sourceType === "database" ||
+    (!currentFlow && flowType === "db-scheduled");
 
   const handleSaved = (newFlowId: string) => {
     setCurrentFlowId(newFlowId);
@@ -66,7 +70,7 @@ export function FlowEditor({
   };
 
   const handleCancelEdit = () => {
-    if (isNew && !currentFlowId) {
+    if (isNewMode) {
       // For new flows, use the onCancel callback to close the editor
       onCancel?.();
     } else {
@@ -88,7 +92,7 @@ export function FlowEditor({
         isWebhookFlow ? (
           <WebhookFlowForm
             flowId={currentFlowId}
-            isNew={isNew && !currentFlowId}
+            isNew={isNewMode}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}
@@ -97,7 +101,7 @@ export function FlowEditor({
           <DbFlowForm
             ref={dbFlowFormRef as React.Ref<DbFlowFormRef>}
             flowId={currentFlowId}
-            isNew={isNew && !currentFlowId}
+            isNew={isNewMode}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}
@@ -105,7 +109,7 @@ export function FlowEditor({
         ) : (
           <ScheduledFlowForm
             flowId={currentFlowId}
-            isNew={isNew && !currentFlowId}
+            isNew={isNewMode}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}
@@ -121,13 +125,22 @@ export function FlowEditor({
               onEdit={handleEditClick}
             />
           )}
-          {currentFlowId && isWebhookFlow && currentWorkspace && (
-            <WebhookStats
-              workspaceId={currentWorkspace.id}
-              flowId={currentFlowId}
-              onEdit={handleEditClick}
-            />
-          )}
+          {currentFlowId &&
+            isWebhookFlow &&
+            currentWorkspace &&
+            (isCdcFlow ? (
+              <BackfillPanel
+                workspaceId={currentWorkspace.id}
+                flowId={currentFlowId}
+                onEdit={handleEditClick}
+              />
+            ) : (
+              <WebhookStats
+                workspaceId={currentWorkspace.id}
+                flowId={currentFlowId}
+                onEdit={handleEditClick}
+              />
+            ))}
         </>
       )}
     </Box>
