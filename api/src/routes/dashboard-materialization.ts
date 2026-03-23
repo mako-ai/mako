@@ -214,7 +214,18 @@ app.post(
       }
 
       const dataSourceId = c.req.param("dataSourceId");
-      getDataSourceOrThrow(dashboard, dataSourceId);
+      const dataSource = dashboard.dataSources.find(
+        ds => ds.id === dataSourceId,
+      );
+      if (!dataSource) {
+        return c.json(
+          {
+            success: false,
+            error: `Dashboard data source not found: ${dataSourceId}`,
+          },
+          404,
+        );
+      }
       const body = await c.req.json().catch(() => ({}));
       const force = body?.force === true;
 
