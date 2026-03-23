@@ -134,6 +134,30 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
 );
 
 export class CloseConnector extends BaseConnector {
+  private static readonly LEAD_BASE_FIELDS = [
+    "id",
+    "name",
+    "display_name",
+    "description",
+    "date_created",
+    "date_updated",
+    "created_by",
+    "created_by_name",
+    "updated_by",
+    "updated_by_name",
+    "organization_id",
+    "status_id",
+    "status_label",
+    "addresses",
+    "url",
+    "source",
+    "contact_ids",
+  ] as const;
+
+  private static readonly LEAD_ALLOWED_NORMALIZED_FIELDS = new Set<string>(
+    CloseConnector.LEAD_BASE_FIELDS,
+  );
+
   private closeApi: AxiosInstance | null = null;
   private activeLogCallback?: (
     level: "debug" | "info" | "warn" | "error",
@@ -143,6 +167,7 @@ export class CloseConnector extends BaseConnector {
   private activeEntity?: string;
   private activeSyncMode: "full" | "incremental" = "full";
   private requestSeq = 0;
+  private cachedLeadFieldSelection?: string;
 
   private setLogContext(options: {
     entity: string;
@@ -188,6 +213,139 @@ export class CloseConnector extends BaseConnector {
       CustomActivity: "/activity/custom/",
     };
     return map[subType] || "/activity/";
+  }
+
+  private async getLeadFieldSelection(): Promise<string> {
+    if (this.cachedLeadFieldSelection) {
+      return this.cachedLeadFieldSelection;
+    }
+
+    const fields = new Set<string>(CloseConnector.LEAD_BASE_FIELDS);
+    const api = this.getCloseClient();
+    const customFieldEndpoints = [
+      "/custom_field/lead/",
+      "/custom_field/shared/",
+    ];
+
+    for (const endpoint of customFieldEndpoints) {
+      try {
+        const response = await api.get(endpoint);
+        const customFields = Array.isArray(response?.data?.data)
+          ? response.data.data
+          : [];
+        for (const customField of customFields) {
+          const customFieldId =
+            typeof customField?.id === "string" ? customField.id.trim() : "";
+          if (!customFieldId) continue;
+          fields.add(`custom.${customFieldId}`);
+        }
+      } catch (error) {
+        logger.warn("Could not fetch custom field selectors for lead query", {
+          endpoint,
+          error,
+        });
+      }
+    }
+
+    this.cachedLeadFieldSelection = Array.from(fields).join(",");
+    return this.cachedLeadFieldSelection;
+  }
+
+  private extractLeadContactIds(record: Record<string, unknown>): string[] {
+    const ids = new Set<string>();
+    const addId = (candidate: unknown) => {
+      if (typeof candidate !== "string") return;
+      const trimmed = candidate.trim();
+      if (trimmed.length > 0) ids.add(trimmed);
+    };
+    const addFromValue = (value: unknown) => {
+      if (!value) return;
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (typeof item === "string") {
+            addId(item);
+          } else if (item && typeof item === "object") {
+            addId((item as Record<string, unknown>).id);
+          }
+        }
+        return;
+      }
+      if (typeof value === "string") {
+        try {
+          const parsed = JSON.parse(value);
+          addFromValue(parsed);
+        } catch {
+          // Keep raw string values if they look like scalar ids.
+          addId(value);
+        }
+      }
+    };
+
+    addFromValue(record.contact_ids);
+    if (ids.size === 0) {
+      addFromValue(record.contacts);
+    }
+
+    return Array.from(ids);
+  }
+
+  private normalizeLeadRecord(
+    record: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const normalized: Record<string, unknown> = {};
+    for (const [rawKey, value] of Object.entries(record || {})) {
+      const key = rawKey.replace(/\./g, "_");
+      if (
+        CloseConnector.LEAD_ALLOWED_NORMALIZED_FIELDS.has(key) ||
+        key.startsWith("custom_cf_")
+      ) {
+        normalized[key] = value;
+      }
+    }
+
+    const contactIds = this.extractLeadContactIds(record);
+    if (contactIds.length > 0) {
+      normalized.contact_ids = contactIds;
+    }
+
+    return normalized;
+  }
+
+  private normalizeLeadBatch(records: any[]): any[] {
+    return records.map(record =>
+      this.normalizeLeadRecord((record || {}) as Record<string, unknown>),
+    );
+  }
+
+  private async requestLeadsPage(options: {
+    limit: number;
+    offset: number;
+    since?: Date;
+    orderBy: string;
+  }): Promise<any> {
+    const api = this.getCloseClient();
+    const fields = await this.getLeadFieldSelection();
+    const params: Record<string, unknown> = {
+      _limit: options.limit,
+      _skip: options.offset,
+      _order_by: options.orderBy,
+      _fields: fields,
+    };
+
+    if (options.since) {
+      const dateFilter = options.since.toISOString().split("T")[0];
+      params.query = `date_updated>="${dateFilter}"`;
+    }
+
+    return api.post(
+      "/lead/",
+      { _params: params },
+      {
+        headers: {
+          "x-http-method-override": "GET",
+        },
+      },
+    );
   }
 
   static getConfigSchema() {
@@ -476,46 +634,54 @@ export class CloseConnector extends BaseConnector {
       };
 
       try {
-        let endpoint: string;
-        switch (entity) {
-          case "leads":
-            endpoint = "/lead/";
-            break;
-          case "opportunities":
-            endpoint = "/opportunity/";
-            break;
-          case "activities":
-            endpoint = "/activity/";
-            break;
-          case "contacts":
-            endpoint = "/contact/";
-            break;
-          default:
-            throw new Error(`Unsupported entity: ${entity}`);
-        }
-
-        // For incremental sync, use POST with query in body
-        if (since) {
-          const dateFilter = since.toISOString().split("T")[0];
-          const postData = {
-            _params: {
-              _limit: batchSize,
-              _skip: offset,
-              _order_by: "-date_updated",
-              query: `date_updated>="${dateFilter}"`,
-            },
-          };
-
-          response = await api.post(endpoint, postData, {
-            headers: {
-              "x-http-method-override": "GET",
-            },
+        if (entity === "leads") {
+          response = await this.requestLeadsPage({
+            limit: batchSize,
+            offset,
+            since,
+            orderBy: since ? "-date_updated" : "id",
           });
         } else {
-          response = await api.get(endpoint, { params });
+          let endpoint: string;
+          switch (entity) {
+            case "opportunities":
+              endpoint = "/opportunity/";
+              break;
+            case "activities":
+              endpoint = "/activity/";
+              break;
+            case "contacts":
+              endpoint = "/contact/";
+              break;
+            default:
+              throw new Error(`Unsupported entity: ${entity}`);
+          }
+
+          // For incremental sync, use POST with query in body
+          if (since) {
+            const dateFilter = since.toISOString().split("T")[0];
+            const postData = {
+              _params: {
+                _limit: batchSize,
+                _skip: offset,
+                _order_by: "-date_updated",
+                query: `date_updated>="${dateFilter}"`,
+              },
+            };
+
+            response = await api.post(endpoint, postData, {
+              headers: {
+                "x-http-method-override": "GET",
+              },
+            });
+          } else {
+            response = await api.get(endpoint, { params });
+          }
         }
 
-        const data = response.data.data || [];
+        const rawData = response.data.data || [];
+        const data =
+          entity === "leads" ? this.normalizeLeadBatch(rawData) : rawData;
 
         if (data.length > 0) {
           await onBatch(data);
@@ -888,50 +1054,58 @@ export class CloseConnector extends BaseConnector {
 
       // Fetch data based on entity type
       try {
-        let endpoint: string;
-        switch (entity) {
-          case "leads":
-            endpoint = "/lead/";
-            break;
-          case "opportunities":
-            endpoint = "/opportunity/";
-            break;
-          case "activities":
-            endpoint = "/activity/";
-            break;
-          case "contacts":
-            endpoint = "/contact/";
-            break;
-          case "users":
-            endpoint = "/user/";
-            break;
-          default:
-            throw new Error(`Unsupported entity: ${entity}`);
-        }
-
-        // For incremental sync, use POST with query in body (Close API requirement)
-        if (since) {
-          const dateFilter = since.toISOString().split("T")[0]; // Format as YYYY-MM-DD
-          const postData = {
-            _params: {
-              _limit: batchSize,
-              _skip: offset,
-              _order_by: "-date_updated",
-              query: `date_updated>="${dateFilter}"`,
-            },
-          };
-
-          response = await api.post(endpoint, postData, {
-            headers: {
-              "x-http-method-override": "GET",
-            },
+        if (entity === "leads") {
+          response = await this.requestLeadsPage({
+            limit: batchSize,
+            offset,
+            since,
+            orderBy: since ? "-date_updated" : "id",
           });
         } else {
-          // Regular GET request for full sync
-          response = await api.get(endpoint, { params });
+          let endpoint: string;
+          switch (entity) {
+            case "opportunities":
+              endpoint = "/opportunity/";
+              break;
+            case "activities":
+              endpoint = "/activity/";
+              break;
+            case "contacts":
+              endpoint = "/contact/";
+              break;
+            case "users":
+              endpoint = "/user/";
+              break;
+            default:
+              throw new Error(`Unsupported entity: ${entity}`);
+          }
+
+          // For incremental sync, use POST with query in body (Close API requirement)
+          if (since) {
+            const dateFilter = since.toISOString().split("T")[0]; // Format as YYYY-MM-DD
+            const postData = {
+              _params: {
+                _limit: batchSize,
+                _skip: offset,
+                _order_by: "-date_updated",
+                query: `date_updated>="${dateFilter}"`,
+              },
+            };
+
+            response = await api.post(endpoint, postData, {
+              headers: {
+                "x-http-method-override": "GET",
+              },
+            });
+          } else {
+            // Regular GET request for full sync
+            response = await api.get(endpoint, { params });
+          }
         }
 
-        const data = response.data.data || [];
+        const rawData = response.data.data || [];
+        const data =
+          entity === "leads" ? this.normalizeLeadBatch(rawData) : rawData;
 
         // Pass batch to callback
         if (data.length > 0) {
@@ -1784,15 +1958,24 @@ export class CloseConnector extends BaseConnector {
       return records;
     }
 
-    return records.map(record => ({
-      ...record,
-      sourceTs,
-      changeId:
-        record.changeId ||
-        event?.id ||
-        event?.event?.id ||
-        `${eventType || "close.event"}:${record.entity}:${record.recordId}`,
-    }));
+    return records.map(record => {
+      const payload =
+        record.entity === "leads"
+          ? this.normalizeLeadRecord(
+              (record.payload || {}) as Record<string, unknown>,
+            )
+          : record.payload;
+      return {
+        ...record,
+        payload,
+        sourceTs,
+        changeId:
+          record.changeId ||
+          event?.id ||
+          event?.event?.id ||
+          `${eventType || "close.event"}:${record.entity}:${record.recordId}`,
+      };
+    });
   }
 
   normalizeBackfillRecord(
@@ -1804,8 +1987,16 @@ export class CloseConnector extends BaseConnector {
       return null;
     }
 
+    const payload =
+      entity === "leads"
+        ? this.normalizeLeadRecord(
+            (normalized.payload || {}) as Record<string, unknown>,
+          )
+        : normalized.payload;
+
     return {
       ...normalized,
+      payload,
       sourceTs: this.resolveRecordTimestamp(record),
     };
   }

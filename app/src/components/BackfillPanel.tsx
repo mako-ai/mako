@@ -33,6 +33,7 @@ import {
   Healing as RecoverIcon,
   ContentCopy as CopyIcon,
   Edit as EditIcon,
+  AutoFixHigh as ResetColumnIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 
@@ -321,6 +322,7 @@ export function BackfillPanel({
     fetchWebhookEvents,
     pauseCdcFlow,
     resumeCdcFlow,
+    resetCdcEntityColumn,
     resyncCdcFlow,
     recoverCdcFlow,
   } = useFlowStore();
@@ -342,6 +344,10 @@ export function BackfillPanel({
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
   const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
+  const [columnResetOpen, setColumnResetOpen] = useState(false);
+  const [columnResetEntity, setColumnResetEntity] = useState("");
+  const [columnResetName, setColumnResetName] = useState("");
+  const [columnResetForceReplay, setColumnResetForceReplay] = useState(true);
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -501,6 +507,40 @@ export function BackfillPanel({
     setLogs([]);
     await pollCdc();
   };
+
+  const openColumnResetDialog = (entity: string) => {
+    setColumnResetEntity(entity);
+    setColumnResetName("");
+    setColumnResetForceReplay(true);
+    setColumnResetOpen(true);
+  };
+
+  const handleResetColumnAndBackfill = () =>
+    withBusy(async () => {
+      const column = columnResetName.trim();
+      if (!column) {
+        throw new Error("Column name is required");
+      }
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) {
+        throw new Error(
+          "Column must be a valid identifier (letters, numbers, underscore)",
+        );
+      }
+      const ok = await resetCdcEntityColumn(workspaceId, flowId, {
+        entity: columnResetEntity,
+        column,
+        forceReplay: columnResetForceReplay,
+        startBackfill: true,
+      });
+      if (!ok) {
+        throw new Error("Failed to reset column and start entity backfill");
+      }
+      setColumnResetOpen(false);
+      setColumnResetEntity("");
+      setColumnResetName("");
+      setLogs([]);
+      setTimeout(() => pollLogs(), 3000);
+    });
 
   const webhookUrl = flow?.webhookConfig?.endpoint;
   const copyWebhook = async () => {
@@ -1034,20 +1074,47 @@ export function BackfillPanel({
                             </Typography>
                           </TableCell>
                           <TableCell align="right">
-                            {state !== "backfill" && (
-                              <Tooltip title={`Sync ${entityLabel(e.entity)}`}>
-                                <IconButton
-                                  size="small"
-                                  onClick={() =>
-                                    handleStartBackfill([e.entity])
-                                  }
-                                  disabled={busy}
-                                  sx={{ p: 0.25 }}
-                                >
-                                  <BackfillIcon sx={{ fontSize: 16 }} />
-                                </IconButton>
-                              </Tooltip>
-                            )}
+                            <Box
+                              sx={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "flex-end",
+                                gap: 0.25,
+                              }}
+                            >
+                              {state !== "backfill" && (
+                                <>
+                                  <Tooltip
+                                    title={`Reset column and rebackfill ${entityLabel(e.entity)}`}
+                                  >
+                                    <IconButton
+                                      size="small"
+                                      onClick={() =>
+                                        openColumnResetDialog(e.entity)
+                                      }
+                                      disabled={busy}
+                                      sx={{ p: 0.25 }}
+                                    >
+                                      <ResetColumnIcon sx={{ fontSize: 16 }} />
+                                    </IconButton>
+                                  </Tooltip>
+                                  <Tooltip
+                                    title={`Sync ${entityLabel(e.entity)}`}
+                                  >
+                                    <IconButton
+                                      size="small"
+                                      onClick={() =>
+                                        handleStartBackfill([e.entity])
+                                      }
+                                      disabled={busy}
+                                      sx={{ p: 0.25 }}
+                                    >
+                                      <BackfillIcon sx={{ fontSize: 16 }} />
+                                    </IconButton>
+                                  </Tooltip>
+                                </>
+                              )}
+                            </Box>
                           </TableCell>
                         </TableRow>
                       );
@@ -1296,6 +1363,61 @@ export function BackfillPanel({
           </Box>
         )}
       </Box>
+
+      {/* Reset column dialog */}
+      <Dialog
+        open={columnResetOpen}
+        onClose={() => !busy && setColumnResetOpen(false)}
+      >
+        <DialogTitle>Reset column and rebackfill</DialogTitle>
+        <DialogContent sx={{ display: "grid", gap: 1, minWidth: 420 }}>
+          <Typography variant="body2">
+            Entity:{" "}
+            <Box
+              component="span"
+              sx={{ fontFamily: "monospace", fontWeight: 600 }}
+            >
+              {columnResetEntity ? entityLabel(columnResetEntity) : "—"}
+            </Box>
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            This sets the destination column to NULL for the entity table, then
+            starts a scoped backfill for this entity.
+          </Typography>
+          <TextField
+            label="Column name"
+            value={columnResetName}
+            onChange={e => setColumnResetName(e.target.value)}
+            size="small"
+            placeholder="e.g. opportunity_status"
+            autoFocus
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={columnResetForceReplay}
+                onChange={e => setColumnResetForceReplay(e.target.checked)}
+              />
+            }
+            label="Force replay by resetting source ordering guards"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setColumnResetOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={
+              !columnResetEntity || columnResetName.trim().length === 0 || busy
+            }
+            onClick={handleResetColumnAndBackfill}
+          >
+            {busy ? "Applying…" : "Reset + rebackfill"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Reset dialog */}
       <Dialog open={resyncOpen} onClose={() => setResyncOpen(false)}>

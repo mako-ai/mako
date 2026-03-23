@@ -140,6 +140,14 @@ function escapePostgresIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
 }
 
+function escapeBigQueryPath(path: string): string {
+  return `\`${path.replace(/`/g, "\\`")}\``;
+}
+
+function isSafeSqlIdentifier(identifier: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier);
+}
+
 function buildDestinationCountQuery(params: {
   destinationType?: string;
   schema: string;
@@ -1403,6 +1411,246 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
       data: {
         runId: backfill.runId,
         resumed: backfill.reusedRunId,
+      },
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/reset-column
+// Reset one destination column for an entity and optionally start entity backfill.
+flowRoutes.post("/:flowId/sync-cdc/reset-column", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const body = (await c.req.json().catch(() => ({}))) as {
+      entity?: string;
+      column?: string;
+      forceReplay?: boolean;
+      startBackfill?: boolean;
+    };
+    const entity =
+      typeof body.entity === "string" ? body.entity.trim() : undefined;
+    const column =
+      typeof body.column === "string" ? body.column.trim() : undefined;
+    const forceReplay = body.forceReplay !== false;
+    const startBackfill = body.startBackfill !== false;
+
+    if (!entity) {
+      return c.json({ success: false, error: "entity is required" }, 400);
+    }
+    if (!column) {
+      return c.json({ success: false, error: "column is required" }, 400);
+    }
+    if (!isSafeSqlIdentifier(column)) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "column must be a valid SQL identifier (letters, digits, underscore)",
+        },
+        400,
+      );
+    }
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).lean();
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+    if (flow.syncEngine !== "cdc") {
+      return c.json(
+        { success: false, error: "Column reset requires syncEngine=cdc" },
+        400,
+      );
+    }
+    if (
+      !flow.tableDestination?.connectionId ||
+      !flow.tableDestination?.schema
+    ) {
+      return c.json(
+        {
+          success: false,
+          error: "Flow has no destination table configuration",
+        },
+        400,
+      );
+    }
+
+    const { entities: configuredEntities } = resolveConfiguredEntities(
+      flow as any,
+    );
+    if (configuredEntities.length > 0 && !configuredEntities.includes(entity)) {
+      return c.json(
+        {
+          success: false,
+          error: `Entity '${entity}' is not enabled for this flow`,
+        },
+        400,
+      );
+    }
+
+    if (startBackfill) {
+      const running = await FlowExecution.exists({
+        flowId: new Types.ObjectId(flowId),
+        workspaceId: new Types.ObjectId(workspaceId),
+        status: "running",
+      });
+      if (running) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Cannot reset column while a flow execution is running. Pause/stop it first.",
+          },
+          400,
+        );
+      }
+    }
+
+    const destinationDoc = await DatabaseConnection.findById(
+      flow.tableDestination.connectionId,
+    ).lean();
+    if (!destinationDoc) {
+      return c.json(
+        { success: false, error: "Destination connection not found" },
+        404,
+      );
+    }
+
+    const destinationType = String(destinationDoc.type || "").toLowerCase();
+    const schema = flow.tableDestination.schema;
+    const tableName = cdcLiveTableName(
+      flow.tableDestination.tableName,
+      entity,
+      String(flow._id),
+    );
+
+    let resetQuery: string | null = null;
+    if (destinationType === "bigquery") {
+      const projectId =
+        typeof (destinationDoc as any)?.connection?.project_id === "string"
+          ? (destinationDoc as any).connection.project_id.trim()
+          : "";
+      const tableRef = projectId
+        ? `${projectId}.${schema}.${tableName}`
+        : `${schema}.${tableName}`;
+      const assignments = [`${escapeBigQueryPath(column)} = NULL`];
+      if (forceReplay) {
+        assignments.push(
+          `${escapeBigQueryPath("_mako_source_ts")} = TIMESTAMP('1970-01-01 00:00:00 UTC')`,
+        );
+        assignments.push(`${escapeBigQueryPath("_mako_ingest_seq")} = -1`);
+      }
+      resetQuery = `UPDATE ${escapeBigQueryPath(tableRef)} SET ${assignments.join(", ")} WHERE TRUE`;
+    } else if (destinationType.includes("postgres")) {
+      const assignments = [`${escapePostgresIdentifier(column)} = NULL`];
+      if (forceReplay) {
+        assignments.push(
+          `${escapePostgresIdentifier("_mako_source_ts")} = TIMESTAMP '1970-01-01 00:00:00+00'`,
+        );
+        assignments.push(
+          `${escapePostgresIdentifier("_mako_ingest_seq")} = -1`,
+        );
+      }
+      resetQuery = `UPDATE ${escapePostgresIdentifier(schema)}.${escapePostgresIdentifier(tableName)} SET ${assignments.join(", ")}`;
+    }
+
+    if (!resetQuery) {
+      return c.json(
+        {
+          success: false,
+          error: `Column reset is not supported for destination type '${destinationDoc.type}'`,
+        },
+        400,
+      );
+    }
+
+    const driver = databaseRegistry.getDriver(destinationType);
+    if (!driver?.executeQuery) {
+      return c.json(
+        {
+          success: false,
+          error: `No query driver available for destination type '${destinationDoc.type}'`,
+        },
+        400,
+      );
+    }
+
+    const resetResult = await driver.executeQuery(
+      destinationDoc as any,
+      resetQuery,
+    );
+    if (!resetResult.success) {
+      return c.json(
+        {
+          success: false,
+          error:
+            typeof resetResult.error === "string"
+              ? resetResult.error
+              : "Failed to reset destination column",
+        },
+        400,
+      );
+    }
+
+    let backfillRunId: string | null = null;
+    let reusedRunId = false;
+    if (startBackfill) {
+      try {
+        const backfill = await cdcBackfillService.startBackfill(
+          workspaceId,
+          flowId,
+          {
+            entities: [entity],
+          },
+        );
+        backfillRunId = backfill.runId;
+        reusedRunId = backfill.reusedRunId;
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error: `Column reset applied but failed to start backfill: ${error instanceof Error ? error.message : String(error)}`,
+            data: {
+              resetApplied: true,
+              entity,
+              column,
+            },
+          },
+          400,
+        );
+      }
+    }
+
+    return c.json({
+      success: true,
+      message: startBackfill
+        ? "Column reset applied and entity backfill started"
+        : "Column reset applied",
+      data: {
+        resetApplied: true,
+        entity,
+        column,
+        forceReplay,
+        backfillStarted: startBackfill,
+        runId: backfillRunId,
+        reusedRunId,
       },
     });
   } catch (error) {

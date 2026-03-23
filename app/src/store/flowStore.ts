@@ -409,6 +409,16 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     entities?: string[],
   ) => Promise<boolean>;
+  resetCdcEntityColumn: (
+    workspaceId: string,
+    flowId: string,
+    params: {
+      entity: string;
+      column: string;
+      forceReplay?: boolean;
+      startBackfill?: boolean;
+    },
+  ) => Promise<boolean>;
   pauseCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resumeCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resyncCdcFlow: (
@@ -850,6 +860,33 @@ export const useFlowStore = create<FlowStore>()(
           );
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC backfill");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      resetCdcEntityColumn: async (workspaceId, flowId, params) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reset-column`,
+            {
+              entity: params.entity,
+              column: params.column,
+              forceReplay: params.forceReplay !== false,
+              startBackfill: params.startBackfill !== false,
+            },
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to reset column");
           }
           await get().refresh(workspaceId);
           return true;
