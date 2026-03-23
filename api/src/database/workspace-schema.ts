@@ -750,6 +750,8 @@ export interface ICdcEntityState extends Document {
   lastMaterializedSeq: number;
   lastMaterializedAt?: Date;
   backlogCount: number;
+  lifetimeEventsProcessed: number;
+  lifetimeRowsApplied: number;
   lastEnqueuedAt?: Date;
   mergeIntervalSeconds: number;
   backfillCursor?: Record<string, unknown>;
@@ -1972,6 +1974,8 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     lastMaterializedSeq: { type: Number, default: 0 },
     lastMaterializedAt: Date,
     backlogCount: { type: Number, default: 0 },
+    lifetimeEventsProcessed: { type: Number, default: 0 },
+    lifetimeRowsApplied: { type: Number, default: 0 },
     lastEnqueuedAt: Date,
     mergeIntervalSeconds: { type: Number, default: 300 },
     backfillCursor: Schema.Types.Mixed,

@@ -290,6 +290,9 @@ export interface CdcStatus {
     backlogCount: number;
     lagSeconds: number | null;
     lastMaterializedAt: string | null;
+    destinationRowCount?: number | null;
+    lifetimeEventsProcessed?: number;
+    lifetimeRowsApplied?: number;
   }>;
   transitions: Array<{
     fromState: string;

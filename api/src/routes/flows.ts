@@ -22,6 +22,8 @@ import {
 } from "../services/destination-writer.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { getCdcFlowStats } from "../sync-cdc/sync-state";
+import { databaseRegistry } from "../databases/registry";
+import { cdcLiveTableName } from "../sync-cdc/normalization";
 
 const logger = loggers.inngest("flow");
 
@@ -54,6 +56,152 @@ function getRequestBaseUrl(c: RequestContextLike): string {
 function toLagSeconds(value: Date | null): number | null {
   if (!value) return null;
   return Math.max(Math.floor((Date.now() - value.getTime()) / 1000), 0);
+}
+
+const DESTINATION_COUNT_CACHE_TTL_MS = 30_000;
+const destinationCountCache = new Map<
+  string,
+  { value: number | null; expiresAt: number }
+>();
+
+function escapePostgresIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function buildDestinationCountQuery(params: {
+  destinationType?: string;
+  schema: string;
+  tableName: string;
+}): string | null {
+  const type = (params.destinationType || "").toLowerCase();
+  if (type === "bigquery") {
+    return `SELECT COUNT(*) AS total_count FROM \`${params.schema}.${params.tableName}\``;
+  }
+  if (type === "postgresql") {
+    return `SELECT COUNT(*)::bigint AS total_count FROM ${escapePostgresIdentifier(params.schema)}.${escapePostgresIdentifier(params.tableName)}`;
+  }
+  return null;
+}
+
+function extractCountFromQueryResult(data: unknown): number | null {
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const row = data[0];
+  if (!row || typeof row !== "object") return null;
+  const record = row as Record<string, unknown>;
+  const raw =
+    record.total_count ??
+    record.totalCount ??
+    record.count ??
+    record.cnt ??
+    record["COUNT(*)"];
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isTableMissingError(errorMessage?: string): boolean {
+  const value = String(errorMessage || "").toLowerCase();
+  const isPostgresMissingRelation =
+    value.includes("relation") && value.includes("does not exist");
+  return (
+    value.includes("not found") ||
+    value.includes("does not exist") ||
+    value.includes("unknown table") ||
+    isPostgresMissingRelation ||
+    value.includes("no such table")
+  );
+}
+
+async function getDestinationEntityRowCount(params: {
+  workspaceId: string;
+  flowId: string;
+  entity: string;
+  destinationType?: string;
+  destination: any;
+  schema: string;
+  baseTablePrefix?: string;
+}): Promise<number | null> {
+  const cacheKey = [
+    params.workspaceId,
+    params.flowId,
+    params.entity,
+    params.destinationType || "",
+    params.schema,
+    params.baseTablePrefix || "",
+  ].join(":");
+  const cached = destinationCountCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const tableName = cdcLiveTableName(
+    params.baseTablePrefix,
+    params.entity,
+    params.flowId,
+  );
+  const query = buildDestinationCountQuery({
+    destinationType: params.destinationType,
+    schema: params.schema,
+    tableName,
+  });
+  if (!query) {
+    destinationCountCache.set(cacheKey, {
+      value: null,
+      expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
+    });
+    return null;
+  }
+
+  const driver = databaseRegistry.getDriver(params.destination.type);
+  if (!driver?.executeQuery) {
+    destinationCountCache.set(cacheKey, {
+      value: null,
+      expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
+    });
+    return null;
+  }
+
+  try {
+    const result = await driver.executeQuery(params.destination, query);
+    if (!result.success) {
+      if (isTableMissingError(result.error)) {
+        destinationCountCache.set(cacheKey, {
+          value: 0,
+          expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
+        });
+        return 0;
+      }
+      logger.warn("Failed to count destination rows for CDC entity", {
+        flowId: params.flowId,
+        entity: params.entity,
+        destinationType: params.destinationType,
+        error: result.error,
+      });
+      destinationCountCache.set(cacheKey, {
+        value: null,
+        expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
+      });
+      return null;
+    }
+
+    const count = extractCountFromQueryResult(result.data);
+    destinationCountCache.set(cacheKey, {
+      value: count,
+      expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
+    });
+    return count;
+  } catch (error) {
+    logger.warn("Destination row count query errored for CDC entity", {
+      flowId: params.flowId,
+      entity: params.entity,
+      destinationType: params.destinationType,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    destinationCountCache.set(cacheKey, {
+      value: null,
+      expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
+    });
+    return null;
+  }
 }
 
 // Apply unified auth middleware to all flow routes
@@ -1376,10 +1524,46 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       throw new Error("Flow not found");
     }
 
+    let destinationByEntity = new Map<string, number | null>();
+    if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
+      const destination = await DatabaseConnection.findById(
+        flow.tableDestination.connectionId,
+      ).lean();
+
+      if (destination) {
+        const uniqueEntities = Array.from(
+          new Set(states.map(state => state.entity).filter(Boolean)),
+        );
+        const counts = await Promise.all(
+          uniqueEntities.map(async entity => {
+            const value = await getDestinationEntityRowCount({
+              workspaceId,
+              flowId,
+              entity,
+              destinationType: destination.type,
+              destination,
+              schema: flow.tableDestination?.schema || "",
+              baseTablePrefix: flow.tableDestination?.tableName,
+            });
+            return [entity, value] as const;
+          }),
+        );
+        destinationByEntity = new Map(counts);
+      }
+    }
+
     const entities = states.map(state => {
       const lastMaterializedAt = state.lastMaterializedAt
         ? new Date(state.lastMaterializedAt)
         : null;
+      const lifetimeEventsProcessed =
+        typeof (state as any).lifetimeEventsProcessed === "number"
+          ? (state as any).lifetimeEventsProcessed
+          : state.lastMaterializedSeq || 0;
+      const lifetimeRowsApplied =
+        typeof (state as any).lifetimeRowsApplied === "number"
+          ? (state as any).lifetimeRowsApplied
+          : state.lastMaterializedSeq || 0;
       return {
         entity: state.entity,
         lastIngestSeq: state.lastIngestSeq || 0,
@@ -1387,6 +1571,12 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         backlogCount: state.backlogCount || 0,
         lagSeconds: toLagSeconds(lastMaterializedAt),
         lastMaterializedAt,
+        destinationRowCount:
+          destinationByEntity.get(state.entity) ??
+          (state as any).destinationRowCount ??
+          null,
+        lifetimeEventsProcessed,
+        lifetimeRowsApplied,
       };
     });
 

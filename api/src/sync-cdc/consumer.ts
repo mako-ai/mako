@@ -124,6 +124,8 @@ export class CdcConsumerService {
         flowId: params.flowId,
         entity: params.entity,
         lastIngestSeq: latestIngestSeq,
+        processedEventsDelta: pending.length,
+        rowsAppliedDelta: 0,
       });
       return {
         processed: pending.length,
@@ -159,6 +161,8 @@ export class CdcConsumerService {
         flowId: params.flowId,
         entity: params.entity,
         lastIngestSeq: latestIngestSeq,
+        processedEventsDelta: pending.length,
+        rowsAppliedDelta: apply.applied,
       });
       await this.updateLifecycleAfterMaterialization(
         params.workspaceId,

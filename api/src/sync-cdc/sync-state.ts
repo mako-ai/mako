@@ -303,26 +303,49 @@ class CdcSyncStateService {
     entity: string;
     lastIngestSeq: number;
     backlogCount?: number;
+    processedEventsDelta?: number;
+    rowsAppliedDelta?: number;
   }): Promise<void> {
+    const increments: Record<string, number> = {};
+    if (
+      typeof params.processedEventsDelta === "number" &&
+      Number.isFinite(params.processedEventsDelta) &&
+      params.processedEventsDelta !== 0
+    ) {
+      increments.lifetimeEventsProcessed = params.processedEventsDelta;
+    }
+    if (
+      typeof params.rowsAppliedDelta === "number" &&
+      Number.isFinite(params.rowsAppliedDelta) &&
+      params.rowsAppliedDelta !== 0
+    ) {
+      increments.lifetimeRowsApplied = params.rowsAppliedDelta;
+    }
+
+    const updateDoc: Record<string, unknown> = {
+      $set: {
+        workspaceId: new Types.ObjectId(params.workspaceId),
+        flowId: new Types.ObjectId(params.flowId),
+        entity: params.entity,
+        lastMaterializedAt: new Date(),
+        ...(typeof params.backlogCount === "number"
+          ? { backlogCount: params.backlogCount }
+          : {}),
+      },
+      $max: {
+        lastMaterializedSeq: params.lastIngestSeq,
+      },
+    };
+    if (Object.keys(increments).length > 0) {
+      updateDoc.$inc = increments;
+    }
+
     await CdcEntityState.updateOne(
       {
         flowId: new Types.ObjectId(params.flowId),
         entity: params.entity,
       },
-      {
-        $set: {
-          workspaceId: new Types.ObjectId(params.workspaceId),
-          flowId: new Types.ObjectId(params.flowId),
-          entity: params.entity,
-          lastMaterializedAt: new Date(),
-          ...(typeof params.backlogCount === "number"
-            ? { backlogCount: params.backlogCount }
-            : {}),
-        },
-        $max: {
-          lastMaterializedSeq: params.lastIngestSeq,
-        },
-      },
+      updateDoc,
       { upsert: true },
     );
   }

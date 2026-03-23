@@ -463,17 +463,37 @@ export function BackfillPanel({
       lastMaterializedSeq: s?.lastMaterializedSeq || 0,
       lagSeconds: s?.lagSeconds ?? null,
       lastMaterializedAt: s?.lastMaterializedAt || null,
+      destinationRowCount:
+        typeof s?.destinationRowCount === "number"
+          ? s.destinationRowCount
+          : null,
+      lifetimeEventsProcessed:
+        typeof s?.lifetimeEventsProcessed === "number"
+          ? s.lifetimeEventsProcessed
+          : 0,
+      lifetimeRowsApplied:
+        typeof s?.lifetimeRowsApplied === "number" ? s.lifetimeRowsApplied : 0,
       execRows: execStats[name] || 0,
       execStatus: execStatus[name] || null,
     };
   });
 
-  const totalProcessed = entities.reduce(
-    (sum, e) => sum + Math.max(e.execRows || 0, e.lastMaterializedSeq || 0),
+  const totalEventsProcessed = entities.reduce(
+    (sum, e) =>
+      sum +
+      Math.max(e.lifetimeEventsProcessed || 0, e.lastMaterializedSeq || 0),
+    0,
+  );
+  const totalRowsApplied = entities.reduce(
+    (sum, e) => sum + Math.max(e.lifetimeRowsApplied || 0, e.execRows || 0),
+    0,
+  );
+  const totalDestinationRows = entities.reduce(
+    (sum, e) => sum + Math.max(e.destinationRowCount || 0, 0),
     0,
   );
   const ss = streamStatus(state);
-  const bs = backfillStatus(state, cdc?.backlogCount ?? 0, totalProcessed);
+  const bs = backfillStatus(state, cdc?.backlogCount ?? 0, totalRowsApplied);
 
   const kpi = {
     borderRadius: 1.5,
@@ -692,7 +712,21 @@ export function BackfillPanel({
             <Box sx={kpi}>
               <Typography sx={kpiLabel}>Events processed</Typography>
               <Typography sx={kpiValue}>
-                {totalProcessed.toLocaleString()}
+                {totalEventsProcessed.toLocaleString()}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
+              >
+                Rows applied: {totalRowsApplied.toLocaleString()}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.1, fontSize: "0.68rem" }}
+              >
+                Destination rows: {totalDestinationRows.toLocaleString()}
               </Typography>
               {cdc.lastMaterializedAt && (
                 <Typography
@@ -797,7 +831,8 @@ export function BackfillPanel({
                       <TableCell>Entity</TableCell>
                       <TableCell>Stream</TableCell>
                       <TableCell>Backfill</TableCell>
-                      <TableCell align="right">Rows written</TableCell>
+                      <TableCell align="right">Destination rows</TableCell>
+                      <TableCell align="right">Events processed</TableCell>
                       <TableCell align="right" sx={{ width: 60 }} />
                     </TableRow>
                   </TableHead>
@@ -813,8 +848,12 @@ export function BackfillPanel({
                             : e.execStatus === "pending"
                               ? { label: "Queued", color: "default" as const }
                               : bc;
-                      const rowCount = Math.max(
-                        e.execRows || 0,
+                      const destinationRows = Math.max(
+                        e.destinationRowCount || 0,
+                        0,
+                      );
+                      const eventCount = Math.max(
+                        e.lifetimeEventsProcessed || 0,
                         e.lastMaterializedSeq || 0,
                       );
                       return (
@@ -860,9 +899,17 @@ export function BackfillPanel({
                           <TableCell align="right">
                             <Typography
                               fontSize="0.8rem"
-                              fontWeight={rowCount > 0 ? 600 : 400}
+                              fontWeight={destinationRows > 0 ? 600 : 400}
                             >
-                              {rowCount.toLocaleString()}
+                              {destinationRows.toLocaleString()}
+                            </Typography>
+                          </TableCell>
+                          <TableCell align="right">
+                            <Typography
+                              fontSize="0.8rem"
+                              fontWeight={eventCount > 0 ? 600 : 400}
+                            >
+                              {eventCount.toLocaleString()}
                             </Typography>
                           </TableCell>
                           <TableCell align="right">
