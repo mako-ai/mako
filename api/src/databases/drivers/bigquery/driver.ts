@@ -86,7 +86,9 @@ function formatBigQueryValue(
   targetType?: string,
   useCast = false,
 ): string {
-  const resolvedTargetType = useCast ? targetType || "STRING" : targetType;
+  const resolvedTargetType = useCast
+    ? targetType || inferBigQueryType(value)
+    : targetType;
   const upperType = resolvedTargetType?.toUpperCase();
 
   // For useCast mode (STRUCT arrays in MERGE/INSERT), NULL must be typed to avoid
@@ -916,6 +918,22 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       dataset,
     );
 
+    if (columnTypes.size === 0) {
+      this.logger.warn(
+        "INFORMATION_SCHEMA returned no column types, forcing refresh",
+        {
+          table: tableName,
+          dataset,
+        },
+      );
+      columnTypes = await this.getCachedTableColumnTypes(
+        database,
+        tableName,
+        dataset,
+        true,
+      );
+    }
+
     const allColumns = new Set<string>();
     for (const row of rows) {
       Object.keys(row).forEach(k => allColumns.add(k));
@@ -1119,6 +1137,22 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       tableName,
       dataset,
     );
+
+    if (columnTypes.size === 0) {
+      this.logger.warn(
+        "INFORMATION_SCHEMA returned no column types, forcing refresh",
+        {
+          table: tableName,
+          dataset,
+        },
+      );
+      columnTypes = await this.getCachedTableColumnTypes(
+        database,
+        tableName,
+        dataset,
+        true,
+      );
+    }
 
     // Get all unique column names from all rows
     const allColumns = new Set<string>();
