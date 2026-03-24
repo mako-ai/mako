@@ -1683,16 +1683,44 @@ export const flowFunction = inngest.createFunction(
               flowId,
               entity,
             });
+            appendExecutionLog(
+              "info",
+              `Flushing ${entity} buffer to BigQuery staging via Parquet`,
+              {
+                entity,
+              },
+            );
             await step.run(`flush-final-${safeEntityStepId}`, async () => {
               await performBulkFlush(bulkSyncOptions);
             });
+            appendExecutionLog(
+              "info",
+              `${entity} buffer flushed to staging table`,
+              {
+                entity,
+              },
+            );
             logger.info(`Merging ${entity} staging table to live`, {
               flowId,
               entity,
             });
+            appendExecutionLog(
+              "info",
+              `Merging ${entity} staging table to live`,
+              {
+                entity,
+              },
+            );
             await step.run(`merge-staging-${safeEntityStepId}`, async () => {
               return performStagingMerge(bulkSyncOptions);
             });
+            appendExecutionLog(
+              "info",
+              `${entity} merged staging to live table`,
+              {
+                entity,
+              },
+            );
             logger.info(`Cleaning up ${entity} staging table`, {
               flowId,
               entity,
@@ -1703,6 +1731,13 @@ export const flowFunction = inngest.createFunction(
             logger.info(
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
               { flowId, entity },
+            );
+            appendExecutionLog(
+              "info",
+              `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
+              {
+                entity,
+              },
             );
           }
 
