@@ -457,6 +457,10 @@ interface FlowStore extends FlowStoreState {
     workspaceId: string,
     flowId: string,
   ) => Promise<CdcStatus | null>;
+  fetchCdcDestinationCounts: (
+    workspaceId: string,
+    flowId: string,
+  ) => Promise<Record<string, number | null> | null>;
   fetchFlowHistory: (
     workspaceId: string,
     flowId: string,
@@ -1052,6 +1056,20 @@ export const useFlowStore = create<FlowStore>()(
           set(state => {
             state.error[workspaceId] = normalizeError(error);
           });
+          return null;
+        }
+      },
+
+      fetchCdcDestinationCounts: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: Record<string, number | null>;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/destination-counts`,
+          );
+          return response.success ? response.data : null;
+        } catch {
           return null;
         }
       },
