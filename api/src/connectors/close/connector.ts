@@ -911,8 +911,6 @@ export class CloseConnector extends BaseConnector {
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
-    let searchCursor: string | null = null;
-    let windowRecordCount = 0;
     const SEARCH_SKIP_LIMIT = 9800;
 
     // Resume cursor: last record's date_created timestamp from previous chunk.
@@ -1167,6 +1165,8 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
+    let skip = state?.metadata?.skip || 0;
+
     while (iterations < maxIterations) {
       try {
         const queries: any[] = [
@@ -1195,6 +1195,7 @@ export class CloseConnector extends BaseConnector {
         const body: any = {
           query: { type: "and", queries },
           _limit: batchSize,
+          _skip: skip,
           sort: [
             {
               direction: "asc",
@@ -1209,39 +1210,37 @@ export class CloseConnector extends BaseConnector {
         if (fieldsMap[objectType]) {
           body._fields = { [objectType]: fieldsMap[objectType] };
         }
-        if (searchCursor) {
-          body.cursor = searchCursor;
-        }
 
         const response = await api.post("/data/search/", body);
         const data = response.data.data || [];
-        searchCursor = response.data.cursor || null;
 
         if (data.length > 0) {
           const records =
             entity === "leads" ? this.normalizeLeadBatch(data) : data;
           await onBatch(records);
           recordCount += records.length;
+          skip += data.length;
+
           const rawCursor = data[data.length - 1].date_created || "";
           cursor = rawCursor.replace(/\+00:00$/, "Z").replace(/\.000000/, "");
+
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
         }
 
-        if (!searchCursor || data.length === 0) {
+        if (data.length < batchSize) {
           return {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: { cursor },
+            metadata: { cursor, skip },
           };
         }
 
-        windowRecordCount += data.length;
-        if (windowRecordCount >= SEARCH_SKIP_LIMIT) {
-          searchCursor = null;
-          windowRecordCount = 0;
+        // Near Close 10k skip limit: window by date_created
+        if (skip >= SEARCH_SKIP_LIMIT) {
+          skip = 0;
         }
 
         iterations++;
@@ -1251,8 +1250,16 @@ export class CloseConnector extends BaseConnector {
           const retryAfter = parseInt(
             error.response.headers["retry-after"] || "60",
           );
-          logger.warn("Rate limited, waiting", {
+          this.emitSyncLog("warn", "Close API rate limited, waiting", {
             retryAfterSeconds: retryAfter,
+            entity,
+            recordsFetched: recordCount,
+            page: iterations,
+          });
+          logger.warn("Rate limited on search API, waiting", {
+            retryAfterSeconds: retryAfter,
+            entity,
+            recordsFetched: recordCount,
           });
           await this.sleep(retryAfter * 1000);
         } else {
@@ -1265,7 +1272,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { cursor },
+      metadata: { cursor, skip },
     };
   }
 
