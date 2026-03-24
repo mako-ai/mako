@@ -1,0 +1,189 @@
+---
+title: "How to Import CSV to Snowflake (4 Methods)"
+slug: import-csv-to-snowflake
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - snowflake
+  - csv
+  - import
+  - data
+excerpt: "Four ways to import CSV files into Snowflake: PUT + COPY INTO via SnowSQL, the Snowsight web UI, Python connector, and external stage loads. Includes staging, file format, and error handling tips."
+metaDescription: "Import CSV to Snowflake in 2026: PUT + COPY INTO, Snowsight GUI, Python connector, and S3/GCS stages. Step-by-step with file formats, error handling, and best practices."
+database: snowflake
+category: import-export
+draft: false
+---
+
+Snowflake uses a staging approach for CSV imports: you first upload (stage) the file, then load it into a table. This two-step process applies to all methods. It adds a step compared to PostgreSQL's `COPY`, but gives you more control over validation and error handling.
+
+## Method 1: SnowSQL CLI (PUT + COPY INTO)
+
+SnowSQL is Snowflake's command-line client. The standard workflow is: create a file format, PUT the file to a stage, then COPY INTO the table.
+
+First, create a file format and the target table:
+
+```sql
+CREATE OR REPLACE FILE FORMAT my_csv_format
+  TYPE = 'CSV'
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  SKIP_HEADER = 1
+  NULL_IF = ('', 'NULL');
+
+CREATE TABLE users (
+  id INTEGER,
+  name STRING,
+  email STRING,
+  signup_date DATE
+);
+```
+
+Stage the file (uploads from your local machine to Snowflake's internal stage):
+
+```sql
+PUT file:///local/path/users.csv @~;
+```
+
+Load the staged file into the table:
+
+```sql
+COPY INTO users
+FROM @~/users.csv.gz
+FILE_FORMAT = (FORMAT_NAME = 'my_csv_format');
+```
+
+Note: `PUT` automatically compresses the file (hence `.gz` in the COPY path). Use `AUTO_COMPRESS = FALSE` in the PUT if you don't want compression.
+
+**One-step from SnowSQL:**
+
+```bash
+snowsql -a your_account -u your_user -d your_db -s your_schema \
+  -f import_script.sql
+```
+
+## Method 2: Snowsight Web UI
+
+Snowflake's web interface provides a visual upload:
+
+1. Log into Snowsight
+2. Navigate to **Data > Databases**, select your database and schema
+3. Click on the target table (or create one)
+4. Click **Load Data**
+5. Select your warehouse, then upload the CSV file
+6. Configure file format settings (delimiter, header, encoding)
+7. Click **Load**
+
+The web UI has a 250 MB file size limit. For larger files, use SnowSQL or an external stage.
+
+## Method 3: Python Snowflake Connector
+
+The Snowflake Python connector supports both staging and direct loading:
+
+```python
+import snowflake.connector
+
+conn = snowflake.connector.connect(
+    account='your_account',
+    user='your_user',
+    password='your_password',
+    database='your_db',
+    schema='your_schema',
+    warehouse='your_warehouse'
+)
+
+cursor = conn.cursor()
+
+# PUT the file
+cursor.execute("PUT file:///local/path/users.csv @~")
+
+# COPY into table
+cursor.execute("""
+    COPY INTO users
+    FROM @~/users.csv.gz
+    FILE_FORMAT = (
+        TYPE = 'CSV'
+        FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+        SKIP_HEADER = 1
+    )
+""")
+
+result = cursor.fetchall()
+print(f"Loaded: {result}")
+
+cursor.close()
+conn.close()
+```
+
+For pandas integration, `write_pandas()` handles the staging automatically:
+
+```python
+from snowflake.connector.pandas_tools import write_pandas
+import pandas as pd
+
+df = pd.read_csv('users.csv')
+success, num_chunks, num_rows, output = write_pandas(
+    conn, df, 'USERS'
+)
+print(f"Loaded {num_rows} rows")
+```
+
+## Method 4: External Stage (S3, GCS, Azure Blob)
+
+For production pipelines, load CSV files from cloud storage using an external stage:
+
+```sql
+-- Create an external stage pointing to S3
+CREATE OR REPLACE STAGE my_s3_stage
+  URL = 's3://my-bucket/csv-imports/'
+  CREDENTIALS = (AWS_KEY_ID = '...' AWS_SECRET_KEY = '...')
+  FILE_FORMAT = my_csv_format;
+
+-- List files in the stage
+LIST @my_s3_stage;
+
+-- Load all CSV files from the stage
+COPY INTO users
+FROM @my_s3_stage
+PATTERN = '.*users.*\\.csv\\.gz';
+```
+
+This supports GCS and Azure Blob Storage with similar syntax. External stages are the recommended approach for automated, recurring loads.
+
+## Common Gotchas
+
+**Everything is staged.** There's no way to directly insert CSV data into Snowflake without staging first. The `PUT` command uploads to an internal stage. Even the Python `write_pandas()` creates a temporary stage behind the scenes.
+
+**Case sensitivity.** Snowflake uppercases all identifiers by default. If your CSV header has `userName` but your table has `USERNAME`, it works. But if your table was created with double-quoted identifiers (`"userName"`), the case must match exactly.
+
+**File format matters.** Create a reusable `FILE FORMAT` object instead of specifying format options inline every time. It prevents inconsistencies across loads:
+
+```sql
+CREATE FILE FORMAT my_csv_format
+  TYPE = 'CSV'
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  SKIP_HEADER = 1
+  DATE_FORMAT = 'YYYY-MM-DD'
+  TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS'
+  NULL_IF = ('', 'NULL', '\\N');
+```
+
+**Error handling.** By default, `COPY INTO` aborts on the first error. To continue and log errors:
+
+```sql
+COPY INTO users
+FROM @~/users.csv.gz
+FILE_FORMAT = my_csv_format
+ON_ERROR = 'CONTINUE';
+```
+
+Check rejected rows with:
+
+```sql
+SELECT * FROM TABLE(VALIDATE(users, JOB_ID => '_last'));
+```
+
+**Warehouse must be running.** Unlike staging (which is free), `COPY INTO` requires an active warehouse. Make sure your warehouse is running or set it to auto-resume.
+
+**Costs.** Staging files to Snowflake's internal stage incurs storage costs. The `COPY INTO` operation uses warehouse compute credits. For large, recurring loads, right-size your warehouse and clean up staged files after loading.
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
