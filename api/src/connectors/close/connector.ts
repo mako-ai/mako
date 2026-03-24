@@ -816,31 +816,18 @@ export class CloseConnector extends BaseConnector {
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
     const maxIterations = options.maxIterations || 10;
 
-    // Parse sub-entity for endpoint selection (e.g., "activities:Call")
     let activitySubType: string | undefined;
     if (entity.includes(":")) {
       const [, activityType] = entity.split(":");
       activitySubType = activityType;
     }
 
-    // Initialize or restore state
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // Sliding window pagination: uses date_created as the cursor.
-    // windowUpper is the exclusive upper bound (start from now, move backwards).
-    // windowLower is the inclusive lower bound (start of current day).
-    // When offset nears Close's 10k skip limit, narrow the window using the
-    // last record's date_created and reset offset to 0.
-    const CLOSE_SKIP_LIMIT = 9900;
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    let windowUpper: string | null =
-      state?.metadata?.windowUpper ?? tomorrow.toISOString().split("T")[0];
-    let windowLower: string =
-      state?.metadata?.windowLower || new Date(now).toISOString().split("T")[0];
-    let dailyOffset = state?.metadata?.dailyOffset || 0;
+    // Cursor-based pagination: each batch moves the cursor to the oldest
+    // record's date_created. No _skip needed — avoids Close's 10k limit.
+    let cursor: string | null = state?.metadata?.cursor ?? null;
     const endDate =
       since ||
       (state?.metadata?.endDate ? new Date(state.metadata.endDate) : null);
@@ -851,27 +838,27 @@ export class CloseConnector extends BaseConnector {
 
     while (iterations < maxIterations) {
       try {
+        const queryParts: string[] = [];
+        if (cursor) {
+          queryParts.push(`date_created__lt="${cursor}"`);
+        }
+        if (endDate) {
+          queryParts.push(
+            `date_created__gte="${endDate.toISOString().split("T")[0]}"`,
+          );
+        }
+
         const params: any = {
           _limit: batchSize,
-          _skip: dailyOffset,
           _order_by: "-date_created",
         };
-
-        // Build query: windowLower <= date_created < windowUpper
-        const parts: string[] = [];
-        parts.push(`date_created__gte="${windowLower}"`);
-        if (windowUpper) {
-          parts.push(`date_created__lt="${windowUpper}"`);
+        if (queryParts.length > 0) {
+          params.query = queryParts.join(" AND ");
         }
-        const query = parts.join(" AND ");
-
-        const postData = {
-          _params: { ...params, query },
-        };
 
         const response = await api.post(
           this.getActivityEndpointForType(activitySubType),
-          postData,
+          { _params: params },
           { headers: { "x-http-method-override": "GET" } },
         );
 
@@ -880,90 +867,21 @@ export class CloseConnector extends BaseConnector {
         if (data.length > 0) {
           await onBatch(data);
           recordCount += data.length;
+          cursor = data[data.length - 1].date_created;
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
         }
 
-        const hasMore = response.data.has_more || false;
-
-        if (!hasMore && data.length === 0) {
-          // Window exhausted and empty — check for older data
-          const probeData = {
-            _params: {
-              _limit: 1,
-              _skip: 0,
-              _order_by: "-date_created",
-              query: `date_created__lt="${windowLower}"`,
-            },
+        if (!response.data.has_more || data.length === 0) {
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: iterations + 1,
+            metadata: { cursor, endDate: endDate?.toISOString() },
           };
-          const probeResp = await api.post(
-            this.getActivityEndpointForType(activitySubType),
-            probeData,
-            { headers: { "x-http-method-override": "GET" } },
-          );
-          iterations++;
-          const probeRecords = probeResp.data.data || [];
-          if (probeRecords.length === 0) {
-            return {
-              totalProcessed: recordCount,
-              hasMore: false,
-              iterationsInChunk: iterations,
-              metadata: { windowLower, windowUpper, dailyOffset: 0 },
-            };
-          }
-          // Jump to the date of the oldest found record
-          const jumpDate = new Date(probeRecords[0].date_created);
-          const prevWindowLower = windowLower;
-          windowLower = new Date(
-            jumpDate.getFullYear(),
-            jumpDate.getMonth(),
-            jumpDate.getDate(),
-          )
-            .toISOString()
-            .split("T")[0];
-          windowUpper = prevWindowLower;
-          dailyOffset = 0;
-          await this.sleep(rateLimitDelay);
-          continue;
         }
 
-        if (!hasMore) {
-          // Current window done — move to previous day, set upper bound to
-          // current windowLower so we don't re-fetch records from today
-          const prevLower = windowLower;
-          const lowerDate = new Date(windowLower);
-          lowerDate.setDate(lowerDate.getDate() - 1);
-          if (endDate && lowerDate < endDate) {
-            return {
-              totalProcessed: recordCount,
-              hasMore: false,
-              iterationsInChunk: iterations,
-              metadata: {
-                windowLower: lowerDate.toISOString().split("T")[0],
-                windowUpper: prevLower,
-                dailyOffset: 0,
-                endDate: endDate.toISOString(),
-              },
-            };
-          }
-          windowLower = lowerDate.toISOString().split("T")[0];
-          windowUpper = prevLower;
-          dailyOffset = 0;
-          iterations++;
-          await this.sleep(rateLimitDelay);
-          continue;
-        }
-
-        // More data in current window
-        if (dailyOffset + batchSize >= CLOSE_SKIP_LIMIT && data.length > 0) {
-          // Approaching 10k skip limit — narrow window using last record's date_created
-          const lastRecord = data[data.length - 1];
-          windowUpper = lastRecord.date_created;
-          dailyOffset = 0;
-        } else {
-          dailyOffset += batchSize;
-        }
         iterations++;
         await this.sleep(rateLimitDelay);
       } catch (error) {
@@ -975,24 +893,17 @@ export class CloseConnector extends BaseConnector {
             retryAfterSeconds: retryAfter,
           });
           await this.sleep(retryAfter * 1000);
-          // Don't increment iterations for rate limit retries
         } else {
           throw error;
         }
       }
     }
 
-    // Reached max iterations for this chunk
     return {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: {
-        windowLower,
-        windowUpper,
-        dailyOffset,
-        endDate: endDate?.toISOString(),
-      },
+      metadata: { cursor, endDate: endDate?.toISOString() },
     };
   }
 
