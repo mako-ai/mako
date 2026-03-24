@@ -891,12 +891,11 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
     let searchCursor: string | null = null;
+    const maxIterations = options.maxIterations || 10;
 
-    // Search API cursor handles up to 10k results and expires after 30s.
-    // We ignore maxIterations here and process the full result set in one
-    // chunk to avoid cursor expiry on resume. For entities >10k, the
-    // caller should fall back to offset or date-based pagination.
-    const searchMaxIterations = 200;
+    // Resume cursor: last record's date_created timestamp from previous chunk.
+    // Used with fixed_utc moment_range to resume from exact position.
+    let cursor: string | null = state?.metadata?.cursor ?? null;
 
     const objectType =
       entity === "leads"
@@ -963,25 +962,6 @@ export class CloseConnector extends BaseConnector {
       ],
     };
 
-    const searchBody: any = {
-      query: { type: "object_type", object_type: objectType },
-      _limit: batchSize,
-      sort: [
-        {
-          direction: "asc",
-          field: {
-            object_type: objectType,
-            type: "regular_field",
-            field_name: "date_created",
-          },
-        },
-      ],
-    };
-
-    if (fieldsMap[objectType]) {
-      searchBody._fields = { [objectType]: fieldsMap[objectType] };
-    }
-
     if (!state && onProgress) {
       try {
         const countResp = await api.post("/data/search/", {
@@ -998,9 +978,48 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
-    while (iterations < searchMaxIterations) {
+    while (iterations < maxIterations) {
       try {
-        const body = { ...searchBody };
+        const queries: any[] = [
+          { type: "object_type", object_type: objectType },
+        ];
+        if (cursor) {
+          queries.push({
+            type: "field_condition",
+            field: {
+              type: "regular_field",
+              object_type: objectType,
+              field_name: "date_created",
+            },
+            condition: {
+              type: "moment_range",
+              on_or_after: {
+                type: "fixed_utc",
+                value: cursor,
+                which: "start",
+              },
+              before: null,
+            },
+          });
+        }
+
+        const body: any = {
+          query: { type: "and", queries },
+          _limit: batchSize,
+          sort: [
+            {
+              direction: "asc",
+              field: {
+                object_type: objectType,
+                type: "regular_field",
+                field_name: "date_created",
+              },
+            },
+          ],
+        };
+        if (fieldsMap[objectType]) {
+          body._fields = { [objectType]: fieldsMap[objectType] };
+        }
         if (searchCursor) {
           body.cursor = searchCursor;
         }
@@ -1014,6 +1033,7 @@ export class CloseConnector extends BaseConnector {
             entity === "leads" ? this.normalizeLeadBatch(data) : data;
           await onBatch(records);
           recordCount += records.length;
+          cursor = data[data.length - 1].date_created;
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
@@ -1024,6 +1044,7 @@ export class CloseConnector extends BaseConnector {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
+            metadata: { cursor },
           };
         }
 
@@ -1048,6 +1069,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
+      metadata: { cursor },
     };
   }
 
