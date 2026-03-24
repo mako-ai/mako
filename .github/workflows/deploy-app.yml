@@ -500,6 +500,7 @@ jobs:
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Sync Inngest branch environment
+        continue-on-error: true
         run: |
           set -euo pipefail
 
@@ -514,8 +515,8 @@ jobs:
             fi
 
             if [ "${attempt}" = "5" ]; then
-              echo "❌ Preview endpoint never became ready for Inngest sync"
-              exit 1
+              echo "Inngest sync failed after retries (non-fatal for PR previews)"
+              exit 0
             fi
 
             echo "Attempt ${attempt}/5 returned HTTP ${STATUS:-unknown}; retrying in 10s..."
@@ -821,6 +822,18 @@ jobs:
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --set-env-vars DEMO_DATABASE_URL=${DEMO_DATABASE_URL} \
             --quiet
+
+      - name: Sync Inngest app
+        run: |
+          echo "Syncing Inngest app at ${BASE_URL}/api/inngest"
+          for attempt in 1 2 3 4 5; do
+            if curl -X PUT "${BASE_URL}/api/inngest" --fail-with-body --silent --show-error; then
+              echo "Inngest sync succeeded"
+              break
+            fi
+            echo "Sync attempt ${attempt} failed; retrying..."
+            sleep $((attempt * 2))
+          done
 
       - name: Run database migrations
         run: pnpm run migrate

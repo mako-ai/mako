@@ -55,7 +55,11 @@ export class CdcBackfillService {
   async startBackfill(
     workspaceId: string,
     flowId: string,
-    options?: { reuseExistingRunId?: boolean; entities?: string[] },
+    options?: {
+      reuseExistingRunId?: boolean;
+      entities?: string[];
+      reason?: string;
+    },
   ): Promise<{ runId: string; reusedRunId: boolean }> {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -95,12 +99,14 @@ export class CdcBackfillService {
         ? flow.backfillState.runId
         : createBackfillRunId(flowId);
     const reusedRunId = Boolean(shouldReuseRunId && flow.backfillState?.runId);
+    const previousFailures = flow.backfillState?.consecutiveFailures ?? 0;
     const now = new Date();
     flow.backfillState = {
       active: true,
       runId,
       startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
       completedAt: undefined,
+      consecutiveFailures: previousFailures,
       scope: {
         mode: effectiveScope.length > 0 ? "subset" : "all",
         entities: effectiveScope,
@@ -108,10 +114,24 @@ export class CdcBackfillService {
     };
     await flow.save();
 
+    const reason =
+      options?.reason ||
+      (reusedRunId
+        ? `Backfill resumed from checkpoint (runId reused, attempt ${previousFailures + 1})`
+        : "Backfill started via API");
+
+    log.info(reason, {
+      flowId,
+      runId,
+      reusedRunId,
+      consecutiveFailures: previousFailures,
+      scope: effectiveScope.length > 0 ? effectiveScope : "all",
+    });
+
     await cdcSyncStateService.applyBackfillTransition({
       workspaceId,
       flowId,
-      event: { type: "START", reason: "Backfill started via API" },
+      event: { type: "START", reason },
       context: { hasActiveRunLock: Boolean(running) },
     });
 
@@ -308,6 +328,7 @@ export class CdcBackfillService {
     if (params.resumeBackfill !== false) {
       resumedRun = await this.startBackfill(params.workspaceId, params.flowId, {
         reuseExistingRunId: true,
+        reason: "Backfill resumed via manual recovery",
       });
     }
 
@@ -494,6 +515,119 @@ export class CdcBackfillService {
       flowId: flow._id.toString(),
       entityCount: enabledEntities.length,
     });
+  }
+
+  async recoverStaleBackfillsOnStartup(): Promise<{
+    recovered: number;
+    skipped: number;
+    errors: number;
+  }> {
+    const MAX_CONSECUTIVE_FAILURES = 3;
+
+    const staleFlows = await Flow.find({
+      syncEngine: "cdc",
+      "backfillState.status": "running",
+    }).lean();
+
+    if (staleFlows.length === 0) {
+      log.info("Startup backfill check: no stale backfills found");
+      return { recovered: 0, skipped: 0, errors: 0 };
+    }
+
+    log.info(
+      `Startup backfill check: found ${staleFlows.length} stale backfill(s) to recover`,
+      {
+        flows: staleFlows.map(f => ({
+          flowId: f._id.toString(),
+          type: f.type,
+          runId: f.backfillState?.runId || null,
+          startedAt: f.backfillState?.startedAt || null,
+          consecutiveFailures: f.backfillState?.consecutiveFailures ?? 0,
+          scope: f.backfillState?.scope?.mode || "all",
+        })),
+      },
+    );
+
+    let recovered = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const flow of staleFlows) {
+      const wId = String(flow.workspaceId);
+      const fId = String(flow._id);
+      const flowLabel = `${flow.type}:${fId}`;
+      const runId = flow.backfillState?.runId || "unknown";
+      const failures = flow.backfillState?.consecutiveFailures ?? 0;
+
+      const activeExec = await hasActiveExecution(wId, fId);
+      if (activeExec) {
+        log.info(
+          `Startup recovery: "${flowLabel}" skipped — execution still active`,
+          { flowId: fId, runId },
+        );
+        skipped++;
+        continue;
+      }
+
+      try {
+        log.info(
+          `Startup recovery: "${flowLabel}" — transitioning to error (was stuck in running)`,
+          { flowId: fId, runId, consecutiveFailures: failures },
+        );
+
+        await cdcSyncStateService.applyBackfillTransition({
+          workspaceId: wId,
+          flowId: fId,
+          event: {
+            type: "FAIL",
+            reason: "Backfill interrupted by server restart",
+            errorCode: "SERVER_RESTART",
+          },
+        });
+        await Flow.findByIdAndUpdate(fId, {
+          $inc: { "backfillState.consecutiveFailures": 1 },
+        });
+
+        if (failures + 1 < MAX_CONSECUTIVE_FAILURES) {
+          const result = await this.startBackfill(wId, fId, {
+            reuseExistingRunId: true,
+            reason: `Auto-resumed on startup (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES})`,
+          });
+          log.info(
+            `Startup recovery: "${flowLabel}" — backfill restarted from checkpoint`,
+            {
+              flowId: fId,
+              newRunId: result.runId,
+              reusedRunId: result.reusedRunId,
+              consecutiveFailures: failures + 1,
+            },
+          );
+          recovered++;
+        } else {
+          log.warn(
+            `Startup recovery: "${flowLabel}" — too many consecutive failures (${failures + 1}/${MAX_CONSECUTIVE_FAILURES}), manual intervention required`,
+            { flowId: fId, runId, consecutiveFailures: failures + 1 },
+          );
+          skipped++;
+        }
+      } catch (err) {
+        log.error(
+          `Startup recovery: "${flowLabel}" — recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+          {
+            flowId: fId,
+            runId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+        errors++;
+      }
+    }
+
+    log.info(
+      `Startup backfill recovery complete: ${recovered} recovered, ${skipped} skipped, ${errors} errors`,
+    );
+
+    return { recovered, skipped, errors };
   }
 }
 

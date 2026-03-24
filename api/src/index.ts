@@ -38,6 +38,7 @@ import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
 import { functions, inngest, logInngestStatus } from "./inngest";
+import { cdcBackfillService } from "./sync-cdc/backfill";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
@@ -247,6 +248,14 @@ async function main(): Promise<void> {
   serve({
     fetch: app.fetch,
     port,
+  });
+
+  // Recover any CDC backfills that were interrupted by the previous shutdown.
+  // Runs async after server is listening so it doesn't block startup.
+  cdcBackfillService.recoverStaleBackfillsOnStartup().catch(err => {
+    logger.error("Startup backfill recovery failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
   });
 }
 
