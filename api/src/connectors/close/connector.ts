@@ -198,6 +198,27 @@ export class CloseConnector extends BaseConnector {
    * Resolve Close API endpoint for a given activities sub-type.
    * Falls back to generic /activity/ if unknown.
    */
+  private getSearchObjectType(entity: string): string {
+    const map: Record<string, string> = {
+      leads: "lead",
+      contacts: "contact",
+      opportunities: "opportunity",
+      activities: "activity",
+      "activities:Meeting": "activity.meeting",
+      "activities:Note": "activity.note",
+      "activities:Call": "activity.call",
+      "activities:Email": "activity.email",
+      "activities:SMS": "activity.sms",
+      "activities:EmailThread": "activity.email_thread",
+      "activities:LeadStatusChange": "activity.status_change.lead",
+      "activities:OpportunityStatusChange":
+        "activity.status_change.opportunity",
+      "activities:TaskCompleted": "activity.task_completed",
+      "activities:CustomActivity": "activity.custom",
+    };
+    return map[entity] || entity;
+  }
+
   private getEntityEndpoint(entity: string): string {
     const map: Record<string, string> = {
       leads: "/lead/",
@@ -614,17 +635,13 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // Activities use date_created cursor via GET URL params
-    if (entity === "activities" || entity.startsWith("activities:")) {
-      return await this.fetchActivitiesChunk(options);
-    }
-
-    // Leads, contacts, and opportunities use the search API with cursor pagination
-    // (avoids _skip pagination loss and 10k limit)
+    // All main entities use the search API with cursor pagination
     if (
       entity === "leads" ||
       entity === "contacts" ||
-      entity === "opportunities"
+      entity === "opportunities" ||
+      entity === "activities" ||
+      entity.startsWith("activities:")
     ) {
       return await this.fetchViaSearchApi(options);
     }
@@ -896,17 +913,51 @@ export class CloseConnector extends BaseConnector {
     // Resume cursor: last record's date_created timestamp from previous chunk.
     let cursor: string | null = state?.metadata?.cursor ?? null;
 
-    const objectType =
-      entity === "leads"
-        ? "lead"
-        : entity === "contacts"
-          ? "contact"
-          : entity === "opportunities"
-            ? "opportunity"
-            : entity;
+    const objectType = this.getSearchObjectType(entity);
+
+    const commonActivityFields = [
+      "id",
+      "_type",
+      "activity_at",
+      "contact_id",
+      "created_by",
+      "created_by_name",
+      "date_created",
+      "date_updated",
+      "lead_id",
+      "organization_id",
+      "source",
+      "updated_by",
+      "updated_by_name",
+      "user_id",
+      "user_name",
+      "users",
+    ];
 
     const fieldsMap: Record<string, string[]> = {
-      lead: [...CloseConnector.LEAD_BASE_FIELDS, "contacts", "custom"],
+      lead: [
+        "id",
+        "name",
+        "display_name",
+        "description",
+        "date_created",
+        "date_updated",
+        "created_by",
+        "created_by_name",
+        "updated_by",
+        "updated_by_name",
+        "organization_id",
+        "status_id",
+        "status_label",
+        "addresses",
+        "url",
+        "html_url",
+        "contacts",
+        "opportunities",
+        "tasks",
+        "integration_links",
+        "custom",
+      ],
       contact: [
         "id",
         "name",
@@ -958,6 +1009,56 @@ export class CloseConnector extends BaseConnector {
         "organization_id",
         "integration_links",
         "attachments",
+      ],
+      "activity.meeting": [
+        ...commonActivityFields,
+        "title",
+        "note",
+        "summary",
+        "duration",
+        "actual_duration",
+        "starts_at",
+        "ends_at",
+        "location",
+        "status",
+        "attendees",
+        "calendar_event_link",
+        "conference_links",
+      ],
+      "activity.note": [
+        ...commonActivityFields,
+        "title",
+        "note",
+        "note_html",
+        "attachments",
+        "pinned",
+      ],
+      "activity.status_change.lead": [
+        ...commonActivityFields,
+        "old_status_id",
+        "old_status_label",
+        "new_status_id",
+        "new_status_label",
+      ],
+      "activity.status_change.opportunity": [
+        ...commonActivityFields,
+        "opportunity_id",
+        "opportunity_value",
+        "opportunity_value_currency",
+        "opportunity_value_formatted",
+        "opportunity_value_period",
+        "opportunity_confidence",
+        "opportunity_date_won",
+        "old_status_id",
+        "old_status_label",
+        "old_status_type",
+        "new_status_id",
+        "new_status_label",
+        "new_status_type",
+        "old_pipeline_id",
+        "old_pipeline_name",
+        "new_pipeline_id",
+        "new_pipeline_name",
       ],
     };
 
