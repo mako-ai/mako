@@ -635,6 +635,7 @@ export interface IFlow extends Document {
     runId?: string;
     startedAt?: Date;
     completedAt?: Date;
+    consecutiveFailures?: number;
     scope?: {
       mode: "all" | "subset";
       entities?: string[];
@@ -1737,6 +1738,7 @@ const FlowSchema = new Schema<IFlow>(
       runId: String,
       startedAt: Date,
       completedAt: Date,
+      consecutiveFailures: { type: Number, default: 0 },
       scope: {
         mode: {
           type: String,

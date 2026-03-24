@@ -33,6 +33,7 @@ import {
   ContentCopy as CopyIcon,
   Edit as EditIcon,
   DeleteSweep as ResetTableIcon,
+  ArrowBack as ArrowBackIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 
@@ -252,6 +253,7 @@ export function BackfillPanel({
     fetchCdcStatus,
     fetchFlowStatus,
     fetchExecutionDetails,
+    fetchFlowHistory,
     fetchWebhookEvents,
     pauseCdcFlow,
     resumeCdcFlow,
@@ -264,8 +266,8 @@ export function BackfillPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [executionId, setExecutionId] = useState<string | null>(null);
+  const [liveLogs, setLiveLogs] = useState<LogEntry[]>([]);
   const [execStats, setExecStats] = useState<Record<string, number>>({});
   const [execStatus, setExecStatus] = useState<Record<string, string>>({});
   const [resyncOpen, setResyncOpen] = useState(false);
@@ -279,32 +281,57 @@ export function BackfillPanel({
   const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
   const [entityResetOpen, setEntityResetOpen] = useState(false);
   const [entityResetEntity, setEntityResetEntity] = useState("");
+  const [runs, setRuns] = useState<
+    Array<{
+      executionId: string;
+      executedAt: string;
+      status: string;
+      success: boolean;
+      error?:
+        | string
+        | { message: string; stack?: string; code?: string }
+        | null;
+      duration?: number;
+    }>
+  >([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunLogs, setSelectedRunLogs] = useState<LogEntry[] | null>(
+    null,
+  );
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const logsEndRef = useRef<HTMLDivElement | null>(null);
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
 
   const streamState: StreamState = cdc?.streamState || "idle";
   const bfStatus: BackfillStatus = cdc?.backfillStatus || "idle";
 
   const pollCdc = useCallback(async () => {
-    const [status, eventsResult] = await Promise.all([
+    const [status, eventsResult, history] = await Promise.all([
       fetchCdcStatus(workspaceId, flowId),
       fetchWebhookEvents(workspaceId, flowId, 50, 0),
+      fetchFlowHistory(workspaceId, flowId, 20),
     ]);
     if (status) setCdc(status);
     if (eventsResult) {
       setWebhookEvents(eventsResult.events);
       setWebhookEventsTotal(eventsResult.total);
     }
-  }, [fetchCdcStatus, fetchWebhookEvents, workspaceId, flowId]);
+    if (history) setRuns(history as typeof runs);
+  }, [
+    fetchCdcStatus,
+    fetchWebhookEvents,
+    fetchFlowHistory,
+    workspaceId,
+    flowId,
+  ]);
 
   const pollLogs = useCallback(async () => {
     if (!executionId) {
       const statusResp = await fetchFlowStatus(workspaceId, flowId);
       if (statusResp?.isRunning && statusResp.runningExecution) {
         setExecutionId(statusResp.runningExecution.executionId);
+        setLiveLogs([]);
       }
       return;
     }
@@ -314,7 +341,7 @@ export function BackfillPanel({
       executionId,
     );
     if (details?.logs && details.logs.length > 0) {
-      setLogs(details.logs as LogEntry[]);
+      setLiveLogs(details.logs as LogEntry[]);
     }
     if (details?.stats) {
       const es = details.stats.entityStats as
@@ -341,6 +368,20 @@ export function BackfillPanel({
     fetchExecutionDetails,
   ]);
 
+  const loadRunLogs = useCallback(
+    async (runId: string) => {
+      setSelectedRunId(runId);
+      setSelectedRunLogs(null);
+      const details = await fetchExecutionDetails(workspaceId, flowId, runId);
+      if (details?.logs && details.logs.length > 0) {
+        setSelectedRunLogs(details.logs as LogEntry[]);
+      } else {
+        setSelectedRunLogs([]);
+      }
+    },
+    [fetchExecutionDetails, workspaceId, flowId],
+  );
+
   useEffect(() => {
     pollCdc();
     cdcPollRef.current = setInterval(pollCdc, 5000);
@@ -356,10 +397,6 @@ export function BackfillPanel({
       if (logPollRef.current) clearInterval(logPollRef.current);
     };
   }, [pollLogs]);
-
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
 
   const withBusy = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -378,7 +415,6 @@ export function BackfillPanel({
     withBusy(async () => {
       const ok = await startCdcBackfill(workspaceId, flowId, entities);
       if (!ok) throw new Error("Failed to start backfill");
-      setLogs([]);
       if (entities?.length) {
         setExecStats(prev => {
           const next = { ...prev };
@@ -449,7 +485,6 @@ export function BackfillPanel({
     setResyncOpen(false);
     setResyncConfirm("");
     setResyncOpts({ deleteDestination: false, clearWebhookEvents: false });
-    setLogs([]);
     await pollCdc();
   };
 
@@ -470,7 +505,6 @@ export function BackfillPanel({
       }
       setEntityResetOpen(false);
       setEntityResetEntity("");
-      setLogs([]);
       setTimeout(() => pollLogs(), 3000);
     });
 
@@ -493,7 +527,6 @@ export function BackfillPanel({
   const dataset = flow?.tableDestination?.schema;
 
   const cdcEntities: any[] = cdc?.entities || [];
-  const transitions: any[] = cdc?.transitions || [];
 
   const configuredEntityNames: string[] = (() => {
     const layouts = flow?.entityLayouts as
@@ -848,7 +881,7 @@ export function BackfillPanel({
         )}
       </Box>
 
-      {/* Tabs — Objects / Logs */}
+      {/* Tabs — Objects / Backfill runs / Events */}
       <Tabs
         value={tab}
         onChange={(_, v) => setTab(v)}
@@ -870,7 +903,7 @@ export function BackfillPanel({
           }}
         />
         <Tab
-          label="Logs"
+          label={`Backfills (${runs.length})`}
           sx={{
             minHeight: 36,
             py: 0.5,
@@ -1079,134 +1112,330 @@ export function BackfillPanel({
 
         {tab === 1 && (
           <Box sx={{ p: 2, display: "grid", gap: 2 }}>
-            {/* Live execution logs */}
-            <Box
-              sx={{
-                borderRadius: 1,
-                border: 1,
-                borderColor: "divider",
-                bgcolor: "grey.950",
-                p: 1.5,
-                maxHeight: 300,
-                overflow: "auto",
-                minHeight: 80,
-              }}
-            >
-              {logs.length === 0 ? (
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ fontFamily: "monospace" }}
-                >
-                  {executionId
-                    ? "Waiting for logs…"
-                    : "No active execution. Start a backfill to see logs."}
-                </Typography>
-              ) : (
-                logs.map((log, i) => (
-                  <Typography
-                    key={`${log.timestamp}-${i}`}
-                    variant="caption"
-                    sx={{
-                      display: "block",
-                      fontFamily: "monospace",
-                      fontSize: "0.72rem",
-                      whiteSpace: "pre-wrap",
-                      color:
-                        log.level === "error"
-                          ? "error.main"
-                          : log.level === "warn"
-                            ? "warning.main"
-                            : "text.secondary",
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    <Typography
-                      component="span"
-                      sx={{
-                        fontFamily: "monospace",
-                        fontSize: "0.68rem",
-                        color: "text.disabled",
-                      }}
-                    >
-                      {new Date(log.timestamp).toLocaleTimeString()}
-                    </Typography>{" "}
-                    {formatLog(log)}
-                  </Typography>
-                ))
-              )}
-              <div ref={logsEndRef} />
-            </Box>
-
-            {/* Transition history */}
-            {transitions.length > 0 && (
+            {/* Live running execution */}
+            {(executionId || liveLogs.length > 0) && !selectedRunId && (
               <Box>
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
+                <Box
                   sx={{
-                    fontWeight: 600,
-                    fontSize: "0.72rem",
-                    textTransform: "uppercase",
-                    letterSpacing: 0.3,
-                    mb: 0.5,
-                    display: "block",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    mb: 0.75,
                   }}
                 >
-                  State transitions
-                </Typography>
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontWeight: 600,
+                      fontSize: "0.72rem",
+                      textTransform: "uppercase",
+                      letterSpacing: 0.3,
+                      color: "text.secondary",
+                    }}
+                  >
+                    {executionId ? "Running" : "Last run"}
+                  </Typography>
+                  {executionId && (
+                    <LinearProgress sx={{ width: 40, height: 3 }} />
+                  )}
+                </Box>
                 <Box
                   sx={{
                     borderRadius: 1,
-                    bgcolor: "action.hover",
-                    p: 1,
-                    maxHeight: 160,
+                    border: 1,
+                    borderColor: executionId ? "info.main" : "divider",
+                    bgcolor: "grey.950",
+                    p: 1.5,
+                    height: 200,
                     overflow: "auto",
-                    display: "grid",
-                    gap: 0.25,
                   }}
                 >
-                  {transitions.map((t: any, i: number) => (
+                  {liveLogs.length === 0 ? (
                     <Typography
-                      key={`${t.at}-${i}`}
                       variant="caption"
-                      sx={{ fontFamily: "monospace", fontSize: "0.72rem" }}
+                      color="text.secondary"
+                      sx={{ fontFamily: "monospace" }}
                     >
+                      Waiting for logs…
+                    </Typography>
+                  ) : (
+                    liveLogs.map((log, i) => (
                       <Typography
-                        component="span"
+                        key={`${log.timestamp}-${i}`}
                         variant="caption"
-                        color="text.secondary"
-                        sx={{ fontFamily: "monospace", fontSize: "0.72rem" }}
+                        sx={{
+                          display: "block",
+                          fontFamily: "monospace",
+                          fontSize: "0.72rem",
+                          whiteSpace: "pre-wrap",
+                          color:
+                            log.level === "error"
+                              ? "error.main"
+                              : log.level === "warn"
+                                ? "warning.main"
+                                : "text.secondary",
+                          lineHeight: 1.6,
+                        }}
                       >
-                        {new Date(t.at).toLocaleString()}
-                      </Typography>
-                      {"  "}
-                      {t.machine && (
                         <Typography
                           component="span"
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ fontFamily: "monospace", fontSize: "0.68rem" }}
+                          sx={{
+                            fontFamily: "monospace",
+                            fontSize: "0.68rem",
+                            color: "text.disabled",
+                          }}
                         >
-                          [{t.machine}]{" "}
-                        </Typography>
-                      )}
-                      {t.fromState} → <strong>{t.toState}</strong>
-                      {"  "}
-                      <Typography
-                        component="span"
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ fontFamily: "monospace", fontSize: "0.68rem" }}
-                      >
-                        ({t.event}
-                        {t.reason ? `: ${t.reason}` : ""})
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </Typography>{" "}
+                        {formatLog(log)}
                       </Typography>
-                    </Typography>
-                  ))}
+                    ))
+                  )}
                 </Box>
               </Box>
             )}
+
+            {/* Selected historical run logs */}
+            {selectedRunId && selectedRunLogs !== null ? (
+              <Box>
+                <Button
+                  size="small"
+                  startIcon={<ArrowBackIcon sx={{ fontSize: 14 }} />}
+                  onClick={() => {
+                    setSelectedRunId(null);
+                    setSelectedRunLogs(null);
+                  }}
+                  sx={{ textTransform: "none", fontSize: "0.75rem", mb: 1 }}
+                >
+                  Back to runs
+                </Button>
+                <Box
+                  sx={{
+                    borderRadius: 1,
+                    border: 1,
+                    borderColor: "divider",
+                    bgcolor: "grey.950",
+                    p: 1.5,
+                    maxHeight: 400,
+                    overflow: "auto",
+                    minHeight: 80,
+                  }}
+                >
+                  {selectedRunLogs.length === 0 ? (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ fontFamily: "monospace" }}
+                    >
+                      No logs recorded for this run.
+                    </Typography>
+                  ) : (
+                    selectedRunLogs.map((log, i) => (
+                      <Typography
+                        key={`${log.timestamp}-${i}`}
+                        variant="caption"
+                        sx={{
+                          display: "block",
+                          fontFamily: "monospace",
+                          fontSize: "0.72rem",
+                          whiteSpace: "pre-wrap",
+                          color:
+                            log.level === "error"
+                              ? "error.main"
+                              : log.level === "warn"
+                                ? "warning.main"
+                                : "text.secondary",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        <Typography
+                          component="span"
+                          sx={{
+                            fontFamily: "monospace",
+                            fontSize: "0.68rem",
+                            color: "text.disabled",
+                          }}
+                        >
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </Typography>{" "}
+                        {formatLog(log)}
+                      </Typography>
+                    ))
+                  )}
+                </Box>
+              </Box>
+            ) : selectedRunId ? (
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                  py: 3,
+                  justifyContent: "center",
+                }}
+              >
+                <LinearProgress sx={{ width: 24 }} />
+                <Typography variant="body2" color="text.secondary">
+                  Loading logs…
+                </Typography>
+              </Box>
+            ) : runs.length === 0 && !executionId && liveLogs.length === 0 ? (
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                textAlign="center"
+                py={2}
+              >
+                No execution history yet.
+              </Typography>
+            ) : runs.length > 0 ? (
+              <Box>
+                {(executionId || liveLogs.length > 0) && (
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontWeight: 600,
+                      fontSize: "0.72rem",
+                      textTransform: "uppercase",
+                      letterSpacing: 0.3,
+                      color: "text.secondary",
+                      mb: 0.75,
+                      display: "block",
+                    }}
+                  >
+                    Past runs
+                  </Typography>
+                )}
+                <TableContainer
+                  sx={{ borderRadius: 1, border: 1, borderColor: "divider" }}
+                >
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow
+                        sx={{
+                          "& th": {
+                            fontSize: "0.72rem",
+                            color: "text.secondary",
+                            fontWeight: 600,
+                            textTransform: "uppercase",
+                            letterSpacing: 0.3,
+                          },
+                        }}
+                      >
+                        <TableCell>Status</TableCell>
+                        <TableCell>Started</TableCell>
+                        <TableCell align="right">Duration</TableCell>
+                        <TableCell>Error</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {runs.map(run => {
+                        const chipColor =
+                          run.status === "completed"
+                            ? ("success" as const)
+                            : run.status === "failed"
+                              ? ("error" as const)
+                              : run.status === "abandoned"
+                                ? ("warning" as const)
+                                : run.status === "running"
+                                  ? ("info" as const)
+                                  : ("default" as const);
+                        const durationStr = run.duration
+                          ? run.duration < 60000
+                            ? `${Math.round(run.duration / 1000)}s`
+                            : run.duration < 3600000
+                              ? `${Math.floor(run.duration / 60000)}m ${Math.round((run.duration % 60000) / 1000)}s`
+                              : `${Math.floor(run.duration / 3600000)}h ${Math.floor((run.duration % 3600000) / 60000)}m`
+                          : "—";
+                        return (
+                          <TableRow
+                            key={run.executionId}
+                            hover
+                            onClick={() => loadRunLogs(run.executionId)}
+                            sx={{
+                              cursor: "pointer",
+                              "&:last-child td": { borderBottom: 0 },
+                            }}
+                          >
+                            <TableCell>
+                              <Chip
+                                label={run.status}
+                                color={chipColor}
+                                size="small"
+                                variant="outlined"
+                                sx={{
+                                  height: 22,
+                                  fontSize: "0.68rem",
+                                  fontWeight: 500,
+                                }}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {new Date(run.executedAt).toLocaleString()}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ fontFamily: "monospace" }}
+                              >
+                                {durationStr}
+                              </Typography>
+                            </TableCell>
+                            <TableCell sx={{ maxWidth: 280 }}>
+                              {run.error && (
+                                <Tooltip
+                                  title={
+                                    typeof run.error === "string"
+                                      ? run.error
+                                      : run.error.message
+                                  }
+                                  placement="bottom-start"
+                                  slotProps={{
+                                    tooltip: {
+                                      sx: {
+                                        maxWidth: 420,
+                                        fontFamily: "monospace",
+                                        fontSize: "0.72rem",
+                                        whiteSpace: "pre-wrap",
+                                        wordBreak: "break-word",
+                                      },
+                                    },
+                                  }}
+                                >
+                                  <Typography
+                                    variant="caption"
+                                    color="error.main"
+                                    sx={{
+                                      fontSize: "0.68rem",
+                                      display: "-webkit-box",
+                                      WebkitLineClamp: 2,
+                                      WebkitBoxOrient: "vertical",
+                                      overflow: "hidden",
+                                      wordBreak: "break-word",
+                                      cursor: "help",
+                                    }}
+                                  >
+                                    {typeof run.error === "string"
+                                      ? run.error
+                                      : run.error.message}
+                                  </Typography>
+                                </Tooltip>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
+            ) : null}
           </Box>
         )}
 

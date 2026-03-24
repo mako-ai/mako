@@ -32,6 +32,7 @@ import {
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import {
+  cdcBackfillService,
   forceDrainCdcFlow,
   markCdcBackfillCompletedForFlow,
   purgeSoftDeletesAfterBackfill,
@@ -386,7 +387,7 @@ export const flowFunction = inngest.createFunction(
       limit: 1, // Only one execution per flow at a time
       key: "event.data.flowId", // Prevent duplicate executions of the same flow
     },
-    retries: 2,
+    retries: 10,
     cancelOn: [
       {
         event: "flow.cancel",
@@ -1989,6 +1990,7 @@ export const flowFunction = inngest.createFunction(
             $set: {
               "backfillState.active": false,
               "backfillState.completedAt": now,
+              "backfillState.consecutiveFailures": 0,
             },
             $unset: {
               "backfillState.runId": "",
@@ -2300,6 +2302,7 @@ export const flowFunction = inngest.createFunction(
             }
             await Flow.findByIdAndUpdate(flowId, {
               $set: update,
+              $inc: { "backfillState.consecutiveFailures": 1 },
             });
           });
           await step.run("drain-bigquery-cdc-on-failure", async () => {
@@ -2668,9 +2671,8 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           executionIds: abandonedExecutions.map(e => e._id.toString()),
         });
 
-        // If a webhook backfill execution is abandoned, do not leave
-        // backfillState.active stuck forever. Clear the gate for flows that
-        // no longer have any running execution.
+        // Clear stale backfill gates and recover CDC state for flows
+        // that no longer have any running execution.
         const abandonedFlowIds = Array.from(
           new Set(
             abandonedExecutions
@@ -2700,25 +2702,95 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           );
 
           if (staleGateFlowIds.length > 0) {
+            // Reset backfillState.active for any flow type (not just webhook)
             const gateResetResult = await Flow.updateMany(
               {
                 _id: { $in: staleGateFlowIds },
-                type: "webhook",
                 "backfillState.active": true,
               },
               {
                 $set: {
                   "backfillState.active": false,
-                  "backfillState.completedAt": now,
+                  "backfillState.status": "error",
                 },
               },
             );
 
-            logger.warn("Reset stale webhook backfill gates", {
+            logger.warn("Reset stale backfill gates", {
               matched: gateResetResult.matchedCount,
               modified: gateResetResult.modifiedCount,
               flowIds: staleGateFlowIds.map(id => id.toString()),
             });
+
+            // Properly transition CDC backfill state and auto-restart
+            const stuckCdcFlows = await Flow.find({
+              _id: { $in: staleGateFlowIds },
+              syncEngine: "cdc",
+              $or: [
+                { "backfillState.status": "running" },
+                { "backfillState.status": "error" },
+              ],
+            }).lean();
+
+            const MAX_CONSECUTIVE_FAILURES = 3;
+
+            for (const cdcFlow of stuckCdcFlows) {
+              const wId = String(cdcFlow.workspaceId);
+              const fId = String(cdcFlow._id);
+              const failures = cdcFlow.backfillState?.consecutiveFailures ?? 0;
+
+              try {
+                // Transition to error via state machine (writes audit record)
+                if (cdcFlow.backfillState?.status === "running") {
+                  await syncMachineService.applyBackfillTransition({
+                    workspaceId: wId,
+                    flowId: fId,
+                    event: {
+                      type: "FAIL",
+                      reason:
+                        "Backfill execution abandoned (worker crash or timeout)",
+                      errorCode: "WORKER_TIMEOUT",
+                    },
+                  });
+                  await Flow.findByIdAndUpdate(fId, {
+                    $inc: { "backfillState.consecutiveFailures": 1 },
+                  });
+                }
+
+                // Auto-restart if under circuit breaker threshold
+                if (failures + 1 < MAX_CONSECUTIVE_FAILURES) {
+                  const restartResult = await cdcBackfillService.startBackfill(
+                    wId,
+                    fId,
+                    {
+                      reuseExistingRunId: true,
+                      reason: `Auto-resumed after worker crash/timeout (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES})`,
+                    },
+                  );
+                  logger.info("Auto-restarted abandoned CDC backfill", {
+                    flowId: fId,
+                    consecutiveFailures: failures + 1,
+                    runId: restartResult.runId,
+                    reusedRunId: restartResult.reusedRunId,
+                  });
+                } else {
+                  logger.warn(
+                    "CDC backfill exceeded max consecutive failures, skipping auto-restart",
+                    {
+                      flowId: fId,
+                      consecutiveFailures: failures + 1,
+                      maxAllowed: MAX_CONSECUTIVE_FAILURES,
+                    },
+                  );
+                }
+              } catch (cdcErr) {
+                logger.error("Failed to recover abandoned CDC backfill", {
+                  flowId: fId,
+                  error:
+                    cdcErr instanceof Error ? cdcErr.message : String(cdcErr),
+                });
+              }
+            }
           }
         }
       }
