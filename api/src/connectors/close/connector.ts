@@ -657,26 +657,12 @@ export class CloseConnector extends BaseConnector {
               throw new Error(`Unsupported entity: ${entity}`);
           }
 
-          // For incremental sync, use POST with query in body
           if (since) {
             const dateFilter = since.toISOString().split("T")[0];
-            const postData = {
-              _params: {
-                _limit: batchSize,
-                _skip: offset,
-                _order_by: "-date_updated",
-                query: `date_updated>="${dateFilter}"`,
-              },
-            };
-
-            response = await api.post(endpoint, postData, {
-              headers: {
-                "x-http-method-override": "GET",
-              },
-            });
-          } else {
-            response = await api.get(endpoint, { params });
+            params.date_updated__gte = dateFilter;
+            params._order_by = "-date_updated";
           }
+          response = await api.get(endpoint, { params });
         }
 
         const rawData = response.data.data || [];
@@ -980,27 +966,12 @@ export class CloseConnector extends BaseConnector {
               throw new Error(`Unsupported entity: ${entity}`);
           }
 
-          // For incremental sync, use POST with query in body (Close API requirement)
           if (since) {
-            const dateFilter = since.toISOString().split("T")[0]; // Format as YYYY-MM-DD
-            const postData = {
-              _params: {
-                _limit: batchSize,
-                _skip: offset,
-                _order_by: "-date_updated",
-                query: `date_updated>="${dateFilter}"`,
-              },
-            };
-
-            response = await api.post(endpoint, postData, {
-              headers: {
-                "x-http-method-override": "GET",
-              },
-            });
-          } else {
-            // Regular GET request for full sync
-            response = await api.get(endpoint, { params });
+            const dateFilter = since.toISOString().split("T")[0];
+            params.date_updated__gte = dateFilter;
+            params._order_by = "-date_updated";
           }
+          response = await api.get(endpoint, { params });
         }
 
         const rawData = response.data.data || [];
@@ -1189,132 +1160,57 @@ export class CloseConnector extends BaseConnector {
     }
 
     let recordCount = 0;
-    const now = new Date();
-    let currentDate = new Date(now);
-    const endDate = since;
-    let isCheckingForOlderData = false;
-    let shouldContinue = true;
+    let cursor: string | null = null;
 
     if (onProgress) {
-      // We can't accurately predict total count with date-based pagination
       onProgress(0, undefined);
     }
 
-    while (shouldContinue) {
-      let hasMoreInCurrentQuery = true;
-      let dailyOffset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      try {
+        const params: any = {
+          _limit: batchSize,
+          _order_by: "-date_created",
+        };
+        if (cursor) {
+          params.date_created__lt = cursor;
+        }
+        if (since) {
+          params.date_created__gte = since.toISOString().split("T")[0];
+        }
 
-      while (hasMoreInCurrentQuery) {
-        try {
-          const params: any = {
-            _limit: isCheckingForOlderData ? 1 : batchSize, // Only check if older data exists, don't fetch it all
-            _skip: dailyOffset,
-            _order_by: "-date_created",
-          };
+        const response = await api.get(
+          this.getActivityEndpointForType(activitySubType),
+          { params },
+        );
 
-          // Build the query based on current state
-          let query = "";
-          if (isCheckingForOlderData) {
-            // Final check: only filter by date_created__lt to see if any older data exists
-            // Query for data BEFORE the current day (not including it, to avoid re-fetching)
-            query = `date_created__lt="${currentDate.toISOString().split("T")[0]}"`;
-          } else {
-            // Normal date range for a specific day
-            const nextDay = new Date(currentDate);
-            nextDay.setDate(nextDay.getDate() + 1);
-            query = `date_created__gte="${currentDate.toISOString().split("T")[0]}" AND date_created__lt="${nextDay.toISOString().split("T")[0]}"`;
-          }
+        const data = response.data.data || [];
 
-          // No need to add _type filter - hitting type-specific endpoint
-
-          const postData = {
-            _params: {
-              ...params,
-              query,
-            },
-          };
-
-          const response = await api.post(
-            this.getActivityEndpointForType(activitySubType),
-            postData,
-            {
-              headers: {
-                "x-http-method-override": "GET",
-              },
-            },
-          );
-
-          const data = response.data.data || [];
-
-          // Only process and count data if we're not just checking for existence
-          if (data.length > 0 && !isCheckingForOlderData) {
-            await onBatch(data);
-            recordCount += data.length;
-
-            if (onProgress) {
-              onProgress(recordCount, undefined);
-            }
-          }
-
-          hasMoreInCurrentQuery = response.data.has_more || false;
-
-          if (isCheckingForOlderData) {
-            // Probe mode issues a single request; avoid paginating older windows.
-            if (data.length === 0) {
-              // No older data exists - we're done
-              shouldContinue = false;
-              break;
-            } else {
-              // Older data exists - jump directly to that date and continue normal fetching
-              const oldestRecord = data[0];
-              const dateCreated = new Date(oldestRecord.date_created);
-              currentDate = new Date(
-                dateCreated.getFullYear(),
-                dateCreated.getMonth(),
-                dateCreated.getDate(),
-              );
-              dailyOffset = 0;
-              isCheckingForOlderData = false;
-              await this.sleep(rateLimitDelay);
-              break; // Break inner loop to continue with next day
-            }
-          } else if (hasMoreInCurrentQuery) {
-            dailyOffset += batchSize;
-            await this.sleep(rateLimitDelay);
-          } else {
-            // Finished current day
-            if (data.length < batchSize && !since) {
-              // Found a day with less than a full page in full sync - need to check if older data exists
-              isCheckingForOlderData = true;
-              await this.sleep(rateLimitDelay);
-            } else {
-              // Move on to the next iteration (previous day)
-              break;
-            }
-          }
-        } catch (error) {
-          if (axios.isAxiosError(error) && error.response?.status === 429) {
-            const retryAfter = parseInt(
-              error.response.headers["retry-after"] || "60",
-            );
-            logger.warn("Rate limited, waiting", {
-              retryAfterSeconds: retryAfter,
-            });
-            await this.sleep(retryAfter * 1000);
-          } else {
-            throw error;
+        if (data.length > 0) {
+          await onBatch(data);
+          recordCount += data.length;
+          cursor = data[data.length - 1].date_created;
+          if (onProgress) {
+            onProgress(recordCount, undefined);
           }
         }
-      }
 
-      if (!isCheckingForOlderData) {
-        // Move to previous day
-        currentDate = new Date(currentDate);
-        currentDate.setDate(currentDate.getDate() - 1);
-
-        // Check if we've reached the end date (for incremental sync)
-        if (endDate && currentDate < endDate) {
-          shouldContinue = false;
+        hasMore = response.data.has_more && data.length > 0;
+        if (hasMore) {
+          await this.sleep(rateLimitDelay);
+        }
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
         }
 
         await this.sleep(rateLimitDelay);
@@ -1451,32 +1347,14 @@ export class CloseConnector extends BaseConnector {
           return undefined;
       }
 
-      let response: any;
-
-      // For incremental sync with date filter, use POST request
+      const params: any = {
+        _limit: 0,
+        _fields: "id",
+      };
       if (since) {
-        const dateFilter = since.toISOString().split("T")[0]; // Format as YYYY-MM-DD
-        const postData = {
-          _params: {
-            _limit: 0,
-            _fields: "id",
-            query: `date_updated>="${dateFilter}"`,
-          },
-        };
-
-        response = await api.post(endpoint, postData, {
-          headers: {
-            "x-http-method-override": "GET",
-          },
-        });
-      } else {
-        // Regular GET request for full sync
-        const params = {
-          _limit: 0,
-          _fields: "id",
-        };
-        response = await api.get(endpoint, { params });
+        params.date_updated__gte = since.toISOString().split("T")[0];
       }
+      const response = await api.get(endpoint, { params });
 
       // Close API returns total_results in the response
       return response.data.total_results || undefined;
