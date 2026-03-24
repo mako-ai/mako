@@ -156,11 +156,23 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     chartSpec: Record<string, unknown> | null;
   }
 
+  interface OpenTabContext {
+    id: string;
+    kind: string;
+    title: string;
+    isActive: boolean;
+    dashboardId?: string;
+    flowId?: string;
+    connectionId?: string;
+    databaseName?: string;
+  }
+
   const {
     messages,
     chatId,
     workspaceId,
     openConsoles,
+    openTabs,
     consoleId,
     modelId,
     activeConsoleResults,
@@ -176,6 +188,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     chatId?: string;
     workspaceId?: string;
     openConsoles?: OpenConsoleContext[];
+    openTabs?: OpenTabContext[];
     consoleId?: string;
     modelId?: string;
     activeConsoleResults?: ActiveConsoleResults;
@@ -307,10 +320,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
 
-  // Get workspace database connections for context
+  // Get workspace database connections for context (include sqlDialect for prompt enrichment)
   const workspaceDatabases = await DatabaseConnection.find({
     workspaceId: new ObjectId(workspaceId),
-  }).select({ type: 1, name: 1 });
+  }).select({ type: 1, name: 1, sqlDialect: 1 });
 
   const databaseTypeMap = new Map<string, string>();
   const databaseNameMap = new Map<string, string>();
@@ -387,10 +400,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     userId: actorId,
     consoles: enrichedConsoles,
     consoleId,
+    openTabs,
     databases: workspaceDatabases.map(db => ({
       id: db._id.toString(),
       name: db.name,
       type: db.type,
+      sqlDialect: (db as any).sqlDialect || undefined,
     })),
     flowFormState,
     workspaceCustomPrompt,

@@ -41,11 +41,23 @@ export interface AgentContext {
   consoles?: ConsoleDataV2[];
   /** Preferred console ID (active tab) */
   consoleId?: string;
+  /** Lightweight summary of ALL open tabs (all kinds) */
+  openTabs?: Array<{
+    id: string;
+    kind: string;
+    title: string;
+    isActive: boolean;
+    dashboardId?: string;
+    flowId?: string;
+    connectionId?: string;
+    databaseName?: string;
+  }>;
   /** Database connections in workspace */
   databases?: Array<{
     id: string;
     name: string;
     type: string;
+    sqlDialect?: string;
   }>;
   /** Flow form state (for flow agent) - read-only snapshot */
   flowFormState?: Record<string, unknown>;

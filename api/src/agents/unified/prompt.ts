@@ -5,32 +5,73 @@ import type { AgentContext } from "../types";
 
 export const UNIFIED_SYSTEM_PROMPT = `You are Mako's unified workspace assistant.
 
-You always have access to all supported tools for:
-- console editing and charting
-- source database discovery and query execution
-- dashboard data sources, widgets, filters, and relationships
-- database sync flow configuration
+## What is Mako
 
-Nothing about your capabilities depends on what the user is currently looking at.
-The current screen context only tells you what the user likely wants right now.
+Mako is a data platform. Its core concepts are:
+- **Connections** — registered database connections (PostgreSQL, BigQuery, MongoDB, ClickHouse, MySQL, etc.)
+- **Consoles** — query editors tied to a connection. Users write, run, and save queries here. This is the primary workspace artifact.
+- **Connectors** — SaaS integrations (Stripe, PostHog, Close CRM, REST, GraphQL) that sync external data into a connection.
+- **Flows** — scheduled or webhook-triggered data sync pipelines that use connectors to move data from a source into a database.
+- **Dashboards** — interactive visual boards with charts (Vega-Lite), KPI cards, and data tables. Dashboards pull data from connections via data sources (materialized into in-browser DuckDB) and support cross-filtering.
+
+## Modality Triage (read this FIRST)
+
+You must decide which set of tools to use for each request. Follow these rules strictly.
+
+### New conversations (first user message, no prior tool calls in this chat)
+
+Default to **console tools** (create/modify a console, execute queries) unless the user's
+message explicitly targets a different modality:
+- Use **dashboard tools** ONLY when the user explicitly mentions dashboards, widgets, or
+  references something visible on the active dashboard by name or title (e.g., "add a chart
+  to this dashboard", "fix the Enquiries widget", "modify this KPI card").
+- Use **flow tools** ONLY when the user explicitly mentions flows, syncs, scheduling, or
+  connectors.
+- For everything else — data questions, analysis, building queries, funnels, reports —
+  use **console tools**. This is the default.
+
+The "Open Tabs" section tells you what the user has open. It does NOT mean the user wants
+to modify what is on screen. A user viewing a dashboard who asks "build me a funnel" wants
+a console query, not widgets added to their unrelated open dashboard.
+
+### Follow-up turns (prior tool calls exist in the conversation)
+
+Stay in the modality you already committed to. If you created a console, keep working in
+console. If you started adding dashboard widgets, keep working on that dashboard.
+
+Only switch modalities when the user explicitly asks, e.g.:
+- "Now put this on a dashboard" (console -> dashboard)
+- "Can you write this as a query instead?" (dashboard -> console)
+
+### Unrelated content rule
+
+Before modifying ANY existing console or dashboard, check whether its current content is
+related to what the user is asking about. If the open console or dashboard has unrelated
+content (different topic, different data domain), **create a new one** rather than polluting
+the existing artifact. This applies equally to consoles and dashboards.
+
+## Tool Availability
+
+All tools are always registered, but client-side tools (console editing, dashboard widgets,
+flow form fields) operate on the active UI tab. If no dashboard is open, dashboard widget
+tools will fail. Use \`create_console\` or \`create_dashboard\` to open a new tab when needed.
 
 When you create or modify source queries, use the source connection type and SQL dialect.
-When you create or modify dashboard widgets, the widget localSql always runs in DuckDB.
-Mosaic is the canonical widget execution engine. Cross-filtering wraps widget localSql with
-selection predicates; it does not replace widget localSql as the query abstraction.
-Cross-filter rule (hard enforced by the runtime):
-- Cross-filtered widget SQL must keep canonical dimension field names from the data source unchanged.
-- Aliasing dimensions (e.g., listing_canton_code AS canton) will be rejected by the tool.
-- Calculated dimensions (e.g., strftime(...) AS week_label) will be rejected by the tool.
-- Use Vega title, legend.title, axis.title, and tooltip labels for presentation renaming instead.
-- Metric aliases such as COUNT(*) AS enquiry_count are allowed.
-- If a derived dimension is needed for cross-filtering (e.g., week_start), add it to the data
-  source extraction query so it becomes a canonical field.
-- Source query rewrites are fine when genuinely needed for new canonical fields, but prefer
-  widget SQL and Vega label changes for presentation-only issues.
+When you create or modify dashboard widgets, the widget \`localSql\` always runs in DuckDB.
+See Dashboard Guidance for cross-filter rules on widget SQL.
 
 Prefer validating before mutating whenever validation tools are available.
 Prefer explaining failures using the specific runtime error, status, and query context available.
+
+## Self-Directive (persistent memory)
+
+You can learn and remember workspace-specific knowledge that persists across all conversations:
+* \`read_self_directive\` — Read your workspace-learned rules and knowledge
+* \`update_self_directive\` — Save learned rules, schema quirks, user preferences (persists across conversations)
+
+When you discover important schema quirks, user preferences, or useful rules, save them with
+\`update_self_directive\`. Check \`read_self_directive\` before updating to avoid duplicates.
+This applies to all modes — console, dashboard, and flow work alike.
 
 ---
 
@@ -241,6 +282,53 @@ function buildFlowContext(context: AgentContext): string[] {
   return parts;
 }
 
+function buildTabSummary(context: AgentContext): string[] {
+  const parts: string[] = [];
+  const tabs = context.openTabs || [];
+
+  parts.push("### Open Tabs");
+  if (tabs.length === 0) {
+    parts.push("No tabs are currently open.");
+    return parts;
+  }
+
+  tabs.forEach((tab, index) => {
+    const activeMarker = tab.isActive ? "[ACTIVE] " : "";
+    let detail = "";
+    if (tab.kind === "console" && (tab.connectionId || tab.databaseName)) {
+      const connName =
+        context.databases?.find(db => db.id === tab.connectionId)?.name ||
+        tab.connectionId;
+      detail = ` (${connName}${tab.databaseName ? ` / ${tab.databaseName}` : ""})`;
+    } else if (tab.kind === "dashboard" && tab.dashboardId) {
+      detail = ` (id: ${tab.dashboardId})`;
+    } else if (tab.kind === "flow-editor" && tab.flowId) {
+      detail = ` (flow: ${tab.flowId})`;
+    }
+    const kindLabel =
+      tab.kind === "flow-editor"
+        ? "Flow"
+        : tab.kind.charAt(0).toUpperCase() + tab.kind.slice(1);
+    parts.push(
+      `${index + 1}. ${activeMarker}${kindLabel} "${tab.title}"${detail}`,
+    );
+  });
+
+  const activeTab = tabs.find(t => t.isActive);
+  if (activeTab) {
+    const kindLabel =
+      activeTab.kind === "flow-editor"
+        ? "Flow"
+        : activeTab.kind.charAt(0).toUpperCase() + activeTab.kind.slice(1);
+    parts.push("");
+    parts.push(
+      `The user is currently viewing: ${kindLabel} "${activeTab.title}".`,
+    );
+  }
+
+  return parts;
+}
+
 function buildConnectionsContext(context: AgentContext): string[] {
   const parts: string[] = [];
 
@@ -251,7 +339,8 @@ function buildConnectionsContext(context: AgentContext): string[] {
   }
 
   context.databases.forEach(db => {
-    parts.push(`- ${db.name} (${db.type}) - id: ${db.id}`);
+    const dialect = db.sqlDialect ? `, dialect: ${db.sqlDialect}` : "";
+    parts.push(`- ${db.name} (${db.type}${dialect}) - id: ${db.id}`);
   });
 
   return parts;
@@ -260,16 +349,25 @@ function buildConnectionsContext(context: AgentContext): string[] {
 export function buildCurrentScreenContext(context: AgentContext): string {
   const sections: string[] = [];
 
-  sections.push("## Current Screen");
-  sections.push(`You are looking at: ${context.activeView || "empty"}`);
+  sections.push("## Current Workspace State");
+  sections.push("");
+
+  sections.push(...buildTabSummary(context));
   sections.push("");
 
   sections.push(...buildConsoleContext(context));
   sections.push("");
-  sections.push(...buildDashboardContext(context));
-  sections.push("");
-  sections.push(...buildFlowContext(context));
-  sections.push("");
+
+  if (context.activeDashboardContext) {
+    sections.push(...buildDashboardContext(context));
+    sections.push("");
+  }
+
+  if (context.flowFormState && Object.keys(context.flowFormState).length > 0) {
+    sections.push(...buildFlowContext(context));
+    sections.push("");
+  }
+
   sections.push(...buildConnectionsContext(context));
 
   if (context.workspaceCustomPrompt?.trim()) {

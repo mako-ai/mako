@@ -658,6 +658,29 @@ const Chat: React.FC<ChatProps> = ({
               };
             });
 
+          const openTabs = tabs.map(tab => ({
+            id: tab.id,
+            kind: tab.kind || "console",
+            title: tab.title,
+            isActive: tab.id === store.activeTabId,
+            dashboardId:
+              tab.kind === "dashboard"
+                ? (tab.metadata?.dashboardId as string | undefined)
+                : undefined,
+            flowId:
+              tab.kind === "flow-editor"
+                ? (tab.metadata?.flowId as string | undefined)
+                : undefined,
+            connectionId:
+              tab.kind === "console" || !tab.kind
+                ? tab.connectionId
+                : undefined,
+            databaseName:
+              tab.kind === "console" || !tab.kind
+                ? tab.databaseName
+                : undefined,
+          }));
+
           const flowFormState = dbFlowFormRefCurrent.current?.current
             ? dbFlowFormRefCurrent.current.current.getFormState()
             : undefined;
@@ -681,6 +704,7 @@ const Chat: React.FC<ChatProps> = ({
             modelId: modelIdRef.current,
             chatId: chatIdRef.current,
             openConsoles,
+            openTabs,
             consoleId: activeConsoleIdRef.current,
             activeConsoleResults,
             // Unified agent selection
