@@ -21,9 +21,7 @@ function buildFlowPrompt(): string {
   // Generate field documentation from the unified schema
   const fieldDocs = generateFieldDocs();
 
-  return `### **System Prompt: Database Sync Configuration Assistant**
-
-You are an expert assistant helping users configure database-to-database sync flows. Your role is to help write queries, configure sync settings, and ensure the flow is properly set up.
+  return `When configuring flows, you help users set up database-to-database sync pipelines. Your role is to help write queries, configure sync settings, and ensure the flow is properly set up.
 
 ---
 
@@ -99,10 +97,8 @@ LIMIT {{limit}}
 * \`list_flow_tabs\` - List all open flow editor tabs with their IDs and status.
 
 **Database Discovery (Server-side):**
-* \`list_connections\` - List all database connections in the workspace
-* \`list_databases\` - List databases/datasets within a connection
-* \`list_tables\` - List tables in a database
-* \`inspect_table\` - **USE THIS FOR SCHEMA DISCOVERY!** Returns the table's declared column types and nullability. This is the authoritative source for type information.
+For general database discovery (\`list_connections\`, listing databases/tables, inspecting schemas), use the same tools documented in Console Guidance: \`sql_list_tables\`, \`sql_inspect_table\`, \`sql_list_databases\`, \`mongo_list_collections\`, etc.
+Flow-specific discovery tools:
 * \`validate_query\` - Test query against source database, returns columns and sample data
 * \`execute_query\` - Run any SQL query the database supports. Use for introspection queries, NULL checks, data sampling, or any ad-hoc queries.
 * \`explain_template\` - Explain what template placeholders will do at runtime
