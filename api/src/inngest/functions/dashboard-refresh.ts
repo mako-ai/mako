@@ -118,6 +118,9 @@ export const dashboardSchedulerFunction = inngest.createFunction(
       }
 
       if (isDue && dashboard.dataSources?.length > 0) {
+        await Dashboard.findByIdAndUpdate(dashboard._id, {
+          $set: { "cache.lastRefreshedAt": new Date() },
+        });
         await step.sendEvent("trigger-refresh", {
           name: "dashboard.refresh",
           data: {
