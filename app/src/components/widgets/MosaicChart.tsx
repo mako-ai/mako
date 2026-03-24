@@ -41,20 +41,21 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
   refreshGeneration = 0,
   onError,
 }) => {
-  const { rows, fields, loading, updateSelection } = useMosaicClient({
-    dashboardId,
-    widgetId,
-    dataSourceId,
-    localSql,
-    initialRows,
-    initialFields,
-    mosaicInstance,
-    crossFilterEnabled,
-    crossFilterResolution,
-    queryGeneration,
-    refreshGeneration,
-    onError,
-  });
+  const { rows, fields, loading, updateSelection, currentSelection } =
+    useMosaicClient({
+      dashboardId,
+      widgetId,
+      dataSourceId,
+      localSql,
+      initialRows,
+      initialFields,
+      mosaicInstance,
+      crossFilterEnabled,
+      crossFilterResolution,
+      queryGeneration,
+      refreshGeneration,
+      onError,
+    });
 
   const handleSelectionChange = React.useCallback(
     (selection: CrossFilterSelection | null) => {
@@ -140,6 +141,7 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
       fields={fields}
       spec={enhancedSpec as MakoChartSpec | undefined}
       enableSelection={crossFilterEnabled}
+      activeSelection={crossFilterEnabled ? currentSelection : undefined}
       onSelectionChange={crossFilterEnabled ? handleSelectionChange : undefined}
       onRenderSuccess={handleRenderSuccess}
       onRenderError={handleRenderError}

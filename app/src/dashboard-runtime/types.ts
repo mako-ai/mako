@@ -50,7 +50,9 @@ export interface Dashboard
     timezone?: string;
   };
   access: "private" | "workspace";
+  owner_id?: string;
   createdBy: string;
+  readOnly?: boolean;
   createdAt: string;
   updatedAt: string;
   snapshots?: Record<
@@ -298,7 +300,9 @@ const DASHBOARD_METADATA_KEYS: ReadonlySet<string> = new Set([
   "_id",
   "workspaceId",
   "access",
+  "owner_id",
   "createdBy",
+  "readOnly",
   "createdAt",
   "updatedAt",
 ]);

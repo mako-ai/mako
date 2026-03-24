@@ -89,6 +89,7 @@ export default function DashboardSettingsDialog({
     "mosaic" | "legacy"
   >("mosaic");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const isReadOnly = dashboard?.readOnly === true;
 
   useEffect(() => {
     if (dashboard && open) {
@@ -195,6 +196,7 @@ export default function DashboardSettingsDialog({
           onChange={e => setTitle(e.target.value)}
           fullWidth
           size="small"
+          disabled={isReadOnly}
         />
         <TextField
           label="Description"
@@ -204,8 +206,9 @@ export default function DashboardSettingsDialog({
           multiline
           minRows={2}
           size="small"
+          disabled={isReadOnly}
         />
-        <FormControl size="small" fullWidth>
+        <FormControl size="small" fullWidth disabled={isReadOnly}>
           <InputLabel>Access</InputLabel>
           <Select
             value={access}
@@ -226,6 +229,7 @@ export default function DashboardSettingsDialog({
             size="small"
             fullWidth
             slotProps={{ htmlInput: { min: 1 } }}
+            disabled={isReadOnly}
           />
           <TextField
             label="Row height"
@@ -235,6 +239,7 @@ export default function DashboardSettingsDialog({
             size="small"
             fullWidth
             slotProps={{ htmlInput: { min: 20 } }}
+            disabled={isReadOnly}
           />
         </Box>
 
@@ -243,6 +248,7 @@ export default function DashboardSettingsDialog({
             <Switch
               checked={materializationEnabled}
               onChange={e => setMaterializationEnabled(e.target.checked)}
+              disabled={isReadOnly}
             />
           }
           label="Automatic materialization"
@@ -297,6 +303,7 @@ export default function DashboardSettingsDialog({
             <Switch
               checked={crossFilterEnabled}
               onChange={e => setCrossFilterEnabled(e.target.checked)}
+              disabled={isReadOnly}
             />
           }
           label="Cross-filtering enabled"
@@ -350,15 +357,17 @@ export default function DashboardSettingsDialog({
             >
               Duplicate
             </Button>
-            <Button
-              variant="outlined"
-              color="error"
-              size="small"
-              startIcon={<Trash2 size={16} />}
-              onClick={() => setConfirmDelete(true)}
-            >
-              Delete
-            </Button>
+            {!isReadOnly && (
+              <Button
+                variant="outlined"
+                color="error"
+                size="small"
+                startIcon={<Trash2 size={16} />}
+                onClick={() => setConfirmDelete(true)}
+              >
+                Delete
+              </Button>
+            )}
           </Box>
           {confirmDelete && (
             <Alert
@@ -375,10 +384,12 @@ export default function DashboardSettingsDialog({
         </Box>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={handleSave}>
-          Save
-        </Button>
+        <Button onClick={onClose}>{isReadOnly ? "Close" : "Cancel"}</Button>
+        {!isReadOnly && (
+          <Button variant="contained" onClick={handleSave}>
+            Save
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   );

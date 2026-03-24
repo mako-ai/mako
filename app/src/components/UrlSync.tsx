@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useUIStore } from "../store/uiStore";
 import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
+import { useDashboardStore } from "../store/dashboardStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 
@@ -52,6 +53,7 @@ export function UrlSync() {
     const consoleMatch = path.match(/^\/c\/([a-zA-Z0-9-]+)/);
     const connectorMatch = path.match(/^\/cx\/([a-zA-Z0-9-]+)/);
     const flowMatch = path.match(/^\/f\/([a-zA-Z0-9-]+)/);
+    const dashboardMatch = path.match(/^\/d\/([a-zA-Z0-9-]+)/);
     const settingsMatch = path.match(/^\/settings/);
 
     if (consoleMatch) {
@@ -104,6 +106,33 @@ export function UrlSync() {
           metadata: { flowId },
         });
         setActiveTab(id);
+      }
+    } else if (dashboardMatch) {
+      // /d/:dashboardId
+      const dashboardId = dashboardMatch[1];
+      setLeftPane("dashboards");
+
+      const existingTab = consoleTabs.find(
+        t => t.kind === "dashboard" && t.metadata?.dashboardId === dashboardId,
+      );
+
+      if (existingTab) {
+        setActiveTab(existingTab.id);
+      } else {
+        // Fetch dashboards to get the title, then open tab
+        useDashboardStore
+          .getState()
+          .fetchDashboards(currentWorkspace.id)
+          .then(dashboards => {
+            const dashboard = dashboards.find(d => d._id === dashboardId);
+            const id = openTab({
+              title: dashboard?.title || "Dashboard",
+              content: "",
+              kind: "dashboard",
+              metadata: { dashboardId },
+            });
+            setActiveTab(id);
+          });
       }
     } else if (settingsMatch) {
       // /settings
@@ -161,6 +190,13 @@ export function UrlSync() {
         const tab = consoleTabs.find(t => t.id === activeConsoleId);
         if (tab && tab.kind === "flow-editor" && tab.metadata?.flowId) {
           newPath = `/f/${tab.metadata.flowId}`;
+        }
+      }
+    } else if (activeView === "dashboards") {
+      if (activeConsoleId) {
+        const tab = consoleTabs.find(t => t.id === activeConsoleId);
+        if (tab && tab.kind === "dashboard" && tab.metadata?.dashboardId) {
+          newPath = `/d/${tab.metadata.dashboardId}`;
         }
       }
     }
