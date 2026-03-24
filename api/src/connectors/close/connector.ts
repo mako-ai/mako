@@ -826,11 +826,8 @@ export class CloseConnector extends BaseConnector {
     let iterations = 0;
 
     // Cursor-based pagination ascending by date_created.
-    // Uses gte + dedup to handle ties (multiple records with same timestamp).
+    // Uses gte so ties are included — MERGE deduplicates on import.
     let cursor: string | null = state?.metadata?.cursor ?? null;
-    const seenIds = new Set<string>(
-      (state?.metadata?.seenIdsAtCursor as string[]) || [],
-    );
     const endDate =
       since ||
       (state?.metadata?.endDate ? new Date(state.metadata.endDate) : null);
@@ -865,26 +862,12 @@ export class CloseConnector extends BaseConnector {
 
         const data = response.data.data || [];
 
-        const newRecords = data.filter((r: any) => !seenIds.has(r.id));
-
-        if (newRecords.length > 0) {
-          await onBatch(newRecords);
-          recordCount += newRecords.length;
+        if (data.length > 0) {
+          await onBatch(data);
+          recordCount += data.length;
+          cursor = data[data.length - 1].date_created;
           if (onProgress) {
             onProgress(recordCount, undefined);
-          }
-        }
-
-        if (data.length > 0) {
-          const lastDate = data[data.length - 1].date_created;
-          if (lastDate !== cursor) {
-            seenIds.clear();
-            cursor = lastDate;
-          }
-          for (const r of data) {
-            if (r.date_created === cursor) {
-              seenIds.add(r.id);
-            }
           }
         }
 
@@ -893,11 +876,7 @@ export class CloseConnector extends BaseConnector {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: {
-              cursor,
-              seenIdsAtCursor: Array.from(seenIds),
-              endDate: endDate?.toISOString(),
-            },
+            metadata: { cursor, endDate: endDate?.toISOString() },
           };
         }
 
@@ -922,11 +901,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: {
-        cursor,
-        seenIdsAtCursor: Array.from(seenIds),
-        endDate: endDate?.toISOString(),
-      },
+      metadata: { cursor, endDate: endDate?.toISOString() },
     };
   }
 
