@@ -134,7 +134,7 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
 );
 
 export class CloseConnector extends BaseConnector {
-  private static readonly LEAD_BASE_FIELDS = [
+  private static readonly LEAD_FIELDS = [
     "id",
     "name",
     "display_name",
@@ -148,23 +148,23 @@ export class CloseConnector extends BaseConnector {
     "organization_id",
     "status_id",
     "status_label",
+    "source",
     "addresses",
     "url",
-    "source",
+    "html_url",
     "contact_ids",
-  ] as const;
-
-  private static readonly LEAD_ALLOWED_NORMALIZED_FIELDS = new Set<string>([
-    ...CloseConnector.LEAD_BASE_FIELDS,
     "contacts",
     "opportunities",
     "tasks",
-    "html_url",
     "integration_links",
     "custom",
     "primary_email",
     "primary_phone",
-  ]);
+  ] as const;
+
+  private static readonly LEAD_ALLOWED_NORMALIZED_FIELDS = new Set<string>(
+    CloseConnector.LEAD_FIELDS,
+  );
 
   private closeApi: AxiosInstance | null = null;
   private activeLogCallback?: (
@@ -262,7 +262,7 @@ export class CloseConnector extends BaseConnector {
       return this.cachedLeadFieldSelection;
     }
 
-    const fields = new Set<string>(CloseConnector.LEAD_BASE_FIELDS);
+    const fields = new Set<string>(CloseConnector.LEAD_FIELDS);
     const api = this.getCloseClient();
     const customFieldEndpoints = [
       "/custom_field/lead/",
