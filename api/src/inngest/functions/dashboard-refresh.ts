@@ -46,6 +46,22 @@ export const dashboardRefreshFunction = inngest.createFunction(
       return doc.toObject();
     })) as any;
 
+    if (triggerType === "schedule" && dashboard.cache?.lastRefreshedAt) {
+      const msSinceRefresh =
+        Date.now() - new Date(dashboard.cache.lastRefreshedAt).getTime();
+      const isDue = isDashboardMaterializationDue({
+        schedule: dashboard.materializationSchedule,
+        lastRefreshedAt: dashboard.cache.lastRefreshedAt,
+      });
+      if (!isDue && msSinceRefresh < 10 * 60 * 1000) {
+        logger.info("Skipping stale scheduled refresh (already refreshed)", {
+          dashboardId,
+          msSinceRefresh,
+        });
+        return { success: true, skipped: true };
+      }
+    }
+
     const filteredDataSources = dashboard.dataSources.filter(
       (ds: any) => !dataSourceIds?.length || dataSourceIds.includes(ds.id),
     );
