@@ -154,9 +154,17 @@ export class CloseConnector extends BaseConnector {
     "contact_ids",
   ] as const;
 
-  private static readonly LEAD_ALLOWED_NORMALIZED_FIELDS = new Set<string>(
-    CloseConnector.LEAD_BASE_FIELDS,
-  );
+  private static readonly LEAD_ALLOWED_NORMALIZED_FIELDS = new Set<string>([
+    ...CloseConnector.LEAD_BASE_FIELDS,
+    "contacts",
+    "opportunities",
+    "tasks",
+    "html_url",
+    "integration_links",
+    "custom",
+    "primary_email",
+    "primary_phone",
+  ]);
 
   private closeApi: AxiosInstance | null = null;
   private activeLogCallback?: (
@@ -981,6 +989,7 @@ export class CloseConnector extends BaseConnector {
         "updated_by",
         "integration_links",
         "timezone",
+        "custom",
       ],
       opportunity: [
         "id",
@@ -1018,6 +1027,7 @@ export class CloseConnector extends BaseConnector {
         "attachments",
         "is_stalled",
         "stall_status",
+        "custom",
       ],
       "activity.meeting": [
         ...commonActivityFields,
