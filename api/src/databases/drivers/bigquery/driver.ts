@@ -1598,6 +1598,52 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Create a table with the same schema as a source table, with optional
+   * partitioning/clustering. Does NOT copy data.
+   */
+  async createTableFromSource(
+    database: IDatabaseConnection,
+    sourceTableName: string,
+    targetTableName: string,
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    const projectId = this.getProjectId(database);
+    const dataset = options?.schema;
+    if (!dataset) {
+      return {
+        success: false,
+        error: "Dataset (schema) is required for BigQuery",
+      };
+    }
+
+    const fullTarget = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(targetTableName)}`;
+    const fullSource = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(sourceTableName)}`;
+
+    const schemaResult = await this.executeQuery(
+      database,
+      `SELECT column_name, data_type FROM ${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${sourceTableName.replace(/'/g, "''")}' ORDER BY ordinal_position`,
+    );
+    if (!schemaResult.success || !schemaResult.data?.length) {
+      return {
+        success: false,
+        error: `Source table ${fullSource} not found or has no columns`,
+      };
+    }
+
+    const colDefs = (schemaResult.data as any[])
+      .map((r: any) => `${escapeIdentifier(r.column_name)} ${r.data_type}`)
+      .join(",\n  ");
+
+    const partitionClause = this.buildPartitionClause(options?.partitioning);
+    const clusterClause = this.buildClusterClause(options?.clustering);
+    const tableOptions = this.buildTableOptions(options?.partitioning);
+
+    const query = `CREATE TABLE IF NOT EXISTS ${fullTarget} (\n  ${colDefs}\n)${partitionClause}${clusterClause}${tableOptions};`;
+    const result = await this.executeQuery(database, query);
+    return { success: result.success, error: result.error };
+  }
+
+  /**
    * Drop a table
    */
   async dropTable(

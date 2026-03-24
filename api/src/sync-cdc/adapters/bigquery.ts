@@ -8,6 +8,7 @@ import {
 } from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
 import {
   normalizePayloadKeys,
@@ -47,64 +48,47 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     sourceTable: string,
   ): Promise<void> {
     const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
-    const projectId = conn.project_id;
     const dataset = this.config.tableDestination.schema;
-    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
-    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
 
-    const liveColumnsResult = await databaseConnectionService.executeQuery(
-      destination,
-      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${layout.tableName.replace(/'/g, "''")}'`,
-    );
-    const liveCols = ((liveColumnsResult.data as any[]) || []).map(
-      (r: any) => r.column_name as string,
-    );
-    if (liveCols.length > 0) return;
-
-    log.info(
-      "Creating live table from source schema with partitioning/clustering",
-      {
-        liveTable: layout.tableName,
-        sourceTable,
-        dataset,
-      },
-    );
-
-    const schemaResult = await databaseConnectionService.executeQuery(
-      destination,
-      `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${sourceTable.replace(/'/g, "''")}' ORDER BY ordinal_position`,
-    );
-    const colDefs = ((schemaResult.data as any[]) || [])
-      .map((r: any) => `${escId(r.column_name)} ${r.data_type}`)
-      .join(",\n  ");
-
-    if (!colDefs) {
+    const driver = databaseRegistry.getDriver(destination.type);
+    if (!driver?.createTableFromSource) {
       throw new Error(
-        `Source table ${sourceTable} has no columns or does not exist`,
+        `Driver ${destination.type} does not support createTableFromSource`,
       );
     }
 
-    let partitionClause = "";
-    if (layout.partitioning?.field) {
-      const partField = escId(layout.partitioning.field);
-      const gran = (layout.partitioning.granularity || "day").toUpperCase();
-      if (layout.partitioning.type === "ingestion") {
-        partitionClause = `\nPARTITION BY DATE(_PARTITIONTIME)`;
-      } else {
-        partitionClause = `\nPARTITION BY DATE_TRUNC(${partField}, ${gran})`;
-      }
-    }
-
-    let clusterClause = "";
-    if (layout.clustering?.fields?.length) {
-      clusterClause = `\nCLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
-    }
-
-    await databaseConnectionService.executeQuery(
+    const result = await driver.createTableFromSource(
       destination,
-      `CREATE TABLE IF NOT EXISTS ${fullLive} (\n  ${colDefs}\n)${partitionClause}${clusterClause}`,
+      sourceTable,
+      layout.tableName,
+      {
+        schema: dataset,
+        partitioning: layout.partitioning
+          ? {
+              type: layout.partitioning.type || "time",
+              field: layout.partitioning.field,
+              granularity: layout.partitioning.granularity,
+              requirePartitionFilter:
+                layout.partitioning.requirePartitionFilter,
+            }
+          : undefined,
+        clustering: layout.clustering?.fields?.length
+          ? { fields: layout.clustering.fields }
+          : undefined,
+      },
     );
+
+    if (!result.success) {
+      throw new Error(
+        result.error || "Failed to create live table from source schema",
+      );
+    }
+
+    log.info("Created live table from source schema", {
+      liveTable: layout.tableName,
+      sourceTable,
+      dataset,
+    });
   }
 
   async applyEvents(params: {
