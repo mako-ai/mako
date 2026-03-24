@@ -281,10 +281,36 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         stagingTable,
         dataset,
       });
+
+      const schemaResult = await databaseConnectionService.executeQuery(
+        destination,
+        `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}' ORDER BY ordinal_position`,
+      );
+      const colDefs = ((schemaResult.data as any[]) || [])
+        .map((r: any) => `${escId(r.column_name)} ${r.data_type}`)
+        .join(",\n  ");
+
+      let partitionClause = "";
+      if (layout.partitioning?.field) {
+        const partField = escId(layout.partitioning.field);
+        const gran = (layout.partitioning.granularity || "day").toUpperCase();
+        if (layout.partitioning.type === "ingestion") {
+          partitionClause = `\nPARTITION BY DATE(_PARTITIONTIME)`;
+        } else {
+          partitionClause = `\nPARTITION BY DATE_TRUNC(${partField}, ${gran})`;
+        }
+      }
+
+      let clusterClause = "";
+      if (layout.clustering?.fields?.length) {
+        clusterClause = `\nCLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
+      }
+
       await databaseConnectionService.executeQuery(
         destination,
-        `CREATE TABLE ${fullLive} AS SELECT * FROM ${fullStaging} LIMIT 0`,
+        `CREATE TABLE ${fullLive} (\n  ${colDefs}\n)${partitionClause}${clusterClause}`,
       );
+
       for (const col of stagingCols) {
         liveCols.add(col);
       }
