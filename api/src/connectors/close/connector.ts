@@ -601,12 +601,8 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // Handle activities and activity sub-entities using date-based pagination
-    // only for incremental sync. Full sync uses offset-based pagination below.
-    if (
-      (entity === "activities" || entity.startsWith("activities:")) &&
-      since
-    ) {
+    // Handle activities and activity sub-entities (e.g., "activities:Call")
+    if (entity === "activities" || entity.startsWith("activities:")) {
       return await this.fetchActivitiesChunk(options);
     }
 
@@ -634,7 +630,7 @@ export class CloseConnector extends BaseConnector {
       const params: any = {
         _limit: batchSize,
         _skip: offset,
-        _order_by: "id",
+        _order_by: "id", // Add consistent ordering for pagination stability
       };
 
       try {
@@ -647,26 +643,40 @@ export class CloseConnector extends BaseConnector {
           });
         } else {
           let endpoint: string;
-          if (entity.startsWith("activities:")) {
-            const [, subType] = entity.split(":");
-            endpoint = this.getActivityEndpointForType(subType);
-          } else {
-            switch (entity) {
-              case "opportunities":
-                endpoint = "/opportunity/";
-                break;
-              case "activities":
-                endpoint = "/activity/";
-                break;
-              case "contacts":
-                endpoint = "/contact/";
-                break;
-              default:
-                throw new Error(`Unsupported entity: ${entity}`);
-            }
+          switch (entity) {
+            case "opportunities":
+              endpoint = "/opportunity/";
+              break;
+            case "activities":
+              endpoint = "/activity/";
+              break;
+            case "contacts":
+              endpoint = "/contact/";
+              break;
+            default:
+              throw new Error(`Unsupported entity: ${entity}`);
           }
 
-          response = await api.get(endpoint, { params });
+          // For incremental sync, use POST with query in body
+          if (since) {
+            const dateFilter = since.toISOString().split("T")[0];
+            const postData = {
+              _params: {
+                _limit: batchSize,
+                _skip: offset,
+                _order_by: "-date_updated",
+                query: `date_updated>="${dateFilter}"`,
+              },
+            };
+
+            response = await api.post(endpoint, postData, {
+              headers: {
+                "x-http-method-override": "GET",
+              },
+            });
+          } else {
+            response = await api.get(endpoint, { params });
+          }
         }
 
         const rawData = response.data.data || [];

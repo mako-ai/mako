@@ -653,6 +653,7 @@ async function performSyncChunkSql(
     isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
   let bulkTempCollection: Collection | null = null;
   let bulkAccumulatedRows = 0;
+  const bulkRunId = options.backfillRunId || options.flowId || "";
   if (useBulkPath && options.flowId) {
     const db = Flow.db;
     const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
@@ -660,6 +661,19 @@ async function performSyncChunkSql(
     const isFirstChunk = !state || state.totalProcessed === 0;
     if (isFirstChunk) {
       await bulkTempCollection.deleteMany({});
+    } else {
+      const staleCount = await bulkTempCollection.countDocuments({
+        _bulkRunId: { $ne: bulkRunId },
+      });
+      if (staleCount > 0) {
+        await bulkTempCollection.deleteMany({
+          _bulkRunId: { $ne: bulkRunId },
+        });
+        orchestratorLogger.info(
+          "Cleared stale temp collection docs from previous run",
+          { entity, staleCount, currentRunId: bulkRunId },
+        );
+      }
     }
   }
 
@@ -772,6 +786,7 @@ async function performSyncChunkSql(
                 (record: Record<string, unknown>) => ({
                   ...record,
                   _mako_source_ts: resolveSourceTimestamp(record),
+                  _bulkRunId: bulkRunId,
                 }),
               );
               await bulkTempCollection.insertMany(enrichedRecords, {
@@ -909,7 +924,10 @@ async function flushBulkBuffer(
   const parquet = await buildParquetFromBatches({
     filenameBase: `backfill-${entity}`,
     streamBatches: async insertBatch => {
-      const cursor = tempCollection.find({}, { projection: { _id: 0 } });
+      const cursor = tempCollection.find(
+        {},
+        { projection: { _id: 0, _bulkRunId: 0 } },
+      );
       const batchSize = 5000;
       let batch: Record<string, unknown>[] = [];
       for await (const doc of cursor) {
