@@ -1,6 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
 import { useForm, Controller } from "react-hook-form";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   TextField,
   Select,
@@ -23,6 +26,9 @@ import {
   Delete as DeleteIcon,
   Webhook as WebhookIcon,
   ContentCopy as CopyIcon,
+  ExpandMore as ExpandMoreIcon,
+  NavigateNext as NextIcon,
+  ErrorOutline as ErrorOutlineIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
@@ -290,6 +296,20 @@ interface FormData {
   entityLayouts?: EntityLayoutConfig[];
 }
 
+const STEPS = [
+  { label: "Source", description: "Select the data source connector" },
+  { label: "Destination", description: "Configure destination database" },
+  {
+    label: "Sync Configuration",
+    description: "Choose sync engine and delete behavior",
+  },
+  {
+    label: "Entity Configuration",
+    description: "Configure per-entity table layouts (BigQuery)",
+  },
+  { label: "Webhook Setup", description: "Webhook URL and signing secret" },
+];
+
 export function WebhookFlowForm({
   flowId,
   isNew = false,
@@ -338,6 +358,30 @@ export function WebhookFlowForm({
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
   const [_entityMetadata, setEntityMetadata] = useState<any[]>([]);
+  const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
+
+  const toggleStep = (stepIndex: number) => {
+    setOpenSteps(prev => {
+      const next = new Set(prev);
+      if (next.has(stepIndex)) {
+        next.delete(stepIndex);
+      } else {
+        next.add(stepIndex);
+      }
+      return next;
+    });
+  };
+
+  const openNextStep = (currentStep: number) => {
+    setOpenSteps(prev => {
+      const next = new Set(prev);
+      const nextStep = currentStep + 1;
+      if (nextStep < STEPS.length) {
+        next.add(nextStep);
+      }
+      return next;
+    });
+  };
 
   const {
     control,
@@ -835,6 +879,35 @@ export function WebhookFlowForm({
     }
   };
 
+  const stepHasError = (stepIndex: number): boolean => {
+    switch (stepIndex) {
+      case 0:
+        return !!errors.dataSourceId;
+      case 1:
+        return (
+          !!errors.destinationDatabaseId || !!errors.tableDestination?.schema
+        );
+      default:
+        return false;
+    }
+  };
+
+  const handleFormSubmit = handleSubmit(onSubmit, fieldErrors => {
+    const errorStepFields: string[][] = [
+      ["dataSourceId"],
+      ["destinationDatabaseId", "tableDestination"],
+      [],
+      [],
+      [],
+    ];
+    const firstErrorStep = errorStepFields.findIndex(fields =>
+      fields.some(f => f in fieldErrors),
+    );
+    if (firstErrorStep >= 0) {
+      setOpenSteps(prev => new Set([...prev, firstErrorStep]));
+    }
+  });
+
   const handleProvisionWebhook = async () => {
     if (!currentWorkspace?.id || !currentFlowId) {
       setError("Save the flow first before creating provider webhook");
@@ -875,6 +948,45 @@ export function WebhookFlowForm({
     }
   };
 
+  const renderStepHeader = (stepIndex: number) => (
+    <AccordionSummary
+      expandIcon={<ExpandMoreIcon />}
+      sx={{
+        "& .MuiAccordionSummary-content": {
+          alignItems: "center",
+          gap: 1,
+        },
+      }}
+    >
+      <Typography
+        sx={{
+          width: 20,
+          height: 20,
+          borderRadius: "50%",
+          bgcolor: "primary.main",
+          color: "primary.contrastText",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: "0.75rem",
+          fontWeight: "bold",
+          flexShrink: 0,
+        }}
+      >
+        {stepIndex + 1}
+      </Typography>
+      {stepHasError(stepIndex) && (
+        <ErrorOutlineIcon color="error" sx={{ fontSize: 16 }} />
+      )}
+      <Box>
+        <Typography variant="subtitle2">{STEPS[stepIndex].label}</Typography>
+        <Typography variant="caption" color="text.secondary">
+          {STEPS[stepIndex].description}
+        </Typography>
+      </Box>
+    </AccordionSummary>
+  );
+
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {/* Top bar with action buttons */}
@@ -889,7 +1001,6 @@ export function WebhookFlowForm({
           borderColor: "divider",
         }}
       >
-        {/* Delete button on the left */}
         {!isNewMode && currentFlowId && (
           <Button
             color="error"
@@ -902,7 +1013,6 @@ export function WebhookFlowForm({
                 if (currentWorkspace?.id) {
                   try {
                     await deleteFlow(currentWorkspace.id, currentFlowId);
-                    // Close the editor after successful deletion
                     onCancel?.();
                   } catch (error) {
                     console.error("Failed to delete webhook flow:", error);
@@ -916,10 +1026,8 @@ export function WebhookFlowForm({
           </Button>
         )}
 
-        {/* Spacer for left alignment */}
         <Box sx={{ flex: 1 }} />
 
-        {/* Right-aligned save/cancel buttons */}
         <Box sx={{ display: "flex", gap: 1 }}>
           {onCancel && (
             <Button size="small" onClick={onCancel} disabled={isSubmitting}>
@@ -932,7 +1040,7 @@ export function WebhookFlowForm({
             size="small"
             startIcon={isNewMode ? <AddIcon /> : <SaveIcon />}
             disabled={isSubmitting}
-            onClick={handleSubmit(onSubmit)}
+            onClick={handleFormSubmit}
           >
             {isNewMode ? "Create" : "Save"}
           </Button>
@@ -948,179 +1056,138 @@ export function WebhookFlowForm({
             </Alert>
           )}
 
-          <Typography
-            variant="body1"
-            sx={{ mb: 3, display: "flex", alignItems: "center", gap: 1 }}
-          >
-            {currentFlowId && (
-              <>
-                <strong>Flow ID:</strong> {currentFlowId}
-              </>
-            )}
-          </Typography>
+          {currentFlowId && (
+            <Typography
+              variant="body1"
+              sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}
+            >
+              <strong>Flow ID:</strong> {currentFlowId}
+            </Typography>
+          )}
 
-          <form onSubmit={handleSubmit(onSubmit)}>
-            <Stack spacing={3}>
-              {/* Source and Destination */}
-              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                <Controller
-                  name="dataSourceId"
-                  control={control}
-                  rules={{ required: "Data source is required" }}
-                  render={({ field }) => (
-                    <FormControl fullWidth error={!!errors.dataSourceId}>
-                      <InputLabel>Data Source</InputLabel>
-                      <Select
-                        {...field}
-                        label="Data Source"
-                        startAdornment={
-                          <DataIcon sx={{ mr: 1, color: "action.active" }} />
-                        }
-                        disabled={isLoadingConnectors || !isNewMode}
-                      >
-                        {connectors.map(source => (
-                          <MenuItem key={source._id} value={source._id}>
-                            <Box
-                              sx={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 1,
-                              }}
-                            >
-                              {source.name}
-                              <Chip label={source.type} size="small" />
-                            </Box>
-                          </MenuItem>
-                        ))}
-                      </Select>
-                      {errors.dataSourceId && (
-                        <FormHelperText>
-                          {errors.dataSourceId.message}
-                        </FormHelperText>
-                      )}
-                      {connectors.length === 0 && !isLoadingConnectors && (
-                        <FormHelperText>
-                          Only Stripe and Close connectors support webhooks
-                        </FormHelperText>
-                      )}
-                    </FormControl>
-                  )}
-                />
-
-                <Controller
-                  name="destinationDatabaseId"
-                  control={control}
-                  rules={{ required: "Destination database is required" }}
-                  render={({ field }) => (
-                    <FormControl
-                      fullWidth
-                      error={!!errors.destinationDatabaseId}
+          <form onSubmit={handleFormSubmit}>
+            {/* Step 1: Source */}
+            <Accordion
+              expanded={openSteps.has(0)}
+              onChange={() => toggleStep(0)}
+              sx={{ mb: 1 }}
+            >
+              {renderStepHeader(0)}
+              <AccordionDetails>
+                <Stack spacing={3}>
+                  <Controller
+                    name="dataSourceId"
+                    control={control}
+                    rules={{ required: "Data source is required" }}
+                    render={({ field }) => (
+                      <FormControl fullWidth error={!!errors.dataSourceId}>
+                        <InputLabel>Data Source</InputLabel>
+                        <Select
+                          {...field}
+                          label="Data Source"
+                          startAdornment={
+                            <DataIcon sx={{ mr: 1, color: "action.active" }} />
+                          }
+                          disabled={isLoadingConnectors || !isNewMode}
+                        >
+                          {connectors.map(source => (
+                            <MenuItem key={source._id} value={source._id}>
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 1,
+                                }}
+                              >
+                                {source.name}
+                                <Chip label={source.type} size="small" />
+                              </Box>
+                            </MenuItem>
+                          ))}
+                        </Select>
+                        {errors.dataSourceId && (
+                          <FormHelperText>
+                            {errors.dataSourceId.message}
+                          </FormHelperText>
+                        )}
+                        {connectors.length === 0 && !isLoadingConnectors && (
+                          <FormHelperText>
+                            Only Stripe and Close connectors support webhooks
+                          </FormHelperText>
+                        )}
+                      </FormControl>
+                    )}
+                  />
+                  <Box
+                    sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
+                  >
+                    <Button
+                      variant="contained"
+                      endIcon={<NextIcon />}
+                      onClick={() => openNextStep(0)}
+                      disabled={!watchDataSourceId}
                     >
-                      <InputLabel>Destination Database</InputLabel>
-                      <Select
-                        {...field}
-                        label="Destination Database"
-                        disabled={!isNewMode}
-                        startAdornment={
-                          <DatabaseIcon
-                            sx={{ mr: 1, color: "action.active" }}
-                          />
-                        }
+                      Continue to Destination
+                    </Button>
+                  </Box>
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+
+            {/* Step 2: Destination */}
+            <Accordion
+              expanded={openSteps.has(1)}
+              onChange={() => toggleStep(1)}
+              sx={{ mb: 1 }}
+            >
+              {renderStepHeader(1)}
+              <AccordionDetails>
+                <Stack spacing={3}>
+                  <Controller
+                    name="destinationDatabaseId"
+                    control={control}
+                    rules={{ required: "Destination database is required" }}
+                    render={({ field }) => (
+                      <FormControl
+                        fullWidth
+                        error={!!errors.destinationDatabaseId}
                       >
-                        {databases.map(db => (
-                          <MenuItem key={db.id} value={db.id}>
-                            <Box
-                              sx={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 1,
-                              }}
-                            >
-                              {db.name}
-                              <Chip label={db.type} size="small" />
-                            </Box>
-                          </MenuItem>
-                        ))}
-                      </Select>
-                      {errors.destinationDatabaseId && (
-                        <FormHelperText>
-                          {errors.destinationDatabaseId.message}
-                        </FormHelperText>
-                      )}
-                    </FormControl>
-                  )}
-                />
-              </Stack>
+                        <InputLabel>Destination Database</InputLabel>
+                        <Select
+                          {...field}
+                          label="Destination Database"
+                          disabled={!isNewMode}
+                          startAdornment={
+                            <DatabaseIcon
+                              sx={{ mr: 1, color: "action.active" }}
+                            />
+                          }
+                        >
+                          {databases.map(db => (
+                            <MenuItem key={db.id} value={db.id}>
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 1,
+                                }}
+                              >
+                                {db.name}
+                                <Chip label={db.type} size="small" />
+                              </Box>
+                            </MenuItem>
+                          ))}
+                        </Select>
+                        {errors.destinationDatabaseId && (
+                          <FormHelperText>
+                            {errors.destinationDatabaseId.message}
+                          </FormHelperText>
+                        )}
+                      </FormControl>
+                    )}
+                  />
 
-              <Controller
-                name="syncEngine"
-                control={control}
-                render={({ field }) => (
-                  <FormControl fullWidth>
-                    <InputLabel>Sync engine</InputLabel>
-                    <Select {...field} label="Sync engine">
-                      <MenuItem value="legacy">legacy</MenuItem>
-                      <MenuItem value="cdc" disabled={!isBigQueryDest}>
-                        cdc
-                      </MenuItem>
-                    </Select>
-                    <FormHelperText>
-                      {watchSyncEngine === "cdc"
-                        ? "CDC mode enabled for this flow."
-                        : isBigQueryDest
-                          ? "CDC is opt-in per flow; legacy remains default."
-                          : "CDC currently requires a BigQuery destination."}
-                    </FormHelperText>
-                  </FormControl>
-                )}
-              />
-
-              {/* Delete Mode */}
-              <Controller
-                name="deleteMode"
-                control={control}
-                render={({ field }) => (
-                  <FormControl fullWidth>
-                    <InputLabel>Delete Mode</InputLabel>
-                    <Select
-                      {...field}
-                      label="Delete Mode"
-                      value={isBigQueryDest ? "soft" : field.value || "hard"}
-                      disabled={!isNewMode || isBigQueryDest}
-                    >
-                      {!isBigQueryDest && (
-                        <MenuItem value="hard">
-                          Hard delete (remove rows)
-                        </MenuItem>
-                      )}
-                      <MenuItem value="soft">
-                        Soft delete (set is_deleted flag)
-                      </MenuItem>
-                    </Select>
-                    <FormHelperText>
-                      {isBigQueryDest
-                        ? "BigQuery webhook flows always use soft delete (CDC tombstones)."
-                        : "How webhook delete events are handled in the destination"}
-                    </FormHelperText>
-                  </FormControl>
-                )}
-              />
-
-              {/* BigQuery Destination Config */}
-              {isBigQueryDest && (
-                <Box
-                  sx={{
-                    p: 2,
-                    bgcolor: "background.paper",
-                    borderRadius: 1,
-                    border: 1,
-                    borderColor: "divider",
-                  }}
-                >
-                  <Typography variant="subtitle2" sx={{ mb: 2 }}>
-                    BigQuery Destination
-                  </Typography>
-                  <Stack spacing={3}>
+                  {isBigQueryDest && (
                     <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                       <Controller
                         name="tableDestination.schema"
@@ -1166,8 +1233,121 @@ export function WebhookFlowForm({
                         )}
                       />
                     </Stack>
+                  )}
 
-                    {/* Per-entity table layout config */}
+                  <Box
+                    sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
+                  >
+                    <Button
+                      variant="contained"
+                      endIcon={<NextIcon />}
+                      onClick={() => openNextStep(1)}
+                      disabled={!watchDestinationId}
+                    >
+                      Continue to Sync Configuration
+                    </Button>
+                  </Box>
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+
+            {/* Step 3: Sync Configuration */}
+            <Accordion
+              expanded={openSteps.has(2)}
+              onChange={() => toggleStep(2)}
+              sx={{ mb: 1 }}
+            >
+              {renderStepHeader(2)}
+              <AccordionDetails>
+                <Stack spacing={3}>
+                  <Controller
+                    name="syncEngine"
+                    control={control}
+                    render={({ field }) => (
+                      <FormControl fullWidth>
+                        <InputLabel>Sync engine</InputLabel>
+                        <Select {...field} label="Sync engine">
+                          <MenuItem value="legacy">legacy</MenuItem>
+                          <MenuItem value="cdc" disabled={!isBigQueryDest}>
+                            cdc
+                          </MenuItem>
+                        </Select>
+                        <FormHelperText>
+                          {watchSyncEngine === "cdc"
+                            ? "CDC mode enabled for this flow."
+                            : isBigQueryDest
+                              ? "CDC is opt-in per flow; legacy remains default."
+                              : "CDC currently requires a BigQuery destination."}
+                        </FormHelperText>
+                      </FormControl>
+                    )}
+                  />
+
+                  <Controller
+                    name="deleteMode"
+                    control={control}
+                    render={({ field }) => (
+                      <FormControl fullWidth>
+                        <InputLabel>Delete Mode</InputLabel>
+                        <Select
+                          {...field}
+                          label="Delete Mode"
+                          value={
+                            isBigQueryDest ? "soft" : field.value || "hard"
+                          }
+                          disabled={!isNewMode || isBigQueryDest}
+                        >
+                          {!isBigQueryDest && (
+                            <MenuItem value="hard">
+                              Hard delete (remove rows)
+                            </MenuItem>
+                          )}
+                          <MenuItem value="soft">
+                            Soft delete (set is_deleted flag)
+                          </MenuItem>
+                        </Select>
+                        <FormHelperText>
+                          {isBigQueryDest
+                            ? "BigQuery webhook flows always use soft delete (CDC tombstones)."
+                            : "How webhook delete events are handled in the destination"}
+                        </FormHelperText>
+                      </FormControl>
+                    )}
+                  />
+
+                  <Box
+                    sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
+                  >
+                    <Button
+                      variant="contained"
+                      endIcon={<NextIcon />}
+                      onClick={() => {
+                        if (isBigQueryDest) {
+                          openNextStep(2);
+                        } else {
+                          setOpenSteps(prev => new Set([...prev, 4]));
+                        }
+                      }}
+                    >
+                      {isBigQueryDest
+                        ? "Continue to Entity Configuration"
+                        : "Continue to Webhook Setup"}
+                    </Button>
+                  </Box>
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+
+            {/* Step 4: Entity Configuration (BigQuery only) */}
+            {isBigQueryDest && (
+              <Accordion
+                expanded={openSteps.has(3)}
+                onChange={() => toggleStep(3)}
+                sx={{ mb: 1 }}
+              >
+                {renderStepHeader(3)}
+                <AccordionDetails>
+                  <Stack spacing={3}>
                     {watchEntityLayouts.length > 0 && (
                       <Box>
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -1182,7 +1362,6 @@ export function WebhookFlowForm({
                           }}
                         >
                           <Box sx={{ minWidth: 640 }}>
-                            {/* Header */}
                             <Box
                               sx={{
                                 display: "grid",
@@ -1232,7 +1411,6 @@ export function WebhookFlowForm({
                                 Cluster Fields
                               </Typography>
                             </Box>
-                            {/* Rows */}
                             {watchEntityLayouts.map((layout, idx) => {
                               const entityFields = CLOSE_ENTITY_FIELDS[
                                 layout.entity
@@ -1385,120 +1563,83 @@ export function WebhookFlowForm({
                         </Box>
                       </Box>
                     )}
-                  </Stack>
-                </Box>
-              )}
 
-              {/* Webhook Configuration */}
-              {/* Webhook URL and Secret (only shown after creation) */}
-              {!isNewMode && currentFlowId && webhookUrl && (
-                <Box
-                  sx={{
-                    p: 2,
-                    bgcolor: "background.paper",
-                    borderRadius: 1,
-                    border: 1,
-                    borderColor: "divider",
-                  }}
-                >
-                  <Typography variant="subtitle2" sx={{ mb: 2 }}>
-                    Webhook Configuration
-                  </Typography>
+                    {watchEntityLayouts.length === 0 && (
+                      <Alert severity="info">
+                        Select a data source and BigQuery destination to
+                        configure entities.
+                      </Alert>
+                    )}
 
-                  <Stack spacing={2}>
-                    <Box>
-                      <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{ mb: 0.5 }}
-                      >
-                        Webhook URL
-                      </Typography>
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 1,
+                    <Box
+                      sx={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        pt: 1,
+                      }}
+                    >
+                      <Button
+                        variant="contained"
+                        endIcon={<NextIcon />}
+                        onClick={() => {
+                          setOpenSteps(prev => new Set([...prev, 4]));
                         }}
                       >
-                        <TextField
-                          value={webhookUrl}
-                          fullWidth
-                          size="small"
-                          InputProps={{
-                            readOnly: true,
-                            endAdornment: (
-                              <Button
-                                size="small"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(webhookUrl);
-                                  setCopySuccess(true);
-                                  setTimeout(() => setCopySuccess(false), 2000);
-                                }}
-                              >
-                                <CopyIcon fontSize="small" />
-                              </Button>
-                            ),
-                          }}
-                        />
-                      </Box>
-                      <Typography variant="caption" color="text.secondary">
-                        Copy this URL to your Stripe/Close webhook settings
+                        Continue to Webhook Setup
+                      </Button>
+                    </Box>
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+            )}
+
+            {/* Step 5: Webhook Setup */}
+            <Accordion
+              expanded={openSteps.has(4)}
+              onChange={() => toggleStep(4)}
+              sx={{ mb: 1 }}
+            >
+              {renderStepHeader(4)}
+              <AccordionDetails>
+                <Stack spacing={3}>
+                  {isNewMode && (
+                    <Alert severity="info" icon={<WebhookIcon />}>
+                      <Typography variant="body2">
+                        <strong>Webhook:</strong> Real-time sync triggered by
+                        webhook events. The webhook URL will be generated after
+                        creation.
                       </Typography>
-                      {canProvisionWebhook && (
+                    </Alert>
+                  )}
+
+                  {!isNewMode && currentFlowId && webhookUrl && (
+                    <Stack spacing={2}>
+                      <Box>
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ mb: 0.5 }}
+                        >
+                          Webhook URL
+                        </Typography>
                         <Box
                           sx={{
-                            mt: 1,
                             display: "flex",
                             alignItems: "center",
                             gap: 1,
-                            flexWrap: "wrap",
                           }}
                         >
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            onClick={handleProvisionWebhook}
-                            disabled={isSubmitting || isProvisioningWebhook}
-                          >
-                            {isProvisioningWebhook
-                              ? "Creating in Close..."
-                              : "Create in Close"}
-                          </Button>
-                          <Typography variant="caption" color="text.secondary">
-                            One click creates the Close webhook and stores its
-                            signing secret.
-                          </Typography>
-                        </Box>
-                      )}
-                    </Box>
-
-                    <Box>
-                      <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{ mb: 0.5 }}
-                      >
-                        Webhook Secret
-                      </Typography>
-                      <Controller
-                        name="webhookSecret"
-                        control={control}
-                        render={({ field }) => (
                           <TextField
-                            {...field}
-                            placeholder="Enter webhook secret (e.g., whsec_...)"
+                            value={webhookUrl}
                             fullWidth
                             size="small"
-                            type="text"
                             InputProps={{
-                              endAdornment: field.value && (
+                              readOnly: true,
+                              endAdornment: (
                                 <Button
                                   size="small"
                                   onClick={() => {
-                                    navigator.clipboard.writeText(
-                                      field.value ?? "",
-                                    );
+                                    navigator.clipboard.writeText(webhookUrl);
                                     setCopySuccess(true);
                                     setTimeout(
                                       () => setCopySuccess(false),
@@ -1511,27 +1652,101 @@ export function WebhookFlowForm({
                               ),
                             }}
                           />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary">
+                          Copy this URL to your Stripe/Close webhook settings
+                        </Typography>
+                        {canProvisionWebhook && (
+                          <Box
+                            sx={{
+                              mt: 1,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 1,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={handleProvisionWebhook}
+                              disabled={isSubmitting || isProvisioningWebhook}
+                            >
+                              {isProvisioningWebhook
+                                ? "Creating in Close..."
+                                : "Create in Close"}
+                            </Button>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              One click creates the Close webhook and stores its
+                              signing secret.
+                            </Typography>
+                          </Box>
                         )}
-                      />
-                      <Typography variant="caption" color="text.secondary">
-                        {selectedConnectorType === "stripe"
-                          ? "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret"
-                          : "Enter the webhook signing secret from your provider"}
-                      </Typography>
-                    </Box>
-                  </Stack>
-                </Box>
-              )}
+                      </Box>
 
-              {/* Webhook Preview */}
-              <Alert severity="info" icon={<WebhookIcon />}>
-                <Typography variant="body2">
-                  <strong>Webhook:</strong> Real-time sync triggered by webhook
-                  events
-                  {isNewMode && " (URL will be generated after creation)"}
-                </Typography>
-              </Alert>
-            </Stack>
+                      <Box>
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ mb: 0.5 }}
+                        >
+                          Webhook Secret
+                        </Typography>
+                        <Controller
+                          name="webhookSecret"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              placeholder="Enter webhook secret (e.g., whsec_...)"
+                              fullWidth
+                              size="small"
+                              type="text"
+                              InputProps={{
+                                endAdornment: field.value && (
+                                  <Button
+                                    size="small"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(
+                                        field.value ?? "",
+                                      );
+                                      setCopySuccess(true);
+                                      setTimeout(
+                                        () => setCopySuccess(false),
+                                        2000,
+                                      );
+                                    }}
+                                  >
+                                    <CopyIcon fontSize="small" />
+                                  </Button>
+                                ),
+                              }}
+                            />
+                          )}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          {selectedConnectorType === "stripe"
+                            ? "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret"
+                            : "Enter the webhook signing secret from your provider"}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  )}
+
+                  {!isNewMode && currentFlowId && !webhookUrl && (
+                    <Alert severity="warning">
+                      <Typography variant="body2">
+                        No webhook URL configured yet. The URL may still be
+                        provisioning.
+                      </Typography>
+                    </Alert>
+                  )}
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
           </form>
         </Box>
       </Box>
