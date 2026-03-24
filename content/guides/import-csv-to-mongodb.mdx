@@ -1,0 +1,143 @@
+---
+title: "How to Import CSV to MongoDB (4 Methods)"
+slug: import-csv-to-mongodb
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - mongodb
+  - csv
+  - import
+  - data
+excerpt: "Four ways to import CSV files into MongoDB: mongoimport CLI, MongoDB Compass, Python with pymongo, and Atlas UI. Includes type handling and field mapping tips."
+metaDescription: "Import CSV to MongoDB in 2026: mongoimport CLI, Compass GUI, Python pymongo, and Atlas. Step-by-step with type conversion, gotchas, and best practices."
+database: mongodb
+category: import-export
+draft: false
+---
+
+MongoDB stores data as documents, not rows, so importing a CSV involves converting tabular data into a document structure. The tools handle this automatically -- each CSV row becomes a document, each column becomes a field. Here are the practical ways to do it.
+
+## Method 1: mongoimport (CLI)
+
+`mongoimport` is part of the MongoDB Database Tools package. It's the fastest way to load CSV data from the command line:
+
+```bash
+mongoimport \
+  --uri "mongodb://localhost:27017/mydb" \
+  --collection users \
+  --type csv \
+  --headerline \
+  --file users.csv
+```
+
+Key flags:
+- `--headerline` -- uses the first row as field names
+- `--type csv` -- specifies the file format (also supports `tsv` and `json`)
+- `--drop` -- drops the collection before importing (useful for full refreshes)
+- `--ignoreBlanks` -- skips fields with empty values instead of storing empty strings
+
+**Specifying field types.** By default, mongoimport imports everything as strings. To specify types:
+
+```bash
+mongoimport \
+  --uri "mongodb://localhost:27017/mydb" \
+  --collection users \
+  --type csv \
+  --headerline \
+  --columnsHaveTypes \
+  --fields "name.string(),age.int32(),email.string(),signup_date.date(2006-01-02)" \
+  --file users.csv
+```
+
+The `--columnsHaveTypes` flag with `--fields` lets you define the type for each column. Date parsing uses Go-style format strings (where `2006-01-02` represents `YYYY-MM-DD`).
+
+## Method 2: MongoDB Compass (GUI)
+
+Compass is MongoDB's official GUI tool. It provides visual CSV import:
+
+1. Connect to your MongoDB instance
+2. Select the target database and collection (or create a new one)
+3. Click **Add Data > Import JSON or CSV file**
+4. Select your CSV file
+5. Compass shows a preview with detected types -- adjust types per field if needed
+6. Click **Import**
+
+Compass lets you change individual field types (string, number, date, boolean) before importing, which is more user-friendly than mongoimport's type syntax.
+
+## Method 3: Python with pymongo
+
+For programmatic control, use Python's csv module with pymongo:
+
+```python
+import csv
+from pymongo import MongoClient
+from datetime import datetime
+
+client = MongoClient('mongodb://localhost:27017/')
+db = client['mydb']
+collection = db['users']
+
+documents = []
+with open('users.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        doc = {
+            'name': row['name'],
+            'age': int(row['age']) if row['age'] else None,
+            'email': row['email'],
+            'signup_date': datetime.strptime(row['signup_date'], '%Y-%m-%d')
+        }
+        documents.append(doc)
+
+# Bulk insert for performance
+collection.insert_many(documents)
+print(f"Imported {len(documents)} documents")
+```
+
+For large files, batch the inserts to control memory usage:
+
+```python
+BATCH_SIZE = 10000
+batch = []
+with open('users.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        batch.append(transform(row))
+        if len(batch) >= BATCH_SIZE:
+            collection.insert_many(batch)
+            batch = []
+    if batch:
+        collection.insert_many(batch)
+```
+
+## Method 4: MongoDB Atlas UI
+
+If you're using MongoDB Atlas (the managed cloud service):
+
+1. Navigate to your cluster in the Atlas dashboard
+2. Click **Browse Collections**
+3. Select the target database and collection
+4. Click **Insert Document** or use the **Data Explorer** import feature
+5. Upload your CSV
+
+Atlas also supports loading CSV data through Data Federation and scheduled triggers for recurring imports.
+
+## Common Gotchas
+
+**Type inference.** mongoimport treats all values as strings unless you explicitly specify types with `--columnsHaveTypes`. This means `"42"` is stored as the string `"42"`, not the number `42`. If you plan to query by numeric range or sort numerically, you need explicit types.
+
+**Nested documents.** CSV is flat -- there's no native way to represent nested objects. If you need nested structures (e.g., an `address` subdocument with `city`, `state`, `zip`), you'll need to transform the data during import using Python or a post-import aggregation pipeline.
+
+**Duplicate handling.** By default, mongoimport stops on the first duplicate `_id` error. Use `--mode=upsert` to update existing documents or `--mode=merge` to merge fields:
+
+```bash
+mongoimport --uri "..." --collection users --type csv \
+  --headerline --mode upsert --upsertFields email \
+  --file users.csv
+```
+
+**Date formats.** The Go date format syntax used by mongoimport is unintuitive if you're used to `strftime`. The reference date is `Mon Jan 2 15:04:05 MST 2006`. So `YYYY-MM-DD` is `2006-01-02`, and `MM/DD/YYYY HH:MM:SS` is `01/02/2006 15:04:05`.
+
+**Large files.** mongoimport handles large files well but uses a single thread. For multi-GB files, splitting the file and running parallel imports against the same collection is faster (MongoDB handles concurrent writes safely).
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
