@@ -1406,8 +1406,63 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   }
 
   /**
+   * Create a table from an existing source table's schema, preserving
+   * partition/cluster layout from options, then copy all data.
+   * Unlike CREATE TABLE ... AS SELECT, this retains partitioning config.
+   */
+  private async createTableWithLayoutFromSource(
+    database: IDatabaseConnection,
+    sourceTable: string,
+    sourceSchema: string,
+    targetTable: string,
+    targetSchema: string,
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    const projectId = this.getProjectId(database);
+
+    const colTypes = await this.getTableColumnTypes(
+      database,
+      sourceTable,
+      sourceSchema,
+    );
+    if (colTypes.size === 0) {
+      return {
+        success: false,
+        error: `Could not read schema from ${sourceSchema}.${sourceTable}`,
+      };
+    }
+
+    const columns: ColumnDefinition[] = Array.from(colTypes.entries()).map(
+      ([name, type]) => ({ name, type, nullable: true }),
+    );
+
+    const createResult = await this.createTable(
+      database,
+      targetTable,
+      columns,
+      { ...options, schema: targetSchema },
+    );
+    if (!createResult.success) {
+      return createResult;
+    }
+
+    const fullSource = `${escapeIdentifier(projectId)}.${escapeIdentifier(sourceSchema)}.${escapeIdentifier(sourceTable)}`;
+    const fullTarget = `${escapeIdentifier(projectId)}.${escapeIdentifier(targetSchema)}.${escapeIdentifier(targetTable)}`;
+    const insertResult = await this.executeQuery(
+      database,
+      `INSERT INTO ${fullTarget} SELECT * FROM ${fullSource};`,
+    );
+    if (!insertResult.success) {
+      return { success: false, error: insertResult.error };
+    }
+
+    return { success: true };
+  }
+
+  /**
    * Swap staging table with original
-   * BigQuery doesn't support RENAME, so we use copy and delete
+   * BigQuery doesn't support RENAME, so we recreate with explicit DDL
+   * to preserve partition/cluster settings from options.
    */
   async swapStagingTable(
     database: IDatabaseConnection,
@@ -1433,22 +1488,25 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
     const fullOriginal = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(originalTableName)}`;
     const fullStaging = `${escapeIdentifier(projectId)}.${escapeIdentifier(stagingDataset)}.${escapeIdentifier(stagingTableName)}`;
-    const fullBackup = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(`${originalTableName}_backup_${Date.now()}`)}`;
+    const backupName = `${originalTableName}_backup_${Date.now()}`;
+    const fullBackup = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(backupName)}`;
 
-    // First-time full sync path: original table may not exist yet.
-    // In that case, promote staging directly without backup/swap steps.
     const originalExists = await this.tableExists(database, originalTableName, {
       schema: dataset,
     });
     if (!originalExists) {
-      const createResult = await this.executeQuery(
+      const promoteResult = await this.createTableWithLayoutFromSource(
         database,
-        `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullStaging};`,
+        stagingTableName,
+        stagingDataset,
+        originalTableName,
+        dataset,
+        options,
       );
-      if (!createResult.success) {
+      if (!promoteResult.success) {
         return {
           success: false,
-          error: `Failed to create original from staging: ${createResult.error}`,
+          error: `Failed to create original from staging: ${promoteResult.error}`,
         };
       }
 
@@ -1456,7 +1514,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       return { success: true };
     }
 
-    // Step 1: Rename original to backup (using CREATE ... AS SELECT and DROP)
+    // Step 1: Backup original (CTAS is fine — backup is temporary and doesn't need partitioning)
     let result = await this.executeQuery(
       database,
       `CREATE TABLE ${fullBackup} AS SELECT * FROM ${fullOriginal};`,
@@ -1477,20 +1535,24 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       };
     }
 
-    // Step 3: Create new original from staging
-    result = await this.executeQuery(
+    // Step 3: Create new original with proper partition/cluster layout
+    const swapResult = await this.createTableWithLayoutFromSource(
       database,
-      `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullStaging};`,
+      stagingTableName,
+      stagingDataset,
+      originalTableName,
+      dataset,
+      options,
     );
-    if (!result.success) {
-      // Try to restore from backup
+    if (!swapResult.success) {
+      // Restore from backup
       await this.executeQuery(
         database,
         `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullBackup};`,
       );
       return {
         success: false,
-        error: `Failed to create new table: ${result.error}`,
+        error: `Failed to create new table: ${swapResult.error}`,
       };
     }
 
