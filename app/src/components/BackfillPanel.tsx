@@ -251,6 +251,7 @@ export function BackfillPanel({
     flows: flowsMap,
     startCdcBackfill,
     fetchCdcStatus,
+    fetchCdcDestinationCounts,
     fetchFlowStatus,
     fetchExecutionDetails,
     fetchFlowHistory,
@@ -298,9 +299,14 @@ export function BackfillPanel({
   const [selectedRunLogs, setSelectedRunLogs] = useState<LogEntry[] | null>(
     null,
   );
+  const [destinationCounts, setDestinationCounts] = useState<Record<
+    string,
+    number | null
+  > | null>(null);
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const destCountsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
 
   const streamState: StreamState = cdc?.streamState || "idle";
@@ -398,6 +404,19 @@ export function BackfillPanel({
     };
   }, [pollLogs]);
 
+  const pollDestCounts = useCallback(async () => {
+    const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
+    if (counts) setDestinationCounts(counts);
+  }, [fetchCdcDestinationCounts, workspaceId, flowId]);
+
+  useEffect(() => {
+    pollDestCounts();
+    destCountsPollRef.current = setInterval(pollDestCounts, 30_000);
+    return () => {
+      if (destCountsPollRef.current) clearInterval(destCountsPollRef.current);
+    };
+  }, [pollDestCounts]);
+
   const withBusy = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -485,7 +504,9 @@ export function BackfillPanel({
     setResyncOpen(false);
     setResyncConfirm("");
     setResyncOpts({ deleteDestination: false, clearWebhookEvents: false });
+    setDestinationCounts(null);
     await pollCdc();
+    pollDestCounts();
   };
 
   const openEntityResetDialog = (entity: string) => {
@@ -561,9 +582,10 @@ export function BackfillPanel({
       lagSeconds: s?.lagSeconds ?? null,
       lastMaterializedAt: s?.lastMaterializedAt || null,
       destinationRowCount:
-        typeof s?.destinationRowCount === "number"
+        destinationCounts?.[name] ??
+        (typeof s?.destinationRowCount === "number"
           ? s.destinationRowCount
-          : null,
+          : null),
       lifetimeEventsProcessed:
         typeof s?.lifetimeEventsProcessed === "number"
           ? s.lifetimeEventsProcessed

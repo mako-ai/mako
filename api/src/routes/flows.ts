@@ -157,13 +157,14 @@ function buildDestinationCountQuery(params: {
 }): string | null {
   const type = (params.destinationType || "").toLowerCase();
   if (type === "bigquery") {
-    const tableRef = params.projectId
-      ? `${params.projectId}.${params.schema}.${params.tableName}`
-      : `${params.schema}.${params.tableName}`;
-    return `SELECT COUNT(*) AS total_count FROM \`${tableRef}\``;
+    const dataset = params.projectId
+      ? `\`${params.projectId}\`.\`${params.schema}\``
+      : `\`${params.schema}\``;
+    return `SELECT row_count AS total_count FROM ${dataset}.INFORMATION_SCHEMA.TABLE_STORAGE WHERE table_name = '${params.tableName}'`;
   }
   if (type.includes("postgres")) {
-    return `SELECT COUNT(*)::bigint AS total_count FROM ${escapePostgresIdentifier(params.schema)}.${escapePostgresIdentifier(params.tableName)}`;
+    const escLiteral = (v: string) => `'${v.replace(/'/g, "''")}'`;
+    return `SELECT reltuples::bigint AS total_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escLiteral(params.schema)} AND c.relname = ${escLiteral(params.tableName)}`;
   }
   return null;
 }
@@ -2160,32 +2161,6 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       ]),
     );
 
-    let destinationByEntity = new Map<string, number | null>();
-    if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
-      const destinationDoc = await DatabaseConnection.findById(
-        flow.tableDestination.connectionId,
-      );
-      const destination = destinationDoc?.toObject();
-
-      if (destination) {
-        const counts = await Promise.all(
-          uniqueEntities.map(async entity => {
-            const value = await getDestinationEntityRowCount({
-              workspaceId,
-              flowId,
-              entity,
-              destinationType: destination.type,
-              destination,
-              schema: flow.tableDestination?.schema || "",
-              baseTablePrefix: flow.tableDestination?.tableName,
-            });
-            return [entity, value] as const;
-          }),
-        );
-        destinationByEntity = new Map(counts);
-      }
-    }
-
     const entities = uniqueEntities.map(entity => {
       const state = stateByEntity.get(entity);
       const lastMaterializedAt = state?.lastMaterializedAt
@@ -2209,10 +2184,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         backlogCount: state?.backlogCount || 0,
         lagSeconds: toLagSeconds(lastMaterializedAt),
         lastMaterializedAt,
-        destinationRowCount:
-          destinationByEntity.get(entity) ??
-          (state as any)?.destinationRowCount ??
-          null,
+        destinationRowCount: (state as any)?.destinationRowCount ?? null,
         lifetimeEventsProcessed,
         lifetimeRowsApplied,
         backfillDone,
@@ -2248,6 +2220,89 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         })),
       },
     });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// GET /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/destination-counts
+// Lazy endpoint — returns destination row counts per entity (may be slow for BigQuery).
+flowRoutes.get("/:flowId/sync-cdc/destination-counts", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const workspaceObjectId = new Types.ObjectId(workspaceId);
+    const flowObjectId = new Types.ObjectId(flowId);
+
+    const flow = await Flow.findOne({
+      _id: flowObjectId,
+      workspaceId: workspaceObjectId,
+    }).lean();
+
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+
+    if (
+      !flow.tableDestination?.connectionId ||
+      !flow.tableDestination?.schema
+    ) {
+      return c.json({ success: true, data: {} });
+    }
+
+    const destinationDoc = await DatabaseConnection.findById(
+      flow.tableDestination.connectionId,
+    );
+    const destination = destinationDoc?.toObject();
+    if (!destination) {
+      return c.json({ success: true, data: {} });
+    }
+
+    const { entities: configuredEntities } = resolveConfiguredEntities(
+      flow as any,
+    );
+    const states = await CdcEntityState.find({
+      workspaceId: workspaceObjectId,
+      flowId: flowObjectId,
+    })
+      .select("entity")
+      .lean();
+    const uniqueEntities = Array.from(
+      new Set([
+        ...configuredEntities,
+        ...states
+          .map(s => (typeof s.entity === "string" ? s.entity : ""))
+          .filter(Boolean),
+      ]),
+    );
+
+    const counts = await Promise.all(
+      uniqueEntities.map(async entity => {
+        const value = await getDestinationEntityRowCount({
+          workspaceId,
+          flowId,
+          entity,
+          destinationType: destination.type,
+          destination,
+          schema: flow.tableDestination?.schema || "",
+          baseTablePrefix: flow.tableDestination?.tableName,
+        });
+        return [entity, value] as const;
+      }),
+    );
+
+    const data: Record<string, number | null> = {};
+    for (const [entity, count] of counts) {
+      data[entity] = count;
+    }
+
+    return c.json({ success: true, data });
   } catch (error) {
     return c.json(
       {
