@@ -740,6 +740,18 @@ export function BackfillPanel({
                 )}
               </Box>
               <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                {streamState === "idle" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                    onClick={handleResumeStream}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Start
+                  </Button>
+                )}
                 {streamState === "active" && (
                   <Button
                     size="small"

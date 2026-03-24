@@ -52,6 +52,7 @@ const STREAM_TRANSITIONS: Record<
 > = {
   idle: {
     START: "active",
+    RESUME: "active",
   },
   active: {
     PAUSE: "paused",
