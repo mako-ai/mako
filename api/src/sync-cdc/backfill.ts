@@ -497,11 +497,13 @@ export class CdcBackfillService {
       destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
     const flowId = flow._id.toString();
 
+    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
     for (const entity of enabledEntities) {
       const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
       const stageTables = new Set<string>([
         cdcStageTableName(tablePrefix, entity, flowId),
         `${liveTable}__stage_changes`,
+        `${liveTable}__${flowToken}__staging`,
       ]);
       await driver.dropTable(destination, liveTable, { schema });
       for (const stageTable of stageTables) {
@@ -509,6 +511,15 @@ export class CdcBackfillService {
           schema: stageSchema,
         });
       }
+    }
+
+    const db = Flow.db;
+    for (const entity of enabledEntities) {
+      const collName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+      await db
+        .collection(collName)
+        .drop()
+        .catch(() => undefined);
     }
 
     log.info("CDC destination tables dropped during resync", {
