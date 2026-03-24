@@ -242,24 +242,51 @@ export async function executeDashboardAgentTool(
     const snapshot = getDashboardStateSnapshot(
       typeof input.dashboardId === "string" ? input.dashboardId : undefined,
     );
+
+    const SAMPLE_ROW_LIMIT = 5;
+
+    const {
+      _id,
+      workspaceId: _wsId,
+      access: _access,
+      owner_id: _ownerId,
+      createdBy: _createdBy,
+      readOnly: _readOnly,
+      createdAt: _createdAt,
+      updatedAt: _updatedAt,
+      versionHistory: _versionHistory,
+      eventLog: _eventLog,
+      queryGeneration: _queryGeneration,
+      ...definition
+    } = snapshot as Record<string, unknown>;
+
+    const dataSources = (definition.dataSources as any[])?.map(
+      ({ _id: _dsId, sampleRows, ...ds }: any) => ({
+        ...ds,
+        sampleRows: sampleRows?.slice(0, SAMPLE_ROW_LIMIT),
+      }),
+    );
+    const widgets = (definition.widgets as any[])?.map(
+      ({ _id: _wId, ...w }: any) => w,
+    );
+
+    const rawSnapshots = (definition.snapshots ?? {}) as Record<string, any>;
+    const snapshots: Record<string, any> = {};
+    for (const [key, snap] of Object.entries(rawSnapshots)) {
+      snapshots[key] = {
+        ...snap,
+        rows: snap.rows?.slice(0, SAMPLE_ROW_LIMIT),
+      };
+    }
+
     return {
       success: true,
       dashboard: {
-        id: snapshot._id,
-        title: snapshot.title,
-        description: snapshot.description,
-        dataSources: snapshot.dataSources,
-        widgets: snapshot.widgets.map(widget => ({
-          id: widget.id,
-          title: widget.title,
-          type: widget.type,
-          dataSourceId: widget.dataSourceId,
-          localSql: widget.localSql,
-        })),
-        relationships: snapshot.relationships,
-        globalFilters: snapshot.globalFilters,
-        crossFilter: snapshot.crossFilter,
-        layout: snapshot.layout,
+        id: _id,
+        ...definition,
+        dataSources,
+        widgets,
+        snapshots,
       },
     };
   }
@@ -380,7 +407,19 @@ export async function executeDashboardAgentTool(
     if (input.tableConfig !== undefined) {
       changes.tableConfig = input.tableConfig;
     }
-    if (input.layouts !== undefined) changes.layouts = input.layouts;
+    if (input.layouts !== undefined) {
+      const ctx = getActiveContext();
+      const existingDashboard = ctx
+        ? useDashboardStore.getState().openDashboards[ctx.dashboardId]
+        : null;
+      const existingWidget = existingDashboard?.widgets.find(
+        w => w.id === input.widgetId,
+      );
+      const existingLayouts = existingWidget?.layouts;
+      changes.layouts = existingLayouts
+        ? { ...existingLayouts, ...input.layouts }
+        : input.layouts;
+    }
     if (changes.vegaLiteSpec !== undefined) {
       const specValidation = validateVegaSpec(changes.vegaLiteSpec);
       if (!specValidation.valid) {
