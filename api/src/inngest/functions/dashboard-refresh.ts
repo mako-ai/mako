@@ -123,6 +123,7 @@ export const dashboardSchedulerFunction = inngest.createFunction(
           data: {
             dashboardId: dashboard._id.toString(),
             triggerType: "schedule",
+            force: true,
           },
         });
         triggered++;
