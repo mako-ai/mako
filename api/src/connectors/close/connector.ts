@@ -834,7 +834,10 @@ export class CloseConnector extends BaseConnector {
     // last record's date_created and reset offset to 0.
     const CLOSE_SKIP_LIMIT = 9900;
     const now = new Date();
-    let windowUpper: string | null = state?.metadata?.windowUpper || null;
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    let windowUpper: string | null =
+      state?.metadata?.windowUpper ?? tomorrow.toISOString().split("T")[0];
     let windowLower: string =
       state?.metadata?.windowLower || new Date(now).toISOString().split("T")[0];
     let dailyOffset = state?.metadata?.dailyOffset || 0;
@@ -911,6 +914,7 @@ export class CloseConnector extends BaseConnector {
           }
           // Jump to the date of the oldest found record
           const jumpDate = new Date(probeRecords[0].date_created);
+          const prevWindowLower = windowLower;
           windowLower = new Date(
             jumpDate.getFullYear(),
             jumpDate.getMonth(),
@@ -918,14 +922,16 @@ export class CloseConnector extends BaseConnector {
           )
             .toISOString()
             .split("T")[0];
-          windowUpper = null;
+          windowUpper = prevWindowLower;
           dailyOffset = 0;
           await this.sleep(rateLimitDelay);
           continue;
         }
 
         if (!hasMore) {
-          // Current window done — move to previous day
+          // Current window done — move to previous day, set upper bound to
+          // current windowLower so we don't re-fetch records from today
+          const prevLower = windowLower;
           const lowerDate = new Date(windowLower);
           lowerDate.setDate(lowerDate.getDate() - 1);
           if (endDate && lowerDate < endDate) {
@@ -935,14 +941,14 @@ export class CloseConnector extends BaseConnector {
               iterationsInChunk: iterations,
               metadata: {
                 windowLower: lowerDate.toISOString().split("T")[0],
-                windowUpper: null,
+                windowUpper: prevLower,
                 dailyOffset: 0,
                 endDate: endDate.toISOString(),
               },
             };
           }
           windowLower = lowerDate.toISOString().split("T")[0];
-          windowUpper = null;
+          windowUpper = prevLower;
           dailyOffset = 0;
           iterations++;
           await this.sleep(rateLimitDelay);
