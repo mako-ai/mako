@@ -1213,6 +1213,7 @@ export class CloseConnector extends BaseConnector {
 
         const response = await api.post("/data/search/", body);
         const data = response.data.data || [];
+        const nextCursor = response.data.cursor || null;
 
         if (data.length > 0) {
           const records =
@@ -1229,7 +1230,7 @@ export class CloseConnector extends BaseConnector {
           }
         }
 
-        if (data.length < batchSize) {
+        if (!nextCursor || data.length === 0) {
           return {
             totalProcessed: recordCount,
             hasMore: false,
