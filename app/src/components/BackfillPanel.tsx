@@ -407,15 +407,15 @@ export function BackfillPanel({
   const pollDestCounts = useCallback(async () => {
     const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
     if (counts) setDestinationCounts(counts);
-  }, [fetchCdcDestinationCounts, workspaceId, flowId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, flowId]);
 
   useEffect(() => {
     pollDestCounts();
-    destCountsPollRef.current = setInterval(pollDestCounts, 30_000);
-    return () => {
-      if (destCountsPollRef.current) clearInterval(destCountsPollRef.current);
-    };
-  }, [pollDestCounts]);
+    const id = setInterval(pollDestCounts, 30_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, flowId]);
 
   const withBusy = async (fn: () => Promise<unknown>) => {
     setBusy(true);
