@@ -1,0 +1,101 @@
+---
+title: "Azure Data Studio vs SSMS in 2026: An Honest Comparison"
+slug: azure-data-studio-vs-ssms
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - azure-data-studio
+  - ssms
+  - sql-server
+  - comparison
+  - tools
+excerpt: "Azure Data Studio was retired in February 2025. Here's what that means for SQL Server users comparing it to SSMS, and what your options are now."
+metaDescription: "Azure Data Studio vs SSMS in 2026: ADS was retired in Feb 2025. Here's what SQL Server users need to know, how SSMS compares, and the best alternatives for modern SQL Server management."
+database: mssql
+category: tool-comparison
+draft: false
+---
+
+If you're searching for "Azure Data Studio vs SSMS" in 2026, the most important thing to know is that Azure Data Studio (ADS) was retired by Microsoft in February 2025. Microsoft now recommends using Visual Studio Code with the MSSQL extension as the cross-platform replacement.
+
+This article covers what happened, how SSMS stacks up now that it's the only standing Microsoft tool, and what alternatives exist.
+
+## What Happened to Azure Data Studio?
+
+Microsoft announced the retirement of Azure Data Studio in early 2025, with the final end-of-life on February 6, 2025. Their rationale: consolidate SQL development tooling into VS Code with the MSSQL extension rather than maintaining a separate application.
+
+Azure Data Studio was a cross-platform (Windows, macOS, Linux) tool built on Electron that provided SQL query editing, notebooks, and basic database management. It never replaced SSMS for DBA work -- it was positioned as a lighter, cross-platform alternative for developers.
+
+With ADS retired, the SQL Server tool landscape simplifies to:
+- **SSMS** -- the full-featured Windows-only management tool
+- **VS Code + MSSQL extension** -- the cross-platform query tool
+- **Third-party tools** -- DBeaver, DataGrip, Mako, and others
+
+## SSMS: What It Is Now
+
+SQL Server Management Studio remains Microsoft's primary tool for SQL Server administration. Current version is SSMS 22.x (as of early 2026). It's free and Windows-only.
+
+### SSMS Strengths
+- **Full DBA tooling**: Agent job management, maintenance plans, replication configuration, Always On dashboard, security management. No other tool matches SSMS's depth for SQL Server administration.
+- **Execution plan analysis**: Visual and detailed execution plan viewer with cost estimates, missing index suggestions, and live query stats.
+- **Activity monitor**: Real-time view of server processes, resource usage, and blocking queries.
+- **Integration Services / Reporting Services**: Direct management of SSIS packages and SSRS reports from within SSMS.
+- **Free**: No licensing cost.
+
+### SSMS Weaknesses
+- **Windows only**: No macOS, no Linux. Full stop.
+- **Heavyweight**: Slow to start, high memory usage. It's a large application that installs with the Visual Studio Shell.
+- **No modern UI**: The interface hasn't changed fundamentally in years. Tabbed query windows work fine, but the overall experience feels dated compared to modern editors.
+- **SQL Server only**: SSMS connects to SQL Server and Azure SQL Database. That's it. If you also work with PostgreSQL or MySQL, you need a separate tool.
+
+## VS Code + MSSQL Extension: The ADS Replacement
+
+Microsoft's official recommendation for cross-platform SQL Server development is VS Code with the MSSQL extension. Here's what it offers:
+
+- **Cross-platform**: Windows, macOS, Linux
+- **SQL query editing**: Syntax highlighting, IntelliSense, query execution
+- **Results grid**: View and export query results
+- **Connection management**: Save and organize SQL Server connections
+- **Lightweight**: VS Code starts fast and uses less memory than SSMS
+
+What it lacks compared to SSMS:
+- No visual execution plan viewer (text-based only)
+- No Agent job management
+- No maintenance plan designer
+- No SSIS/SSRS integration
+- No Activity Monitor
+- Limited schema management UI
+
+For writing and running SQL queries, VS Code + MSSQL is a solid choice. For DBA work, SSMS remains necessary.
+
+## The Comparison That Matters Now
+
+Since ADS is retired, here's the practical comparison:
+
+| | SSMS | VS Code + MSSQL | Third-Party (DBeaver, DataGrip, etc.) |
+|---|---|---|---|
+| Platform | Windows only | Windows, macOS, Linux | Varies (most are cross-platform) |
+| Price | Free | Free | Free to $229/year |
+| DBA features | Complete | Minimal | Varies |
+| SQL editing | Good | Good (with extensions) | Good to excellent |
+| Multi-database | No (SQL Server only) | No (SQL Server only) | Yes |
+| Visual execution plans | Yes | No | Some (DataGrip, DBeaver) |
+| Startup speed | Slow | Fast | Varies |
+
+## If You Were an ADS User
+
+If Azure Data Studio was your primary tool, here's the migration path:
+
+1. **For query work**: Move to VS Code + MSSQL extension. The SQL editing experience is similar, and VS Code's extension ecosystem adds capabilities ADS didn't have.
+2. **For notebooks**: VS Code supports Jupyter notebooks. The SQL notebook experience requires some setup but works.
+3. **For DBA tasks you did in ADS**: You'll need SSMS (on Windows) or a third-party tool. ADS had limited DBA features anyway, so the gap may be small.
+
+## Alternatives Worth Considering
+
+- **DBeaver Community** (free): Cross-platform, supports SQL Server alongside 80+ other databases. Good for teams using multiple database types.
+- **DataGrip** ($99-229/year): JetBrains SQL IDE with the best SQL intelligence. Cross-platform.
+- **HeidiSQL** (free): Windows-native, lightweight, supports SQL Server. Less feature-rich than SSMS but faster for quick queries.
+
+## Where Mako Fits
+
+Mako is a browser-based SQL client with AI-powered autocomplete that connects to SQL Server alongside PostgreSQL, MySQL, ClickHouse, MongoDB, BigQuery, Snowflake, and more. It runs in the browser -- no installation, no platform restrictions. If you need a cross-platform SQL Server query tool and want AI-assisted SQL writing, Mako fills the gap ADS left. Try it free at [mako.ai](https://mako.ai).
