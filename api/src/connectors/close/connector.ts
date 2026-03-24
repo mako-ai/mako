@@ -198,6 +198,19 @@ export class CloseConnector extends BaseConnector {
    * Resolve Close API endpoint for a given activities sub-type.
    * Falls back to generic /activity/ if unknown.
    */
+  private getEntityEndpoint(entity: string): string {
+    const map: Record<string, string> = {
+      leads: "/lead/",
+      opportunities: "/opportunity/",
+      contacts: "/contact/",
+      activities: "/activity/",
+      users: "/user/",
+    };
+    const endpoint = map[entity];
+    if (!endpoint) throw new Error(`No endpoint for entity: ${entity}`);
+    return endpoint;
+  }
+
   private getActivityEndpointForType(subType?: string): string {
     if (!subType) return "/activity/";
     const map: Record<string, string> = {
@@ -601,22 +614,31 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // Handle activities and activity sub-entities (e.g., "activities:Call")
+    // Activities use date_created cursor via GET URL params
     if (entity === "activities" || entity.startsWith("activities:")) {
       return await this.fetchActivitiesChunk(options);
+    }
+
+    // Leads, contacts, and opportunities use the search API with cursor pagination
+    // (avoids _skip pagination loss and 10k limit)
+    if (
+      entity === "leads" ||
+      entity === "contacts" ||
+      entity === "opportunities"
+    ) {
+      return await this.fetchViaSearchApi(options);
     }
 
     const api = this.getCloseClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
 
-    // Initialize or restore state
+    // Offset-based pagination fallback for other entities
     let offset = state?.offset || 0;
     let recordCount = state?.totalProcessed || 0;
     let hasMore = true;
     let iterations = 0;
 
-    // Get total count if this is the first chunk
     let totalCount: number | undefined = state?.metadata?.totalCount;
     if (!state && onProgress) {
       totalCount = await this.fetchTotalCount(entity, since);
@@ -630,44 +652,20 @@ export class CloseConnector extends BaseConnector {
       const params: any = {
         _limit: batchSize,
         _skip: offset,
-        _order_by: "id", // Add consistent ordering for pagination stability
+        _order_by: "id",
       };
 
       try {
-        if (entity === "leads") {
-          response = await this.requestLeadsPage({
-            limit: batchSize,
-            offset,
-            since,
-            orderBy: since ? "-date_updated" : "id",
-          });
-        } else {
-          let endpoint: string;
-          switch (entity) {
-            case "opportunities":
-              endpoint = "/opportunity/";
-              break;
-            case "activities":
-              endpoint = "/activity/";
-              break;
-            case "contacts":
-              endpoint = "/contact/";
-              break;
-            default:
-              throw new Error(`Unsupported entity: ${entity}`);
-          }
+        const endpoint = this.getEntityEndpoint(entity);
 
-          if (since) {
-            const dateFilter = since.toISOString().split("T")[0];
-            params.date_updated__gte = dateFilter;
-            params._order_by = "-date_updated";
-          }
-          response = await api.get(endpoint, { params });
+        if (since) {
+          const dateFilter = since.toISOString().split("T")[0];
+          params.date_updated__gte = dateFilter;
+          params._order_by = "-date_updated";
         }
+        response = await api.get(endpoint, { params });
 
-        const rawData = response.data.data || [];
-        const data =
-          entity === "leads" ? this.normalizeLeadBatch(rawData) : rawData;
+        const data = response.data.data || [];
 
         if (data.length > 0) {
           await onBatch(data);
@@ -683,11 +681,8 @@ export class CloseConnector extends BaseConnector {
         if (hasMore) {
           offset += batchSize;
           iterations++;
-
-          // Rate limiting
           await this.sleep(rateLimitDelay);
         } else {
-          // No more data
           break;
         }
       } catch (error) {
@@ -883,6 +878,163 @@ export class CloseConnector extends BaseConnector {
       iterationsInChunk: iterations,
       metadata: { cursor, endDate: endDate?.toISOString() },
     };
+  }
+
+  private async fetchViaSearchApi(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { entity, onBatch, onProgress, since, state } = options;
+    const api = this.getCloseClient();
+    const batchSize = options.batchSize || this.getBatchSize();
+    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
+    const maxIterations = options.maxIterations || 10;
+
+    let recordCount = state?.totalProcessed || 0;
+    let iterations = 0;
+    let searchCursor: string | null = null;
+
+    const resumeDate: string | null = state?.metadata?.resumeDate ?? null;
+
+    const objectType =
+      entity === "leads"
+        ? "lead"
+        : entity === "contacts"
+          ? "contact"
+          : entity === "opportunities"
+            ? "opportunity"
+            : entity;
+
+    const fieldsMap: Record<string, string[]> = {
+      lead: [
+        ...CloseConnector.LEAD_BASE_FIELDS,
+        "contacts",
+        ...(await this.getLeadCustomFieldIds()),
+      ],
+    };
+
+    const queries: any[] = [{ type: "object_type", object_type: objectType }];
+
+    const dateFilterValue =
+      resumeDate || (since ? since.toISOString().split("T")[0] : null);
+    if (dateFilterValue) {
+      queries.push({
+        type: "field_condition",
+        field: {
+          type: "regular_field",
+          object_type: objectType,
+          field_name: "date_created",
+        },
+        condition: {
+          type: "moment_range",
+          on_or_after: {
+            type: "fixed_local_date",
+            value: dateFilterValue,
+            which: "start",
+          },
+          before: null,
+        },
+      });
+    }
+
+    const searchBody: any = {
+      query: { type: "and", queries },
+      _limit: batchSize,
+      sort: [
+        {
+          direction: "asc",
+          field: {
+            object_type: objectType,
+            type: "regular_field",
+            field_name: "date_created",
+          },
+        },
+      ],
+    };
+
+    if (fieldsMap[objectType]) {
+      searchBody._fields = { [objectType]: fieldsMap[objectType] };
+    }
+
+    if (!state && onProgress) {
+      const countBody = {
+        query: { type: "object_type", object_type: objectType },
+        include_counts: true,
+        results_limit: 0,
+      };
+      try {
+        const countResp = await api.post("/data/search/", countBody);
+        const total = countResp.data?.count?.total;
+        if (typeof total === "number") {
+          onProgress(0, total);
+        }
+      } catch {
+        onProgress(0, undefined);
+      }
+    }
+
+    let lastDateCreated: string | null = resumeDate;
+
+    while (iterations < maxIterations) {
+      try {
+        const body = { ...searchBody };
+        if (searchCursor) {
+          body.cursor = searchCursor;
+        }
+
+        const response = await api.post("/data/search/", body);
+        const data = response.data.data || [];
+        searchCursor = response.data.cursor || null;
+
+        if (data.length > 0) {
+          const records =
+            entity === "leads" ? this.normalizeLeadBatch(data) : data;
+          await onBatch(records);
+          recordCount += records.length;
+          lastDateCreated =
+            data[data.length - 1].date_created?.split("T")[0] ||
+            lastDateCreated;
+          if (onProgress) {
+            onProgress(recordCount, undefined);
+          }
+        }
+
+        if (!searchCursor || data.length === 0) {
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: iterations + 1,
+            metadata: { resumeDate: lastDateCreated },
+          };
+        }
+
+        iterations++;
+        await this.sleep(rateLimitDelay);
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return {
+      totalProcessed: recordCount,
+      hasMore: true,
+      iterationsInChunk: iterations,
+      metadata: { resumeDate: lastDateCreated },
+    };
+  }
+
+  private async getLeadCustomFieldIds(): Promise<string[]> {
+    const fields = await this.getLeadFieldSelection();
+    return fields.split(",").filter(f => f.startsWith("custom."));
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
