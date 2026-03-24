@@ -342,13 +342,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   private async resolveDestination(): Promise<IDatabaseConnection> {
     const doc = await DatabaseConnection.findById(
       this.config.destinationDatabaseId,
-    ).lean();
+    );
     if (!doc) {
       throw new Error(
         `Destination connection ${this.config.destinationDatabaseId} not found`,
       );
     }
-    return doc as IDatabaseConnection;
+    return doc;
   }
 
   private async createWriter(layout: CdcEntityLayout) {
