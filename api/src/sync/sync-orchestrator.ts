@@ -18,7 +18,10 @@ import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
-import { normalizePayloadKeys } from "../sync-cdc/normalization";
+import {
+  normalizePayloadKeys,
+  resolveSourceTimestamp,
+} from "../sync-cdc/normalization";
 import {
   buildCdcEntityLayout,
   hasCdcDestinationAdapter,
@@ -754,7 +757,13 @@ async function performSyncChunkSql(
             }
 
             if (useBulkPath && bulkTempCollection) {
-              await bulkTempCollection.insertMany(processedRecords, {
+              const enrichedRecords = processedRecords.map(
+                (record: Record<string, unknown>) => ({
+                  ...record,
+                  _mako_source_ts: resolveSourceTimestamp(record),
+                }),
+              );
+              await bulkTempCollection.insertMany(enrichedRecords, {
                 ordered: false,
               });
               bulkAccumulatedRows += processedRecords.length;
