@@ -650,6 +650,10 @@ async function performSyncChunkSql(
     const db = Flow.db;
     const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
     bulkTempCollection = db.collection(collName);
+    const isFirstChunk = !state || state.totalProcessed === 0;
+    if (isFirstChunk) {
+      await bulkTempCollection.deleteMany({});
+    }
   }
 
   const writeRows = async (
