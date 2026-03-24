@@ -885,16 +885,15 @@ export class CloseConnector extends BaseConnector {
   ): Promise<FetchState> {
     const { entity, onBatch, onProgress, state } = options;
     const api = this.getCloseClient();
-    const batchSize = options.batchSize || this.getBatchSize();
+    const batchSize = 200;
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
+    const maxIterations = options.maxIterations || 10;
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
     let searchCursor: string | null = null;
-    const maxIterations = options.maxIterations || 10;
 
     // Resume cursor: last record's date_created timestamp from previous chunk.
-    // Used with fixed_utc moment_range to resume from exact position.
     let cursor: string | null = state?.metadata?.cursor ?? null;
 
     const objectType =
