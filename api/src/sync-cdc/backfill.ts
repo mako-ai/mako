@@ -491,7 +491,7 @@ export class CdcBackfillService {
     }
 
     const enabledEntities = resolveConfiguredEntities(flow).entities;
-    const tablePrefix = flow.tableDestination.tableName || "sync";
+    const tablePrefix = flow.tableDestination.tableName || "";
     const schema = flow.tableDestination.schema;
     const stageSchema =
       destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
