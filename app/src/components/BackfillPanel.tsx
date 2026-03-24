@@ -306,7 +306,7 @@ export function BackfillPanel({
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const destCountsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
 
   const streamState: StreamState = cdc?.streamState || "idle";
@@ -407,15 +407,15 @@ export function BackfillPanel({
   const pollDestCounts = useCallback(async () => {
     const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
     if (counts) setDestinationCounts(counts);
-  }, [fetchCdcDestinationCounts, workspaceId, flowId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, flowId]);
 
   useEffect(() => {
     pollDestCounts();
-    destCountsPollRef.current = setInterval(pollDestCounts, 30_000);
-    return () => {
-      if (destCountsPollRef.current) clearInterval(destCountsPollRef.current);
-    };
-  }, [pollDestCounts]);
+    const id = setInterval(pollDestCounts, 30_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, flowId]);
 
   const withBusy = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -740,6 +740,18 @@ export function BackfillPanel({
                 )}
               </Box>
               <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                {streamState === "idle" && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                    onClick={handleResumeStream}
+                    disabled={busy}
+                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                  >
+                    Start
+                  </Button>
+                )}
                 {streamState === "active" && (
                   <Button
                     size="small"

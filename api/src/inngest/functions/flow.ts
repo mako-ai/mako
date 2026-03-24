@@ -9,6 +9,9 @@ import {
 import {
   performSync,
   performSyncChunk,
+  performBulkFlush,
+  performStagingMerge,
+  performStagingCleanup,
   SyncLogger,
 } from "../../services/sync-executor.service";
 import {
@@ -1660,6 +1663,138 @@ export const flowFunction = inngest.createFunction(
             entity,
             totalChunks: chunkIndex,
           });
+
+          const useBulkPath = isCdcEnabled && destinationType === "bigquery";
+          if (useBulkPath) {
+            const flowTableDest = (flow as any).tableDestination;
+            const bulkEntityLayout = ((flow as any).entityLayouts || []).find(
+              (l: any) =>
+                l.entity === entity || l.entity === entity.split(":")[0],
+            );
+            const bulkPartitioning = bulkEntityLayout?.partitionField
+              ? {
+                  type: "time" as const,
+                  field: bulkEntityLayout.partitionField,
+                  granularity: bulkEntityLayout.partitionGranularity || "day",
+                  requirePartitionFilter:
+                    flowTableDest?.partitioning?.requirePartitionFilter,
+                }
+              : flowTableDest?.partitioning?.enabled
+                ? {
+                    type: flowTableDest.partitioning.type || "time",
+                    field:
+                      flowTableDest.partitioning.type === "ingestion"
+                        ? "_syncedAt"
+                        : flowTableDest.partitioning.field || "_syncedAt",
+                    granularity:
+                      flowTableDest.partitioning.granularity || "day",
+                    requirePartitionFilter:
+                      flowTableDest.partitioning.requirePartitionFilter,
+                  }
+                : undefined;
+            const bulkClustering = bulkEntityLayout?.clusterFields?.length
+              ? { fields: bulkEntityLayout.clusterFields }
+              : flowTableDest?.clustering?.enabled &&
+                  flowTableDest.clustering.fields?.length
+                ? { fields: flowTableDest.clustering.fields }
+                : undefined;
+
+            const bulkSyncOptions = {
+              dataSourceId: dataSourceId.toString(),
+              destinationId: flow.destinationDatabaseId.toString(),
+              destinationDatabaseName: flow.destinationDatabaseName,
+              flowId: flowId.toString(),
+              workspaceId: flow.workspaceId.toString(),
+              syncEngine: (flow as any).syncEngine,
+              entity,
+              isIncremental: flow.syncMode === "incremental",
+              tableDestination: flowTableDest,
+              deleteMode: (flow as any).deleteMode,
+              entityPartitioning: bulkPartitioning,
+              entityClustering: bulkClustering,
+            };
+
+            logger.info(`Flushing ${entity} bulk buffer to BigQuery staging`, {
+              flowId,
+              entity,
+            });
+            appendExecutionLog(
+              "info",
+              `Flushing ${entity} buffer to BigQuery staging via Parquet`,
+              {
+                entity,
+              },
+            );
+            await step.run(`flush-final-${safeEntityStepId}`, async () => {
+              await performBulkFlush(bulkSyncOptions);
+            });
+            appendExecutionLog(
+              "info",
+              `${entity} buffer flushed to staging table`,
+              {
+                entity,
+              },
+            );
+            logger.info(`Merging ${entity} staging table to live`, {
+              flowId,
+              entity,
+            });
+            appendExecutionLog(
+              "info",
+              `Merging ${entity} staging table to live`,
+              {
+                entity,
+              },
+            );
+            await step.run(`merge-staging-${safeEntityStepId}`, async () => {
+              return performStagingMerge(bulkSyncOptions);
+            });
+            appendExecutionLog(
+              "info",
+              `${entity} merged staging to live table`,
+              {
+                entity,
+              },
+            );
+            logger.info(`Cleaning up ${entity} staging table`, {
+              flowId,
+              entity,
+            });
+            await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
+              await performStagingCleanup(bulkSyncOptions);
+            });
+            logger.info(
+              `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
+              { flowId, entity },
+            );
+            appendExecutionLog(
+              "info",
+              `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
+              {
+                entity,
+              },
+            );
+
+            if (executionId) {
+              try {
+                const db = Flow.db;
+                await db.collection("flow_executions").updateOne(
+                  { _id: new Types.ObjectId(executionId) },
+                  {
+                    $set: {
+                      lastHeartbeat: new Date(),
+                      [`stats.entityStatus.${entity}`]: "completed",
+                    },
+                    $addToSet: {
+                      "stats.syncedEntities": entity,
+                    },
+                  },
+                );
+              } catch {
+                // non-critical
+              }
+            }
+          }
 
           if (checkpointEnabled && state) {
             await step.run(

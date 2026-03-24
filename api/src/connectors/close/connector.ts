@@ -134,7 +134,7 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
 );
 
 export class CloseConnector extends BaseConnector {
-  private static readonly LEAD_BASE_FIELDS = [
+  private static readonly LEAD_FIELDS = [
     "id",
     "name",
     "display_name",
@@ -148,14 +148,22 @@ export class CloseConnector extends BaseConnector {
     "organization_id",
     "status_id",
     "status_label",
+    "source",
     "addresses",
     "url",
-    "source",
+    "html_url",
     "contact_ids",
+    "contacts",
+    "opportunities",
+    "tasks",
+    "integration_links",
+    "custom",
+    "primary_email",
+    "primary_phone",
   ] as const;
 
   private static readonly LEAD_ALLOWED_NORMALIZED_FIELDS = new Set<string>(
-    CloseConnector.LEAD_BASE_FIELDS,
+    CloseConnector.LEAD_FIELDS,
   );
 
   private closeApi: AxiosInstance | null = null;
@@ -198,6 +206,40 @@ export class CloseConnector extends BaseConnector {
    * Resolve Close API endpoint for a given activities sub-type.
    * Falls back to generic /activity/ if unknown.
    */
+  private getSearchObjectType(entity: string): string {
+    const map: Record<string, string> = {
+      leads: "lead",
+      contacts: "contact",
+      opportunities: "opportunity",
+      activities: "activity",
+      "activities:Meeting": "activity.meeting",
+      "activities:Note": "activity.note",
+      "activities:Call": "activity.call",
+      "activities:Email": "activity.email",
+      "activities:SMS": "activity.sms",
+      "activities:EmailThread": "activity.email_thread",
+      "activities:LeadStatusChange": "activity.lead_status_change",
+      "activities:OpportunityStatusChange":
+        "activity.opportunity_status_change",
+      "activities:TaskCompleted": "activity.task_completed",
+      "activities:CustomActivity": "activity.custom",
+    };
+    return map[entity] || entity;
+  }
+
+  private getEntityEndpoint(entity: string): string {
+    const map: Record<string, string> = {
+      leads: "/lead/",
+      opportunities: "/opportunity/",
+      contacts: "/contact/",
+      activities: "/activity/",
+      users: "/user/",
+    };
+    const endpoint = map[entity];
+    if (!endpoint) throw new Error(`No endpoint for entity: ${entity}`);
+    return endpoint;
+  }
+
   private getActivityEndpointForType(subType?: string): string {
     if (!subType) return "/activity/";
     const map: Record<string, string> = {
@@ -220,7 +262,7 @@ export class CloseConnector extends BaseConnector {
       return this.cachedLeadFieldSelection;
     }
 
-    const fields = new Set<string>(CloseConnector.LEAD_BASE_FIELDS);
+    const fields = new Set<string>(CloseConnector.LEAD_FIELDS);
     const api = this.getCloseClient();
     const customFieldEndpoints = [
       "/custom_field/lead/",
@@ -601,22 +643,27 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // Handle activities and activity sub-entities (e.g., "activities:Call")
-    if (entity === "activities" || entity.startsWith("activities:")) {
-      return await this.fetchActivitiesChunk(options);
+    // All main entities use the search API with cursor pagination
+    if (
+      entity === "leads" ||
+      entity === "contacts" ||
+      entity === "opportunities" ||
+      entity === "activities" ||
+      entity.startsWith("activities:")
+    ) {
+      return await this.fetchViaSearchApi(options);
     }
 
     const api = this.getCloseClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
 
-    // Initialize or restore state
+    // Offset-based pagination fallback for other entities
     let offset = state?.offset || 0;
     let recordCount = state?.totalProcessed || 0;
     let hasMore = true;
     let iterations = 0;
 
-    // Get total count if this is the first chunk
     let totalCount: number | undefined = state?.metadata?.totalCount;
     if (!state && onProgress) {
       totalCount = await this.fetchTotalCount(entity, since);
@@ -630,58 +677,20 @@ export class CloseConnector extends BaseConnector {
       const params: any = {
         _limit: batchSize,
         _skip: offset,
-        _order_by: "id", // Add consistent ordering for pagination stability
+        _order_by: "id",
       };
 
       try {
-        if (entity === "leads") {
-          response = await this.requestLeadsPage({
-            limit: batchSize,
-            offset,
-            since,
-            orderBy: since ? "-date_updated" : "id",
-          });
-        } else {
-          let endpoint: string;
-          switch (entity) {
-            case "opportunities":
-              endpoint = "/opportunity/";
-              break;
-            case "activities":
-              endpoint = "/activity/";
-              break;
-            case "contacts":
-              endpoint = "/contact/";
-              break;
-            default:
-              throw new Error(`Unsupported entity: ${entity}`);
-          }
+        const endpoint = this.getEntityEndpoint(entity);
 
-          // For incremental sync, use POST with query in body
-          if (since) {
-            const dateFilter = since.toISOString().split("T")[0];
-            const postData = {
-              _params: {
-                _limit: batchSize,
-                _skip: offset,
-                _order_by: "-date_updated",
-                query: `date_updated>="${dateFilter}"`,
-              },
-            };
-
-            response = await api.post(endpoint, postData, {
-              headers: {
-                "x-http-method-override": "GET",
-              },
-            });
-          } else {
-            response = await api.get(endpoint, { params });
-          }
+        if (since) {
+          const dateFilter = since.toISOString().split("T")[0];
+          params.date_updated__gte = dateFilter;
+          params._order_by = "-date_updated";
         }
+        response = await api.get(endpoint, { params });
 
-        const rawData = response.data.data || [];
-        const data =
-          entity === "leads" ? this.normalizeLeadBatch(rawData) : rawData;
+        const data = response.data.data || [];
 
         if (data.length > 0) {
           await onBatch(data);
@@ -697,11 +706,8 @@ export class CloseConnector extends BaseConnector {
         if (hasMore) {
           offset += batchSize;
           iterations++;
-
-          // Rate limiting
           await this.sleep(rateLimitDelay);
         } else {
-          // No more data
           break;
         }
       } catch (error) {
@@ -816,159 +822,66 @@ export class CloseConnector extends BaseConnector {
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
     const maxIterations = options.maxIterations || 10;
 
-    // Parse sub-entity for endpoint selection (e.g., "activities:Call")
     let activitySubType: string | undefined;
     if (entity.includes(":")) {
       const [, activityType] = entity.split(":");
       activitySubType = activityType;
     }
 
-    // Initialize or restore state
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // For date-based pagination metadata
-    const now = new Date();
-    let currentDate = state?.metadata?.currentDate
-      ? new Date(state.metadata.currentDate)
-      : new Date(now);
-    let dailyOffset = state?.metadata?.dailyOffset || 0;
+    // Cursor-based pagination ascending by date_created.
+    // Uses gte so ties are included — MERGE deduplicates on import.
+    let cursor: string | null = state?.metadata?.cursor ?? null;
     const endDate =
       since ||
       (state?.metadata?.endDate ? new Date(state.metadata.endDate) : null);
-    let isCheckingForOlderData =
-      state?.metadata?.isCheckingForOlderData || false;
 
-    // Initialize progress if this is the first chunk
     if (!state && onProgress) {
-      // We can't accurately predict total count with date-based pagination
       onProgress(0, undefined);
     }
 
     while (iterations < maxIterations) {
       try {
         const params: any = {
-          _limit: isCheckingForOlderData ? 1 : batchSize, // Only check if older data exists, don't fetch it all
-          _skip: dailyOffset,
-          _order_by: "-date_created", // Most recent first within each day
+          _limit: batchSize,
+          _order_by: "-date_created",
         };
-
-        // Build the query based on current state
-        let query = "";
-        if (isCheckingForOlderData) {
-          // Final check: only filter by date_created__lt to see if any older data exists
-          // Query for data BEFORE the current day (not including it, to avoid re-fetching)
-          query = `date_created__lt="${currentDate.toISOString().split("T")[0]}"`;
-        } else {
-          // Normal date range for a specific day
-          const nextDay = new Date(currentDate);
-          nextDay.setDate(nextDay.getDate() + 1);
-          query = `date_created__gte="${currentDate.toISOString().split("T")[0]}" AND date_created__lt="${nextDay.toISOString().split("T")[0]}"`;
+        if (cursor) {
+          params.date_created__lt = cursor;
+        }
+        if (endDate) {
+          params.date_created__gte = endDate.toISOString().split("T")[0];
         }
 
-        // No _type filter needed: using type-specific endpoint when applicable
-
-        const postData = {
-          _params: {
-            ...params,
-            query,
-          },
-        };
-
-        const response = await api.post(
+        const response = await api.get(
           this.getActivityEndpointForType(activitySubType),
-          postData,
-          {
-            headers: {
-              "x-http-method-override": "GET",
-            },
-          },
+          { params },
         );
 
         const data = response.data.data || [];
 
-        // Only process and count data if we're not just checking for existence
-        if (data.length > 0 && !isCheckingForOlderData) {
+        if (data.length > 0) {
           await onBatch(data);
           recordCount += data.length;
-
+          cursor = data[data.length - 1].date_created;
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
         }
 
-        const hasMoreInCurrentQuery = response.data.has_more || false;
-
-        if (isCheckingForOlderData) {
-          // Probe mode issues a single request; avoid paginating older windows.
-          if (data.length === 0) {
-            // No older data exists - we're done
-            return {
-              totalProcessed: recordCount,
-              hasMore: false,
-              iterationsInChunk: iterations,
-              metadata: {
-                currentDate: currentDate.toISOString(),
-                dailyOffset: 0,
-                endDate: endDate?.toISOString(),
-                isCheckingForOlderData: false,
-              },
-            };
-          } else {
-            // Older data exists - jump directly to that date and continue normal fetching
-            const oldestRecord = data[0];
-            const dateCreated = new Date(oldestRecord.date_created);
-            currentDate = new Date(
-              dateCreated.getFullYear(),
-              dateCreated.getMonth(),
-              dateCreated.getDate(),
-            );
-            dailyOffset = 0;
-            isCheckingForOlderData = false;
-            iterations++;
-            await this.sleep(rateLimitDelay);
-            continue;
-          }
+        if (!response.data.has_more || data.length === 0) {
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: iterations + 1,
+            metadata: { cursor, endDate: endDate?.toISOString() },
+          };
         }
 
-        if (hasMoreInCurrentQuery) {
-          // More data in current date/query
-          dailyOffset += batchSize;
-          iterations++;
-          await this.sleep(rateLimitDelay);
-        } else {
-          // Finished current day
-          if (data.length < batchSize && !since) {
-            // Found a day with less than a full page in full sync - need to check if older data exists
-            isCheckingForOlderData = true;
-            dailyOffset = 0;
-            iterations++;
-            await this.sleep(rateLimitDelay);
-          } else {
-            // Move to previous day
-            currentDate = new Date(currentDate);
-            currentDate.setDate(currentDate.getDate() - 1);
-            dailyOffset = 0;
-
-            // Check if we've reached the end date (for incremental sync)
-            if (endDate && currentDate < endDate) {
-              return {
-                totalProcessed: recordCount,
-                hasMore: false,
-                iterationsInChunk: iterations,
-                metadata: {
-                  currentDate: currentDate.toISOString(),
-                  dailyOffset: 0,
-                  endDate: endDate.toISOString(),
-                  isCheckingForOlderData: false,
-                },
-              };
-            }
-
-            iterations++;
-            await this.sleep(rateLimitDelay);
-          }
-        }
+        iterations++;
+        await this.sleep(rateLimitDelay);
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 429) {
           const retryAfter = parseInt(
@@ -978,25 +891,405 @@ export class CloseConnector extends BaseConnector {
             retryAfterSeconds: retryAfter,
           });
           await this.sleep(retryAfter * 1000);
-          // Don't increment iterations for rate limit retries
         } else {
           throw error;
         }
       }
     }
 
-    // Reached max iterations for this chunk
     return {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: {
-        currentDate: currentDate.toISOString(),
-        dailyOffset,
-        endDate: endDate?.toISOString(),
-        isCheckingForOlderData,
-      },
+      metadata: { cursor, endDate: endDate?.toISOString() },
     };
+  }
+
+  private async fetchViaSearchApi(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { entity, onBatch, onProgress, state } = options;
+    const api = this.getCloseClient();
+    const batchSize = 200;
+    const rateLimitDelay = Math.max(
+      500,
+      options.rateLimitDelay || this.getRateLimitDelay(),
+    );
+    const maxIterations = options.maxIterations || 10;
+
+    let recordCount = state?.totalProcessed || 0;
+    let iterations = 0;
+    const SEARCH_SKIP_LIMIT = 9800;
+
+    // Resume cursor: last record's date_created timestamp from previous chunk.
+    let cursor: string | null = state?.metadata?.cursor ?? null;
+
+    const objectType = this.getSearchObjectType(entity);
+
+    const commonActivityFields = [
+      "id",
+      "_type",
+      "activity_at",
+      "contact_id",
+      "created_by",
+      "created_by_name",
+      "date_created",
+      "date_updated",
+      "lead_id",
+      "organization_id",
+      "source",
+      "updated_by",
+      "updated_by_name",
+      "user_id",
+      "user_name",
+      "users",
+    ];
+
+    const fieldsMap: Record<string, string[]> = {
+      lead: [
+        "id",
+        "name",
+        "display_name",
+        "description",
+        "date_created",
+        "date_updated",
+        "created_by",
+        "created_by_name",
+        "updated_by",
+        "updated_by_name",
+        "organization_id",
+        "status_id",
+        "status_label",
+        "source",
+        "addresses",
+        "url",
+        "html_url",
+        "contacts",
+        "contact_ids",
+        "opportunities",
+        "tasks",
+        "integration_links",
+        "custom",
+        "primary_email",
+        "primary_phone",
+      ],
+      contact: [
+        "id",
+        "name",
+        "display_name",
+        "title",
+        "emails",
+        "phones",
+        "urls",
+        "lead_id",
+        "organization_id",
+        "date_created",
+        "date_updated",
+        "created_by",
+        "updated_by",
+        "integration_links",
+        "timezone",
+        "custom",
+      ],
+      opportunity: [
+        "id",
+        "lead_id",
+        "lead_name",
+        "contact_id",
+        "contact_name",
+        "status_id",
+        "status_label",
+        "status_type",
+        "status_display_name",
+        "pipeline_id",
+        "pipeline_name",
+        "user_id",
+        "user_name",
+        "value",
+        "value_currency",
+        "value_formatted",
+        "value_period",
+        "annualized_value",
+        "expected_value",
+        "annualized_expected_value",
+        "confidence",
+        "note",
+        "date_created",
+        "date_updated",
+        "date_won",
+        "date_lost",
+        "created_by",
+        "created_by_name",
+        "updated_by",
+        "updated_by_name",
+        "organization_id",
+        "integration_links",
+        "attachments",
+        "is_stalled",
+        "stall_status",
+        "custom",
+      ],
+      "activity.meeting": [
+        ...commonActivityFields,
+        "title",
+        "note",
+        "summary",
+        "duration",
+        "actual_duration",
+        "starts_at",
+        "ends_at",
+        "location",
+        "status",
+        "attendees",
+        "calendar_event_link",
+        "conference_links",
+      ],
+      "activity.note": [
+        ...commonActivityFields,
+        "title",
+        "note",
+        "note_html",
+        "attachments",
+        "pinned",
+      ],
+      "activity.lead_status_change": [
+        ...commonActivityFields,
+        "old_status_id",
+        "old_status_label",
+        "new_status_id",
+        "new_status_label",
+      ],
+      "activity.opportunity_status_change": [
+        ...commonActivityFields,
+        "opportunity_id",
+        "opportunity_value",
+        "opportunity_value_currency",
+        "opportunity_value_formatted",
+        "opportunity_value_period",
+        "opportunity_confidence",
+        "opportunity_date_won",
+        "old_status_id",
+        "old_status_label",
+        "old_status_type",
+        "new_status_id",
+        "new_status_label",
+        "new_status_type",
+        "old_pipeline_id",
+        "old_pipeline_name",
+        "new_pipeline_id",
+        "new_pipeline_name",
+      ],
+      "activity.call": [
+        ...commonActivityFields,
+        "direction",
+        "disposition",
+        "duration",
+        "status",
+        "note",
+        "note_html",
+        "phone",
+        "remote_phone",
+        "remote_phone_formatted",
+        "local_phone",
+        "local_phone_formatted",
+        "remote_country_iso",
+        "local_country_iso",
+        "has_recording",
+        "recording_url",
+        "recording_duration",
+        "recording_transcript",
+        "voicemail_duration",
+        "voicemail_url",
+        "voicemail_transcript",
+        "date_answered",
+        "cost",
+        "outcome_id",
+        "outcome_reason",
+        "call_method",
+        "is_forwarded",
+        "forwarded_to",
+        "transferred_from",
+        "transferred_to",
+        "sequence_id",
+        "sequence_name",
+      ],
+      "activity.email": [
+        ...commonActivityFields,
+        "direction",
+        "status",
+        "subject",
+        "body_text",
+        "body_html",
+        "body_preview",
+        "body_text_quoted",
+        "body_html_quoted",
+        "sender",
+        "to",
+        "cc",
+        "bcc",
+        "envelope",
+        "attachments",
+        "opens",
+        "opens_summary",
+        "has_reply",
+        "date_sent",
+        "date_scheduled",
+        "email_account_id",
+        "thread_id",
+        "in_reply_to_id",
+        "message_ids",
+        "references",
+        "template_id",
+        "template_name",
+        "sequence_id",
+        "sequence_name",
+        "send_as_id",
+      ],
+      "activity.sms": [
+        ...commonActivityFields,
+        "direction",
+        "status",
+        "text",
+        "local_phone",
+        "local_phone_formatted",
+        "remote_phone",
+        "remote_phone_formatted",
+        "local_country_iso",
+        "remote_country_iso",
+      ],
+    };
+
+    if (!state && onProgress) {
+      try {
+        const countResp = await api.post("/data/search/", {
+          query: { type: "object_type", object_type: objectType },
+          include_counts: true,
+          results_limit: 0,
+        });
+        const total = countResp.data?.count?.total;
+        if (typeof total === "number") {
+          onProgress(0, total);
+        }
+      } catch {
+        onProgress(0, undefined);
+      }
+    }
+
+    let skip = state?.metadata?.skip || 0;
+
+    while (iterations < maxIterations) {
+      try {
+        const queries: any[] = [
+          { type: "object_type", object_type: objectType },
+        ];
+        if (cursor) {
+          queries.push({
+            type: "field_condition",
+            field: {
+              type: "regular_field",
+              object_type: objectType,
+              field_name: "date_created",
+            },
+            condition: {
+              type: "moment_range",
+              on_or_after: {
+                type: "fixed_utc",
+                value: cursor,
+                which: "start",
+              },
+              before: null,
+            },
+          });
+        }
+
+        const body: any = {
+          query: { type: "and", queries },
+          _limit: batchSize,
+          _skip: skip,
+          sort: [
+            {
+              direction: "asc",
+              field: {
+                object_type: objectType,
+                type: "regular_field",
+                field_name: "date_created",
+              },
+            },
+          ],
+        };
+        if (fieldsMap[objectType]) {
+          body._fields = { [objectType]: fieldsMap[objectType] };
+        }
+
+        const response = await api.post("/data/search/", body);
+        const data = response.data.data || [];
+        const nextCursor = response.data.cursor || null;
+
+        if (data.length > 0) {
+          const records =
+            entity === "leads" ? this.normalizeLeadBatch(data) : data;
+          await onBatch(records);
+          recordCount += records.length;
+          skip += data.length;
+
+          const rawCursor = data[data.length - 1].date_created || "";
+          cursor = rawCursor.replace(/\+00:00$/, "Z").replace(/\.000000/, "");
+
+          if (onProgress) {
+            onProgress(recordCount, undefined);
+          }
+        }
+
+        if (!nextCursor || data.length === 0) {
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: iterations + 1,
+            metadata: { cursor, skip },
+          };
+        }
+
+        // Near Close 10k skip limit: window by date_created
+        if (skip >= SEARCH_SKIP_LIMIT) {
+          skip = 0;
+        }
+
+        iterations++;
+        await this.sleep(rateLimitDelay);
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          this.emitSyncLog("warn", "Close API rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+            entity,
+            recordsFetched: recordCount,
+            page: iterations,
+          });
+          logger.warn("Rate limited on search API, waiting", {
+            retryAfterSeconds: retryAfter,
+            entity,
+            recordsFetched: recordCount,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return {
+      totalProcessed: recordCount,
+      hasMore: true,
+      iterationsInChunk: iterations,
+      metadata: { cursor, skip },
+    };
+  }
+
+  private async getLeadCustomFieldIds(): Promise<string[]> {
+    const fields = await this.getLeadFieldSelection();
+    return fields.split(",").filter(f => f.startsWith("custom."));
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
@@ -1080,27 +1373,12 @@ export class CloseConnector extends BaseConnector {
               throw new Error(`Unsupported entity: ${entity}`);
           }
 
-          // For incremental sync, use POST with query in body (Close API requirement)
           if (since) {
-            const dateFilter = since.toISOString().split("T")[0]; // Format as YYYY-MM-DD
-            const postData = {
-              _params: {
-                _limit: batchSize,
-                _skip: offset,
-                _order_by: "-date_updated",
-                query: `date_updated>="${dateFilter}"`,
-              },
-            };
-
-            response = await api.post(endpoint, postData, {
-              headers: {
-                "x-http-method-override": "GET",
-              },
-            });
-          } else {
-            // Regular GET request for full sync
-            response = await api.get(endpoint, { params });
+            const dateFilter = since.toISOString().split("T")[0];
+            params.date_updated__gte = dateFilter;
+            params._order_by = "-date_updated";
           }
+          response = await api.get(endpoint, { params });
         }
 
         const rawData = response.data.data || [];
@@ -1289,132 +1567,57 @@ export class CloseConnector extends BaseConnector {
     }
 
     let recordCount = 0;
-    const now = new Date();
-    let currentDate = new Date(now);
-    const endDate = since;
-    let isCheckingForOlderData = false;
-    let shouldContinue = true;
+    let cursor: string | null = null;
 
     if (onProgress) {
-      // We can't accurately predict total count with date-based pagination
       onProgress(0, undefined);
     }
 
-    while (shouldContinue) {
-      let hasMoreInCurrentQuery = true;
-      let dailyOffset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      try {
+        const params: any = {
+          _limit: batchSize,
+          _order_by: "-date_created",
+        };
+        if (cursor) {
+          params.date_created__lt = cursor;
+        }
+        if (since) {
+          params.date_created__gte = since.toISOString().split("T")[0];
+        }
 
-      while (hasMoreInCurrentQuery) {
-        try {
-          const params: any = {
-            _limit: isCheckingForOlderData ? 1 : batchSize, // Only check if older data exists, don't fetch it all
-            _skip: dailyOffset,
-            _order_by: "-date_created",
-          };
+        const response = await api.get(
+          this.getActivityEndpointForType(activitySubType),
+          { params },
+        );
 
-          // Build the query based on current state
-          let query = "";
-          if (isCheckingForOlderData) {
-            // Final check: only filter by date_created__lt to see if any older data exists
-            // Query for data BEFORE the current day (not including it, to avoid re-fetching)
-            query = `date_created__lt="${currentDate.toISOString().split("T")[0]}"`;
-          } else {
-            // Normal date range for a specific day
-            const nextDay = new Date(currentDate);
-            nextDay.setDate(nextDay.getDate() + 1);
-            query = `date_created__gte="${currentDate.toISOString().split("T")[0]}" AND date_created__lt="${nextDay.toISOString().split("T")[0]}"`;
-          }
+        const data = response.data.data || [];
 
-          // No need to add _type filter - hitting type-specific endpoint
-
-          const postData = {
-            _params: {
-              ...params,
-              query,
-            },
-          };
-
-          const response = await api.post(
-            this.getActivityEndpointForType(activitySubType),
-            postData,
-            {
-              headers: {
-                "x-http-method-override": "GET",
-              },
-            },
-          );
-
-          const data = response.data.data || [];
-
-          // Only process and count data if we're not just checking for existence
-          if (data.length > 0 && !isCheckingForOlderData) {
-            await onBatch(data);
-            recordCount += data.length;
-
-            if (onProgress) {
-              onProgress(recordCount, undefined);
-            }
-          }
-
-          hasMoreInCurrentQuery = response.data.has_more || false;
-
-          if (isCheckingForOlderData) {
-            // Probe mode issues a single request; avoid paginating older windows.
-            if (data.length === 0) {
-              // No older data exists - we're done
-              shouldContinue = false;
-              break;
-            } else {
-              // Older data exists - jump directly to that date and continue normal fetching
-              const oldestRecord = data[0];
-              const dateCreated = new Date(oldestRecord.date_created);
-              currentDate = new Date(
-                dateCreated.getFullYear(),
-                dateCreated.getMonth(),
-                dateCreated.getDate(),
-              );
-              dailyOffset = 0;
-              isCheckingForOlderData = false;
-              await this.sleep(rateLimitDelay);
-              break; // Break inner loop to continue with next day
-            }
-          } else if (hasMoreInCurrentQuery) {
-            dailyOffset += batchSize;
-            await this.sleep(rateLimitDelay);
-          } else {
-            // Finished current day
-            if (data.length < batchSize && !since) {
-              // Found a day with less than a full page in full sync - need to check if older data exists
-              isCheckingForOlderData = true;
-              await this.sleep(rateLimitDelay);
-            } else {
-              // Move on to the next iteration (previous day)
-              break;
-            }
-          }
-        } catch (error) {
-          if (axios.isAxiosError(error) && error.response?.status === 429) {
-            const retryAfter = parseInt(
-              error.response.headers["retry-after"] || "60",
-            );
-            logger.warn("Rate limited, waiting", {
-              retryAfterSeconds: retryAfter,
-            });
-            await this.sleep(retryAfter * 1000);
-          } else {
-            throw error;
+        if (data.length > 0) {
+          await onBatch(data);
+          recordCount += data.length;
+          cursor = data[data.length - 1].date_created;
+          if (onProgress) {
+            onProgress(recordCount, undefined);
           }
         }
-      }
 
-      if (!isCheckingForOlderData) {
-        // Move to previous day
-        currentDate = new Date(currentDate);
-        currentDate.setDate(currentDate.getDate() - 1);
-
-        // Check if we've reached the end date (for incremental sync)
-        if (endDate && currentDate < endDate) {
-          shouldContinue = false;
+        hasMore = response.data.has_more && data.length > 0;
+        if (hasMore) {
+          await this.sleep(rateLimitDelay);
+        }
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
         }
 
         await this.sleep(rateLimitDelay);
@@ -1551,32 +1754,14 @@ export class CloseConnector extends BaseConnector {
           return undefined;
       }
 
-      let response: any;
-
-      // For incremental sync with date filter, use POST request
+      const params: any = {
+        _limit: 0,
+        _fields: "id",
+      };
       if (since) {
-        const dateFilter = since.toISOString().split("T")[0]; // Format as YYYY-MM-DD
-        const postData = {
-          _params: {
-            _limit: 0,
-            _fields: "id",
-            query: `date_updated>="${dateFilter}"`,
-          },
-        };
-
-        response = await api.post(endpoint, postData, {
-          headers: {
-            "x-http-method-override": "GET",
-          },
-        });
-      } else {
-        // Regular GET request for full sync
-        const params = {
-          _limit: 0,
-          _fields: "id",
-        };
-        response = await api.get(endpoint, { params });
+        params.date_updated__gte = since.toISOString().split("T")[0];
       }
+      const response = await api.get(endpoint, { params });
 
       // Close API returns total_results in the response
       return response.data.total_results || undefined;

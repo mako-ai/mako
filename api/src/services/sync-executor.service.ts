@@ -1,6 +1,9 @@
 import {
   performSync as performSyncOrchestrated,
   performSyncChunk as performSyncChunkOrchestrated,
+  performBulkFlush as performBulkFlushOrchestrated,
+  performStagingMerge as performStagingMergeOrchestrated,
+  performStagingCleanup as performStagingCleanupOrchestrated,
   SyncChunkOptions,
   SyncChunkResult,
 } from "../sync/sync-orchestrator";
@@ -24,6 +27,24 @@ export async function performSyncChunk(
   options: SyncChunkOptions,
 ): Promise<SyncChunkResult> {
   return performSyncChunkOrchestrated(options);
+}
+
+export async function performBulkFlush(
+  options: SyncChunkOptions,
+): Promise<void> {
+  return performBulkFlushOrchestrated(options);
+}
+
+export async function performStagingMerge(
+  options: SyncChunkOptions,
+): Promise<{ written: number }> {
+  return performStagingMergeOrchestrated(options);
+}
+
+export async function performStagingCleanup(
+  options: SyncChunkOptions,
+): Promise<void> {
+  return performStagingCleanupOrchestrated(options);
 }
 
 /**

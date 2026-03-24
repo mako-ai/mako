@@ -1,6 +1,14 @@
 import { Types } from "mongoose";
-import type { IFlow } from "../../database/workspace-schema";
+import { promises as fs } from "fs";
+import { BigQuery } from "@google-cloud/bigquery";
+import {
+  DatabaseConnection,
+  type IFlow,
+  type IDatabaseConnection,
+} from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
+import { databaseConnectionService } from "../../services/database-connection.service";
+import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
 import {
   normalizePayloadKeys,
@@ -31,8 +39,56 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
-  async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
-    // DestinationWriter creates tables lazily on first write.
+  async ensureLiveTable(layout: CdcEntityLayout): Promise<void> {
+    await this.createWriter(layout);
+  }
+
+  async ensureLiveTableFromSourceSchema(
+    layout: CdcEntityLayout,
+    sourceTable: string,
+  ): Promise<void> {
+    const destination = await this.resolveDestination();
+    const dataset = this.config.tableDestination.schema;
+
+    const driver = databaseRegistry.getDriver(destination.type);
+    if (!driver?.createTableFromSource) {
+      throw new Error(
+        `Driver ${destination.type} does not support createTableFromSource`,
+      );
+    }
+
+    const result = await driver.createTableFromSource(
+      destination,
+      sourceTable,
+      layout.tableName,
+      {
+        schema: dataset,
+        partitioning: layout.partitioning
+          ? {
+              type: layout.partitioning.type || "time",
+              field: layout.partitioning.field,
+              granularity: layout.partitioning.granularity,
+              requirePartitionFilter:
+                layout.partitioning.requirePartitionFilter,
+            }
+          : undefined,
+        clustering: layout.clustering?.fields?.length
+          ? { fields: layout.clustering.fields }
+          : undefined,
+      },
+    );
+
+    if (!result.success) {
+      throw new Error(
+        result.error || "Failed to create live table from source schema",
+      );
+    }
+
+    log.info("Created live table from source schema", {
+      liveTable: layout.tableName,
+      sourceTable,
+      dataset,
+    });
   }
 
   async applyEvents(params: {
@@ -181,6 +237,204 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return {
       written: write.rowsWritten,
     };
+  }
+
+  async loadStagingFromParquet(
+    parquetPath: string,
+    layout: CdcEntityLayout,
+    flowId: string,
+  ): Promise<{ loaded: number }> {
+    await this.createWriter(layout);
+
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const credentials =
+      typeof conn.service_account_json === "string"
+        ? JSON.parse(conn.service_account_json)
+        : conn.service_account_json;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
+    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
+
+    const bq = new BigQuery({ projectId, credentials });
+    const [metadata] = await bq
+      .dataset(dataset)
+      .table(stagingTable)
+      .load(parquetPath, {
+        sourceFormat: "PARQUET",
+        writeDisposition: "WRITE_APPEND",
+        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
+      });
+
+    const jobMeta = metadata as Record<string, any>;
+    if (jobMeta?.status?.errorResult) {
+      throw new Error(
+        jobMeta.status.errorResult.message || "BigQuery load job failed",
+      );
+    }
+
+    const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
+
+    await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+
+    log.info("Loaded Parquet to BigQuery staging table", {
+      stagingTable,
+      dataset,
+      loaded,
+    });
+
+    return { loaded };
+  }
+
+  async mergeFromStaging(
+    layout: CdcEntityLayout,
+    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
+    flowId: string,
+  ): Promise<{ written: number }> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const liveTable = layout.tableName;
+    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
+    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
+
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
+    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
+
+    const stagingColumnsResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}'`,
+    );
+    const liveColumnsResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${liveTable.replace(/'/g, "''")}'`,
+    );
+
+    const stagingCols = new Set(
+      ((stagingColumnsResult.data as any[]) || []).map(
+        (r: any) => r.column_name as string,
+      ),
+    );
+    const liveCols = new Set(
+      ((liveColumnsResult.data as any[]) || []).map(
+        (r: any) => r.column_name as string,
+      ),
+    );
+
+    if (liveCols.size === 0) {
+      await this.ensureLiveTableFromSourceSchema(layout, stagingTable);
+      for (const col of stagingCols) {
+        liveCols.add(col);
+      }
+    }
+
+    const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
+    if (missingInLive.length > 0) {
+      const stagingSchemaResult = await databaseConnectionService.executeQuery(
+        destination,
+        `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}'`,
+      );
+      const stagingSchema = new Map(
+        ((stagingSchemaResult.data as any[]) || []).map((r: any) => [
+          r.column_name as string,
+          r.data_type as string,
+        ]),
+      );
+      for (const col of missingInLive) {
+        const colType = stagingSchema.get(col) || "STRING";
+        await databaseConnectionService.executeQuery(
+          destination,
+          `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
+        );
+        liveCols.add(col);
+      }
+      log.info("Added missing columns to live table from staging", {
+        liveTable,
+        addedColumns: missingInLive,
+      });
+    }
+
+    const allColumns = Array.from(new Set([...stagingCols, ...liveCols]));
+
+    const keyColumns = layout.keyColumns;
+    const joinCondition = keyColumns
+      .map(k => `T.${escId(k)} = S.${escId(k)}`)
+      .join(" AND ");
+    const nonKeyColumns = allColumns.filter(c => !keyColumns.includes(c));
+
+    const hasSourceTs = allColumns.includes("_mako_source_ts");
+    const hasIngestSeq = allColumns.includes("_mako_ingest_seq");
+    const matchedGuard = hasSourceTs
+      ? ` AND COALESCE(S.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(T.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
+      : hasIngestSeq
+        ? ` AND COALESCE(S.\`_mako_ingest_seq\`, -1) >= COALESCE(T.\`_mako_ingest_seq\`, -1)`
+        : "";
+
+    const updateSet = nonKeyColumns
+      .map(c => `${escId(c)} = S.${escId(c)}`)
+      .join(", ");
+    const insertCols = allColumns.map(escId).join(", ");
+    const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
+
+    const dedupKey = keyColumns.map(escId).join(", ");
+    const dedupSource = `(SELECT * FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
+
+    const mergeQuery = `
+      MERGE INTO ${fullLive} T
+      USING ${dedupSource} S
+      ON ${joinCondition}
+      ${nonKeyColumns.length > 0 ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateSet}` : ""}
+      WHEN NOT MATCHED THEN INSERT (${insertCols}) VALUES (${insertVals})
+    `;
+
+    const result = await databaseConnectionService.executeQuery(
+      destination,
+      mergeQuery,
+    );
+    if (!result.success) {
+      throw new Error(result.error || "BigQuery staging MERGE failed");
+    }
+
+    log.info("Merged staging to live table", {
+      liveTable,
+      stagingTable,
+      dataset,
+    });
+
+    return { written: 0 };
+  }
+
+  async cleanupStaging(layout: CdcEntityLayout, flowId: string): Promise<void> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
+    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
+
+    await databaseConnectionService.executeQuery(
+      destination,
+      `DROP TABLE IF EXISTS ${fullStaging}`,
+    );
+
+    log.info("Cleaned up staging table", { stagingTable, dataset });
+  }
+
+  private async resolveDestination(): Promise<IDatabaseConnection> {
+    const doc = await DatabaseConnection.findById(
+      this.config.destinationDatabaseId,
+    );
+    if (!doc) {
+      throw new Error(
+        `Destination connection ${this.config.destinationDatabaseId} not found`,
+      );
+    }
+    return doc;
   }
 
   private async createWriter(layout: CdcEntityLayout) {

@@ -256,6 +256,17 @@ export interface DatabaseDriver {
   ): Promise<{ success: boolean; error?: string }>;
 
   /**
+   * Create a table with the same schema as a source table, with optional
+   * partitioning/clustering. Does NOT copy data.
+   */
+  createTableFromSource?(
+    database: IDatabaseConnection,
+    sourceTableName: string,
+    targetTableName: string,
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }>;
+
+  /**
    * Drop a table
    */
   dropTable?(
