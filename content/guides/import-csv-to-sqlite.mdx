@@ -1,0 +1,140 @@
+---
+title: "How to Import CSV to SQLite (4 Methods)"
+slug: import-csv-to-sqlite
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - sqlite
+  - csv
+  - import
+  - data
+excerpt: "Four ways to import CSV files into SQLite: the .import command, Python's sqlite3 module, DB Browser for SQLite, and programmatic approaches. Includes type handling tips."
+metaDescription: "Import CSV to SQLite in 2026: .import CLI, Python sqlite3, DB Browser GUI, and more. Step-by-step with code, gotchas, and performance tips."
+database: sqlite
+category: import-export
+draft: false
+---
+
+SQLite doesn't have a built-in `COPY` or `LOAD DATA` SQL command like PostgreSQL or MySQL. Instead, CSV import happens through the sqlite3 CLI tool, programming languages, or GUI applications. Here are the practical options.
+
+## Method 1: sqlite3 CLI .import Command
+
+The sqlite3 command-line tool has a built-in `.import` command that reads CSV files directly.
+
+```bash
+sqlite3 mydb.db
+```
+
+Then inside the sqlite3 shell:
+
+```
+.mode csv
+.import /path/to/users.csv users
+```
+
+If the `users` table doesn't exist, sqlite3 creates it automatically using the first row as column names (all columns will be `TEXT`). If the table already exists, it appends the data -- and treats the first row as data, not headers. To skip the header when importing into an existing table:
+
+```
+.mode csv
+.import --skip 1 /path/to/users.csv users
+```
+
+The `--skip 1` flag requires SQLite 3.32.0 or later (2020).
+
+**One-liner from the shell:**
+
+```bash
+sqlite3 mydb.db -cmd ".mode csv" ".import /path/to/users.csv users"
+```
+
+## Method 2: Python sqlite3 Module
+
+Python's standard library includes sqlite3, making it straightforward to script CSV imports with type control:
+
+```python
+import csv
+import sqlite3
+
+conn = sqlite3.connect('mydb.db')
+cursor = conn.cursor()
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER,
+        name TEXT,
+        email TEXT,
+        signup_date TEXT
+    )
+''')
+
+with open('users.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        cursor.execute(
+            'INSERT INTO users (id, name, email, signup_date) VALUES (?, ?, ?, ?)',
+            (int(row['id']), row['name'], row['email'], row['signup_date'])
+        )
+
+conn.commit()
+conn.close()
+```
+
+This approach gives you full control over type conversion, validation, and error handling per row. For large files, use `executemany` with a generator for better performance:
+
+```python
+with open('users.csv', 'r') as f:
+    reader = csv.reader(f)
+    next(reader)  # skip header
+    cursor.executemany('INSERT INTO users VALUES (?, ?, ?, ?)', reader)
+```
+
+## Method 3: DB Browser for SQLite (GUI)
+
+DB Browser for SQLite is a free, open-source GUI tool:
+
+1. Open your database (or create a new one)
+2. Go to **File > Import > Table from CSV file**
+3. Select your CSV
+4. Configure: column names in first row, delimiter, encoding
+5. Name the target table
+6. Click **OK**
+
+This is the simplest approach for one-off imports. DB Browser handles table creation and basic type inference.
+
+## Method 4: pandas (Python)
+
+If you're already working in Python, pandas provides a one-liner:
+
+```python
+import pandas as pd
+import sqlite3
+
+conn = sqlite3.connect('mydb.db')
+df = pd.read_csv('users.csv')
+df.to_sql('users', conn, if_exists='replace', index=False)
+conn.close()
+```
+
+The `if_exists` parameter controls behavior: `'fail'` (default), `'replace'` (drop and recreate), or `'append'`. pandas handles type inference and creates the table with appropriate types.
+
+**Performance note.** For files under a few hundred MB, pandas works well. For larger files, the sqlite3 CLI `.import` command is significantly faster because it avoids Python's overhead.
+
+## Common Gotchas
+
+**Everything is TEXT.** When using the `.import` command, SQLite creates all columns as `TEXT` if the table doesn't already exist. SQLite is dynamically typed, so this often doesn't matter in practice -- but if you need type constraints, create the table with explicit types before importing.
+
+**No native date type.** SQLite stores dates as TEXT, REAL, or INTEGER. There's no `DATE` or `TIMESTAMP` type. Store dates as ISO 8601 strings (`YYYY-MM-DD HH:MM:SS`) for consistency and to make SQLite's built-in date functions work correctly.
+
+**Comma-in-field issues.** The `.import` command handles quoted fields correctly (fields containing commas wrapped in double quotes). If your CSV uses a different quoting style, you may need to preprocess the file or use Python instead.
+
+**Large files and WAL mode.** For importing large CSVs, enable WAL (Write-Ahead Logging) mode first for better write performance:
+
+```sql
+PRAGMA journal_mode=WAL;
+```
+
+This can make bulk inserts 2-5x faster compared to the default rollback journal.
+
+**Wrapping in a transaction.** The sqlite3 CLI auto-commits after each `.import`. For the Python approach, wrapping all inserts in a single transaction (the default with `conn.commit()` at the end) is much faster than auto-committing per row.
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

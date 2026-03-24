@@ -1,0 +1,154 @@
+---
+title: "How to Import CSV to MySQL (4 Methods)"
+slug: import-csv-to-mysql
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - mysql
+  - csv
+  - import
+  - data
+excerpt: "Four ways to import CSV files into MySQL: LOAD DATA INFILE, mysqlimport, MySQL Workbench, and Mako. Includes permission gotchas and encoding fixes."
+metaDescription: "Import CSV to MySQL in 2026: LOAD DATA INFILE, mysqlimport CLI, Workbench GUI, and Mako. Step-by-step with examples, permission fixes, and common errors."
+database: mysql
+category: import-export
+draft: false
+---
+
+MySQL has several methods for importing CSV data. The fastest is `LOAD DATA INFILE` for server-side files. For client-side imports, `LOAD DATA LOCAL INFILE` or GUI tools work well. Here's a practical rundown of each approach.
+
+## Method 1: LOAD DATA INFILE (Server-Side)
+
+This is MySQL's fastest import method. The file must be on the server's filesystem (or accessible to the MySQL process).
+
+Create the target table first:
+
+```sql
+CREATE TABLE products (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255),
+  price DECIMAL(10,2),
+  category VARCHAR(100),
+  created_at DATETIME
+);
+```
+
+Then load the CSV:
+
+```sql
+LOAD DATA INFILE '/var/lib/mysql-files/products.csv'
+INTO TABLE products
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(name, price, category, created_at);
+```
+
+Key options:
+- `FIELDS TERMINATED BY ','` -- the column delimiter
+- `ENCLOSED BY '"'` -- handles quoted fields
+- `LINES TERMINATED BY '\n'` -- use `'\r\n'` for Windows-generated files
+- `IGNORE 1 ROWS` -- skips the header row
+- Column list at the end maps CSV columns to table columns
+
+**The secure_file_priv restriction.** MySQL 8.0+ restricts file imports to a specific directory set by `secure_file_priv`. Check it with:
+
+```sql
+SHOW VARIABLES LIKE 'secure_file_priv';
+```
+
+Your CSV file must be in that directory, or the command will fail. This is a security feature, not a bug.
+
+## Method 2: LOAD DATA LOCAL INFILE (Client-Side)
+
+When the file is on your local machine (not the server), use the `LOCAL` keyword:
+
+```sql
+LOAD DATA LOCAL INFILE '/local/path/products.csv'
+INTO TABLE products
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS;
+```
+
+This requires `local_infile` to be enabled on both client and server:
+
+```sql
+-- Check current setting
+SHOW GLOBAL VARIABLES LIKE 'local_infile';
+
+-- Enable it (requires SUPER privilege)
+SET GLOBAL local_infile = 1;
+```
+
+When connecting via the mysql CLI, add the `--local-infile` flag:
+
+```bash
+mysql --local-infile -h your-host -u your-user -p your_database
+```
+
+## Method 3: MySQL Workbench
+
+MySQL Workbench provides a table data import wizard:
+
+1. Right-click the target table in the navigator
+2. Select **Table Data Import Wizard**
+3. Choose your CSV file
+4. Configure field separators and encoding
+5. Map columns to table fields
+6. Execute the import
+
+The wizard handles type mapping and shows a preview. It's slower than `LOAD DATA` for large files but provides better error reporting for individual rows.
+
+## Method 4: Mako
+
+Connect to your MySQL database in Mako and use the import feature:
+
+1. Open the import dialog from the interface
+2. Select your CSV file
+3. Mako auto-detects column types and delimiters
+4. Preview and adjust the column mapping
+5. Import
+
+Mako handles type inference and gives you a preview before committing data. No need to worry about `secure_file_priv` or `local_infile` settings since data flows through Mako's connection.
+
+## Common Gotchas
+
+**Windows line endings.** Files created on Windows use `\r\n` line endings. If you see garbled data or import errors, change `LINES TERMINATED BY '\n'` to `LINES TERMINATED BY '\r\n'`.
+
+**Character encoding.** MySQL defaults to the connection's character set. If your CSV is UTF-8 but the connection uses `latin1`, special characters will be corrupted. Set the character set explicitly:
+
+```sql
+LOAD DATA INFILE '/path/file.csv'
+INTO TABLE products
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',';
+```
+
+**NULL vs empty string.** MySQL treats `\N` in CSV files as NULL by default. If your file uses empty strings for missing values, they'll be stored as empty strings, not NULL. To convert:
+
+```sql
+LOAD DATA INFILE '/path/file.csv'
+INTO TABLE products
+FIELDS TERMINATED BY ','
+(name, @price, category)
+SET price = NULLIF(@price, '');
+```
+
+**Date formats.** MySQL expects dates as `YYYY-MM-DD`. For other formats, load into a variable and use `STR_TO_DATE`:
+
+```sql
+LOAD DATA INFILE '/path/file.csv'
+INTO TABLE products
+FIELDS TERMINATED BY ','
+(name, price, category, @date_str)
+SET created_at = STR_TO_DATE(@date_str, '%m/%d/%Y');
+```
+
+**Duplicate keys.** Add `REPLACE` or `IGNORE` after the filename to handle duplicates:
+- `LOAD DATA INFILE ... REPLACE` -- overwrites existing rows with matching keys
+- `LOAD DATA INFILE ... IGNORE` -- skips rows with duplicate keys
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
