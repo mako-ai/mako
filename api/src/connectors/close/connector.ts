@@ -827,148 +827,139 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // For date-based pagination metadata
+    // Sliding window pagination: uses date_created as the cursor.
+    // windowUpper is the exclusive upper bound (start from now, move backwards).
+    // windowLower is the inclusive lower bound (start of current day).
+    // When offset nears Close's 10k skip limit, narrow the window using the
+    // last record's date_created and reset offset to 0.
+    const CLOSE_SKIP_LIMIT = 9900;
     const now = new Date();
-    let currentDate = state?.metadata?.currentDate
-      ? new Date(state.metadata.currentDate)
-      : new Date(now);
+    let windowUpper: string | null = state?.metadata?.windowUpper || null;
+    let windowLower: string =
+      state?.metadata?.windowLower || new Date(now).toISOString().split("T")[0];
     let dailyOffset = state?.metadata?.dailyOffset || 0;
     const endDate =
       since ||
       (state?.metadata?.endDate ? new Date(state.metadata.endDate) : null);
-    let isCheckingForOlderData =
-      state?.metadata?.isCheckingForOlderData || false;
 
-    // Initialize progress if this is the first chunk
     if (!state && onProgress) {
-      // We can't accurately predict total count with date-based pagination
       onProgress(0, undefined);
     }
 
     while (iterations < maxIterations) {
       try {
         const params: any = {
-          _limit: isCheckingForOlderData ? 1 : batchSize, // Only check if older data exists, don't fetch it all
+          _limit: batchSize,
           _skip: dailyOffset,
-          _order_by: "-date_created", // Most recent first within each day
+          _order_by: "-date_created",
         };
 
-        // Build the query based on current state
-        let query = "";
-        if (isCheckingForOlderData) {
-          // Final check: only filter by date_created__lt to see if any older data exists
-          // Query for data BEFORE the current day (not including it, to avoid re-fetching)
-          query = `date_created__lt="${currentDate.toISOString().split("T")[0]}"`;
-        } else {
-          // Normal date range for a specific day
-          const nextDay = new Date(currentDate);
-          nextDay.setDate(nextDay.getDate() + 1);
-          query = `date_created__gte="${currentDate.toISOString().split("T")[0]}" AND date_created__lt="${nextDay.toISOString().split("T")[0]}"`;
+        // Build query: windowLower <= date_created < windowUpper
+        const parts: string[] = [];
+        parts.push(`date_created__gte="${windowLower}"`);
+        if (windowUpper) {
+          parts.push(`date_created__lt="${windowUpper}"`);
         }
-
-        // No _type filter needed: using type-specific endpoint when applicable
+        const query = parts.join(" AND ");
 
         const postData = {
-          _params: {
-            ...params,
-            query,
-          },
+          _params: { ...params, query },
         };
 
         const response = await api.post(
           this.getActivityEndpointForType(activitySubType),
           postData,
-          {
-            headers: {
-              "x-http-method-override": "GET",
-            },
-          },
+          { headers: { "x-http-method-override": "GET" } },
         );
 
         const data = response.data.data || [];
 
-        // Only process and count data if we're not just checking for existence
-        if (data.length > 0 && !isCheckingForOlderData) {
+        if (data.length > 0) {
           await onBatch(data);
           recordCount += data.length;
-
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
         }
 
-        const hasMoreInCurrentQuery = response.data.has_more || false;
+        const hasMore = response.data.has_more || false;
 
-        if (isCheckingForOlderData) {
-          // Probe mode issues a single request; avoid paginating older windows.
-          if (data.length === 0) {
-            // No older data exists - we're done
+        if (!hasMore && data.length === 0) {
+          // Window exhausted and empty — check for older data
+          const probeData = {
+            _params: {
+              _limit: 1,
+              _skip: 0,
+              _order_by: "-date_created",
+              query: `date_created__lt="${windowLower}"`,
+            },
+          };
+          const probeResp = await api.post(
+            this.getActivityEndpointForType(activitySubType),
+            probeData,
+            { headers: { "x-http-method-override": "GET" } },
+          );
+          iterations++;
+          const probeRecords = probeResp.data.data || [];
+          if (probeRecords.length === 0) {
+            return {
+              totalProcessed: recordCount,
+              hasMore: false,
+              iterationsInChunk: iterations,
+              metadata: { windowLower, windowUpper, dailyOffset: 0 },
+            };
+          }
+          // Jump to the date of the oldest found record
+          const jumpDate = new Date(probeRecords[0].date_created);
+          windowLower = new Date(
+            jumpDate.getFullYear(),
+            jumpDate.getMonth(),
+            jumpDate.getDate(),
+          )
+            .toISOString()
+            .split("T")[0];
+          windowUpper = null;
+          dailyOffset = 0;
+          await this.sleep(rateLimitDelay);
+          continue;
+        }
+
+        if (!hasMore) {
+          // Current window done — move to previous day
+          const lowerDate = new Date(windowLower);
+          lowerDate.setDate(lowerDate.getDate() - 1);
+          if (endDate && lowerDate < endDate) {
             return {
               totalProcessed: recordCount,
               hasMore: false,
               iterationsInChunk: iterations,
               metadata: {
-                currentDate: currentDate.toISOString(),
+                windowLower: lowerDate.toISOString().split("T")[0],
+                windowUpper: null,
                 dailyOffset: 0,
-                endDate: endDate?.toISOString(),
-                isCheckingForOlderData: false,
+                endDate: endDate.toISOString(),
               },
             };
-          } else {
-            // Older data exists - jump directly to that date and continue normal fetching
-            const oldestRecord = data[0];
-            const dateCreated = new Date(oldestRecord.date_created);
-            currentDate = new Date(
-              dateCreated.getFullYear(),
-              dateCreated.getMonth(),
-              dateCreated.getDate(),
-            );
-            dailyOffset = 0;
-            isCheckingForOlderData = false;
-            iterations++;
-            await this.sleep(rateLimitDelay);
-            continue;
           }
-        }
-
-        if (hasMoreInCurrentQuery) {
-          // More data in current date/query
-          dailyOffset += batchSize;
+          windowLower = lowerDate.toISOString().split("T")[0];
+          windowUpper = null;
+          dailyOffset = 0;
           iterations++;
           await this.sleep(rateLimitDelay);
-        } else {
-          // Finished current day
-          if (data.length < batchSize && !since) {
-            // Found a day with less than a full page in full sync - need to check if older data exists
-            isCheckingForOlderData = true;
-            dailyOffset = 0;
-            iterations++;
-            await this.sleep(rateLimitDelay);
-          } else {
-            // Move to previous day
-            currentDate = new Date(currentDate);
-            currentDate.setDate(currentDate.getDate() - 1);
-            dailyOffset = 0;
-
-            // Check if we've reached the end date (for incremental sync)
-            if (endDate && currentDate < endDate) {
-              return {
-                totalProcessed: recordCount,
-                hasMore: false,
-                iterationsInChunk: iterations,
-                metadata: {
-                  currentDate: currentDate.toISOString(),
-                  dailyOffset: 0,
-                  endDate: endDate.toISOString(),
-                  isCheckingForOlderData: false,
-                },
-              };
-            }
-
-            iterations++;
-            await this.sleep(rateLimitDelay);
-          }
+          continue;
         }
+
+        // More data in current window
+        if (dailyOffset + batchSize >= CLOSE_SKIP_LIMIT && data.length > 0) {
+          // Approaching 10k skip limit — narrow window using last record's date_created
+          const lastRecord = data[data.length - 1];
+          windowUpper = lastRecord.date_created;
+          dailyOffset = 0;
+        } else {
+          dailyOffset += batchSize;
+        }
+        iterations++;
+        await this.sleep(rateLimitDelay);
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 429) {
           const retryAfter = parseInt(
@@ -991,10 +982,10 @@ export class CloseConnector extends BaseConnector {
       hasMore: true,
       iterationsInChunk: iterations,
       metadata: {
-        currentDate: currentDate.toISOString(),
+        windowLower,
+        windowUpper,
         dailyOffset,
         endDate: endDate?.toISOString(),
-        isCheckingForOlderData,
       },
     };
   }
