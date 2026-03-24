@@ -838,26 +838,20 @@ export class CloseConnector extends BaseConnector {
 
     while (iterations < maxIterations) {
       try {
-        const queryParts: string[] = [];
-        if (cursor) {
-          queryParts.push(`date_created__gt="${cursor}"`);
-        }
-        if (endDate) {
-          queryParts.push(`date_created__lte="${endDate.toISOString()}"`);
-        }
-
         const params: any = {
           _limit: batchSize,
-          _order_by: "date_created",
+          _order_by: "-date_created",
         };
-        if (queryParts.length > 0) {
-          params.query = queryParts.join(" AND ");
+        if (cursor) {
+          params.date_created__lt = cursor;
+        }
+        if (endDate) {
+          params.date_created__gte = endDate.toISOString().split("T")[0];
         }
 
-        const response = await api.post(
+        const response = await api.get(
           this.getActivityEndpointForType(activitySubType),
-          { _params: params },
-          { headers: { "x-http-method-override": "GET" } },
+          { params },
         );
 
         const data = response.data.data || [];
