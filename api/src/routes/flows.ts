@@ -160,7 +160,7 @@ function buildDestinationCountQuery(params: {
     const dataset = params.projectId
       ? `\`${params.projectId}\`.\`${params.schema}\``
       : `\`${params.schema}\``;
-    return `SELECT row_count AS total_count FROM ${dataset}.INFORMATION_SCHEMA.TABLE_STORAGE WHERE table_name = '${params.tableName}'`;
+    return `SELECT total_rows AS total_count FROM ${dataset}.INFORMATION_SCHEMA.TABLE_STORAGE WHERE table_name = '${params.tableName}'`;
   }
   if (type.includes("postgres")) {
     const escLiteral = (v: string) => `'${v.replace(/'/g, "''")}'`;
