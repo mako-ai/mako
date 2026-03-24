@@ -909,6 +909,8 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
     let searchCursor: string | null = null;
+    let windowRecordCount = 0;
+    const SEARCH_SKIP_LIMIT = 9800;
 
     // Resume cursor: last record's date_created timestamp from previous chunk.
     let cursor: string | null = state?.metadata?.cursor ?? null;
@@ -1217,7 +1219,8 @@ export class CloseConnector extends BaseConnector {
             entity === "leads" ? this.normalizeLeadBatch(data) : data;
           await onBatch(records);
           recordCount += records.length;
-          cursor = data[data.length - 1].date_created;
+          const rawCursor = data[data.length - 1].date_created || "";
+          cursor = rawCursor.replace(/\+00:00$/, "Z").replace(/\.000000/, "");
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
@@ -1230,6 +1233,12 @@ export class CloseConnector extends BaseConnector {
             iterationsInChunk: iterations + 1,
             metadata: { cursor },
           };
+        }
+
+        windowRecordCount += data.length;
+        if (windowRecordCount >= SEARCH_SKIP_LIMIT) {
+          searchCursor = null;
+          windowRecordCount = 0;
         }
 
         iterations++;
