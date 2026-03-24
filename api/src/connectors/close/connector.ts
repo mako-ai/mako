@@ -840,7 +840,7 @@ export class CloseConnector extends BaseConnector {
       try {
         const queryParts: string[] = [];
         if (cursor) {
-          queryParts.push(`date_created__gte="${cursor}"`);
+          queryParts.push(`date_created__gt="${cursor}"`);
         }
         if (endDate) {
           queryParts.push(`date_created__lte="${endDate.toISOString()}"`);
