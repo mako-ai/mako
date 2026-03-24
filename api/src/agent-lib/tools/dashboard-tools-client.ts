@@ -241,7 +241,8 @@ export const clientDashboardTools = {
   },
   modify_widget: {
     description:
-      "Modify an existing widget. Only include the fields you want to change.",
+      "Modify an existing widget. Only include the fields you want to change. " +
+      "Layouts are deep-merged: sending only lg preserves existing md/sm/xs breakpoints.",
     inputSchema: modifyWidgetSchema,
   },
   remove_widget: {
@@ -250,7 +251,10 @@ export const clientDashboardTools = {
   },
   get_dashboard_state: {
     description:
-      "Get the full dashboard specification including all widgets, data sources, and their column schemas.",
+      "Get the full dashboard definition: widgets (with layouts, vegaLiteSpec, localSql, kpiConfig), " +
+      "data sources (with query code, column schemas, runtime status), cross-filter config, " +
+      "global filters, relationships, and materialization schedule. " +
+      "Also includes truncated sample rows and widget snapshots.",
     inputSchema: getDashboardStateSchema,
   },
   preview_data_source: {

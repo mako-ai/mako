@@ -713,7 +713,8 @@ const Chat: React.FC<ChatProps> = ({
             tabKind: activeTab?.kind,
             flowType: activeTab?.metadata?.flowType,
             flowFormState,
-            // Dashboard context
+            // Dashboard context — pass full snapshot, only strip DB metadata and
+            // truncate large arrays. Enriches data sources with connection info.
             ...(() => {
               try {
                 const snapshot = getDashboardStateSnapshot();
@@ -724,50 +725,35 @@ const Chat: React.FC<ChatProps> = ({
                     connection,
                   ]),
                 );
+                const SAMPLE_LIMIT = 3;
                 return {
                   activeDashboardContext: {
                     dashboardId: snapshot._id,
                     title: snapshot.title,
-                    dataSources: snapshot.dataSources.map((ds: any) => ({
-                      id: ds.id,
-                      name: ds.name,
-                      tableRef: ds.tableRef,
-                      status: ds.status || null,
-                      rowsLoaded: ds.rowsLoaded || 0,
-                      rowCount: ds.rowCount,
-                      error: ds.error || null,
-                      connectionType:
-                        connectionById.get(ds.query?.connectionId)?.type ||
-                        undefined,
-                      sqlDialect:
-                        (
-                          connectionById.get(ds.query?.connectionId) as
-                            | { sqlDialect?: string }
-                            | undefined
-                        )?.sqlDialect ||
-                        (ds.query?.language === "sql" ? "duckdb" : undefined),
-                      queryCode: ds.query?.code,
-                      queryLanguage: ds.query?.language,
-                      columns: ds.columns || [],
-                      sampleRows: ds.sampleRows || [],
-                    })),
-                    widgets: snapshot.widgets.map((w: any) => ({
-                      id: w.id,
-                      title: w.title,
-                      type: w.type,
-                      dataSourceId: w.dataSourceId,
-                      localSql: w.localSql,
-                      queryEngine: "mosaic",
-                      queryStatus: w.queryStatus,
-                      queryError: w.queryError,
-                      queryErrorKind: w.queryErrorKind,
-                      renderStatus: w.renderStatus,
-                      renderError: w.renderError,
-                      renderErrorKind: w.renderErrorKind,
-                      queryRowCount: w.queryRowCount,
-                      queryFields: w.queryFields,
-                    })),
-                    crossFilterEnabled: snapshot.crossFilter?.enabled ?? true,
+                    description: snapshot.description,
+                    crossFilter: snapshot.crossFilter,
+                    layout: snapshot.layout,
+                    materializationSchedule: snapshot.materializationSchedule,
+                    dataSources: snapshot.dataSources.map((ds: any) => {
+                      const { _id: _dsId, sampleRows, ...rest } = ds;
+                      return {
+                        ...rest,
+                        sampleRows: sampleRows?.slice(0, SAMPLE_LIMIT),
+                        connectionType:
+                          connectionById.get(ds.query?.connectionId)?.type ||
+                          undefined,
+                        sqlDialect:
+                          (
+                            connectionById.get(ds.query?.connectionId) as
+                              | { sqlDialect?: string }
+                              | undefined
+                          )?.sqlDialect ||
+                          (ds.query?.language === "sql" ? "duckdb" : undefined),
+                      };
+                    }),
+                    widgets: snapshot.widgets.map(
+                      ({ _id: _wId, ...w }: any) => w,
+                    ),
                   },
                 };
               } catch {

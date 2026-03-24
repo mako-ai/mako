@@ -69,6 +69,8 @@ Place widgets on a 12-column grid using the \`layouts\` field with at least an \
 
 Stack widgets vertically by incrementing the y value. Avoid overlapping layouts.
 
+When repositioning or resizing existing widgets, always read their current \`layouts\` from \`get_dashboard_state\` first. Use the actual x, y, w, h values — never guess or assume layout positions.
+
 ### Widget Examples
 
 **Area chart (time series):**
@@ -192,32 +194,13 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
 /**
  * Build runtime context string describing the current dashboard state.
  * Injected as a second system message so the LLM knows what it's working with.
+ *
+ * Accepts whatever the client sends — no restrictive type to maintain.
+ * Renders a compact markdown overview; full details available via get_dashboard_state.
  */
 export function buildDashboardRuntimeContext(context: AgentContext): string {
   const dc = (context as unknown as Record<string, unknown>)
-    .activeDashboardContext as
-    | {
-        title: string;
-        dashboardId: string;
-        crossFilterEnabled: boolean;
-        dataSources?: Array<{
-          id: string;
-          name: string;
-          columns?: Array<{
-            name: string;
-            type: string;
-            cardinality?: number;
-            sampleValues?: unknown[];
-          }>;
-        }>;
-        widgets?: Array<{
-          id: string;
-          title?: string;
-          type: string;
-          dataSourceId: string;
-        }>;
-      }
-    | undefined;
+    .activeDashboardContext as Record<string, any> | undefined;
 
   if (!dc) return "";
 
@@ -226,32 +209,50 @@ export function buildDashboardRuntimeContext(context: AgentContext): string {
   parts.push("## Current Dashboard");
   parts.push(`Title: ${dc.title}`);
   parts.push(`ID: ${dc.dashboardId}`);
-  parts.push(
-    `Cross-filtering: ${dc.crossFilterEnabled ? "enabled" : "disabled"}`,
-  );
+  const cf = dc.crossFilter;
+  if (cf) {
+    parts.push(
+      `Cross-filtering: ${cf.enabled ? "enabled" : "disabled"}${cf.resolution ? ` (${cf.resolution})` : ""}`,
+    );
+  }
+  const grid = dc.layout;
+  if (grid) {
+    parts.push(
+      `Grid: ${grid.columns ?? 12} columns, ${grid.rowHeight ?? 80}px row height`,
+    );
+  }
   parts.push("");
 
-  if (dc.dataSources && dc.dataSources.length > 0) {
+  // --- Data Sources ---
+  const dataSources = dc.dataSources as any[] | undefined;
+  if (dataSources && dataSources.length > 0) {
     parts.push("### Data Sources");
-    for (const ds of dc.dataSources) {
-      parts.push(`- **${ds.name}** (id: ${ds.id})`);
-      if ((ds as any).tableRef) {
-        parts.push(`  - tableRef: \`${(ds as any).tableRef}\``);
+    for (const ds of dataSources) {
+      const statusParts: string[] = [];
+      if (ds.status) statusParts.push(ds.status);
+      if (ds.rowsLoaded) {
+        statusParts.push(`${ds.rowsLoaded.toLocaleString()} rows`);
       }
-      if ((ds as any).status) {
-        const rowsLoaded = (ds as any).rowsLoaded || 0;
-        parts.push(
-          `  - status: ${(ds as any).status}${rowsLoaded ? ` (${rowsLoaded.toLocaleString()} rows loaded)` : ""}`,
-        );
+      const statusStr =
+        statusParts.length > 0 ? `, ${statusParts.join(", ")}` : "";
+      parts.push(
+        `- **${ds.name}** (id: ${ds.id}, tableRef: \`${ds.tableRef}\`${statusStr})`,
+      );
+      if (ds.error) {
+        parts.push(`  - error: ${ds.error}`);
       }
-      if ((ds as any).error) {
-        parts.push(`  - last error: ${(ds as any).error}`);
+      if (ds.query?.code) {
+        const code =
+          ds.query.code.length > 200
+            ? ds.query.code.slice(0, 200) + "…"
+            : ds.query.code;
+        parts.push(`  - query: \`${code.replace(/\n/g, " ")}\``);
       }
       if (ds.columns && ds.columns.length > 0) {
         for (const col of ds.columns) {
           let colDesc = `  - \`${col.name}\` (${col.type})`;
           if (col.cardinality != null) {
-            colDesc += ` — ${col.cardinality} distinct values`;
+            colDesc += ` — ${col.cardinality} distinct`;
           }
           if (col.sampleValues && col.sampleValues.length > 0) {
             colDesc += ` — e.g. ${col.sampleValues
@@ -262,24 +263,43 @@ export function buildDashboardRuntimeContext(context: AgentContext): string {
           parts.push(colDesc);
         }
       }
-      if ((ds as any).sampleRows && (ds as any).sampleRows.length > 0) {
-        parts.push(
-          `  - sample rows: ${(ds as any).sampleRows
-            .slice(0, 2)
-            .map((row: unknown) => JSON.stringify(row))
-            .join(" | ")}`,
-        );
-      }
     }
     parts.push("");
   }
 
-  if (dc.widgets && dc.widgets.length > 0) {
+  // --- Widgets ---
+  const widgets = dc.widgets as any[] | undefined;
+  if (widgets && widgets.length > 0) {
     parts.push("### Widgets");
-    for (const w of dc.widgets) {
+    for (const w of widgets) {
+      const lg = w.layouts?.lg;
+      const layoutStr = lg
+        ? ` layout:{x:${lg.x},y:${lg.y},w:${lg.w},h:${lg.h}}`
+        : "";
       parts.push(
-        `- **${w.title || "Untitled"}** (id: ${w.id}, type: ${w.type}, source: ${w.dataSourceId})`,
+        `- **${w.title || "Untitled"}** (id: ${w.id}, type: ${w.type}, source: ${w.dataSourceId})${layoutStr}`,
       );
+      if (w.localSql) {
+        const sql =
+          w.localSql.length > 200 ? w.localSql.slice(0, 200) + "…" : w.localSql;
+        parts.push(`  - sql: \`${sql.replace(/\n/g, " ")}\``);
+      }
+      if (w.vegaLiteSpec) {
+        const mark =
+          typeof w.vegaLiteSpec.mark === "string"
+            ? w.vegaLiteSpec.mark
+            : w.vegaLiteSpec.mark?.type;
+        if (mark) parts.push(`  - mark: ${mark}`);
+      }
+      if (w.kpiConfig) {
+        const kpi = w.kpiConfig;
+        parts.push(
+          `  - kpi: valueField=${kpi.valueField}${kpi.format ? `, format=${kpi.format}` : ""}`,
+        );
+      }
+      if (w.crossFilter && !w.crossFilter.enabled) {
+        parts.push(`  - cross-filter: disabled`);
+      }
     }
     parts.push("");
   }
