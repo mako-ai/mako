@@ -883,7 +883,7 @@ export class CloseConnector extends BaseConnector {
   private async fetchViaSearchApi(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
-    const { entity, onBatch, onProgress, since, state } = options;
+    const { entity, onBatch, onProgress, state } = options;
     const api = this.getCloseClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
@@ -892,8 +892,6 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
     let searchCursor: string | null = null;
-
-    const resumeDate: string | null = state?.metadata?.resumeDate ?? null;
 
     const objectType =
       entity === "leads"
@@ -905,11 +903,7 @@ export class CloseConnector extends BaseConnector {
             : entity;
 
     const fieldsMap: Record<string, string[]> = {
-      lead: [
-        ...CloseConnector.LEAD_BASE_FIELDS,
-        "contacts",
-        ...(await this.getLeadCustomFieldIds()),
-      ],
+      lead: [...CloseConnector.LEAD_BASE_FIELDS, "contacts", "custom"],
       contact: [
         "id",
         "name",
@@ -964,32 +958,8 @@ export class CloseConnector extends BaseConnector {
       ],
     };
 
-    const queries: any[] = [{ type: "object_type", object_type: objectType }];
-
-    const dateFilterValue =
-      resumeDate || (since ? since.toISOString().split("T")[0] : null);
-    if (dateFilterValue) {
-      queries.push({
-        type: "field_condition",
-        field: {
-          type: "regular_field",
-          object_type: objectType,
-          field_name: "date_created",
-        },
-        condition: {
-          type: "moment_range",
-          on_or_after: {
-            type: "fixed_local_date",
-            value: dateFilterValue,
-            which: "start",
-          },
-          before: null,
-        },
-      });
-    }
-
     const searchBody: any = {
-      query: { type: "and", queries },
+      query: { type: "object_type", object_type: objectType },
       _limit: batchSize,
       sort: [
         {
@@ -1008,13 +978,12 @@ export class CloseConnector extends BaseConnector {
     }
 
     if (!state && onProgress) {
-      const countBody = {
-        query: { type: "object_type", object_type: objectType },
-        include_counts: true,
-        results_limit: 0,
-      };
       try {
-        const countResp = await api.post("/data/search/", countBody);
+        const countResp = await api.post("/data/search/", {
+          query: { type: "object_type", object_type: objectType },
+          include_counts: true,
+          results_limit: 0,
+        });
         const total = countResp.data?.count?.total;
         if (typeof total === "number") {
           onProgress(0, total);
@@ -1024,7 +993,27 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
-    let lastDateCreated: string | null = resumeDate;
+    // On resume: fast-forward through already-processed records
+    const skipCount = state?.totalProcessed || 0;
+    if (skipCount > 0) {
+      let skipped = 0;
+      const skipBody = {
+        query: { type: "object_type", object_type: objectType },
+        _limit: batchSize,
+        sort: searchBody.sort,
+      };
+      while (skipped < skipCount) {
+        const resp: any = await api.post("/data/search/", {
+          ...skipBody,
+          ...(searchCursor ? { cursor: searchCursor } : {}),
+        });
+        searchCursor = resp.data.cursor || null;
+        const batch = resp.data.data || [];
+        skipped += batch.length;
+        if (!searchCursor || batch.length === 0) break;
+        await this.sleep(rateLimitDelay);
+      }
+    }
 
     while (iterations < maxIterations) {
       try {
@@ -1042,9 +1031,6 @@ export class CloseConnector extends BaseConnector {
             entity === "leads" ? this.normalizeLeadBatch(data) : data;
           await onBatch(records);
           recordCount += records.length;
-          lastDateCreated =
-            data[data.length - 1].date_created?.split("T")[0] ||
-            lastDateCreated;
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
@@ -1055,7 +1041,6 @@ export class CloseConnector extends BaseConnector {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: { resumeDate: lastDateCreated },
           };
         }
 
@@ -1080,7 +1065,6 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { resumeDate: lastDateCreated },
     };
   }
 
