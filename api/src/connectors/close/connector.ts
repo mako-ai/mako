@@ -825,9 +825,12 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // Cursor-based pagination: each batch moves the cursor to the oldest
-    // record's date_created. No _skip needed — avoids Close's 10k limit.
+    // Cursor-based pagination ascending by date_created.
+    // Uses gte + dedup to handle ties (multiple records with same timestamp).
     let cursor: string | null = state?.metadata?.cursor ?? null;
+    const seenIds = new Set<string>(
+      (state?.metadata?.seenIdsAtCursor as string[]) || [],
+    );
     const endDate =
       since ||
       (state?.metadata?.endDate ? new Date(state.metadata.endDate) : null);
@@ -840,17 +843,15 @@ export class CloseConnector extends BaseConnector {
       try {
         const queryParts: string[] = [];
         if (cursor) {
-          queryParts.push(`date_created__lt="${cursor}"`);
+          queryParts.push(`date_created__gte="${cursor}"`);
         }
         if (endDate) {
-          queryParts.push(
-            `date_created__gte="${endDate.toISOString().split("T")[0]}"`,
-          );
+          queryParts.push(`date_created__lte="${endDate.toISOString()}"`);
         }
 
         const params: any = {
           _limit: batchSize,
-          _order_by: "-date_created",
+          _order_by: "date_created",
         };
         if (queryParts.length > 0) {
           params.query = queryParts.join(" AND ");
@@ -864,12 +865,26 @@ export class CloseConnector extends BaseConnector {
 
         const data = response.data.data || [];
 
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
-          cursor = data[data.length - 1].date_created;
+        const newRecords = data.filter((r: any) => !seenIds.has(r.id));
+
+        if (newRecords.length > 0) {
+          await onBatch(newRecords);
+          recordCount += newRecords.length;
           if (onProgress) {
             onProgress(recordCount, undefined);
+          }
+        }
+
+        if (data.length > 0) {
+          const lastDate = data[data.length - 1].date_created;
+          if (lastDate !== cursor) {
+            seenIds.clear();
+            cursor = lastDate;
+          }
+          for (const r of data) {
+            if (r.date_created === cursor) {
+              seenIds.add(r.id);
+            }
           }
         }
 
@@ -878,7 +893,11 @@ export class CloseConnector extends BaseConnector {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: { cursor, endDate: endDate?.toISOString() },
+            metadata: {
+              cursor,
+              seenIdsAtCursor: Array.from(seenIds),
+              endDate: endDate?.toISOString(),
+            },
           };
         }
 
@@ -903,7 +922,11 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { cursor, endDate: endDate?.toISOString() },
+      metadata: {
+        cursor,
+        seenIdsAtCursor: Array.from(seenIds),
+        endDate: endDate?.toISOString(),
+      },
     };
   }
 
