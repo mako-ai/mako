@@ -54,8 +54,11 @@ export function FlowEditor({
 
   const handleSaved = (newFlowId: string) => {
     setCurrentFlowId(newFlowId);
-    // Switch to info view after saving
-    setIsEditing(false);
+    // Webhook flows stay in editing mode after first save so the user
+    // can see the generated webhook URL and finish setup in Step 5.
+    if (!isWebhookFlow) {
+      setIsEditing(false);
+    }
     onSave?.();
   };
 
