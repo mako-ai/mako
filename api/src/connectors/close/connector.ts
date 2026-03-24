@@ -903,7 +903,10 @@ export class CloseConnector extends BaseConnector {
     const { entity, onBatch, onProgress, state } = options;
     const api = this.getCloseClient();
     const batchSize = 200;
-    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
+    const rateLimitDelay = Math.max(
+      500,
+      options.rateLimitDelay || this.getRateLimitDelay(),
+    );
     const maxIterations = options.maxIterations || 10;
 
     let recordCount = state?.totalProcessed || 0;
