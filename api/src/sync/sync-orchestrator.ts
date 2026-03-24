@@ -952,12 +952,17 @@ export async function performBulkFlush(
   const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
   const tempCollection = db.collection(collName);
 
+  orchestratorLogger.info("performBulkFlush: flushing buffer to staging", {
+    entity,
+    flowId: options.flowId,
+  });
   await flushBulkBuffer(
     tempCollection,
     cdcAdapter,
     cdcLayout,
     entity,
     options.flowId!,
+    options.logger,
   );
 }
 
@@ -1001,6 +1006,10 @@ export async function performStagingMerge(
     options.dataSourceId,
   );
 
+  orchestratorLogger.info("performStagingMerge: merging staging to live", {
+    entity: options.entity,
+    flowId: options.flowId,
+  });
   return cdcAdapter.mergeFromStaging(
     cdcLayout,
     {
@@ -1051,6 +1060,13 @@ export async function performStagingCleanup(
     entity,
     tableName: entityTableName,
   });
+  orchestratorLogger.info(
+    "performStagingCleanup: dropping staging table and temp collection",
+    {
+      entity: options.entity,
+      flowId: options.flowId,
+    },
+  );
   await cdcAdapter.cleanupStaging(cdcLayout, options.flowId!);
 
   const db = Flow.db;

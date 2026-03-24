@@ -1679,15 +1679,31 @@ export const flowFunction = inngest.createFunction(
               deleteMode: (flow as any).deleteMode,
             };
 
+            logger.info(`Flushing ${entity} bulk buffer to BigQuery staging`, {
+              flowId,
+              entity,
+            });
             await step.run(`flush-final-${safeEntityStepId}`, async () => {
               await performBulkFlush(bulkSyncOptions);
             });
+            logger.info(`Merging ${entity} staging table to live`, {
+              flowId,
+              entity,
+            });
             await step.run(`merge-staging-${safeEntityStepId}`, async () => {
-              await performStagingMerge(bulkSyncOptions);
+              return performStagingMerge(bulkSyncOptions);
+            });
+            logger.info(`Cleaning up ${entity} staging table`, {
+              flowId,
+              entity,
             });
             await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
               await performStagingCleanup(bulkSyncOptions);
             });
+            logger.info(
+              `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
+              { flowId, entity },
+            );
           }
 
           if (checkpointEnabled && state) {
