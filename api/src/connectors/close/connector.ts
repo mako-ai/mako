@@ -887,11 +887,16 @@ export class CloseConnector extends BaseConnector {
     const api = this.getCloseClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
-    const maxIterations = options.maxIterations || 10;
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
     let searchCursor: string | null = null;
+
+    // Search API cursor handles up to 10k results and expires after 30s.
+    // We ignore maxIterations here and process the full result set in one
+    // chunk to avoid cursor expiry on resume. For entities >10k, the
+    // caller should fall back to offset or date-based pagination.
+    const searchMaxIterations = 200;
 
     const objectType =
       entity === "leads"
@@ -993,29 +998,7 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
-    // On resume: fast-forward through already-processed records
-    const skipCount = state?.totalProcessed || 0;
-    if (skipCount > 0) {
-      let skipped = 0;
-      const skipBody = {
-        query: { type: "object_type", object_type: objectType },
-        _limit: batchSize,
-        sort: searchBody.sort,
-      };
-      while (skipped < skipCount) {
-        const resp: any = await api.post("/data/search/", {
-          ...skipBody,
-          ...(searchCursor ? { cursor: searchCursor } : {}),
-        });
-        searchCursor = resp.data.cursor || null;
-        const batch = resp.data.data || [];
-        skipped += batch.length;
-        if (!searchCursor || batch.length === 0) break;
-        await this.sleep(rateLimitDelay);
-      }
-    }
-
-    while (iterations < maxIterations) {
+    while (iterations < searchMaxIterations) {
       try {
         const body = { ...searchBody };
         if (searchCursor) {
