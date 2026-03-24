@@ -38,8 +38,73 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
-  async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
-    // DestinationWriter creates tables lazily on first write.
+  async ensureLiveTable(layout: CdcEntityLayout): Promise<void> {
+    await this.createWriter(layout);
+  }
+
+  async ensureLiveTableFromSourceSchema(
+    layout: CdcEntityLayout,
+    sourceTable: string,
+  ): Promise<void> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
+
+    const liveColumnsResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${layout.tableName.replace(/'/g, "''")}'`,
+    );
+    const liveCols = ((liveColumnsResult.data as any[]) || []).map(
+      (r: any) => r.column_name as string,
+    );
+    if (liveCols.length > 0) return;
+
+    log.info(
+      "Creating live table from source schema with partitioning/clustering",
+      {
+        liveTable: layout.tableName,
+        sourceTable,
+        dataset,
+      },
+    );
+
+    const schemaResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${sourceTable.replace(/'/g, "''")}' ORDER BY ordinal_position`,
+    );
+    const colDefs = ((schemaResult.data as any[]) || [])
+      .map((r: any) => `${escId(r.column_name)} ${r.data_type}`)
+      .join(",\n  ");
+
+    if (!colDefs) {
+      throw new Error(
+        `Source table ${sourceTable} has no columns or does not exist`,
+      );
+    }
+
+    let partitionClause = "";
+    if (layout.partitioning?.field) {
+      const partField = escId(layout.partitioning.field);
+      const gran = (layout.partitioning.granularity || "day").toUpperCase();
+      if (layout.partitioning.type === "ingestion") {
+        partitionClause = `\nPARTITION BY DATE(_PARTITIONTIME)`;
+      } else {
+        partitionClause = `\nPARTITION BY DATE_TRUNC(${partField}, ${gran})`;
+      }
+    }
+
+    let clusterClause = "";
+    if (layout.clustering?.fields?.length) {
+      clusterClause = `\nCLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
+    }
+
+    await databaseConnectionService.executeQuery(
+      destination,
+      `CREATE TABLE IF NOT EXISTS ${fullLive} (\n  ${colDefs}\n)${partitionClause}${clusterClause}`,
+    );
   }
 
   async applyEvents(params: {
@@ -276,41 +341,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     );
 
     if (liveCols.size === 0) {
-      log.info("Live table does not exist, creating from staging schema", {
-        liveTable,
-        stagingTable,
-        dataset,
-      });
-
-      const schemaResult = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}' ORDER BY ordinal_position`,
-      );
-      const colDefs = ((schemaResult.data as any[]) || [])
-        .map((r: any) => `${escId(r.column_name)} ${r.data_type}`)
-        .join(",\n  ");
-
-      let partitionClause = "";
-      if (layout.partitioning?.field) {
-        const partField = escId(layout.partitioning.field);
-        const gran = (layout.partitioning.granularity || "day").toUpperCase();
-        if (layout.partitioning.type === "ingestion") {
-          partitionClause = `\nPARTITION BY DATE(_PARTITIONTIME)`;
-        } else {
-          partitionClause = `\nPARTITION BY DATE_TRUNC(${partField}, ${gran})`;
-        }
-      }
-
-      let clusterClause = "";
-      if (layout.clustering?.fields?.length) {
-        clusterClause = `\nCLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
-      }
-
-      await databaseConnectionService.executeQuery(
-        destination,
-        `CREATE TABLE ${fullLive} (\n  ${colDefs}\n)${partitionClause}${clusterClause}`,
-      );
-
+      await this.ensureLiveTableFromSourceSchema(layout, stagingTable);
       for (const col of stagingCols) {
         liveCols.add(col);
       }
