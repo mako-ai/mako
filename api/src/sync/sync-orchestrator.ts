@@ -76,6 +76,13 @@ export interface SyncChunkOptions {
   workspaceId?: string;
   syncEngine?: string;
   backfillRunId?: string;
+  entityPartitioning?: {
+    type?: "time" | "ingestion";
+    field: string;
+    granularity?: "day" | "hour" | "month" | "year";
+    requirePartitionFilter?: boolean;
+  };
+  entityClustering?: { fields: string[] };
 }
 
 /**
@@ -1014,6 +1021,8 @@ export async function performStagingMerge(
   const cdcLayout = buildCdcEntityLayout({
     entity,
     tableName: entityTableName,
+    partitioning: options.entityPartitioning,
+    clustering: options.entityClustering,
   });
   const dataSource = await databaseDataSourceManager.getDataSource(
     options.dataSourceId,

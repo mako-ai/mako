@@ -1666,6 +1666,39 @@ export const flowFunction = inngest.createFunction(
 
           const useBulkPath = isCdcEnabled && destinationType === "bigquery";
           if (useBulkPath) {
+            const flowTableDest = (flow as any).tableDestination;
+            const bulkEntityLayout = ((flow as any).entityLayouts || []).find(
+              (l: any) =>
+                l.entity === entity || l.entity === entity.split(":")[0],
+            );
+            const bulkPartitioning = bulkEntityLayout?.partitionField
+              ? {
+                  type: "time" as const,
+                  field: bulkEntityLayout.partitionField,
+                  granularity: bulkEntityLayout.partitionGranularity || "day",
+                  requirePartitionFilter:
+                    flowTableDest?.partitioning?.requirePartitionFilter,
+                }
+              : flowTableDest?.partitioning?.enabled
+                ? {
+                    type: flowTableDest.partitioning.type || "time",
+                    field:
+                      flowTableDest.partitioning.type === "ingestion"
+                        ? "_syncedAt"
+                        : flowTableDest.partitioning.field || "_syncedAt",
+                    granularity:
+                      flowTableDest.partitioning.granularity || "day",
+                    requirePartitionFilter:
+                      flowTableDest.partitioning.requirePartitionFilter,
+                  }
+                : undefined;
+            const bulkClustering = bulkEntityLayout?.clusterFields?.length
+              ? { fields: bulkEntityLayout.clusterFields }
+              : flowTableDest?.clustering?.enabled &&
+                  flowTableDest.clustering.fields?.length
+                ? { fields: flowTableDest.clustering.fields }
+                : undefined;
+
             const bulkSyncOptions = {
               dataSourceId: dataSourceId.toString(),
               destinationId: flow.destinationDatabaseId.toString(),
@@ -1675,8 +1708,10 @@ export const flowFunction = inngest.createFunction(
               syncEngine: (flow as any).syncEngine,
               entity,
               isIncremental: flow.syncMode === "incremental",
-              tableDestination: (flow as any).tableDestination,
+              tableDestination: flowTableDest,
               deleteMode: (flow as any).deleteMode,
+              entityPartitioning: bulkPartitioning,
+              entityClustering: bulkClustering,
             };
 
             logger.info(`Flushing ${entity} bulk buffer to BigQuery staging`, {
