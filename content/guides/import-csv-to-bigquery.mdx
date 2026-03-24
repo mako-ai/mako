@@ -1,0 +1,151 @@
+---
+title: "How to Import CSV to BigQuery (4 Methods)"
+slug: import-csv-to-bigquery
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - bigquery
+  - csv
+  - import
+  - data
+excerpt: "Four ways to import CSV files into BigQuery: the bq CLI, Google Cloud Console, Python client library, and Cloud Storage loads. Includes schema detection and quota tips."
+metaDescription: "Import CSV to BigQuery in 2026: bq load CLI, Cloud Console GUI, Python client, and GCS. Step-by-step with auto-detect, partitioning, and common errors."
+database: bigquery
+category: import-export
+draft: false
+---
+
+BigQuery handles CSV imports differently from traditional databases. There's no `COPY` command or server-side file access. Instead, you load files through the BigQuery API -- either from your local machine or from Google Cloud Storage (GCS). Here are the practical methods.
+
+## Method 1: bq CLI
+
+The `bq` command-line tool is the quickest way to load a local CSV:
+
+```bash
+bq load \
+  --source_format=CSV \
+  --autodetect \
+  --skip_leading_rows=1 \
+  mydataset.users \
+  ./users.csv
+```
+
+Key flags:
+- `--autodetect` -- BigQuery infers the schema from the file
+- `--skip_leading_rows=1` -- skips the header row
+- `--replace` -- overwrites the table (default is append)
+- `--max_bad_records=10` -- allows up to 10 malformed rows before failing
+
+To specify the schema explicitly instead of auto-detecting:
+
+```bash
+bq load \
+  --source_format=CSV \
+  --skip_leading_rows=1 \
+  mydataset.users \
+  ./users.csv \
+  name:STRING,email:STRING,age:INTEGER,signup_date:DATE
+```
+
+**From Google Cloud Storage:**
+
+```bash
+bq load \
+  --source_format=CSV \
+  --autodetect \
+  --skip_leading_rows=1 \
+  mydataset.users \
+  gs://my-bucket/users.csv
+```
+
+Loading from GCS is faster for large files and supports wildcards (`gs://my-bucket/users_*.csv`).
+
+## Method 2: Google Cloud Console
+
+The BigQuery web UI provides a visual import:
+
+1. Open BigQuery in the Google Cloud Console
+2. Select your dataset in the explorer panel
+3. Click **Create Table**
+4. Set source to **Upload** and select your CSV file
+5. BigQuery shows schema auto-detection -- review and adjust
+6. Configure table name and write disposition (append, overwrite, or create if empty)
+7. Click **Create Table**
+
+The console has a 100 MB file size limit for direct uploads. For larger files, upload to GCS first, then load from there.
+
+## Method 3: Python Client Library
+
+The `google-cloud-bigquery` Python library provides programmatic control:
+
+```python
+from google.cloud import bigquery
+
+client = bigquery.Client()
+
+job_config = bigquery.LoadJobConfig(
+    source_format=bigquery.SourceFormat.CSV,
+    skip_leading_rows=1,
+    autodetect=True,
+    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+)
+
+table_id = "my-project.mydataset.users"
+
+with open("users.csv", "rb") as f:
+    job = client.load_table_from_file(f, table_id, job_config=job_config)
+
+job.result()  # Wait for completion
+print(f"Loaded {job.output_rows} rows")
+```
+
+For explicit schema control:
+
+```python
+job_config = bigquery.LoadJobConfig(
+    schema=[
+        bigquery.SchemaField("name", "STRING"),
+        bigquery.SchemaField("email", "STRING"),
+        bigquery.SchemaField("age", "INTEGER"),
+        bigquery.SchemaField("signup_date", "DATE"),
+    ],
+    skip_leading_rows=1,
+    source_format=bigquery.SourceFormat.CSV,
+)
+```
+
+## Method 4: Cloud Storage + Scheduled Loads
+
+For recurring imports, upload files to a GCS bucket and configure a scheduled load or trigger:
+
+```bash
+# Upload to GCS
+gsutil cp users.csv gs://my-bucket/imports/users.csv
+
+# Load into BigQuery
+bq load --source_format=CSV --autodetect --skip_leading_rows=1 \
+  mydataset.users gs://my-bucket/imports/users.csv
+```
+
+For automated pipelines, use BigQuery Data Transfer Service or set up a Cloud Function triggered by GCS object creation.
+
+## Common Gotchas
+
+**Auto-detect isn't always right.** BigQuery's schema auto-detection samples a subset of rows. If the first 100 rows of a column are integers but row 101 has a string, the load will fail. When in doubt, define the schema explicitly.
+
+**Quoted newlines.** BigQuery's CSV parser handles quoted fields containing newlines, but you may need to set `--allow_quoted_newlines` explicitly:
+
+```bash
+bq load --source_format=CSV --allow_quoted_newlines \
+  mydataset.users ./users.csv
+```
+
+**NULL handling.** BigQuery treats empty strings and the literal string `""` (two double quotes) differently. An empty field in CSV becomes NULL. A field containing `""` becomes an empty string. This catches people who expect empty strings to be stored as empty strings.
+
+**Date and timestamp formats.** BigQuery accepts dates as `YYYY-MM-DD` and timestamps as `YYYY-MM-DD HH:MM:SS[.ffffff] [timezone]`. Other formats will fail. Preprocess your CSV or load as STRING and convert with `PARSE_DATE` or `PARSE_TIMESTAMP` in SQL.
+
+**File size limits.** Direct upload via `bq load` or the console supports up to 5 TB per load job. The console UI limits uploads to 100 MB. For large local files, upload to GCS first.
+
+**Costs.** Loading data into BigQuery is free. Storage costs apply once data is loaded (about $0.02/GB/month for active storage as of 2026). Queries against the data are billed by bytes scanned.
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
