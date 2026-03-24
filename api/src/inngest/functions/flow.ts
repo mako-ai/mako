@@ -9,6 +9,9 @@ import {
 import {
   performSync,
   performSyncChunk,
+  performBulkFlush,
+  performStagingMerge,
+  performStagingCleanup,
   SyncLogger,
 } from "../../services/sync-executor.service";
 import {
@@ -1660,6 +1663,32 @@ export const flowFunction = inngest.createFunction(
             entity,
             totalChunks: chunkIndex,
           });
+
+          const useBulkPath = isCdcEnabled && destinationType === "bigquery";
+          if (useBulkPath) {
+            const bulkSyncOptions = {
+              dataSourceId: dataSourceId.toString(),
+              destinationId: flow.destinationDatabaseId.toString(),
+              destinationDatabaseName: flow.destinationDatabaseName,
+              flowId: flowId.toString(),
+              workspaceId: flow.workspaceId.toString(),
+              syncEngine: (flow as any).syncEngine,
+              entity,
+              isIncremental: flow.syncMode === "incremental",
+              tableDestination: (flow as any).tableDestination,
+              deleteMode: (flow as any).deleteMode,
+            };
+
+            await step.run(`flush-final-${safeEntityStepId}`, async () => {
+              await performBulkFlush(bulkSyncOptions);
+            });
+            await step.run(`merge-staging-${safeEntityStepId}`, async () => {
+              await performStagingMerge(bulkSyncOptions);
+            });
+            await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
+              await performStagingCleanup(bulkSyncOptions);
+            });
+          }
 
           if (checkpointEnabled && state) {
             await step.run(

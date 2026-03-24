@@ -1,6 +1,13 @@
 import { Types } from "mongoose";
-import type { IFlow } from "../../database/workspace-schema";
+import { promises as fs } from "fs";
+import { BigQuery } from "@google-cloud/bigquery";
+import {
+  DatabaseConnection,
+  type IFlow,
+  type IDatabaseConnection,
+} from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
+import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import {
   normalizePayloadKeys,
@@ -181,6 +188,167 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return {
       written: write.rowsWritten,
     };
+  }
+
+  async loadStagingFromParquet(
+    parquetPath: string,
+    layout: CdcEntityLayout,
+    flowId: string,
+  ): Promise<{ loaded: number }> {
+    await this.createWriter(layout);
+
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const credentials =
+      typeof conn.service_account_json === "string"
+        ? JSON.parse(conn.service_account_json)
+        : conn.service_account_json;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
+    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
+
+    const bq = new BigQuery({ projectId, credentials });
+    const [job] = await bq
+      .dataset(dataset)
+      .table(stagingTable)
+      .load(parquetPath, {
+        sourceFormat: "PARQUET",
+        writeDisposition: "WRITE_APPEND",
+        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
+      });
+
+    const metadata = job.metadata;
+    if (metadata?.status?.errorResult) {
+      throw new Error(
+        metadata.status.errorResult.message || "BigQuery load job failed",
+      );
+    }
+
+    const loaded = Number(metadata?.statistics?.load?.outputRows || 0);
+
+    await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+
+    log.info("Loaded Parquet to BigQuery staging table", {
+      stagingTable,
+      dataset,
+      loaded,
+    });
+
+    return { loaded };
+  }
+
+  async mergeFromStaging(
+    layout: CdcEntityLayout,
+    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
+    flowId: string,
+  ): Promise<{ written: number }> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const liveTable = layout.tableName;
+    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
+    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
+
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
+    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
+
+    const stagingColumnsResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}'`,
+    );
+    const liveColumnsResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${liveTable.replace(/'/g, "''")}'`,
+    );
+
+    const stagingCols = new Set(
+      ((stagingColumnsResult.data as any[]) || []).map(
+        (r: any) => r.column_name as string,
+      ),
+    );
+    const liveCols = new Set(
+      ((liveColumnsResult.data as any[]) || []).map(
+        (r: any) => r.column_name as string,
+      ),
+    );
+    const allColumns = Array.from(new Set([...stagingCols, ...liveCols]));
+
+    const keyColumns = layout.keyColumns;
+    const joinCondition = keyColumns
+      .map(k => `T.${escId(k)} = S.${escId(k)}`)
+      .join(" AND ");
+    const nonKeyColumns = allColumns.filter(c => !keyColumns.includes(c));
+
+    const hasSourceTs = allColumns.includes("_mako_source_ts");
+    const hasIngestSeq = allColumns.includes("_mako_ingest_seq");
+    const matchedGuard = hasSourceTs
+      ? ` AND COALESCE(S.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(T.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
+      : hasIngestSeq
+        ? ` AND COALESCE(S.\`_mako_ingest_seq\`, -1) >= COALESCE(T.\`_mako_ingest_seq\`, -1)`
+        : "";
+
+    const updateSet = nonKeyColumns
+      .map(c => `${escId(c)} = S.${escId(c)}`)
+      .join(", ");
+    const insertCols = allColumns.map(escId).join(", ");
+    const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
+
+    const mergeQuery = `
+      MERGE INTO ${fullLive} T
+      USING ${fullStaging} S
+      ON ${joinCondition}
+      ${nonKeyColumns.length > 0 ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateSet}` : ""}
+      WHEN NOT MATCHED THEN INSERT (${insertCols}) VALUES (${insertVals})
+    `;
+
+    const result = await databaseConnectionService.executeQuery(
+      destination,
+      mergeQuery,
+    );
+    if (!result.success) {
+      throw new Error(result.error || "BigQuery staging MERGE failed");
+    }
+
+    log.info("Merged staging to live table", {
+      liveTable,
+      stagingTable,
+      dataset,
+    });
+
+    return { written: 0 };
+  }
+
+  async cleanupStaging(layout: CdcEntityLayout, flowId: string): Promise<void> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
+    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
+
+    await databaseConnectionService.executeQuery(
+      destination,
+      `DROP TABLE IF EXISTS ${fullStaging}`,
+    );
+
+    log.info("Cleaned up staging table", { stagingTable, dataset });
+  }
+
+  private async resolveDestination(): Promise<IDatabaseConnection> {
+    const doc = await DatabaseConnection.findById(
+      this.config.destinationDatabaseId,
+    ).lean();
+    if (!doc) {
+      throw new Error(
+        `Destination connection ${this.config.destinationDatabaseId} not found`,
+      );
+    }
+    return doc as IDatabaseConnection;
   }
 
   private async createWriter(layout: CdcEntityLayout) {

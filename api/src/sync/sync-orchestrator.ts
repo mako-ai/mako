@@ -9,9 +9,11 @@ import { SyncLogger, FetchState } from "../connectors/base/BaseConnector";
 import {
   DatabaseConnection,
   ITableDestination,
+  Flow,
 } from "../database/workspace-schema";
 import { createDestinationWriter } from "../services/destination-writer.service";
-import { Db } from "mongodb";
+import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";
+import { Db, Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
@@ -21,6 +23,7 @@ import {
   buildCdcEntityLayout,
   hasCdcDestinationAdapter,
   resolveCdcDestinationAdapter,
+  type CdcDestinationAdapter,
 } from "../sync-cdc/adapters/registry";
 
 const orchestratorLogger = loggers.sync("orchestrator");
@@ -635,6 +638,17 @@ async function performSyncChunkSql(
   const fullSyncWriteBatchSize = 1000;
   let pendingFullSyncRows: Record<string, unknown>[] = [];
 
+  const BULK_FLUSH_THRESHOLD = 50_000;
+  const useBulkPath =
+    isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
+  let bulkTempCollection: Collection | null = null;
+  let bulkAccumulatedRows = 0;
+  if (useBulkPath && options.flowId) {
+    const db = Flow.db;
+    const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+    bulkTempCollection = db.collection(collName);
+  }
+
   const writeRows = async (
     rowsToWrite: Record<string, unknown>[],
     fetchedCountForLog: number,
@@ -738,6 +752,23 @@ async function performSyncChunkSql(
             if (!cdcAdapter || !cdcLayout) {
               throw new Error("CDC adapter not initialized");
             }
+
+            if (useBulkPath && bulkTempCollection) {
+              await bulkTempCollection.insertMany(processedRecords, {
+                ordered: false,
+              });
+              bulkAccumulatedRows += processedRecords.length;
+              runningRowsWritten += processedRecords.length;
+              logger?.log("info", "Buffered batch to MongoDB temp collection", {
+                entity,
+                fetchedCount: batch.length,
+                bufferedTotal: bulkAccumulatedRows,
+                totalProcessed: runningRowsWritten,
+                writeMode: "bulk-buffer",
+              });
+              return;
+            }
+
             const applyResult = await cdcAdapter.applyBatch({
               records: processedRecords,
               layout: cdcLayout,
@@ -789,6 +820,24 @@ async function performSyncChunkSql(
     await flushFullSyncRows("chunk-end");
   }
 
+  if (
+    useBulkPath &&
+    bulkTempCollection &&
+    cdcAdapter?.loadStagingFromParquet &&
+    cdcLayout &&
+    bulkAccumulatedRows >= BULK_FLUSH_THRESHOLD
+  ) {
+    await flushBulkBuffer(
+      bulkTempCollection,
+      cdcAdapter,
+      cdcLayout,
+      entity,
+      options.flowId!,
+      logger,
+    );
+    bulkAccumulatedRows = 0;
+  }
+
   const nextMetadata =
     fetchState.metadata && typeof fetchState.metadata === "object"
       ? { ...(fetchState.metadata as Record<string, unknown>) }
@@ -824,6 +873,192 @@ async function performSyncChunkSql(
     totalFetched: fetchState.totalProcessed,
     totalWritten: runningRowsWritten,
   };
+}
+
+async function flushBulkBuffer(
+  tempCollection: Collection,
+  cdcAdapter: CdcDestinationAdapter,
+  cdcLayout: ReturnType<typeof buildCdcEntityLayout>,
+  entity: string,
+  flowId: string,
+  logger?: SyncLogger,
+): Promise<void> {
+  const count = await tempCollection.countDocuments();
+  if (count === 0) return;
+
+  const parquet = await buildParquetFromBatches({
+    filenameBase: `backfill-${entity}`,
+    streamBatches: async insertBatch => {
+      const cursor = tempCollection.find({}, { projection: { _id: 0 } });
+      const batchSize = 5000;
+      let batch: Record<string, unknown>[] = [];
+      for await (const doc of cursor) {
+        batch.push(doc as Record<string, unknown>);
+        if (batch.length >= batchSize) {
+          await insertBatch(batch);
+          batch = [];
+        }
+      }
+      if (batch.length > 0) {
+        await insertBatch(batch);
+      }
+    },
+  });
+
+  await cdcAdapter.loadStagingFromParquet!(parquet.filePath, cdcLayout, flowId);
+  await tempCollection.deleteMany({});
+
+  logger?.log("info", "Flushed bulk buffer to staging via Parquet", {
+    entity,
+    rowsFlushed: count,
+  });
+}
+
+export async function performBulkFlush(
+  options: SyncChunkOptions,
+): Promise<void> {
+  if (!options.tableDestination?.connectionId || !options.flowId) return;
+
+  const entity = options.entity;
+  const entityTableName = getEntityTableName(
+    options.tableDestination.tableName,
+    entity,
+  );
+
+  const destinationConn = await DatabaseConnection.findById(
+    options.tableDestination.connectionId,
+  )
+    .select({ type: 1 })
+    .lean();
+
+  const cdcAdapter = resolveCdcDestinationAdapter({
+    destinationType: destinationConn?.type || "",
+    destinationDatabaseId: options.destinationId,
+    destinationDatabaseName: options.destinationDatabaseName,
+    tableDestination: {
+      connectionId: String(options.tableDestination.connectionId),
+      schema: options.tableDestination.schema || "public",
+      tableName: entityTableName,
+    },
+  });
+
+  if (!cdcAdapter.loadStagingFromParquet) return;
+
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+  });
+  const db = Flow.db;
+  const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+  const tempCollection = db.collection(collName);
+
+  await flushBulkBuffer(
+    tempCollection,
+    cdcAdapter,
+    cdcLayout,
+    entity,
+    options.flowId!,
+  );
+}
+
+export async function performStagingMerge(
+  options: SyncChunkOptions,
+): Promise<{ written: number }> {
+  if (!options.tableDestination?.connectionId || !options.flowId) {
+    return { written: 0 };
+  }
+
+  const entity = options.entity;
+  const entityTableName = getEntityTableName(
+    options.tableDestination.tableName,
+    entity,
+  );
+
+  const destinationConn = await DatabaseConnection.findById(
+    options.tableDestination.connectionId,
+  )
+    .select({ type: 1 })
+    .lean();
+
+  const cdcAdapter = resolveCdcDestinationAdapter({
+    destinationType: destinationConn?.type || "",
+    destinationDatabaseId: options.destinationId,
+    destinationDatabaseName: options.destinationDatabaseName,
+    tableDestination: {
+      connectionId: String(options.tableDestination.connectionId),
+      schema: options.tableDestination.schema || "public",
+      tableName: entityTableName,
+    },
+  });
+
+  if (!cdcAdapter.mergeFromStaging) return { written: 0 };
+
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+  });
+  const dataSource = await databaseDataSourceManager.getDataSource(
+    options.dataSourceId,
+  );
+
+  return cdcAdapter.mergeFromStaging(
+    cdcLayout,
+    {
+      _id: new Types.ObjectId(options.flowId),
+      deleteMode: options.deleteMode,
+      dataSourceId:
+        dataSource &&
+        typeof dataSource.id === "string" &&
+        Types.ObjectId.isValid(dataSource.id)
+          ? new Types.ObjectId(dataSource.id)
+          : undefined,
+    } as any,
+    options.flowId!,
+  );
+}
+
+export async function performStagingCleanup(
+  options: SyncChunkOptions,
+): Promise<void> {
+  if (!options.tableDestination?.connectionId || !options.flowId) return;
+
+  const entity = options.entity;
+  const entityTableName = getEntityTableName(
+    options.tableDestination.tableName,
+    entity,
+  );
+
+  const destinationConn = await DatabaseConnection.findById(
+    options.tableDestination.connectionId,
+  )
+    .select({ type: 1 })
+    .lean();
+
+  const cdcAdapter = resolveCdcDestinationAdapter({
+    destinationType: destinationConn?.type || "",
+    destinationDatabaseId: options.destinationId,
+    destinationDatabaseName: options.destinationDatabaseName,
+    tableDestination: {
+      connectionId: String(options.tableDestination.connectionId),
+      schema: options.tableDestination.schema || "public",
+      tableName: entityTableName,
+    },
+  });
+
+  if (!cdcAdapter.cleanupStaging) return;
+
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+  });
+  await cdcAdapter.cleanupStaging(cdcLayout, options.flowId!);
+
+  const db = Flow.db;
+  const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+  await db
+    .collection(collName)
+    .drop()
+    .catch(() => undefined);
 }
 
 /**

@@ -32,6 +32,18 @@ export interface CdcDestinationAdapter {
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
   }): Promise<{ written: number }>;
+
+  loadStagingFromParquet?(
+    parquetPath: string,
+    layout: CdcEntityLayout,
+    flowId: string,
+  ): Promise<{ loaded: number }>;
+  mergeFromStaging?(
+    layout: CdcEntityLayout,
+    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
+    flowId: string,
+  ): Promise<{ written: number }>;
+  cleanupStaging?(layout: CdcEntityLayout, flowId: string): Promise<void>;
 }
 
 export function resolveCdcDestinationAdapter(params: {
