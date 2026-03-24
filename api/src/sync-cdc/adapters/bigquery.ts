@@ -209,7 +209,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const stagingTable = `${layout.tableName}__${flowToken}__staging`;
 
     const bq = new BigQuery({ projectId, credentials });
-    const [job] = await bq
+    const [metadata] = await bq
       .dataset(dataset)
       .table(stagingTable)
       .load(parquetPath, {
@@ -218,14 +218,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
       });
 
-    const [metadata] = await job.getMetadata();
-    if (metadata?.status?.errorResult) {
+    const jobMeta = metadata as Record<string, any>;
+    if (jobMeta?.status?.errorResult) {
       throw new Error(
-        metadata.status.errorResult.message || "BigQuery load job failed",
+        jobMeta.status.errorResult.message || "BigQuery load job failed",
       );
     }
 
-    const loaded = Number(metadata?.statistics?.load?.outputRows || 0);
+    const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
 
     await fs.rm(parquetPath, { force: true }).catch(() => undefined);
 
