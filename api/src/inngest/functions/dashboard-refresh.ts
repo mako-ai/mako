@@ -117,7 +117,13 @@ export const dashboardSchedulerFunction = inngest.createFunction(
         continue;
       }
 
-      if (isDue && dashboard.dataSources?.length > 0) {
+      const anyBuilding = dashboard.dataSources?.some(
+        (ds: any) =>
+          ds.cache?.parquetBuildStatus === "building" ||
+          ds.cache?.parquetBuildStatus === "queued",
+      );
+
+      if (isDue && !anyBuilding && dashboard.dataSources?.length > 0) {
         await step.sendEvent("trigger-refresh", {
           name: "dashboard.refresh",
           data: {
