@@ -372,12 +372,15 @@ export function WebhookFlowForm({
     });
   };
 
-  const openNextStep = (currentStep: number) => {
+  const openNextStep = (currentStep: number, closeCurrentStep = true) => {
     setOpenSteps(prev => {
       const next = new Set(prev);
       const nextStep = currentStep + 1;
       if (nextStep < STEPS.length) {
         next.add(nextStep);
+      }
+      if (closeCurrentStep) {
+        next.delete(currentStep);
       }
       return next;
     });
@@ -420,10 +423,15 @@ export function WebhookFlowForm({
   const isBigQueryDest = selectedDestination?.type === "bigquery";
 
   useEffect(() => {
-    if (isBigQueryDest && watchDeleteMode !== "soft") {
-      setValue("deleteMode", "soft");
+    if (isBigQueryDest) {
+      if (watchDeleteMode !== "soft") {
+        setValue("deleteMode", "soft");
+      }
+      if (isNewMode && watchSyncEngine !== "cdc") {
+        setValue("syncEngine", "cdc");
+      }
     }
-  }, [isBigQueryDest, setValue, watchDeleteMode]);
+  }, [isBigQueryDest, setValue, watchDeleteMode, watchSyncEngine, isNewMode]);
 
   // Fetch entity metadata from connector and build per-entity layout defaults
   useEffect(() => {
@@ -1325,7 +1333,12 @@ export function WebhookFlowForm({
                         if (isBigQueryDest) {
                           openNextStep(2);
                         } else {
-                          setOpenSteps(prev => new Set([...prev, 4]));
+                          setOpenSteps(prev => {
+                            const next = new Set(prev);
+                            next.delete(2);
+                            next.add(4);
+                            return next;
+                          });
                         }
                       }}
                     >
@@ -1582,7 +1595,12 @@ export function WebhookFlowForm({
                         variant="contained"
                         endIcon={<NextIcon />}
                         onClick={() => {
-                          setOpenSteps(prev => new Set([...prev, 4]));
+                          setOpenSteps(prev => {
+                            const next = new Set(prev);
+                            next.delete(3);
+                            next.add(4);
+                            return next;
+                          });
                         }}
                       >
                         Continue to Webhook Setup
@@ -1602,14 +1620,28 @@ export function WebhookFlowForm({
               {renderStepHeader(4)}
               <AccordionDetails>
                 <Stack spacing={3}>
+                  <Alert severity="info" icon={<WebhookIcon />}>
+                    <Typography variant="body2">
+                      <strong>Webhook:</strong> Real-time sync triggered by
+                      webhook events.
+                      {isNewMode
+                        ? " Save the flow to generate the webhook URL and secret."
+                        : " Configure the webhook URL and signing secret below."}
+                    </Typography>
+                  </Alert>
+
                   {isNewMode && (
-                    <Alert severity="info" icon={<WebhookIcon />}>
-                      <Typography variant="body2">
-                        <strong>Webhook:</strong> Real-time sync triggered by
-                        webhook events. The webhook URL will be generated after
-                        creation.
-                      </Typography>
-                    </Alert>
+                    <Button
+                      variant="contained"
+                      startIcon={<AddIcon />}
+                      onClick={handleFormSubmit}
+                      disabled={isSubmitting}
+                      fullWidth
+                    >
+                      {isSubmitting
+                        ? "Creating..."
+                        : "Create Flow & Generate Webhook URL"}
+                    </Button>
                   )}
 
                   {!isNewMode && currentFlowId && webhookUrl && (
