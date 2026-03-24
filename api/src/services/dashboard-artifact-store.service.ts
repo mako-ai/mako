@@ -16,6 +16,7 @@ export interface DashboardArtifactStore {
   ): Promise<void>;
   getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
+  getSize(key: string): Promise<number | null>;
   delete(key: string): Promise<void>;
 }
 
@@ -109,6 +110,15 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
     return fs.createReadStream(this.resolvePath(key));
   }
 
+  async getSize(key: string): Promise<number | null> {
+    try {
+      const stat = await fsPromises.stat(this.resolvePath(key));
+      return stat.size;
+    } catch {
+      return null;
+    }
+  }
+
   async delete(key: string): Promise<void> {
     const targetPath = this.resolvePath(key);
     await fsPromises.rm(targetPath, { force: true }).catch(() => undefined);
@@ -175,8 +185,21 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
     return signedUrl;
   }
 
-  async openReadStream(): Promise<NodeJS.ReadableStream | null> {
-    return null;
+  async openReadStream(key: string): Promise<NodeJS.ReadableStream | null> {
+    try {
+      return this.file(key).createReadStream();
+    } catch {
+      return null;
+    }
+  }
+
+  async getSize(key: string): Promise<number | null> {
+    try {
+      const [metadata] = await this.file(key).getMetadata();
+      return metadata.size ? Number(metadata.size) : null;
+    } catch {
+      return null;
+    }
   }
 
   async delete(key: string): Promise<void> {
@@ -434,8 +457,29 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
     return await this.createSignedGetUrl(key);
   }
 
-  async openReadStream(): Promise<NodeJS.ReadableStream | null> {
-    return null;
+  async openReadStream(key: string): Promise<NodeJS.ReadableStream | null> {
+    try {
+      const url = await this.createSignedGetUrl(key);
+      const response = await fetch(url);
+      if (!response.ok || !response.body) {
+        return null;
+      }
+      const { Readable } = await import("stream");
+      return Readable.fromWeb(response.body as any);
+    } catch {
+      return null;
+    }
+  }
+
+  async getSize(key: string): Promise<number | null> {
+    try {
+      const response = await this.signedRequest("HEAD", key);
+      return response.ok
+        ? Number(response.headers.get("content-length")) || null
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   async delete(key: string): Promise<void> {

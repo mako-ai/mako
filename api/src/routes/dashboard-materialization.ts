@@ -406,6 +406,7 @@ app.get(
       }
 
       const store = getDashboardArtifactStore();
+
       if (getDashboardArtifactStoreType() === "filesystem") {
         const filePath = getFilesystemArtifactPath(status.artifactKey);
         let stat;
@@ -452,12 +453,26 @@ app.get(
         );
       }
 
-      const signedUrl = await store.getSignedUrl(status.artifactKey, 3600);
-      if (!signedUrl) {
-        return c.json({ success: false, error: "Artifact not available" }, 404);
+      // For GCS/S3: stream through the API to avoid browser CORS issues
+      // with cross-origin signed-URL redirects.
+      const stream = await store.openReadStream(status.artifactKey);
+      if (stream) {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/vnd.apache.parquet",
+          "Cache-Control": "private, max-age=300",
+          "X-Row-Count": String(status.rowCount || ""),
+        };
+
+        const size =
+          status.byteSize ?? (await store.getSize(status.artifactKey));
+        if (size) {
+          headers["Content-Length"] = String(size);
+        }
+
+        return c.body(stream as any, 200, headers);
       }
 
-      return c.redirect(signedUrl, 302);
+      return c.json({ success: false, error: "Artifact not available" }, 404);
     } catch (error) {
       logger.error("Failed to stream materialized artifact", { error });
       return c.json(
