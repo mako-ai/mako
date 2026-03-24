@@ -1,0 +1,147 @@
+---
+title: "How to Import CSV to ClickHouse (4 Methods)"
+slug: import-csv-to-clickhouse
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - clickhouse
+  - csv
+  - import
+  - data
+excerpt: "Four ways to import CSV files into ClickHouse: clickhouse-client piping, INSERT FROM INFILE, the HTTP interface, and the file() table function. Includes performance tips for large datasets."
+metaDescription: "Import CSV to ClickHouse in 2026: clickhouse-client, INSERT FROM INFILE, HTTP API, and file() function. Step-by-step with examples and optimization tips."
+database: clickhouse
+category: import-export
+draft: false
+---
+
+ClickHouse is designed for fast analytical queries on large datasets, and its import capabilities reflect that. It handles CSV files efficiently through several methods, each suited to different scenarios.
+
+## Method 1: clickhouse-client with Pipe
+
+The most common approach is piping a CSV file directly into `clickhouse-client`:
+
+```bash
+clickhouse-client \
+  --host your-host \
+  --query "INSERT INTO events FORMAT CSVWithNames" \
+  < events.csv
+```
+
+Use `CSVWithNames` if your file has a header row, or `CSV` if it doesn't. The client streams data to the server, so this works with files of any size.
+
+Create the target table first:
+
+```sql
+CREATE TABLE events (
+  event_id UInt64,
+  user_id UInt64,
+  event_type String,
+  timestamp DateTime,
+  payload String
+) ENGINE = MergeTree()
+ORDER BY (timestamp, event_id);
+```
+
+**Multiple files at once:**
+
+```bash
+cat events_*.csv | clickhouse-client \
+  --query "INSERT INTO events FORMAT CSVWithNames"
+```
+
+## Method 2: INSERT FROM INFILE (Local Client)
+
+ClickHouse supports `FROM INFILE` for loading files directly from the client machine:
+
+```sql
+INSERT INTO events
+FROM INFILE '/path/to/events.csv'
+FORMAT CSVWithNames;
+```
+
+This runs inside `clickhouse-client` and reads the file from the client's filesystem. It supports compression automatically:
+
+```sql
+INSERT INTO events
+FROM INFILE '/path/to/events.csv.gz'
+FORMAT CSVWithNames;
+```
+
+ClickHouse detects `.gz`, `.zst`, `.br`, and other compression formats from the file extension.
+
+## Method 3: HTTP Interface
+
+ClickHouse's HTTP API accepts CSV data via POST requests, which is useful for programmatic imports:
+
+```bash
+curl -X POST \
+  "http://your-host:8123/?query=INSERT+INTO+events+FORMAT+CSVWithNames" \
+  --data-binary @events.csv
+```
+
+For authenticated ClickHouse Cloud instances:
+
+```bash
+curl -X POST \
+  "https://your-instance.clickhouse.cloud:8443/?query=INSERT+INTO+events+FORMAT+CSVWithNames" \
+  --user "default:your-password" \
+  --data-binary @events.csv
+```
+
+This method works from any language or tool that can make HTTP requests.
+
+## Method 4: file() Table Function
+
+The `file()` table function lets you query CSV files directly as if they were tables, without importing first:
+
+```sql
+SELECT *
+FROM file('events.csv', CSVWithNames)
+LIMIT 10;
+```
+
+This is useful for inspecting data before importing. To combine it with an insert:
+
+```sql
+INSERT INTO events
+SELECT *
+FROM file('events.csv', CSVWithNames);
+```
+
+The file must be in ClickHouse's `user_files` directory (configurable in the server settings).
+
+## Performance Tips
+
+**Choose the right table engine.** For analytical workloads, `MergeTree` with an appropriate `ORDER BY` clause is the default. The sort key affects both query performance and compression ratio.
+
+**Batch size.** ClickHouse performs best with large batches. Avoid inserting row-by-row. The methods above all send data in bulk, which is ideal.
+
+**Parallel imports.** For very large datasets, split the file and run multiple `clickhouse-client` processes in parallel. ClickHouse handles concurrent inserts well:
+
+```bash
+split -l 1000000 events.csv events_part_
+for f in events_part_*; do
+  clickhouse-client --query "INSERT INTO events FORMAT CSV" < "$f" &
+done
+wait
+```
+
+**Compression.** If you're transferring over a network, compress the file first. ClickHouse decompresses on the fly and the reduced network transfer usually outweighs the decompression cost:
+
+```bash
+gzip events.csv
+clickhouse-client --query "INSERT INTO events FORMAT CSVWithNames" < events.csv.gz
+```
+
+## Common Gotchas
+
+**Type strictness.** ClickHouse is stricter about types than PostgreSQL or MySQL. A `UInt64` column will reject negative numbers. A `DateTime` column requires a specific format (`YYYY-MM-DD HH:MM:SS`). Check your data types before importing.
+
+**DateTime formats.** ClickHouse expects `YYYY-MM-DD HH:MM:SS` by default. For other formats, use `parseDateTimeBestEffort()` with a materialized view or import into a staging table with `String` columns first.
+
+**CSV dialect.** ClickHouse's CSV parser follows RFC 4180. Fields containing commas or newlines must be double-quoted. Single-quoted fields are not recognized as quoted.
+
+**Header mismatch.** When using `CSVWithNames`, column names in the header must match the table column names exactly (case-sensitive). Use `CSVWithNamesAndTypes` if your header also includes type information.
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
