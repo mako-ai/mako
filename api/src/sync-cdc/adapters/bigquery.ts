@@ -274,6 +274,22 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         (r: any) => r.column_name as string,
       ),
     );
+
+    if (liveCols.size === 0) {
+      log.info("Live table does not exist, creating from staging schema", {
+        liveTable,
+        stagingTable,
+        dataset,
+      });
+      await databaseConnectionService.executeQuery(
+        destination,
+        `CREATE TABLE ${fullLive} AS SELECT * FROM ${fullStaging} LIMIT 0`,
+      );
+      for (const col of stagingCols) {
+        liveCols.add(col);
+      }
+    }
+
     const allColumns = Array.from(new Set([...stagingCols, ...liveCols]));
 
     const keyColumns = layout.keyColumns;
