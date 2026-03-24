@@ -160,11 +160,10 @@ function buildDestinationCountQuery(params: {
     const dataset = params.projectId
       ? `\`${params.projectId}\`.\`${params.schema}\``
       : `\`${params.schema}\``;
-    return `SELECT row_count AS total_count FROM ${dataset}.INFORMATION_SCHEMA.TABLE_STORAGE WHERE table_name = '${params.tableName}'`;
+    return `SELECT total_rows AS total_count FROM ${dataset}.INFORMATION_SCHEMA.TABLE_STORAGE WHERE table_name = '${params.tableName}'`;
   }
   if (type.includes("postgres")) {
-    const escLiteral = (v: string) => `'${v.replace(/'/g, "''")}'`;
-    return `SELECT reltuples::bigint AS total_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escLiteral(params.schema)} AND c.relname = ${escLiteral(params.tableName)}`;
+    return `SELECT COUNT(*)::bigint AS total_count FROM ${escapePostgresIdentifier(params.schema)}.${escapePostgresIdentifier(params.tableName)}`;
   }
   return null;
 }
