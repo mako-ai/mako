@@ -225,10 +225,33 @@ export const useDashboardStore = create<DashboardStoreState>()(
         try {
           const response = await apiClient.get<{
             success: boolean;
-            data: Dashboard[];
+            data?: Dashboard[];
+            myDashboards?: any[];
+            workspaceDashboards?: any[];
           }>(`/workspaces/${workspaceId}/dashboards`);
 
-          const data = response.data || [];
+          // Support both flat (legacy) and tree (new) response shapes
+          let data: Dashboard[];
+          if (response.data) {
+            data = response.data;
+          } else {
+            const flatten = (nodes: any[]): Dashboard[] => {
+              const result: Dashboard[] = [];
+              for (const node of nodes) {
+                if (node.isDirectory && node.children) {
+                  result.push(...flatten(node.children));
+                } else if (!node.isDirectory) {
+                  result.push(node);
+                }
+              }
+              return result;
+            };
+            data = [
+              ...flatten(response.myDashboards || []),
+              ...flatten(response.workspaceDashboards || []),
+            ];
+          }
+
           set(state => {
             state.dashboards[workspaceId] = data;
           });

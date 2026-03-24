@@ -5,6 +5,7 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
+import { DashboardManager } from "../utils/dashboard-manager";
 import {
   buildDashboardMaterializationStatus,
   getDashboardForMaterialization,
@@ -91,7 +92,7 @@ async function getScopedDashboardOrResponse(c: AuthenticatedContext) {
   }
 
   const userId = c.get("user")?.id;
-  if (dashboard.access === "private" && dashboard.createdBy !== userId) {
+  if (!userId || !DashboardManager.canRead(dashboard as any, userId)) {
     return c.json({ success: false, error: "Access denied" }, 403);
   }
 

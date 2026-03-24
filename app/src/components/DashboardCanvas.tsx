@@ -26,6 +26,8 @@ import {
   Redo2,
   ChartPie as DashboardIcon,
   Code2,
+  Pencil,
+  Eye,
 } from "lucide-react";
 import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
@@ -132,6 +134,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
+  const [isEditModeLocal, setIsEditModeLocal] = useState(true);
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const [dataSourcePanelOpen, setDataSourcePanelOpen] = useState(false);
@@ -553,6 +556,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }
 
   const hasCodeError = Boolean(codeError);
+  const isReadOnly = dashboard.readOnly === true;
+  const isEditMode = isEditModeLocal && !isReadOnly;
   const renderWidget = (widget: DashboardWidget) => {
     const snapshot = dashboard.snapshots?.[widget.id];
     if (!runtimeSession && !snapshot) {
@@ -664,15 +669,53 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           minHeight: 44,
         }}
       >
+        {/* Edit / View mode toggle (hidden when read-only) */}
+        {!isReadOnly && (
+          <ToggleButtonGroup
+            value={isEditMode ? "edit" : "view"}
+            exclusive
+            onChange={(_, v) => v && setIsEditModeLocal(v === "edit")}
+            size="small"
+            sx={{ height: 28 }}
+          >
+            <ToggleButton value="view" sx={{ px: 1, py: 0.25 }}>
+              <Tooltip title="View mode">
+                <Eye size={14} />
+              </Tooltip>
+            </ToggleButton>
+            <ToggleButton value="edit" sx={{ px: 1, py: 0.25 }}>
+              <Tooltip title="Edit mode">
+                <Pencil size={14} />
+              </Tooltip>
+            </ToggleButton>
+          </ToggleButtonGroup>
+        )}
+
+        {isReadOnly && (
+          <Chip
+            label="Read-only"
+            size="small"
+            color="default"
+            variant="outlined"
+            sx={{ mr: 0.5 }}
+          />
+        )}
+
         {/* Data Sources */}
-        <Tooltip title="Manage data sources">
+        <Tooltip
+          title={
+            isReadOnly ? "Data sources (read-only)" : "Manage data sources"
+          }
+        >
           <Chip
             icon={<Database size={14} />}
             label={`${dashboard.dataSources.length} sources`}
             size="small"
             variant="outlined"
-            onClick={() => setDataSourcePanelOpen(true)}
-            sx={{ cursor: "pointer" }}
+            onClick={
+              isReadOnly ? undefined : () => setDataSourcePanelOpen(true)
+            }
+            sx={{ cursor: isReadOnly ? "default" : "pointer" }}
           />
         </Tooltip>
 
@@ -688,69 +731,77 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
 
-        {/* Reload data: re-fetch from source DB */}
-        <Tooltip title="Reload data from source database">
-          <Chip
-            icon={<Database size={14} />}
-            label="Reload data"
-            size="small"
-            variant="outlined"
-            onClick={isMaterializationBuilding ? undefined : handleReloadData}
-            sx={{ cursor: isMaterializationBuilding ? "default" : "pointer" }}
-            disabled={isMaterializationBuilding}
-          />
-        </Tooltip>
-
-        {/* Add Widget */}
-        <Tooltip title="Add widget">
-          <IconButton size="small" onClick={() => setAddWidgetOpen(true)}>
-            <Plus size={18} />
-          </IconButton>
-        </Tooltip>
-
-        {/* Undo / Redo */}
-        <Tooltip title="Undo (Cmd+Z)">
-          <span>
-            <IconButton
-              size="small"
-              onClick={() => dashboardId && undo(dashboardId)}
-              disabled={historyIndex <= 0}
-            >
-              <Undo2 size={16} />
-            </IconButton>
-          </span>
-        </Tooltip>
-        <Tooltip title="Redo (Cmd+Shift+Z)">
-          <span>
-            <IconButton
-              size="small"
-              onClick={() => dashboardId && redo(dashboardId)}
-              disabled={historyIndex >= historyLength - 1}
-            >
-              <Redo2 size={16} />
-            </IconButton>
-          </span>
-        </Tooltip>
-
-        {/* View toggle */}
-        <ToggleButtonGroup
-          value={viewMode}
-          exclusive
-          onChange={(_, v) => v && setViewMode(v)}
-          size="small"
-          sx={{ height: 28 }}
-        >
-          <ToggleButton value="canvas" sx={{ px: 1, py: 0.25 }}>
-            <Tooltip title="Dashboard view">
-              <DashboardIcon size={14} />
+        {isEditMode && (
+          <>
+            {/* Reload data: re-fetch from source DB */}
+            <Tooltip title="Reload data from source database">
+              <Chip
+                icon={<Database size={14} />}
+                label="Reload data"
+                size="small"
+                variant="outlined"
+                onClick={
+                  isMaterializationBuilding ? undefined : handleReloadData
+                }
+                sx={{
+                  cursor: isMaterializationBuilding ? "default" : "pointer",
+                }}
+                disabled={isMaterializationBuilding}
+              />
             </Tooltip>
-          </ToggleButton>
-          <ToggleButton value="code" sx={{ px: 1, py: 0.25 }}>
-            <Tooltip title="Code view (JSON)">
-              <Code2 size={14} />
+
+            {/* Add Widget */}
+            <Tooltip title="Add widget">
+              <IconButton size="small" onClick={() => setAddWidgetOpen(true)}>
+                <Plus size={18} />
+              </IconButton>
             </Tooltip>
-          </ToggleButton>
-        </ToggleButtonGroup>
+
+            {/* Undo / Redo */}
+            <Tooltip title="Undo (Cmd+Z)">
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => dashboardId && undo(dashboardId)}
+                  disabled={historyIndex <= 0}
+                >
+                  <Undo2 size={16} />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title="Redo (Cmd+Shift+Z)">
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => dashboardId && redo(dashboardId)}
+                  disabled={historyIndex >= historyLength - 1}
+                >
+                  <Redo2 size={16} />
+                </IconButton>
+              </span>
+            </Tooltip>
+
+            {/* Canvas / Code view toggle */}
+            <ToggleButtonGroup
+              value={viewMode}
+              exclusive
+              onChange={(_, v) => v && setViewMode(v)}
+              size="small"
+              sx={{ height: 28 }}
+            >
+              <ToggleButton value="canvas" sx={{ px: 1, py: 0.25 }}>
+                <Tooltip title="Dashboard view">
+                  <DashboardIcon size={14} />
+                </Tooltip>
+              </ToggleButton>
+              <ToggleButton value="code" sx={{ px: 1, py: 0.25 }}>
+                <Tooltip title="Code view (JSON)">
+                  <Code2 size={14} />
+                </Tooltip>
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </>
+        )}
 
         {/* Export */}
         <Tooltip title="Export">
@@ -759,30 +810,44 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </IconButton>
         </Tooltip>
 
-        <Tooltip
-          title={hasCodeError ? "Fix JSON errors before saving" : "Save"}
-        >
-          <span>
-            <IconButton
-              size="small"
-              disabled={viewMode === "code" && hasCodeError}
-              onClick={() =>
-                workspaceId &&
-                dashboardId &&
-                saveDashboard(workspaceId, dashboardId)
-              }
+        {isEditMode && (
+          <>
+            <Tooltip
+              title={hasCodeError ? "Fix JSON errors before saving" : "Save"}
             >
-              <Save size={16} />
-            </IconButton>
-          </span>
-        </Tooltip>
+              <span>
+                <IconButton
+                  size="small"
+                  disabled={viewMode === "code" && hasCodeError}
+                  onClick={() =>
+                    workspaceId &&
+                    dashboardId &&
+                    saveDashboard(workspaceId, dashboardId)
+                  }
+                >
+                  <Save size={16} />
+                </IconButton>
+              </span>
+            </Tooltip>
 
-        {/* Settings */}
-        <Tooltip title="Dashboard settings">
-          <IconButton size="small" onClick={() => setSettingsOpen(true)}>
-            <Settings size={16} />
-          </IconButton>
-        </Tooltip>
+            {/* Settings */}
+            <Tooltip title="Dashboard settings">
+              <IconButton size="small" onClick={() => setSettingsOpen(true)}>
+                <Settings size={16} />
+              </IconButton>
+            </Tooltip>
+          </>
+        )}
+
+        {/* Settings always available (read-only users can view settings) */}
+        {!isEditMode && (
+          <Tooltip title="Dashboard settings">
+            <IconButton size="small" onClick={() => setSettingsOpen(true)}>
+              <Settings size={16} />
+            </IconButton>
+          </Tooltip>
+        )}
+
         <Tooltip title="Toggle dashboard event log">
           <Chip
             size="small"
@@ -952,9 +1017,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           overflow: "hidden",
         }}
       >
-        {/* Main content: Canvas or Code */}
+        {/* Main content: Canvas or Code (code view only available in edit mode) */}
         <Box sx={{ flex: 1, overflow: "auto" }}>
-          {viewMode === "canvas" ? (
+          {viewMode === "canvas" || !isEditMode ? (
             <Box ref={gridContainerRef} sx={{ height: "100%" }}>
               {dashboard.widgets.length === 0 ? (
                 <Box
@@ -968,20 +1033,27 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                     gap: 2,
                   }}
                 >
-                  <Typography variant="body2">No widgets yet.</Typography>
-                  {dashboard.dataSources.length === 0 ? (
-                    <Tooltip title="Add a data source">
-                      <IconButton onClick={() => setDataSourcePanelOpen(true)}>
-                        <Database size={16} />
-                      </IconButton>
-                    </Tooltip>
-                  ) : (
-                    <Tooltip title="Add a widget">
-                      <IconButton onClick={() => setAddWidgetOpen(true)}>
-                        <Plus size={16} />
-                      </IconButton>
-                    </Tooltip>
-                  )}
+                  <Typography variant="body2">
+                    {isEditMode
+                      ? "No widgets yet."
+                      : "This dashboard has no widgets."}
+                  </Typography>
+                  {isEditMode &&
+                    (dashboard.dataSources.length === 0 ? (
+                      <Tooltip title="Add a data source">
+                        <IconButton
+                          onClick={() => setDataSourcePanelOpen(true)}
+                        >
+                          <Database size={16} />
+                        </IconButton>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip title="Add a widget">
+                        <IconButton onClick={() => setAddWidgetOpen(true)}>
+                          <Plus size={16} />
+                        </IconButton>
+                      </Tooltip>
+                    ))}
                 </Box>
               ) : (
                 <ResponsiveGridLayout
@@ -992,7 +1064,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   cols={{ lg: 12, md: 10, sm: 6, xs: 4 }}
                   rowHeight={dashboard.layout?.rowHeight || 80}
                   onLayoutChange={handleLayoutChange}
-                  dragConfig={{ handle: ".drag-handle" }}
+                  dragConfig={{
+                    handle: ".drag-handle",
+                    enabled: isEditMode,
+                  }}
+                  resizeConfig={{ enabled: isEditMode }}
                 >
                   {dashboard.widgets.map(widget => (
                     <div key={widget.id}>
@@ -1007,6 +1083,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                             title={widget.title}
                             loading={!allSourcesReady}
                             error={widgetError || undefined}
+                            isEditMode={isEditMode}
                             onRefresh={() =>
                               dashboardId &&
                               refreshDashboardWidgetCommand({

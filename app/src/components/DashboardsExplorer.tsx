@@ -1,17 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Box,
   IconButton,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
   Typography,
   Tooltip,
   Alert,
-  Skeleton,
-  TextField,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -22,64 +15,71 @@ import {
 import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
-  Trash2 as DeleteIcon,
-  ChartPie as DashboardIcon,
-  Copy as CopyIcon,
+  Lock as LockIcon,
+  Globe as GlobeIcon,
+  User as UserIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useDashboardStore, type Dashboard } from "../store/dashboardStore";
+import { useAuth } from "../contexts/auth-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { useDashboardStore } from "../store/dashboardStore";
+import { useDashboardTreeStore } from "../store/dashboardTreeStore";
+import { useExplorerStore } from "../store/explorerStore";
+import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 
-function formatRelativeTime(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
+const EMPTY_TREE: ResourceTreeNode[] = [];
 
 export function DashboardsExplorer() {
   const { currentWorkspace } = useWorkspace();
-  const {
-    dashboards: dashboardsMap,
-    loading: loadingMap,
-    error: errorMap,
-    fetchDashboards,
-    deleteDashboard,
-  } = useDashboardStore();
+  const { user } = useAuth();
+  const workspaceId = currentWorkspace?.id;
+  const isAdmin =
+    currentWorkspace?.role === "owner" || currentWorkspace?.role === "admin";
 
-  const dashboards = currentWorkspace
-    ? dashboardsMap[currentWorkspace.id] || []
-    : [];
-  const isLoading = currentWorkspace
-    ? !!loadingMap[currentWorkspace.id]
-    : false;
-  const error = currentWorkspace ? errorMap[currentWorkspace.id] || null : null;
+  const myDashboards = useDashboardTreeStore(
+    s => (workspaceId && s.myDashboards[workspaceId]) || EMPTY_TREE,
+  );
+  const workspaceDashboards = useDashboardTreeStore(
+    s => (workspaceId && s.workspaceDashboards[workspaceId]) || EMPTY_TREE,
+  );
+  const loading = useDashboardTreeStore(s =>
+    workspaceId ? !!s.loading[workspaceId] : false,
+  );
+  const error = useDashboardTreeStore(s =>
+    workspaceId ? s.error[workspaceId] || null : null,
+  );
+  const fetchTree = useDashboardTreeStore(s => s.fetchTree);
+  const moveItem = useDashboardTreeStore(s => s.moveItem);
+  const moveFolder = useDashboardTreeStore(s => s.moveFolder);
+  const createFolder = useDashboardTreeStore(s => s.createFolder);
+  const renameItem = useDashboardTreeStore(s => s.renameItem);
+  const deleteItem = useDashboardTreeStore(s => s.deleteItem);
+  const resortItem = useDashboardTreeStore(s => s.resortItem);
+  const duplicateDashboard = useDashboardStore(s => s.duplicateDashboard);
 
-  const { tabs, activeTabId, openTab, setActiveTab } = useConsoleStore();
-  const consoleTabs = Object.values(tabs);
+  const isDashboardFolderExpanded = useExplorerStore(
+    s => s.isDashboardFolderExpanded,
+  );
+  const toggleDashboardFolder = useExplorerStore(s => s.toggleDashboardFolder);
+  const expandDashboardFolder = useExplorerStore(s => s.expandDashboardFolder);
 
-  const [deleteTarget, setDeleteTarget] = useState<Dashboard | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  const { openTab, setActiveTab, activeTabId, tabs } = useConsoleStore();
+
+  const [deleteTarget, setDeleteTarget] = useState<ResourceTreeNode | null>(
+    null,
+  );
 
   useEffect(() => {
-    if (currentWorkspace) {
-      fetchDashboards(currentWorkspace.id);
+    if (workspaceId) {
+      fetchTree(workspaceId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id, fetchDashboards]);
+  }, [workspaceId, fetchTree]);
 
-  const handleRefresh = async () => {
-    if (currentWorkspace?.id) {
-      await fetchDashboards(currentWorkspace.id);
-    }
-  };
+  const handleRefresh = useCallback(async () => {
+    if (workspaceId) await fetchTree(workspaceId);
+  }, [workspaceId, fetchTree]);
 
-  const handleCreate = () => {
+  const handleCreate = useCallback(() => {
     const id = openTab({
       title: "New Dashboard",
       content: "",
@@ -87,93 +87,161 @@ export function DashboardsExplorer() {
       metadata: { isNew: true },
     });
     setActiveTab(id);
-  };
+  }, [openTab, setActiveTab]);
 
-  const handleSelect = (dashboard: Dashboard) => {
-    const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-      (tab: any) =>
-        tab.kind === "dashboard" && tab.metadata?.dashboardId === dashboard._id,
-    );
+  const handleItemClick = useCallback(
+    (node: ResourceTreeNode) => {
+      const existingTab = Object.values(tabs).find(
+        (tab: any) =>
+          tab.kind === "dashboard" && tab.metadata?.dashboardId === node.id,
+      );
+      if (existingTab) {
+        setActiveTab(existingTab.id);
+      } else {
+        const id = openTab({
+          title: node.name,
+          content: "",
+          kind: "dashboard",
+          metadata: { dashboardId: node.id },
+        });
+        setActiveTab(id);
+      }
+    },
+    [tabs, openTab, setActiveTab],
+  );
 
-    if (existingTab) {
-      setActiveTab(existingTab.id);
-    } else {
-      const id = openTab({
-        title: dashboard.title,
-        content: "",
-        kind: "dashboard",
-        metadata: { dashboardId: dashboard._id },
-      });
-      setActiveTab(id);
+  const handleDeleteItem = useCallback((node: ResourceTreeNode) => {
+    setDeleteTarget(node);
+  }, []);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deleteTarget || !workspaceId) return;
+    await deleteItem(workspaceId, deleteTarget.id, deleteTarget.isDirectory);
+    setDeleteTarget(null);
+  }, [deleteTarget, workspaceId, deleteItem]);
+
+  const handleDuplicate = useCallback(
+    async (node: ResourceTreeNode) => {
+      if (!workspaceId) return;
+      const result = await duplicateDashboard(workspaceId, node.id);
+      if (result) {
+        await fetchTree(workspaceId);
+        const id = openTab({
+          title: result.title,
+          content: "",
+          kind: "dashboard",
+          metadata: { dashboardId: result._id },
+        });
+        setActiveTab(id);
+      }
+    },
+    [workspaceId, duplicateDashboard, fetchTree, openTab, setActiveTab],
+  );
+
+  const handleCreateFolder = useCallback(
+    async (
+      parentId: string | null,
+      access?: string,
+    ): Promise<string | null> => {
+      if (!workspaceId) return null;
+      return createFolder(
+        workspaceId,
+        "New Folder",
+        parentId,
+        (access as "private" | "workspace") || undefined,
+      );
+    },
+    [workspaceId, createFolder],
+  );
+
+  const handleMoveItem = useCallback(
+    (itemId: string, targetFolderId: string | null, access?: string) => {
+      if (!workspaceId) return;
+      moveItem(
+        workspaceId,
+        itemId,
+        targetFolderId,
+        (access as "private" | "workspace") || undefined,
+      );
+    },
+    [workspaceId, moveItem],
+  );
+
+  const handleMoveFolder = useCallback(
+    (folderId: string, parentId: string | null, access?: string) => {
+      if (!workspaceId) return;
+      moveFolder(
+        workspaceId,
+        folderId,
+        parentId,
+        (access as "private" | "workspace") || undefined,
+      );
+    },
+    [workspaceId, moveFolder],
+  );
+
+  const handleRenameItem = useCallback(
+    (id: string, name: string, isDirectory: boolean) => {
+      if (!workspaceId) return;
+      renameItem(workspaceId, id, name, isDirectory);
+    },
+    [workspaceId, renameItem],
+  );
+
+  const handleResortItem = useCallback(
+    (id: string) => {
+      if (!workspaceId) return;
+      resortItem(workspaceId, id);
+    },
+    [workspaceId, resortItem],
+  );
+
+  const canManageItem = useCallback(
+    (node: ResourceTreeNode) => {
+      if (isAdmin) return true;
+      if (node.owner_id === user?.id) return true;
+      return false;
+    },
+    [isAdmin, user?.id],
+  );
+
+  const getItemIcon = useCallback((node: ResourceTreeNode) => {
+    if (node.access === "workspace") {
+      return <GlobeIcon size={16} strokeWidth={1.5} />;
     }
-  };
+    return <LockIcon size={16} strokeWidth={1.5} />;
+  }, []);
 
-  const handleDeleteConfirm = async () => {
-    if (deleteTarget && currentWorkspace?.id) {
-      await deleteDashboard(currentWorkspace.id, deleteTarget._id);
-      setDeleteTarget(null);
+  const sectionsDef = useMemo(
+    () => [
+      {
+        key: "my",
+        label: "My Dashboards",
+        icon: <UserIcon size={16} strokeWidth={1.5} />,
+        nodes: myDashboards as ResourceTreeNode[],
+        droppableId: "__section_my",
+        defaultAccess: "private" as const,
+      },
+      {
+        key: "workspace",
+        label: "Workspace",
+        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
+        nodes: workspaceDashboards as ResourceTreeNode[],
+        droppableId: "__section_workspace",
+        defaultAccess: "workspace" as const,
+      },
+    ],
+    [myDashboards, workspaceDashboards],
+  );
+
+  const activeDashboardTabId = (() => {
+    if (!activeTabId) return null;
+    const tab = tabs[activeTabId];
+    if (tab?.kind === "dashboard" && tab.metadata?.dashboardId) {
+      return tab.metadata.dashboardId as string;
     }
-  };
-
-  const handleRename = async (dashboardId: string) => {
-    if (!currentWorkspace?.id || !renameValue.trim()) {
-      setRenamingId(null);
-      return;
-    }
-    await useDashboardStore
-      .getState()
-      .updateDashboard(currentWorkspace.id, dashboardId, {
-        title: renameValue.trim(),
-      });
-    await fetchDashboards(currentWorkspace.id);
-    setRenamingId(null);
-  };
-
-  const handleDuplicate = async (dashboard: Dashboard) => {
-    if (!currentWorkspace?.id) return;
-    await useDashboardStore
-      .getState()
-      .duplicateDashboard(currentWorkspace.id, dashboard._id);
-    const updated =
-      useDashboardStore.getState().dashboards[currentWorkspace.id] || [];
-    const duplicated =
-      updated.find(d => d.title === `${dashboard.title} (copy)`) ||
-      updated[updated.length - 1];
-    if (duplicated) {
-      const id = openTab({
-        title: duplicated.title,
-        content: "",
-        kind: "dashboard",
-        metadata: { dashboardId: duplicated._id },
-      });
-      setActiveTab(id);
-    }
-  };
-
-  const renderSkeletonItems = () =>
-    Array.from({ length: 3 }).map((_, index) => (
-      <ListItem key={`skeleton-${index}`} disablePadding>
-        <ListItemButton disabled>
-          <ListItemText
-            primary={
-              <Skeleton
-                variant="text"
-                width={`${60 + Math.random() * 40}%`}
-                height={20}
-              />
-            }
-            secondary={
-              <Box
-                component="span"
-                sx={{ display: "inline-flex", gap: 0.5, alignItems: "center" }}
-              >
-                <Skeleton variant="text" width={120} height={16} />
-              </Box>
-            }
-          />
-        </ListItemButton>
-      </ListItem>
-    ));
+    return null;
+  })();
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -207,7 +275,7 @@ export function DashboardsExplorer() {
               <IconButton
                 size="small"
                 onClick={handleRefresh}
-                disabled={isLoading}
+                disabled={loading}
               >
                 <RefreshIcon size={20} strokeWidth={2} />
               </IconButton>
@@ -221,9 +289,9 @@ export function DashboardsExplorer() {
         <Alert
           severity="error"
           onClose={() => {
-            if (currentWorkspace?.id) {
-              useDashboardStore.setState(state => {
-                state.error[currentWorkspace.id] = null;
+            if (workspaceId) {
+              useDashboardTreeStore.setState(state => {
+                state.error[workspaceId] = null;
               });
             }
           }}
@@ -233,155 +301,52 @@ export function DashboardsExplorer() {
         </Alert>
       )}
 
-      {/* Dashboard List */}
+      {/* Tree */}
       <Box sx={{ flexGrow: 1, overflow: "auto" }}>
-        {isLoading && dashboards.length === 0 ? (
-          <List dense>{renderSkeletonItems()}</List>
-        ) : dashboards.length === 0 ? (
+        {loading &&
+        myDashboards.length === 0 &&
+        workspaceDashboards.length === 0 ? (
           <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-            <Typography variant="body2">No dashboards yet.</Typography>
+            <Typography variant="body2">Loading...</Typography>
           </Box>
         ) : (
-          <List dense>
-            {dashboards.map(dashboard => {
-              const isActive = !!(
-                activeTabId &&
-                consoleTabs.find(
-                  (t: any) =>
-                    t.id === activeTabId &&
-                    t.kind === "dashboard" &&
-                    t.metadata?.dashboardId === dashboard._id,
-                )
-              );
-              const widgetCount = dashboard.widgets?.length || 0;
-              const dsCount = dashboard.dataSources?.length || 0;
-
-              return (
-                <ListItem
-                  key={dashboard._id}
-                  disablePadding
-                  secondaryAction={
-                    <Box sx={{ display: "flex", gap: 0 }}>
-                      <Tooltip title="Duplicate">
-                        <IconButton
-                          size="small"
-                          onClick={e => {
-                            e.stopPropagation();
-                            handleDuplicate(dashboard);
-                          }}
-                        >
-                          <CopyIcon size={14} strokeWidth={1.5} />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Delete">
-                        <IconButton
-                          edge="end"
-                          size="small"
-                          onClick={e => {
-                            e.stopPropagation();
-                            setDeleteTarget(dashboard);
-                          }}
-                        >
-                          <DeleteIcon size={14} strokeWidth={1.5} />
-                        </IconButton>
-                      </Tooltip>
-                    </Box>
-                  }
-                >
-                  <ListItemButton
-                    selected={isActive}
-                    onClick={() => handleSelect(dashboard)}
-                    sx={{
-                      px: 1,
-                      py: 0.2,
-                      display: "flex",
-                      alignItems: "center",
-                    }}
-                  >
-                    <ListItemIcon sx={{ minWidth: 28 }}>
-                      <DashboardIcon size={20} strokeWidth={1.5} />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={
-                        renamingId === dashboard._id ? (
-                          <TextField
-                            value={renameValue}
-                            onChange={e => setRenameValue(e.target.value)}
-                            onBlur={() => handleRename(dashboard._id)}
-                            onKeyDown={e => {
-                              if (e.key === "Enter") {
-                                handleRename(dashboard._id);
-                              }
-                              if (e.key === "Escape") setRenamingId(null);
-                            }}
-                            size="small"
-                            autoFocus
-                            sx={{ fontSize: "0.85rem" }}
-                            onClick={e => e.stopPropagation()}
-                          />
-                        ) : (
-                          <Typography
-                            variant="body2"
-                            onDoubleClick={e => {
-                              e.stopPropagation();
-                              setRenamingId(dashboard._id);
-                              setRenameValue(dashboard.title);
-                            }}
-                            sx={{
-                              fontWeight: 500,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {dashboard.title || "Untitled Dashboard"}
-                          </Typography>
-                        )
-                      }
-                      secondary={
-                        <Box
-                          component="span"
-                          sx={{
-                            display: "inline-flex",
-                            gap: 1,
-                            alignItems: "center",
-                          }}
-                        >
-                          <Typography
-                            component="span"
-                            variant="caption"
-                            color="text.secondary"
-                          >
-                            {widgetCount}w · {dsCount}ds
-                          </Typography>
-                          {dashboard.updatedAt && (
-                            <Typography
-                              component="span"
-                              variant="caption"
-                              color="text.disabled"
-                            >
-                              {formatRelativeTime(dashboard.updatedAt)}
-                            </Typography>
-                          )}
-                        </Box>
-                      }
-                      sx={{ pr: 4 }}
-                    />
-                  </ListItemButton>
-                </ListItem>
-              );
-            })}
-          </List>
+          <ResourceTree
+            sections={sectionsDef}
+            mode="sidebar"
+            activeItemId={activeDashboardTabId}
+            getItemIcon={getItemIcon}
+            enableDragDrop
+            enableRename
+            enableDuplicate
+            enableDelete
+            enableNewFolder
+            onItemClick={handleItemClick}
+            onMoveItem={handleMoveItem}
+            onMoveFolder={handleMoveFolder}
+            onRenameItem={handleRenameItem}
+            onDeleteItem={handleDeleteItem}
+            onDuplicateItem={handleDuplicate}
+            onCreateFolder={handleCreateFolder}
+            onResortItem={handleResortItem}
+            isFolderExpanded={isDashboardFolderExpanded}
+            onToggleFolder={toggleDashboardFolder}
+            onExpandFolder={expandDashboardFolder}
+            canManageItem={canManageItem}
+          />
         )}
       </Box>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete Dashboard</DialogTitle>
+        <DialogTitle>
+          Delete {deleteTarget?.isDirectory ? "Folder" : "Dashboard"}
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Are you sure you want to delete "{deleteTarget?.title}"? This action
-            cannot be undone.
+            Are you sure you want to delete "{deleteTarget?.name}"?
+            {deleteTarget?.isDirectory
+              ? " All dashboards inside will be moved to the root level."
+              : " This action cannot be undone."}
           </DialogContentText>
         </DialogContent>
         <DialogActions>

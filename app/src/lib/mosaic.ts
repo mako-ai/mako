@@ -11,6 +11,7 @@ export interface MosaicSelectionInput {
   field: string;
   values: unknown[];
   type: "point" | "interval";
+  additive?: boolean;
 }
 
 let mosaicCorePromise: Promise<MosaicCoreModule> | null = null;
@@ -125,6 +126,25 @@ export interface MosaicInstance {
     selection: MosaicSelectionInput | null,
     options: { source: object; client?: MosaicClient | null },
   ) => any;
+  /**
+   * Register a widget's active clause so other widgets can clear it
+   * during non-additive (plain click) cross-filter interactions.
+   * `onExternalClear` is called when another widget clears this clause
+   * so the owning hook can reset its internal tracking.
+   */
+  registerClause: (
+    widgetId: string,
+    clause: any,
+    selection: MosaicSelection,
+    onExternalClear?: () => void,
+  ) => void;
+  /** Remove all clauses except the given widget's, on the same selection. */
+  clearOtherClauses: (
+    exceptWidgetId: string,
+    selection: MosaicSelection,
+  ) => void;
+  /** Remove a widget's clause from the registry (cleanup). */
+  unregisterClause: (widgetId: string) => void;
   destroy: () => void;
 }
 
@@ -168,10 +188,42 @@ export async function createMosaicInstance(
   };
   const defaultSelection = getSelection("__default__", "intersect");
 
+  const activeClauses = new Map<
+    string,
+    { clause: any; selection: MosaicSelection; onExternalClear?: () => void }
+  >();
+
   return {
     coordinator,
     selection: defaultSelection,
     getSelection,
+    registerClause(
+      widgetId: string,
+      clause: any,
+      selection: MosaicSelection,
+      onExternalClear?: () => void,
+    ) {
+      activeClauses.set(widgetId, { clause, selection, onExternalClear });
+    },
+    clearOtherClauses(
+      exceptWidgetId: string,
+      targetSelection: MosaicSelection,
+    ) {
+      for (const [wid, entry] of activeClauses.entries()) {
+        if (wid !== exceptWidgetId && entry.selection === targetSelection) {
+          try {
+            entry.selection.reset?.([entry.clause]);
+          } catch {
+            // Best-effort; clause may already be gone.
+          }
+          entry.onExternalClear?.();
+          activeClauses.delete(wid);
+        }
+      }
+    },
+    unregisterClause(widgetId: string) {
+      activeClauses.delete(widgetId);
+    },
     createSelectionClause: (
       selection: MosaicSelectionInput | null,
       options: { source: object; client?: MosaicClient | null },
@@ -207,6 +259,7 @@ export async function createMosaicInstance(
     destroy: () => {
       coordinator.clear();
       selections.clear();
+      activeClauses.clear();
       void conn.close();
     },
   };

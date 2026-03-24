@@ -28,6 +28,11 @@ interface ExplorerState {
     expandedFolders: Set<string>;
   };
 
+  // Dashboard explorer
+  dashboard: {
+    expandedFolders: Set<string>;
+  };
+
   // View explorer
   view: {
     expandedCollections: Set<string>;
@@ -56,6 +61,11 @@ interface ExplorerActions {
   expandFolder: (folderPath: string) => void;
   isFolderExpanded: (folderPath: string) => boolean;
 
+  // Dashboard explorer
+  toggleDashboardFolder: (folderPath: string) => void;
+  expandDashboardFolder: (folderPath: string) => void;
+  isDashboardFolderExpanded: (folderPath: string) => boolean;
+
   // View explorer
   toggleCollection: (collectionName: string) => void;
   expandCollection: (collectionName: string) => void;
@@ -76,6 +86,9 @@ const createInitialState = (): ExplorerState => ({
     expandedNodes: new Set(),
   },
   console: {
+    expandedFolders: new Set(),
+  },
+  dashboard: {
     expandedFolders: new Set(),
   },
   view: {
@@ -158,6 +171,20 @@ export const useExplorerStore = create<ExplorerStore>()(
       isFolderExpanded: folderPath =>
         get().console.expandedFolders.has(folderPath),
 
+      // Dashboard explorer actions
+      toggleDashboardFolder: folderPath =>
+        set(state => {
+          toggleInSet(state.dashboard.expandedFolders, folderPath);
+        }),
+
+      expandDashboardFolder: folderPath =>
+        set(state => {
+          state.dashboard.expandedFolders.add(folderPath);
+        }),
+
+      isDashboardFolderExpanded: folderPath =>
+        get().dashboard.expandedFolders.has(folderPath),
+
       // View explorer actions
       toggleCollection: collectionName =>
         set(state => {
@@ -207,6 +234,13 @@ export const useExplorerStore = create<ExplorerStore>()(
               data.state.console.expandedFolders || [],
             );
           }
+          if (data.state?.dashboard) {
+            data.state.dashboard.expandedFolders = new Set(
+              data.state.dashboard.expandedFolders || [],
+            );
+          } else {
+            data.state.dashboard = { expandedFolders: new Set() };
+          }
           if (data.state?.view) {
             data.state.view.expandedCollections = new Set(
               data.state.view.expandedCollections || [],
@@ -239,6 +273,11 @@ export const useExplorerStore = create<ExplorerStore>()(
               console: {
                 expandedFolders: Array.from(
                   value.state.console.expandedFolders || [],
+                ),
+              },
+              dashboard: {
+                expandedFolders: Array.from(
+                  value.state.dashboard?.expandedFolders || [],
                 ),
               },
               view: {

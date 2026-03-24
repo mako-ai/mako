@@ -75,6 +75,12 @@ export function useMosaicClient({
   const selectionRef = useRef<any>(null);
   const lastClauseRef = useRef<any>(null);
   const lastSelectionSignatureRef = useRef<string | null>(null);
+  const dataGenerationRef = useRef(0);
+  const selectionDataGenerationRef = useRef(0);
+  const [currentSelection, setCurrentSelection] = useState<Omit<
+    MosaicSelectionInput,
+    "additive"
+  > | null>(null);
 
   const clearSelection = useCallback(() => {
     if (selectionRef.current && lastClauseRef.current) {
@@ -150,6 +156,7 @@ export function useMosaicClient({
             if (cancelled) {
               return;
             }
+            dataGenerationRef.current++;
             setRows(result.rows);
             setFields(result.fields);
             setLoading(false);
@@ -219,6 +226,7 @@ export function useMosaicClient({
         destroyMosaicClient(mosaicInstance, currentClient);
       }
       clearSelection();
+      mosaicInstance?.unregisterClause(widgetId);
     };
   }, [
     clearSelection,
@@ -255,6 +263,7 @@ export function useMosaicClient({
     (selection: MosaicSelectionInput | null) => {
       if (!crossFilterEnabled || !selectionRef.current) {
         clearSelection();
+        setCurrentSelection(null);
         if (clientRef.current && mosaicInstance) {
           void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
         }
@@ -264,10 +273,19 @@ export function useMosaicClient({
       const signature = selection ? JSON.stringify(selection) : null;
       if (!selection || selection.values.length === 0) {
         clearSelection();
-        if (clientRef.current && mosaicInstance) {
-          void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+        setCurrentSelection(null);
+        if (mosaicInstance) {
+          mosaicInstance.unregisterClause(widgetId);
+          if (clientRef.current) {
+            void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+          }
         }
         return;
+      }
+
+      if (dataGenerationRef.current !== selectionDataGenerationRef.current) {
+        lastSelectionSignatureRef.current = null;
+        selectionDataGenerationRef.current = dataGenerationRef.current;
       }
 
       if (
@@ -276,10 +294,18 @@ export function useMosaicClient({
         lastClauseRef.current
       ) {
         clearSelection();
-        if (clientRef.current && mosaicInstance) {
-          void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+        setCurrentSelection(null);
+        if (mosaicInstance) {
+          mosaicInstance.unregisterClause(widgetId);
+          if (clientRef.current) {
+            void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+          }
         }
         return;
+      }
+
+      if (!selection.additive && mosaicInstance && selectionRef.current) {
+        mosaicInstance.clearOtherClauses(widgetId, selectionRef.current);
       }
 
       const clause = mosaicInstance?.createSelectionClause(selection, {
@@ -289,8 +315,12 @@ export function useMosaicClient({
 
       if (!clause) {
         clearSelection();
-        if (clientRef.current && mosaicInstance) {
-          void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+        setCurrentSelection(null);
+        if (mosaicInstance) {
+          mosaicInstance.unregisterClause(widgetId);
+          if (clientRef.current) {
+            void mosaicInstance.coordinator.requestQuery?.(clientRef.current);
+          }
         }
         return;
       }
@@ -299,8 +329,23 @@ export function useMosaicClient({
       selectionRef.current.update?.(clause);
       lastClauseRef.current = clause;
       lastSelectionSignatureRef.current = signature;
+      setCurrentSelection({
+        field: selection.field,
+        values: selection.values,
+        type: selection.type,
+      });
+      mosaicInstance?.registerClause(
+        widgetId,
+        clause,
+        selectionRef.current,
+        () => {
+          lastClauseRef.current = null;
+          lastSelectionSignatureRef.current = null;
+          setCurrentSelection(null);
+        },
+      );
     },
-    [clearSelection, crossFilterEnabled, mosaicInstance],
+    [clearSelection, crossFilterEnabled, mosaicInstance, widgetId],
   );
 
   return {
@@ -309,5 +354,6 @@ export function useMosaicClient({
     loading,
     client: clientRef.current,
     updateSelection,
+    currentSelection,
   };
 }

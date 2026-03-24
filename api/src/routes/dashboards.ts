@@ -1,5 +1,9 @@
 import { Hono } from "hono";
-import { Dashboard, DatabaseConnection } from "../database/workspace-schema";
+import {
+  Dashboard,
+  DashboardFolder,
+  DatabaseConnection,
+} from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -18,6 +22,7 @@ import {
   validateDashboardMaterializationSchedule,
 } from "../services/dashboard-materialization-schedule.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
+import { DashboardManager } from "../utils/dashboard-manager";
 
 const logger = loggers.api("dashboards");
 
@@ -277,33 +282,29 @@ app.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-// GET /api/workspaces/:workspaceId/dashboards - List dashboards for workspace
+// GET /api/workspaces/:workspaceId/dashboards - List dashboards as tree
 app.get("/", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const userId = c.get("user")?.id;
+    const memberRole = c.get("memberRole");
 
-    const dashboards = await Dashboard.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-      $or: [{ access: "workspace" }, { access: "private", createdBy: userId }],
-    })
-      .sort({ updatedAt: -1 })
-      .lean();
+    if (userId) {
+      const { myDashboards, workspaceDashboards } =
+        await DashboardManager.listDashboardsSplit(
+          workspaceId,
+          userId,
+          memberRole || "member",
+        );
 
-    const normalizedDashboards = dashboards.map(d =>
-      normalizeDashboardWidgetLayouts(d),
-    );
-    const hydratedDashboards = await Promise.all(
-      normalizedDashboards.map(dashboard =>
-        hydrateDashboardArtifactUrls(dashboard as any),
-      ),
-    );
-    return c.json({
-      success: true,
-      data: hydratedDashboards.map(dashboard =>
-        sanitizeDashboardResponse(dashboard as any),
-      ),
-    });
+      return c.json({
+        success: true,
+        myDashboards,
+        workspaceDashboards,
+      });
+    }
+
+    return c.json({ success: true, myDashboards: [], workspaceDashboards: [] });
   } catch (error) {
     logger.error("Error listing dashboards", { error });
     return c.json(
@@ -369,6 +370,7 @@ app.post("/", async (c: AuthenticatedContext) => {
       dataSources: normalizedDataSources.dataSources || [],
       workspaceId: new Types.ObjectId(workspaceId),
       createdBy: userId,
+      owner_id: userId,
       materializationSchedule,
     });
 
@@ -417,18 +419,28 @@ app.get("/:id", async (c: AuthenticatedContext) => {
     }
 
     const userId = c.get("user")?.id;
-    if (dashboard.access === "private" && dashboard.createdBy !== userId) {
+    if (userId && !DashboardManager.canRead(dashboard, userId)) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    const readOnly = !DashboardManager.canWrite(dashboard, userId, isAdmin);
 
     const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
     normalizeDashboardWidgetLayouts(plain);
 
     return c.json({
       success: true,
-      data: sanitizeDashboardResponse(
-        await hydrateDashboardArtifactUrls(plain as any),
-      ),
+      data: {
+        ...sanitizeDashboardResponse(
+          await hydrateDashboardArtifactUrls(plain as any),
+        ),
+        readOnly,
+      },
     });
   } catch (error) {
     logger.error("Error getting dashboard", { error });
@@ -459,20 +471,19 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     }
 
     const userId = c.get("user")?.id;
-    if (dashboard.access === "private" && dashboard.createdBy !== userId) {
-      return c.json({ success: false, error: "Access denied" }, 403);
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
     }
-    if (dashboard.access === "workspace" && dashboard.createdBy !== userId) {
-      const memberRole = c.get("memberRole");
-      if (memberRole !== "owner" && memberRole !== "admin") {
-        return c.json(
-          {
-            success: false,
-            error: "Only the owner or admins can edit this dashboard",
-          },
-          403,
-        );
-      }
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+      return c.json(
+        {
+          success: false,
+          error: "You do not have permission to edit this dashboard",
+        },
+        403,
+      );
     }
 
     const previousDataSources = dashboard.toObject().dataSources || [];
@@ -586,20 +597,19 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
     }
 
     const userId = c.get("user")?.id;
-    if (existing.access === "private" && existing.createdBy !== userId) {
-      return c.json({ success: false, error: "Access denied" }, 403);
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
     }
-    if (existing.access === "workspace" && existing.createdBy !== userId) {
-      const memberRole = c.get("memberRole");
-      if (memberRole !== "owner" && memberRole !== "admin") {
-        return c.json(
-          {
-            success: false,
-            error: "Only the owner or admins can edit this dashboard",
-          },
-          403,
-        );
-      }
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!DashboardManager.canWrite(existing, userId, isAdmin)) {
+      return c.json(
+        {
+          success: false,
+          error: "You do not have permission to edit this dashboard",
+        },
+        403,
+      );
     }
 
     const validation = DashboardDefinitionSchema.partial().safeParse(body);
@@ -711,6 +721,11 @@ app.post("/:id/refresh", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
 
+    const userId = c.get("user")?.id;
+    if (userId && !DashboardManager.canRead(dashboard, userId)) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
     const queueResult = await queueDashboardArtifactRefresh({
       dashboardId: dashboard._id.toString(),
       workspaceId: dashboard.workspaceId.toString(),
@@ -740,19 +755,40 @@ app.post("/:id/refresh", async (c: AuthenticatedContext) => {
 });
 
 // DELETE /api/workspaces/:workspaceId/dashboards/:id - Delete dashboard
-app.delete("/:id", async c => {
+app.delete("/:id", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
 
-    const result = await Dashboard.deleteOne({
+    const dashboard = await Dashboard.findOne({
       _id: new Types.ObjectId(id),
       workspaceId: new Types.ObjectId(workspaceId),
     });
 
-    if (result.deletedCount === 0) {
+    if (!dashboard) {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
+
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+      return c.json(
+        {
+          success: false,
+          error: "You do not have permission to delete this dashboard",
+        },
+        403,
+      );
+    }
+
+    await Dashboard.deleteOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
 
     return c.json({ success: true, message: "Dashboard deleted successfully" });
   } catch (error) {
@@ -784,11 +820,17 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
 
+    if (!DashboardManager.canRead(dashboard, userId)) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
     const spec: any = dashboard.toObject();
     delete spec._id;
     delete spec.__v;
     spec.title = `${spec.title} (copy)`;
     spec.createdBy = userId;
+    spec.owner_id = userId;
+    spec.access = "private";
 
     // Regenerate all internal IDs and remap references
     const dsIdMap = new Map<string, string>();
@@ -840,6 +882,278 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
     });
   } catch (error) {
     logger.error("Error duplicating dashboard", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// ── Folder endpoints ──
+
+// POST /api/workspaces/:workspaceId/dashboards/folders - Create folder
+app.post("/folders", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const body = await c.req.json();
+    const { name, parentId, access } = body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return c.json({ success: false, error: "Folder name is required" }, 400);
+    }
+
+    if (parentId && !Types.ObjectId.isValid(parentId)) {
+      return c.json({ success: false, error: "Invalid parentId" }, 400);
+    }
+
+    const folder = new DashboardFolder({
+      workspaceId: new Types.ObjectId(workspaceId),
+      name: name.trim(),
+      parentId: parentId ? new Types.ObjectId(parentId) : undefined,
+      ownerId: userId,
+      access: access || "private",
+    });
+
+    await folder.save();
+    return c.json({
+      success: true,
+      data: {
+        id: folder._id.toString(),
+        name: folder.name,
+        parentId: folder.parentId?.toString() || null,
+        access: folder.access,
+        ownerId: folder.ownerId,
+      },
+    });
+  } catch (error) {
+    logger.error("Error creating dashboard folder", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/dashboards/folders/:id/rename
+app.patch("/folders/:id/rename", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const folderId = c.req.param("id");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const body = await c.req.json();
+    const { name } = body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return c.json({ success: false, error: "Folder name is required" }, 400);
+    }
+
+    const folder = await DashboardFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!folder) {
+      return c.json({ success: false, error: "Folder not found" }, 404);
+    }
+
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (folder.ownerId !== userId && !isAdmin) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    folder.name = name.trim();
+    await folder.save();
+
+    return c.json({
+      success: true,
+      data: { id: folder._id.toString(), name: folder.name },
+    });
+  } catch (error) {
+    logger.error("Error renaming dashboard folder", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// DELETE /api/workspaces/:workspaceId/dashboards/folders/:id
+app.delete("/folders/:id", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const folderId = c.req.param("id");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const folder = await DashboardFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!folder) {
+      return c.json({ success: false, error: "Folder not found" }, 404);
+    }
+
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (folder.ownerId !== userId && !isAdmin) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    const wsId = new Types.ObjectId(workspaceId);
+    const collectFolderIds = async (
+      parentId: Types.ObjectId,
+    ): Promise<Types.ObjectId[]> => {
+      const children = await DashboardFolder.find({
+        workspaceId: wsId,
+        parentId,
+      });
+      const ids: Types.ObjectId[] = [];
+      for (const child of children) {
+        ids.push(child._id);
+        ids.push(...(await collectFolderIds(child._id)));
+      }
+      return ids;
+    };
+
+    const descendantIds = await collectFolderIds(new Types.ObjectId(folderId));
+    const allFolderIds = [new Types.ObjectId(folderId), ...descendantIds];
+
+    await Dashboard.updateMany(
+      { workspaceId: wsId, folderId: { $in: allFolderIds } },
+      { $unset: { folderId: "" } },
+    );
+    await DashboardFolder.deleteMany({ _id: { $in: allFolderIds } });
+
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error("Error deleting dashboard folder", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/dashboards/folders/:id/move
+app.patch("/folders/:id/move", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const folderId = c.req.param("id");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const body = await c.req.json();
+    const { parentId, access } = body;
+
+    const folder = await DashboardFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!folder) {
+      return c.json({ success: false, error: "Folder not found" }, 404);
+    }
+
+    if (parentId !== undefined && parentId !== null) {
+      const wouldCycle = await DashboardManager.wouldCreateCycle(
+        folderId,
+        parentId,
+        workspaceId,
+      );
+      if (wouldCycle) {
+        return c.json(
+          { success: false, error: "Folder not found or circular nesting" },
+          404,
+        );
+      }
+    }
+
+    if (parentId !== undefined) {
+      folder.parentId = parentId ? new Types.ObjectId(parentId) : undefined;
+    }
+    if (access !== undefined) {
+      folder.access = access;
+    }
+    await folder.save();
+
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error("Error moving dashboard folder", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// PATCH /api/workspaces/:workspaceId/dashboards/:id/move - Move dashboard to folder
+app.patch("/:id/move", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const body = await c.req.json();
+    const { folderId, access } = body;
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    if (folderId !== undefined) {
+      dashboard.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
+    }
+    if (access !== undefined) {
+      dashboard.access = access;
+    }
+    await dashboard.save();
+
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error("Error moving dashboard", { error });
     return c.json(
       {
         success: false,

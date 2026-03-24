@@ -26,6 +26,7 @@ export interface CrossFilterSelection {
   field: string;
   values: unknown[];
   type: "point" | "interval";
+  additive?: boolean;
 }
 
 function getMarkType(spec: Record<string, any>): string {
@@ -155,6 +156,42 @@ function injectSelectionParams(spec: Record<string, any>): Record<string, any> {
   return enhanced;
 }
 
+/**
+ * If we have an active cross-filter selection for this widget, inject it
+ * as the initial `value` on the Vega-Lite selection param so the visual
+ * highlight (opacity encoding) is restored when the chart re-embeds.
+ */
+function injectActiveSelection(
+  spec: Record<string, any>,
+  activeSelection: CrossFilterSelection | null | undefined,
+): Record<string, any> {
+  if (!activeSelection || !Array.isArray(spec.params)) return spec;
+
+  const params = spec.params.map((param: any) => {
+    if (param?.name !== "crossfilter") return param;
+    if (activeSelection.type === "point") {
+      return {
+        ...param,
+        value: activeSelection.values.map(v => ({
+          [activeSelection.field]: v,
+        })),
+      };
+    }
+    if (
+      activeSelection.type === "interval" &&
+      activeSelection.values.length === 2
+    ) {
+      return {
+        ...param,
+        value: { [activeSelection.field]: activeSelection.values },
+      };
+    }
+    return param;
+  });
+
+  return { ...spec, params };
+}
+
 function parseSelectionSignal(value: any): CrossFilterSelection | null {
   if (!value || !Array.isArray(value) || value.length === 0) return null;
 
@@ -218,6 +255,7 @@ interface ResultsChartProps {
   onRenderError?: (error: string) => void;
   onRenderSuccess?: () => void;
   enableSelection?: boolean;
+  activeSelection?: CrossFilterSelection | null;
   onSelectionChange?: (selection: CrossFilterSelection | null) => void;
 }
 
@@ -228,6 +266,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
   onRenderError,
   onRenderSuccess,
   enableSelection,
+  activeSelection,
   onSelectionChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -235,6 +274,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
   const resizeFrameRef = useRef<number | null>(null);
   const selectionEmitFrameRef = useRef<number | null>(null);
   const lastSelectionRef = useRef<string>("__init__");
+  const shiftKeyRef = useRef(false);
   const onRenderErrorRef = useRef(onRenderError);
   const onRenderSuccessRef = useRef(onRenderSuccess);
   const onSelectionChangeRef = useRef(onSelectionChange);
@@ -287,6 +327,11 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
     });
     resizeObserver.observe(containerEl);
 
+    const handleMouseDown = (e: MouseEvent) => {
+      shiftKeyRef.current = e.shiftKey;
+    };
+    containerEl.addEventListener("mousedown", handleMouseDown, true);
+
     async function render() {
       setLoading(true);
       setError(null);
@@ -303,7 +348,11 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
           ? injectSelectionParams(activeSpec as Record<string, any>)
           : (activeSpec as Record<string, any>);
 
-        const baseSpec = stabilizeColorDomain(withSelection, data);
+        const withActiveSel = enableSelection
+          ? injectActiveSelection(withSelection, activeSelection)
+          : withSelection;
+
+        const baseSpec = stabilizeColorDomain(withActiveSel, data);
 
         // Shallow-clone each row so Vega can attach its internal
         // Symbol(vega_id) property.  Data arriving from Zustand/Immer
@@ -339,6 +388,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         if (enableSelection && onSelectionChangeRef.current) {
           const scheduleEmitSelection = () => {
+            const additive = shiftKeyRef.current;
             if (selectionEmitFrameRef.current !== null) {
               cancelAnimationFrame(selectionEmitFrameRef.current);
             }
@@ -351,7 +401,9 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
                 const signature = JSON.stringify(next);
                 if (signature !== lastSelectionRef.current) {
                   lastSelectionRef.current = signature;
-                  onSelectionChangeRef.current?.(next);
+                  onSelectionChangeRef.current?.(
+                    next ? { ...next, additive } : null,
+                  );
                 }
               } catch {
                 if (lastSelectionRef.current !== "null") {
@@ -383,7 +435,18 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
               }
             }
             if (attached) {
-              scheduleEmitSelection();
+              // Set the dedup baseline without emitting. Emitting null
+              // here would clear active cross-filter clauses when the
+              // chart re-embeds after receiving filtered data from
+              // another widget's selection.
+              // If an activeSelection was injected into the spec, set the
+              // baseline to its signature so click-to-deselect works.
+              if (activeSelection) {
+                const { additive: _, ...sel } = activeSelection;
+                lastSelectionRef.current = JSON.stringify(sel);
+              } else {
+                lastSelectionRef.current = "null";
+              }
             } else if (lastSelectionRef.current !== "null") {
               lastSelectionRef.current = "null";
               onSelectionChangeRef.current?.(null);
@@ -411,6 +474,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
     return () => {
       cancelled = true;
       resizeObserver.disconnect();
+      containerEl.removeEventListener("mousedown", handleMouseDown, true);
       if (resizeFrameRef.current !== null) {
         cancelAnimationFrame(resizeFrameRef.current);
         resizeFrameRef.current = null;
@@ -426,6 +490,7 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
       }
     };
   }, [
+    activeSelection,
     activeSpec,
     data,
     dispatchContainerResize,

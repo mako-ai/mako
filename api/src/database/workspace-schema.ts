@@ -2330,10 +2330,25 @@ export interface IDashboard extends Document {
     message?: string;
   }>;
 
+  folderId?: Types.ObjectId;
   access: "private" | "workspace";
+  owner_id?: string;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * DashboardFolder model interface
+ */
+export interface IDashboardFolder extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  parentId?: Types.ObjectId;
+  ownerId?: string;
+  access: "private" | "workspace";
+  createdAt: Date;
 }
 
 export interface IDashboardQueryDefinition {
@@ -2622,11 +2637,16 @@ const DashboardSchema = new Schema<IDashboard>(
       },
     ],
 
+    folderId: {
+      type: Schema.Types.ObjectId,
+      ref: "DashboardFolder",
+    },
     access: {
       type: String,
       enum: ["private", "workspace"],
       default: "private",
     },
+    owner_id: { type: String },
     createdBy: { type: String, required: true },
   },
   {
@@ -2637,6 +2657,43 @@ const DashboardSchema = new Schema<IDashboard>(
 
 DashboardSchema.index({ workspaceId: 1 });
 DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
+DashboardSchema.index({ workspaceId: 1, access: 1, owner_id: 1 });
+
+/**
+ * DashboardFolder Schema
+ */
+const DashboardFolderSchema = new Schema<IDashboardFolder>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    parentId: {
+      type: Schema.Types.ObjectId,
+      ref: "DashboardFolder",
+    },
+    ownerId: {
+      type: String,
+      ref: "User",
+    },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+  },
+  {
+    timestamps: { createdAt: true, updatedAt: false },
+  },
+);
+
+DashboardFolderSchema.index({ workspaceId: 1, parentId: 1 });
 
 // Models
 export const Workspace = mongoose.model<IWorkspace>(
@@ -2701,6 +2758,10 @@ export const QueryExecution = mongoose.model<IQueryExecution>(
 export const MaterializationRun = mongoose.model<IMaterializationRun>(
   "MaterializationRun",
   MaterializationRunSchema,
+);
+export const DashboardFolder = mongoose.model<IDashboardFolder>(
+  "DashboardFolder",
+  DashboardFolderSchema,
 );
 export const Dashboard = mongoose.model<IDashboard>(
   "Dashboard",

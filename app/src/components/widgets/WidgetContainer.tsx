@@ -74,6 +74,7 @@ interface WidgetContainerProps {
   title?: string;
   loading?: boolean;
   error?: string;
+  isEditMode?: boolean;
   onRefresh?: () => void;
   onRemove?: () => void;
   onDuplicate?: () => void;
@@ -85,6 +86,7 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
   title,
   loading,
   error,
+  isEditMode = true,
   onRefresh,
   onRemove,
   onDuplicate,
@@ -116,11 +118,13 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
           borderBottom: "1px solid",
           borderColor: "divider",
           minHeight: 32,
-          cursor: "move",
+          cursor: isEditMode ? "move" : "default",
         }}
-        className="drag-handle"
+        className={isEditMode ? "drag-handle" : undefined}
       >
-        <GripHorizontal size={14} style={{ opacity: 0.4, flexShrink: 0 }} />
+        {isEditMode && (
+          <GripHorizontal size={14} style={{ opacity: 0.4, flexShrink: 0 }} />
+        )}
         <Typography
           variant="caption"
           sx={{
@@ -134,74 +138,78 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
           {title || "Untitled"}
         </Typography>
         {loading && <CircularProgress size={14} />}
-        {onRefresh && (
-          <Tooltip title="Refresh widget">
-            <IconButton size="small" onClick={onRefresh} sx={{ p: 0.25 }}>
-              <RefreshCw size={14} />
-            </IconButton>
-          </Tooltip>
+        {isEditMode && (
+          <>
+            {onRefresh && (
+              <Tooltip title="Refresh widget">
+                <IconButton size="small" onClick={onRefresh} sx={{ p: 0.25 }}>
+                  <RefreshCw size={14} />
+                </IconButton>
+              </Tooltip>
+            )}
+            <Tooltip title="Options">
+              <IconButton
+                size="small"
+                onClick={e => setAnchorEl(e.currentTarget)}
+                sx={{ p: 0.25 }}
+              >
+                <MoreVertical size={14} />
+              </IconButton>
+            </Tooltip>
+            <Menu
+              anchorEl={anchorEl}
+              open={Boolean(anchorEl)}
+              onClose={() => setAnchorEl(null)}
+              slotProps={{ paper: { sx: { minWidth: 140 } } }}
+            >
+              {onInspect && (
+                <MenuItem
+                  onClick={() => {
+                    setAnchorEl(null);
+                    onInspect();
+                  }}
+                >
+                  <Settings size={14} style={{ marginRight: 8 }} />
+                  Inspect
+                </MenuItem>
+              )}
+              {onRefresh && (
+                <MenuItem
+                  onClick={() => {
+                    setAnchorEl(null);
+                    onRefresh();
+                  }}
+                >
+                  <RefreshCw size={14} style={{ marginRight: 8 }} />
+                  Refresh
+                </MenuItem>
+              )}
+              {onDuplicate && (
+                <MenuItem
+                  onClick={() => {
+                    setAnchorEl(null);
+                    onDuplicate();
+                  }}
+                >
+                  <Copy size={14} style={{ marginRight: 8 }} />
+                  Duplicate
+                </MenuItem>
+              )}
+              {onRemove && (
+                <MenuItem
+                  onClick={() => {
+                    setAnchorEl(null);
+                    onRemove();
+                  }}
+                  sx={{ color: "error.main" }}
+                >
+                  <Trash2 size={14} style={{ marginRight: 8 }} />
+                  Remove
+                </MenuItem>
+              )}
+            </Menu>
+          </>
         )}
-        <Tooltip title="Options">
-          <IconButton
-            size="small"
-            onClick={e => setAnchorEl(e.currentTarget)}
-            sx={{ p: 0.25 }}
-          >
-            <MoreVertical size={14} />
-          </IconButton>
-        </Tooltip>
-        <Menu
-          anchorEl={anchorEl}
-          open={Boolean(anchorEl)}
-          onClose={() => setAnchorEl(null)}
-          slotProps={{ paper: { sx: { minWidth: 140 } } }}
-        >
-          {onInspect && (
-            <MenuItem
-              onClick={() => {
-                setAnchorEl(null);
-                onInspect();
-              }}
-            >
-              <Settings size={14} style={{ marginRight: 8 }} />
-              Inspect
-            </MenuItem>
-          )}
-          {onRefresh && (
-            <MenuItem
-              onClick={() => {
-                setAnchorEl(null);
-                onRefresh();
-              }}
-            >
-              <RefreshCw size={14} style={{ marginRight: 8 }} />
-              Refresh
-            </MenuItem>
-          )}
-          {onDuplicate && (
-            <MenuItem
-              onClick={() => {
-                setAnchorEl(null);
-                onDuplicate();
-              }}
-            >
-              <Copy size={14} style={{ marginRight: 8 }} />
-              Duplicate
-            </MenuItem>
-          )}
-          {onRemove && (
-            <MenuItem
-              onClick={() => {
-                setAnchorEl(null);
-                onRemove();
-              }}
-              sx={{ color: "error.main" }}
-            >
-              <Trash2 size={14} style={{ marginRight: 8 }} />
-              Remove
-            </MenuItem>
-          )}
-        </Menu>
       </Box>
 
       <Box
