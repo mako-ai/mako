@@ -1,0 +1,107 @@
+---
+title: "How to Import CSV to PostgreSQL (4 Methods)"
+slug: import-csv-to-postgresql
+date: "2026-03-24"
+author: Mako Team
+tags:
+  - postgresql
+  - csv
+  - import
+  - data
+excerpt: "Four ways to import CSV files into PostgreSQL: the COPY command, psql \\copy, pgAdmin's GUI, and Mako's visual importer. Includes gotchas for encoding, NULLs, and large files."
+metaDescription: "Import CSV to PostgreSQL in 2026: COPY command, psql \\copy, pgAdmin GUI, and Mako. Step-by-step with code examples, error handling, and performance tips."
+database: postgresql
+category: import-export
+draft: false
+---
+
+Importing CSV data into PostgreSQL is one of the most common database tasks. There are several ways to do it, ranging from raw SQL commands to GUI tools. The right method depends on where your file lives, how big it is, and whether you have direct server access.
+
+## Method 1: The COPY Command (Server-Side)
+
+The `COPY` command is PostgreSQL's fastest import method. It reads the file directly on the database server, so it's ideal for large files. The catch: the file must be accessible to the PostgreSQL process on the server's filesystem.
+
+First, create the target table:
+
+```sql
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  name TEXT,
+  email TEXT,
+  created_at TIMESTAMP
+);
+```
+
+Then import:
+
+```sql
+COPY users (name, email, created_at)
+FROM '/path/to/users.csv'
+WITH (FORMAT csv, HEADER true, DELIMITER ',');
+```
+
+Key options:
+- `HEADER true` -- skips the first row
+- `DELIMITER ','` -- change if your file uses tabs or semicolons
+- `NULL 'NULL'` -- specify how NULL values appear in your file
+- `ENCODING 'UTF8'` -- set explicitly if your file uses a different encoding
+
+**When it fails.** The most common error is permissions: the PostgreSQL server process (usually the `postgres` user) must be able to read the file. If you're loading from a client machine, this command won't work -- use `\copy` instead.
+
+## Method 2: psql \copy (Client-Side)
+
+The `\copy` meta-command in psql reads the file from the client machine and streams it to the server. Same syntax as `COPY` but works regardless of where the file lives:
+
+```bash
+psql -h your-host -d your-db -c "\copy users (name, email, created_at) FROM '/local/path/users.csv' WITH (FORMAT csv, HEADER true)"
+```
+
+This is the go-to method when you don't have filesystem access on the server (which is most cloud-hosted databases like RDS, Cloud SQL, or Supabase).
+
+**Performance note.** `\copy` is slower than server-side `COPY` for very large files because data travels over the network connection. For files over a few GB, consider uploading to the server first.
+
+## Method 3: pgAdmin Import
+
+pgAdmin provides a visual import wizard:
+
+1. Right-click the target table and select **Import/Export Data**
+2. Select your CSV file
+3. Set format options (delimiter, header, encoding)
+4. Map columns if names don't match exactly
+5. Click **OK**
+
+This is convenient for one-off imports but offers limited error handling compared to the command line. If a row fails, the entire import rolls back by default.
+
+## Method 4: Mako
+
+In Mako, you can import CSV files through the interface:
+
+1. Connect to your PostgreSQL database
+2. Open the import dialog
+3. Select your CSV file
+4. Mako detects columns and types automatically
+5. Preview the data, adjust mappings if needed, and import
+
+Mako handles type inference (detecting integers, dates, booleans from the CSV data) and lets you preview before committing. Useful when you're not sure about the file's structure or want to verify before loading.
+
+## Common Gotchas
+
+**Encoding issues.** If your CSV was exported from Excel, it might be in `Windows-1252` or `Latin-1` instead of UTF-8. You'll see errors like `invalid byte sequence for encoding "UTF8"`. Fix: specify the encoding explicitly with `ENCODING 'WIN1252'` or convert the file first with `iconv`:
+
+```bash
+iconv -f WINDOWS-1252 -t UTF-8 input.csv > output.csv
+```
+
+**NULL handling.** Empty strings and NULL are different in PostgreSQL. By default, `COPY` treats an unquoted empty field as NULL. If your CSV uses a specific string like `NULL` or `\N`, specify it with the `NULL` option.
+
+**Date formats.** PostgreSQL expects dates in ISO 8601 format (`YYYY-MM-DD`). If your CSV has `MM/DD/YYYY` or `DD.MM.YYYY`, set `datestyle` before importing:
+
+```sql
+SET datestyle = 'MDY';  -- for MM/DD/YYYY
+```
+
+**Large files.** For files over 1 GB, consider splitting them and importing in batches, or use `COPY` with a transaction and `ON_ERROR` handling (PostgreSQL 17+ supports `ON_ERROR = stop` to get the exact failing row).
+
+**Type mismatches.** If a column is defined as `INTEGER` but the CSV contains non-numeric values, the import will fail. Check your data or import into a staging table with all `TEXT` columns first, then cast.
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
