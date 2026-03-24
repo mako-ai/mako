@@ -1774,6 +1774,26 @@ export const flowFunction = inngest.createFunction(
                 entity,
               },
             );
+
+            if (executionId) {
+              try {
+                const db = Flow.db;
+                await db.collection("flow_executions").updateOne(
+                  { _id: new Types.ObjectId(executionId) },
+                  {
+                    $set: {
+                      lastHeartbeat: new Date(),
+                      [`stats.entityStatus.${entity}`]: "completed",
+                    },
+                    $addToSet: {
+                      "stats.syncedEntities": entity,
+                    },
+                  },
+                );
+              } catch {
+                // non-critical
+              }
+            }
           }
 
           if (checkpointEnabled && state) {

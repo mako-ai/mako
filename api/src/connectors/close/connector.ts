@@ -218,9 +218,9 @@ export class CloseConnector extends BaseConnector {
       "activities:Email": "activity.email",
       "activities:SMS": "activity.sms",
       "activities:EmailThread": "activity.email_thread",
-      "activities:LeadStatusChange": "activity.status_change.lead",
+      "activities:LeadStatusChange": "activity.lead_status_change",
       "activities:OpportunityStatusChange":
-        "activity.status_change.opportunity",
+        "activity.opportunity_status_change",
       "activities:TaskCompleted": "activity.task_completed",
       "activities:CustomActivity": "activity.custom",
     };
@@ -1052,14 +1052,14 @@ export class CloseConnector extends BaseConnector {
         "attachments",
         "pinned",
       ],
-      "activity.status_change.lead": [
+      "activity.lead_status_change": [
         ...commonActivityFields,
         "old_status_id",
         "old_status_label",
         "new_status_id",
         "new_status_label",
       ],
-      "activity.status_change.opportunity": [
+      "activity.opportunity_status_change": [
         ...commonActivityFields,
         "opportunity_id",
         "opportunity_value",

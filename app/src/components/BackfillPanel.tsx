@@ -306,7 +306,7 @@ export function BackfillPanel({
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const destCountsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
 
   const streamState: StreamState = cdc?.streamState || "idle";
