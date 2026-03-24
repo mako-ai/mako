@@ -500,17 +500,19 @@ export class CdcBackfillService {
     const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
     for (const entity of enabledEntities) {
       const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
-      const stageTables = new Set<string>([
+      const oldStageTables = [
         cdcStageTableName(tablePrefix, entity, flowId),
         `${liveTable}__stage_changes`,
-        `${liveTable}__${flowToken}__staging`,
-      ]);
+      ];
+      const bulkStagingTable = `${liveTable}__${flowToken}__staging`;
+
       await driver.dropTable(destination, liveTable, { schema });
-      for (const stageTable of stageTables) {
+      for (const stageTable of oldStageTables) {
         await driver.dropTable(destination, stageTable, {
           schema: stageSchema,
         });
       }
+      await driver.dropTable(destination, bulkStagingTable, { schema });
     }
 
     const db = Flow.db;
