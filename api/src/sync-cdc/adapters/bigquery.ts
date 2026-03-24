@@ -218,7 +218,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
       });
 
-    const metadata = job.metadata;
+    const [metadata] = await job.getMetadata();
     if (metadata?.status?.errorResult) {
       throw new Error(
         metadata.status.errorResult.message || "BigQuery load job failed",
