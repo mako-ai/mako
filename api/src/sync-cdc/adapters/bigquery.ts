@@ -379,9 +379,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const insertCols = allColumns.map(escId).join(", ");
     const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
 
+    const dedupKey = keyColumns.map(escId).join(", ");
+    const dedupSource = `(SELECT * FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
+
     const mergeQuery = `
       MERGE INTO ${fullLive} T
-      USING ${fullStaging} S
+      USING ${dedupSource} S
       ON ${joinCondition}
       ${nonKeyColumns.length > 0 ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateSet}` : ""}
       WHEN NOT MATCHED THEN INSERT (${insertCols}) VALUES (${insertVals})
