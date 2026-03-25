@@ -918,10 +918,14 @@ export class CloseConnector extends BaseConnector {
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
-    const SEARCH_SKIP_LIMIT = 9800;
 
-    // Resume cursor: last record's date_created timestamp from previous chunk.
-    let cursor: string | null = state?.metadata?.cursor ?? null;
+    // date_created cursor for cross-chunk resumability (persisted in state).
+    let dateCursor: string | null = state?.metadata?.cursor ?? null;
+
+    // Close's native search cursor for page-to-page pagination.
+    // _skip is ignored by /data/search/ — the cursor is the only way to paginate.
+    // Not persisted: expires after 30s, so each chunk starts a fresh query.
+    let closeCursor: string | null = null;
 
     const objectType = this.getSearchObjectType(entity);
 
@@ -1174,14 +1178,12 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
-    let skip = state?.metadata?.skip || 0;
-
     while (iterations < maxIterations) {
       try {
         const queries: any[] = [
           { type: "object_type", object_type: objectType },
         ];
-        if (cursor) {
+        if (dateCursor) {
           queries.push({
             type: "field_condition",
             field: {
@@ -1193,7 +1195,7 @@ export class CloseConnector extends BaseConnector {
               type: "moment_range",
               on_or_after: {
                 type: "fixed_utc",
-                value: cursor,
+                value: dateCursor,
                 which: "start",
               },
               before: null,
@@ -1204,7 +1206,6 @@ export class CloseConnector extends BaseConnector {
         const body: any = {
           query: { type: "and", queries },
           _limit: batchSize,
-          _skip: skip,
           sort: [
             {
               direction: "asc",
@@ -1219,38 +1220,37 @@ export class CloseConnector extends BaseConnector {
         if (fieldsMap[objectType]) {
           body._fields = { [objectType]: fieldsMap[objectType] };
         }
+        if (closeCursor) {
+          body.cursor = closeCursor;
+        }
 
         const response = await api.post("/data/search/", body);
         const data = response.data.data || [];
-        const nextCursor = response.data.cursor || null;
+        closeCursor = response.data.cursor || null;
 
         if (data.length > 0) {
           const records =
             entity === "leads" ? this.normalizeLeadBatch(data) : data;
           await onBatch(records);
           recordCount += records.length;
-          skip += data.length;
 
           const rawCursor = data[data.length - 1].date_created || "";
-          cursor = rawCursor.replace(/\+00:00$/, "Z").replace(/\.000000/, "");
+          dateCursor = rawCursor
+            .replace(/\+00:00$/, "Z")
+            .replace(/\.000000/, "");
 
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
         }
 
-        if (!nextCursor || data.length === 0) {
+        if (closeCursor === null || data.length === 0) {
           return {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: { cursor, skip },
+            metadata: { cursor: dateCursor },
           };
-        }
-
-        // Near Close 10k skip limit: window by date_created
-        if (skip >= SEARCH_SKIP_LIMIT) {
-          skip = 0;
         }
 
         iterations++;
@@ -1272,6 +1272,19 @@ export class CloseConnector extends BaseConnector {
             recordsFetched: recordCount,
           });
           await this.sleep(retryAfter * 1000);
+          closeCursor = null;
+        } else if (
+          axios.isAxiosError(error) &&
+          error.response?.status === 400 &&
+          /expired.*cursor|cursor.*expired/i.test(
+            String(error.response?.data?.error || ""),
+          )
+        ) {
+          logger.warn(
+            "Close search cursor expired, restarting from date cursor",
+            { dateCursor, entity, recordCount },
+          );
+          closeCursor = null;
         } else {
           throw error;
         }
@@ -1282,7 +1295,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { cursor, skip },
+      metadata: { cursor: dateCursor },
     };
   }
 
