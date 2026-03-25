@@ -820,6 +820,12 @@ export class CloseConnector extends BaseConnector {
     };
   }
 
+  private static nextMonth(iso: string): string {
+    const d = new Date(iso);
+    d.setUTCMonth(d.getUTCMonth() + 1);
+    return d.toISOString().slice(0, 10);
+  }
+
   private async fetchActivitiesChunk(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
@@ -838,20 +844,35 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // REST list endpoint ignores _order_by and always returns descending.
-    // _skip works correctly (verified up to 130k) with no hard limit,
-    // so we paginate purely by offset — no date cursor needed.
+    // Window by month so _skip stays small and requests stay fast.
+    // windowStart is the first day of the current month window (YYYY-MM-DD).
+    let windowStart: string = state?.metadata?.windowStart || "2000-01-01";
     let skip = state?.metadata?.skip || 0;
+
+    const now = new Date();
+    const endWindow = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 2).padStart(2, "0")}-01`;
 
     if (!state && onProgress) {
       onProgress(0, undefined);
     }
 
     while (iterations < maxIterations) {
+      if (windowStart >= endWindow) {
+        return {
+          totalProcessed: recordCount,
+          hasMore: false,
+          iterationsInChunk: iterations,
+          metadata: { windowStart, skip },
+        };
+      }
+
       try {
+        const windowEnd = CloseConnector.nextMonth(windowStart);
         const params: any = {
           _limit: batchSize,
           _skip: skip,
+          date_created__gte: windowStart,
+          date_created__lt: windowEnd,
         };
 
         const response = await api.get(
@@ -871,12 +892,10 @@ export class CloseConnector extends BaseConnector {
         }
 
         if (!response.data.has_more || data.length === 0) {
-          return {
-            totalProcessed: recordCount,
-            hasMore: false,
-            iterationsInChunk: iterations + 1,
-            metadata: { skip },
-          };
+          windowStart = CloseConnector.nextMonth(windowStart);
+          skip = 0;
+          iterations++;
+          continue;
         }
 
         iterations++;
@@ -900,7 +919,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { skip },
+      metadata: { windowStart, skip },
     };
   }
 
