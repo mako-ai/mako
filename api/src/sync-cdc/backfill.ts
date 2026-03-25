@@ -571,7 +571,7 @@ export class CdcBackfillService {
       resumed: true,
       pendingBacklog: pending,
       drainQueued: pending > 0,
-      webhookEventsDrained,
+      webhookEventsDrained: 0,
     };
   }
 
