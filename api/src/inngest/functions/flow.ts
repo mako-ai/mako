@@ -2010,11 +2010,16 @@ export const flowFunction = inngest.createFunction(
             );
             const replayCutoff = new Date();
 
-            const totalPending = await WebhookEvent.countDocuments({
+            const replayFilter: Record<string, unknown> = {
               flowId: flowObjectId,
               applyStatus: "pending",
               receivedAt: { $lte: replayCutoff },
-            });
+            };
+            if (isCdcEnabled) {
+              replayFilter.status = "pending";
+            }
+
+            const totalPending = await WebhookEvent.countDocuments(replayFilter);
 
             let queued = 0;
             let batches = 0;
@@ -2040,9 +2045,7 @@ export const flowFunction = inngest.createFunction(
                   : {};
 
               const pendingBatch = (await WebhookEvent.find({
-                flowId: flowObjectId,
-                applyStatus: "pending",
-                receivedAt: { $lte: replayCutoff },
+                ...replayFilter,
                 ...cursorClause,
               })
                 .sort({ receivedAt: 1, eventId: 1 })
