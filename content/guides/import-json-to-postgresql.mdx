@@ -1,0 +1,163 @@
+---
+title: "How to Import JSON to PostgreSQL (4 Methods)"
+slug: import-json-to-postgresql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - postgresql
+  - json
+  - import
+  - data
+excerpt: "Four ways to import JSON data into PostgreSQL: COPY with psql, pg_read_file, a Python script, and Mako. Covers jsonb vs json, flattening nested structures, and performance tips."
+metaDescription: "Import JSON to PostgreSQL in 2026: COPY command, pg_read_file, Python scripting, and Mako GUI. Step-by-step with jsonb examples and common pitfalls."
+database: postgresql
+category: import-export
+draft: false
+---
+
+PostgreSQL has strong native JSON support with its `json` and `jsonb` data types. There are several ways to get JSON data into a PostgreSQL table depending on your file structure and what you want to do with the data.
+
+## Approach 1: Store as jsonb (Whole Documents)
+
+If you want to keep the JSON structure intact, create a table with a `jsonb` column and load the data using `\copy`.
+
+First, prepare the file. PostgreSQL's `COPY` expects one JSON object per line (newline-delimited JSON, aka NDJSON). If your file is a JSON array, convert it first:
+
+```bash
+# Convert JSON array to NDJSON
+cat data.json | jq -c '.[]' > data.ndjson
+```
+
+Create the table and import:
+
+```sql
+CREATE TABLE events (
+  id SERIAL PRIMARY KEY,
+  data JSONB NOT NULL
+);
+```
+
+```bash
+# From psql
+\copy events(data) FROM 'data.ndjson'
+```
+
+Each line becomes one row. You can then query into the JSON:
+
+```sql
+SELECT data->>'name' AS name, data->>'email' AS email
+FROM events
+WHERE data->>'status' = 'active';
+```
+
+## Approach 2: Flatten JSON into Relational Columns
+
+If you want structured columns instead of a single JSON blob, load into a staging jsonb column and then extract:
+
+```sql
+-- Staging table
+CREATE TEMP TABLE staging (doc JSONB);
+\copy staging(doc) FROM 'users.ndjson'
+
+-- Target table
+CREATE TABLE users (
+  id INT PRIMARY KEY,
+  name TEXT,
+  email TEXT,
+  created_at TIMESTAMPTZ
+);
+
+-- Insert with extraction
+INSERT INTO users (id, name, email, created_at)
+SELECT
+  (doc->>'id')::INT,
+  doc->>'name',
+  doc->>'email',
+  (doc->>'created_at')::TIMESTAMPTZ
+FROM staging;
+```
+
+This approach gives you full control over type conversion and data validation.
+
+## Approach 3: Python Script
+
+For complex JSON structures (nested arrays, inconsistent schemas), a Python script gives you the most flexibility:
+
+```python
+import json
+import psycopg2
+
+conn = psycopg2.connect("dbname=mydb user=postgres")
+cur = conn.cursor()
+
+with open('data.json') as f:
+    records = json.load(f)
+
+for record in records:
+    cur.execute(
+        "INSERT INTO users (name, email, metadata) VALUES (%s, %s, %s)",
+        (record['name'], record['email'], json.dumps(record.get('metadata', {})))
+    )
+
+conn.commit()
+cur.close()
+conn.close()
+```
+
+For large files, use `execute_batch` or `copy_expert` from psycopg2 for much better performance:
+
+```python
+from psycopg2.extras import execute_batch
+
+execute_batch(cur, 
+    "INSERT INTO users (name, email) VALUES (%s, %s)",
+    [(r['name'], r['email']) for r in records],
+    page_size=1000
+)
+```
+
+## Approach 4: Mako (GUI)
+
+Mako connects to PostgreSQL and lets you import JSON files through a visual interface. It handles the file parsing and column mapping, so you can preview the data before committing.
+
+## json vs jsonb
+
+PostgreSQL has two JSON types:
+
+- **`json`** -- stores the exact text. Preserves formatting, duplicate keys, and key order. Slower to query.
+- **`jsonb`** -- stores a parsed binary representation. Removes duplicates, doesn't preserve key order. Faster to query, supports indexing.
+
+Use `jsonb` unless you have a specific reason to preserve the original text. It's faster for reads and supports GIN indexes for efficient lookups:
+
+```sql
+CREATE INDEX idx_events_data ON events USING GIN (data);
+```
+
+## Common Gotchas
+
+**NDJSON vs JSON array.** PostgreSQL's `COPY` reads one value per line. A JSON array `[{...}, {...}]` won't work directly -- convert to NDJSON first (one object per line, no wrapping array).
+
+**Encoding.** Ensure your file is UTF-8. PostgreSQL rejects invalid UTF-8 bytes:
+
+```bash
+# Check and convert
+file --mime-encoding data.json
+iconv -f ISO-8859-1 -t UTF-8 data.json > data_utf8.json
+```
+
+**Nested objects.** When flattening, use the `->` operator for nested JSON objects and `->>` for text extraction:
+
+```sql
+-- doc = {"address": {"city": "Zurich", "zip": "8001"}}
+SELECT doc->'address'->>'city' AS city FROM staging;
+```
+
+**Large files.** For files over 100 MB, avoid loading everything into a single `COPY` transaction. Split the NDJSON file and load in batches, or use `pg_bulkload` for even faster throughput.
+
+**NULL handling.** JSON `null` and SQL `NULL` are different. `doc->>'field'` returns SQL `NULL` if the key doesn't exist, but returns the string `'null'` if the JSON value is `null`. Handle both:
+
+```sql
+SELECT NULLIF(doc->>'field', 'null') FROM staging;
+```
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
