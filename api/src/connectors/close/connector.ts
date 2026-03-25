@@ -823,7 +823,7 @@ export class CloseConnector extends BaseConnector {
   private async fetchActivitiesChunk(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
-    const { entity, onBatch, onProgress, since, state } = options;
+    const { entity, onBatch, onProgress, state } = options;
     const api = this.getCloseClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
@@ -837,9 +837,10 @@ export class CloseConnector extends BaseConnector {
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
-    const SKIP_LIMIT = 9800;
 
-    let cursor: string | null = state?.metadata?.cursor ?? null;
+    // REST list endpoint ignores _order_by and always returns descending.
+    // _skip works correctly (verified up to 130k) with no hard limit,
+    // so we paginate purely by offset — no date cursor needed.
     let skip = state?.metadata?.skip || 0;
 
     if (!state && onProgress) {
@@ -851,14 +852,7 @@ export class CloseConnector extends BaseConnector {
         const params: any = {
           _limit: batchSize,
           _skip: skip,
-          _order_by: "date_created",
         };
-        if (cursor) {
-          params.date_created__gte = cursor;
-        }
-        if (since) {
-          params.date_created__gte = since.toISOString().split("T")[0];
-        }
 
         const response = await api.get(
           this.getActivityEndpointForType(activitySubType),
@@ -871,7 +865,6 @@ export class CloseConnector extends BaseConnector {
           await onBatch(data);
           recordCount += data.length;
           skip += data.length;
-          cursor = data[data.length - 1].date_created;
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
@@ -882,12 +875,8 @@ export class CloseConnector extends BaseConnector {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: { cursor, skip },
+            metadata: { skip },
           };
-        }
-
-        if (skip >= SKIP_LIMIT) {
-          skip = 0;
         }
 
         iterations++;
@@ -911,7 +900,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { cursor, skip },
+      metadata: { skip },
     };
   }
 
