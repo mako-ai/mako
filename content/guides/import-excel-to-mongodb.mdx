@@ -1,0 +1,187 @@
+---
+title: "How to Import Excel to MongoDB (3 Methods)"
+slug: import-excel-to-mongodb
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mongodb
+  - excel
+  - import
+  - data
+excerpt: "Three ways to import Excel data into MongoDB: convert to CSV and use mongoimport, Python with pymongo and openpyxl, and Mako. Covers document structure, type handling, and multi-sheet workbooks."
+metaDescription: "Import Excel to MongoDB in 2026: CSV with mongoimport, Python pymongo, and Mako. Step-by-step with document mapping, type inference, and common pitfalls."
+database: mongodb
+category: import-export
+draft: false
+---
+
+MongoDB doesn't accept Excel files directly. `mongoimport` reads CSV, TSV, and JSON, so you'll either convert first or use a programming language to parse the spreadsheet. Here are three approaches.
+
+## Method 1: Convert to CSV, Then mongoimport
+
+Save the Excel file as CSV (UTF-8) and import with `mongoimport`:
+
+```bash
+mongoimport \
+  --uri="mongodb://localhost:27017/mydb" \
+  --collection=customers \
+  --type=csv \
+  --headerline \
+  --file=customers.csv
+```
+
+The `--headerline` flag uses the first row as field names. Each subsequent row becomes a document with those field names as keys.
+
+By default, `mongoimport` infers types: numbers become doubles, everything else becomes strings. Dates stay as strings unless you process them after import.
+
+### Limitations of the CSV Path
+
+- All numbers become BSON `double`, even integers. If you need `int32` or `int64`, post-process with an `updateMany`:
+
+```javascript
+db.customers.updateMany(
+  {},
+  [{ $set: { age: { $toInt: "$age" } } }]
+);
+```
+
+- Dates import as strings. Convert them:
+
+```javascript
+db.customers.updateMany(
+  {},
+  [{ $set: { signup_date: { $dateFromString: { dateString: "$signup_date" } } } }]
+);
+```
+
+- Nested documents aren't possible from flat CSV. If you need nested structure, use the Python approach and construct documents manually.
+
+## Method 2: Python with pymongo
+
+Python gives you full control over document structure and types:
+
+```python
+import pymongo
+from openpyxl import load_workbook
+from datetime import datetime
+
+client = pymongo.MongoClient("mongodb://localhost:27017/")
+db = client["mydb"]
+collection = db["orders"]
+
+wb = load_workbook("orders.xlsx", read_only=True)
+ws = wb.active
+
+# Get headers
+headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+
+# Build documents
+docs = []
+for row in ws.iter_rows(min_row=2, values_only=True):
+    doc = dict(zip(headers, row))
+    docs.append(doc)
+
+# Bulk insert
+if docs:
+    collection.insert_many(docs)
+    print(f"Inserted {len(docs)} documents")
+```
+
+For nested documents, transform during insertion:
+
+```python
+for row in ws.iter_rows(min_row=2, values_only=True):
+    raw = dict(zip(headers, row))
+    doc = {
+        "name": raw["name"],
+        "email": raw["email"],
+        "address": {
+            "street": raw["street"],
+            "city": raw["city"],
+            "zip": raw["zip"]
+        },
+        "created_at": raw["date"] if isinstance(raw["date"], datetime) else None
+    }
+    docs.append(doc)
+```
+
+For large files, batch the inserts:
+
+```python
+batch_size = 5000
+batch = []
+for row in ws.iter_rows(min_row=2, values_only=True):
+    batch.append(dict(zip(headers, row)))
+    if len(batch) >= batch_size:
+        collection.insert_many(batch)
+        batch = []
+if batch:
+    collection.insert_many(batch)
+```
+
+Alternatively, use pandas for a simpler API:
+
+```python
+import pandas as pd
+
+df = pd.read_excel("data.xlsx")
+records = df.to_dict("records")
+collection.insert_many(records)
+```
+
+pandas converts Excel types to Python types that pymongo maps to BSON: integers to `int64`, floats to `double`, dates to `datetime`, strings to `string`.
+
+## Method 3: Mako
+
+Mako imports Excel files into MongoDB without manual conversion:
+
+1. Connect to your MongoDB instance in Mako
+2. Click **Import** and select the `.xlsx` file
+3. Choose the sheet and review the preview
+4. Mako maps each row to a document, using column headers as field names
+5. Run the import
+
+For simple flat imports where you don't need nested document structures, this is the fastest option.
+
+## Document Structure Decisions
+
+MongoDB's flexible schema means you have choices that don't exist with relational databases:
+
+**Flat vs nested.** An Excel row with `name`, `street`, `city`, `zip` could import as a flat document or as a document with an `address` subdocument. The CSV/Mako approach gives you flat. Python lets you nest.
+
+**Arrays from multiple sheets.** If your workbook has a "customers" sheet and an "orders" sheet, you can import them as separate collections (relational style) or embed orders as arrays within customer documents (document style). The right choice depends on your query patterns.
+
+**_id field.** If your Excel data has a natural unique key, use it as `_id` to avoid duplicates on re-import:
+
+```python
+doc = {"_id": raw["customer_id"], "name": raw["name"], ...}
+```
+
+Without an explicit `_id`, MongoDB generates an ObjectId for each document.
+
+## Common Gotchas
+
+**Duplicate imports.** Running `mongoimport` twice inserts everything again (new ObjectIds). If you need idempotent imports, use `--upsertFields` to specify which fields identify unique records:
+
+```bash
+mongoimport --collection=customers --type=csv --headerline \
+  --mode=upsert --upsertFields=email \
+  --file=customers.csv
+```
+
+**Date handling.** Excel dates come through as Python `datetime` objects via `openpyxl`, which pymongo stores as BSON `Date`. Via CSV, they're just strings. Use the Python path if date types matter.
+
+**NaN values.** pandas converts empty Excel cells to `NaN` (float), which pymongo stores as BSON `double NaN`. To convert to `None` (BSON null):
+
+```python
+import numpy as np
+df = df.where(pd.notnull(df), None)
+# or
+df = df.replace({np.nan: None})
+```
+
+**Column name rules.** MongoDB field names can't start with `$` or contain `.`. If your Excel headers include these characters, clean them before import.
+
+**Large file memory.** `openpyxl` in default mode loads the entire workbook into memory. For files over 50 MB, use `read_only=True`. For extremely large files, convert to CSV first and stream with `mongoimport`.
+
+Mako connects to MongoDB, PostgreSQL, MySQL, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
