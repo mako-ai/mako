@@ -158,6 +158,75 @@ export function appendWhereCondition(query: string, condition: string): string {
 }
 
 /**
+ * Count semicolons that are NOT inside single-quoted strings, double-quoted
+ * identifiers, line comments (`-- …`), or block comments.  Returns the total
+ * count and the character index of the last top-level semicolon (or -1).
+ */
+export function countTopLevelSemicolons(query: string): {
+  count: number;
+  lastIndex: number;
+} {
+  let count = 0;
+  let lastIndex = -1;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  const len = query.length;
+
+  for (let i = 0; i < len; i++) {
+    const ch = query[i];
+
+    if (ch === "'" && !inDoubleQuote) {
+      if (inSingleQuote) {
+        if (i + 1 < len && query[i + 1] === "'") {
+          i++;
+        } else {
+          inSingleQuote = false;
+        }
+      } else {
+        inSingleQuote = true;
+      }
+      continue;
+    }
+    if (inSingleQuote) continue;
+
+    if (ch === '"') {
+      if (inDoubleQuote) {
+        if (i + 1 < len && query[i + 1] === '"') {
+          i++;
+        } else {
+          inDoubleQuote = false;
+        }
+      } else {
+        inDoubleQuote = true;
+      }
+      continue;
+    }
+    if (inDoubleQuote) continue;
+
+    if (ch === "-" && i + 1 < len && query[i + 1] === "-") {
+      const nl = query.indexOf("\n", i + 2);
+      if (nl === -1) break;
+      i = nl;
+      continue;
+    }
+
+    if (ch === "/" && i + 1 < len && query[i + 1] === "*") {
+      const close = query.indexOf("*/", i + 2);
+      if (close === -1) break;
+      i = close + 1;
+      continue;
+    }
+
+    if (ch === ";") {
+      count++;
+      lastIndex = i;
+    }
+  }
+
+  return { count, lastIndex };
+}
+
+/**
  * Safely append a SQL clause (e.g. `ORDER BY id`, `LIMIT 100`) to a query
  * string.  If the query ends with a line comment (`-- …`), a newline is
  * inserted so the appended clause does not land inside the comment.

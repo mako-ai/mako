@@ -3,7 +3,10 @@ import {
   getSqlDialectOrNull,
   type SqlDialect,
 } from "../agent-lib/tools/shared/sql-dialects";
-import { findTopLevelKeyword } from "./sql-query-utils";
+import {
+  countTopLevelSemicolons,
+  findTopLevelKeyword,
+} from "./sql-query-utils";
 
 export const MAX_PREVIEW_PAGE_SIZE = 500;
 export const DEFAULT_PREVIEW_PAGE_SIZE = 500;
@@ -83,6 +86,27 @@ export interface PreparedSqlBatchQuery {
 
 function stripTrailingSemicolon(query: string): string {
   return query.replace(/;\s*$/, "").trim();
+}
+
+/**
+ * Strip leading SQL comments (line `--` and block comments) so that
+ * safety-check regexes can see the first real keyword.
+ */
+function stripLeadingSqlComments(sql: string): string {
+  let s = sql;
+  for (;;) {
+    s = s.replace(/^\s+/, "");
+    if (s.startsWith("--")) {
+      const nl = s.indexOf("\n");
+      s = nl === -1 ? "" : s.substring(nl + 1);
+    } else if (s.startsWith("/*")) {
+      const end = s.indexOf("*/");
+      s = end === -1 ? "" : s.substring(end + 2);
+    } else {
+      break;
+    }
+  }
+  return s;
 }
 
 export function resolvePreviewPageSize(requested?: number): {
@@ -165,7 +189,7 @@ export function checkPreviewQuerySafety(
     errors: [],
   };
 
-  const trimmedQuery = query.trim();
+  const trimmedQuery = stripLeadingSqlComments(query.trim());
 
   for (const { pattern, name } of PREVIEW_DANGEROUS_PATTERNS) {
     if (pattern.test(trimmedQuery)) {
@@ -184,10 +208,12 @@ export function checkPreviewQuerySafety(
     result.errors.push("Preview queries must start with SELECT or WITH (CTE).");
   }
 
-  const semicolonCount = (trimmedQuery.match(/;/g) || []).length;
+  const { count: semicolonCount, lastIndex: lastSemicolon } =
+    countTopLevelSemicolons(trimmedQuery);
   if (
     semicolonCount > 1 ||
-    (semicolonCount === 1 && !trimmedQuery.endsWith(";"))
+    (semicolonCount === 1 &&
+      trimmedQuery.trimEnd().length - 1 !== lastSemicolon)
   ) {
     result.safe = false;
     result.errors.push("Preview queries must contain a single SQL statement.");
