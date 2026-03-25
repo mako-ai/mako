@@ -20,6 +20,8 @@ import {
   Button,
   CircularProgress,
   Divider,
+  Menu,
+  Collapse,
 } from "@mui/material";
 import {
   Plus,
@@ -32,6 +34,9 @@ import {
   CheckCircle2,
   XCircle,
   LoaderCircle,
+  FileCode,
+  Import,
+  ChevronUp,
 } from "lucide-react";
 import {
   useDashboardStore,
@@ -367,6 +372,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
       setDirectLanguage("sql");
       setDirectQuery("");
       setEditingDataSourceId(null);
+      setAddMode(null);
     } finally {
       setCreatingDirect(false);
     }
@@ -397,18 +403,37 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
     setDirectQuery("");
   };
 
+  const [addMode, setAddMode] = useState<null | "scratch" | "import">(null);
+  const [addMenuAnchor, setAddMenuAnchor] = useState<null | HTMLElement>(null);
+
+  const closeAddPanel = () => {
+    setAddMode(null);
+    resetDirectForm();
+    setSearchQuery("");
+  };
+
+  const handleStartEdit = (dataSourceId: string) => {
+    handleEditDataSource(dataSourceId);
+    setAddMode("scratch");
+  };
+
   const dataSources = dashboard?.dataSources ?? [];
   const hasBuildingMaterialization = dataSources.some(
     dataSource => dataSource.cache?.parquetBuildStatus === "building",
   );
+
+  const showAddPanel = addMode !== null || editingDataSourceId !== null;
 
   return (
     <Drawer
       anchor="right"
       open={open}
       onClose={onClose}
-      PaperProps={{ sx: { width: 380, p: 0 } }}
+      PaperProps={{
+        sx: { width: 420, p: 0, display: "flex", flexDirection: "column" },
+      }}
     >
+      {/* Header */}
       <Box
         sx={{
           display: "flex",
@@ -416,6 +441,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
           justifyContent: "space-between",
           px: 2,
           py: 1.5,
+          flexShrink: 0,
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -423,232 +449,309 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
           <Typography variant="subtitle1" fontWeight={600}>
             Data Sources
           </Typography>
-        </Box>
-        <IconButton size="small" onClick={onClose}>
-          <X size={18} />
-        </IconButton>
-      </Box>
-
-      <Divider />
-
-      {/* Search / Add Section */}
-      <Box sx={{ px: 2, py: 1.5 }}>
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ mb: 0.5, display: "block" }}
-        >
-          {editingDataSourceId ? "Edit Data Source" : "New Data Source"}
-        </Typography>
-        <TextField
-          size="small"
-          fullWidth
-          label="Name"
-          value={directName}
-          onChange={e => setDirectName(e.target.value)}
-          sx={{ mb: 1 }}
-        />
-        <FormControl size="small" fullWidth sx={{ mb: 1 }}>
-          <InputLabel>Connection</InputLabel>
-          <Select
-            value={directConnectionId}
-            label="Connection"
-            onChange={e => setDirectConnectionId(e.target.value)}
-          >
-            {availableConnections.map(connection => (
-              <MenuItem key={connection.id} value={connection.id}>
-                {connection.name}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <Box sx={{ display: "flex", gap: 1, mb: 1 }}>
-          <FormControl size="small" sx={{ minWidth: 130 }}>
-            <InputLabel>Language</InputLabel>
-            <Select
-              value={directLanguage}
-              label="Language"
-              onChange={e =>
-                setDirectLanguage(
-                  e.target.value as "sql" | "javascript" | "mongodb",
-                )
-              }
-            >
-              <MenuItem value="sql">SQL</MenuItem>
-              <MenuItem value="javascript">JavaScript</MenuItem>
-              <MenuItem value="mongodb">MongoDB</MenuItem>
-            </Select>
-          </FormControl>
-          <TextField
+          <Chip
+            label={dataSources.length}
             size="small"
-            fullWidth
-            label="Database Name (optional)"
-            value={directDatabaseName}
-            onChange={e => setDirectDatabaseName(e.target.value)}
+            sx={{ height: 20, fontSize: "0.75rem", ml: 0.5 }}
           />
         </Box>
-        <TextField
-          size="small"
-          fullWidth
-          multiline
-          minRows={4}
-          maxRows={10}
-          label="Query"
-          value={directQuery}
-          onChange={e => setDirectQuery(e.target.value)}
-          sx={{ mb: 1 }}
-          slotProps={{
-            input: { sx: { fontFamily: "monospace", fontSize: 13 } },
-          }}
-        />
-        <Button
-          size="small"
-          variant="contained"
-          fullWidth
-          disabled={
-            creatingDirect ||
-            !directName.trim() ||
-            !directConnectionId ||
-            !directQuery.trim()
-          }
-          onClick={handleCreateDirectDataSource}
-        >
-          {creatingDirect
-            ? editingDataSourceId
-              ? "Saving..."
-              : "Creating..."
-            : editingDataSourceId
-              ? "Save data source"
-              : "Create data source"}
-        </Button>
-        {editingDataSourceId && (
-          <Button
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <IconButton
             size="small"
-            fullWidth
-            variant="text"
-            sx={{ mt: 1 }}
-            onClick={resetDirectForm}
+            onClick={e => setAddMenuAnchor(e.currentTarget)}
+            color="primary"
           >
-            Cancel edit
-          </Button>
-        )}
+            <Plus size={18} />
+          </IconButton>
+          <Menu
+            anchorEl={addMenuAnchor}
+            open={Boolean(addMenuAnchor)}
+            onClose={() => setAddMenuAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+          >
+            <MenuItem
+              onClick={() => {
+                setAddMenuAnchor(null);
+                resetDirectForm();
+                setAddMode("scratch");
+              }}
+            >
+              <FileCode size={16} style={{ marginRight: 8 }} />
+              From scratch
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setAddMenuAnchor(null);
+                setAddMode("import");
+              }}
+            >
+              <Import size={16} style={{ marginRight: 8 }} />
+              From a saved console
+            </MenuItem>
+          </Menu>
+          <IconButton size="small" onClick={onClose}>
+            <X size={18} />
+          </IconButton>
+        </Box>
       </Box>
 
       <Divider />
 
-      <Box sx={{ px: 2, py: 1.5 }}>
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ mb: 0.5, display: "block" }}
-        >
-          Import Saved Console
-        </Typography>
-        <TextField
-          size="small"
-          fullWidth
-          placeholder="Search saved consoles…"
-          value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
-          slotProps={{
-            input: {
-              startAdornment: (
-                <Search size={16} style={{ marginRight: 8, opacity: 0.5 }} />
-              ),
-              endAdornment: searching ? (
-                <CircularProgress size={16} />
-              ) : searchQuery ? (
-                <IconButton
-                  size="small"
-                  onClick={() => {
-                    setSearchQuery("");
-                    setSearchResults([]);
-                  }}
-                >
-                  <X size={14} />
-                </IconButton>
-              ) : null,
-            },
-          }}
-        />
-
-        {searchResults.length > 0 && (
-          <List dense sx={{ maxHeight: 220, overflow: "auto", mt: 0.5 }}>
-            {searchResults.map(c => (
-              <ListItem
-                key={c.id}
+      {/* Collapsible Add/Edit Panel */}
+      <Collapse in={showAddPanel}>
+        <Box sx={{ bgcolor: "action.hover" }}>
+          {(addMode === "scratch" || editingDataSourceId) && (
+            <Box sx={{ px: 2, py: 1.5 }}>
+              <Box
                 sx={{
-                  borderRadius: 1,
-                  "&:hover": { bgcolor: "action.hover" },
-                  cursor: "pointer",
-                  pr: 6,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  mb: 1,
                 }}
-                onClick={() => handleAddDataSource(c)}
               >
-                <ListItemText
-                  primary={c.title}
-                  secondary={
-                    [c.connectionName, c.language]
-                      .filter(Boolean)
-                      .join(" · ") || undefined
-                  }
-                  primaryTypographyProps={{ variant: "body2", noWrap: true }}
-                  secondaryTypographyProps={{ variant: "caption" }}
+                <Typography
+                  variant="caption"
+                  fontWeight={600}
+                  color="text.secondary"
+                >
+                  {editingDataSourceId ? "Edit Data Source" : "New Data Source"}
+                </Typography>
+                <IconButton size="small" onClick={closeAddPanel}>
+                  <ChevronUp size={16} />
+                </IconButton>
+              </Box>
+              <TextField
+                size="small"
+                fullWidth
+                label="Name"
+                value={directName}
+                onChange={e => setDirectName(e.target.value)}
+                sx={{ mb: 1 }}
+              />
+              <FormControl size="small" fullWidth sx={{ mb: 1 }}>
+                <InputLabel>Connection</InputLabel>
+                <Select
+                  value={directConnectionId}
+                  label="Connection"
+                  onChange={e => setDirectConnectionId(e.target.value)}
+                >
+                  {availableConnections.map(connection => (
+                    <MenuItem key={connection.id} value={connection.id}>
+                      {connection.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <Box sx={{ display: "flex", gap: 1, mb: 1 }}>
+                <FormControl size="small" sx={{ minWidth: 120 }}>
+                  <InputLabel>Language</InputLabel>
+                  <Select
+                    value={directLanguage}
+                    label="Language"
+                    onChange={e =>
+                      setDirectLanguage(
+                        e.target.value as "sql" | "javascript" | "mongodb",
+                      )
+                    }
+                  >
+                    <MenuItem value="sql">SQL</MenuItem>
+                    <MenuItem value="javascript">JavaScript</MenuItem>
+                    <MenuItem value="mongodb">MongoDB</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label="Database Name (optional)"
+                  value={directDatabaseName}
+                  onChange={e => setDirectDatabaseName(e.target.value)}
                 />
-                <ListItemSecondaryAction>
-                  {addingId === c.id ? (
-                    <CircularProgress size={18} />
-                  ) : (
-                    <IconButton
-                      size="small"
+              </Box>
+              <TextField
+                size="small"
+                fullWidth
+                multiline
+                minRows={3}
+                maxRows={8}
+                label="Query"
+                value={directQuery}
+                onChange={e => setDirectQuery(e.target.value)}
+                sx={{ mb: 1 }}
+                slotProps={{
+                  input: { sx: { fontFamily: "monospace", fontSize: 13 } },
+                }}
+              />
+              <Box sx={{ display: "flex", gap: 1 }}>
+                <Button
+                  size="small"
+                  variant="contained"
+                  fullWidth
+                  disabled={
+                    creatingDirect ||
+                    !directName.trim() ||
+                    !directConnectionId ||
+                    !directQuery.trim()
+                  }
+                  onClick={handleCreateDirectDataSource}
+                >
+                  {creatingDirect
+                    ? editingDataSourceId
+                      ? "Saving..."
+                      : "Creating..."
+                    : editingDataSourceId
+                      ? "Save"
+                      : "Create"}
+                </Button>
+                <Button size="small" variant="text" onClick={closeAddPanel}>
+                  Cancel
+                </Button>
+              </Box>
+            </Box>
+          )}
+
+          {addMode === "import" && !editingDataSourceId && (
+            <Box sx={{ px: 2, py: 1.5 }}>
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  mb: 1,
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  fontWeight={600}
+                  color="text.secondary"
+                >
+                  Import Saved Console
+                </Typography>
+                <IconButton size="small" onClick={closeAddPanel}>
+                  <ChevronUp size={16} />
+                </IconButton>
+              </Box>
+              <TextField
+                size="small"
+                fullWidth
+                placeholder="Search saved consoles…"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                slotProps={{
+                  input: {
+                    startAdornment: (
+                      <Search
+                        size={16}
+                        style={{ marginRight: 8, opacity: 0.5 }}
+                      />
+                    ),
+                    endAdornment: searching ? (
+                      <CircularProgress size={16} />
+                    ) : searchQuery ? (
+                      <IconButton
+                        size="small"
+                        onClick={() => {
+                          setSearchQuery("");
+                          setSearchResults([]);
+                        }}
+                      >
+                        <X size={14} />
+                      </IconButton>
+                    ) : null,
+                  },
+                }}
+              />
+
+              {searchResults.length > 0 && (
+                <List dense sx={{ maxHeight: 200, overflow: "auto", mt: 0.5 }}>
+                  {searchResults.map(c => (
+                    <ListItem
+                      key={c.id}
+                      sx={{
+                        borderRadius: 1,
+                        "&:hover": { bgcolor: "background.paper" },
+                        cursor: "pointer",
+                        pr: 6,
+                      }}
                       onClick={() => handleAddDataSource(c)}
                     >
-                      <Plus size={16} />
-                    </IconButton>
-                  )}
-                </ListItemSecondaryAction>
-              </ListItem>
-            ))}
-          </List>
-        )}
+                      <ListItemText
+                        primary={c.title}
+                        secondary={
+                          [c.connectionName, c.language]
+                            .filter(Boolean)
+                            .join(" · ") || undefined
+                        }
+                        primaryTypographyProps={{
+                          variant: "body2",
+                          noWrap: true,
+                        }}
+                        secondaryTypographyProps={{ variant: "caption" }}
+                      />
+                      <ListItemSecondaryAction>
+                        {addingId === c.id ? (
+                          <CircularProgress size={18} />
+                        ) : (
+                          <IconButton
+                            size="small"
+                            onClick={() => handleAddDataSource(c)}
+                          >
+                            <Plus size={16} />
+                          </IconButton>
+                        )}
+                      </ListItemSecondaryAction>
+                    </ListItem>
+                  ))}
+                </List>
+              )}
 
-        {searchQuery.trim().length >= 2 &&
-          !searching &&
-          searchResults.length === 0 && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ mt: 1, display: "block" }}
-            >
-              {searchQuery.trim()
-                ? "No consoles found. Try a different search."
-                : "No saved consoles in this workspace."}
-            </Typography>
+              {searchQuery.trim().length >= 2 &&
+                !searching &&
+                searchResults.length === 0 && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ mt: 1, display: "block" }}
+                  >
+                    No consoles found. Try a different search.
+                  </Typography>
+                )}
+            </Box>
           )}
-      </Box>
 
-      <Divider />
+          <Divider />
+        </Box>
+      </Collapse>
 
-      {/* Attached Data Sources */}
+      {/* Data Sources List (primary content) */}
       <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 1 }}>
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ mb: 0.5, display: "block" }}
-        >
-          Attached ({dataSources.length})
-        </Typography>
-
         {dataSources.length === 0 ? (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ mt: 2, textAlign: "center" }}
+          <Box
+            sx={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              py: 6,
+              gap: 1.5,
+            }}
           >
-            No data sources attached yet.
-          </Typography>
+            <Database size={32} style={{ opacity: 0.25 }} />
+            <Typography variant="body2" color="text.secondary">
+              No data sources yet
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<Plus size={14} />}
+              onClick={e => setAddMenuAnchor(e.currentTarget)}
+            >
+              Add data source
+            </Button>
+          </Box>
         ) : (
-          <List dense disablePadding>
+          <Box>
             {dataSources.map(ds => {
               const runtimeDataSource = runtimeSession?.dataSources[ds.id];
               const status = runtimeDataSource?.status;
@@ -709,85 +812,86 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                   />
                 );
 
+              const statsSegments = [
+                status === "ready" && loadedRows > 0
+                  ? `${loadedRows.toLocaleString()} rows`
+                  : null,
+                sizeLabel,
+                materializedAt,
+              ].filter(Boolean);
+
               return (
-                <ListItem
+                <Box
                   key={ds.id}
                   sx={{
+                    px: 1.5,
+                    py: 1,
                     borderRadius: 1,
-                    mb: 0.5,
-                    pr: 10,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    mb: 1,
                   }}
                 >
-                  <ListItemText
-                    primary={ds.name}
-                    primaryTypographyProps={{
-                      variant: "body2",
-                      fontFamily: "monospace",
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.5,
                     }}
-                    secondary={
-                      <Box sx={{ mt: 0.25 }}>
-                        {status === "loading" ? (
-                          <Typography variant="caption" color="text.secondary">
-                            {loadedRows > 0
-                              ? `${loadedRows.toLocaleString()} rows loaded...`
-                              : "Starting stream..."}
-                          </Typography>
-                        ) : status === "ready" && loadedRows > 0 ? (
-                          <Typography variant="caption" color="text.secondary">
-                            {loadedRows.toLocaleString()} rows loaded
-                          </Typography>
-                        ) : status === "error" ? (
-                          <Typography
-                            variant="caption"
-                            color="error.main"
-                            sx={{ display: "block", maxWidth: 220 }}
-                          >
-                            {errorMessage || "Failed to load data source"}
-                          </Typography>
-                        ) : null}
-                        <Typography
-                          variant="caption"
-                          color={
-                            materializationStatus === "ready"
-                              ? "success.main"
-                              : materializationStatus === "building"
-                                ? "warning.main"
-                                : "text.secondary"
-                          }
-                          sx={{ display: "block", mt: 0.25 }}
-                        >
-                          {materializationStatus === "ready"
-                            ? "Materialized"
-                            : materializationStatus === "building"
-                              ? "Materializing..."
-                              : "Not materialized"}
-                          {materializedAt
-                            ? ` · Last materialized ${materializedAt}`
-                            : ""}
-                          {ds.cache?.rowCount
-                            ? ` · ${ds.cache.rowCount.toLocaleString()} rows`
-                            : ""}
-                          {sizeLabel ? ` · ${sizeLabel}` : ""}
-                        </Typography>
-                        {diagnostics.length > 0 && (
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{
-                              display: "block",
-                              mt: 0.25,
-                              fontFamily: "monospace",
-                            }}
-                          >
-                            {diagnostics.join(" · ")}
-                          </Typography>
-                        )}
-                      </Box>
-                    }
-                    secondaryTypographyProps={{ component: "div" }}
-                  />
-                  <ListItemSecondaryAction
-                    sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
+                  >
+                    <Typography
+                      variant="body2"
+                      fontFamily="monospace"
+                      fontWeight={600}
+                      noWrap
+                      sx={{ flex: 1, minWidth: 0 }}
+                    >
+                      {ds.name}
+                    </Typography>
+                    <IconButton
+                      size="small"
+                      onClick={() => handleRefreshDataSource(ds.id)}
+                      disabled={
+                        status === "loading" ||
+                        materializationStatus === "building"
+                      }
+                      sx={{ p: 0.5 }}
+                    >
+                      {status === "loading" ? (
+                        <CircularProgress size={14} />
+                      ) : (
+                        <RefreshCw size={14} />
+                      )}
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => handleStartEdit(ds.id)}
+                      sx={{ p: 0.5 }}
+                    >
+                      <Pencil size={14} />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => handleRemoveDataSource(ds.id)}
+                      disabled={removingId === ds.id}
+                      color="error"
+                      sx={{ p: 0.5 }}
+                    >
+                      {removingId === ds.id ? (
+                        <CircularProgress size={14} />
+                      ) : (
+                        <Trash2 size={14} />
+                      )}
+                    </IconButton>
+                  </Box>
+
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.5,
+                      mt: 0.5,
+                    }}
                   >
                     {materializationChip}
                     {chipProps && (
@@ -796,52 +900,65 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                         color={chipProps.color}
                         size="small"
                         variant="outlined"
-                        sx={{ height: 22, fontSize: "0.7rem" }}
+                        sx={{ height: 20, fontSize: "0.7rem" }}
                       />
                     )}
-                    <IconButton
-                      size="small"
-                      onClick={() => handleRefreshDataSource(ds.id)}
-                      disabled={
-                        status === "loading" ||
-                        materializationStatus === "building"
+                  </Box>
+
+                  {(statsSegments.length > 0 ||
+                    status === "loading" ||
+                    status === "error") && (
+                    <Typography
+                      variant="caption"
+                      color={
+                        status === "error" ? "error.main" : "text.secondary"
                       }
+                      sx={{ display: "block", mt: 0.5, lineHeight: 1.4 }}
                     >
-                      {status === "loading" ? (
-                        <CircularProgress size={16} />
-                      ) : (
-                        <RefreshCw size={15} />
-                      )}
-                    </IconButton>
-                    <Button
-                      size="small"
-                      onClick={() => void openHistory(ds.id)}
+                      {status === "loading"
+                        ? loadedRows > 0
+                          ? `${loadedRows.toLocaleString()} rows loaded...`
+                          : "Starting stream..."
+                        : status === "error"
+                          ? errorMessage || "Failed to load data source"
+                          : statsSegments.join(" · ")}
+                    </Typography>
+                  )}
+
+                  {diagnostics.length > 0 && (
+                    <Typography
+                      variant="caption"
+                      color="text.disabled"
+                      sx={{
+                        display: "block",
+                        mt: 0.25,
+                        fontFamily: "monospace",
+                        fontSize: "0.65rem",
+                        lineHeight: 1.3,
+                      }}
                     >
-                      History
-                    </Button>
-                    <IconButton
-                      size="small"
-                      onClick={() => handleEditDataSource(ds.id)}
-                    >
-                      <Pencil size={15} />
-                    </IconButton>
-                    <IconButton
-                      size="small"
-                      onClick={() => handleRemoveDataSource(ds.id)}
-                      disabled={removingId === ds.id}
-                      color="error"
-                    >
-                      {removingId === ds.id ? (
-                        <CircularProgress size={16} />
-                      ) : (
-                        <Trash2 size={15} />
-                      )}
-                    </IconButton>
-                  </ListItemSecondaryAction>
-                </ListItem>
+                      {diagnostics.join(" · ")}
+                    </Typography>
+                  )}
+
+                  <Button
+                    size="small"
+                    sx={{
+                      mt: 0.5,
+                      minWidth: 0,
+                      fontSize: "0.7rem",
+                      textTransform: "none",
+                      py: 0,
+                      px: 0,
+                    }}
+                    onClick={() => void openHistory(ds.id)}
+                  >
+                    Materialization history
+                  </Button>
+                </Box>
               );
             })}
-          </List>
+          </Box>
         )}
       </Box>
 
@@ -849,7 +966,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
       {dataSources.length > 0 && (
         <>
           <Divider />
-          <Box sx={{ px: 2, py: 1.5 }}>
+          <Box sx={{ px: 2, py: 1, flexShrink: 0 }}>
             <Button
               size="small"
               fullWidth
