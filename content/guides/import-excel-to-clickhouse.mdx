@@ -1,0 +1,165 @@
+---
+title: "How to Import Excel to ClickHouse (3 Methods)"
+slug: import-excel-to-clickhouse
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - clickhouse
+  - excel
+  - import
+  - data
+excerpt: "Three ways to import Excel data into ClickHouse: convert to CSV and use clickhouse-client, Python with pandas and clickhouse-connect, and Mako. Covers format conversion, type mapping, and batch loading."
+metaDescription: "Import Excel to ClickHouse in 2026: CSV conversion with clickhouse-client, Python clickhouse-connect, and Mako. Step-by-step with type mapping and gotchas."
+database: clickhouse
+category: import-export
+draft: false
+---
+
+ClickHouse doesn't support `.xlsx` files natively. It reads CSV, TSV, JSON, Parquet, and many other formats, but not Excel directly. Convert first, then load. Here are three practical approaches.
+
+## Method 1: Convert to CSV, Then clickhouse-client
+
+Save the Excel file as CSV (UTF-8), then insert using `clickhouse-client`:
+
+```bash
+clickhouse-client \
+  --query="INSERT INTO sales FORMAT CSVWithNames" \
+  < sales.csv
+```
+
+`CSVWithNames` expects the first row to be column headers that match the table columns. Create the table first:
+
+```sql
+CREATE TABLE sales (
+    id UInt32,
+    product String,
+    amount Decimal(10,2),
+    sale_date Date
+) ENGINE = MergeTree()
+ORDER BY id;
+```
+
+For TSV files, use `TabSeparatedWithNames` format. ClickHouse also accepts Parquet, which preserves types better than CSV:
+
+```bash
+# Convert Excel to Parquet with Python first
+python3 -c "
+import pandas as pd
+df = pd.read_excel('data.xlsx')
+df.to_parquet('data.parquet', index=False)
+"
+
+# Load Parquet into ClickHouse
+clickhouse-client \
+  --query="INSERT INTO sales FORMAT Parquet" \
+  < data.parquet
+```
+
+Parquet preserves integer, float, and date types without the ambiguity of CSV text. For large datasets, this is the preferred path.
+
+## Method 2: Python with clickhouse-connect
+
+The `clickhouse-connect` library supports inserting pandas DataFrames directly:
+
+```python
+import pandas as pd
+import clickhouse_connect
+
+client = clickhouse_connect.get_client(host='localhost')
+
+df = pd.read_excel("report.xlsx", sheet_name="Events")
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+# Create table first (ClickHouse needs explicit schema)
+client.command("""
+    CREATE TABLE IF NOT EXISTS events (
+        id UInt32,
+        event_type String,
+        value Float64,
+        event_date Date
+    ) ENGINE = MergeTree()
+    ORDER BY (event_date, id)
+""")
+
+# Insert DataFrame
+client.insert_df("events", df)
+```
+
+For large files, split into chunks:
+
+```python
+chunk_size = 100000
+for i in range(0, len(df), chunk_size):
+    client.insert_df("events", df.iloc[i:i+chunk_size])
+```
+
+An alternative is `clickhouse-driver`, which uses the native TCP protocol and can be faster for very large inserts:
+
+```python
+from clickhouse_driver import Client
+
+client = Client('localhost')
+data = df.values.tolist()
+client.execute(
+    "INSERT INTO events (id, event_type, value, event_date) VALUES",
+    data
+)
+```
+
+## Method 3: Mako
+
+Mako imports Excel files into ClickHouse without manual conversion:
+
+1. Connect to your ClickHouse instance in Mako
+2. Click **Import** and select the `.xlsx` file
+3. Choose the sheet and review the preview
+4. Adjust column mappings and types
+5. Run the import
+
+Mako handles the conversion internally. For one-off imports, this avoids the CSV conversion step.
+
+## Type Mapping: Excel to ClickHouse
+
+ClickHouse has strict, performance-oriented types. Picking the right one matters for query speed and storage:
+
+| Excel Type | ClickHouse Type | Notes |
+|---|---|---|
+| Integer | `UInt32`, `Int32`, `UInt64`, `Int64` | Choose the smallest type that fits. ClickHouse benefits from narrow types. |
+| Decimal | `Decimal(p,s)` or `Float64` | Use `Decimal` for exact values, `Float64` for analytics |
+| Date | `Date` or `DateTime` | `Date` stores as days since 1970-01-01 (2 bytes). `DateTime` adds time. |
+| Text | `String` or `LowCardinality(String)` | Use `LowCardinality` for columns with few distinct values (country codes, statuses) |
+| Boolean | `Bool` (alias for `UInt8`) | TRUE=1, FALSE=0 |
+
+## ClickHouse-Specific Considerations
+
+**Engine choice matters.** `MergeTree` is the default for analytics tables. Choose your `ORDER BY` based on how you'll query the data, not on a primary key. ClickHouse uses the ordering for index compression and query optimization.
+
+**No UPDATE/DELETE by default.** Unlike PostgreSQL or MySQL, ClickHouse is append-oriented. If your Excel data needs deduplication, use `ReplacingMergeTree` and `FINAL` queries, or deduplicate before importing.
+
+**Batch size.** ClickHouse prefers large inserts (thousands to millions of rows at once) over many small ones. Each insert creates a new data part that later needs merging. For Excel files with thousands of rows, a single insert is fine. For millions, batch by 100K-500K rows.
+
+## Common Gotchas
+
+**NULL handling.** ClickHouse columns are non-nullable by default. If your Excel data has empty cells, either declare columns as `Nullable(Type)` or provide default values:
+
+```sql
+CREATE TABLE t (
+    id UInt32,
+    name String DEFAULT '',
+    amount Nullable(Float64)
+) ENGINE = MergeTree() ORDER BY id;
+```
+
+Be aware that `Nullable` columns use extra storage and are slightly slower to query.
+
+**Date conversion.** Excel dates exported as CSV may appear as serial numbers or locale-formatted strings. If they come through as numbers (e.g., `45352`), convert in Python before loading:
+
+```python
+df["date"] = pd.to_datetime(df["date"], origin="1899-12-30", unit="D")
+```
+
+**String encoding.** ClickHouse expects UTF-8. Excel CSV exports from Windows may use other encodings. Convert with `iconv` or handle in Python before loading.
+
+**Parquet is better than CSV.** If you're converting from Excel anyway, consider Parquet as the intermediate format instead of CSV. It preserves types, compresses well, and ClickHouse reads it faster.
+
+Mako connects to ClickHouse, PostgreSQL, MySQL, MongoDB, BigQuery, and Snowflake with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
