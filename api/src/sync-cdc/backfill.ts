@@ -404,6 +404,7 @@ export class CdcBackfillService {
       {
         $set: {
           "backfillState.active": false,
+          "backfillState.status": "paused",
           "backfillState.completedAt": null,
         },
       },
@@ -455,11 +456,19 @@ export class CdcBackfillService {
       }
     }
 
+    let resumedRun: { runId: string; reusedRunId: boolean } | undefined;
+    if (flow.backfillState?.runId) {
+      resumedRun = await this.startBackfill(workspaceId, flowId, {
+        reuseExistingRunId: true,
+        reason: "Backfill resumed from pause",
+      });
+    }
+
     return {
       resumed: true,
-      resumedRunId: null,
-      reusedRunId: false,
-      resumedBackfill: false,
+      resumedRunId: resumedRun?.runId || null,
+      reusedRunId: resumedRun?.reusedRunId || false,
+      resumedBackfill: Boolean(resumedRun),
       pendingBacklog: pending,
       drainQueued: pending > 0,
     };
