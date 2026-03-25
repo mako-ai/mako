@@ -884,10 +884,10 @@ export class CloseConnector extends BaseConnector {
           windowStart = CloseConnector.nextMonth(windowStart);
         }
       } else if (windowGranularity === "day") {
-        windowStart = CloseConnector.nextDay(windowStart);
         const monthBoundary = CloseConnector.nextMonth(
           windowStart.slice(0, 7) + "-01",
         );
+        windowStart = CloseConnector.nextDay(windowStart);
         if (windowStart >= monthBoundary) {
           windowGranularity = "month";
         }

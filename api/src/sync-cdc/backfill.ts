@@ -299,7 +299,11 @@ export class CdcBackfillService {
       throw new Error("Cannot recover while a CDC execution is active");
     }
 
-    await this.resumeStream(params.workspaceId, params.flowId);
+    await cdcSyncStateService.applyStreamTransition({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      event: { type: "RECOVER", reason: "Stream recovered via API" },
+    });
 
     await cdcSyncStateService.applyBackfillTransition({
       workspaceId: params.workspaceId,
@@ -571,7 +575,6 @@ export class CdcBackfillService {
       resumed: true,
       pendingBacklog: pending,
       drainQueued: pending > 0,
-      webhookEventsDrained,
     };
   }
 
