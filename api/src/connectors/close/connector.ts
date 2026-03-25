@@ -837,13 +837,10 @@ export class CloseConnector extends BaseConnector {
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
+    const SKIP_LIMIT = 9800;
 
-    // Cursor-based pagination ascending by date_created.
-    // Uses gte so ties are included — MERGE deduplicates on import.
     let cursor: string | null = state?.metadata?.cursor ?? null;
-    const endDate =
-      since ||
-      (state?.metadata?.endDate ? new Date(state.metadata.endDate) : null);
+    let skip = state?.metadata?.skip || 0;
 
     if (!state && onProgress) {
       onProgress(0, undefined);
@@ -853,13 +850,14 @@ export class CloseConnector extends BaseConnector {
       try {
         const params: any = {
           _limit: batchSize,
-          _order_by: "-date_created",
+          _skip: skip,
+          _order_by: "date_created",
         };
         if (cursor) {
-          params.date_created__lt = cursor;
+          params.date_created__gte = cursor;
         }
-        if (endDate) {
-          params.date_created__gte = endDate.toISOString().split("T")[0];
+        if (since) {
+          params.date_created__gte = since.toISOString().split("T")[0];
         }
 
         const response = await api.get(
@@ -872,6 +870,7 @@ export class CloseConnector extends BaseConnector {
         if (data.length > 0) {
           await onBatch(data);
           recordCount += data.length;
+          skip += data.length;
           cursor = data[data.length - 1].date_created;
           if (onProgress) {
             onProgress(recordCount, undefined);
@@ -883,8 +882,12 @@ export class CloseConnector extends BaseConnector {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: { cursor, endDate: endDate?.toISOString() },
+            metadata: { cursor, skip },
           };
+        }
+
+        if (skip >= SKIP_LIMIT) {
+          skip = 0;
         }
 
         iterations++;
@@ -908,7 +911,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { cursor, endDate: endDate?.toISOString() },
+      metadata: { cursor, skip },
     };
   }
 
