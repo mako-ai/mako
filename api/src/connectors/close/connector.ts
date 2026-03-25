@@ -643,13 +643,20 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // All main entities use the search API with cursor pagination
+    // Activities: use direct REST endpoint with date_created__lt cursor.
+    // The search API cursor expires after ~30s; on expiry the code restarts
+    // from an inclusive dateCursor, causing duplicate pages across chunks.
+    // The direct endpoint uses strict date_created__lt so there are no gaps
+    // or duplicates, and it has no 10k search-API skip limit.
+    if (entity === "activities" || entity.startsWith("activities:")) {
+      return await this.fetchActivitiesChunk(options);
+    }
+
+    // Leads, contacts, opportunities use the search API with cursor pagination
     if (
       entity === "leads" ||
       entity === "contacts" ||
-      entity === "opportunities" ||
-      entity === "activities" ||
-      entity.startsWith("activities:")
+      entity === "opportunities"
     ) {
       return await this.fetchViaSearchApi(options);
     }
