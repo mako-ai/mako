@@ -331,29 +331,46 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
-    if (missingInLive.length > 0) {
-      const stagingSchemaResult = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}'`,
-      );
-      const stagingSchema = new Map(
-        ((stagingSchemaResult.data as any[]) || []).map((r: any) => [
-          r.column_name as string,
-          r.data_type as string,
-        ]),
-      );
-      for (const col of missingInLive) {
-        const colType = stagingSchema.get(col) || "STRING";
-        await databaseConnectionService.executeQuery(
-          destination,
-          `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
-        );
-        liveCols.add(col);
+    const schemaResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`,
+    );
+    const columnTypeMap = new Map<string, string>();
+    for (const r of (schemaResult.data as any[]) || []) {
+      if (!columnTypeMap.has(r.column_name)) {
+        columnTypeMap.set(r.column_name as string, r.data_type as string);
       }
+    }
+
+    const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
+    for (const col of missingInLive) {
+      const colType = columnTypeMap.get(col) || "STRING";
+      await databaseConnectionService.executeQuery(
+        destination,
+        `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
+      );
+      liveCols.add(col);
+    }
+    if (missingInLive.length > 0) {
       log.info("Added missing columns to live table from staging", {
         liveTable,
         addedColumns: missingInLive,
+      });
+    }
+
+    const missingInStaging = [...liveCols].filter(c => !stagingCols.has(c));
+    for (const col of missingInStaging) {
+      const colType = columnTypeMap.get(col) || "STRING";
+      await databaseConnectionService.executeQuery(
+        destination,
+        `ALTER TABLE ${fullStaging} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
+      );
+      stagingCols.add(col);
+    }
+    if (missingInStaging.length > 0) {
+      log.info("Added missing columns to staging table from live", {
+        stagingTable,
+        addedColumns: missingInStaging,
       });
     }
 
