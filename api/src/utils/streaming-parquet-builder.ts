@@ -98,7 +98,11 @@ export async function buildParquetFromBatches(
       const batch = remaining < rows.length ? rows.slice(0, remaining) : rows;
 
       if (!tableCreated) {
-        columns = Object.keys(batch[0]);
+        const colSet = new Set<string>();
+        for (const row of batch) {
+          for (const key of Object.keys(row)) colSet.add(key);
+        }
+        columns = Array.from(colSet);
         const sampleSize = Math.min(100, batch.length);
         const colDefs = columns.map(col => {
           const samples = [];
@@ -109,6 +113,30 @@ export async function buildParquetFromBatches(
         });
         await connection.run(`CREATE TABLE _data (${colDefs.join(", ")})`);
         tableCreated = true;
+      } else {
+        const newCols: string[] = [];
+        const existingSet = new Set(columns);
+        for (const row of batch) {
+          for (const key of Object.keys(row)) {
+            if (!existingSet.has(key)) {
+              existingSet.add(key);
+              newCols.push(key);
+            }
+          }
+        }
+        if (newCols.length > 0) {
+          const sampleSize = Math.min(100, batch.length);
+          for (const col of newCols) {
+            const samples = [];
+            for (let i = 0; i < sampleSize; i++) {
+              samples.push(batch[i]?.[col]);
+            }
+            await connection.run(
+              `ALTER TABLE _data ADD COLUMN ${escapeIdentifier(col)} ${inferDuckDBType(samples)}`,
+            );
+          }
+          columns.push(...newCols);
+        }
       }
 
       const valueRows = batch.map(
