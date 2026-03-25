@@ -1726,7 +1726,17 @@ export const flowFunction = inngest.createFunction(
               },
             );
             await step.run(`flush-final-${safeEntityStepId}`, async () => {
-              await performBulkFlush(bulkSyncOptions);
+              try {
+                await performBulkFlush(bulkSyncOptions);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                appendExecutionLog(
+                  "error",
+                  `Failed to flush ${entity} buffer to staging: ${msg}`,
+                  { entity },
+                );
+                throw err;
+              }
             });
             appendExecutionLog(
               "info",
@@ -1747,7 +1757,17 @@ export const flowFunction = inngest.createFunction(
               },
             );
             await step.run(`merge-staging-${safeEntityStepId}`, async () => {
-              return performStagingMerge(bulkSyncOptions);
+              try {
+                return await performStagingMerge(bulkSyncOptions);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                appendExecutionLog(
+                  "error",
+                  `Failed to merge ${entity} staging to live: ${msg}`,
+                  { entity },
+                );
+                throw err;
+              }
             });
             appendExecutionLog(
               "info",
@@ -1761,7 +1781,17 @@ export const flowFunction = inngest.createFunction(
               entity,
             });
             await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
-              await performStagingCleanup(bulkSyncOptions);
+              try {
+                await performStagingCleanup(bulkSyncOptions);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                appendExecutionLog(
+                  "error",
+                  `Failed to cleanup ${entity} staging: ${msg}`,
+                  { entity },
+                );
+                throw err;
+              }
             });
             logger.info(
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
