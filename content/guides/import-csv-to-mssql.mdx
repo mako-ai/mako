@@ -1,0 +1,150 @@
+---
+title: "How to Import CSV to SQL Server (4 Methods)"
+slug: import-csv-to-mssql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mssql
+  - csv
+  - import
+  - data
+excerpt: "Four methods to import CSV files into Microsoft SQL Server: BULK INSERT, bcp utility, SSMS Import Wizard, and Mako. Includes format files, permissions, and error handling."
+metaDescription: "Import CSV to SQL Server in 2026: BULK INSERT, bcp CLI, SSMS Import Wizard, and Mako. Step-by-step with format files, permissions, and gotchas."
+database: mssql
+category: import-export
+draft: false
+---
+
+SQL Server has its own set of tools for CSV imports, distinct from the MySQL/MariaDB family. Here are four practical approaches.
+
+## Method 1: BULK INSERT
+
+The most direct way to load a CSV file from the server's filesystem:
+
+```sql
+CREATE TABLE orders (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  customer_name NVARCHAR(255),
+  amount DECIMAL(10,2),
+  order_date DATE,
+  status NVARCHAR(50)
+);
+```
+
+```sql
+BULK INSERT orders
+FROM 'C:\data\orders.csv'
+WITH (
+  FORMAT = 'CSV',
+  FIRSTROW = 2,
+  FIELDTERMINATOR = ',',
+  ROWTERMINATOR = '\n',
+  TABLOCK
+);
+```
+
+Key options:
+- `FORMAT = 'CSV'` -- available in SQL Server 2017+, handles quoted fields correctly
+- `FIRSTROW = 2` -- skips the header row
+- `TABLOCK` -- acquires a table-level lock for faster inserts
+- `ERRORFILE = 'C:\data\errors.log'` -- logs rows that fail to import
+
+**Permissions.** `BULK INSERT` requires the `ADMINISTER BULK OPERATIONS` permission or membership in the `bulkadmin` server role. The file must be accessible from the SQL Server process, not your local machine.
+
+For older SQL Server versions without `FORMAT = 'CSV'`, use a format file to handle quoted fields properly.
+
+## Method 2: bcp Utility
+
+The `bcp` (Bulk Copy Program) command-line tool works from any machine that can connect to the server:
+
+```bash
+bcp mydb.dbo.orders in orders.csv \
+  -S localhost \
+  -U sa -P yourpassword \
+  -c -t "," -r "\n" \
+  -F 2
+```
+
+Flags:
+- `in` -- direction (import)
+- `-c` -- character data mode
+- `-t ","` -- field terminator
+- `-r "\n"` -- row terminator
+- `-F 2` -- start from row 2 (skip header)
+
+For Windows authentication, replace `-U` and `-P` with `-T` (trusted connection).
+
+`bcp` is faster than `BULK INSERT` for very large files because it can run in parallel batches:
+
+```bash
+bcp mydb.dbo.orders in orders.csv -c -t "," -F 2 -b 10000 -S localhost -T
+```
+
+The `-b 10000` flag commits every 10,000 rows, which reduces transaction log pressure.
+
+## Method 3: SSMS Import Flat File Wizard
+
+SQL Server Management Studio has a built-in wizard:
+
+1. Right-click the database > Tasks > Import Flat File
+2. Browse to your CSV file
+3. Preview the data and adjust column types
+4. Click Finish to import
+
+The wizard auto-detects column types and handles most formatting issues. It's the easiest option for one-off imports, but not scriptable or repeatable.
+
+For more control, use Tasks > Import Data, which opens the SQL Server Import and Export Wizard with options for transformations and column mappings.
+
+## Method 4: Mako (GUI)
+
+Mako connects to SQL Server and provides a visual CSV import interface. You can drag and drop files, preview data, map columns, and adjust types before committing. Useful when you need to inspect the data or when SSMS isn't available.
+
+## Common Gotchas
+
+**Encoding.** SQL Server defaults to the server's collation for character interpretation. For UTF-8 CSV files, use a code page:
+
+```sql
+BULK INSERT orders
+FROM 'C:\data\orders.csv'
+WITH (
+  FORMAT = 'CSV',
+  FIRSTROW = 2,
+  CODEPAGE = '65001'
+);
+```
+
+Code page `65001` is UTF-8.
+
+**NULL handling.** Empty fields in CSV are imported as empty strings, not NULL. To convert them post-import:
+
+```sql
+UPDATE orders SET customer_name = NULL WHERE customer_name = '';
+```
+
+Or handle it during import with a staging table and a transformation step.
+
+**Date formats.** SQL Server uses the `SET DATEFORMAT` session setting. If your CSV has `MM/DD/YYYY` dates but the server expects `YYYY-MM-DD`:
+
+```sql
+SET DATEFORMAT mdy;
+BULK INSERT orders FROM 'C:\data\orders.csv'
+WITH (FORMAT = 'CSV', FIRSTROW = 2);
+```
+
+**Identity columns.** If the table has an `IDENTITY` column and the CSV doesn't include it, SQL Server auto-generates values. If the CSV does include identity values, add `KEEPIDENTITY`:
+
+```sql
+BULK INSERT orders
+FROM 'C:\data\orders.csv'
+WITH (FORMAT = 'CSV', FIRSTROW = 2, KEEPIDENTITY);
+```
+
+**Large files.** For files over 1 GB, use `bcp` with `-b` batch size or `BULK INSERT` with `BATCHSIZE` to avoid filling the transaction log:
+
+```sql
+BULK INSERT orders
+FROM 'C:\data\orders.csv'
+WITH (FORMAT = 'CSV', FIRSTROW = 2, BATCHSIZE = 50000);
+```
+
+Mako connects to SQL Server, PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
