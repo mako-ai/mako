@@ -12,7 +12,8 @@
     }
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "prepare": "tsc"
   },
   "dependencies": {
     "zod": "^4.2.1"
