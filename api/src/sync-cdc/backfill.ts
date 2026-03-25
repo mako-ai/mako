@@ -299,11 +299,8 @@ export class CdcBackfillService {
       throw new Error("Cannot recover while a CDC execution is active");
     }
 
-    await cdcSyncStateService.applyStreamTransition({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-      event: { type: "RECOVER", reason: "Recovered via API" },
-    });
+    await this.resumeStream(params.workspaceId, params.flowId);
+
     await cdcSyncStateService.applyBackfillTransition({
       workspaceId: params.workspaceId,
       flowId: params.flowId,
@@ -357,11 +354,6 @@ export class CdcBackfillService {
       workspaceId,
       flowId,
       event: { type: "PAUSE", reason: "Paused via API" },
-    });
-    await cdcSyncStateService.applyStreamTransition({
-      workspaceId,
-      flowId,
-      event: { type: "PAUSE", reason: "Paused via API (backfill pause)" },
     });
 
     const runningExecution = await FlowExecution.findOne({
@@ -429,32 +421,11 @@ export class CdcBackfillService {
       throw new Error("Resume requires syncEngine=cdc");
     }
 
-    await cdcSyncStateService.applyStreamTransition({
+    await cdcSyncStateService.applyBackfillTransition({
       workspaceId,
       flowId,
-      event: { type: "RESUME", reason: "Resumed via API" },
+      event: { type: "RESUME", reason: "Backfill resumed via API" },
     });
-
-    const pending = await getCdcEventStore().countEvents({
-      workspaceId,
-      flowId,
-      materializationStatus: "pending",
-    });
-    if (pending > 0) {
-      try {
-        await forceDrainCdcFlow({
-          workspaceId,
-          flowId,
-        });
-      } catch (error) {
-        log.warn("Failed to schedule CDC drain after resume", {
-          flowId,
-          workspaceId,
-          pendingBacklog: pending,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
 
     let resumedRun: { runId: string; reusedRunId: boolean } | undefined;
     if (flow.backfillState?.runId) {
@@ -469,6 +440,75 @@ export class CdcBackfillService {
       resumedRunId: resumedRun?.runId || null,
       reusedRunId: resumedRun?.reusedRunId || false,
       resumedBackfill: Boolean(resumedRun),
+    };
+  }
+
+  async pauseStream(workspaceId: string, flowId: string) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Stream pause requires syncEngine=cdc");
+    }
+
+    await cdcSyncStateService.applyStreamTransition({
+      workspaceId,
+      flowId,
+      event: { type: "PAUSE", reason: "Stream paused via API" },
+    });
+
+    return { paused: true };
+  }
+
+  async resumeStream(workspaceId: string, flowId: string) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Stream resume requires syncEngine=cdc");
+    }
+
+    const result = await cdcSyncStateService.applyStreamTransition({
+      workspaceId,
+      flowId,
+      event: { type: "RESUME", reason: "Stream resumed via API" },
+    });
+    if (!result.changed) {
+      await cdcSyncStateService.applyStreamTransition({
+        workspaceId,
+        flowId,
+        event: { type: "START", reason: "Stream started via API" },
+      });
+    }
+
+    const pending = await getCdcEventStore().countEvents({
+      workspaceId,
+      flowId,
+      materializationStatus: "pending",
+    });
+    if (pending > 0) {
+      try {
+        await forceDrainCdcFlow({ workspaceId, flowId });
+      } catch (error) {
+        log.warn("Failed to schedule CDC drain after stream resume", {
+          flowId,
+          workspaceId,
+          pendingBacklog: pending,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      resumed: true,
       pendingBacklog: pending,
       drainQueued: pending > 0,
     };
