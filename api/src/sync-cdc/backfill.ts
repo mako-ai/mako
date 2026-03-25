@@ -2,6 +2,7 @@ import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
 import {
+  BackfillStatus,
   CdcEntityState,
   CdcStateTransition,
   DatabaseConnection,
@@ -94,6 +95,7 @@ export class CdcBackfillService {
       );
     }
 
+    const currentStatus = (flow.backfillState?.status || "idle") as BackfillStatus;
     const runId =
       shouldReuseRunId && flow.backfillState?.runId
         ? flow.backfillState.runId
@@ -104,6 +106,7 @@ export class CdcBackfillService {
     flow.backfillState = {
       active: true,
       runId,
+      status: currentStatus,
       startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
       completedAt: undefined,
       consecutiveFailures: previousFailures,
@@ -114,6 +117,12 @@ export class CdcBackfillService {
     };
     await flow.save();
 
+    const transitionEvent: "START" | "RESUME" | "RECOVER" =
+      currentStatus === "paused"
+        ? "RESUME"
+        : currentStatus === "error"
+          ? "RECOVER"
+          : "START";
     const reason =
       options?.reason ||
       (reusedRunId
@@ -131,7 +140,7 @@ export class CdcBackfillService {
     await cdcSyncStateService.applyBackfillTransition({
       workspaceId,
       flowId,
-      event: { type: "START", reason },
+      event: { type: transitionEvent, reason },
       context: { hasActiveRunLock: Boolean(running) },
     });
 
@@ -421,12 +430,6 @@ export class CdcBackfillService {
       throw new Error("Resume requires syncEngine=cdc");
     }
 
-    await cdcSyncStateService.applyBackfillTransition({
-      workspaceId,
-      flowId,
-      event: { type: "RESUME", reason: "Backfill resumed via API" },
-    });
-
     let resumedRun: { runId: string; reusedRunId: boolean } | undefined;
     if (flow.backfillState?.runId) {
       resumedRun = await this.startBackfill(workspaceId, flowId, {
@@ -479,13 +482,13 @@ export class CdcBackfillService {
     let result = await cdcSyncStateService.applyStreamTransition({
       workspaceId,
       flowId,
-      event: { type: "RECOVER", reason: "Stream recovered via API" },
+      event: { type: "RESUME", reason: "Stream resumed via API" },
     });
     if (!result.changed) {
       result = await cdcSyncStateService.applyStreamTransition({
         workspaceId,
         flowId,
-        event: { type: "RESUME", reason: "Stream resumed via API" },
+        event: { type: "RECOVER", reason: "Stream recovered via API" },
       });
     }
     if (!result.changed) {
