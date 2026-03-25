@@ -844,37 +844,26 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // Window by month so _skip stays small and requests stay fast.
-    // windowStart is the first day of the current month window (YYYY-MM-DD).
-    let windowStart: string = state?.metadata?.windowStart || "2000-01-01";
-    let skip = state?.metadata?.skip || 0;
-
-    const now = new Date();
-    const endWindow = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 2).padStart(2, "0")}-01`;
+    // Use date_created cursor instead of _skip to avoid Close API skip limits.
+    // Cursor is the exclusive lower bound (date_created > cursor).
+    let cursor: string | null = state?.metadata?.cursor ?? null;
 
     if (!state && onProgress) {
       onProgress(0, undefined);
     }
 
     while (iterations < maxIterations) {
-      if (windowStart >= endWindow) {
-        return {
-          totalProcessed: recordCount,
-          hasMore: false,
-          iterationsInChunk: iterations,
-          metadata: { windowStart, skip },
-        };
-      }
-
       try {
-        const windowEnd = CloseConnector.nextMonth(windowStart);
         const params: any = {
           _limit: batchSize,
-          _skip: skip,
           _order_by: "date_created",
-          date_created__gte: windowStart,
-          date_created__lt: windowEnd,
         };
+
+        if (cursor) {
+          params.date_created__gt = cursor;
+        } else {
+          params.date_created__gte = "2000-01-01";
+        }
 
         const response = await api.get(
           this.getActivityEndpointForType(activitySubType),
@@ -886,24 +875,19 @@ export class CloseConnector extends BaseConnector {
         if (data.length > 0) {
           await onBatch(data);
           recordCount += data.length;
-          skip += data.length;
+          cursor = data[data.length - 1].date_created;
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
         }
 
         if (!response.data.has_more || data.length === 0) {
-          // Jump a year when empty, a month when drained — skip gaps fast.
-          if (data.length === 0) {
-            const d = new Date(windowStart);
-            d.setUTCFullYear(d.getUTCFullYear() + 1);
-            windowStart = d.toISOString().slice(0, 10);
-          } else {
-            windowStart = CloseConnector.nextMonth(windowStart);
-            iterations++;
-          }
-          skip = 0;
-          continue;
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: iterations + 1,
+            metadata: { cursor },
+          };
         }
 
         iterations++;
@@ -927,7 +911,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { windowStart, skip },
+      metadata: { cursor },
     };
   }
 
