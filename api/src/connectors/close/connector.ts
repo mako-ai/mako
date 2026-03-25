@@ -829,7 +829,7 @@ export class CloseConnector extends BaseConnector {
   private async fetchActivitiesChunk(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
-    const { entity, onBatch, onProgress, state } = options;
+    const { entity, onBatch, onProgress, since, state } = options;
     const api = this.getCloseClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
@@ -846,11 +846,14 @@ export class CloseConnector extends BaseConnector {
 
     // Window by month so _skip stays small and requests stay fast.
     // windowStart is the first day of the current month window (YYYY-MM-DD).
-    let windowStart: string = state?.metadata?.windowStart || "2000-01-01";
+    const defaultStartDate = since?.toISOString().split("T")[0] || "2000-01-01";
+    let windowStart: string = state?.metadata?.windowStart || defaultStartDate;
     let skip = state?.metadata?.skip || 0;
 
     const now = new Date();
-    const endWindow = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 2).padStart(2, "0")}-01`;
+    const endWindowDate = new Date(now);
+    endWindowDate.setUTCMonth(endWindowDate.getUTCMonth() + 1);
+    const endWindow = endWindowDate.toISOString().slice(0, 10);
 
     if (!state && onProgress) {
       onProgress(0, undefined);
