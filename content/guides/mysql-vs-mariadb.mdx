@@ -1,0 +1,176 @@
+---
+title: "MySQL vs MariaDB in 2026: The Fork Compared"
+slug: mysql-vs-mariadb
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mysql
+  - mariadb
+  - comparison
+  - database
+excerpt: "MySQL vs MariaDB: the original and the fork. Compatibility, performance differences, storage engines, JSON support, and why the choice matters more now than it did five years ago."
+metaDescription: "MySQL vs MariaDB in 2026: compatibility, storage engines, JSON support, replication, licensing, and when to choose the fork over the original. Honest comparison."
+database: null
+category: database-comparison
+draft: false
+---
+
+MariaDB started as a fork of MySQL 5.1 in 2009 after Oracle acquired Sun Microsystems (and MySQL with it). The goal was to maintain a community-driven, GPL-licensed alternative. For years, they were nearly interchangeable. That's no longer the case.
+
+This comparison uses MySQL 8.x/9.x and MariaDB 11.x as of early 2026.
+
+## The Short Version
+
+MySQL and MariaDB have diverged significantly. MariaDB adds more storage engines, columnar analytics, and Oracle compatibility features. MySQL focuses on refining InnoDB, improving JSON support, and tightening Group Replication. For most web applications, either works. For specific use cases, the differences matter.
+
+## Compatibility
+
+MariaDB maintains wire-protocol compatibility with MySQL -- most MySQL client libraries, drivers, and tools work with MariaDB. But at the SQL level, they've diverged:
+
+**Where MariaDB is compatible:**
+- Core SQL syntax for DML (SELECT, INSERT, UPDATE, DELETE)
+- InnoDB storage engine
+- Most MySQL configuration variables
+- Authentication protocols
+
+**Where they've diverged:**
+- MariaDB doesn't support MySQL's `JSON_TABLE` function
+- MySQL's `->` and `->>` JSON operators work differently in MariaDB
+- MariaDB doesn't support MySQL's Window Functions `GROUPS` frame type
+- MySQL's Group Replication has no MariaDB equivalent (MariaDB uses Galera)
+- GTIDs are implemented differently and are not cross-compatible
+- `mysql_native_password` vs `caching_sha2_password` default differences
+- Some `INFORMATION_SCHEMA` views differ
+
+If you're migrating from MySQL to MariaDB (or vice versa), test thoroughly. Drop-in replacement claims are increasingly inaccurate for anything beyond basic CRUD applications.
+
+## Storage Engines
+
+MariaDB offers more storage engine choices:
+
+| Engine | MySQL | MariaDB | Purpose |
+|---|---|---|---|
+| InnoDB | Yes (default) | Yes (default) | General-purpose OLTP |
+| MyISAM | Yes (legacy) | Yes (legacy) | Read-heavy, no transactions |
+| Aria | No | Yes | MyISAM replacement, crash-safe |
+| ColumnStore | No | Yes | Columnar analytics (OLAP) |
+| CONNECT | No | Yes | Access external data sources |
+| Spider | No | Yes | Sharding engine |
+| Mroonga | No | Yes | Full-text search (CJK) |
+| RocksDB (MyRocks) | No | Yes | Write-optimized, compressed |
+
+MariaDB's ColumnStore is notable -- it brings columnar analytics into the same server as your OLTP data. MySQL would require a separate system (like ClickHouse or BigQuery) for analytical workloads.
+
+In practice, the vast majority of production workloads use InnoDB on both databases. The extra engines matter for specific use cases but don't affect most users.
+
+## JSON Support
+
+MySQL has a meaningful lead here:
+
+**MySQL:**
+- Native `JSON` data type with binary storage
+- `JSON_TABLE` for converting JSON to relational rows
+- `->` and `->>` operators for path access
+- Multi-valued indexes on JSON arrays
+- `JSON_SCHEMA_VALID` for schema validation
+
+**MariaDB:**
+- JSON is an alias for `LONGTEXT` (stored as text, not binary)
+- JSON functions available but parsed on each query
+- No `JSON_TABLE`
+- No multi-valued indexes on JSON content
+- JSON path operators exist but with syntax differences
+
+For applications that heavily use JSON data, MySQL's native JSON type with binary storage and specialized indexing provides measurably better performance. MariaDB treats JSON as text, which means every JSON operation requires parsing.
+
+## Replication
+
+Both support traditional binary log replication, but their high-availability approaches differ:
+
+**MySQL:**
+- Binary log replication (async, semi-sync)
+- Group Replication (Paxos-based, multi-primary capable)
+- InnoDB Cluster (integrated HA solution)
+- MySQL Router (connection routing and failover)
+- Clone plugin for fast provisioning
+
+**MariaDB:**
+- Binary log replication (async, semi-sync)
+- Galera Cluster (synchronous multi-primary, wsrep-based)
+- MaxScale (proxy for routing, filtering, failover)
+- Parallel replication (optimistic or conservative)
+
+MySQL's Group Replication and MariaDB's Galera Cluster solve similar problems but are completely different implementations. You can't mix them. GTIDs are also incompatible between the two, which makes cross-replication impossible.
+
+## Performance
+
+For typical web workloads, performance is comparable. Both use InnoDB as the default engine with similar optimizations.
+
+Where they differ:
+- MariaDB's thread pool is included in the community edition. MySQL's thread pool is enterprise-only.
+- MariaDB claims faster complex query optimization in some benchmarks.
+- MySQL's JSON operations are faster due to binary storage.
+- MariaDB's Aria engine can be faster than MyISAM for temporary tables.
+
+The thread pool difference is practically significant. Under high connection counts (hundreds to thousands), a thread pool prevents performance degradation from excessive thread creation. MySQL charges for this; MariaDB includes it.
+
+## Licensing and Governance
+
+This is a philosophical rather than technical difference, but it drives adoption decisions:
+
+**MySQL:**
+- Dual-licensed: GPL community edition + commercial enterprise edition
+- Controlled by Oracle
+- Enterprise features (Thread Pool, Audit, Encryption) require paid license
+- Roadmap decisions are Oracle's to make
+
+**MariaDB:**
+- GPL (community) + Business Source License (enterprise server)
+- Governed by MariaDB Foundation (community) + MariaDB Corporation (commercial)
+- More features in the community edition
+- Community-driven development with corporate sponsorship
+
+Some organizations choose MariaDB specifically to avoid Oracle dependency. Linux distributions (Debian, RHEL, Arch) have defaulted to MariaDB for this reason.
+
+MariaDB Corporation's BSL licensing for enterprise features has drawn some criticism -- it's open source with a time delay, not purely GPL. But the community edition remains fully open.
+
+## Ecosystem
+
+**MySQL** has the larger ecosystem:
+- More hosting providers, managed services, and cloud offerings
+- Broader tooling support (every database tool supports MySQL)
+- PlanetScale, Vitess for horizontal scaling
+- Larger community and more Stack Overflow answers
+- WordPress, Drupal, and most PHP frameworks default to MySQL
+
+**MariaDB:**
+- Drop-in for most MySQL tools (drivers, GUIs, ORMs usually work)
+- SkySQL (MariaDB's managed cloud service)
+- Default in many Linux distributions
+- Growing but smaller community
+
+If you're choosing a managed database service, MySQL has more options. If you're deploying on your own Linux servers, MariaDB may already be installed.
+
+## When to Choose MySQL
+
+- JSON-heavy applications that benefit from native binary JSON storage
+- Teams that want MySQL Group Replication / InnoDB Cluster
+- Projects that need PlanetScale or Vitess for sharding
+- Applications where the broader hosting ecosystem matters
+- WordPress and PHP applications (MySQL is the tested default)
+
+## When to Choose MariaDB
+
+- Teams that want thread pool and other enterprise features without paying Oracle
+- Projects that need columnar analytics alongside OLTP (ColumnStore)
+- Organizations that prefer community-governed open source
+- Linux-based deployments where MariaDB is already the system default
+- Applications that benefit from additional storage engines (Aria, RocksDB, Spider)
+
+## The Bottom Line
+
+MySQL and MariaDB started as the same database but are increasingly different products. "Just swap one for the other" is outdated advice. Test your application thoroughly before migrating between them.
+
+For new projects, the choice usually comes down to: do you value MySQL's JSON support and larger managed-service ecosystem, or MariaDB's community governance and built-in enterprise features? Neither is wrong.
+
+Mako connects to both MySQL and MariaDB with AI-assisted query editing. Try it free at [mako.ai](https://mako.ai).
