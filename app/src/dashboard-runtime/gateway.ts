@@ -633,20 +633,12 @@ export async function materializeDashboardDataSource(options: {
     ),
   );
 
-  // Check if materialized data is stale based on age
-  const freshnessTtl =
-    (dashboard as any).materializationSchedule?.dataFreshnessTtlMs ?? null;
-  const isDataStale = (() => {
-    if (!cache.parquetBuiltAt) return false;
-    if (freshnessTtl == null) return false;
-    const ageMs = Date.now() - new Date(cache.parquetBuiltAt).getTime();
-    return ageMs > freshnessTtl;
-  })();
-
-  // Skip if already loaded with the same version and data isn't stale.
+  // Skip if already loaded with the same version.
+  // Staleness (dataFreshnessTtlMs) is handled by the materialization pipeline
+  // which produces a new parquet version; reloading the same parquet into
+  // DuckDB would not produce fresher data.
   if (
     !force &&
-    !isDataStale &&
     cachedVersion === version &&
     existingRuntime?.status === "ready"
   ) {

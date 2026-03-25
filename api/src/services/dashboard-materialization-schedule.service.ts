@@ -34,7 +34,7 @@ export function normalizeDashboardMaterializationSchedule(
     timezone:
       input?.timezone?.trim() ||
       DEFAULT_DASHBOARD_MATERIALIZATION_SCHEDULE.timezone,
-    dataFreshnessTtlMs: (input as any)?.dataFreshnessTtlMs ?? null,
+    dataFreshnessTtlMs: input?.dataFreshnessTtlMs ?? null,
   };
 }
 
