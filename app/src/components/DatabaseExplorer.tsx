@@ -836,7 +836,7 @@ function DatabaseExplorer({
                             letterSpacing: "0.05em",
                           }}
                         >
-                          Shared with me
+                          Workspace
                         </Typography>
                       </ListItem>
                       {sharedDatabases.map(renderDatabaseItem)}
