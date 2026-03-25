@@ -1,0 +1,206 @@
+---
+title: "How to Import JSON to SQL Server (4 Methods)"
+slug: import-json-to-mssql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mssql
+  - json
+  - import
+  - data
+excerpt: "Four ways to import JSON data into Microsoft SQL Server: OPENROWSET with OPENJSON, a Python script with pyodbc, SSIS, and Mako. Covers NVARCHAR(MAX) storage, indexing, and large file handling."
+metaDescription: "Import JSON to SQL Server in 2026: OPENROWSET + OPENJSON, Python pyodbc, SSIS, and Mako. Step-by-step with type mapping, computed columns, and gotchas."
+database: mssql
+category: import-export
+draft: false
+---
+
+SQL Server 2016+ has built-in JSON functions but no native JSON column type. JSON is stored as `NVARCHAR(MAX)` and parsed with `OPENJSON`, `JSON_VALUE`, and `JSON_QUERY`. Here are four ways to get JSON data into SQL Server.
+
+## Method 1: OPENROWSET + OPENJSON (Native T-SQL)
+
+This is the most direct approach. `OPENROWSET(BULK)` reads the file, and `OPENJSON` parses it into rows.
+
+First, load the file into a variable:
+
+```sql
+DECLARE @json NVARCHAR(MAX);
+
+SELECT @json = BulkColumn
+FROM OPENROWSET(BULK 'C:\data\users.json', SINGLE_CLOB) AS j;
+```
+
+If your JSON is an array of objects, parse and insert directly:
+
+```sql
+SELECT *
+INTO users
+FROM OPENJSON(@json)
+WITH (
+    id INT '$.id',
+    name NVARCHAR(200) '$.name',
+    email NVARCHAR(200) '$.email',
+    created_at DATETIME2 '$.created_at'
+);
+```
+
+The `WITH` clause defines the schema explicitly. Each `$.path` expression maps a JSON property to a column. Without the `WITH` clause, `OPENJSON` returns key-value-type rows instead, which is useful for exploration but not for structured imports.
+
+For nested objects, use dot notation in the path:
+
+```sql
+SELECT *
+FROM OPENJSON(@json)
+WITH (
+    id INT '$.id',
+    city NVARCHAR(100) '$.address.city',
+    zip NVARCHAR(20) '$.address.zip'
+);
+```
+
+### Permissions Note
+
+`OPENROWSET(BULK)` requires the `ADMINISTER BULK OPERATIONS` permission or the `bulkadmin` server role. If your DBA hasn't granted this, you'll get a permission error. An alternative is to load the file contents externally and pass them as a parameter.
+
+## Method 2: Python with pyodbc
+
+For files too large to load in one shot, or when you need transformation logic, a Python script gives you full control.
+
+```python
+import json
+import pyodbc
+
+conn = pyodbc.connect(
+    "DRIVER={ODBC Driver 18 for SQL Server};"
+    "SERVER=localhost;"
+    "DATABASE=mydb;"
+    "UID=sa;PWD=yourpassword;"
+    "TrustServerCertificate=yes;"
+)
+cursor = conn.cursor()
+
+# Create table
+cursor.execute("""
+    CREATE TABLE users (
+        id INT PRIMARY KEY,
+        name NVARCHAR(200),
+        email NVARCHAR(200),
+        created_at DATETIME2
+    )
+""")
+
+# Load and insert
+with open("users.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+for row in data:
+    cursor.execute(
+        "INSERT INTO users (id, name, email, created_at) VALUES (?, ?, ?, ?)",
+        row["id"], row["name"], row["email"], row.get("created_at")
+    )
+
+conn.commit()
+conn.close()
+```
+
+For large files (millions of rows), use `cursor.fast_executemany = True` before the insert loop. This batches the inserts and is significantly faster:
+
+```python
+cursor.fast_executemany = True
+cursor.executemany(
+    "INSERT INTO users (id, name, email, created_at) VALUES (?, ?, ?, ?)",
+    [(r["id"], r["name"], r["email"], r.get("created_at")) for r in data]
+)
+```
+
+For streaming NDJSON (one object per line), read line by line instead of loading the entire file into memory:
+
+```python
+import json
+batch = []
+batch_size = 5000
+
+with open("events.ndjson", "r") as f:
+    for line in f:
+        obj = json.loads(line)
+        batch.append((obj["id"], obj["type"], obj["payload"]))
+        if len(batch) >= batch_size:
+            cursor.executemany(insert_sql, batch)
+            conn.commit()
+            batch = []
+
+if batch:
+    cursor.executemany(insert_sql, batch)
+    conn.commit()
+```
+
+## Method 3: SSIS (SQL Server Integration Services)
+
+SSIS can import JSON files through a Script Component that reads JSON and feeds rows into the data flow pipeline.
+
+1. Add a **Data Flow Task** to your SSIS package
+2. Add a **Script Component** as a Source
+3. In the script, use `System.IO.File.ReadAllText` to load the JSON and `Newtonsoft.Json` (or `System.Text.Json`) to parse it
+4. Output rows from the script into a destination (OLE DB Destination or SQL Server Destination)
+
+SSIS doesn't have a built-in JSON source adapter, so the Script Component approach is the standard workaround. For simple jobs, the T-SQL OPENROWSET method is usually less effort. SSIS makes more sense when JSON import is part of a larger ETL pipeline with other transformations.
+
+Third-party SSIS components from vendors like ZappySys and CData add native JSON source adapters with a visual interface, but they require separate licenses.
+
+## Method 4: Mako
+
+Mako's import handles JSON files through a visual interface. Drag a JSON file onto the import panel, map fields to columns, and execute.
+
+1. Connect to your SQL Server instance in Mako
+2. Click **Import** and select your JSON file
+3. Mako parses the structure and shows a preview with detected types
+4. Adjust column mappings and types if needed
+5. Choose the target table (new or existing) and run the import
+
+Mako flattens nested JSON objects into columns and handles type inference. For straightforward imports where you don't need to write T-SQL or set up SSIS, this is the fastest path.
+
+## JSON Storage in SQL Server
+
+SQL Server doesn't have a dedicated JSON column type like PostgreSQL's `jsonb`. JSON is stored as `NVARCHAR(MAX)`, which means:
+
+- No binary optimization for JSON queries (each access parses the text)
+- Maximum size is 2 GB per value
+- You can add a `CHECK` constraint to validate JSON on insert:
+
+```sql
+ALTER TABLE events
+ADD CONSTRAINT CK_events_data_json CHECK (ISJSON(data) = 1);
+```
+
+To speed up queries on JSON properties, create computed columns with indexes:
+
+```sql
+ALTER TABLE events
+ADD event_type AS JSON_VALUE(data, '$.type');
+
+CREATE INDEX idx_events_type ON events(event_type);
+```
+
+This materializes the extracted value and makes filtered queries fast.
+
+## Common Gotchas
+
+**File encoding.** SQL Server expects UTF-16 or UTF-8. If your JSON file uses a different encoding, convert it first or specify the code page in OPENROWSET.
+
+**NVARCHAR(MAX) performance.** Storing raw JSON as NVARCHAR(MAX) and querying with JSON_VALUE on every read is slow at scale. Use computed columns with indexes for frequently queried properties.
+
+**Nested arrays.** `OPENJSON` without a `WITH` clause returns one row per array element or object property. For nested arrays, use `CROSS APPLY OPENJSON` to expand them:
+
+```sql
+SELECT u.id, u.name, t.value AS tag
+FROM OPENJSON(@json) WITH (
+    id INT, name NVARCHAR(200), tags NVARCHAR(MAX) AS JSON
+) AS u
+CROSS APPLY OPENJSON(u.tags) AS t;
+```
+
+**NULL vs missing.** `JSON_VALUE` returns SQL `NULL` both when a key is missing and when its value is JSON `null`. If you need to distinguish between the two, use `OPENJSON` which includes a `type` column (0 = null, 1 = string, 2 = number, etc.).
+
+**Large files.** `OPENROWSET(BULK)` loads the entire file into memory. For files over a few hundred MB, consider splitting them or using the Python streaming approach from Method 2.
+
+Mako connects to SQL Server, PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
