@@ -207,6 +207,17 @@ export class CloseConnector extends BaseConnector {
       leads: "lead",
       contacts: "contact",
       opportunities: "opportunity",
+      activities: "activity",
+      "activities:Email": "activity.email",
+      "activities:EmailThread": "activity.email_thread",
+      "activities:Call": "activity.call",
+      "activities:SMS": "activity.sms",
+      "activities:Meeting": "activity.meeting",
+      "activities:LeadStatusChange": "activity.lead_status_change",
+      "activities:OpportunityStatusChange": "activity.opportunity_status_change",
+      "activities:Note": "activity.note",
+      "activities:TaskCompleted": "activity.task_completed",
+      "activities:CustomActivity": "activity.custom_activity",
     };
     return map[entity] || entity;
   }
@@ -960,7 +971,7 @@ export class CloseConnector extends BaseConnector {
             typeof lastRecord?.date_created === "string"
               ? lastRecord.date_created.slice(0, 10)
               : windowStart;
-          windowStart = lastDateCreated;
+          windowStart = CloseConnector.nextDay(lastDateCreated);
           skip = 0;
           windowGranularity = "day";
           iterations++;
@@ -989,6 +1000,12 @@ export class CloseConnector extends BaseConnector {
             windowStart,
             skip,
           });
+          const lastRecord = data[data.length - 1];
+          const lastDateCreated =
+            typeof lastRecord?.date_created === "string"
+              ? lastRecord.date_created.slice(0, 10)
+              : windowStart;
+          windowStart = CloseConnector.nextDay(lastDateCreated);
           windowGranularity = "day";
           skip = 0;
           continue;

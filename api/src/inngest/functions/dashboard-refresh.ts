@@ -118,6 +118,19 @@ export const dashboardSchedulerFunction = inngest.createFunction(
       }
 
       if (isDue && dashboard.dataSources?.length > 0) {
+        const lastRefreshedAt = dashboard.cache?.lastRefreshedAt;
+        const msSinceRefresh = lastRefreshedAt
+          ? Date.now() - new Date(lastRefreshedAt).getTime()
+          : Infinity;
+
+        if (msSinceRefresh < 10 * 60 * 1000) {
+          logger.debug("Skipping dashboard refresh, recently refreshed", {
+            dashboardId: dashboard._id.toString(),
+            msSinceRefresh,
+          });
+          continue;
+        }
+
         await Dashboard.findByIdAndUpdate(dashboard._id, {
           $set: { "cache.lastRefreshedAt": new Date() },
         });
