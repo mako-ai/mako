@@ -1,0 +1,186 @@
+---
+title: "PostgreSQL vs MongoDB in 2026: Relational Meets Document"
+slug: postgresql-vs-mongodb
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - postgresql
+  - mongodb
+  - comparison
+  - database
+excerpt: "PostgreSQL vs MongoDB: relational vs document, SQL vs MQL, JSONB vs BSON. A practical guide to choosing between them when the lines are blurring."
+metaDescription: "PostgreSQL vs MongoDB in 2026: data modeling, query languages, performance, scaling, transactions, and when each database is the right choice. Honest comparison with no marketing."
+database: null
+category: database-comparison
+draft: false
+---
+
+The PostgreSQL vs MongoDB question used to be simple: structured data goes in PostgreSQL, unstructured data goes in MongoDB. That line has blurred considerably. PostgreSQL's JSONB support makes it a capable document store. MongoDB's multi-document transactions make it a more reliable transactional database. In 2026, the choice is less about capability and more about defaults and trade-offs.
+
+This comparison uses PostgreSQL 17/18 and MongoDB 7.x/8.x as of early 2026.
+
+## The Short Version
+
+PostgreSQL is a relational database that also handles documents well. MongoDB is a document database that also handles relations (somewhat). If your data is naturally relational with some JSON flexibility needed, PostgreSQL. If your data is genuinely document-shaped with variable schemas, MongoDB. If you're unsure, PostgreSQL is the safer bet because it's harder to outgrow.
+
+## Data Modeling
+
+The core philosophical difference:
+
+**PostgreSQL** uses tables, rows, and columns. Relationships are modeled with foreign keys and joins. Schema is enforced at the database level. You define your structure upfront, and the database ensures data conforms to it.
+
+```sql
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE orders (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id),
+  total NUMERIC(10,2),
+  items JSONB  -- flexible part
+);
+```
+
+**MongoDB** uses collections of documents. Each document is a BSON object (binary JSON) that can have any structure. You can enforce schemas with validation rules, but by default, documents in the same collection can have different fields.
+
+```javascript
+db.orders.insertOne({
+  user: { name: "Alice", email: "alice@example.com" },
+  total: 149.99,
+  items: [
+    { product: "Widget", qty: 3, price: 29.99 },
+    { product: "Gadget", qty: 1, price: 60.02 }
+  ],
+  metadata: { source: "web", campaign: "spring-sale" }
+})
+```
+
+MongoDB's model maps naturally to application objects. No ORM needed to translate between rows and objects. This is a genuine productivity advantage for applications with complex, nested data structures.
+
+PostgreSQL's model enforces consistency. If you say `user_id REFERENCES users(id)`, the database guarantees that reference is valid. MongoDB has no equivalent enforcement -- referential integrity is your application's responsibility.
+
+## Query Languages
+
+**PostgreSQL uses SQL** -- the lingua franca of data. Decades of tooling, learning resources, and developer knowledge. CTEs, window functions, subqueries, joins, aggregations -- all standardized.
+
+**MongoDB uses MQL** (MongoDB Query Language) -- a JavaScript-based syntax. Expressive for document operations but proprietary to MongoDB. The aggregation pipeline is a different mental model from SQL.
+
+```sql
+-- PostgreSQL: find users with more than 5 orders
+SELECT u.name, COUNT(*) as order_count
+FROM users u
+JOIN orders o ON o.user_id = u.id
+GROUP BY u.name
+HAVING COUNT(*) > 5;
+```
+
+```javascript
+// MongoDB: same query
+db.orders.aggregate([
+  { $group: { _id: "$user_id", count: { $sum: 1 } } },
+  { $match: { count: { $gt: 5 } } },
+  { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "user" } },
+  { $unwind: "$user" },
+  { $project: { name: "$user.name", order_count: "$count" } }
+])
+```
+
+For analytics and reporting, SQL is more concise and widely understood. For document manipulation and nested array operations, MQL can be more natural. But the SQL ecosystem -- BI tools, data platforms, analyst knowledge -- is a significant practical advantage.
+
+## PostgreSQL's JSONB vs MongoDB's Documents
+
+PostgreSQL's JSONB narrows the gap considerably:
+
+- Store arbitrary JSON structures in JSONB columns
+- Create GIN indexes on JSONB for fast querying
+- Use operators like `@>`, `->`, `->>` for path-based queries
+- Combine relational and document data in the same table
+
+```sql
+-- PostgreSQL JSONB query
+SELECT * FROM events
+WHERE payload @> '{"type": "purchase", "amount": {"currency": "USD"}}'::jsonb;
+```
+
+The difference: in MongoDB, the entire database is built around the document model. Query planning, indexing, sharding -- everything optimizes for document access patterns. PostgreSQL's JSONB is an excellent bolt-on, but complex document queries with deeply nested array operations can be more awkward in SQL than in MQL.
+
+If 80% of your data is relational and 20% is flexible JSON, PostgreSQL's JSONB covers you well. If 80% of your data is document-shaped, MongoDB's native model is more natural.
+
+## Transactions
+
+**PostgreSQL** has full ACID transactions across any number of tables and operations. This has always been PostgreSQL's strength.
+
+**MongoDB** added multi-document transactions in version 4.0 (2018) and has improved them since. They work, but with caveats:
+- Transaction size limits (16MB by default)
+- Performance overhead compared to single-document operations
+- MongoDB's documentation still recommends designing schemas to minimize the need for multi-document transactions
+
+For applications that need strong transactional guarantees across multiple entities -- financial systems, inventory management, booking systems -- PostgreSQL's transaction model is more mature and performant.
+
+## Scaling
+
+This is where MongoDB has a historical advantage:
+
+**MongoDB:**
+- Built-in horizontal sharding (shard key-based distribution)
+- Auto-balancing across shards
+- Atlas (managed service) handles sharding configuration
+- Designed from the ground up for distributed operation
+
+**PostgreSQL:**
+- Primarily vertical scaling (bigger server)
+- Read replicas for read scaling
+- Citus extension for horizontal sharding
+- Partitioning for large tables
+- Newer options like Neon for serverless scaling
+
+MongoDB's sharding is more integrated and easier to set up. If you know your data will grow to terabytes with globally distributed access patterns, MongoDB's architecture handles this more naturally.
+
+That said, most applications never reach the scale where PostgreSQL can't handle the load on a single well-configured server with read replicas. Premature sharding adds complexity that most teams don't need.
+
+## Ecosystem and Tooling
+
+**PostgreSQL:**
+- Universal SQL tooling (every BI tool, ETL platform, and data tool speaks SQL)
+- Extensions ecosystem (PostGIS, pgvector, TimescaleDB)
+- Managed services: RDS, Cloud SQL, AlloyDB, Supabase, Neon, Crunchy Bridge
+- 30+ years of community knowledge
+
+**MongoDB:**
+- MongoDB Atlas (managed cloud, very polished)
+- Compass (official GUI)
+- MongoDB Charts for visualization
+- Strong driver ecosystem across all languages
+- Atlas Search (Lucene-based full-text search, integrated)
+
+MongoDB Atlas is genuinely excellent as a managed database service. Atlas Search eliminates the need for a separate Elasticsearch instance for many use cases. PostgreSQL's ecosystem is broader but more fragmented.
+
+## When to Choose PostgreSQL
+
+- Your data has clear relationships between entities
+- You need strong transactional guarantees
+- You want SQL for analytics and reporting
+- Your team knows SQL (most do)
+- You need extensions like PostGIS, pgvector, or TimescaleDB
+- You want document flexibility as a feature, not the whole model (use JSONB columns)
+
+## When to Choose MongoDB
+
+- Your data is genuinely document-shaped (CMS content, product catalogs with variable attributes, event logs)
+- You need built-in horizontal sharding from day one
+- Your team works primarily with JavaScript/TypeScript and values the object-to-document mapping
+- You want integrated full-text search without a separate service
+- Schema flexibility is a core requirement, not a nice-to-have
+
+## The Honest Take
+
+PostgreSQL is increasingly the default choice for new projects, and for good reason. Its JSONB support means you rarely need a separate document database. Its SQL compatibility means your data is accessible to every tool in the ecosystem. Its extension system means it can grow with your needs.
+
+MongoDB is a strong choice when your data genuinely doesn't fit relational models -- deeply nested, variable-schema documents where the document is the natural unit of access. Forcing that into tables creates complexity that MongoDB avoids.
+
+The worst choice is picking MongoDB because "it's flexible" and then spending months reimplementing relational integrity checks in application code. The second worst is picking PostgreSQL and then fighting to model genuinely hierarchical, variable-schema data in rigid tables.
+
+Mako connects to both PostgreSQL and MongoDB with AI-assisted query editing. Try it free at [mako.ai](https://mako.ai).
