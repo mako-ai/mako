@@ -183,7 +183,8 @@ export interface IWorkspaceInvite extends Document {
   acceptedAt?: Date;
 }
 
-export type DatabaseAccessLevel = "private" | "shared_read" | "shared_write";
+export type DatabaseVisibility = "private" | "shared";
+export type DatabasePermissions = "read_write" | "read_only";
 
 /**
  * DatabaseConnection model interface
@@ -231,7 +232,8 @@ export interface IDatabaseConnection extends Document {
       privateKey?: string;
     };
   };
-  access: DatabaseAccessLevel;
+  access: DatabaseVisibility;
+  permissions: DatabasePermissions;
   ownerId: string;
   sharedWith: Types.ObjectId[];
   isDemo?: boolean; // True if this is a demo database connection
@@ -1052,8 +1054,13 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
     },
     access: {
       type: String,
-      enum: ["private", "shared_read", "shared_write"],
-      default: "shared_write",
+      enum: ["private", "shared"],
+      default: "shared",
+    },
+    permissions: {
+      type: String,
+      enum: ["read_write", "read_only"],
+      default: "read_write",
     },
     ownerId: {
       type: String,

@@ -9,7 +9,7 @@ import {
   DatabaseConnection,
   IDatabaseConnection,
   Flow,
-  DatabaseAccessLevel,
+  DatabaseVisibility,
 } from "../database/workspace-schema";
 import {
   canUserSeeDatabase,
@@ -265,7 +265,7 @@ workspaceDatabaseRoutes.post(
         isDemo: true,
         createdBy: user.id,
         ownerId: user.id,
-        access: "shared_write" as DatabaseAccessLevel,
+        access: "shared" as DatabaseVisibility,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -367,6 +367,7 @@ workspaceDatabaseRoutes.get(
             hostKey,
             hostName,
             access: level,
+            permissions: db.permissions || "read_write",
             isOwner,
             canManage,
             ownerId: db.ownerId,
@@ -443,6 +444,7 @@ workspaceDatabaseRoutes.get(
           updatedAt: database.updatedAt,
           lastConnectedAt: database.lastConnectedAt,
           access: level,
+          permissions: database.permissions || "read_write",
           isOwner,
           canManage,
           ownerId: database.ownerId,
@@ -563,7 +565,7 @@ workspaceDatabaseRoutes.post(
         ownerId: user.id,
         access: (body.access && isValidAccessLevel(body.access)
           ? body.access
-          : "shared_write") as DatabaseAccessLevel,
+          : "shared") as DatabaseVisibility,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -661,8 +663,7 @@ workspaceDatabaseRoutes.put(
           return c.json(
             {
               success: false,
-              error:
-                "Invalid access level. Must be: private, shared_read, or shared_write",
+              error: "Invalid access level. Must be: private or shared",
             },
             400,
           );
@@ -859,13 +860,19 @@ workspaceDatabaseRoutes.post(
           return c.json(
             {
               success: false,
-              error:
-                "Invalid access level. Must be: private, shared_read, or shared_write",
+              error: "Invalid access level. Must be: private or shared",
             },
             400,
           );
         }
         database.access = body.access;
+      }
+
+      if (
+        body.permissions &&
+        (body.permissions === "read_write" || body.permissions === "read_only")
+      ) {
+        database.permissions = body.permissions;
       }
 
       if (Array.isArray(body.sharedWith)) {
@@ -894,6 +901,7 @@ workspaceDatabaseRoutes.post(
         data: {
           id: database._id.toString(),
           access: database.access,
+          permissions: database.permissions,
           sharedWith: database.sharedWith,
         },
       });

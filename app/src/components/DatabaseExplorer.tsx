@@ -49,7 +49,8 @@ import {
   useSchemaStore,
   Connection,
   TreeNode,
-  DatabaseAccessLevel,
+  DatabaseVisibility,
+  DatabasePermissions,
 } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -91,12 +92,13 @@ DatabaseTypeIcon.displayName = "DatabaseTypeIcon";
 const AccessBadge = React.memo(
   ({
     access,
+    permissions,
     isOwner,
   }: {
-    access?: DatabaseAccessLevel;
+    access?: DatabaseVisibility;
+    permissions?: DatabasePermissions;
     isOwner?: boolean;
   }) => {
-    if (!access || access === "shared_write") return null;
     if (access === "private") {
       return (
         <Tooltip title="Private">
@@ -108,7 +110,7 @@ const AccessBadge = React.memo(
         </Tooltip>
       );
     }
-    if (access === "shared_read" && !isOwner) {
+    if (access === "shared" && permissions === "read_only" && !isOwner) {
       return (
         <Chip
           label="read-only"
@@ -135,19 +137,26 @@ function ShareDatabaseDialog({
   workspaceId: string;
 }) {
   const shareDatabase = useSchemaStore(s => s.shareDatabase);
-  const [accessLevel, setAccessLevel] = useState<DatabaseAccessLevel>(
-    database?.access || "shared_write",
+  const [accessLevel, setAccessLevel] = useState<DatabaseVisibility>(
+    database?.access || "shared",
+  );
+  const [permissions, setPermissions] = useState<DatabasePermissions>(
+    database?.permissions || "read_write",
   );
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (database?.access) setAccessLevel(database.access);
-  }, [database?.access]);
+    setAccessLevel(database?.access || "shared");
+    setPermissions(database?.permissions || "read_write");
+  }, [database?.access, database?.permissions]);
 
   const handleSave = async () => {
     if (!database) return;
     setSaving(true);
-    await shareDatabase(workspaceId, database.id, { access: accessLevel });
+    await shareDatabase(workspaceId, database.id, {
+      access: accessLevel,
+      permissions,
+    });
     setSaving(false);
     onClose();
   };
@@ -155,21 +164,35 @@ function ShareDatabaseDialog({
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle>Share Settings</DialogTitle>
-      <DialogContent>
+      <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <FormControl fullWidth sx={{ mt: 1 }}>
-          <InputLabel>Access Level</InputLabel>
+          <InputLabel>Visibility</InputLabel>
           <Select
             value={accessLevel}
-            label="Access Level"
+            label="Visibility"
             onChange={(e: SelectChangeEvent) =>
-              setAccessLevel(e.target.value as DatabaseAccessLevel)
+              setAccessLevel(e.target.value as DatabaseVisibility)
             }
           >
-            <MenuItem value="shared_write">Shared (read &amp; write)</MenuItem>
-            <MenuItem value="shared_read">Shared (read-only)</MenuItem>
+            <MenuItem value="shared">Shared with workspace</MenuItem>
             <MenuItem value="private">Private (only me)</MenuItem>
           </Select>
         </FormControl>
+        {accessLevel === "shared" && (
+          <FormControl fullWidth>
+            <InputLabel>Permissions</InputLabel>
+            <Select
+              value={permissions}
+              label="Permissions"
+              onChange={(e: SelectChangeEvent) =>
+                setPermissions(e.target.value as DatabasePermissions)
+              }
+            >
+              <MenuItem value="read_write">Read & Write</MenuItem>
+              <MenuItem value="read_only">Read only</MenuItem>
+            </Select>
+          </FormControl>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
@@ -256,11 +279,11 @@ function DatabaseExplorer({
   const [workspaceDbsExpanded, setWorkspaceDbsExpanded] = useState(true);
 
   const myDatabases = useMemo(
-    () => databases.filter(db => db.isOwner === true),
+    () => databases.filter(db => db.access === "private"),
     [databases],
   );
   const sharedDatabases = useMemo(
-    () => databases.filter(db => db.isOwner !== true),
+    () => databases.filter(db => db.access !== "private"),
     [databases],
   );
 
@@ -778,6 +801,7 @@ function DatabaseExplorer({
                               </Typography>
                               <AccessBadge
                                 access={database.access}
+                                permissions={database.permissions}
                                 isOwner={database.isOwner}
                               />
                             </Box>
@@ -799,92 +823,98 @@ function DatabaseExplorer({
                 );
               };
 
-              const showSections =
-                myDatabases.length > 0 && sharedDatabases.length > 0;
-
-              if (!showSections) {
-                return databases.map(renderDatabaseItem);
-              }
-
               return (
                 <>
-                  {myDatabases.length > 0 && (
-                    <>
-                      <ListItemButton
-                        onClick={() => setMyDbsExpanded(!myDbsExpanded)}
-                        sx={{ py: 0.25, pl: 0.5 }}
+                  <ListItemButton
+                    onClick={() => setMyDbsExpanded(!myDbsExpanded)}
+                    sx={{ py: 0.25, pl: 0.5 }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                      {myDbsExpanded ? (
+                        <ChevronDownIcon strokeWidth={1.5} size={20} />
+                      ) : (
+                        <ChevronRightIcon strokeWidth={1.5} size={20} />
+                      )}
+                    </ListItemIcon>
+                    <ListItemIcon sx={{ minWidth: 24 }}>
+                      <DatabaseIcon size={18} strokeWidth={1.5} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="My Databases"
+                      primaryTypographyProps={{
+                        variant: "body2",
+                        fontWeight: 600,
+                        sx: {
+                          textTransform: "uppercase",
+                          fontSize: "0.75rem",
+                          letterSpacing: "0.05em",
+                        },
+                      }}
+                    />
+                    <Chip
+                      label={myDatabases.length}
+                      size="small"
+                      sx={{ height: 18, fontSize: "0.7rem" }}
+                    />
+                  </ListItemButton>
+                  {myDbsExpanded &&
+                    (myDatabases.length > 0 ? (
+                      myDatabases.map(renderDatabaseItem)
+                    ) : (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ pl: 5, py: 0.5, display: "block" }}
                       >
-                        <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
-                          {myDbsExpanded ? (
-                            <ChevronDownIcon strokeWidth={1.5} size={20} />
-                          ) : (
-                            <ChevronRightIcon strokeWidth={1.5} size={20} />
-                          )}
-                        </ListItemIcon>
-                        <ListItemIcon sx={{ minWidth: 24 }}>
-                          <UserIcon strokeWidth={1.5} size={18} />
-                        </ListItemIcon>
-                        <ListItemText
-                          primary="My Databases"
-                          primaryTypographyProps={{
-                            variant: "body2",
-                            fontWeight: 600,
-                            sx: {
-                              textTransform: "uppercase",
-                              fontSize: "0.75rem",
-                              letterSpacing: "0.05em",
-                            },
-                          }}
-                        />
-                        <Chip
-                          label={myDatabases.length}
-                          size="small"
-                          sx={{ height: 18, fontSize: "0.7rem" }}
-                        />
-                      </ListItemButton>
-                      {myDbsExpanded && myDatabases.map(renderDatabaseItem)}
-                    </>
-                  )}
-                  {sharedDatabases.length > 0 && (
-                    <>
-                      <ListItemButton
-                        onClick={() =>
-                          setWorkspaceDbsExpanded(!workspaceDbsExpanded)
-                        }
-                        sx={{ py: 0.25, pl: 0.5 }}
+                        No databases yet
+                      </Typography>
+                    ))}
+                  <ListItemButton
+                    onClick={() =>
+                      setWorkspaceDbsExpanded(!workspaceDbsExpanded)
+                    }
+                    sx={{ py: 0.25, pl: 0.5 }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                      {workspaceDbsExpanded ? (
+                        <ChevronDownIcon strokeWidth={1.5} size={20} />
+                      ) : (
+                        <ChevronRightIcon strokeWidth={1.5} size={20} />
+                      )}
+                    </ListItemIcon>
+                    <ListItemIcon sx={{ minWidth: 24 }}>
+                      <GlobeIcon strokeWidth={1.5} size={18} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="Workspace"
+                      primaryTypographyProps={{
+                        variant: "body2",
+                        fontWeight: 600,
+                        sx: {
+                          textTransform: "uppercase",
+                          fontSize: "0.75rem",
+                          letterSpacing: "0.05em",
+                        },
+                      }}
+                    />
+                    <Chip
+                      label={sharedDatabases.length}
+                      size="small"
+                      sx={{ height: 18, fontSize: "0.7rem" }}
+                    />
+                  </ListItemButton>
+                  {workspaceDbsExpanded &&
+                    (sharedDatabases.length > 0 ? (
+                      sharedDatabases.map(db => renderDatabaseItem(db))
+                    ) : (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ pl: 5, py: 0.5, display: "block" }}
                       >
-                        <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
-                          {workspaceDbsExpanded ? (
-                            <ChevronDownIcon strokeWidth={1.5} size={20} />
-                          ) : (
-                            <ChevronRightIcon strokeWidth={1.5} size={20} />
-                          )}
-                        </ListItemIcon>
-                        <ListItemIcon sx={{ minWidth: 24 }}>
-                          <GlobeIcon strokeWidth={1.5} size={18} />
-                        </ListItemIcon>
-                        <ListItemText
-                          primary="Workspace"
-                          primaryTypographyProps={{
-                            variant: "body2",
-                            fontWeight: 600,
-                            sx: {
-                              textTransform: "uppercase",
-                              fontSize: "0.75rem",
-                              letterSpacing: "0.05em",
-                            },
-                          }}
-                        />
-                        <Chip
-                          label={sharedDatabases.length}
-                          size="small"
-                          sx={{ height: 18, fontSize: "0.7rem" }}
-                        />
-                      </ListItemButton>
-                      {workspaceDbsExpanded &&
-                        sharedDatabases.map(db => renderDatabaseItem(db))}
-                    </>
-                  )}
+                        No workspace databases yet
+                      </Typography>
+                    ))}
                 </>
               );
             })()

@@ -145,7 +145,15 @@ export function ScheduledFlowForm({
     : null;
   const connectionsMap = useSchemaStore(state => state.connections);
   const databases = useMemo(
-    () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
+    () =>
+      (currentWorkspace
+        ? connectionsMap[currentWorkspace.id] || []
+        : []
+      ).filter(
+        db =>
+          db.isOwner ||
+          (db.access !== "private" && db.permissions !== "read_only"),
+      ),
     [currentWorkspace, connectionsMap],
   );
   const ensureConnections = useSchemaStore(state => state.ensureConnections);

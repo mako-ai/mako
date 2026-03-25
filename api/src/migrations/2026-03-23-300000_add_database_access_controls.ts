@@ -26,10 +26,16 @@ export async function up(db: Db): Promise<void> {
 
   const accessResult = await col.updateMany(
     { access: { $exists: false } },
-    { $set: { access: "shared_write" } },
+    { $set: { access: "shared" } },
+  );
+  log.info(`Set access='shared' for ${accessResult.modifiedCount} connections`);
+
+  const permissionsResult = await col.updateMany(
+    { permissions: { $exists: false } },
+    { $set: { permissions: "read_write" } },
   );
   log.info(
-    `Set access='shared_write' for ${accessResult.modifiedCount} connections`,
+    `Set permissions='read_write' for ${permissionsResult.modifiedCount} connections`,
   );
 
   const sharedWithResult = await col.updateMany(
@@ -75,9 +81,11 @@ export async function down(db: Db): Promise<void> {
 
   await col.updateMany(
     {},
-    { $unset: { access: "", ownerId: "", sharedWith: "" } },
+    { $unset: { access: "", permissions: "", ownerId: "", sharedWith: "" } },
   );
-  log.info("Removed access, ownerId, sharedWith from all connections");
+  log.info(
+    "Removed access, permissions, ownerId, sharedWith from all connections",
+  );
 
   try {
     await col.dropIndex("workspace_access_owner_idx");

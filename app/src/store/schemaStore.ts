@@ -8,7 +8,8 @@ import { apiClient } from "../lib/api-client";
 // Types
 // ============================================================================
 
-export type DatabaseAccessLevel = "private" | "shared_read" | "shared_write";
+export type DatabaseVisibility = "private" | "shared";
+export type DatabasePermissions = "read_write" | "read_only";
 
 /** Database connection/server */
 export interface Connection {
@@ -26,7 +27,8 @@ export interface Connection {
   displayName: string;
   hostKey: string;
   hostName: string;
-  access?: DatabaseAccessLevel;
+  access?: DatabaseVisibility;
+  permissions?: DatabasePermissions;
   isOwner?: boolean;
   canManage?: boolean;
   ownerId?: string;
@@ -177,7 +179,11 @@ interface SchemaState {
   shareDatabase: (
     workspaceId: string,
     databaseId: string,
-    settings: { access?: DatabaseAccessLevel; sharedWith?: string[] },
+    settings: {
+      access?: DatabaseVisibility;
+      permissions?: DatabasePermissions;
+      sharedWith?: string[];
+    },
   ) => Promise<{ success: boolean; error?: string }>;
 
   // === Console Template ===

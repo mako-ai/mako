@@ -322,9 +322,13 @@ export function WebhookFlowForm({
     : null;
   const connectionsMap = useSchemaStore(state => state.connections);
   const ensureConnections = useSchemaStore(state => state.ensureConnections);
-  const databases = currentWorkspace
+  const allDatabases = currentWorkspace
     ? connectionsMap[currentWorkspace.id] || []
     : [];
+  const databases = allDatabases.filter(
+    db =>
+      db.isOwner || (db.access !== "private" && db.permissions !== "read_only"),
+  );
 
   const [connectors, setConnectors] = useState<any[]>([]);
   const [isLoadingConnectors, setIsLoadingConnectors] = useState(false);

@@ -1,6 +1,6 @@
 import type {
   IDatabaseConnection,
-  DatabaseAccessLevel,
+  DatabaseVisibility,
 } from "../database/workspace-schema";
 
 export interface AccessCheckResult {
@@ -78,11 +78,7 @@ const MONGO_OP_PATTERN = new RegExp(
   "g",
 );
 
-const VALID_ACCESS_LEVELS: DatabaseAccessLevel[] = [
-  "private",
-  "shared_read",
-  "shared_write",
-];
+const VALID_ACCESS_LEVELS: DatabaseVisibility[] = ["private", "shared"];
 
 // ---------------------------------------------------------------------------
 // SQL helpers
@@ -241,57 +237,42 @@ export function extractAllMongoOperations(query: string): string[] {
 // Access check functions
 // ---------------------------------------------------------------------------
 
-export function isValidAccessLevel(
-  value: string,
-): value is DatabaseAccessLevel {
-  return VALID_ACCESS_LEVELS.includes(value as DatabaseAccessLevel);
+export function isValidAccessLevel(value: string): value is DatabaseVisibility {
+  return VALID_ACCESS_LEVELS.includes(value as DatabaseVisibility);
 }
 
 /**
  * Checks whether a user can execute a given query against a database.
  *
- * Fail-closed: when userId is undefined, only shared_write databases allow
- * queries. private and shared_read deny everything.
+ * Fail-closed: when userId is undefined, only shared databases allow
+ * queries. private databases deny everything.
  */
 export function checkQueryAccess(
   database: Pick<
     IDatabaseConnection,
-    "access" | "ownerId" | "sharedWith" | "type" | "createdBy"
+    "access" | "permissions" | "ownerId" | "sharedWith" | "type" | "createdBy"
   >,
   userId: string | undefined,
   query: string,
   options?: { mongoOperation?: string },
 ): AccessCheckResult {
-  const access = database.access || "shared_write";
+  const access = database.access || "shared";
+  const permissions = database.permissions || "read_write";
   const ownerId = database.ownerId || database.createdBy;
   const isOwner = !!userId && ownerId === userId;
 
   // Owner always has full access
   if (isOwner) return { allowed: true };
 
-  // shared_write: everyone can read and write
-  if (access === "shared_write") return { allowed: true };
-
-  // private: only owner + sharedWith users
+  // private: only owner
   if (access === "private") {
-    if (!userId) {
-      return { allowed: false, error: "This database is private." };
-    }
-    const sharedWithIds = (database.sharedWith || []).map(id => id.toString());
-    if (!sharedWithIds.includes(userId)) {
-      return { allowed: false, error: "This database is private." };
-    }
-    // Fall through to read-only enforcement for sharedWith users
+    return { allowed: false, error: "This database is private." };
   }
 
-  // shared_read or private+sharedWith: enforce read-only
-  if (!userId) {
-    return {
-      allowed: false,
-      error: "Authentication required to query this database.",
-    };
-  }
+  // shared + read_write: everyone can read and write
+  if (permissions === "read_write") return { allowed: true };
 
+  // shared + read_only: enforce read-only for non-owners
   const isMongoType = database.type === "mongodb";
   let isReadOnly: boolean;
 
@@ -312,7 +293,7 @@ export function checkQueryAccess(
       : "Only SELECT, WITH, SHOW, DESCRIBE, and EXPLAIN (without ANALYZE) are allowed.";
     return {
       allowed: false,
-      error: `This database is shared as read-only. ${hint}`,
+      error: `This database is read-only. ${hint}`,
     };
   }
 
@@ -323,14 +304,19 @@ export function checkQueryAccess(
  * Checks whether a user can write to a database (used for flow destination validation).
  */
 export function canUserWriteDatabase(
-  database: Pick<IDatabaseConnection, "access" | "ownerId" | "createdBy">,
+  database: Pick<
+    IDatabaseConnection,
+    "access" | "permissions" | "ownerId" | "createdBy"
+  >,
   userId: string | undefined,
 ): boolean {
-  const access = database.access || "shared_write";
-  if (access === "shared_write") return true;
-  if (!userId) return false;
+  const access = database.access || "shared";
+  const permissions = database.permissions || "read_write";
   const ownerId = database.ownerId || database.createdBy;
-  return ownerId === userId;
+  const isOwner = !!userId && ownerId === userId;
+  if (isOwner) return true;
+  if (access === "private") return false;
+  return permissions === "read_write";
 }
 
 /**
@@ -343,10 +329,10 @@ export function canUserSeeDatabase(
   >,
   userId: string | undefined,
 ): boolean {
-  const access = database.access || "shared_write";
+  const access = database.access || "shared";
 
-  // shared_write and shared_read are visible to everyone in the workspace
-  if (access === "shared_write" || access === "shared_read") return true;
+  // shared databases are visible to everyone in the workspace
+  if (access === "shared") return true;
 
   // private: only owner + sharedWith
   if (!userId) return false;
@@ -364,8 +350,8 @@ export function getEffectiveAccess(
   database: Pick<IDatabaseConnection, "access" | "ownerId" | "createdBy">,
   userId: string | undefined,
   memberRole?: string,
-): { level: DatabaseAccessLevel; isOwner: boolean; canManage: boolean } {
-  const level = database.access || "shared_write";
+): { level: DatabaseVisibility; isOwner: boolean; canManage: boolean } {
+  const level = database.access || "shared";
   const ownerId = database.ownerId || database.createdBy;
   const isOwner = !!userId && ownerId === userId;
   const isWorkspaceAdmin = memberRole === "owner" || memberRole === "admin";

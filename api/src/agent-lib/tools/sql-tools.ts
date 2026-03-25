@@ -142,10 +142,15 @@ async function listSqlConnectionsImpl(workspaceId: string, userId?: string) {
         displayInfo = dbId || "main";
       }
 
-      const access = db.access || "shared_write";
+      const access = db.access || "shared";
+      const permissions = db.permissions || "read_write";
       const isOwner = !!userId && db.ownerId === userId;
       const accessLabel =
-        access === "shared_read" && !isOwner ? " [read-only]" : "";
+        access === "private"
+          ? " [private]"
+          : permissions === "read_only" && !isOwner
+            ? " [read-only]"
+            : "";
 
       return {
         id: db._id.toString(),
@@ -875,7 +880,7 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: {
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. For shared_read connections, only SELECT/WITH/EXPLAIN (without ANALYZE) are allowed. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
       execute: async (params: {
         connectionId: string;

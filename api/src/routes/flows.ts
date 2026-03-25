@@ -652,7 +652,7 @@ flowRoutes.post("/", async (c: AuthenticatedContext) => {
           {
             success: false,
             error:
-              "You do not have write access to the destination database. Only owners of shared_write or private databases can use them as flow destinations.",
+              "You do not have write access to the destination database. Only owners of shared or private databases can use them as flow destinations.",
           },
           403,
         );
@@ -682,7 +682,7 @@ flowRoutes.post("/", async (c: AuthenticatedContext) => {
           {
             success: false,
             error:
-              "You do not have write access to the destination database. Only owners of shared_write or private databases can use them as flow destinations.",
+              "You do not have write access to the destination database. Only owners of shared or private databases can use them as flow destinations.",
           },
           403,
         );
