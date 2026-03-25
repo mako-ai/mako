@@ -202,27 +202,11 @@ export class CloseConnector extends BaseConnector {
     }
   }
 
-  /**
-   * Resolve Close API endpoint for a given activities sub-type.
-   * Falls back to generic /activity/ if unknown.
-   */
   private getSearchObjectType(entity: string): string {
     const map: Record<string, string> = {
       leads: "lead",
       contacts: "contact",
       opportunities: "opportunity",
-      activities: "activity",
-      "activities:Meeting": "activity.meeting",
-      "activities:Note": "activity.note",
-      "activities:Call": "activity.call",
-      "activities:Email": "activity.email",
-      "activities:SMS": "activity.sms",
-      "activities:EmailThread": "activity.email_thread",
-      "activities:LeadStatusChange": "activity.lead_status_change",
-      "activities:OpportunityStatusChange":
-        "activity.opportunity_status_change",
-      "activities:TaskCompleted": "activity.task_completed",
-      "activities:CustomActivity": "activity.custom",
     };
     return map[entity] || entity;
   }
@@ -232,7 +216,6 @@ export class CloseConnector extends BaseConnector {
       leads: "/lead/",
       opportunities: "/opportunity/",
       contacts: "/contact/",
-      activities: "/activity/",
       users: "/user/",
     };
     const endpoint = map[entity];
@@ -643,11 +626,10 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // Activities: use direct REST endpoint with date_created__lt cursor.
-    // The search API cursor expires after ~30s; on expiry the code restarts
-    // from an inclusive dateCursor, causing duplicate pages across chunks.
-    // The direct endpoint uses strict date_created__lt so there are no gaps
-    // or duplicates, and it has no 10k search-API skip limit.
+    // Activities: use direct REST endpoint with month-windowed _skip pagination.
+    // The Search API was previously used but drops records at chunk boundaries
+    // (the "before" date cursor silently skips rows sharing the cursor ts)
+    // and doesn't return data fields by default without _fields projection.
     if (entity === "activities" || entity.startsWith("activities:")) {
       return await this.fetchActivitiesChunk(options);
     }
@@ -826,340 +808,18 @@ export class CloseConnector extends BaseConnector {
     return d.toISOString().slice(0, 10);
   }
 
-  private getActivitySubtypeSearchObjectType(entity: string): string | null {
-    const supportedEntityTypes = new Set<string>([
-      "activities:Meeting",
-      "activities:Note",
-      "activities:Call",
-      "activities:Email",
-      "activities:SMS",
-      "activities:LeadStatusChange",
-      "activities:OpportunityStatusChange",
-    ]);
-    if (!supportedEntityTypes.has(entity)) return null;
-    return this.getSearchObjectType(entity);
+  private static nextDay(iso: string): string {
+    const d = new Date(iso);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
   }
 
-  private getActivitySearchFields(objectType: string): string[] | undefined {
-    const commonActivityFields = [
-      "id",
-      "_type",
-      "activity_at",
-      "contact_id",
-      "created_by",
-      "created_by_name",
-      "date_created",
-      "date_updated",
-      "lead_id",
-      "organization_id",
-      "source",
-      "updated_by",
-      "updated_by_name",
-      "user_id",
-      "user_name",
-      "users",
-    ];
-
-    const fieldsMap: Record<string, string[]> = {
-      "activity.meeting": [
-        ...commonActivityFields,
-        "title",
-        "note",
-        "summary",
-        "duration",
-        "actual_duration",
-        "starts_at",
-        "ends_at",
-        "location",
-        "status",
-        "attendees",
-        "calendar_event_link",
-        "conference_links",
-      ],
-      "activity.note": [
-        ...commonActivityFields,
-        "title",
-        "note",
-        "note_html",
-        "attachments",
-        "pinned",
-      ],
-      "activity.lead_status_change": [
-        ...commonActivityFields,
-        "old_status_id",
-        "old_status_label",
-        "new_status_id",
-        "new_status_label",
-      ],
-      "activity.opportunity_status_change": [
-        ...commonActivityFields,
-        "opportunity_id",
-        "opportunity_value",
-        "opportunity_value_currency",
-        "opportunity_value_formatted",
-        "opportunity_value_period",
-        "opportunity_confidence",
-        "opportunity_date_won",
-        "old_status_id",
-        "old_status_label",
-        "old_status_type",
-        "new_status_id",
-        "new_status_label",
-        "new_status_type",
-        "old_pipeline_id",
-        "old_pipeline_name",
-        "new_pipeline_id",
-        "new_pipeline_name",
-      ],
-      "activity.call": [
-        ...commonActivityFields,
-        "direction",
-        "disposition",
-        "duration",
-        "status",
-        "note",
-        "note_html",
-        "phone",
-        "remote_phone",
-        "remote_phone_formatted",
-        "local_phone",
-        "local_phone_formatted",
-        "remote_country_iso",
-        "local_country_iso",
-        "has_recording",
-        "recording_url",
-        "recording_duration",
-        "recording_transcript",
-        "voicemail_duration",
-        "voicemail_url",
-        "voicemail_transcript",
-        "date_answered",
-        "cost",
-        "outcome_id",
-        "outcome_reason",
-        "call_method",
-        "is_forwarded",
-        "forwarded_to",
-        "transferred_from",
-        "transferred_to",
-        "sequence_id",
-        "sequence_name",
-      ],
-      "activity.email": [
-        ...commonActivityFields,
-        "direction",
-        "status",
-        "subject",
-        "body_text",
-        "body_html",
-        "body_preview",
-        "body_text_quoted",
-        "body_html_quoted",
-        "sender",
-        "to",
-        "cc",
-        "bcc",
-        "envelope",
-        "attachments",
-        "opens",
-        "opens_summary",
-        "has_reply",
-        "date_sent",
-        "date_scheduled",
-        "email_account_id",
-        "thread_id",
-        "in_reply_to_id",
-        "message_ids",
-        "references",
-        "template_id",
-        "template_name",
-        "sequence_id",
-        "sequence_name",
-        "send_as_id",
-      ],
-      "activity.sms": [
-        ...commonActivityFields,
-        "direction",
-        "status",
-        "text",
-        "local_phone",
-        "local_phone_formatted",
-        "remote_phone",
-        "remote_phone_formatted",
-        "local_country_iso",
-        "remote_country_iso",
-      ],
-    };
-
-    return fieldsMap[objectType];
-  }
-
-  private async fetchActivitySubtypeChunkViaSearch(
-    options: ResumableFetchOptions,
-    objectType: string,
-  ): Promise<FetchState> {
-    const { onBatch, onProgress, state } = options;
-    const api = this.getCloseClient();
-    // Close Search API allows _limit up to 200; force max page size.
-    const batchSize = 200;
-    // Avoid artificial sleeps on the fast path; rely on 429 retry-after.
-    const rateLimitDelay = Math.max(0, options.rateLimitDelay ?? 0);
-    const maxIterations = options.maxIterations || 10;
-
-    let recordCount = state?.totalProcessed || 0;
-    let iterations = 0;
-    let cursorDateCreated: string | null =
-      state?.metadata?.cursorDateCreated ?? null;
-    let searchCursor: string | null = state?.metadata?.searchCursor ?? null;
-
-    if (!state && onProgress) {
-      onProgress(0, undefined);
-    }
-
-    while (iterations < maxIterations) {
-      try {
-        const queries: any[] = [
-          { type: "object_type", object_type: objectType },
-        ];
-
-        if (cursorDateCreated && !searchCursor) {
-          queries.push({
-            type: "field_condition",
-            field: {
-              type: "regular_field",
-              object_type: objectType,
-              field_name: "date_created",
-            },
-            condition: {
-              type: "moment_range",
-              on_or_after: null,
-              before: {
-                type: "fixed_utc",
-                value: cursorDateCreated,
-                which: "start",
-              },
-            },
-          });
-        }
-
-        const body: any = {
-          query: { type: "and", queries },
-          _limit: batchSize,
-          sort: [
-            {
-              direction: "desc",
-              field: {
-                object_type: objectType,
-                type: "regular_field",
-                field_name: "date_created",
-              },
-            },
-          ],
-        };
-        if (searchCursor) {
-          body.cursor = searchCursor;
-        }
-
-        const projectedFields = this.getActivitySearchFields(objectType);
-        if (projectedFields && projectedFields.length > 0) {
-          body._fields = { [objectType]: projectedFields };
-        }
-
-        const response = await api.post("/data/search/", body);
-        const data = response.data?.data || [];
-        const nextCursor = response.data?.cursor || null;
-
-        if (data.length === 0) {
-          return {
-            totalProcessed: recordCount,
-            hasMore: false,
-            iterationsInChunk: iterations + 1,
-            metadata: { cursorDateCreated, searchCursor: nextCursor },
-          };
-        }
-
-        await onBatch(data);
-        recordCount += data.length;
-
-        const rawCursor = data[data.length - 1]?.date_created;
-        if (typeof rawCursor !== "string" || rawCursor.length === 0) {
-          throw new Error(
-            `Close search response missing date_created for ${objectType}`,
-          );
-        }
-        cursorDateCreated = rawCursor;
-        searchCursor = nextCursor;
-
-        if (onProgress) {
-          onProgress(recordCount, undefined);
-        }
-
-        iterations++;
-
-        if (!nextCursor) {
-          return {
-            totalProcessed: recordCount,
-            hasMore: false,
-            iterationsInChunk: iterations,
-            metadata: { cursorDateCreated, searchCursor },
-          };
-        }
-
-        if (rateLimitDelay > 0) {
-          await this.sleep(rateLimitDelay);
-        }
-      } catch (error) {
-        if (
-          axios.isAxiosError(error) &&
-          error.response?.status === 400 &&
-          searchCursor &&
-          error.response.data?.["field-errors"]?.cursor === "Expired cursor"
-        ) {
-          logger.warn("Search cursor expired, retrying with date cursor", {
-            objectType,
-            recordsFetched: recordCount,
-          });
-          searchCursor = null;
-          continue;
-        }
-
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited on search API, waiting", {
-            retryAfterSeconds: retryAfter,
-            objectType,
-            recordsFetched: recordCount,
-          });
-          await this.sleep(retryAfter * 1000);
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    return {
-      totalProcessed: recordCount,
-      hasMore: true,
-      iterationsInChunk: iterations,
-      metadata: { cursorDateCreated, searchCursor },
-    };
-  }
+  private static readonly ACTIVITY_SKIP_LIMIT = 9900;
 
   private async fetchActivitiesChunk(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
     const { entity, onBatch, onProgress, state } = options;
-    const activitySearchObjectType =
-      this.getActivitySubtypeSearchObjectType(entity);
-    if (activitySearchObjectType) {
-      return await this.fetchActivitySubtypeChunkViaSearch(
-        options,
-        activitySearchObjectType,
-      );
-    }
-
     const api = this.getCloseClient();
     const batchSize = Math.min(options.batchSize || this.getBatchSize(), 100);
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
@@ -1176,15 +836,45 @@ export class CloseConnector extends BaseConnector {
 
     // Window by month so _skip stays small and requests stay fast.
     // windowStart is the first day of the current month window (YYYY-MM-DD).
+    // windowGranularity: "month" (default) or "day" (used when a single month
+    // hits the _skip ceiling and we need finer windows to drain it).
     let windowStart: string = state?.metadata?.windowStart || "2000-01-01";
-    let skip = state?.metadata?.skip || 0;
+    let skip: number = state?.metadata?.skip || 0;
+    let windowGranularity: "month" | "day" =
+      state?.metadata?.windowGranularity || "month";
 
     const now = new Date();
-    const endWindow = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 2).padStart(2, "0")}-01`;
+    const endWindow = CloseConnector.nextMonth(
+      `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`,
+    );
 
     if (!state && onProgress) {
       onProgress(0, undefined);
     }
+
+    const advanceWindow = (empty: boolean) => {
+      if (empty) {
+        if (windowGranularity === "day") {
+          windowStart = CloseConnector.nextMonth(windowStart);
+          windowGranularity = "month";
+        } else {
+          const d = new Date(windowStart);
+          d.setUTCFullYear(d.getUTCFullYear() + 1);
+          windowStart = d.toISOString().slice(0, 10);
+        }
+      } else if (windowGranularity === "day") {
+        windowStart = CloseConnector.nextDay(windowStart);
+        const monthBoundary = CloseConnector.nextMonth(
+          windowStart.slice(0, 7) + "-01",
+        );
+        if (windowStart >= monthBoundary) {
+          windowGranularity = "month";
+        }
+      } else {
+        windowStart = CloseConnector.nextMonth(windowStart);
+      }
+      skip = 0;
+    };
 
     while (iterations < maxIterations) {
       if (windowStart >= endWindow) {
@@ -1192,12 +882,16 @@ export class CloseConnector extends BaseConnector {
           totalProcessed: recordCount,
           hasMore: false,
           iterationsInChunk: iterations,
-          metadata: { windowStart, skip },
+          metadata: { windowStart, skip, windowGranularity },
         };
       }
 
       try {
-        const windowEnd = CloseConnector.nextMonth(windowStart);
+        const windowEnd =
+          windowGranularity === "day"
+            ? CloseConnector.nextDay(windowStart)
+            : CloseConnector.nextMonth(windowStart);
+
         const params: any = {
           _limit: batchSize,
           _skip: skip,
@@ -1223,16 +917,32 @@ export class CloseConnector extends BaseConnector {
         }
 
         if (!response.data.has_more || data.length === 0) {
-          // Jump a year when empty, a month when drained — skip gaps fast.
-          if (data.length === 0) {
-            const d = new Date(windowStart);
-            d.setUTCFullYear(d.getUTCFullYear() + 1);
-            windowStart = d.toISOString().slice(0, 10);
-          } else {
-            windowStart = CloseConnector.nextMonth(windowStart);
-            iterations++;
-          }
+          advanceWindow(data.length === 0);
+          if (data.length > 0) iterations++;
+          continue;
+        }
+
+        // Guard against Close _skip ceiling: when skip approaches the limit,
+        // narrow the window to day-level granularity so pagination resets.
+        if (
+          windowGranularity === "month" &&
+          skip >= CloseConnector.ACTIVITY_SKIP_LIMIT
+        ) {
+          logger.warn("Approaching _skip limit, switching to day windows", {
+            entity,
+            windowStart,
+            skip,
+            recordsFetched: recordCount,
+          });
+          const lastRecord = data[data.length - 1];
+          const lastDateCreated =
+            typeof lastRecord?.date_created === "string"
+              ? lastRecord.date_created.slice(0, 10)
+              : windowStart;
+          windowStart = lastDateCreated;
           skip = 0;
+          windowGranularity = "day";
+          iterations++;
           continue;
         }
 
@@ -1247,6 +957,20 @@ export class CloseConnector extends BaseConnector {
             retryAfterSeconds: retryAfter,
           });
           await this.sleep(retryAfter * 1000);
+        } else if (
+          axios.isAxiosError(error) &&
+          error.response?.status === 400 &&
+          windowGranularity === "month" &&
+          skip > 0
+        ) {
+          logger.warn("400 on high skip, falling back to day windows", {
+            entity,
+            windowStart,
+            skip,
+          });
+          windowGranularity = "day";
+          skip = 0;
+          continue;
         } else {
           throw error;
         }
@@ -1257,7 +981,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { windowStart, skip },
+      metadata: { windowStart, skip, windowGranularity },
     };
   }
 
@@ -1281,25 +1005,6 @@ export class CloseConnector extends BaseConnector {
     let cursor: string | null = state?.metadata?.cursor ?? null;
 
     const objectType = this.getSearchObjectType(entity);
-
-    const commonActivityFields = [
-      "id",
-      "_type",
-      "activity_at",
-      "contact_id",
-      "created_by",
-      "created_by_name",
-      "date_created",
-      "date_updated",
-      "lead_id",
-      "organization_id",
-      "source",
-      "updated_by",
-      "updated_by_name",
-      "user_id",
-      "user_name",
-      "users",
-    ];
 
     const fieldsMap: Record<string, string[]> = {
       lead: [
@@ -1384,134 +1089,6 @@ export class CloseConnector extends BaseConnector {
         "is_stalled",
         "stall_status",
         "custom",
-      ],
-      "activity.meeting": [
-        ...commonActivityFields,
-        "title",
-        "note",
-        "summary",
-        "duration",
-        "actual_duration",
-        "starts_at",
-        "ends_at",
-        "location",
-        "status",
-        "attendees",
-        "calendar_event_link",
-        "conference_links",
-      ],
-      "activity.note": [
-        ...commonActivityFields,
-        "title",
-        "note",
-        "note_html",
-        "attachments",
-        "pinned",
-      ],
-      "activity.lead_status_change": [
-        ...commonActivityFields,
-        "old_status_id",
-        "old_status_label",
-        "new_status_id",
-        "new_status_label",
-      ],
-      "activity.opportunity_status_change": [
-        ...commonActivityFields,
-        "opportunity_id",
-        "opportunity_value",
-        "opportunity_value_currency",
-        "opportunity_value_formatted",
-        "opportunity_value_period",
-        "opportunity_confidence",
-        "opportunity_date_won",
-        "old_status_id",
-        "old_status_label",
-        "old_status_type",
-        "new_status_id",
-        "new_status_label",
-        "new_status_type",
-        "old_pipeline_id",
-        "old_pipeline_name",
-        "new_pipeline_id",
-        "new_pipeline_name",
-      ],
-      "activity.call": [
-        ...commonActivityFields,
-        "direction",
-        "disposition",
-        "duration",
-        "status",
-        "note",
-        "note_html",
-        "phone",
-        "remote_phone",
-        "remote_phone_formatted",
-        "local_phone",
-        "local_phone_formatted",
-        "remote_country_iso",
-        "local_country_iso",
-        "has_recording",
-        "recording_url",
-        "recording_duration",
-        "recording_transcript",
-        "voicemail_duration",
-        "voicemail_url",
-        "voicemail_transcript",
-        "date_answered",
-        "cost",
-        "outcome_id",
-        "outcome_reason",
-        "call_method",
-        "is_forwarded",
-        "forwarded_to",
-        "transferred_from",
-        "transferred_to",
-        "sequence_id",
-        "sequence_name",
-      ],
-      "activity.email": [
-        ...commonActivityFields,
-        "direction",
-        "status",
-        "subject",
-        "body_text",
-        "body_html",
-        "body_preview",
-        "body_text_quoted",
-        "body_html_quoted",
-        "sender",
-        "to",
-        "cc",
-        "bcc",
-        "envelope",
-        "attachments",
-        "opens",
-        "opens_summary",
-        "has_reply",
-        "date_sent",
-        "date_scheduled",
-        "email_account_id",
-        "thread_id",
-        "in_reply_to_id",
-        "message_ids",
-        "references",
-        "template_id",
-        "template_name",
-        "sequence_id",
-        "sequence_name",
-        "send_as_id",
-      ],
-      "activity.sms": [
-        ...commonActivityFields,
-        "direction",
-        "status",
-        "text",
-        "local_phone",
-        "local_phone_formatted",
-        "remote_phone",
-        "remote_phone_formatted",
-        "local_country_iso",
-        "remote_country_iso",
       ],
     };
 
@@ -1643,11 +1220,6 @@ export class CloseConnector extends BaseConnector {
     };
   }
 
-  private async getLeadCustomFieldIds(): Promise<string[]> {
-    const fields = await this.getLeadFieldSelection();
-    return fields.split(",").filter(f => f.startsWith("custom."));
-  }
-
   async fetchEntity(options: FetchOptions): Promise<void> {
     this.setLogContext(options);
     const { entity, onBatch, onProgress, since } = options;
@@ -1711,23 +1283,7 @@ export class CloseConnector extends BaseConnector {
             orderBy: since ? "-date_updated" : "id",
           });
         } else {
-          let endpoint: string;
-          switch (entity) {
-            case "opportunities":
-              endpoint = "/opportunity/";
-              break;
-            case "activities":
-              endpoint = "/activity/";
-              break;
-            case "contacts":
-              endpoint = "/contact/";
-              break;
-            case "users":
-              endpoint = "/user/";
-              break;
-            default:
-              throw new Error(`Unsupported entity: ${entity}`);
-          }
+          const endpoint = this.getEntityEndpoint(entity);
 
           if (since) {
             const dateFilter = since.toISOString().split("T")[0];
@@ -1910,88 +1466,12 @@ export class CloseConnector extends BaseConnector {
   }
 
   private async fetchAllActivities(options: FetchOptions): Promise<void> {
-    const { entity, onBatch, onProgress, since } = options;
-    const activitySearchObjectType =
-      this.getActivitySubtypeSearchObjectType(entity);
-    if (activitySearchObjectType) {
-      await this.fetchActivitySubtypeChunkViaSearch(
-        {
-          ...options,
-          maxIterations: Number.MAX_SAFE_INTEGER,
-        },
-        activitySearchObjectType,
-      );
-      return;
-    }
-
-    const api = this.getCloseClient();
-    const batchSize = Math.min(options.batchSize || this.getBatchSize(), 100);
-    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
-
-    // Parse sub-entity for endpoint selection (e.g., "activities:Call")
-    let activitySubType: string | undefined;
-    if (entity.includes(":")) {
-      const [, activityType] = entity.split(":");
-      activitySubType = activityType;
-    }
-
-    let recordCount = 0;
-    let cursor: string | null = null;
-
-    if (onProgress) {
-      onProgress(0, undefined);
-    }
-
-    let hasMore = true;
-    while (hasMore) {
-      try {
-        const params: any = {
-          _limit: batchSize,
-          _order_by: "-date_created",
-        };
-        if (cursor) {
-          params.date_created__lt = cursor;
-        }
-        if (since) {
-          params.date_created__gte = since.toISOString().split("T")[0];
-        }
-
-        const response = await api.get(
-          this.getActivityEndpointForType(activitySubType),
-          { params },
-        );
-
-        const data = response.data.data || [];
-
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
-          cursor = data[data.length - 1].date_created;
-          if (onProgress) {
-            onProgress(recordCount, undefined);
-          }
-        }
-
-        hasMore = response.data.has_more && data.length > 0;
-        if (hasMore) {
-          await this.sleep(rateLimitDelay);
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-        } else {
-          throw error;
-        }
-
-        await this.sleep(rateLimitDelay);
-      }
-    }
+    // Delegate to fetchActivitiesChunk with unlimited iterations so the
+    // month-windowed _skip approach handles all activity types uniformly.
+    await this.fetchActivitiesChunk({
+      ...options,
+      maxIterations: Number.MAX_SAFE_INTEGER,
+    });
   }
 
   private static readonly SIMPLE_ENTITY_ENDPOINTS: Record<string, string> = {
@@ -2110,14 +1590,8 @@ export class CloseConnector extends BaseConnector {
         case "opportunities":
           endpoint = "/opportunity/";
           break;
-        case "activities":
-          endpoint = "/activity/";
-          break;
         case "contacts":
           endpoint = "/contact/";
-          break;
-        case "users":
-          endpoint = "/user/";
           break;
         default:
           return undefined;
