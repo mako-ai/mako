@@ -10,6 +10,8 @@ import {
   updateDashboardWidget,
 } from "./commands";
 import { useDashboardStore } from "../store/dashboardStore";
+import { useConsoleStore } from "../store/consoleStore";
+import { useUIStore } from "../store/uiStore";
 import type { DashboardDataSource, DashboardWidget } from "./types";
 import { classifyDuckDBError, classifySourceError } from "./error-kinds";
 import {
@@ -34,6 +36,55 @@ export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<Record<string, unknown> | null> {
+  if (toolName === "create_dashboard") {
+    const ctx = getActiveContext();
+    const workspaceId =
+      ctx?.workspaceId ?? useUIStore.getState().currentWorkspaceId;
+    if (!workspaceId || typeof workspaceId !== "string") {
+      return { success: false, error: "No active workspace" };
+    }
+    if (typeof input.title !== "string" || !input.title.trim()) {
+      return { success: false, error: "title is required" };
+    }
+
+    try {
+      const dashboard = await useDashboardStore
+        .getState()
+        .createDashboard(workspaceId, {
+          title: input.title,
+          description:
+            typeof input.description === "string"
+              ? input.description
+              : undefined,
+        } as any);
+
+      if (!dashboard) {
+        return { success: false, error: "Failed to create dashboard" };
+      }
+
+      const consoleStore = useConsoleStore.getState();
+      const tabId = consoleStore.openTab({
+        title: dashboard.title,
+        content: "",
+        kind: "dashboard",
+        metadata: { dashboardId: dashboard._id },
+      });
+      consoleStore.setActiveTab(tabId);
+      useUIStore.getState().setLeftPane("dashboards");
+
+      return {
+        success: true,
+        dashboardId: dashboard._id,
+        _eventType: "dashboard_creation",
+        message: `Dashboard "${dashboard.title}" created successfully`,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to create dashboard";
+      return { success: false, error: message };
+    }
+  }
+
   if (
     toolName === "add_data_source" ||
     toolName === "import_console_as_data_source"

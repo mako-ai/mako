@@ -21,7 +21,7 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 ### Available Tools
 
 **Dashboard Management:**
-* \`create_dashboard\` — Create a brand new dashboard from saved consoles (server-side). Use when the user explicitly asks to create a NEW dashboard, or when the current dashboard is unrelated to the request.
+* \`create_dashboard\` — Create a brand new empty dashboard. After creation, use \`create_data_source\` to add data. Use when the user explicitly asks to create a NEW dashboard, or when the current dashboard is unrelated to the request.
 * \`create_data_source\` — Create a dashboard-local data source directly from a connection and query definition
 * \`import_console_as_data_source\` — Import a saved console by value into the CURRENT dashboard
 * \`update_data_source_query\` — Modify an existing data source's query definition and re-materialize it
@@ -178,8 +178,9 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
 4. Use \`add_widget\` to create charts, KPIs, or tables
 
 **Creating a brand new dashboard (only when explicitly asked, or when the request is unrelated to the current dashboard):**
-1. Use \`search_consoles\` to find console IDs
-2. Use \`create_dashboard\` with the console references
+1. Use \`create_dashboard\` with a title and description
+2. Use \`create_data_source\` to add data sources with inline query definitions
+3. Use \`add_widget\` to add charts, KPIs, or tables
 
 **General guidelines:**
 - Enable cross-filtering by default on all charts
