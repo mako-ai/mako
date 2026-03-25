@@ -816,6 +816,22 @@ export class CloseConnector extends BaseConnector {
 
   private static readonly ACTIVITY_SKIP_LIMIT = 9900;
 
+  private async resolveActivityWindowStart(endpoint: string): Promise<string> {
+    try {
+      const api = this.getCloseClient();
+      const resp = await api.get(endpoint, {
+        params: { _limit: 1, _order_by: "date_created" },
+      });
+      const oldest = resp.data?.data?.[0]?.date_created;
+      if (typeof oldest === "string" && oldest.length >= 10) {
+        return oldest.slice(0, 7) + "-01";
+      }
+    } catch {
+      // Fall back to a safe default on error.
+    }
+    return "2015-01-01";
+  }
+
   private async fetchActivitiesChunk(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
@@ -834,14 +850,16 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // Window by month so _skip stays small and requests stay fast.
-    // windowStart is the first day of the current month window (YYYY-MM-DD).
-    // windowGranularity: "month" (default) or "day" (used when a single month
-    // hits the _skip ceiling and we need finer windows to drain it).
-    let windowStart: string = state?.metadata?.windowStart || "2000-01-01";
+    let windowStart: string = state?.metadata?.windowStart || "";
     let skip: number = state?.metadata?.skip || 0;
     let windowGranularity: "month" | "day" =
       state?.metadata?.windowGranularity || "month";
+
+    if (!windowStart) {
+      windowStart = await this.resolveActivityWindowStart(
+        this.getActivityEndpointForType(activitySubType),
+      );
+    }
 
     const now = new Date();
     const endWindow = CloseConnector.nextMonth(
