@@ -1,0 +1,191 @@
+---
+title: "How to Import Excel to BigQuery (4 Methods)"
+slug: import-excel-to-bigquery
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - bigquery
+  - excel
+  - import
+  - data
+excerpt: "Four ways to import Excel data into BigQuery: upload CSV via the Cloud Console, use Google Sheets as an intermediary, Python with pandas-gbq, and Mako. Covers GCS staging, schema auto-detection, and large files."
+metaDescription: "Import Excel to BigQuery in 2026: CSV upload, Google Sheets, Python pandas-gbq, and Mako. Step-by-step with schema detection, partitioning, and gotchas."
+database: bigquery
+category: import-export
+draft: false
+---
+
+BigQuery doesn't accept `.xlsx` files directly. It supports CSV, JSON, Avro, Parquet, and ORC for bulk loads. Every path involves converting from Excel first. Here are four approaches.
+
+## Method 1: Convert to CSV, Upload via Console or bq CLI
+
+The most straightforward path for small to medium files:
+
+1. Save the Excel file as CSV (UTF-8)
+2. In the BigQuery Console, click your dataset, then **Create Table**
+3. Source: **Upload**, select the CSV file
+4. Enable **Auto detect** for schema, or define columns manually
+5. Click **Create Table**
+
+Or use the `bq` CLI:
+
+```bash
+bq load \
+  --source_format=CSV \
+  --skip_leading_rows=1 \
+  --autodetect \
+  myproject:mydataset.sales \
+  sales.csv
+```
+
+For files over 10 MB (the direct upload limit), stage them in Google Cloud Storage first:
+
+```bash
+# Upload to GCS
+gsutil cp sales.csv gs://my-bucket/imports/sales.csv
+
+# Load from GCS
+bq load \
+  --source_format=CSV \
+  --skip_leading_rows=1 \
+  --autodetect \
+  myproject:mydataset.sales \
+  gs://my-bucket/imports/sales.csv
+```
+
+Schema auto-detection works well for clean data but can misidentify types (e.g., ZIP codes as integers). To control the schema explicitly:
+
+```bash
+bq load \
+  --source_format=CSV \
+  --skip_leading_rows=1 \
+  myproject:mydataset.sales \
+  gs://my-bucket/imports/sales.csv \
+  id:INTEGER,product:STRING,amount:NUMERIC,sale_date:DATE
+```
+
+## Method 2: Google Sheets as Intermediary
+
+BigQuery can query Google Sheets directly as an external table. This is useful for data that updates frequently in a spreadsheet:
+
+1. Upload the Excel file to Google Drive (it opens as a Google Sheet)
+2. In BigQuery, create an external table pointing to the Sheet:
+
+```sql
+CREATE EXTERNAL TABLE mydataset.sheet_data
+OPTIONS (
+  format = 'GOOGLE_SHEETS',
+  uris = ['https://docs.google.com/spreadsheets/d/SHEET_ID/edit'],
+  skip_leading_rows = 1,
+  sheet_range = 'Sheet1'
+);
+```
+
+Query it like a normal table:
+
+```sql
+SELECT * FROM mydataset.sheet_data WHERE amount > 1000;
+```
+
+This approach doesn't actually load the data into BigQuery storage. Queries read from the Sheet each time, which means slower performance and Sheets API rate limits for large datasets. For a one-time import, use `CREATE TABLE ... AS SELECT * FROM mydataset.sheet_data` to materialize it.
+
+## Method 3: Python with pandas-gbq
+
+Python reads Excel directly and writes to BigQuery:
+
+```python
+import pandas as pd
+import pandas_gbq
+
+df = pd.read_excel("report.xlsx", sheet_name="Revenue")
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+pandas_gbq.to_gbq(
+    df,
+    destination_table="mydataset.revenue",
+    project_id="my-project",
+    if_exists="replace"
+)
+```
+
+Install dependencies: `pip install pandas openpyxl pandas-gbq`.
+
+For explicit type control, define the schema:
+
+```python
+table_schema = [
+    {"name": "id", "type": "INTEGER"},
+    {"name": "product", "type": "STRING"},
+    {"name": "amount", "type": "NUMERIC"},
+    {"name": "sale_date", "type": "DATE"},
+]
+
+pandas_gbq.to_gbq(
+    df,
+    destination_table="mydataset.revenue",
+    project_id="my-project",
+    if_exists="replace",
+    table_schema=table_schema
+)
+```
+
+Alternatively, use the `google-cloud-bigquery` library with `load_table_from_dataframe` for more control:
+
+```python
+from google.cloud import bigquery
+
+client = bigquery.Client()
+job = client.load_table_from_dataframe(df, "my-project.mydataset.revenue")
+job.result()  # Wait for completion
+```
+
+## Method 4: Mako
+
+Mako imports Excel files into BigQuery without manual conversion or GCS staging:
+
+1. Connect to your BigQuery project in Mako
+2. Click **Import** and select the `.xlsx` file
+3. Choose the sheet and review the type mappings
+4. Select the target dataset and table name
+5. Run the import
+
+For one-off imports where you don't want to deal with CSV conversion, GCS buckets, or Python scripts, this is the simplest path.
+
+## Type Mapping: Excel to BigQuery
+
+| Excel Type | BigQuery Type | Notes |
+|---|---|---|
+| Integer | `INT64` | BigQuery has only one integer type |
+| Decimal | `NUMERIC` or `FLOAT64` | `NUMERIC` for exact decimal arithmetic (financial data) |
+| Date | `DATE` or `TIMESTAMP` | Ensure consistent formatting before import |
+| Text | `STRING` | No length limits in BigQuery |
+| Boolean | `BOOL` | TRUE/FALSE |
+
+## Common Gotchas
+
+**10 MB upload limit.** The BigQuery Console direct upload is limited to 10 MB. For larger CSV files, stage in GCS first. The `bq load` CLI can handle local files up to 5 GB.
+
+**Schema auto-detection mistakes.** BigQuery scans the first 500 rows to detect types. If the first 500 rows of a column are integers but row 501 has text, the load fails. Specify the schema explicitly for mixed-type columns.
+
+**CSV quoting issues.** Fields containing commas or newlines must be quoted. Excel's CSV export usually handles this, but verify with a text editor if loads fail with "unexpected number of columns."
+
+**Date formats.** BigQuery expects dates in `YYYY-MM-DD` format. US-formatted dates (`MM/DD/YYYY`) from Excel won't auto-parse. Either reformat in Excel before export, or load as `STRING` and convert in SQL:
+
+```sql
+SELECT PARSE_DATE('%m/%d/%Y', date_string) AS parsed_date FROM raw_table;
+```
+
+**Column name restrictions.** BigQuery column names must start with a letter or underscore and contain only letters, numbers, and underscores. Excel headers with spaces or special characters need cleaning. pandas does this automatically when using `pandas_gbq`.
+
+**Cost.** BigQuery charges for storage and queries. Loading data is free, but querying it isn't. For large imports, consider partitioning the table by date to reduce query costs:
+
+```python
+from google.cloud import bigquery
+
+job_config = bigquery.LoadJobConfig(
+    time_partitioning=bigquery.TimePartitioning(field="sale_date")
+)
+client.load_table_from_dataframe(df, table_ref, job_config=job_config)
+```
+
+Mako connects to BigQuery, PostgreSQL, MySQL, MongoDB, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
