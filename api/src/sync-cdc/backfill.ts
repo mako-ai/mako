@@ -456,6 +456,45 @@ export class CdcBackfillService {
       }
     }
 
+    let webhookEventsDrained = 0;
+    try {
+      const flowObjectId = new Types.ObjectId(flowId);
+      const stuckWebhookEvents = await WebhookEvent.find({
+        flowId: flowObjectId,
+        status: "pending",
+        attempts: { $lt: 5 },
+      })
+        .sort({ receivedAt: 1 })
+        .limit(500)
+        .select({ eventId: 1 })
+        .lean();
+
+      if (stuckWebhookEvents.length > 0) {
+        for (const evt of stuckWebhookEvents) {
+          await inngest.send({
+            name: "webhook/event.process",
+            data: {
+              flowId,
+              eventId: (evt as any).eventId,
+              isReplay: true,
+            },
+          });
+        }
+        webhookEventsDrained = stuckWebhookEvents.length;
+        log.info("Drained pending WebhookEvents on resume", {
+          flowId,
+          workspaceId,
+          count: webhookEventsDrained,
+        });
+      }
+    } catch (error) {
+      log.warn("Failed to drain pending WebhookEvents on resume", {
+        flowId,
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     let resumedRun: { runId: string; reusedRunId: boolean } | undefined;
     if (flow.backfillState?.runId) {
       resumedRun = await this.startBackfill(workspaceId, flowId, {
@@ -471,6 +510,7 @@ export class CdcBackfillService {
       resumedBackfill: Boolean(resumedRun),
       pendingBacklog: pending,
       drainQueued: pending > 0,
+      webhookEventsDrained,
     };
   }
 

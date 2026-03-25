@@ -1993,7 +1993,7 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && !isCdcEnabled) {
+      if (backfill && flow.type === "webhook") {
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
@@ -2099,14 +2099,16 @@ export const flowFunction = inngest.createFunction(
           remainingEstimate: replayResult.remainingEstimate,
         });
 
-        await step.run("disable-webhook-backfill-gate", async () => {
-          await Flow.findByIdAndUpdate(flowId, {
-            $set: {
-              "backfillState.active": false,
-              "backfillState.completedAt": new Date(),
-            },
+        if (!isCdcEnabled) {
+          await step.run("disable-webhook-backfill-gate", async () => {
+            await Flow.findByIdAndUpdate(flowId, {
+              $set: {
+                "backfillState.active": false,
+                "backfillState.completedAt": new Date(),
+              },
+            });
           });
-        });
+        }
       }
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
