@@ -295,7 +295,18 @@ export const createConsoleSearchTools = (workspaceId: string) => ({
         .default(5)
         .describe("Max results to return (default 5)"),
     }),
-    execute: async ({ query, limit }: { query: string; limit?: number }) =>
-      searchConsoles(query, workspaceId, limit || 5),
+    execute: async ({ query, limit }: { query: string; limit?: number }) => {
+      try {
+        return await searchConsoles(query, workspaceId, limit || 5);
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to search consoles",
+        };
+      }
+    },
   },
 });
