@@ -2412,6 +2412,23 @@ export const flowFunction = inngest.createFunction(
           hasCdcDestinationAdapter(destinationType);
         if (isCdcEnabled) {
           const safeFlowRef = flowRef as IFlow;
+
+          const wasPausedByUser = await step.run(
+            "check-pause-vs-cancel",
+            async () => {
+              const freshFlow = await Flow.findById(flowId)
+                .select("backfillState")
+                .lean();
+              return (
+                isCancelled && freshFlow?.backfillState?.status === "paused"
+              );
+            },
+          );
+
+          if (wasPausedByUser) {
+            throw error;
+          }
+
           await step.run("cdc-transition-fail", async () => {
             await syncMachineService.applyBackfillTransition({
               workspaceId: String(safeFlowRef.workspaceId),

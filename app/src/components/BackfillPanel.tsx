@@ -834,7 +834,7 @@ export function BackfillPanel({
                     size="small"
                     variant="outlined"
                     startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                    onClick={() => handleStartBackfill()}
+                    onClick={handleResumeStream}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >
