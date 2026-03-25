@@ -1,0 +1,162 @@
+---
+title: "How to Import JSON to MySQL (4 Methods)"
+slug: import-json-to-mysql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mysql
+  - json
+  - import
+  - data
+excerpt: "Four ways to import JSON data into MySQL: MySQL Shell's importJSON utility, LOAD DATA INFILE, a Python script, and Mako. Covers the JSON column type, indexing, and large file handling."
+metaDescription: "Import JSON to MySQL in 2026: MySQL Shell importJSON, LOAD DATA INFILE, Python scripting, and Mako. Step-by-step with the JSON column type and gotchas."
+database: mysql
+category: import-export
+draft: false
+---
+
+MySQL 8.0+ has a native JSON column type and dedicated import tools. Here are four practical approaches to get JSON data into MySQL.
+
+## Method 1: MySQL Shell util.importJSON()
+
+MySQL Shell (mysqlsh) has a built-in JSON import utility that handles the parsing for you:
+
+```bash
+mysqlsh --uri root@localhost/mydb --js
+```
+
+```javascript
+// Import a JSON array file into a table's JSON column
+util.importJSON("users.json", {
+  schema: "mydb",
+  table: "users",
+  tableColumn: "doc"
+});
+```
+
+This creates or uses a `doc` column of type JSON and inserts each top-level object as a row. It handles both JSON arrays (`[{...}, {...}]`) and NDJSON (one object per line).
+
+You can also import from the command line directly:
+
+```bash
+mysqlsh -- util importJSON users.json \
+  --schema=mydb --table=users --tableColumn=doc
+```
+
+The utility supports `--convertBsonTypes` and `--convertBsonOid` flags for importing MongoDB exports, which is useful during migrations.
+
+## Method 2: LOAD DATA INFILE with JSON Column
+
+If your data is NDJSON (one JSON object per line), you can load it directly into a JSON column:
+
+```sql
+CREATE TABLE events (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  data JSON NOT NULL
+);
+```
+
+```sql
+LOAD DATA INFILE '/var/lib/mysql-files/events.ndjson'
+INTO TABLE events
+LINES TERMINATED BY '\n'
+(data);
+```
+
+Each line becomes one row. No field terminators needed since the whole line is one JSON value.
+
+For client-side files, use `LOAD DATA LOCAL INFILE` (requires `local_infile` enabled on both client and server).
+
+## Method 3: Python Script
+
+For complex transformations or when you need to flatten JSON into relational columns:
+
+```python
+import json
+import mysql.connector
+
+conn = mysql.connector.connect(
+    host='localhost', user='root',
+    password='pass', database='mydb'
+)
+cursor = conn.cursor()
+
+with open('users.json') as f:
+    records = json.load(f)
+
+sql = "INSERT INTO users (name, email, metadata) VALUES (%s, %s, %s)"
+for record in records:
+    cursor.execute(sql, (
+        record['name'],
+        record['email'],
+        json.dumps(record.get('metadata', {}))
+    ))
+
+conn.commit()
+cursor.close()
+conn.close()
+```
+
+For better performance with large datasets, use `executemany`:
+
+```python
+data = [(r['name'], r['email'], json.dumps(r.get('metadata', {}))) 
+        for r in records]
+cursor.executemany(sql, data)
+```
+
+## Method 4: Mako (GUI)
+
+Mako connects to MySQL and provides a visual interface for importing JSON files. You can preview the data, map fields to columns, and adjust types before inserting.
+
+## MySQL's JSON Column Type
+
+MySQL 8.0's JSON type stores documents in an optimized binary format (not as text). This means:
+
+- **Validation on insert** -- invalid JSON is rejected
+- **Efficient access** -- the server can read individual keys without parsing the entire document
+- **Indexing** -- create virtual generated columns and index them
+
+```sql
+-- Add a generated column for indexing
+ALTER TABLE events
+ADD COLUMN event_type VARCHAR(50) 
+  GENERATED ALWAYS AS (data->>"$.type") STORED;
+
+CREATE INDEX idx_event_type ON events (event_type);
+```
+
+The `->>` operator extracts a value as unquoted text. `->` returns a JSON value (with quotes for strings).
+
+## Common Gotchas
+
+**JSON array vs NDJSON.** `LOAD DATA INFILE` needs one JSON value per line. If your file is a JSON array, convert first:
+
+```bash
+cat data.json | jq -c '.[]' > data.ndjson
+```
+
+**Size limit.** MySQL's `max_allowed_packet` setting limits the size of a single JSON value. The default is 64 MB. For documents larger than that:
+
+```sql
+SET GLOBAL max_allowed_packet = 256 * 1024 * 1024;
+```
+
+**Encoding.** MySQL's JSON type requires valid UTF-8. Binary data or non-UTF-8 characters will cause insert errors. Validate your files first.
+
+**Querying nested data.** Use `JSON_EXTRACT` or the shorthand `->` and `->>`:
+
+```sql
+-- These are equivalent
+SELECT JSON_EXTRACT(data, '$.address.city') FROM events;
+SELECT data->'$.address.city' FROM events;
+SELECT data->>'$.address.city' FROM events;  -- unquoted
+```
+
+**Performance.** Avoid `SELECT *` on tables with large JSON columns. Extract only the keys you need:
+
+```sql
+SELECT data->>'$.name', data->>'$.email' FROM events WHERE data->>'$.status' = 'active';
+```
+
+Mako connects to MySQL, PostgreSQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

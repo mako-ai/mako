@@ -1,0 +1,157 @@
+---
+title: "How to Import JSON to SQLite (4 Methods)"
+slug: import-json-to-sqlite
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - sqlite
+  - json
+  - import
+  - data
+excerpt: "Four ways to import JSON data into SQLite: sqlite-utils CLI, the .import command, Python scripting, and Mako. Covers JSON1 functions, type handling, and nested data."
+metaDescription: "Import JSON to SQLite in 2026: sqlite-utils, .import CLI, Python sqlite3 module, and Mako. Step-by-step with JSON1 extension and practical examples."
+database: sqlite
+category: import-export
+draft: false
+---
+
+SQLite doesn't have a native JSON column type, but its JSON1 extension (included by default since SQLite 3.38.0) provides robust JSON functions. Here are four ways to load JSON data.
+
+## Method 1: sqlite-utils CLI
+
+The `sqlite-utils` package is the fastest way to go from a JSON file to a SQLite table:
+
+```bash
+pip install sqlite-utils
+```
+
+```bash
+# Import a JSON array file
+sqlite-utils insert mydb.db users users.json
+
+# Import NDJSON (one object per line)
+sqlite-utils insert mydb.db events events.ndjson --nl
+```
+
+That's it. The tool creates the table, infers column types, and inserts the data. For a file with 100,000 records, this typically takes a few seconds.
+
+Options:
+- `--pk=id` -- set a primary key
+- `--alter` -- add columns if the JSON has keys not yet in the table
+- `--batch-size=1000` -- commit in batches for large files
+- `--truncate` -- clear the table before inserting
+
+```bash
+sqlite-utils insert mydb.db users users.json --pk=id --alter --batch-size=5000
+```
+
+For piped data:
+
+```bash
+cat users.json | sqlite-utils insert mydb.db users -
+```
+
+## Method 2: SQLite .import with JSON
+
+SQLite's built-in `.import` command doesn't natively parse JSON, but you can combine it with `jq` to flatten JSON into CSV and import that:
+
+```bash
+# Flatten JSON array to CSV
+cat users.json | jq -r '.[] | [.id, .name, .email] | @csv' > users.csv
+```
+
+```
+sqlite3 mydb.db
+.mode csv
+.import users.csv users
+```
+
+This works but loses the flexibility of keeping nested structures. Use `sqlite-utils` instead when possible.
+
+## Method 3: Python Script
+
+For maximum control, use Python's built-in `sqlite3` and `json` modules:
+
+```python
+import json
+import sqlite3
+
+conn = sqlite3.connect('mydb.db')
+cur = conn.cursor()
+
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        email TEXT,
+        metadata TEXT
+    )
+''')
+
+with open('users.json') as f:
+    records = json.load(f)
+
+cur.executemany(
+    "INSERT INTO users (id, name, email, metadata) VALUES (?, ?, ?, ?)",
+    [(r['id'], r['name'], r['email'], json.dumps(r.get('metadata', {})))
+     for r in records]
+)
+
+conn.commit()
+conn.close()
+```
+
+For nested JSON that you want to query later, store it as a TEXT column and use SQLite's JSON functions:
+
+```sql
+SELECT json_extract(metadata, '$.city') FROM users;
+```
+
+## Method 4: Mako (GUI)
+
+Mako connects to SQLite databases and provides a visual interface for importing JSON. Drag and drop your file, preview the data, and map fields to columns.
+
+## SQLite JSON Functions
+
+SQLite's JSON1 extension (enabled by default in recent versions) provides these key functions:
+
+```sql
+-- Extract a value
+SELECT json_extract(data, '$.name') FROM events;
+
+-- Check if a path exists
+SELECT * FROM events WHERE json_type(data, '$.email') IS NOT NULL;
+
+-- Extract array elements
+SELECT json_each.value
+FROM events, json_each(events.data, '$.tags');
+```
+
+These functions work on any TEXT column containing valid JSON. There's no separate JSON type -- it's just text with validation and extraction functions.
+
+## Common Gotchas
+
+**No JSON column type.** SQLite stores JSON as TEXT. There's no validation on insert -- invalid JSON will be accepted but `json_extract` will fail when you query it. Validate before inserting.
+
+**Nested data.** If your JSON has nested objects and you want to query into them, store the entire document as TEXT and use `json_extract`. If you only need top-level fields, flatten them into separate columns for better query performance.
+
+**Type inference with sqlite-utils.** The tool infers types from the first batch of records. If early records have `null` for a field that later contains integers, the column may be created as TEXT. Use `--alter` to adapt, or define the schema upfront.
+
+**Large files.** SQLite handles single-writer scenarios well, but for files over 1 GB, import in batches to avoid holding a long transaction:
+
+```python
+BATCH = 10000
+for i in range(0, len(records), BATCH):
+    cur.executemany(sql, data[i:i+BATCH])
+    conn.commit()
+```
+
+**WAL mode.** For faster imports, enable WAL (Write-Ahead Logging):
+
+```sql
+PRAGMA journal_mode=WAL;
+```
+
+This allows reads during the import and reduces fsync overhead.
+
+Mako connects to SQLite, PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

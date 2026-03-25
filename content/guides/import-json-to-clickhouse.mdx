@@ -1,0 +1,165 @@
+---
+title: "How to Import JSON to ClickHouse (3 Methods)"
+slug: import-json-to-clickhouse
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - clickhouse
+  - json
+  - import
+  - data
+excerpt: "Three ways to import JSON data into ClickHouse: JSONEachRow format with clickhouse-client, the HTTP interface, and Mako. Covers JSON format variants, nested data, and performance."
+metaDescription: "Import JSON to ClickHouse in 2026: JSONEachRow with clickhouse-client, HTTP interface, and Mako. Step-by-step with format options and performance tips."
+database: clickhouse
+category: import-export
+draft: false
+---
+
+ClickHouse supports multiple JSON input formats and can ingest JSON data at very high throughput. The most common approach uses the `JSONEachRow` format.
+
+## Method 1: clickhouse-client with JSONEachRow
+
+`JSONEachRow` expects one JSON object per line (NDJSON). This is ClickHouse's standard format for JSON ingestion.
+
+Create the table:
+
+```sql
+CREATE TABLE events (
+  timestamp DateTime,
+  event_type String,
+  user_id UInt64,
+  properties String
+) ENGINE = MergeTree()
+ORDER BY (timestamp, event_type);
+```
+
+Import the data:
+
+```bash
+cat events.ndjson | clickhouse-client \
+  --query="INSERT INTO events FORMAT JSONEachRow"
+```
+
+If your JSON has fields not in the table, add the skip flag:
+
+```bash
+cat events.ndjson | clickhouse-client \
+  --input_format_skip_unknown_fields=1 \
+  --query="INSERT INTO events FORMAT JSONEachRow"
+```
+
+For JSON arrays (not NDJSON), use the `JSONEachRow` format with the array-unwrapping setting:
+
+```bash
+cat events.json | clickhouse-client \
+  --input_format_json_read_objects_as_strings=1 \
+  --query="INSERT INTO events FORMAT JSONEachRow"
+```
+
+Or convert to NDJSON first with `jq`:
+
+```bash
+cat events.json | jq -c '.[]' | clickhouse-client \
+  --query="INSERT INTO events FORMAT JSONEachRow"
+```
+
+## Method 2: HTTP Interface
+
+ClickHouse's HTTP interface accepts JSON data directly, which is useful for programmatic imports:
+
+```bash
+curl 'http://localhost:8123/?query=INSERT+INTO+events+FORMAT+JSONEachRow' \
+  --data-binary @events.ndjson
+```
+
+For authenticated clusters:
+
+```bash
+curl 'https://your-cluster.clickhouse.cloud/?query=INSERT+INTO+events+FORMAT+JSONEachRow' \
+  --user 'default:password' \
+  --data-binary @events.ndjson
+```
+
+The HTTP interface supports chunked transfer, so you can stream large files without loading them into memory:
+
+```bash
+cat large_file.ndjson | curl 'http://localhost:8123/?query=INSERT+INTO+events+FORMAT+JSONEachRow' \
+  --data-binary @-
+```
+
+## Method 3: Mako (GUI)
+
+Mako connects to ClickHouse and provides a visual interface for importing data. You can preview JSON content and map it to your table structure before inserting.
+
+## JSON Format Variants
+
+ClickHouse supports several JSON formats beyond `JSONEachRow`:
+
+| Format | Input | Description |
+|--------|-------|-------------|
+| `JSONEachRow` | NDJSON | One object per line. Most common. |
+| `JSONStringsEachRow` | NDJSON | All values as strings, ClickHouse converts. |
+| `JSONCompactEachRow` | NDJSON | Arrays instead of objects (column order matters). |
+| `JSONColumnsWithMetadata` | Single JSON | Column-oriented format with type info. |
+
+For most use cases, `JSONEachRow` is the right choice.
+
+## Storing JSON as Strings vs Typed Columns
+
+ClickHouse is a columnar database optimized for typed data. You have two approaches:
+
+**Typed columns (recommended for querying):**
+
+```sql
+CREATE TABLE events (
+  timestamp DateTime,
+  user_id UInt64,
+  event_type LowCardinality(String),
+  page_url String,
+  duration_ms UInt32
+) ENGINE = MergeTree() ORDER BY timestamp;
+```
+
+This gives you full compression and fast aggregation. ClickHouse maps JSON keys to columns automatically when using `JSONEachRow`.
+
+**String column for flexible schemas:**
+
+```sql
+CREATE TABLE events_raw (
+  timestamp DateTime,
+  data String
+) ENGINE = MergeTree() ORDER BY timestamp;
+```
+
+Query with JSON functions:
+
+```sql
+SELECT
+  JSONExtractString(data, 'user_id') AS user_id,
+  JSONExtractUInt(data, 'duration_ms') AS duration
+FROM events_raw
+WHERE JSONExtractString(data, 'event_type') = 'pageview';
+```
+
+This is slower but handles inconsistent schemas. ClickHouse 23.1+ also supports the `JSON` data type (experimental) for semi-structured data.
+
+## Common Gotchas
+
+**Unknown fields.** By default, ClickHouse rejects JSON with fields not in the table schema. Always use `--input_format_skip_unknown_fields=1` unless you want strict validation.
+
+**Date/time parsing.** ClickHouse expects dates as `YYYY-MM-DD` and timestamps as `YYYY-MM-DD HH:MM:SS` or Unix epoch seconds. For ISO 8601 strings with timezones, use `DateTime64` with a timezone:
+
+```sql
+CREATE TABLE events (
+  ts DateTime64(3, 'UTC')
+) ENGINE = MergeTree() ORDER BY ts;
+```
+
+**Nested objects.** ClickHouse can flatten nested JSON into `Nested` columns or `Tuple` types, but the mapping isn't automatic. For nested data, either flatten it before import or store as a String and extract with JSON functions.
+
+**Performance.** ClickHouse can ingest millions of JSON rows per second on a single node. For maximum throughput:
+- Use `JSONEachRow` (not `JSON`)
+- Insert in batches of at least 10,000 rows
+- Avoid inserting one row at a time -- it creates too many small parts
+
+Mako connects to ClickHouse, PostgreSQL, MySQL, MongoDB, BigQuery, and Snowflake with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

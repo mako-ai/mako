@@ -1,0 +1,165 @@
+---
+title: "How to Import JSON to BigQuery (3 Methods)"
+slug: import-json-to-bigquery
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - bigquery
+  - json
+  - import
+  - data
+excerpt: "Three ways to import JSON data into BigQuery: bq load CLI, the BigQuery Console, and Mako. Covers NDJSON requirements, schema auto-detection, nested structs, and Cloud Storage staging."
+metaDescription: "Import JSON to BigQuery in 2026: bq load command, Console upload, and Mako. Step-by-step with NDJSON format, nested data, and common errors."
+database: bigquery
+category: import-export
+draft: false
+---
+
+BigQuery ingests newline-delimited JSON (NDJSON) natively. Standard JSON arrays need to be converted first. Here are three ways to load JSON data.
+
+## Method 1: bq load CLI
+
+The `bq` command-line tool (part of the Google Cloud SDK) is the most common approach.
+
+**Load from a local file:**
+
+```bash
+bq load \
+  --source_format=NEWLINE_DELIMITED_JSON \
+  --autodetect \
+  myproject:mydataset.events \
+  events.ndjson
+```
+
+Key flags:
+- `--source_format=NEWLINE_DELIMITED_JSON` -- required for JSON files
+- `--autodetect` -- lets BigQuery infer the schema from the data
+- `--replace` -- overwrites the table (default is append)
+- `--max_bad_records=10` -- tolerate up to 10 malformed rows
+
+**Load from Cloud Storage (recommended for large files):**
+
+```bash
+# Upload to GCS first
+gsutil cp events.ndjson gs://my-bucket/data/
+
+# Load from GCS
+bq load \
+  --source_format=NEWLINE_DELIMITED_JSON \
+  --autodetect \
+  myproject:mydataset.events \
+  gs://my-bucket/data/events.ndjson
+```
+
+Loading from GCS is faster and more reliable for files over 10 MB. BigQuery can also load multiple files using wildcards:
+
+```bash
+bq load \
+  --source_format=NEWLINE_DELIMITED_JSON \
+  --autodetect \
+  myproject:mydataset.events \
+  "gs://my-bucket/data/events_*.ndjson"
+```
+
+**With an explicit schema:**
+
+```bash
+bq load \
+  --source_format=NEWLINE_DELIMITED_JSON \
+  myproject:mydataset.events \
+  events.ndjson \
+  name:STRING,email:STRING,created_at:TIMESTAMP,score:FLOAT
+```
+
+Or from a schema file:
+
+```bash
+bq load \
+  --source_format=NEWLINE_DELIMITED_JSON \
+  myproject:mydataset.events \
+  events.ndjson \
+  schema.json
+```
+
+## Method 2: BigQuery Console
+
+The web console supports direct JSON uploads:
+
+1. Open BigQuery in the Google Cloud Console
+2. Click your dataset > Create Table
+3. Source: Upload, select your NDJSON file
+4. File format: JSON (Newline Delimited)
+5. Enable "Auto detect" for schema
+6. Click Create Table
+
+The console upload has a 10 MB file size limit. For larger files, upload to Cloud Storage first.
+
+## Method 3: Mako (GUI)
+
+Mako connects to BigQuery and provides a visual interface for data management. You can run queries, explore schemas, and work with your data through Mako's AI-powered SQL editor.
+
+## NDJSON Format Requirement
+
+BigQuery only accepts newline-delimited JSON (one JSON object per line), not standard JSON arrays. If your file looks like this:
+
+```json
+[
+  {"name": "Alice", "score": 95},
+  {"name": "Bob", "score": 87}
+]
+```
+
+Convert it to NDJSON first:
+
+```bash
+cat data.json | jq -c '.[]' > data.ndjson
+```
+
+Result:
+
+```
+{"name":"Alice","score":95}
+{"name":"Bob","score":87}
+```
+
+## Nested JSON and Structs
+
+BigQuery maps nested JSON objects to STRUCT types and JSON arrays to REPEATED fields:
+
+```json
+{"name": "Alice", "address": {"city": "Zurich", "zip": "8001"}, "tags": ["admin", "beta"]}
+```
+
+With auto-detect, BigQuery creates:
+- `name` STRING
+- `address` STRUCT<city STRING, zip STRING>
+- `tags` REPEATED STRING (ARRAY)
+
+Query nested fields with dot notation:
+
+```sql
+SELECT name, address.city, tag
+FROM mydataset.events, UNNEST(tags) AS tag
+WHERE address.city = 'Zurich';
+```
+
+## Common Gotchas
+
+**Not NDJSON.** The most common error. If your file is a JSON array, `bq load` fails with a parse error. Always convert to NDJSON first.
+
+**Schema conflicts.** If the same field has different types across rows (e.g., `"score": 95` in one row and `"score": "high"` in another), auto-detect fails. Either clean the data or provide an explicit schema.
+
+**Timestamp formats.** BigQuery auto-detects ISO 8601 timestamps (`2026-01-15T10:30:00Z`) and epoch seconds. Other formats need an explicit schema with `STRING` type and a post-load transformation:
+
+```sql
+SELECT PARSE_TIMESTAMP('%m/%d/%Y %H:%M', date_str) AS parsed_date
+FROM mydataset.events;
+```
+
+**Null vs missing.** In BigQuery, a missing field and a field with `null` value are treated the same -- both result in NULL in the table. No special handling needed.
+
+**File size.** Local uploads via `bq load` support files up to 5 TB (compressed). The Console UI limits to 10 MB. For anything over 10 MB, use GCS staging or the `bq` CLI.
+
+**Costs.** Loading data into BigQuery is free. You only pay for storage and queries. Streaming inserts (via the API) cost $0.01 per 200 MB, but batch `bq load` is always free.
+
+Mako connects to BigQuery, PostgreSQL, MySQL, MongoDB, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
