@@ -391,31 +391,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           return;
         }
 
-        try {
-          const response = await apiClient.get<{
-            success: boolean;
-            data: Dashboard;
-          }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`);
-
-          if (response.data) {
-            const dashboard = response.data;
-            if (Array.isArray(dashboard.widgets)) {
-              dashboard.widgets = dashboard.widgets.map(
-                w =>
-                  normalizeWidgetLayouts(
-                    w as Record<string, unknown>,
-                  ) as typeof w,
-              );
-            }
-            set(state => {
-              state.openDashboards[dashboardId] = dashboard;
-              state.activeDashboardId = dashboardId;
-              state.historyMap[dashboardId] = { stack: [], index: -1 };
-            });
-          }
-        } catch {
-          // silent
-        }
+        await get().reloadDashboard(workspaceId, dashboardId);
       },
 
       reloadDashboard: async (workspaceId: string, dashboardId: string) => {
