@@ -63,6 +63,9 @@ const KNOWN_MONGO_OPERATIONS = [
   "deleteMany",
   "replaceOne",
   "bulkWrite",
+  "findOneAndUpdate",
+  "findOneAndDelete",
+  "findOneAndReplace",
   "drop",
   "createIndex",
   "dropIndex",
@@ -158,7 +161,7 @@ export function stripSqlCommentsAndStrings(sql: string): string {
 function extractFirstSqlKeyword(stripped: string): string | null {
   const trimmed = stripped.trim();
   if (!trimmed) return null;
-  const match = trimmed.match(/^([A-Za-z_]+)/);
+  const match = trimmed.match(/^[\s(]*([A-Za-z_]+)/);
   return match ? match[1].toUpperCase() : null;
 }
 
@@ -191,7 +194,7 @@ export function isSqlReadOnly(query: string): boolean {
     .map(s => s.trim())
     .filter(Boolean);
 
-  if (statements.length === 0) return true;
+  if (statements.length === 0) return false;
 
   return statements.every(stmt => {
     const keyword = extractFirstSqlKeyword(stmt);
@@ -253,14 +256,15 @@ export function isValidAccessLevel(
 export function checkQueryAccess(
   database: Pick<
     IDatabaseConnection,
-    "access" | "ownerId" | "sharedWith" | "type"
+    "access" | "ownerId" | "sharedWith" | "type" | "createdBy"
   >,
   userId: string | undefined,
   query: string,
   options?: { mongoOperation?: string },
 ): AccessCheckResult {
   const access = database.access || "shared_write";
-  const isOwner = !!userId && database.ownerId === userId;
+  const ownerId = database.ownerId || database.createdBy;
+  const isOwner = !!userId && ownerId === userId;
 
   // Owner always has full access
   if (isOwner) return { allowed: true };
@@ -319,20 +323,24 @@ export function checkQueryAccess(
  * Checks whether a user can write to a database (used for flow destination validation).
  */
 export function canUserWriteDatabase(
-  database: Pick<IDatabaseConnection, "access" | "ownerId">,
+  database: Pick<IDatabaseConnection, "access" | "ownerId" | "createdBy">,
   userId: string | undefined,
 ): boolean {
   const access = database.access || "shared_write";
   if (access === "shared_write") return true;
   if (!userId) return false;
-  return database.ownerId === userId;
+  const ownerId = database.ownerId || database.createdBy;
+  return ownerId === userId;
 }
 
 /**
  * Determines whether a database should appear in a user's list.
  */
 export function canUserSeeDatabase(
-  database: Pick<IDatabaseConnection, "access" | "ownerId" | "sharedWith">,
+  database: Pick<
+    IDatabaseConnection,
+    "access" | "ownerId" | "sharedWith" | "createdBy"
+  >,
   userId: string | undefined,
 ): boolean {
   const access = database.access || "shared_write";
@@ -342,7 +350,8 @@ export function canUserSeeDatabase(
 
   // private: only owner + sharedWith
   if (!userId) return false;
-  if (database.ownerId === userId) return true;
+  const ownerId = database.ownerId || database.createdBy;
+  if (ownerId === userId) return true;
   const sharedWithIds = (database.sharedWith || []).map(id => id.toString());
   return sharedWithIds.includes(userId);
 }
@@ -352,12 +361,13 @@ export function canUserSeeDatabase(
  * `canManage` is true when the user is the owner or a workspace admin/owner.
  */
 export function getEffectiveAccess(
-  database: Pick<IDatabaseConnection, "access" | "ownerId">,
+  database: Pick<IDatabaseConnection, "access" | "ownerId" | "createdBy">,
   userId: string | undefined,
   memberRole?: string,
 ): { level: DatabaseAccessLevel; isOwner: boolean; canManage: boolean } {
   const level = database.access || "shared_write";
-  const isOwner = !!userId && database.ownerId === userId;
+  const ownerId = database.ownerId || database.createdBy;
+  const isOwner = !!userId && ownerId === userId;
   const isWorkspaceAdmin = memberRole === "owner" || memberRole === "admin";
   const canManage = isOwner || isWorkspaceAdmin;
   return { level, isOwner, canManage };

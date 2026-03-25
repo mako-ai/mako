@@ -205,9 +205,10 @@ function DatabaseExplorer({
 
   const { currentWorkspace } = useWorkspace();
 
-  const databases: Connection[] = currentWorkspace
-    ? connections[currentWorkspace.id] || []
-    : [];
+  const databases: Connection[] = useMemo(
+    () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
+    [connections, currentWorkspace],
+  );
 
   const isLoadingConnections = currentWorkspace
     ? !!loading[`connections:${currentWorkspace.id}`]
@@ -902,7 +903,7 @@ function DatabaseExplorer({
 
         return (
           <Menu
-            open={databaseContextMenu !== null}
+            open={databaseContextMenu !== null && canManageCtx}
             onClose={() => setDatabaseContextMenu(null)}
             anchorReference="anchorPosition"
             anchorPosition={

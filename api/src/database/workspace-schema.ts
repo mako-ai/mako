@@ -1062,7 +1062,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
     sharedWith: [
       {
         type: Schema.Types.ObjectId,
-        ref: "WorkspaceMember",
+        ref: "User",
       },
     ],
     isDemo: {
