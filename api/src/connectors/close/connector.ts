@@ -893,9 +893,16 @@ export class CloseConnector extends BaseConnector {
         }
 
         if (!response.data.has_more || data.length === 0) {
-          windowStart = CloseConnector.nextMonth(windowStart);
+          // Jump a year when empty, a month when drained — skip gaps fast.
+          if (data.length === 0) {
+            const d = new Date(windowStart);
+            d.setUTCFullYear(d.getUTCFullYear() + 1);
+            windowStart = d.toISOString().slice(0, 10);
+          } else {
+            windowStart = CloseConnector.nextMonth(windowStart);
+            iterations++;
+          }
           skip = 0;
-          iterations++;
           continue;
         }
 
