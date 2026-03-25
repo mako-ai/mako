@@ -114,6 +114,20 @@ export class CdcBackfillService {
     };
     await flow.save();
 
+    if (!reusedRunId) {
+      await CdcEntityState.updateMany(
+        {
+          workspaceId: new Types.ObjectId(workspaceId),
+          flowId: new Types.ObjectId(flowId),
+        },
+        {
+          $unset: {
+            backfillCompletedAt: "",
+          },
+        },
+      );
+    }
+
     const reason =
       options?.reason ||
       (reusedRunId
@@ -352,6 +366,12 @@ export class CdcBackfillService {
     if (flow.syncEngine !== "cdc") {
       throw new Error("Pause requires syncEngine=cdc");
     }
+
+    await cdcSyncStateService.applyStreamTransition({
+      workspaceId,
+      flowId,
+      event: { type: "PAUSE", reason: "Paused via API" },
+    });
 
     await cdcSyncStateService.applyBackfillTransition({
       workspaceId,
