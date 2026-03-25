@@ -835,15 +835,28 @@ export class CloseConnector extends BaseConnector {
       activitySubType = activityType;
     }
 
-    let recordCount = state?.totalProcessed || 0;
+    // Detect and reset stale state from old fetchViaSearchApi code path.
+    // Old state has windowing skip (resets at 9800) + cursor; new state uses absolute skip only.
+    const isStaleState = state?.metadata?.cursor !== undefined;
+    if (isStaleState) {
+      logger.warn(
+        "Detected stale activity sync state from old code path, resetting to start",
+        {
+          entity,
+          oldSkip: state?.metadata?.skip,
+          oldTotalProcessed: state?.totalProcessed,
+        },
+      );
+    }
+    const recordCount = isStaleState ? 0 : state?.totalProcessed || 0;
     let iterations = 0;
 
     // REST list endpoint ignores _order_by and always returns descending.
     // _skip works correctly (verified up to 130k) with no hard limit,
     // so we paginate purely by offset — no date cursor needed.
-    let skip = state?.metadata?.skip || 0;
+    let skip = isStaleState ? 0 : state?.metadata?.skip || 0;
 
-    if (!state && onProgress) {
+    if ((!state || isStaleState) && onProgress) {
       onProgress(0, undefined);
     }
 
