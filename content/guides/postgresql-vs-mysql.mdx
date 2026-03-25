@@ -1,0 +1,157 @@
+---
+title: "PostgreSQL vs MySQL in 2026: An Honest Comparison"
+slug: postgresql-vs-mysql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - postgresql
+  - mysql
+  - comparison
+  - database
+excerpt: "PostgreSQL vs MySQL compared across data types, performance, JSON support, replication, licensing, and ecosystem. A straightforward guide to choosing between the two most popular open-source databases."
+metaDescription: "PostgreSQL vs MySQL in 2026: honest comparison of performance, JSON support, data types, replication, extensions, licensing, and real-world use cases. No hype, just facts."
+database: null
+category: database-comparison
+draft: false
+---
+
+PostgreSQL and MySQL are the two most popular open-source relational databases. Together they power the majority of web applications, data platforms, and backend services. But they optimize for different things, and the right choice depends on your workload.
+
+This comparison is based on PostgreSQL 17/18 and MySQL 8.x/9.x as of early 2026.
+
+## The Short Version
+
+PostgreSQL has richer data types, better SQL standards compliance, and stronger JSON support. MySQL is simpler to operate, often faster for straightforward read-heavy workloads, and has broader hosting availability.
+
+If you need advanced SQL features, JSONB, or extensibility, PostgreSQL. If you need simplicity and raw read throughput for a web app, MySQL works great.
+
+## Data Types
+
+This is where the two databases differ most.
+
+| Feature | PostgreSQL | MySQL |
+|---|---|---|
+| Arrays | Native `ARRAY` type with indexing | No native arrays (use JSON) |
+| JSON | `JSONB` with GIN indexes, operators | `JSON` type, limited indexing |
+| Custom types | `CREATE TYPE` for enums, composites | `ENUM` only |
+| UUID | Native `uuid` type | `CHAR(36)` or `BINARY(16)` |
+| Network types | `inet`, `cidr`, `macaddr` | No native support |
+| Range types | `int4range`, `tsrange`, etc. | No native support |
+| Full-text search | Built-in `tsvector`/`tsquery` | Built-in `FULLTEXT` indexes |
+| Geospatial | PostGIS extension | Spatial extension |
+
+PostgreSQL's type system is significantly more expressive. If your application uses arrays, JSON documents, network addresses, or range queries, PostgreSQL handles them natively where MySQL requires workarounds.
+
+MySQL's JSON support has improved, but it lacks the indexing depth of PostgreSQL's JSONB. In PostgreSQL, you can create GIN indexes on JSONB columns and query nested paths efficiently. MySQL's JSON indexes are limited to generated columns.
+
+## Performance
+
+For most typical web workloads, performance is comparable -- within 30% either direction depending on the query pattern.
+
+**Where MySQL tends to win:**
+- Simple primary key lookups and single-table reads
+- Connection handling under high concurrency (MySQL's thread-per-connection model is lighter than PostgreSQL's process-per-connection)
+- Replication lag on read replicas (MySQL's binary log replication is mature and fast)
+
+**Where PostgreSQL tends to win:**
+- Complex joins across multiple tables
+- Queries using CTEs, window functions, and subqueries
+- JSONB queries and indexing
+- Full-text search (built-in vs MySQL's more basic FULLTEXT)
+- Write-heavy mixed workloads with MVCC
+
+The Uber Engineering blog post about switching from PostgreSQL to MySQL (2016) is often cited, but the issues they described -- write amplification, replication challenges, connection overhead -- were largely addressed in PostgreSQL 10+ with logical replication, improved parallel query, and better VACUUM performance.
+
+For read-heavy web applications with simple queries, MySQL's lighter architecture gives it an edge. For analytical queries, complex joins, or mixed read/write workloads, PostgreSQL typically performs better.
+
+## SQL Standards Compliance
+
+PostgreSQL is closer to the SQL standard. This matters in practice:
+
+- **CTEs**: PostgreSQL has supported recursive CTEs since version 8.4 (2009). MySQL added CTE support in 8.0 (2018).
+- **Window functions**: PostgreSQL has had them since 8.4. MySQL added them in 8.0.
+- **LATERAL joins**: PostgreSQL supports them. MySQL added `LATERAL` derived tables in 8.0.14.
+- **CHECK constraints**: PostgreSQL has enforced them for decades. MySQL only started enforcing them in 8.0.16 -- before that, they were parsed but silently ignored.
+- **GENERATED columns**: Both support them, but PostgreSQL supports both stored and virtual; MySQL defaults to virtual.
+
+If you write standard SQL, it's more likely to work unmodified on PostgreSQL. MySQL has historically had quirks -- implicit type conversions, non-standard `GROUP BY` behavior, and silent truncation of data -- though many of these have been tightened in MySQL 8.x with stricter SQL modes.
+
+## Replication and High Availability
+
+Both databases have mature replication, but the approaches differ.
+
+**MySQL:**
+- Binary log (binlog) replication is battle-tested and widely used
+- Group Replication provides multi-primary clustering
+- InnoDB Cluster / InnoDB ClusterSet for managed HA
+- MySQL Router for automatic failover
+- Replication is generally simpler to set up
+
+**PostgreSQL:**
+- Streaming replication (physical) with synchronous or asynchronous modes
+- Logical replication (table-level, selective) since PostgreSQL 10
+- Patroni, Stolon, or pg_auto_failover for HA orchestration
+- No built-in multi-primary (requires extensions like BDR)
+- More flexible logical replication for complex topologies
+
+MySQL's replication ecosystem is more turnkey. PostgreSQL's is more flexible but requires more assembly. For simple primary-replica setups, both work well. For multi-region or multi-primary needs, MySQL Group Replication is more integrated out of the box, while PostgreSQL relies on third-party tools.
+
+## Extensibility
+
+PostgreSQL's extension system is one of its defining features:
+
+- **PostGIS** -- the gold standard for geospatial data
+- **pgvector** -- vector similarity search for AI/ML embeddings
+- **pg_cron** -- scheduled jobs inside the database
+- **TimescaleDB** -- time-series on top of PostgreSQL
+- **Citus** -- distributed/sharded PostgreSQL
+
+MySQL doesn't have an equivalent extension system. You get plugins for authentication and storage engines, but nothing comparable to PostgreSQL's ability to add entirely new data types, index types, and query capabilities.
+
+This extensibility means PostgreSQL can grow with your needs. Need vector search? Add pgvector. Need geospatial? Add PostGIS. With MySQL, these would require a separate specialized database.
+
+## Licensing and Cost
+
+Both are open source, but with different dynamics:
+
+- **PostgreSQL**: PostgreSQL License (permissive, similar to MIT/BSD). No commercial entity controls it. Development is driven by a global community and multiple companies (EDB, Crunchy Data, Supabase, Neon, etc.).
+- **MySQL**: Dual-licensed -- GPL for community edition, commercial license from Oracle for enterprise features. Oracle controls the roadmap.
+
+MySQL's community edition is fully functional for most use cases. The enterprise edition adds features like Thread Pool, Enterprise Encryption, and Enterprise Monitor. These extras matter for large deployments but aren't essential for most applications.
+
+The Oracle factor is a real consideration. Some organizations prefer PostgreSQL specifically because no single company controls it. MariaDB exists as a MySQL fork partly because of this concern.
+
+## Hosting and Ecosystem
+
+Both are available everywhere, but MySQL has a slight edge in breadth:
+
+- **MySQL**: Amazon RDS/Aurora, Google Cloud SQL, Azure Database, PlanetScale, Vitess (sharding), every shared hosting provider
+- **PostgreSQL**: Amazon RDS/Aurora, Google Cloud SQL/AlloyDB, Azure Database, Supabase, Neon, Crunchy Bridge, Tembo
+
+MySQL's dominance in shared hosting (cPanel, Plesk) means it's often the default for WordPress, Drupal, and PHP applications. PostgreSQL has gained significant ground in cloud-native and developer-focused platforms, especially with Supabase and Neon making it the default for new projects.
+
+Stack Overflow's 2025 developer survey shows PostgreSQL as the most popular database among professional developers, overtaking MySQL for the first time.
+
+## When to Choose PostgreSQL
+
+- Complex data models with arrays, JSON, or custom types
+- Applications that benefit from extensions (geospatial, vector search, time-series)
+- Teams that value SQL standards compliance
+- Mixed read/write workloads with complex queries
+- Projects where vendor independence matters
+
+## When to Choose MySQL
+
+- Read-heavy web applications with simple query patterns
+- WordPress or PHP-ecosystem projects
+- Teams familiar with MySQL who don't need PostgreSQL-specific features
+- Environments where MySQL's simpler operational model is an advantage
+- Projects that need PlanetScale or Vitess for horizontal sharding
+
+## The Bottom Line
+
+PostgreSQL is the more capable database. MySQL is the more straightforward one. For new projects in 2026, PostgreSQL is increasingly the default choice -- and for good reason. But MySQL remains an excellent database that powers enormous production systems reliably.
+
+The wrong choice between these two is rarely catastrophic. Both handle the majority of application workloads well. Pick the one that matches your team's expertise and your application's specific needs.
+
+Mako connects to both PostgreSQL and MySQL with AI-assisted query editing. Try it free at [mako.ai](https://mako.ai).
