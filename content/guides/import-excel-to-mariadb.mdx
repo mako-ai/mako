@@ -1,0 +1,179 @@
+---
+title: "How to Import Excel to MariaDB (4 Methods)"
+slug: import-excel-to-mariadb
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mariadb
+  - excel
+  - import
+  - data
+excerpt: "Four ways to import Excel data into MariaDB: convert to CSV and use LOAD DATA INFILE, Python with pandas, HeidiSQL's import tool, and Mako. Covers character sets, date handling, and the CONNECT engine."
+metaDescription: "Import Excel to MariaDB in 2026: LOAD DATA INFILE, Python pandas, HeidiSQL, and Mako. Step-by-step with the CONNECT storage engine, encoding, and gotchas."
+database: mariadb
+category: import-export
+draft: false
+---
+
+MariaDB doesn't read `.xlsx` files directly through standard SQL, but it does have a unique trick up its sleeve: the CONNECT storage engine can read Excel files as virtual tables. Beyond that, the methods are similar to MySQL. Here are four approaches.
+
+## Method 1: Convert to CSV, Then LOAD DATA INFILE
+
+Save the Excel file as CSV (UTF-8) and load with MariaDB's bulk import:
+
+```sql
+CREATE TABLE orders (
+  id INT,
+  customer VARCHAR(200),
+  total DECIMAL(10,2),
+  order_date DATE
+);
+
+LOAD DATA INFILE '/var/lib/mysql/imports/orders.csv'
+INTO TABLE orders
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(id, customer, total, @order_date)
+SET order_date = STR_TO_DATE(@order_date, '%m/%d/%Y');
+```
+
+This is identical to MySQL's syntax. The same `secure_file_priv` restriction applies -- the file must be in the permitted directory. Use `LOAD DATA LOCAL INFILE` to read from the client machine instead.
+
+For faster loading on large files, disable indexes during import:
+
+```sql
+ALTER TABLE orders DISABLE KEYS;
+LOAD DATA INFILE '/path/orders.csv' INTO TABLE orders ...;
+ALTER TABLE orders ENABLE KEYS;
+```
+
+## Method 2: CONNECT Storage Engine (Read Excel Directly)
+
+MariaDB's CONNECT engine can read Excel files as virtual tables without conversion. This is unique to MariaDB -- MySQL doesn't have this.
+
+First, install the CONNECT engine plugin:
+
+```sql
+INSTALL SONAME 'ha_connect';
+```
+
+Then create a table that points to the Excel file:
+
+```sql
+CREATE TABLE excel_data
+ENGINE=CONNECT TABLE_TYPE=XLSX FILE_NAME='/path/to/data.xlsx'
+HEADER=1 ACCEPT=1;
+```
+
+Query it directly:
+
+```sql
+SELECT * FROM excel_data WHERE amount > 100;
+```
+
+To import into a regular InnoDB table:
+
+```sql
+CREATE TABLE orders ENGINE=InnoDB AS SELECT * FROM excel_data;
+```
+
+### CONNECT Engine Caveats
+
+- The CONNECT engine must be installed separately (not always available on managed MariaDB services)
+- Performance is slower than `LOAD DATA INFILE` since it reads the file on each query
+- Type detection is automatic but imperfect -- verify column types after creating the table
+- The Excel file must be accessible to the MariaDB server process (file permissions matter)
+- `.xls` (legacy format) and `.xlsx` are both supported
+
+## Method 3: Python with pandas
+
+pandas reads Excel and writes to MariaDB through SQLAlchemy:
+
+```python
+import pandas as pd
+from sqlalchemy import create_engine
+
+engine = create_engine("mysql+pymysql://user:pass@localhost/mydb?charset=utf8mb4")
+
+df = pd.read_excel("sales.xlsx", sheet_name="Q1")
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+df.to_sql("q1_sales", engine, if_exists="replace", index=False)
+```
+
+MariaDB uses the same wire protocol as MySQL, so `pymysql` and `mysql-connector-python` both work. The `mysql+pymysql://` connection string is correct for MariaDB.
+
+For large files:
+
+```python
+df.to_sql("big_table", engine, if_exists="append", index=False,
+          chunksize=5000, method="multi")
+```
+
+For multi-sheet workbooks:
+
+```python
+xls = pd.ExcelFile("workbook.xlsx")
+for sheet in xls.sheet_names:
+    df = pd.read_excel(xls, sheet_name=sheet)
+    table_name = sheet.lower().replace(" ", "_")
+    df.to_sql(table_name, engine, if_exists="replace", index=False)
+```
+
+## Method 4: Mako
+
+Mako imports Excel files into MariaDB without conversion:
+
+1. Connect to your MariaDB instance in Mako
+2. Click **Import** and select the `.xlsx` file
+3. Choose the sheet and review the preview
+4. Adjust column mappings and types if needed
+5. Run the import
+
+For one-off imports where you don't need the CONNECT engine or Python, this is the quickest path.
+
+## MariaDB vs MySQL: Import Differences
+
+MariaDB is largely compatible with MySQL for data import, but a few things differ:
+
+- **CONNECT engine**: MariaDB-only. Can read Excel files directly as virtual tables.
+- **LOAD DATA syntax**: Identical to MySQL.
+- **pymysql compatibility**: Works the same way with both databases.
+- **Default character set**: MariaDB 10.6+ defaults to `utf8mb3` for tables. Use `utf8mb4` explicitly for full Unicode support (emoji, CJK characters).
+
+## Common Gotchas
+
+**Character set.** If your Excel data contains special characters (accented letters, emoji, CJK), ensure the table uses `utf8mb4`:
+
+```sql
+CREATE TABLE t (
+  name VARCHAR(200)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+**Date parsing.** Excel dates exported as text may use locale-specific formats. Use `STR_TO_DATE` with the correct format string during `LOAD DATA`, or parse in Python before insertion.
+
+**CONNECT engine availability.** Managed MariaDB services (AWS RDS, Azure, etc.) may not include the CONNECT engine plugin. Check with `SHOW PLUGINS` before relying on it.
+
+**NULL vs empty string.** `LOAD DATA` treats empty fields as empty strings by default. To convert to NULL:
+
+```sql
+LOAD DATA INFILE '/path/file.csv'
+INTO TABLE t
+FIELDS TERMINATED BY ','
+(id, @name, @amount)
+SET name = NULLIF(@name, ''),
+    amount = NULLIF(@amount, '');
+```
+
+**secure_file_priv.** Same restriction as MySQL. Check the allowed directory:
+
+```sql
+SHOW VARIABLES LIKE 'secure_file_priv';
+```
+
+If it's set to an empty string, file loading from arbitrary paths is disabled. Use `LOAD DATA LOCAL INFILE` as a workaround.
+
+Mako connects to MariaDB, PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
