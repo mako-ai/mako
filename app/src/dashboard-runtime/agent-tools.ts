@@ -296,17 +296,27 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "dataSourceId is required" };
     }
 
-    const result = await previewDashboardQuery({
-      dataSourceId: input.dataSourceId,
-      sql: typeof input.sql === "string" ? input.sql : undefined,
-    });
+    try {
+      const result = await previewDashboardQuery({
+        dataSourceId: input.dataSourceId,
+        sql: typeof input.sql === "string" ? input.sql : undefined,
+      });
 
-    return {
-      success: true,
-      columns: result.fields,
-      rows: result.rows.slice(0, 50),
-      rowCount: result.rowCount,
-    };
+      return {
+        success: true,
+        columns: result.fields,
+        rows: result.rows.slice(0, 50),
+        rowCount: result.rowCount,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Query preview failed";
+      return {
+        success: false,
+        error: message,
+        errorKind: classifyDuckDBError(message),
+      };
+    }
   }
 
   if (toolName === "add_widget") {

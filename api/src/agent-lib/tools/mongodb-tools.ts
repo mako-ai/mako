@@ -318,26 +318,63 @@ export const createMongoToolsV2 = (
       description:
         "List all MongoDB connections available in this workspace. Returns connection ID, name, and database name.",
       inputSchema: emptySchema,
-      execute: async () => listMongoConnectionsImpl(workspaceId),
+      execute: async () => {
+        try {
+          return await listMongoConnectionsImpl(workspaceId);
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list MongoDB connections",
+          };
+        }
+      },
     },
 
     list_databases: {
       description:
         "List databases available on the MongoDB server for a specific connection.",
       inputSchema: connectionIdSchema,
-      execute: async (params: { connectionId: string }) =>
-        listMongoDatabasesImpl(params.connectionId, workspaceId),
+      execute: async (params: { connectionId: string }) => {
+        try {
+          return await listMongoDatabasesImpl(params.connectionId, workspaceId);
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list databases",
+          };
+        }
+      },
     },
 
     list_collections: {
       description: "List collections in a MongoDB database.",
       inputSchema: connectionAndDbSchema,
-      execute: async (params: { connectionId: string; databaseName: string }) =>
-        listCollectionsImpl(
-          params.connectionId,
-          params.databaseName,
-          workspaceId,
-        ),
+      execute: async (params: {
+        connectionId: string;
+        databaseName: string;
+      }) => {
+        try {
+          return await listCollectionsImpl(
+            params.connectionId,
+            params.databaseName,
+            workspaceId,
+          );
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list collections",
+          };
+        }
+      },
     },
 
     inspect_collection: {
@@ -348,13 +385,24 @@ export const createMongoToolsV2 = (
         connectionId: string;
         collectionName: string;
         databaseName: string;
-      }) =>
-        inspectCollectionImpl(
-          params.connectionId,
-          params.collectionName,
-          params.databaseName,
-          workspaceId,
-        ),
+      }) => {
+        try {
+          return await inspectCollectionImpl(
+            params.connectionId,
+            params.collectionName,
+            params.databaseName,
+            workspaceId,
+          );
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to inspect collection",
+          };
+        }
+      },
     },
 
     execute_query: {
@@ -365,14 +413,25 @@ export const createMongoToolsV2 = (
         query: string;
         connectionId: string;
         databaseName: string;
-      }) =>
-        executeQueryImpl(
-          params.query,
-          params.connectionId,
-          params.databaseName,
-          workspaceId,
-          userId,
-        ),
+      }) => {
+        try {
+          return await executeQueryImpl(
+            params.query,
+            params.connectionId,
+            params.databaseName,
+            workspaceId,
+            userId,
+          );
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to execute query",
+          };
+        }
+      },
     },
   };
 };
