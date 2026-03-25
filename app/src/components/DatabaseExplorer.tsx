@@ -39,6 +39,8 @@ import {
   Layers as LayersIcon,
   Share2 as ShareIcon,
   Lock as LockIcon,
+  User as UserIcon,
+  Globe as GlobeIcon,
 } from "lucide-react";
 import { useDatabaseExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -250,6 +252,8 @@ function DatabaseExplorer({
   const [sharingDatabase, setSharingDatabase] = useState<Connection | null>(
     null,
   );
+  const [myDbsExpanded, setMyDbsExpanded] = useState(true);
+  const [workspaceDbsExpanded, setWorkspaceDbsExpanded] = useState(true);
 
   const myDatabases = useMemo(
     () => databases.filter(db => db.isOwner === true),
@@ -806,40 +810,79 @@ function DatabaseExplorer({
                 <>
                   {myDatabases.length > 0 && (
                     <>
-                      <ListItem sx={{ py: 0.25 }}>
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            color: "text.secondary",
+                      <ListItemButton
+                        onClick={() => setMyDbsExpanded(!myDbsExpanded)}
+                        sx={{ py: 0.25, pl: 0.5 }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                          {myDbsExpanded ? (
+                            <ChevronDownIcon strokeWidth={1.5} size={20} />
+                          ) : (
+                            <ChevronRightIcon strokeWidth={1.5} size={20} />
+                          )}
+                        </ListItemIcon>
+                        <ListItemIcon sx={{ minWidth: 24 }}>
+                          <UserIcon strokeWidth={1.5} size={18} />
+                        </ListItemIcon>
+                        <ListItemText
+                          primary="My Databases"
+                          primaryTypographyProps={{
+                            variant: "body2",
                             fontWeight: 600,
-                            textTransform: "uppercase",
-                            fontSize: "0.65rem",
-                            letterSpacing: "0.05em",
+                            sx: {
+                              textTransform: "uppercase",
+                              fontSize: "0.75rem",
+                              letterSpacing: "0.05em",
+                            },
                           }}
-                        >
-                          My Databases
-                        </Typography>
-                      </ListItem>
-                      {myDatabases.map(renderDatabaseItem)}
+                        />
+                        <Chip
+                          label={myDatabases.length}
+                          size="small"
+                          sx={{ height: 18, fontSize: "0.7rem" }}
+                        />
+                      </ListItemButton>
+                      {myDbsExpanded && myDatabases.map(renderDatabaseItem)}
                     </>
                   )}
                   {sharedDatabases.length > 0 && (
                     <>
-                      <ListItem sx={{ py: 0.25, mt: 0.5 }}>
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            color: "text.secondary",
+                      <ListItemButton
+                        onClick={() =>
+                          setWorkspaceDbsExpanded(!workspaceDbsExpanded)
+                        }
+                        sx={{ py: 0.25, pl: 0.5 }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                          {workspaceDbsExpanded ? (
+                            <ChevronDownIcon strokeWidth={1.5} size={20} />
+                          ) : (
+                            <ChevronRightIcon strokeWidth={1.5} size={20} />
+                          )}
+                        </ListItemIcon>
+                        <ListItemIcon sx={{ minWidth: 24 }}>
+                          <GlobeIcon strokeWidth={1.5} size={18} />
+                        </ListItemIcon>
+                        <ListItemText
+                          primary="Workspace"
+                          primaryTypographyProps={{
+                            variant: "body2",
                             fontWeight: 600,
-                            textTransform: "uppercase",
-                            fontSize: "0.65rem",
-                            letterSpacing: "0.05em",
+                            sx: {
+                              textTransform: "uppercase",
+                              fontSize: "0.75rem",
+                              letterSpacing: "0.05em",
+                            },
                           }}
-                        >
-                          Workspace
-                        </Typography>
-                      </ListItem>
-                      {sharedDatabases.map(renderDatabaseItem)}
+                        />
+                        <Chip
+                          label={sharedDatabases.length}
+                          size="small"
+                          sx={{ height: 18, fontSize: "0.7rem" }}
+                        />
+                      </ListItemButton>
+                      {workspaceDbsExpanded &&
+                        sharedDatabases.map(db => renderDatabaseItem(db))}
                     </>
                   )}
                 </>
