@@ -2055,6 +2055,60 @@ flowRoutes.post("/:flowId/sync-cdc/resync", async c => {
   }
 });
 
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/stream/start
+flowRoutes.post("/:flowId/sync-cdc/stream/start", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+    const result = await cdcBackfillService.resumeStream(workspaceId, flowId);
+    return c.json({
+      success: true,
+      message: "CDC stream activated",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/stream/pause
+flowRoutes.post("/:flowId/sync-cdc/stream/pause", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+    const result = await cdcBackfillService.pauseStream(workspaceId, flowId);
+    return c.json({
+      success: true,
+      message: "CDC stream paused",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/pause
 flowRoutes.post("/:flowId/sync-cdc/pause", async c => {
   try {

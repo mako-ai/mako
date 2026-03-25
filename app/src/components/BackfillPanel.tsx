@@ -256,6 +256,8 @@ export function BackfillPanel({
     fetchExecutionDetails,
     fetchFlowHistory,
     fetchWebhookEvents,
+    startCdcStream,
+    pauseCdcStream,
     pauseCdcFlow,
     resumeCdcFlow,
     resetCdcEntityTable,
@@ -456,15 +458,21 @@ export function BackfillPanel({
       setTimeout(() => pollLogs(), 3000);
     });
 
+  const handleStartStream = () =>
+    withBusy(async () => {
+      const ok = await startCdcStream(workspaceId, flowId);
+      if (!ok) throw new Error("Failed to start stream");
+    });
+
   const handlePauseStream = () =>
     withBusy(async () => {
-      const ok = await pauseCdcFlow(workspaceId, flowId);
+      const ok = await pauseCdcStream(workspaceId, flowId);
       if (!ok) throw new Error("Failed to pause stream");
     });
 
   const handleResumeStream = () =>
     withBusy(async () => {
-      const ok = await resumeCdcFlow(workspaceId, flowId);
+      const ok = await startCdcStream(workspaceId, flowId);
       if (!ok) throw new Error("Failed to resume stream");
     });
 
@@ -751,7 +759,7 @@ export function BackfillPanel({
                     size="small"
                     variant="outlined"
                     startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleResumeStream}
+                    onClick={handleStartStream}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >

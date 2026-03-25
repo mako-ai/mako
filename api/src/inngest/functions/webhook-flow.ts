@@ -138,7 +138,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
         // BigQuery interprets dots as struct field access which breaks queries
         const documentData = {
           ...normalizePayloadKeys(data),
-          _dataSourceId: dataSource._id,
+          _dataSourceId: dataSource.id,
           _dataSourceName: dataSource.name,
           _syncedAt: new Date(),
           _webhookEventId: webhookEvent.eventId,
@@ -324,7 +324,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
             } else {
               const result = await writer.deleteByKeys({
                 id,
-                _dataSourceId: dataSource._id,
+                _dataSourceId: dataSource.id,
               });
               if (!result.success) {
                 throw new Error(`SQL hard delete failed: ${result.error}`);

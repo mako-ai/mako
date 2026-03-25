@@ -110,7 +110,16 @@ function coerceValue(value: unknown, arrowType: ArrowDataType): unknown {
     return null;
   }
 
-  if (typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "object") {
+    if (
+      value != null &&
+      typeof (value as any).toString === "function" &&
+      (value as any)._bsontype
+    ) {
+      return (value as any).toString();
+    }
+    return JSON.stringify(value);
+  }
   return String(value);
 }
 

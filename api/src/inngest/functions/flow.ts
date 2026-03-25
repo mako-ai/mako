@@ -2019,7 +2019,8 @@ export const flowFunction = inngest.createFunction(
               replayFilter.status = "pending";
             }
 
-            const totalPending = await WebhookEvent.countDocuments(replayFilter);
+            const totalPending =
+              await WebhookEvent.countDocuments(replayFilter);
 
             let queued = 0;
             let batches = 0;

@@ -429,6 +429,8 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     entity: string,
   ) => Promise<boolean>;
+  startCdcStream: (workspaceId: string, flowId: string) => Promise<boolean>;
+  pauseCdcStream: (workspaceId: string, flowId: string) => Promise<boolean>;
   pauseCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resumeCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resyncCdcFlow: (
@@ -923,6 +925,48 @@ export const useFlowStore = create<FlowStore>()(
           );
           if (!response.success) {
             throw new Error(response.error || "Failed to reset entity table");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      startCdcStream: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/stream/start`,
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to start CDC stream");
+          }
+          await get().refresh(workspaceId);
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      pauseCdcStream: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/stream/pause`,
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to pause CDC stream");
           }
           await get().refresh(workspaceId);
           return true;
