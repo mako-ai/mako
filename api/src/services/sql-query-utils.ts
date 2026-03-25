@@ -44,7 +44,10 @@ export function findTopLevelKeyword(
       continue;
     }
 
-    if (inSingleQuote) continue;
+    if (inSingleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
 
     // Handle double-quoted SQL identifiers ("" is the escape for a literal
     // double-quote inside an identifier, e.g. "col""name")
@@ -61,7 +64,10 @@ export function findTopLevelKeyword(
       continue;
     }
 
-    if (inDoubleQuote) continue;
+    if (inDoubleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
 
     // Handle line comments: -- through end of line
     if (ch === "-" && i + 1 < len && query[i + 1] === "-") {
@@ -155,6 +161,85 @@ export function appendWhereCondition(query: string, condition: string): string {
     return `${beforeClause}${separator}AND ${condition} ${afterClause}`;
   }
   return `${beforeClause}${separator}WHERE ${condition} ${afterClause}`;
+}
+
+/**
+ * Count semicolons that are NOT inside single-quoted strings, double-quoted
+ * identifiers, line comments (`-- …`), or block comments.  Returns the total
+ * count and the character index of the last top-level semicolon (or -1).
+ */
+export function countTopLevelSemicolons(query: string): {
+  count: number;
+  lastIndex: number;
+} {
+  let count = 0;
+  let lastIndex = -1;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  const len = query.length;
+
+  for (let i = 0; i < len; i++) {
+    const ch = query[i];
+
+    if (ch === "'" && !inDoubleQuote) {
+      if (inSingleQuote) {
+        if (i + 1 < len && query[i + 1] === "'") {
+          i++;
+        } else {
+          inSingleQuote = false;
+        }
+      } else {
+        inSingleQuote = true;
+      }
+      continue;
+    }
+    if (inSingleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
+
+    if (ch === '"') {
+      if (inDoubleQuote) {
+        if (i + 1 < len && query[i + 1] === '"') {
+          i++;
+        } else {
+          inDoubleQuote = false;
+        }
+      } else {
+        inDoubleQuote = true;
+      }
+      continue;
+    }
+    if (inDoubleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
+
+    if (ch === "-" && i + 1 < len && query[i + 1] === "-") {
+      const nl = query.indexOf("\n", i + 2);
+      if (nl === -1) break;
+      i = nl;
+      continue;
+    }
+
+    if (ch === "/" && i + 1 < len && query[i + 1] === "*") {
+      if (i + 2 < len && query[i + 2] === "!") {
+        i += 2;
+        continue;
+      }
+      const close = query.indexOf("*/", i + 2);
+      if (close === -1) break;
+      i = close + 1;
+      continue;
+    }
+
+    if (ch === ";") {
+      count++;
+      lastIndex = i;
+    }
+  }
+
+  return { count, lastIndex };
 }
 
 /**
