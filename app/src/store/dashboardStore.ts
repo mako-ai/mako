@@ -148,6 +148,7 @@ interface DashboardStoreState {
     id: string,
   ) => Promise<Dashboard | null>;
   openDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
+  reloadDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
   closeDashboard: (dashboardId: string) => void;
   saveDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
   resolveConflict: (
@@ -387,8 +388,13 @@ export const useDashboardStore = create<DashboardStoreState>()(
           set(state => {
             state.activeDashboardId = dashboardId;
           });
+          return;
         }
 
+        await get().reloadDashboard(workspaceId, dashboardId);
+      },
+
+      reloadDashboard: async (workspaceId: string, dashboardId: string) => {
         try {
           const response = await apiClient.get<{
             success: boolean;
@@ -408,9 +414,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             set(state => {
               state.openDashboards[dashboardId] = dashboard;
               state.activeDashboardId = dashboardId;
-              if (!existing) {
-                state.historyMap[dashboardId] = { stack: [], index: -1 };
-              }
+              state.historyMap[dashboardId] = { stack: [], index: -1 };
             });
           }
         } catch {
@@ -451,7 +455,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
           }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`, payload);
           if (response.data) {
             set(state => {
-              state.openDashboards[dashboardId] = response.data;
+              const local = state.openDashboards[dashboardId];
+              if (local) {
+                local.version = response.data.version;
+              }
             });
           }
         } catch (err: any) {
@@ -829,7 +836,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
         } catch {
           const dash = get().openDashboards[dashboardId];
           if (dash) {
-            await get().openDashboard(workspaceId, dashboardId);
+            await get().reloadDashboard(workspaceId, dashboardId);
           }
           return false;
         }
