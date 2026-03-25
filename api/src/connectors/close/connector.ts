@@ -826,12 +826,342 @@ export class CloseConnector extends BaseConnector {
     return d.toISOString().slice(0, 10);
   }
 
+  private getActivitySubtypeSearchObjectType(entity: string): string | null {
+    const supportedEntityTypes = new Set<string>([
+      "activities:Meeting",
+      "activities:Note",
+      "activities:Call",
+      "activities:Email",
+      "activities:SMS",
+      "activities:LeadStatusChange",
+      "activities:OpportunityStatusChange",
+    ]);
+    if (!supportedEntityTypes.has(entity)) return null;
+    return this.getSearchObjectType(entity);
+  }
+
+  private getActivitySearchFields(objectType: string): string[] | undefined {
+    const commonActivityFields = [
+      "id",
+      "_type",
+      "activity_at",
+      "contact_id",
+      "created_by",
+      "created_by_name",
+      "date_created",
+      "date_updated",
+      "lead_id",
+      "organization_id",
+      "source",
+      "updated_by",
+      "updated_by_name",
+      "user_id",
+      "user_name",
+      "users",
+    ];
+
+    const fieldsMap: Record<string, string[]> = {
+      "activity.meeting": [
+        ...commonActivityFields,
+        "title",
+        "note",
+        "summary",
+        "duration",
+        "actual_duration",
+        "starts_at",
+        "ends_at",
+        "location",
+        "status",
+        "attendees",
+        "calendar_event_link",
+        "conference_links",
+      ],
+      "activity.note": [
+        ...commonActivityFields,
+        "title",
+        "note",
+        "note_html",
+        "attachments",
+        "pinned",
+      ],
+      "activity.lead_status_change": [
+        ...commonActivityFields,
+        "old_status_id",
+        "old_status_label",
+        "new_status_id",
+        "new_status_label",
+      ],
+      "activity.opportunity_status_change": [
+        ...commonActivityFields,
+        "opportunity_id",
+        "opportunity_value",
+        "opportunity_value_currency",
+        "opportunity_value_formatted",
+        "opportunity_value_period",
+        "opportunity_confidence",
+        "opportunity_date_won",
+        "old_status_id",
+        "old_status_label",
+        "old_status_type",
+        "new_status_id",
+        "new_status_label",
+        "new_status_type",
+        "old_pipeline_id",
+        "old_pipeline_name",
+        "new_pipeline_id",
+        "new_pipeline_name",
+      ],
+      "activity.call": [
+        ...commonActivityFields,
+        "direction",
+        "disposition",
+        "duration",
+        "status",
+        "note",
+        "note_html",
+        "phone",
+        "remote_phone",
+        "remote_phone_formatted",
+        "local_phone",
+        "local_phone_formatted",
+        "remote_country_iso",
+        "local_country_iso",
+        "has_recording",
+        "recording_url",
+        "recording_duration",
+        "recording_transcript",
+        "voicemail_duration",
+        "voicemail_url",
+        "voicemail_transcript",
+        "date_answered",
+        "cost",
+        "outcome_id",
+        "outcome_reason",
+        "call_method",
+        "is_forwarded",
+        "forwarded_to",
+        "transferred_from",
+        "transferred_to",
+        "sequence_id",
+        "sequence_name",
+      ],
+      "activity.email": [
+        ...commonActivityFields,
+        "direction",
+        "status",
+        "subject",
+        "body_text",
+        "body_html",
+        "body_preview",
+        "body_text_quoted",
+        "body_html_quoted",
+        "sender",
+        "to",
+        "cc",
+        "bcc",
+        "envelope",
+        "attachments",
+        "opens",
+        "opens_summary",
+        "has_reply",
+        "date_sent",
+        "date_scheduled",
+        "email_account_id",
+        "thread_id",
+        "in_reply_to_id",
+        "message_ids",
+        "references",
+        "template_id",
+        "template_name",
+        "sequence_id",
+        "sequence_name",
+        "send_as_id",
+      ],
+      "activity.sms": [
+        ...commonActivityFields,
+        "direction",
+        "status",
+        "text",
+        "local_phone",
+        "local_phone_formatted",
+        "remote_phone",
+        "remote_phone_formatted",
+        "local_country_iso",
+        "remote_country_iso",
+      ],
+    };
+
+    return fieldsMap[objectType];
+  }
+
+  private async fetchActivitySubtypeChunkViaSearch(
+    options: ResumableFetchOptions,
+    objectType: string,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, state } = options;
+    const api = this.getCloseClient();
+    // Close Search API allows _limit up to 200; force max page size.
+    const batchSize = 200;
+    // Avoid artificial sleeps on the fast path; rely on 429 retry-after.
+    const rateLimitDelay = Math.max(0, options.rateLimitDelay ?? 0);
+    const maxIterations = options.maxIterations || 10;
+
+    let recordCount = state?.totalProcessed || 0;
+    let iterations = 0;
+    let cursorDateCreated: string | null =
+      state?.metadata?.cursorDateCreated ?? null;
+    let searchCursor: string | null = state?.metadata?.searchCursor ?? null;
+
+    if (!state && onProgress) {
+      onProgress(0, undefined);
+    }
+
+    while (iterations < maxIterations) {
+      try {
+        const queries: any[] = [
+          { type: "object_type", object_type: objectType },
+        ];
+
+        if (cursorDateCreated && !searchCursor) {
+          queries.push({
+            type: "field_condition",
+            field: {
+              type: "regular_field",
+              object_type: objectType,
+              field_name: "date_created",
+            },
+            condition: {
+              type: "moment_range",
+              on_or_after: null,
+              before: {
+                type: "fixed_utc",
+                value: cursorDateCreated,
+                which: "start",
+              },
+            },
+          });
+        }
+
+        const body: any = {
+          query: { type: "and", queries },
+          _limit: batchSize,
+          sort: [
+            {
+              direction: "desc",
+              field: {
+                object_type: objectType,
+                type: "regular_field",
+                field_name: "date_created",
+              },
+            },
+          ],
+        };
+        if (searchCursor) {
+          body.cursor = searchCursor;
+        }
+
+        const projectedFields = this.getActivitySearchFields(objectType);
+        if (projectedFields && projectedFields.length > 0) {
+          body._fields = { [objectType]: projectedFields };
+        }
+
+        const response = await api.post("/data/search/", body);
+        const data = response.data?.data || [];
+        const nextCursor = response.data?.cursor || null;
+
+        if (data.length === 0) {
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: iterations + 1,
+            metadata: { cursorDateCreated, searchCursor: nextCursor },
+          };
+        }
+
+        await onBatch(data);
+        recordCount += data.length;
+
+        const rawCursor = data[data.length - 1]?.date_created;
+        if (typeof rawCursor !== "string" || rawCursor.length === 0) {
+          throw new Error(
+            `Close search response missing date_created for ${objectType}`,
+          );
+        }
+        cursorDateCreated = rawCursor;
+        searchCursor = nextCursor;
+
+        if (onProgress) {
+          onProgress(recordCount, undefined);
+        }
+
+        iterations++;
+
+        if (!nextCursor) {
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: iterations,
+            metadata: { cursorDateCreated, searchCursor },
+          };
+        }
+
+        if (rateLimitDelay > 0) {
+          await this.sleep(rateLimitDelay);
+        }
+      } catch (error) {
+        if (
+          axios.isAxiosError(error) &&
+          error.response?.status === 400 &&
+          searchCursor &&
+          error.response.data?.["field-errors"]?.cursor === "Expired cursor"
+        ) {
+          logger.warn("Search cursor expired, retrying with date cursor", {
+            objectType,
+            recordsFetched: recordCount,
+          });
+          searchCursor = null;
+          continue;
+        }
+
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited on search API, waiting", {
+            retryAfterSeconds: retryAfter,
+            objectType,
+            recordsFetched: recordCount,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return {
+      totalProcessed: recordCount,
+      hasMore: true,
+      iterationsInChunk: iterations,
+      metadata: { cursorDateCreated, searchCursor },
+    };
+  }
+
   private async fetchActivitiesChunk(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
     const { entity, onBatch, onProgress, state } = options;
+    const activitySearchObjectType =
+      this.getActivitySubtypeSearchObjectType(entity);
+    if (activitySearchObjectType) {
+      return await this.fetchActivitySubtypeChunkViaSearch(
+        options,
+        activitySearchObjectType,
+      );
+    }
+
     const api = this.getCloseClient();
-    const batchSize = options.batchSize || this.getBatchSize();
+    const batchSize = Math.min(options.batchSize || this.getBatchSize(), 100);
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
     const maxIterations = options.maxIterations || 10;
 
@@ -1581,8 +1911,21 @@ export class CloseConnector extends BaseConnector {
 
   private async fetchAllActivities(options: FetchOptions): Promise<void> {
     const { entity, onBatch, onProgress, since } = options;
+    const activitySearchObjectType =
+      this.getActivitySubtypeSearchObjectType(entity);
+    if (activitySearchObjectType) {
+      await this.fetchActivitySubtypeChunkViaSearch(
+        {
+          ...options,
+          maxIterations: Number.MAX_SAFE_INTEGER,
+        },
+        activitySearchObjectType,
+      );
+      return;
+    }
+
     const api = this.getCloseClient();
-    const batchSize = options.batchSize || this.getBatchSize();
+    const batchSize = Math.min(options.batchSize || this.getBatchSize(), 100);
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
 
     // Parse sub-entity for endpoint selection (e.g., "activities:Call")
