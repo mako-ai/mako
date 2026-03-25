@@ -483,6 +483,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
             <MenuItem
               onClick={() => {
                 setAddMenuAnchor(null);
+                resetDirectForm();
                 setAddMode("import");
               }}
             >
