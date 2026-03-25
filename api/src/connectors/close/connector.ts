@@ -873,18 +873,17 @@ export class CloseConnector extends BaseConnector {
     const advanceWindow = (empty: boolean) => {
       if (empty) {
         if (windowGranularity === "day") {
-          windowStart = CloseConnector.nextMonth(windowStart);
-          windowGranularity = "month";
+          windowStart = CloseConnector.nextDay(windowStart);
         } else {
           const d = new Date(windowStart);
           d.setUTCFullYear(d.getUTCFullYear() + 1);
           windowStart = d.toISOString().slice(0, 10);
         }
       } else if (windowGranularity === "day") {
-        windowStart = CloseConnector.nextDay(windowStart);
         const monthBoundary = CloseConnector.nextMonth(
           windowStart.slice(0, 7) + "-01",
         );
+        windowStart = CloseConnector.nextDay(windowStart);
         if (windowStart >= monthBoundary) {
           windowGranularity = "month";
         }
