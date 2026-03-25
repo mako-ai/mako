@@ -536,7 +536,6 @@ export class CloseConnector extends BaseConnector {
     const baseEntities = [
       "leads",
       "opportunities",
-      "activities",
       "contacts",
       "users",
       "custom_fields",
