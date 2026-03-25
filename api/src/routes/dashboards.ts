@@ -501,33 +501,14 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       );
     }
 
-    // Optimistic concurrency check
-    const clientVersion =
-      typeof body.version === "number" ? body.version : null;
-    if (clientVersion !== null && dashboard.version !== clientVersion) {
-      const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
-      normalizeDashboardWidgetLayouts(plain);
-      return c.json(
-        {
-          success: false,
-          error: "Dashboard was modified by another user",
-          code: "VERSION_CONFLICT",
-          serverVersion: dashboard.version,
-          data: sanitizeDashboardResponse(
-            await hydrateDashboardArtifactUrls(plain as any),
-          ),
-        },
-        409,
-      );
-    }
-
     const previousDataSources = dashboard.toObject().dataSources || [];
 
+    const updateFields: Record<string, unknown> = {};
     if (body.title !== undefined) {
-      dashboard.title = body.title;
+      updateFields.title = body.title;
     }
     if (body.description !== undefined) {
-      dashboard.description = body.description;
+      updateFields.description = body.description;
     }
     if (body.dataSources !== undefined) {
       const normalizedDataSources = await normalizeDashboardDataSources(
@@ -540,29 +521,29 @@ app.put("/:id", async (c: AuthenticatedContext) => {
           400,
         );
       }
-      dashboard.dataSources = normalizedDataSources.dataSources || [];
+      updateFields.dataSources = normalizedDataSources.dataSources || [];
     }
     if (body.widgets !== undefined) {
-      dashboard.widgets = body.widgets;
+      updateFields.widgets = body.widgets;
     }
     if (body.relationships !== undefined) {
-      dashboard.relationships = body.relationships;
+      updateFields.relationships = body.relationships;
     }
     if (body.globalFilters !== undefined) {
-      dashboard.globalFilters = body.globalFilters;
+      updateFields.globalFilters = body.globalFilters;
     }
     if (body.layout !== undefined) {
-      dashboard.layout = body.layout;
+      updateFields.layout = body.layout;
     }
     if (body.crossFilter !== undefined) {
-      dashboard.crossFilter = body.crossFilter;
+      updateFields.crossFilter = body.crossFilter;
     }
     if (body.materializationSchedule !== undefined) {
       try {
-        dashboard.materializationSchedule =
+        updateFields.materializationSchedule =
           validateDashboardMaterializationSchedule(
             body.materializationSchedule,
-          ) as any;
+          );
       } catch (error) {
         return c.json(
           {
@@ -577,23 +558,65 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       }
     }
     if (body.cache !== undefined) {
-      dashboard.cache = body.cache;
+      updateFields.cache = body.cache;
     }
     if (body.access !== undefined) {
-      dashboard.access = body.access;
+      updateFields.access = body.access;
     }
 
-    dashboard.version = (dashboard.version || 1) + 1;
-    await dashboard.save();
+    // Atomic optimistic concurrency update
+    const clientVersion =
+      typeof body.version === "number" ? body.version : null;
+    const filter: Record<string, unknown> = {
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    };
+    if (clientVersion !== null) {
+      filter.version = clientVersion;
+    }
+
+    const updated = await Dashboard.findOneAndUpdate(
+      filter,
+      {
+        $set: updateFields,
+        $inc: { version: 1 },
+      },
+      { new: true, runValidators: true },
+    );
+
+    if (!updated) {
+      const latest = await Dashboard.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (latest) {
+        const plain = latest.toObject ? latest.toObject() : latest;
+        normalizeDashboardWidgetLayouts(plain);
+        return c.json(
+          {
+            success: false,
+            error: "Dashboard was modified by another user",
+            code: "VERSION_CONFLICT",
+            serverVersion: latest.version,
+            data: sanitizeDashboardResponse(
+              await hydrateDashboardArtifactUrls(plain as any),
+            ),
+          },
+          409,
+        );
+      }
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
     if (
       didDashboardArtifactInputsChange(
         previousDataSources as any[],
-        (dashboard.toObject().dataSources || []) as any[],
+        (updated.toObject().dataSources || []) as any[],
       ) &&
-      isDashboardMaterializationEnabled(dashboard.materializationSchedule)
+      isDashboardMaterializationEnabled(updated.materializationSchedule)
     ) {
       await queueDashboardArtifactRefresh({
-        dashboardId: dashboard._id.toString(),
+        dashboardId: updated._id.toString(),
         triggerType: "dashboard_update",
       }).catch(() => undefined);
     }
@@ -601,7 +624,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     return c.json({
       success: true,
       data: sanitizeDashboardResponse(
-        await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
+        await hydrateDashboardArtifactUrls(updated.toObject() as any),
       ),
     });
   } catch (error) {

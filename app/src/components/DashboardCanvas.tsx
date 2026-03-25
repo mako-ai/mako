@@ -162,11 +162,18 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     null,
   );
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isEditModeLocalRef = useRef(false);
+  const workspaceIdRef = useRef<string | undefined>(undefined);
+  const dashboardIdRef = useRef<string | undefined>(dashboardId);
 
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();
 
   const workspaceId = currentWorkspace?.id;
+  isEditModeLocalRef.current = isEditModeLocal;
+  workspaceIdRef.current = workspaceId;
+  dashboardIdRef.current = dashboardId;
+
   const crossFilterResolution =
     dashboard?.crossFilter.resolution ?? "intersect";
   const isCrossFilterEnabled = dashboard?.crossFilter.enabled ?? false;
@@ -353,8 +360,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   // Release lock on unmount
   useEffect(() => {
     return () => {
-      if (isEditModeLocal && workspaceId && dashboardId) {
-        void releaseLock(workspaceId, dashboardId);
+      if (
+        isEditModeLocalRef.current &&
+        workspaceIdRef.current &&
+        dashboardIdRef.current
+      ) {
+        void releaseLock(workspaceIdRef.current, dashboardIdRef.current);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -968,11 +979,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           {lockError}
         </Alert>
       )}
-      {!isEditMode && dashboard?.editLock && !isReadOnly && (
-        <Alert severity="info" sx={{ borderRadius: 0 }}>
-          {dashboard.editLock.userName} is currently editing this dashboard
-        </Alert>
-      )}
+      {!isEditMode &&
+        dashboard?.editLock &&
+        new Date(dashboard.editLock.expiresAt) > new Date() &&
+        !isReadOnly && (
+          <Alert severity="info" sx={{ borderRadius: 0 }}>
+            {dashboard.editLock.userName} is currently editing this dashboard
+          </Alert>
+        )}
       {dataFreshness && (
         <Alert
           severity="warning"
