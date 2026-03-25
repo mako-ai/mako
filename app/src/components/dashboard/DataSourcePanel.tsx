@@ -378,12 +378,12 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
     }
   };
 
-  const handleEditDataSource = (dataSourceId: string) => {
+  const handleEditDataSource = (dataSourceId: string): boolean => {
     const ds = dashboard?.dataSources.find(
       source => source.id === dataSourceId,
     );
     if (!ds) {
-      return;
+      return false;
     }
 
     setEditingDataSourceId(ds.id);
@@ -392,6 +392,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
     setDirectDatabaseName(ds.query.databaseName || "");
     setDirectLanguage(ds.query.language);
     setDirectQuery(ds.query.code);
+    return true;
   };
 
   const resetDirectForm = () => {
@@ -413,8 +414,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
   };
 
   const handleStartEdit = (dataSourceId: string) => {
-    handleEditDataSource(dataSourceId);
-    setAddMode("scratch");
+    if (handleEditDataSource(dataSourceId)) {
+      setAddMode("scratch");
+    }
   };
 
   const dataSources = dashboard?.dataSources ?? [];
@@ -814,7 +816,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                 );
 
               const statsSegments = [
-                status === "ready" && loadedRows > 0
+                loadedRows > 0
                   ? `${loadedRows.toLocaleString()} rows`
                   : null,
                 sizeLabel,
