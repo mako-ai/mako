@@ -476,11 +476,18 @@ export class CdcBackfillService {
       throw new Error("Stream resume requires syncEngine=cdc");
     }
 
-    const result = await cdcSyncStateService.applyStreamTransition({
+    let result = await cdcSyncStateService.applyStreamTransition({
       workspaceId,
       flowId,
-      event: { type: "RESUME", reason: "Stream resumed via API" },
+      event: { type: "RECOVER", reason: "Stream recovered via API" },
     });
+    if (!result.changed) {
+      result = await cdcSyncStateService.applyStreamTransition({
+        workspaceId,
+        flowId,
+        event: { type: "RESUME", reason: "Stream resumed via API" },
+      });
+    }
     if (!result.changed) {
       await cdcSyncStateService.applyStreamTransition({
         workspaceId,
