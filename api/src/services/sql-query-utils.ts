@@ -211,6 +211,10 @@ export function countTopLevelSemicolons(query: string): {
     }
 
     if (ch === "/" && i + 1 < len && query[i + 1] === "*") {
+      if (i + 2 < len && query[i + 2] === "!") {
+        i += 2;
+        continue;
+      }
       const close = query.indexOf("*/", i + 2);
       if (close === -1) break;
       i = close + 1;

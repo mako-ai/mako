@@ -100,6 +100,9 @@ function stripLeadingSqlComments(sql: string): string {
       const nl = s.indexOf("\n");
       s = nl === -1 ? "" : s.substring(nl + 1);
     } else if (s.startsWith("/*")) {
+      if (s.length > 2 && s[2] === "!") {
+        break;
+      }
       const end = s.indexOf("*/");
       s = end === -1 ? "" : s.substring(end + 2);
     } else {
