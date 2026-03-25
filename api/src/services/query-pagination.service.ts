@@ -103,7 +103,7 @@ function stripLeadingSqlComments(sql: string): string {
       if (s.length > 2 && s[2] === "!") {
         break;
       }
-      const end = s.indexOf("*/");
+      const end = s.indexOf("*/", 2);
       s = end === -1 ? "" : s.substring(end + 2);
     } else {
       break;
