@@ -11,7 +11,6 @@ import {
   DASHBOARD_SYSTEM_PROMPT,
   buildDashboardRuntimeContext,
 } from "./prompt";
-import { createDashboardServerTools } from "../../agent-lib/tools/dashboard-tools-server";
 import { clientDashboardTools } from "../../agent-lib/tools/dashboard-tools-client";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -35,7 +34,6 @@ export const dashboardAgentMeta: AgentMeta = {
 export function dashboardAgentFactory(context: AgentContext): AgentConfig {
   const { workspaceId } = context;
 
-  const serverTools = createDashboardServerTools(workspaceId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
 
@@ -56,7 +54,6 @@ export function dashboardAgentFactory(context: AgentContext): AgentConfig {
       },
     ],
     tools: {
-      ...serverTools,
       ...clientDashboardTools,
       ...selfDirectiveTools,
       ...consoleSearchTools,

@@ -634,6 +634,9 @@ export async function materializeDashboardDataSource(options: {
   );
 
   // Skip if already loaded with the same version.
+  // Staleness (dataFreshnessTtlMs) is handled by the materialization pipeline
+  // which produces a new parquet version; reloading the same parquet into
+  // DuckDB would not produce fresher data.
   if (
     !force &&
     cachedVersion === version &&
