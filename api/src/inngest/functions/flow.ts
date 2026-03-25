@@ -1726,7 +1726,17 @@ export const flowFunction = inngest.createFunction(
               },
             );
             await step.run(`flush-final-${safeEntityStepId}`, async () => {
-              await performBulkFlush(bulkSyncOptions);
+              try {
+                await performBulkFlush(bulkSyncOptions);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                appendExecutionLog(
+                  "error",
+                  `Failed to flush ${entity} buffer to staging: ${msg}`,
+                  { entity },
+                );
+                throw err;
+              }
             });
             appendExecutionLog(
               "info",
@@ -1747,7 +1757,17 @@ export const flowFunction = inngest.createFunction(
               },
             );
             await step.run(`merge-staging-${safeEntityStepId}`, async () => {
-              return performStagingMerge(bulkSyncOptions);
+              try {
+                return await performStagingMerge(bulkSyncOptions);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                appendExecutionLog(
+                  "error",
+                  `Failed to merge ${entity} staging to live: ${msg}`,
+                  { entity },
+                );
+                throw err;
+              }
             });
             appendExecutionLog(
               "info",
@@ -1761,7 +1781,17 @@ export const flowFunction = inngest.createFunction(
               entity,
             });
             await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
-              await performStagingCleanup(bulkSyncOptions);
+              try {
+                await performStagingCleanup(bulkSyncOptions);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                appendExecutionLog(
+                  "error",
+                  `Failed to cleanup ${entity} staging: ${msg}`,
+                  { entity },
+                );
+                throw err;
+              }
             });
             logger.info(
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
@@ -1963,7 +1993,7 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && !isCdcEnabled) {
+      if (backfill && flow.type === "webhook") {
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
@@ -1980,11 +2010,17 @@ export const flowFunction = inngest.createFunction(
             );
             const replayCutoff = new Date();
 
-            const totalPending = await WebhookEvent.countDocuments({
+            const replayFilter: Record<string, unknown> = {
               flowId: flowObjectId,
               applyStatus: "pending",
               receivedAt: { $lte: replayCutoff },
-            });
+            };
+            if (isCdcEnabled) {
+              replayFilter.status = "pending";
+            }
+
+            const totalPending =
+              await WebhookEvent.countDocuments(replayFilter);
 
             let queued = 0;
             let batches = 0;
@@ -2010,9 +2046,7 @@ export const flowFunction = inngest.createFunction(
                   : {};
 
               const pendingBatch = (await WebhookEvent.find({
-                flowId: flowObjectId,
-                applyStatus: "pending",
-                receivedAt: { $lte: replayCutoff },
+                ...replayFilter,
                 ...cursorClause,
               })
                 .sort({ receivedAt: 1, eventId: 1 })
@@ -2069,14 +2103,16 @@ export const flowFunction = inngest.createFunction(
           remainingEstimate: replayResult.remainingEstimate,
         });
 
-        await step.run("disable-webhook-backfill-gate", async () => {
-          await Flow.findByIdAndUpdate(flowId, {
-            $set: {
-              "backfillState.active": false,
-              "backfillState.completedAt": new Date(),
-            },
+        if (!isCdcEnabled) {
+          await step.run("disable-webhook-backfill-gate", async () => {
+            await Flow.findByIdAndUpdate(flowId, {
+              $set: {
+                "backfillState.active": false,
+                "backfillState.completedAt": new Date(),
+              },
+            });
           });
-        });
+        }
       }
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {

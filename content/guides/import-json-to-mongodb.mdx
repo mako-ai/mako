@@ -1,0 +1,163 @@
+---
+title: "How to Import JSON to MongoDB (3 Methods)"
+slug: import-json-to-mongodb
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mongodb
+  - json
+  - import
+  - data
+excerpt: "Three ways to import JSON data into MongoDB: mongoimport CLI, insertMany in the shell, and Mako. Covers JSON vs BSON, large file handling, and schema validation."
+metaDescription: "Import JSON to MongoDB in 2026: mongoimport, insertMany(), and Mako GUI. Step-by-step with NDJSON, JSON arrays, and practical tips."
+database: mongodb
+category: import-export
+draft: false
+---
+
+MongoDB stores data as BSON (Binary JSON), so importing JSON is a natural operation. The primary tool is `mongoimport`, part of the MongoDB Database Tools package.
+
+## Method 1: mongoimport CLI
+
+Install MongoDB Database Tools if you don't have them (they're separate from the server since MongoDB 4.4):
+
+```bash
+# macOS
+brew install mongodb-database-tools
+
+# Ubuntu/Debian
+sudo apt-get install mongodb-database-tools
+```
+
+**Import a JSON array file:**
+
+```bash
+mongoimport --uri="mongodb://localhost:27017/mydb" \
+  --collection=users \
+  --file=users.json \
+  --jsonArray
+```
+
+The `--jsonArray` flag tells mongoimport the file contains a single JSON array of documents.
+
+**Import NDJSON (one document per line):**
+
+```bash
+mongoimport --uri="mongodb://localhost:27017/mydb" \
+  --collection=events \
+  --file=events.ndjson
+```
+
+No `--jsonArray` flag needed -- mongoimport defaults to expecting one document per line.
+
+**Import to MongoDB Atlas:**
+
+```bash
+mongoimport --uri="mongodb+srv://user:pass@cluster.mongodb.net/mydb" \
+  --collection=users \
+  --file=users.json \
+  --jsonArray
+```
+
+Useful options:
+- `--drop` -- drop the collection before importing
+- `--upsertFields=email` -- update existing documents matching on the `email` field
+- `--mode=upsert` -- insert new documents, update existing ones
+- `--numInsertionWorkers=4` -- parallelize inserts for large files
+- `--batchSize=1000` -- number of documents per batch
+
+```bash
+mongoimport --uri="mongodb://localhost:27017/mydb" \
+  --collection=users \
+  --file=users.json \
+  --jsonArray \
+  --mode=upsert \
+  --upsertFields=email \
+  --numInsertionWorkers=4
+```
+
+## Method 2: insertMany in mongosh
+
+For smaller datasets or programmatic imports, use the MongoDB Shell:
+
+```javascript
+// mongosh
+const data = JSON.parse(cat("users.json"));
+db.users.insertMany(data);
+```
+
+Or with Node.js:
+
+```javascript
+const { MongoClient } = require('mongodb');
+const fs = require('fs');
+
+async function importJSON() {
+  const client = new MongoClient('mongodb://localhost:27017');
+  await client.connect();
+
+  const db = client.db('mydb');
+  const records = JSON.parse(fs.readFileSync('users.json', 'utf8'));
+
+  const result = await db.collection('users').insertMany(records, {
+    ordered: false  // continue on duplicate key errors
+  });
+
+  console.log(`Inserted ${result.insertedCount} documents`);
+  await client.close();
+}
+
+importJSON();
+```
+
+The `ordered: false` option is important for bulk imports -- it continues inserting even if some documents fail (e.g., duplicate `_id` values), instead of stopping at the first error.
+
+## Method 3: Mako (GUI)
+
+Mako connects to MongoDB and provides a visual import interface. It handles JSON parsing and lets you preview documents before inserting them into a collection.
+
+## JSON vs Extended JSON
+
+MongoDB uses Extended JSON to represent BSON types that don't exist in standard JSON:
+
+```json
+{
+  "_id": {"$oid": "507f1f77bcf86cd799439011"},
+  "created": {"$date": "2026-01-15T10:30:00Z"},
+  "count": {"$numberLong": "9999999999"}
+}
+```
+
+`mongoimport` handles both standard JSON and Extended JSON automatically. If your data comes from `mongoexport`, it's already in Extended JSON format and imports cleanly.
+
+## Common Gotchas
+
+**_id field.** If your JSON documents don't have an `_id` field, MongoDB auto-generates an ObjectId for each document. If they do have `_id`, duplicates will fail unless you use `--mode=upsert`.
+
+**Date handling.** Standard JSON has no date type. Strings like `"2026-01-15"` are stored as strings, not BSON dates. To import as dates, use Extended JSON format:
+
+```json
+{"created": {"$date": "2026-01-15T00:00:00Z"}}
+```
+
+Or transform after import:
+
+```javascript
+db.users.updateMany({}, [
+  {$set: {created: {$dateFromString: {dateString: "$created"}}}}
+]);
+```
+
+**Nested arrays and objects.** MongoDB handles these natively -- no flattening needed. A JSON document with nested objects and arrays imports directly as a BSON document with the same structure.
+
+**Large files.** For files over 1 GB, `mongoimport` with `--numInsertionWorkers=4` or higher parallelizes the insert. The tool streams the file, so memory usage stays low regardless of file size.
+
+**Number types.** JSON numbers are imported as either doubles or 32-bit integers. For 64-bit integers, use Extended JSON:
+
+```json
+{"amount": {"$numberLong": "9007199254740993"}}
+```
+
+Without this, large integers lose precision when stored as doubles.
+
+Mako connects to MongoDB, PostgreSQL, MySQL, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

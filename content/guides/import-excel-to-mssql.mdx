@@ -1,0 +1,167 @@
+---
+title: "How to Import Excel to SQL Server (4 Methods)"
+slug: import-excel-to-mssql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mssql
+  - excel
+  - import
+  - data
+excerpt: "Four ways to import Excel data into SQL Server: the SSMS Import Wizard, OPENROWSET with the ACE provider, Python with pyodbc, and Mako. Covers the ACE driver, linked servers, and common permission issues."
+metaDescription: "Import Excel to SQL Server in 2026: SSMS wizard, OPENROWSET ACE provider, Python pyodbc, and Mako. Step-by-step with driver setup, permissions, and gotchas."
+database: mssql
+category: import-export
+draft: false
+---
+
+SQL Server can read Excel files directly using the ACE OLE DB provider, which makes it one of the few databases with near-native Excel support. The catch: getting the driver installed and permissions configured. Here are four approaches.
+
+## Method 1: SSMS Import and Export Wizard
+
+SQL Server Management Studio has a built-in wizard that handles Excel imports without writing code:
+
+1. Right-click the target database in SSMS
+2. Select **Tasks > Import Data**
+3. Data Source: **Microsoft Excel**, select the `.xlsx` file
+4. Destination: **SQL Server Native Client**, select the target database
+5. Choose the sheet(s) to import
+6. Map columns and types
+7. Run immediately or save as an SSIS package for reuse
+
+The wizard requires the Microsoft Access Database Engine (ACE provider) installed on the machine running SSMS. Download it from Microsoft's website -- choose the version that matches your Office installation (32-bit or 64-bit).
+
+This is the easiest method for non-technical users and one-off imports.
+
+## Method 2: OPENROWSET with ACE Provider (T-SQL)
+
+Read Excel directly from T-SQL using `OPENROWSET`:
+
+```sql
+SELECT *
+INTO customers
+FROM OPENROWSET(
+    'Microsoft.ACE.OLEDB.12.0',
+    'Excel 12.0;Database=C:\data\customers.xlsx;HDR=YES',
+    'SELECT * FROM [Sheet1$]'
+);
+```
+
+`HDR=YES` uses the first row as column headers. The sheet name uses the `[SheetName$]` syntax. For a named range, use `[RangeName]` without the `$`.
+
+To import a specific cell range:
+
+```sql
+SELECT *
+FROM OPENROWSET(
+    'Microsoft.ACE.OLEDB.12.0',
+    'Excel 12.0;Database=C:\data\report.xlsx;HDR=YES',
+    'SELECT * FROM [Sheet1$A1:F500]'
+);
+```
+
+### Setup Requirements
+
+1. **Install the ACE provider**: Download "Microsoft Access Database Engine 2016 Redistributable" from Microsoft. If you have 64-bit SQL Server, install the 64-bit version.
+
+2. **Enable Ad Hoc Distributed Queries**:
+```sql
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+EXEC sp_configure 'Ad Hoc Distributed Queries', 1;
+RECONFIGURE;
+```
+
+3. **Set the ACE provider properties** (if you get permission errors):
+```sql
+EXEC sp_MSset_oledb_prop N'Microsoft.ACE.OLEDB.12.0', N'AllowInProcess', 1;
+EXEC sp_MSset_oledb_prop N'Microsoft.ACE.OLEDB.12.0', N'DynamicParameters', 1;
+```
+
+### Linked Server Alternative
+
+For repeated Excel imports, create a linked server:
+
+```sql
+EXEC sp_addlinkedserver
+    @server = 'ExcelSource',
+    @srvproduct = 'ACE',
+    @provider = 'Microsoft.ACE.OLEDB.12.0',
+    @datasrc = 'C:\data\report.xlsx',
+    @provstr = 'Excel 12.0;HDR=YES';
+
+SELECT * FROM ExcelSource...[Sheet1$];
+```
+
+## Method 3: Python with pyodbc
+
+Python avoids the ACE driver headaches entirely by reading Excel with `openpyxl` and writing to SQL Server with `pyodbc`:
+
+```python
+import pandas as pd
+import pyodbc
+from sqlalchemy import create_engine
+
+connection_string = (
+    "mssql+pyodbc://user:pass@localhost/mydb"
+    "?driver=ODBC+Driver+18+for+SQL+Server"
+    "&TrustServerCertificate=yes"
+)
+engine = create_engine(connection_string)
+
+df = pd.read_excel("report.xlsx", sheet_name="Data")
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+df.to_sql("report_data", engine, if_exists="replace", index=False)
+```
+
+For faster loading with large files, use `fast_executemany`:
+
+```python
+engine = create_engine(connection_string,
+    fast_executemany=True)
+df.to_sql("big_table", engine, if_exists="append", index=False,
+          chunksize=5000)
+```
+
+`fast_executemany=True` tells pyodbc to batch inserts, which is 10-100x faster than row-by-row.
+
+## Method 4: Mako
+
+Mako imports Excel files into SQL Server without the ACE driver or Python setup:
+
+1. Connect to your SQL Server instance in Mako
+2. Click **Import** and select the `.xlsx` file
+3. Choose the sheet and review the type preview
+4. Adjust column mappings if needed
+5. Run the import
+
+Mako handles the Excel parsing client-side, so there's no server-side driver to install.
+
+## The ACE Driver Problem
+
+The biggest pain point with SQL Server Excel imports is the ACE OLE DB provider:
+
+- **32-bit vs 64-bit conflicts**: If you have 32-bit Office installed, you need the 32-bit ACE provider. But 64-bit SQL Server needs the 64-bit version. You can't install both. The fix: use the `/quiet` flag during installation to bypass the conflict check, or match your Office and SQL Server bitness.
+- **Not available on Linux**: SQL Server on Linux can't use the ACE provider. Use the Python approach or convert to CSV.
+- **Not available on Azure SQL**: Managed services like Azure SQL Database and Azure SQL Managed Instance don't support `OPENROWSET` with the ACE provider. Use Azure Data Factory, Python, or `BULK INSERT` with CSV instead.
+
+If you're on a managed service or Linux, skip Methods 1-2 entirely and use Python or Mako.
+
+## Common Gotchas
+
+**Type inference with OPENROWSET.** The ACE provider scans the first 8 rows by default to determine column types. If the first 8 rows of a column are numeric but row 9 is text, the text value becomes NULL. Change the scan depth in the registry (`TypeGuessRows` under `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Office\...`) or set it to 0 to scan all rows (slower but safer).
+
+**Sheet names with spaces.** Sheet names containing spaces or special characters must be quoted: `[My Sheet$]`. Always include the `$` suffix for worksheets.
+
+**Mixed types in a column.** Excel allows a column to have mixed types (numbers and text). The ACE provider picks one type for the whole column. Minority-type values become NULL. To avoid this, format the column as text in Excel before importing, or add `IMEX=1` to the connection string (treats everything as text):
+
+```sql
+'Excel 12.0;Database=C:\data\file.xlsx;HDR=YES;IMEX=1'
+```
+
+**File locking.** If the Excel file is open in Excel, the OPENROWSET query may fail or read stale data. Close the file before importing.
+
+**Permissions.** `OPENROWSET(BULK)` requires `ADMINISTER BULK OPERATIONS`. `OPENROWSET` with the ACE provider requires `Ad Hoc Distributed Queries` to be enabled (disabled by default for security).
+
+Mako connects to SQL Server, PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

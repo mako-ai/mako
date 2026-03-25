@@ -801,709 +801,750 @@ const Chat: React.FC<ChatProps> = ({
       const toolName = toolCall.toolName;
       const input = toolCall.input as Record<string, unknown>;
 
-      // Handle read_console - requires explicit consoleId
-      if (toolName === "read_console") {
-        const consoleId = input.consoleId as string | undefined;
+      try {
+        // Handle read_console - requires explicit consoleId
+        if (toolName === "read_console") {
+          const consoleId = input.consoleId as string | undefined;
 
-        if (!consoleId) {
+          if (!consoleId) {
+            addToolOutput({
+              tool: "read_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "consoleId is required. Use list_open_consoles first to get available console IDs.",
+              },
+            });
+            return;
+          }
+
+          // Get fresh state to avoid stale closure issues
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
+          const targetConsole = currentTabs.find(
+            (c: any) => c.id === consoleId,
+          );
+
+          if (!targetConsole) {
+            addToolOutput({
+              tool: "read_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
+              },
+            });
+            return;
+          }
+
+          // Add line numbers to help AI accurately specify patch ranges
+          const rawContent = targetConsole.content || "";
+          const lines = rawContent.split("\n");
+          const totalLines = lines.length;
+          const lineNumberWidth = String(totalLines).length;
+          // Format: "  1| code here" - line numbers are for reference only
+          const content = lines
+            .map(
+              (line: string, i: number) =>
+                `${String(i + 1).padStart(lineNumberWidth)}| ${line}`,
+            )
+            .join("\n");
+
           addToolOutput({
             tool: "read_console",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: false,
-              error:
-                "consoleId is required. Use list_open_consoles first to get available console IDs.",
+              success: true,
+              consoleId: targetConsole.id,
+              title: targetConsole.title,
+              content,
+              totalLines,
+              connectionId: targetConsole.connectionId,
+              connectionType: (
+                targetConsole.metadata as { connectionType?: string }
+              )?.connectionType,
+              databaseId: targetConsole.databaseId,
+              databaseName: targetConsole.databaseName,
             },
           });
           return;
         }
 
-        // Get fresh state to avoid stale closure issues
-        const currentStore = useConsoleStore.getState();
-        const currentTabs = Object.values(currentStore.tabs);
-        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
+        // Handle modify_console - requires explicit consoleId
+        if (toolName === "modify_console") {
+          const action = input.action as
+            | "replace"
+            | "insert"
+            | "append"
+            | "patch";
+          const content = input.content as string;
+          const position = input.position as number | null;
+          const consoleId = input.consoleId as string | undefined;
+          const startLine = input.startLine as number | undefined;
+          const endLine = input.endLine as number | undefined;
 
-        if (!targetConsole) {
-          addToolOutput({
-            tool: "read_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
-            },
-          });
-          return;
-        }
+          if (!consoleId) {
+            addToolOutput({
+              tool: "modify_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
+              },
+            });
+            return;
+          }
 
-        // Add line numbers to help AI accurately specify patch ranges
-        const rawContent = targetConsole.content || "";
-        const lines = rawContent.split("\n");
-        const totalLines = lines.length;
-        const lineNumberWidth = String(totalLines).length;
-        // Format: "  1| code here" - line numbers are for reference only
-        const content = lines
-          .map(
-            (line: string, i: number) =>
-              `${String(i + 1).padStart(lineNumberWidth)}| ${line}`,
-          )
-          .join("\n");
+          // Get fresh state to avoid stale closure issues
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
 
-        addToolOutput({
-          tool: "read_console",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            consoleId: targetConsole.id,
-            title: targetConsole.title,
-            content,
-            totalLines,
-            connectionId: targetConsole.connectionId,
-            connectionType: (
-              targetConsole.metadata as { connectionType?: string }
-            )?.connectionType,
-            databaseId: targetConsole.databaseId,
-            databaseName: targetConsole.databaseName,
-          },
-        });
-        return;
-      }
+          const targetConsole = currentTabs.find(
+            (c: any) => c.id === consoleId,
+          );
+          if (!targetConsole) {
+            addToolOutput({
+              tool: "modify_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
+              },
+            });
+            return;
+          }
 
-      // Handle modify_console - requires explicit consoleId
-      if (toolName === "modify_console") {
-        const action = input.action as
-          | "replace"
-          | "insert"
-          | "append"
-          | "patch";
-        const content = input.content as string;
-        const position = input.position as number | null;
-        const consoleId = input.consoleId as string | undefined;
-        const startLine = input.startLine as number | undefined;
-        const endLine = input.endLine as number | undefined;
+          // Check if the console is read-only (shared/workspace without write access)
+          if ((targetConsole as any).readOnly) {
+            addToolOutput({
+              tool: "modify_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "This console is shared as read-only. Use create_console to create a copy with the desired changes instead.",
+              },
+            });
+            return;
+          }
 
-        if (!consoleId) {
-          addToolOutput({
-            tool: "modify_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error:
-                "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
-            },
-          });
-          return;
-        }
+          // Validate insert action has position
+          if (
+            action === "insert" &&
+            (position === null || position === undefined)
+          ) {
+            addToolOutput({
+              tool: "modify_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: "Position is required for insert action",
+              },
+            });
+            return;
+          }
 
-        // Get fresh state to avoid stale closure issues
-        const currentStore = useConsoleStore.getState();
-        const currentTabs = Object.values(currentStore.tabs);
+          // Validate patch action has startLine and endLine
+          if (action === "patch" && (!startLine || !endLine)) {
+            addToolOutput({
+              tool: "modify_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "startLine and endLine are required for patch action. Use read_console first to see line numbers.",
+              },
+            });
+            return;
+          }
 
-        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
-        if (!targetConsole) {
-          addToolOutput({
-            tool: "modify_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
-            },
-          });
-          return;
-        }
+          // Dispatch through the event system - this ensures Monaco editor gets updated
+          // The App.tsx handleConsoleModification callback will:
+          // 1. Dispatch a CustomEvent that Editor.tsx listens to
+          // 2. Editor.tsx calls showDiff() on the Console ref
+          // 3. Console.tsx updates Monaco editor via the diff mode
+          if (onConsoleModificationRef.current) {
+            onConsoleModificationRef.current({
+              action,
+              content,
+              // Convert line number to position format expected by ConsoleModification
+              position:
+                position !== null && position !== undefined
+                  ? { line: position, column: 1 }
+                  : undefined,
+              consoleId,
+              startLine,
+              endLine,
+            });
+          }
 
-        // Check if the console is read-only (shared/workspace without write access)
-        if ((targetConsole as any).readOnly) {
-          addToolOutput({
-            tool: "modify_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error:
-                "This console is shared as read-only. Use create_console to create a copy with the desired changes instead.",
-            },
-          });
-          return;
-        }
-
-        // Validate insert action has position
-        if (
-          action === "insert" &&
-          (position === null || position === undefined)
-        ) {
-          addToolOutput({
-            tool: "modify_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: "Position is required for insert action",
-            },
-          });
-          return;
-        }
-
-        // Validate patch action has startLine and endLine
-        if (action === "patch" && (!startLine || !endLine)) {
-          addToolOutput({
-            tool: "modify_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error:
-                "startLine and endLine are required for patch action. Use read_console first to see line numbers.",
-            },
-          });
-          return;
-        }
-
-        // Dispatch through the event system - this ensures Monaco editor gets updated
-        // The App.tsx handleConsoleModification callback will:
-        // 1. Dispatch a CustomEvent that Editor.tsx listens to
-        // 2. Editor.tsx calls showDiff() on the Console ref
-        // 3. Console.tsx updates Monaco editor via the diff mode
-        if (onConsoleModificationRef.current) {
-          onConsoleModificationRef.current({
+          // Also update store for consistency using shared utility
+          const currentContent = targetConsole.content || "";
+          const modification: ConsoleModification = {
             action,
             content,
-            // Convert line number to position format expected by ConsoleModification
             position:
               position !== null && position !== undefined
                 ? { line: position, column: 1 }
                 : undefined,
-            consoleId,
             startLine,
             endLine,
-          });
-        }
+          };
+          const newContent = applyModification(currentContent, modification);
+          currentStore.updateContent(consoleId, newContent);
 
-        // Also update store for consistency using shared utility
-        const currentContent = targetConsole.content || "";
-        const modification: ConsoleModification = {
-          action,
-          content,
-          position:
-            position !== null && position !== undefined
-              ? { line: position, column: 1 }
-              : undefined,
-          startLine,
-          endLine,
-        };
-        const newContent = applyModification(currentContent, modification);
-        currentStore.updateContent(consoleId, newContent);
-
-        addToolOutput({
-          tool: "modify_console",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            consoleId,
-            message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
-          },
-        });
-        return;
-      }
-
-      // Handle create_console - dispatch through event system
-      if (toolName === "create_console") {
-        // Get fresh state to avoid stale closure issues
-        const currentStore = useConsoleStore.getState();
-        const currentTabs = Object.values(currentStore.tabs);
-        const currentActiveId = currentStore.activeTabId;
-
-        const title = input.title as string;
-        const content = input.content as string;
-        const connectionId = (input.connectionId as string | null) ?? undefined;
-        const databaseId = (input.databaseId as string | null) ?? undefined;
-        const databaseName = (input.databaseName as string | null) ?? undefined;
-
-        // Use captured console ID (from message submission time) as the primary fallback
-        // This prevents the race condition where user switches consoles while agent is thinking
-        const capturedId = capturedConsoleIdRef.current;
-
-        // If connection info not provided, inherit from captured/active console
-        const baseConsole =
-          currentTabs.find((c: any) => c.id === capturedId) ||
-          currentTabs.find((c: any) => c.id === currentActiveId) ||
-          currentTabs[0];
-
-        const effectiveConnectionId = connectionId ?? baseConsole?.connectionId;
-        const effectiveDatabaseId = databaseId ?? baseConsole?.databaseId;
-        const effectiveDatabaseName = databaseName ?? baseConsole?.databaseName;
-
-        // Generate a new ID for the console
-        const newConsoleId = generateObjectId();
-
-        // Dispatch through the event system - App.tsx handleConsoleModification will:
-        // 1. Call openTab with the provided consoleId
-        // 2. Call setActiveTab
-        if (onConsoleModificationRef.current) {
-          onConsoleModificationRef.current({
-            action: "create",
-            content,
-            consoleId: newConsoleId,
-            title,
-            connectionId: effectiveConnectionId,
-            databaseId: effectiveDatabaseId,
-            databaseName: effectiveDatabaseName,
-            isDirty: true, // Mark as dirty so it won't be replaced by pristine tab logic
-          });
-        }
-
-        addToolOutput({
-          tool: "create_console",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            _eventType: "console_creation",
-            consoleId: newConsoleId,
-            title,
-            content,
-            connectionId: effectiveConnectionId,
-            databaseId: effectiveDatabaseId,
-            databaseName: effectiveDatabaseName,
-            message: `✓ New console "${title}" created successfully`,
-          },
-        });
-        return;
-      }
-
-      // Handle list_open_consoles - return all open console tabs
-      if (toolName === "list_open_consoles") {
-        // Get fresh state to avoid stale closure issues
-        const currentStore = useConsoleStore.getState();
-        const currentTabs = Object.values(currentStore.tabs);
-        const currentActiveId = currentStore.activeTabId;
-
-        const consoles = currentTabs
-          .filter(
-            (tab: any) => tab?.kind === undefined || tab?.kind === "console",
-          )
-          .map((tab: any) => ({
-            id: tab.id,
-            title: tab.title || "Untitled",
-            connectionId: tab.connectionId,
-            connectionName: tab.metadata?.connectionName || tab.connectionId,
-            databaseName:
-              tab.databaseName || tab.metadata?.queryOptions?.databaseName,
-            contentPreview:
-              (tab.content || "").slice(0, 100) +
-              ((tab.content || "").length > 100 ? "..." : ""),
-            isActive: tab.id === currentActiveId,
-          }));
-
-        addToolOutput({
-          tool: "list_open_consoles",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            consoles,
-            message: `Found ${consoles.length} open console(s)`,
-          },
-        });
-        return;
-      }
-
-      // Handle set_console_connection - requires explicit consoleId
-      if (toolName === "set_console_connection") {
-        const consoleId = input.consoleId as string | undefined;
-        const connectionId = input.connectionId as string;
-        const databaseId = input.databaseId as string | undefined;
-        const databaseName = input.databaseName as string | undefined;
-
-        if (!consoleId) {
           addToolOutput({
-            tool: "set_console_connection",
+            tool: "modify_console",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: false,
-              error:
-                "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
+              success: true,
+              consoleId,
+              message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
             },
           });
           return;
         }
 
-        // Get fresh state to avoid stale closure issues
-        const currentStore = useConsoleStore.getState();
-        const currentTabs = Object.values(currentStore.tabs);
-
-        const targetConsole = currentTabs.find((c: any) => c.id === consoleId);
-        if (!targetConsole) {
-          addToolOutput({
-            tool: "set_console_connection",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
-            },
-          });
-          return;
-        }
-
-        // Update the console's connection and database
-        currentStore.updateConnection(consoleId, connectionId);
-        if (databaseId !== undefined || databaseName !== undefined) {
-          currentStore.updateDatabase(consoleId, databaseId, databaseName);
-        }
-
-        addToolOutput({
-          tool: "set_console_connection",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            consoleId,
-            connectionId,
-            databaseId,
-            databaseName,
-            message: `Console "${targetConsole.title}" attached to connection ${connectionId}${databaseName ? ` (database: ${databaseName})` : ""}`,
-          },
-        });
-        return;
-      }
-
-      // Handle open_console - fetch and open a saved console
-      if (toolName === "open_console") {
-        const consoleId = input.consoleId as string | undefined;
-        if (!consoleId) {
-          addToolOutput({
-            tool: "open_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: "consoleId is required.",
-            },
-          });
-          return;
-        }
-
-        try {
+        // Handle create_console - dispatch through event system
+        if (toolName === "create_console") {
+          // Get fresh state to avoid stale closure issues
           const currentStore = useConsoleStore.getState();
-          const existingTab = currentStore.tabs[consoleId];
-          if (existingTab) {
+          const currentTabs = Object.values(currentStore.tabs);
+          const currentActiveId = currentStore.activeTabId;
+
+          const title = input.title as string;
+          const content = input.content as string;
+          const connectionId =
+            (input.connectionId as string | null) ?? undefined;
+          const databaseId = (input.databaseId as string | null) ?? undefined;
+          const databaseName =
+            (input.databaseName as string | null) ?? undefined;
+
+          // Use captured console ID (from message submission time) as the primary fallback
+          // This prevents the race condition where user switches consoles while agent is thinking
+          const capturedId = capturedConsoleIdRef.current;
+
+          // If connection info not provided, inherit from captured/active console
+          const baseConsole =
+            currentTabs.find((c: any) => c.id === capturedId) ||
+            currentTabs.find((c: any) => c.id === currentActiveId) ||
+            currentTabs[0];
+
+          const effectiveConnectionId =
+            connectionId ?? baseConsole?.connectionId;
+          const effectiveDatabaseId = databaseId ?? baseConsole?.databaseId;
+          const effectiveDatabaseName =
+            databaseName ?? baseConsole?.databaseName;
+
+          // Generate a new ID for the console
+          const newConsoleId = generateObjectId();
+
+          // Dispatch through the event system - App.tsx handleConsoleModification will:
+          // 1. Call openTab with the provided consoleId
+          // 2. Call setActiveTab
+          if (onConsoleModificationRef.current) {
+            onConsoleModificationRef.current({
+              action: "create",
+              content,
+              consoleId: newConsoleId,
+              title,
+              connectionId: effectiveConnectionId,
+              databaseId: effectiveDatabaseId,
+              databaseName: effectiveDatabaseName,
+              isDirty: true, // Mark as dirty so it won't be replaced by pristine tab logic
+            });
+          }
+
+          addToolOutput({
+            tool: "create_console",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              _eventType: "console_creation",
+              consoleId: newConsoleId,
+              title,
+              content,
+              connectionId: effectiveConnectionId,
+              databaseId: effectiveDatabaseId,
+              databaseName: effectiveDatabaseName,
+              message: `✓ New console "${title}" created successfully`,
+            },
+          });
+          return;
+        }
+
+        // Handle list_open_consoles - return all open console tabs
+        if (toolName === "list_open_consoles") {
+          // Get fresh state to avoid stale closure issues
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
+          const currentActiveId = currentStore.activeTabId;
+
+          const consoles = currentTabs
+            .filter(
+              (tab: any) => tab?.kind === undefined || tab?.kind === "console",
+            )
+            .map((tab: any) => ({
+              id: tab.id,
+              title: tab.title || "Untitled",
+              connectionId: tab.connectionId,
+              connectionName: tab.metadata?.connectionName || tab.connectionId,
+              databaseName:
+                tab.databaseName || tab.metadata?.queryOptions?.databaseName,
+              contentPreview:
+                (tab.content || "").slice(0, 100) +
+                ((tab.content || "").length > 100 ? "..." : ""),
+              isActive: tab.id === currentActiveId,
+            }));
+
+          addToolOutput({
+            tool: "list_open_consoles",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              consoles,
+              message: `Found ${consoles.length} open console(s)`,
+            },
+          });
+          return;
+        }
+
+        // Handle set_console_connection - requires explicit consoleId
+        if (toolName === "set_console_connection") {
+          const consoleId = input.consoleId as string | undefined;
+          const connectionId = input.connectionId as string;
+          const databaseId = input.databaseId as string | undefined;
+          const databaseName = input.databaseName as string | undefined;
+
+          if (!consoleId) {
+            addToolOutput({
+              tool: "set_console_connection",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
+              },
+            });
+            return;
+          }
+
+          // Get fresh state to avoid stale closure issues
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
+
+          const targetConsole = currentTabs.find(
+            (c: any) => c.id === consoleId,
+          );
+          if (!targetConsole) {
+            addToolOutput({
+              tool: "set_console_connection",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
+              },
+            });
+            return;
+          }
+
+          // Update the console's connection and database
+          currentStore.updateConnection(consoleId, connectionId);
+          if (databaseId !== undefined || databaseName !== undefined) {
+            currentStore.updateDatabase(consoleId, databaseId, databaseName);
+          }
+
+          addToolOutput({
+            tool: "set_console_connection",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              consoleId,
+              connectionId,
+              databaseId,
+              databaseName,
+              message: `Console "${targetConsole.title}" attached to connection ${connectionId}${databaseName ? ` (database: ${databaseName})` : ""}`,
+            },
+          });
+          return;
+        }
+
+        // Handle open_console - fetch and open a saved console
+        if (toolName === "open_console") {
+          const consoleId = input.consoleId as string | undefined;
+          if (!consoleId) {
+            addToolOutput({
+              tool: "open_console",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: "consoleId is required.",
+              },
+            });
+            return;
+          }
+
+          try {
+            const currentStore = useConsoleStore.getState();
+            const existingTab = currentStore.tabs[consoleId];
+            if (existingTab) {
+              currentStore.setActiveTab(consoleId);
+              addToolOutput({
+                tool: "open_console",
+                toolCallId: toolCall.toolCallId,
+                output: {
+                  success: true,
+                  consoleId,
+                  title: existingTab.title,
+                  message: `Console "${existingTab.title}" is already open — switched to it.`,
+                },
+              });
+              return;
+            }
+
+            const data = await currentStore.fetchConsoleContent(
+              workspaceIdRef.current!,
+              consoleId,
+            );
+            if (!data) {
+              addToolOutput({
+                tool: "open_console",
+                toolCallId: toolCall.toolCallId,
+                output: {
+                  success: false,
+                  error: `Console ${consoleId} not found or access denied.`,
+                },
+              });
+              return;
+            }
+
+            const title = data.name || data.path || "Untitled";
+            currentStore.openTab({
+              id: consoleId,
+              title,
+              content: data.content || "",
+              connectionId: data.connectionId,
+              databaseId: data.databaseId,
+              databaseName: data.databaseName,
+            });
             currentStore.setActiveTab(consoleId);
+
             addToolOutput({
               tool: "open_console",
               toolCallId: toolCall.toolCallId,
               output: {
                 success: true,
                 consoleId,
-                title: existingTab.title,
-                message: `Console "${existingTab.title}" is already open — switched to it.`,
+                title,
+                message: `Console "${title}" opened successfully.`,
               },
             });
-            return;
-          }
-
-          const data = await currentStore.fetchConsoleContent(
-            workspaceIdRef.current!,
-            consoleId,
-          );
-          if (!data) {
+          } catch (err) {
             addToolOutput({
               tool: "open_console",
               toolCallId: toolCall.toolCallId,
               output: {
                 success: false,
-                error: `Console ${consoleId} not found or access denied.`,
+                error: `Failed to open console: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            });
+          }
+          return;
+        }
+
+        // Handle modify_chart_spec - set chart visualization for current results
+        if (toolName === "modify_chart_spec") {
+          const vegaLiteSpec = input.vegaLiteSpec as
+            | Record<string, unknown>
+            | undefined;
+          if (!vegaLiteSpec) {
+            addToolOutput({
+              tool: "modify_chart_spec",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: "vegaLiteSpec is required.",
               },
             });
             return;
           }
 
-          const title = data.name || data.path || "Untitled";
-          currentStore.openTab({
-            id: consoleId,
-            title,
-            content: data.content || "",
-            connectionId: data.connectionId,
-            databaseId: data.databaseId,
-            databaseName: data.databaseName,
-          });
-          currentStore.setActiveTab(consoleId);
+          // Validate the spec structure with Zod before sending to the renderer
+          const { MakoChartSpec: MakoChartSpecSchema } = await import(
+            "../lib/chart-spec"
+          );
+          const parsed = MakoChartSpecSchema.safeParse(vegaLiteSpec);
+          if (!parsed.success) {
+            const issues = parsed.error.issues
+              .slice(0, 5)
+              .map((i: any) => `${i.path.join(".")}: ${i.message}`)
+              .join("; ");
+            addToolOutput({
+              tool: "modify_chart_spec",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Invalid Vega-Lite spec: ${issues}. Fix the spec and try again.`,
+              },
+            });
+            return;
+          }
 
-          addToolOutput({
-            tool: "open_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              consoleId,
-              title,
-              message: `Console "${title}" opened successfully.`,
-            },
+          if (!onChartSpecChangeRef?.current) {
+            addToolOutput({
+              tool: "modify_chart_spec",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: "No active console tab to display the chart in.",
+              },
+            });
+            return;
+          }
+
+          // Send the spec to the renderer and wait for render result
+          const renderResult = await new Promise<{
+            success: boolean;
+            error?: string;
+          }>(resolve => {
+            const timeout = setTimeout(() => resolve({ success: true }), 5000);
+            onChartSpecChangeRef.current!({
+              spec: parsed.data,
+              onRenderResult: result => {
+                clearTimeout(timeout);
+                resolve(result);
+              },
+            });
           });
-        } catch (err) {
-          addToolOutput({
-            tool: "open_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: `Failed to open console: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          });
+
+          if (renderResult.success) {
+            addToolOutput({
+              tool: "modify_chart_spec",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: true,
+                message: "Chart rendered successfully in the results panel.",
+              },
+            });
+          } else {
+            addToolOutput({
+              tool: "modify_chart_spec",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
+              },
+            });
+          }
+          return;
         }
-        return;
-      }
 
-      // Handle modify_chart_spec - set chart visualization for current results
-      if (toolName === "modify_chart_spec") {
-        const vegaLiteSpec = input.vegaLiteSpec as
-          | Record<string, unknown>
-          | undefined;
-        if (!vegaLiteSpec) {
+        // --- Dashboard tools (client-side) ---
+        try {
+          const dashboardToolOutput = await executeDashboardAgentTool(
+            toolName,
+            input,
+          );
+
+          if (dashboardToolOutput !== null) {
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              output: dashboardToolOutput,
+            });
+            return;
+          }
+        } catch (dashboardError) {
           addToolOutput({
-            tool: "modify_chart_spec",
+            tool: toolName,
             toolCallId: toolCall.toolCallId,
             output: {
               success: false,
-              error: "vegaLiteSpec is required.",
+              error:
+                dashboardError instanceof Error
+                  ? dashboardError.message
+                  : "Dashboard tool execution failed",
             },
           });
           return;
         }
 
-        // Validate the spec structure with Zod before sending to the renderer
-        const { MakoChartSpec: MakoChartSpecSchema } = await import(
-          "../lib/chart-spec"
-        );
-        const parsed = MakoChartSpecSchema.safeParse(vegaLiteSpec);
-        if (!parsed.success) {
-          const issues = parsed.error.issues
-            .slice(0, 5)
-            .map((i: any) => `${i.path.join(".")}: ${i.message}`)
-            .join("; ");
-          addToolOutput({
-            tool: "modify_chart_spec",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: `Invalid Vega-Lite spec: ${issues}. Fix the spec and try again.`,
-            },
-          });
-          return;
-        }
+        // Handle flow agent client-side tools
+        // get_form_state - Return current form configuration
+        if (toolName === "get_form_state") {
+          const formRef = dbFlowFormRefCurrent.current?.current;
+          if (!formRef) {
+            addToolOutput({
+              tool: "get_form_state",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Form is not available. Make sure you're in the flow editor.",
+              },
+            });
+            return;
+          }
 
-        if (!onChartSpecChangeRef?.current) {
-          addToolOutput({
-            tool: "modify_chart_spec",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: "No active console tab to display the chart in.",
-            },
-          });
-          return;
-        }
-
-        // Send the spec to the renderer and wait for render result
-        const renderResult = await new Promise<{
-          success: boolean;
-          error?: string;
-        }>(resolve => {
-          const timeout = setTimeout(() => resolve({ success: true }), 5000);
-          onChartSpecChangeRef.current!({
-            spec: parsed.data,
-            onRenderResult: result => {
-              clearTimeout(timeout);
-              resolve(result);
-            },
-          });
-        });
-
-        if (renderResult.success) {
-          addToolOutput({
-            tool: "modify_chart_spec",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              message: "Chart rendered successfully in the results panel.",
-            },
-          });
-        } else {
-          addToolOutput({
-            tool: "modify_chart_spec",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: false,
-              error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
-            },
-          });
-        }
-        return;
-      }
-
-      // --- Dashboard tools (client-side) ---
-      const dashboardToolOutput = await executeDashboardAgentTool(
-        toolName,
-        input,
-      );
-
-      if (dashboardToolOutput !== null) {
-        addToolOutput({
-          tool: toolName,
-          toolCallId: toolCall.toolCallId,
-          output: dashboardToolOutput,
-        });
-        return;
-      }
-
-      // Handle flow agent client-side tools
-      // get_form_state - Return current form configuration
-      if (toolName === "get_form_state") {
-        const formRef = dbFlowFormRefCurrent.current?.current;
-        if (!formRef) {
+          const formState = formRef.getFormState();
           addToolOutput({
             tool: "get_form_state",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: false,
-              error:
-                "Form is not available. Make sure you're in the flow editor.",
+              success: true,
+              formState,
             },
           });
           return;
         }
 
-        const formState = formRef.getFormState();
-        addToolOutput({
-          tool: "get_form_state",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            formState,
-          },
-        });
-        return;
-      }
+        // set_form_field - Update a single form field
+        if (toolName === "set_form_field") {
+          const formRef = dbFlowFormRefCurrent.current?.current;
+          if (!formRef) {
+            addToolOutput({
+              tool: "set_form_field",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Form is not available. Make sure you're in the flow editor.",
+              },
+            });
+            return;
+          }
 
-      // set_form_field - Update a single form field
-      if (toolName === "set_form_field") {
-        const formRef = dbFlowFormRefCurrent.current?.current;
-        if (!formRef) {
+          const { fieldName, value } = input as {
+            fieldName: string;
+            value: unknown;
+          };
+
+          // The tool schema uses a structured z.union() instead of z.any(),
+          // so the LLM returns proper typed values (arrays as arrays, not strings).
+          // See: TYPE_COERCION_SCHEMA in db-flow-form.schema.ts
+          formRef.setField(fieldName, value);
           addToolOutput({
             tool: "set_form_field",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: false,
-              error:
-                "Form is not available. Make sure you're in the flow editor.",
+              success: true,
+              fieldName,
+              value,
+              message: `Updated ${fieldName} successfully`,
             },
           });
           return;
         }
 
-        const { fieldName, value } = input as {
-          fieldName: string;
-          value: unknown;
-        };
+        // set_multiple_fields - Update multiple fields at once
+        if (toolName === "set_multiple_fields") {
+          const formRef = dbFlowFormRefCurrent.current?.current;
+          if (!formRef) {
+            addToolOutput({
+              tool: "set_multiple_fields",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Form is not available. Make sure you're in the flow editor.",
+              },
+            });
+            return;
+          }
 
-        // The tool schema uses a structured z.union() instead of z.any(),
-        // so the LLM returns proper typed values (arrays as arrays, not strings).
-        // See: TYPE_COERCION_SCHEMA in db-flow-form.schema.ts
-        formRef.setField(fieldName, value);
-        addToolOutput({
-          tool: "set_form_field",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            fieldName,
-            value,
-            message: `Updated ${fieldName} successfully`,
-          },
-        });
-        return;
-      }
-
-      // set_multiple_fields - Update multiple fields at once
-      if (toolName === "set_multiple_fields") {
-        const formRef = dbFlowFormRefCurrent.current?.current;
-        if (!formRef) {
+          const { fields } = input as { fields: Record<string, unknown> };
+          formRef.setMultipleFields(fields);
           addToolOutput({
             tool: "set_multiple_fields",
             toolCallId: toolCall.toolCallId,
             output: {
-              success: false,
-              error:
-                "Form is not available. Make sure you're in the flow editor.",
+              success: true,
+              fields: Object.keys(fields),
+              message: `Updated ${Object.keys(fields).length} field(s) successfully`,
             },
           });
           return;
         }
 
-        const { fields } = input as { fields: Record<string, unknown> };
-        formRef.setMultipleFields(fields);
-        addToolOutput({
-          tool: "set_multiple_fields",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            fields: Object.keys(fields),
-            message: `Updated ${Object.keys(fields).length} field(s) successfully`,
-          },
-        });
-        return;
-      }
+        // NOTE: set_column_mappings has been removed
+        // Use set_form_field with fieldName="typeCoercions" instead
 
-      // NOTE: set_column_mappings has been removed
-      // Use set_form_field with fieldName="typeCoercions" instead
+        // create_flow_tab - Create a new db-scheduled flow tab
+        if (toolName === "create_flow_tab") {
+          const currentStore = useConsoleStore.getState();
+          const title = (input.title as string) || "New Database Sync";
 
-      // create_flow_tab - Create a new db-scheduled flow tab
-      if (toolName === "create_flow_tab") {
-        const currentStore = useConsoleStore.getState();
-        const title = (input.title as string) || "New Database Sync";
-
-        // Generate a new ID and create the flow tab
-        const newTabId = generateObjectId();
-        currentStore.openTab({
-          id: newTabId,
-          title,
-          content: "",
-          kind: "flow-editor",
-          metadata: { isNew: true, flowType: "db-scheduled" },
-        });
-        currentStore.setActiveTab(newTabId);
-
-        addToolOutput({
-          tool: "create_flow_tab",
-          toolCallId: toolCall.toolCallId,
-          output: {
-            success: true,
-            tabId: newTabId,
+          // Generate a new ID and create the flow tab
+          const newTabId = generateObjectId();
+          currentStore.openTab({
+            id: newTabId,
             title,
-            message: `Created new flow tab "${title}"`,
-          },
-        });
-        return;
-      }
+            content: "",
+            kind: "flow-editor",
+            metadata: { isNew: true, flowType: "db-scheduled" },
+          });
+          currentStore.setActiveTab(newTabId);
 
-      // list_flow_tabs - List all open flow editor tabs
-      if (toolName === "list_flow_tabs") {
-        const currentStore = useConsoleStore.getState();
-        const currentTabs = Object.values(currentStore.tabs);
-        const currentActiveId = currentStore.activeTabId;
+          addToolOutput({
+            tool: "create_flow_tab",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              tabId: newTabId,
+              title,
+              message: `Created new flow tab "${title}"`,
+            },
+          });
+          return;
+        }
 
-        const flowTabs = currentTabs
-          .filter((tab: any) => tab?.kind === "flow-editor")
-          .map((tab: any) => ({
-            id: tab.id,
-            title: tab.title || "Untitled Flow",
-            flowType: tab.metadata?.flowType || "unknown",
-            flowId: tab.metadata?.flowId,
-            isNew: tab.metadata?.isNew || false,
-            isActive: tab.id === currentActiveId,
-          }));
+        // list_flow_tabs - List all open flow editor tabs
+        if (toolName === "list_flow_tabs") {
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
+          const currentActiveId = currentStore.activeTabId;
 
+          const flowTabs = currentTabs
+            .filter((tab: any) => tab?.kind === "flow-editor")
+            .map((tab: any) => ({
+              id: tab.id,
+              title: tab.title || "Untitled Flow",
+              flowType: tab.metadata?.flowType || "unknown",
+              flowId: tab.metadata?.flowId,
+              isNew: tab.metadata?.isNew || false,
+              isActive: tab.id === currentActiveId,
+            }));
+
+          addToolOutput({
+            tool: "list_flow_tabs",
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: true,
+              flowTabs,
+              message: `Found ${flowTabs.length} open flow tab(s)`,
+            },
+          });
+          return;
+        }
+
+        // Unknown tool - not a client-side tool, let it be handled server-side
+      } catch (toolError) {
+        // Safety net: if any client-side tool throws an uncaught error,
+        // return the error to the LLM so the conversation doesn't hang.
         addToolOutput({
-          tool: "list_flow_tabs",
+          tool: toolName,
           toolCallId: toolCall.toolCallId,
           output: {
-            success: true,
-            flowTabs,
-            message: `Found ${flowTabs.length} open flow tab(s)`,
+            success: false,
+            error:
+              toolError instanceof Error
+                ? toolError.message
+                : "Client-side tool execution failed unexpectedly",
           },
         });
-        return;
       }
-
-      // Unknown tool - not a client-side tool, let it be handled server-side
     },
 
     onError: err => {

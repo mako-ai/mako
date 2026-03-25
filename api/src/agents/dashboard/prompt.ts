@@ -21,7 +21,7 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 ### Available Tools
 
 **Dashboard Management:**
-* \`create_dashboard\` — Create a brand new dashboard from saved consoles (server-side). Use when the user explicitly asks to create a NEW dashboard, or when the current dashboard is unrelated to the request.
+* \`create_dashboard\` — Create a brand new empty dashboard. After creation, use \`create_data_source\` to add data. Use when the user explicitly asks to create a NEW dashboard, or when the current dashboard is unrelated to the request.
 * \`create_data_source\` — Create a dashboard-local data source directly from a connection and query definition
 * \`import_console_as_data_source\` — Import a saved console by value into the CURRENT dashboard
 * \`update_data_source_query\` — Modify an existing data source's query definition and re-materialize it
@@ -42,6 +42,31 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 * \`remove_global_filter\` — Remove a global filter
 * \`link_tables\` — Define a relationship between two data sources for cross-filtering
 * \`set_time_dimension\` — Set the default time column for a data source
+
+### DuckDB SQL Reference
+
+Dashboard data lives in an **in-browser DuckDB** instance. All \`localSql\` queries run against DuckDB, not the original database. Key differences from PostgreSQL/MySQL:
+
+**Timestamp handling:**
+- Columns typed TIMESTAMP may contain **epoch milliseconds as integers** (e.g. \`1774421106308\`). Check the sample values in the data source schema.
+- If sample values are large integers (13 digits), they are epoch milliseconds. Convert with: \`to_timestamp(col / 1000.0)\` or \`epoch_ms(col)\`
+- Do NOT use \`col::TIMESTAMP\` on epoch integers — DuckDB interprets that as microseconds, producing wrong dates.
+- For relative time: \`age(now(), to_timestamp(col / 1000.0))\`
+- For formatting: \`strftime(to_timestamp(col / 1000.0), '%Y-%m-%d %H:%M')\`
+
+**Common DuckDB functions:**
+- \`date_trunc('week', ts)\` — truncate to interval
+- \`strftime(ts, format)\` — format timestamp as string
+- \`epoch_ms(bigint)\` — convert epoch milliseconds to timestamp
+- \`to_timestamp(seconds)\` — convert epoch seconds to timestamp
+- \`age(ts1, ts2)\` — interval between timestamps
+- \`now()\` — current timestamp (evaluated at query time)
+- \`INTERVAL '7 days'\` — interval literal
+
+**Type casting:**
+- Use \`TRY_CAST(x AS type)\` instead of \`x::type\` when the data may have unexpected values
+- String to number: \`CAST(col AS DOUBLE)\` or \`TRY_CAST(col AS INTEGER)\`
+- Always check the column's sample values in the data source schema to understand the actual data format before writing SQL
 
 ### Chart Guidelines
 
@@ -178,8 +203,9 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
 4. Use \`add_widget\` to create charts, KPIs, or tables
 
 **Creating a brand new dashboard (only when explicitly asked, or when the request is unrelated to the current dashboard):**
-1. Use \`search_consoles\` to find console IDs
-2. Use \`create_dashboard\` with the console references
+1. Use \`create_dashboard\` with a title and description
+2. Use \`create_data_source\` to add data sources with inline query definitions
+3. Use \`add_widget\` to add charts, KPIs, or tables
 
 **General guidelines:**
 - Enable cross-filtering by default on all charts

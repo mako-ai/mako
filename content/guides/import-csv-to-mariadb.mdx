@@ -1,0 +1,151 @@
+---
+title: "How to Import CSV to MariaDB (4 Methods)"
+slug: import-csv-to-mariadb
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mariadb
+  - csv
+  - import
+  - data
+excerpt: "Four methods to import CSV files into MariaDB: LOAD DATA INFILE, LOAD DATA LOCAL INFILE, mariadb-import CLI, and Mako. Covers permissions, encoding, and type conversion."
+metaDescription: "Import CSV to MariaDB in 2026: LOAD DATA INFILE, LOCAL INFILE, mariadb-import CLI, and Mako GUI. Step-by-step with examples and common pitfalls."
+database: mariadb
+category: import-export
+draft: false
+---
+
+MariaDB shares most of MySQL's CSV import syntax, but there are a few MariaDB-specific details worth knowing. Here are four ways to get CSV data into MariaDB.
+
+## Method 1: LOAD DATA INFILE (Server-Side)
+
+The fastest option when the CSV file is on the MariaDB server's filesystem.
+
+Create the target table:
+
+```sql
+CREATE TABLE customers (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255),
+  email VARCHAR(255),
+  signup_date DATE,
+  plan VARCHAR(50)
+);
+```
+
+Load the file:
+
+```sql
+LOAD DATA INFILE '/var/lib/mysql/customers.csv'
+INTO TABLE customers
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(name, email, signup_date, plan);
+```
+
+Key points:
+- `IGNORE 1 ROWS` skips the header
+- The column list at the end maps CSV columns to table columns, excluding `id` so it auto-increments
+- `FIELDS TERMINATED BY ','` and `ENCLOSED BY '"'` handle standard CSV formatting
+
+**The secure_file_priv restriction.** Like MySQL, MariaDB can restrict file imports to a specific directory:
+
+```sql
+SHOW VARIABLES LIKE 'secure_file_priv';
+```
+
+If this is set, your CSV must be in that directory. If it's empty (empty string, not NULL), any path is allowed. If NULL, file imports are disabled entirely.
+
+## Method 2: LOAD DATA LOCAL INFILE (Client-Side)
+
+When the file is on your local machine rather than the server:
+
+```sql
+LOAD DATA LOCAL INFILE '/home/user/customers.csv'
+INTO TABLE customers
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(name, email, signup_date, plan);
+```
+
+This requires `local_infile` to be enabled. Check and enable it:
+
+```sql
+-- Check
+SHOW GLOBAL VARIABLES LIKE 'local_infile';
+
+-- Enable (requires SUPER privilege)
+SET GLOBAL local_infile = 1;
+```
+
+The MariaDB CLI client also needs the `--local-infile` flag:
+
+```bash
+mariadb --local-infile -u root -p mydb
+```
+
+MariaDB 10.6+ enables `local_infile` by default on the server side, but older versions may have it disabled.
+
+## Method 3: mariadb-import CLI
+
+MariaDB provides `mariadb-import` (the equivalent of MySQL's `mysqlimport`) for command-line bulk loading:
+
+```bash
+mariadb-import --local \
+  --fields-terminated-by=',' \
+  --fields-enclosed-by='"' \
+  --lines-terminated-by='\n' \
+  --ignore-lines=1 \
+  -u root -p mydb customers.csv
+```
+
+The tool infers the table name from the filename -- `customers.csv` loads into the `customers` table. The table must already exist.
+
+Add `--replace` to overwrite rows with duplicate keys, or `--ignore` to skip them.
+
+## Method 4: Mako (GUI)
+
+Mako connects to MariaDB and lets you import CSV files through a visual interface. Drag and drop your file, map columns, and preview the data before committing. Useful when you want to inspect the data or adjust column mappings without writing SQL.
+
+## Common Gotchas
+
+**Encoding.** If your CSV contains accented characters or emoji, specify the character set:
+
+```sql
+LOAD DATA INFILE '/path/customers.csv'
+INTO TABLE customers
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ',';
+```
+
+**NULL handling.** MariaDB treats `\N` in CSV as NULL by default. If your file uses empty strings for missing values, convert them explicitly:
+
+```sql
+LOAD DATA INFILE '/path/file.csv'
+INTO TABLE customers
+FIELDS TERMINATED BY ','
+(name, @email, signup_date, plan)
+SET email = NULLIF(@email, '');
+```
+
+**Date formats.** MariaDB expects `YYYY-MM-DD`. For other formats, load into a variable and convert:
+
+```sql
+LOAD DATA INFILE '/path/file.csv'
+INTO TABLE customers
+FIELDS TERMINATED BY ','
+(name, email, @date_str, plan)
+SET signup_date = STR_TO_DATE(@date_str, '%m/%d/%Y');
+```
+
+**Duplicate keys.** Add `REPLACE` or `IGNORE` after the filename:
+- `LOAD DATA INFILE ... REPLACE` -- overwrites rows with matching keys
+- `LOAD DATA INFILE ... IGNORE` -- skips rows with duplicate keys
+
+**Line endings.** Windows-generated CSVs use `\r\n`. If you see garbled data, switch to `LINES TERMINATED BY '\r\n'`.
+
+Mako connects to MariaDB, MySQL, PostgreSQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

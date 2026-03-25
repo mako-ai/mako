@@ -183,7 +183,19 @@ export const createUniversalTools = (
       description:
         "List all database connections in this workspace (MongoDB, PostgreSQL, Redshift, BigQuery, SQLite, Cloudflare D1). Use this to discover available databases before running queries.",
       inputSchema: emptySchema,
-      execute: async () => listAllConnectionsImpl(workspaceId),
+      execute: async () => {
+        try {
+          return await listAllConnectionsImpl(workspaceId);
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list connections",
+          };
+        }
+      },
     },
 
     // MongoDB tools (namespaced with mongo_ prefix) - server-side

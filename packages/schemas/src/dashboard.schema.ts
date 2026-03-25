@@ -42,6 +42,7 @@ export const DashboardMaterializationScheduleSchema = z.object({
   enabled: z.boolean(),
   cron: z.string().nullable(),
   timezone: z.string().optional(),
+  dataFreshnessTtlMs: z.number().nullable().optional(),
 });
 
 export const DashboardDataSourceSchema = z.object({

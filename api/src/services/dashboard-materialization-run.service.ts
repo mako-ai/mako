@@ -107,20 +107,36 @@ export async function createMaterializationRun(input: {
   });
 }
 
-export async function claimMaterializationRun(input: {
+export async function ensureMaterializationRunStarted(input: {
+  workspaceId: string;
+  dashboardId: string;
+  dataSourceId: string;
   runId: string;
+  triggerType: DashboardMaterializationTriggerType;
+  requestedAt: Date;
   workerId?: string;
   artifactKey?: string;
   version?: string;
-  stage?: string;
-}): Promise<MaterializationRunRecord | null> {
+}): Promise<void> {
   const now = new Date();
-  const run = await MaterializationRun.findOneAndUpdate(
+  await MaterializationRun.findOneAndUpdate(
+    { runId: input.runId },
     {
-      runId: input.runId,
-      status: "queued",
-    },
-    {
+      $setOnInsert: {
+        workspaceId: new Types.ObjectId(input.workspaceId),
+        dashboardId: new Types.ObjectId(input.dashboardId),
+        dataSourceId: input.dataSourceId,
+        triggerType: input.triggerType,
+        requestedAt: input.requestedAt,
+        attempt: 1,
+        events: [
+          {
+            type: "materialization_requested",
+            timestamp: now,
+            message: "Materialization requested",
+          },
+        ],
+      },
       $set: {
         status: "building",
         startedAt: now,
@@ -128,13 +144,13 @@ export async function claimMaterializationRun(input: {
         workerId: input.workerId,
         artifactKey: input.artifactKey,
         version: input.version,
-        stage: input.stage || "started",
+        stage: "started",
+        finishedAt: null,
+        error: null,
       },
     },
-    { new: true },
+    { upsert: true },
   );
-
-  return run ? toMaterializationRunRecord(run) : null;
 }
 
 export async function appendMaterializationRunEvent(input: {

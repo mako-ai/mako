@@ -1,0 +1,188 @@
+---
+title: "How to Import JSON to Snowflake (3 Methods)"
+slug: import-json-to-snowflake
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - snowflake
+  - json
+  - import
+  - data
+excerpt: "Three ways to import JSON data into Snowflake: COPY INTO with stages, direct VARIANT insert, and Mako. Covers file formats, FLATTEN, and extracting nested data."
+metaDescription: "Import JSON to Snowflake in 2026: COPY INTO from stages, VARIANT columns, and Mako. Step-by-step with FLATTEN examples and practical tips."
+database: snowflake
+category: import-export
+draft: false
+---
+
+Snowflake handles semi-structured data through its VARIANT data type. JSON files are loaded into VARIANT columns and can then be queried or flattened into relational tables.
+
+## Method 1: COPY INTO from a Stage
+
+The standard Snowflake pattern: upload the file to a stage, then COPY into a table.
+
+**Step 1: Create a file format and table:**
+
+```sql
+CREATE OR REPLACE FILE FORMAT json_format
+  TYPE = 'JSON'
+  STRIP_OUTER_ARRAY = TRUE;
+
+CREATE OR REPLACE TABLE events_raw (
+  data VARIANT
+);
+```
+
+`STRIP_OUTER_ARRAY = TRUE` handles JSON files that are arrays (`[{...}, {...}]`) by treating each array element as a separate row.
+
+**Step 2: Upload to an internal stage:**
+
+```bash
+# Using SnowSQL
+PUT file:///local/path/events.json @%events_raw;
+```
+
+Or create a named stage:
+
+```sql
+CREATE OR REPLACE STAGE my_json_stage
+  FILE_FORMAT = json_format;
+```
+
+```bash
+PUT file:///local/path/events.json @my_json_stage;
+```
+
+**Step 3: Load the data:**
+
+```sql
+COPY INTO events_raw
+FROM @%events_raw
+FILE_FORMAT = json_format;
+```
+
+Or from a named stage:
+
+```sql
+COPY INTO events_raw
+FROM @my_json_stage
+FILE_FORMAT = json_format;
+```
+
+**From cloud storage (S3, GCS, Azure):**
+
+```sql
+COPY INTO events_raw
+FROM 's3://my-bucket/data/events.json'
+CREDENTIALS = (AWS_KEY_ID='...' AWS_SECRET_KEY='...')
+FILE_FORMAT = json_format;
+```
+
+Or better, use a storage integration to avoid embedding credentials:
+
+```sql
+COPY INTO events_raw
+FROM @my_s3_stage/events.json
+FILE_FORMAT = json_format;
+```
+
+## Method 2: Direct INSERT with PARSE_JSON
+
+For smaller datasets or programmatic inserts, parse JSON strings directly:
+
+```sql
+INSERT INTO events_raw (data)
+SELECT PARSE_JSON('{
+  "event": "signup",
+  "user_id": 42,
+  "timestamp": "2026-03-25T10:00:00Z"
+}');
+```
+
+For multiple rows:
+
+```sql
+INSERT INTO events_raw (data)
+SELECT PARSE_JSON(column1) FROM VALUES
+  ('{"event": "signup", "user_id": 42}'),
+  ('{"event": "login", "user_id": 42}'),
+  ('{"event": "purchase", "user_id": 42, "amount": 29.99}');
+```
+
+This works for small batches but isn't practical for large files -- use COPY INTO instead.
+
+## Method 3: Mako (GUI)
+
+Mako connects to Snowflake and lets you query and explore your data with AI-powered autocomplete. Run queries against VARIANT columns and explore nested JSON structures visually.
+
+## Querying JSON in Snowflake
+
+Once data is in a VARIANT column, extract fields with colon notation:
+
+```sql
+SELECT
+  data:event::STRING AS event_type,
+  data:user_id::NUMBER AS user_id,
+  data:timestamp::TIMESTAMP_TZ AS event_time
+FROM events_raw;
+```
+
+The `::TYPE` cast converts VARIANT values to Snowflake types. Without the cast, values remain VARIANT.
+
+**Nested objects:**
+
+```sql
+-- data = {"user": {"name": "Alice", "address": {"city": "Zurich"}}}
+SELECT
+  data:user.name::STRING AS name,
+  data:user.address.city::STRING AS city
+FROM events_raw;
+```
+
+**Flattening arrays:**
+
+```sql
+-- data = {"user": "Alice", "tags": ["admin", "beta", "early"]}
+SELECT
+  data:user::STRING AS user_name,
+  f.value::STRING AS tag
+FROM events_raw,
+LATERAL FLATTEN(input => data:tags) f;
+```
+
+## Creating Relational Tables from JSON
+
+A common pattern: load JSON into a staging VARIANT table, then transform into typed columns:
+
+```sql
+CREATE TABLE events AS
+SELECT
+  data:event::STRING AS event_type,
+  data:user_id::NUMBER AS user_id,
+  data:timestamp::TIMESTAMP_TZ AS event_time,
+  data:properties::VARIANT AS properties
+FROM events_raw;
+```
+
+This gives you the performance of typed columns for known fields while keeping flexible data in a VARIANT column.
+
+## Common Gotchas
+
+**STRIP_OUTER_ARRAY.** If your file is a JSON array and you forget this setting, the entire array loads as a single row. Always set `STRIP_OUTER_ARRAY = TRUE` for array files.
+
+**NDJSON files.** For newline-delimited JSON (one object per line), don't set `STRIP_OUTER_ARRAY`. Snowflake handles NDJSON natively with the JSON format.
+
+**File size.** Snowflake recommends files between 100-250 MB (compressed) for optimal loading performance. Split larger files before staging.
+
+**Compression.** Snowflake auto-detects gzip compression. You can upload `.json.gz` files directly -- no need to decompress first.
+
+**Case sensitivity.** Snowflake preserves case in VARIANT keys. `data:Name` and `data:name` are different. If your JSON has mixed-case keys, be consistent in queries.
+
+**NULL handling.** JSON `null` becomes Snowflake VARIANT null. When casting, null VARIANT values become SQL NULL:
+
+```sql
+SELECT data:field::STRING FROM events_raw;
+-- Returns NULL if field is missing or null
+```
+
+Mako connects to Snowflake, PostgreSQL, MySQL, MongoDB, BigQuery, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

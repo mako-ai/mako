@@ -18,6 +18,7 @@ export type {
   Dashboard,
   DashboardDataSource,
   DashboardDataSourceOrigin,
+  DashboardEditLock,
   DashboardQueryDefinition,
   DashboardQueryLanguage,
   DashboardWidget,
@@ -28,6 +29,13 @@ export type {
 interface HistoryEntry {
   stack: Dashboard[];
   index: number;
+}
+
+export interface DashboardConflict {
+  dashboardId: string;
+  serverVersion: number;
+  serverDashboard: Dashboard;
+  localDashboard: Dashboard;
 }
 
 export interface DashboardDataSourceMaterializationStatus {
@@ -122,6 +130,8 @@ interface DashboardStoreState {
   historyMap: Record<string, HistoryEntry>;
   autoRefreshInterval: number | null;
 
+  conflict: DashboardConflict | null;
+
   fetchDashboards: (workspaceId: string) => Promise<Dashboard[]>;
   createDashboard: (
     workspaceId: string,
@@ -140,6 +150,10 @@ interface DashboardStoreState {
   openDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
   closeDashboard: (dashboardId: string) => void;
   saveDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
+  resolveConflict: (
+    resolution: "discard" | "overwrite",
+    workspaceId: string,
+  ) => Promise<void>;
   applyDefinition: (
     dashboardId: string,
     json: unknown,
@@ -191,6 +205,10 @@ interface DashboardStoreState {
     dashboardId: string,
     runId: string,
   ) => Promise<MaterializationRunRecord | null>;
+
+  acquireLock: (workspaceId: string, dashboardId: string) => Promise<boolean>;
+  releaseLock: (workspaceId: string, dashboardId: string) => Promise<void>;
+  heartbeatLock: (workspaceId: string, dashboardId: string) => Promise<void>;
 }
 
 const saveTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
@@ -216,6 +234,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
       activeDashboardId: null,
       historyMap: {},
       autoRefreshInterval: null,
+      conflict: null,
 
       fetchDashboards: async (workspaceId: string) => {
         set(state => {
@@ -367,17 +386,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
         if (existing) {
           set(state => {
             state.activeDashboardId = dashboardId;
-            const d = state.openDashboards[dashboardId];
-            if (d && Array.isArray(d.widgets)) {
-              d.widgets = d.widgets.map(
-                w =>
-                  normalizeWidgetLayouts(
-                    w as Record<string, unknown>,
-                  ) as typeof w,
-              );
-            }
           });
-          return;
         }
 
         try {
@@ -399,7 +408,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             set(state => {
               state.openDashboards[dashboardId] = dashboard;
               state.activeDashboardId = dashboardId;
-              state.historyMap[dashboardId] = { stack: [], index: -1 };
+              if (!existing) {
+                state.historyMap[dashboardId] = { stack: [], index: -1 };
+              }
             });
           }
         } catch {
@@ -432,6 +443,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             cache: dashboard.cache,
             title: dashboard.title,
             description: dashboard.description,
+            version: dashboard.version,
           };
           const response = await apiClient.patch<{
             success: boolean;
@@ -442,8 +454,50 @@ export const useDashboardStore = create<DashboardStoreState>()(
               state.openDashboards[dashboardId] = response.data;
             });
           }
-        } catch {
-          // best-effort save
+        } catch (err: any) {
+          const status = err?.response?.status ?? err?.status;
+          if (
+            status === 409 &&
+            err?.response?.data?.code === "VERSION_CONFLICT"
+          ) {
+            const serverData = err.response.data.data as Dashboard;
+            set(state => {
+              state.conflict = {
+                dashboardId,
+                serverVersion: err.response.data.serverVersion,
+                serverDashboard: serverData,
+                localDashboard: JSON.parse(
+                  JSON.stringify(state.openDashboards[dashboardId]),
+                ),
+              };
+            });
+          }
+        }
+      },
+
+      resolveConflict: async (
+        resolution: "discard" | "overwrite",
+        workspaceId: string,
+      ) => {
+        const conflict = get().conflict;
+        if (!conflict) return;
+        const { dashboardId, serverDashboard, localDashboard } = conflict;
+
+        if (resolution === "discard") {
+          set(state => {
+            state.openDashboards[dashboardId] = serverDashboard;
+            state.conflict = null;
+            state.historyMap[dashboardId] = { stack: [], index: -1 };
+          });
+        } else {
+          set(state => {
+            state.openDashboards[dashboardId] = {
+              ...localDashboard,
+              version: serverDashboard.version,
+            };
+            state.conflict = null;
+          });
+          await get().saveDashboard(workspaceId, dashboardId);
         }
       },
 
@@ -756,34 +810,63 @@ export const useDashboardStore = create<DashboardStoreState>()(
           return null;
         }
       },
+
+      acquireLock: async (workspaceId: string, dashboardId: string) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: Dashboard;
+          }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}/lock`);
+          if (response.data) {
+            set(state => {
+              const d = state.openDashboards[dashboardId];
+              if (d) {
+                d.editLock = response.data.editLock;
+              }
+            });
+          }
+          return true;
+        } catch {
+          const dash = get().openDashboards[dashboardId];
+          if (dash) {
+            await get().openDashboard(workspaceId, dashboardId);
+          }
+          return false;
+        }
+      },
+
+      releaseLock: async (workspaceId: string, dashboardId: string) => {
+        try {
+          await apiClient.delete(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock`,
+          );
+          set(state => {
+            const d = state.openDashboards[dashboardId];
+            if (d) {
+              d.editLock = null;
+            }
+          });
+        } catch {
+          // best-effort
+        }
+      },
+
+      heartbeatLock: async (workspaceId: string, dashboardId: string) => {
+        try {
+          await apiClient.post(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock/heartbeat`,
+          );
+        } catch {
+          // best-effort
+        }
+      },
     })),
     {
       name: "mako-dashboard-store",
       partialize: state => ({
-        openDashboards: state.openDashboards,
         activeDashboardId: state.activeDashboardId,
         autoRefreshInterval: state.autoRefreshInterval,
       }),
-      onRehydrateStorage: () => state => {
-        if (!state) return;
-        for (const dashboard of Object.values(state.openDashboards)) {
-          if (!dashboard.materializationSchedule) {
-            dashboard.materializationSchedule = {
-              enabled: true,
-              cron: "0 0 * * *",
-              timezone: "UTC",
-            };
-          }
-          if (Array.isArray(dashboard.widgets)) {
-            dashboard.widgets = dashboard.widgets.map(
-              w =>
-                normalizeWidgetLayouts(
-                  w as Record<string, unknown>,
-                ) as typeof w,
-            );
-          }
-        }
-      },
     },
   ),
 );

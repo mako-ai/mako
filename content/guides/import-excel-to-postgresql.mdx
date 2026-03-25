@@ -1,0 +1,152 @@
+---
+title: "How to Import Excel to PostgreSQL (4 Methods)"
+slug: import-excel-to-postgresql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - postgresql
+  - excel
+  - import
+  - data
+excerpt: "Four ways to import Excel data into PostgreSQL: convert to CSV and use COPY, Python with pandas, pgAdmin's import tool, and Mako. Covers type mapping, multi-sheet files, and common pitfalls."
+metaDescription: "Import Excel to PostgreSQL in 2026: CSV conversion with COPY, Python pandas, pgAdmin GUI, and Mako. Step-by-step with encoding, type inference, and gotchas."
+database: postgresql
+category: import-export
+draft: false
+---
+
+PostgreSQL doesn't read `.xlsx` files directly. Every method involves either converting to CSV first or using a programming language to parse the spreadsheet. Here are four practical approaches.
+
+## Method 1: Convert to CSV, Then COPY
+
+The simplest path. Save the Excel file as CSV, then use PostgreSQL's fast `COPY` command.
+
+In Excel or LibreOffice Calc, export as CSV (UTF-8). Then create the target table and import:
+
+```sql
+CREATE TABLE sales (
+  id INTEGER,
+  product TEXT,
+  amount NUMERIC(10,2),
+  sale_date DATE
+);
+```
+
+```bash
+# From psql
+\copy sales FROM 'sales.csv' WITH (FORMAT csv, HEADER true, ENCODING 'UTF8')
+```
+
+This is the fastest approach for single-sheet files with clean data. `COPY` is optimized for bulk loading and handles millions of rows efficiently.
+
+### When This Breaks Down
+
+- Multi-sheet workbooks: you'll need to export each sheet separately
+- Formulas: only the computed values export, not the formulas themselves (usually what you want)
+- Merged cells: CSV export flattens them, often leaving blank values where you don't expect them
+- Rich formatting: dates may export in locale-specific formats that PostgreSQL can't parse without a custom `DATESTYLE` setting
+
+## Method 2: Python with pandas
+
+For anything beyond a simple single-sheet file, Python gives you the most control.
+
+```python
+import pandas as pd
+from sqlalchemy import create_engine
+
+engine = create_engine("postgresql://user:pass@localhost/mydb")
+
+# Read specific sheet
+df = pd.read_excel("report.xlsx", sheet_name="Q1 Sales")
+
+# Clean up column names (spaces, special chars)
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+# Write to PostgreSQL
+df.to_sql("q1_sales", engine, if_exists="replace", index=False)
+```
+
+pandas uses `openpyxl` under the hood for `.xlsx` files (install it with `pip install openpyxl`). For older `.xls` files, it uses `xlrd`.
+
+For large files, load in chunks to avoid memory issues:
+
+```python
+# Read in chunks of 10,000 rows
+for chunk in pd.read_excel("large_file.xlsx", chunksize=10000):
+    chunk.to_sql("big_table", engine, if_exists="append", index=False)
+```
+
+pandas handles type inference reasonably well -- integers, floats, dates, and strings are mapped to appropriate PostgreSQL types. You can override with explicit dtypes if needed:
+
+```python
+df = pd.read_excel("data.xlsx", dtype={"zip_code": str, "amount": float})
+```
+
+## Method 3: pgAdmin Import
+
+pgAdmin 4 has a built-in import tool, but it only accepts CSV and text files -- not Excel directly. The workflow is:
+
+1. Save your Excel file as CSV
+2. In pgAdmin, right-click the target table and select **Import/Export Data**
+3. Select the CSV file, set delimiter to comma, enable **Header**
+4. Map columns if names don't match exactly
+5. Click **OK** to import
+
+For small to medium datasets where you're already using pgAdmin, this is convenient. For anything larger or repeatable, use `COPY` or Python.
+
+## Method 4: Mako
+
+Mako's import accepts Excel files directly without CSV conversion.
+
+1. Connect to your PostgreSQL instance in Mako
+2. Click **Import** and select your `.xlsx` file
+3. Pick the sheet you want to import (if the workbook has multiple sheets)
+4. Mako shows a preview with detected column types
+5. Adjust mappings and types as needed
+6. Choose the target table (create new or append to existing) and run
+
+Mako handles the `.xlsx` parsing internally and maps Excel types to PostgreSQL types. For one-off imports where you don't want to write code or convert files, this is the fastest path.
+
+## Type Mapping: Excel to PostgreSQL
+
+Excel stores data differently than you might expect. Numbers are all IEEE 754 doubles internally (even integers). Dates are serial numbers (days since January 1, 1900). Here's how they typically map:
+
+| Excel Type | PostgreSQL Type | Notes |
+|---|---|---|
+| Number (integer) | `INTEGER` or `BIGINT` | Excel stores as float; conversion may lose precision above 2^53 |
+| Number (decimal) | `NUMERIC` or `DOUBLE PRECISION` | Use `NUMERIC` for money to avoid floating-point rounding |
+| Date | `DATE` or `TIMESTAMP` | Excel serial number needs conversion; pandas handles this automatically |
+| Text | `TEXT` or `VARCHAR` | Check encoding on export |
+| Boolean | `BOOLEAN` | TRUE/FALSE map cleanly |
+| Formula | (result type) | Only the computed value exports, not the formula |
+
+## Common Gotchas
+
+**Encoding issues.** Excel files saved on Windows often use Windows-1252 encoding when exported to CSV. PostgreSQL expects UTF-8 by default. Convert before importing:
+
+```bash
+iconv -f WINDOWS-1252 -t UTF-8 data.csv > data_utf8.csv
+```
+
+Or specify the encoding in the COPY command: `WITH (ENCODING 'WIN1252')`.
+
+**Date format mismatches.** Excel dates exported as text may appear as `MM/DD/YYYY` or `DD.MM.YYYY` depending on locale. Set PostgreSQL's `DATESTYLE` before importing:
+
+```sql
+SET DATESTYLE = 'ISO, MDY';  -- for MM/DD/YYYY
+```
+
+**Leading zeros stripped.** Excel removes leading zeros from numbers. ZIP codes like `01234` become `1234`. If your data has these, format the column as text in Excel before exporting, or use `dtype={"zip": str}` in pandas.
+
+**Empty rows at the bottom.** Excel files often have invisible empty rows below the data. pandas and CSV export usually handle this, but check your row count after import.
+
+**Multi-sheet workbooks.** The CSV and pgAdmin methods only handle one sheet at a time. Python with pandas is the only approach here that lets you loop through sheets programmatically:
+
+```python
+xls = pd.ExcelFile("workbook.xlsx")
+for sheet in xls.sheet_names:
+    df = pd.read_excel(xls, sheet_name=sheet)
+    df.to_sql(sheet.lower().replace(" ", "_"), engine, if_exists="replace", index=False)
+```
+
+Mako connects to PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

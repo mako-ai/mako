@@ -1,0 +1,170 @@
+---
+title: "How to Import Excel to SQLite (4 Methods)"
+slug: import-excel-to-sqlite
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - sqlite
+  - excel
+  - import
+  - data
+excerpt: "Four ways to import Excel data into SQLite: convert to CSV and use the .import command, Python with pandas, the sqlite3 CLI with a script, and Mako. Covers type affinity, large files, and multi-sheet workbooks."
+metaDescription: "Import Excel to SQLite in 2026: CSV .import command, Python pandas, sqlite3 CLI, and Mako. Step-by-step with type affinity, encoding, and practical tips."
+database: sqlite
+category: import-export
+draft: false
+---
+
+SQLite doesn't read Excel files natively, but its CSV import is fast and simple. Here are four ways to get Excel data into SQLite.
+
+## Method 1: Convert to CSV, Then .import
+
+Save the Excel file as CSV, then use SQLite's built-in `.import` command:
+
+```bash
+sqlite3 mydb.sqlite
+```
+
+```sql
+.mode csv
+.import --skip 1 sales.csv sales
+```
+
+The `--skip 1` flag (SQLite 3.32+) skips the header row. On older versions, use `.headers on` and `.import` without the skip flag -- SQLite will use the first row as column names if the table doesn't exist yet.
+
+If the table already exists, `.import` appends rows to it. If it doesn't exist, SQLite creates it with all columns as `TEXT`.
+
+To create the table with proper types first:
+
+```sql
+CREATE TABLE sales (
+  id INTEGER,
+  product TEXT,
+  amount REAL,
+  sale_date TEXT
+);
+.mode csv
+.import --skip 1 sales.csv sales
+```
+
+Note: SQLite uses type affinity, not strict types. A column declared as `INTEGER` will still accept text values. SQLite 3.37+ supports `STRICT` tables if you want enforcement.
+
+## Method 2: Python with pandas
+
+pandas is the cleanest approach for Excel-to-SQLite, handling both formats natively:
+
+```python
+import pandas as pd
+import sqlite3
+
+conn = sqlite3.connect("mydb.sqlite")
+
+df = pd.read_excel("report.xlsx", sheet_name="Q1")
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+df.to_sql("q1_data", conn, if_exists="replace", index=False)
+conn.close()
+```
+
+No SQLAlchemy needed -- pandas works directly with Python's built-in `sqlite3` module.
+
+For multi-sheet workbooks:
+
+```python
+xls = pd.ExcelFile("workbook.xlsx")
+for sheet in xls.sheet_names:
+    df = pd.read_excel(xls, sheet_name=sheet)
+    table_name = sheet.lower().replace(" ", "_")
+    df.to_sql(table_name, conn, if_exists="replace", index=False)
+```
+
+For large files, use chunked loading:
+
+```python
+for chunk in pd.read_excel("big_file.xlsx", chunksize=10000):
+    chunk.to_sql("big_table", conn, if_exists="append", index=False)
+```
+
+## Method 3: Python with openpyxl (No pandas)
+
+If you want something lighter than pandas:
+
+```python
+import sqlite3
+from openpyxl import load_workbook
+
+wb = load_workbook("data.xlsx", read_only=True)
+ws = wb.active
+
+conn = sqlite3.connect("mydb.sqlite")
+cursor = conn.cursor()
+
+# Get headers from first row
+headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+cols = ", ".join(headers)
+placeholders = ", ".join(["?"] * len(headers))
+
+cursor.execute(f"CREATE TABLE IF NOT EXISTS data ({cols})")
+
+# Insert remaining rows
+for row in ws.iter_rows(min_row=2, values_only=True):
+    cursor.execute(f"INSERT INTO data VALUES ({placeholders})", row)
+
+conn.commit()
+conn.close()
+```
+
+The `read_only=True` flag is important for large files -- it streams rows instead of loading the entire workbook into memory.
+
+## Method 4: Mako
+
+Mako imports Excel files directly into SQLite:
+
+1. Connect to your SQLite database file in Mako
+2. Click **Import** and select the `.xlsx` file
+3. Choose the sheet and review the preview
+4. Adjust column mappings if needed
+5. Run the import
+
+For quick imports without writing code or converting files, this is the simplest option.
+
+## SQLite Type Affinity
+
+SQLite is different from other databases. It uses type affinity, not strict data types. A column declared as `INTEGER` can still hold text. This means:
+
+- Excel data imports without type errors, but you may get unexpected values if types are mixed
+- There's no `DATE` type -- dates are stored as text (ISO 8601 format `YYYY-MM-DD` is conventional) or integers (Unix timestamps)
+- `REAL` is an 8-byte IEEE float, same as Excel's internal number format
+
+For strict typing, use `STRICT` tables (SQLite 3.37+):
+
+```sql
+CREATE TABLE sales (
+  id INTEGER,
+  product TEXT,
+  amount REAL,
+  sale_date TEXT
+) STRICT;
+```
+
+## Common Gotchas
+
+**Date handling.** SQLite has no date type, so dates from Excel may come through as serial numbers (e.g., `45352` for 2024-02-20) or formatted strings. In pandas, dates convert correctly by default. In CSV mode, you may need to format dates as `YYYY-MM-DD` in Excel before exporting.
+
+**File locking.** SQLite locks the entire database file during writes. If another process is reading the database, your import may fail with `SQLITE_BUSY`. Use `PRAGMA busy_timeout = 5000;` to wait up to 5 seconds before failing.
+
+**Large file performance.** Wrap bulk inserts in a transaction for much faster performance:
+
+```sql
+BEGIN TRANSACTION;
+-- .import or INSERT statements here
+COMMIT;
+```
+
+Without explicit transactions, SQLite commits after each row, which is extremely slow for large imports. The `.import` command handles this automatically.
+
+**Column name quirks.** SQLite allows almost anything as a column name (including spaces and special characters) if you quote it. But it's easier to clean names before import to avoid quoting everywhere.
+
+**Memory with large Excel files.** `openpyxl` in default mode loads the entire workbook into memory. For files over 50 MB, use `read_only=True` mode or convert to CSV first.
+
+Mako connects to SQLite, PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
