@@ -871,6 +871,7 @@ export class CloseConnector extends BaseConnector {
         const params: any = {
           _limit: batchSize,
           _skip: skip,
+          _order_by: "date_created",
           date_created__gte: windowStart,
           date_created__lt: windowEnd,
         };
