@@ -998,7 +998,7 @@ export class CloseConnector extends BaseConnector {
     options: ResumableFetchOptions,
     objectType: string,
   ): Promise<FetchState> {
-    const { onBatch, onProgress, state } = options;
+    const { onBatch, onProgress, state, since } = options;
     const api = this.getCloseClient();
     // Close Search API allows _limit up to 200; force max page size.
     const batchSize = 200;
@@ -1022,7 +1022,25 @@ export class CloseConnector extends BaseConnector {
           { type: "object_type", object_type: objectType },
         ];
 
-        if (cursorDateCreated && !searchCursor) {
+        if (since && !cursorDateCreated && !searchCursor) {
+          queries.push({
+            type: "field_condition",
+            field: {
+              type: "regular_field",
+              object_type: objectType,
+              field_name: "date_created",
+            },
+            condition: {
+              type: "moment_range",
+              on_or_after: {
+                type: "fixed_local_date",
+                date: since.toISOString().split("T")[0],
+                which: "start",
+              },
+              before: null,
+            },
+          });
+        } else if (cursorDateCreated && !searchCursor) {
           queries.push({
             type: "field_condition",
             field: {
@@ -1282,25 +1300,6 @@ export class CloseConnector extends BaseConnector {
 
     const objectType = this.getSearchObjectType(entity);
 
-    const commonActivityFields = [
-      "id",
-      "_type",
-      "activity_at",
-      "contact_id",
-      "created_by",
-      "created_by_name",
-      "date_created",
-      "date_updated",
-      "lead_id",
-      "organization_id",
-      "source",
-      "updated_by",
-      "updated_by_name",
-      "user_id",
-      "user_name",
-      "users",
-    ];
-
     const fieldsMap: Record<string, string[]> = {
       lead: [
         "id",
@@ -1384,134 +1383,6 @@ export class CloseConnector extends BaseConnector {
         "is_stalled",
         "stall_status",
         "custom",
-      ],
-      "activity.meeting": [
-        ...commonActivityFields,
-        "title",
-        "note",
-        "summary",
-        "duration",
-        "actual_duration",
-        "starts_at",
-        "ends_at",
-        "location",
-        "status",
-        "attendees",
-        "calendar_event_link",
-        "conference_links",
-      ],
-      "activity.note": [
-        ...commonActivityFields,
-        "title",
-        "note",
-        "note_html",
-        "attachments",
-        "pinned",
-      ],
-      "activity.lead_status_change": [
-        ...commonActivityFields,
-        "old_status_id",
-        "old_status_label",
-        "new_status_id",
-        "new_status_label",
-      ],
-      "activity.opportunity_status_change": [
-        ...commonActivityFields,
-        "opportunity_id",
-        "opportunity_value",
-        "opportunity_value_currency",
-        "opportunity_value_formatted",
-        "opportunity_value_period",
-        "opportunity_confidence",
-        "opportunity_date_won",
-        "old_status_id",
-        "old_status_label",
-        "old_status_type",
-        "new_status_id",
-        "new_status_label",
-        "new_status_type",
-        "old_pipeline_id",
-        "old_pipeline_name",
-        "new_pipeline_id",
-        "new_pipeline_name",
-      ],
-      "activity.call": [
-        ...commonActivityFields,
-        "direction",
-        "disposition",
-        "duration",
-        "status",
-        "note",
-        "note_html",
-        "phone",
-        "remote_phone",
-        "remote_phone_formatted",
-        "local_phone",
-        "local_phone_formatted",
-        "remote_country_iso",
-        "local_country_iso",
-        "has_recording",
-        "recording_url",
-        "recording_duration",
-        "recording_transcript",
-        "voicemail_duration",
-        "voicemail_url",
-        "voicemail_transcript",
-        "date_answered",
-        "cost",
-        "outcome_id",
-        "outcome_reason",
-        "call_method",
-        "is_forwarded",
-        "forwarded_to",
-        "transferred_from",
-        "transferred_to",
-        "sequence_id",
-        "sequence_name",
-      ],
-      "activity.email": [
-        ...commonActivityFields,
-        "direction",
-        "status",
-        "subject",
-        "body_text",
-        "body_html",
-        "body_preview",
-        "body_text_quoted",
-        "body_html_quoted",
-        "sender",
-        "to",
-        "cc",
-        "bcc",
-        "envelope",
-        "attachments",
-        "opens",
-        "opens_summary",
-        "has_reply",
-        "date_sent",
-        "date_scheduled",
-        "email_account_id",
-        "thread_id",
-        "in_reply_to_id",
-        "message_ids",
-        "references",
-        "template_id",
-        "template_name",
-        "sequence_id",
-        "sequence_name",
-        "send_as_id",
-      ],
-      "activity.sms": [
-        ...commonActivityFields,
-        "direction",
-        "status",
-        "text",
-        "local_phone",
-        "local_phone_formatted",
-        "remote_phone",
-        "remote_phone_formatted",
-        "local_country_iso",
-        "remote_country_iso",
       ],
     };
 
