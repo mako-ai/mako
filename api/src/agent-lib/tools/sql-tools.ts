@@ -6,6 +6,10 @@
 import { z } from "zod";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import {
+  canUserSeeDatabase,
+  checkQueryAccess,
+} from "../../services/database-access.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -105,7 +109,7 @@ const executeQuerySchema = z.object({
 // ============================================================================
 // sql_list_connections
 // ============================================================================
-async function listSqlConnectionsImpl(workspaceId: string) {
+async function listSqlConnectionsImpl(workspaceId: string, userId?: string) {
   const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
 
   const databases = await DatabaseConnection.find({
@@ -113,38 +117,51 @@ async function listSqlConnectionsImpl(workspaceId: string) {
     type: { $in: Array.from(ALL_SQL_TYPES) },
   }).sort({ name: 1 });
 
-  return databases.map(db => {
-    const connection: Record<string, unknown> =
-      (db as unknown as { connection: Record<string, unknown> }).connection ||
-      {};
-    const dialect = getDialect(db.type);
+  return databases
+    .filter(db => canUserSeeDatabase(db, userId))
+    .map(db => {
+      const connection: Record<string, unknown> =
+        (db as unknown as { connection: Record<string, unknown> }).connection ||
+        {};
+      const dialect = getDialect(db.type);
 
-    let displayInfo: string;
-    if (dialect === "postgresql" || dialect === "mysql") {
-      const host = (connection.host || connection.instanceConnectionName) as
-        | string
-        | undefined;
-      const dbName = (connection.database || connection.db) as
-        | string
-        | undefined;
-      displayInfo = `${host || "unknown-host"}/${dbName || "unknown-db"}`;
-    } else if (dialect === "bigquery") {
-      displayInfo = (connection.project_id as string) || "unknown-project";
-    } else {
-      // SQLite/D1
-      const dbId = connection.database_id as string | undefined;
-      displayInfo = dbId || "main";
-    }
+      let displayInfo: string;
+      if (dialect === "postgresql" || dialect === "mysql") {
+        const host = (connection.host || connection.instanceConnectionName) as
+          | string
+          | undefined;
+        const dbName = (connection.database || connection.db) as
+          | string
+          | undefined;
+        displayInfo = `${host || "unknown-host"}/${dbName || "unknown-db"}`;
+      } else if (dialect === "bigquery") {
+        displayInfo = (connection.project_id as string) || "unknown-project";
+      } else {
+        // SQLite/D1
+        const dbId = connection.database_id as string | undefined;
+        displayInfo = dbId || "main";
+      }
 
-    return {
-      id: db._id.toString(),
-      name: db.name,
-      type: db.type,
-      sqlDialect: dialect,
-      displayName: `${db.name} (${dialect}: ${displayInfo})`,
-      active: true,
-    };
-  });
+      const access = db.access || "shared";
+      const permissions = db.permissions || "read_write";
+      const isOwner = !!userId && db.ownerId === userId;
+      const accessLabel =
+        access === "private"
+          ? " [private]"
+          : permissions === "read_only" && !isOwner
+            ? " [read-only]"
+            : "";
+
+      return {
+        id: db._id.toString(),
+        name: db.name,
+        type: db.type,
+        sqlDialect: dialect,
+        displayName: `${db.name} (${dialect}: ${displayInfo})${accessLabel}`,
+        access,
+        active: true,
+      };
+    });
 }
 
 // ============================================================================
@@ -768,6 +785,7 @@ async function executeQueryImpl(
   databaseName: string,
   query: string,
   workspaceId: string,
+  userId?: string,
 ) {
   if (!databaseName) {
     throw new Error("'database' is required");
@@ -777,6 +795,12 @@ async function executeQueryImpl(
   }
 
   const database = await fetchSqlDatabase(connectionId, workspaceId);
+
+  const accessCheck = checkQueryAccess(database, userId, query);
+  if (!accessCheck.allowed) {
+    throw new Error(accessCheck.error);
+  }
+
   const dialect = getDialect(database.type);
   const safeQuery = appendLimitIfMissing(query);
 
@@ -809,15 +833,16 @@ export const createSqlToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
+  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
 
     sql_list_connections: {
       description:
-        "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",
+        "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, sqlDialect, and access level. Connections marked [read-only] only allow SELECT/WITH/EXPLAIN queries.",
       inputSchema: emptySchema,
-      execute: async () => listSqlConnectionsImpl(workspaceId),
+      execute: async () => listSqlConnectionsImpl(workspaceId, userId),
     },
 
     sql_list_databases: {
@@ -867,6 +892,7 @@ export const createSqlToolsV2 = (
           params.database,
           params.query,
           workspaceId,
+          userId,
         ),
     },
   };

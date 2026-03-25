@@ -8,6 +8,10 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
+import {
+  canUserSeeDatabase,
+  checkQueryAccess,
+} from "../../services/database-access.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -39,7 +43,7 @@ const executeQuerySchema = z.object({
 });
 
 // Helper implementations
-async function listMongoConnectionsImpl(workspaceId: string) {
+async function listMongoConnectionsImpl(workspaceId: string, userId?: string) {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
@@ -48,7 +52,7 @@ async function listMongoConnectionsImpl(workspaceId: string) {
   }).sort({ name: 1 });
 
   return databases
-    .filter(db => db.type === "mongodb")
+    .filter(db => db.type === "mongodb" && canUserSeeDatabase(db, userId))
     .map(db => ({
       id: db._id.toString(),
       name: db.name,
@@ -225,6 +229,11 @@ async function executeQueryImpl(
   });
   if (!database) throw new Error("Connection not found or access denied");
 
+  const accessCheck = checkQueryAccess(database, userId, query);
+  if (!accessCheck.allowed) {
+    throw new Error(accessCheck.error);
+  }
+
   const result = await databaseConnectionService.executeQuery(
     database as Parameters<typeof databaseConnectionService.executeQuery>[0],
     query,
@@ -318,7 +327,7 @@ export const createMongoToolsV2 = (
       description:
         "List all MongoDB connections available in this workspace. Returns connection ID, name, and database name.",
       inputSchema: emptySchema,
-      execute: async () => listMongoConnectionsImpl(workspaceId),
+      execute: async () => listMongoConnectionsImpl(workspaceId, userId),
     },
 
     list_databases: {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Box,
   Typography,
@@ -13,6 +13,16 @@ import {
   Menu,
   MenuItem,
   Tooltip,
+  Chip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  FormControl,
+  InputLabel,
+  Select,
+  type SelectChangeEvent,
 } from "@mui/material";
 import {
   ChevronRight as ChevronRightIcon,
@@ -27,11 +37,21 @@ import {
   Trash2 as DeleteIcon,
   Settings as SettingsIcon,
   Layers as LayersIcon,
+  Share2 as ShareIcon,
+  Lock as LockIcon,
+  User as UserIcon,
+  Globe as GlobeIcon,
 } from "lucide-react";
 import { useDatabaseExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
-import { useSchemaStore, Connection, TreeNode } from "../store/schemaStore";
+import {
+  useSchemaStore,
+  Connection,
+  TreeNode,
+  DatabaseVisibility,
+  DatabasePermissions,
+} from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useConsoleStore } from "../store/consoleStore";
 
@@ -69,6 +89,121 @@ const DatabaseTypeIcon = React.memo(
 );
 DatabaseTypeIcon.displayName = "DatabaseTypeIcon";
 
+const AccessBadge = React.memo(
+  ({
+    access,
+    permissions,
+    isOwner,
+  }: {
+    access?: DatabaseVisibility;
+    permissions?: DatabasePermissions;
+    isOwner?: boolean;
+  }) => {
+    if (access === "private") {
+      return (
+        <Tooltip title="Private">
+          <LockIcon
+            size={14}
+            strokeWidth={1.5}
+            style={{ opacity: 0.6, flexShrink: 0 }}
+          />
+        </Tooltip>
+      );
+    }
+    if (access === "shared" && permissions === "read_only" && !isOwner) {
+      return (
+        <Chip
+          label="read-only"
+          size="small"
+          variant="outlined"
+          sx={{ height: 18, fontSize: "0.65rem", flexShrink: 0 }}
+        />
+      );
+    }
+    return null;
+  },
+);
+AccessBadge.displayName = "AccessBadge";
+
+function ShareDatabaseDialog({
+  open,
+  database,
+  onClose,
+  workspaceId,
+}: {
+  open: boolean;
+  database: Connection | null;
+  onClose: () => void;
+  workspaceId: string;
+}) {
+  const shareDatabase = useSchemaStore(s => s.shareDatabase);
+  const [accessLevel, setAccessLevel] = useState<DatabaseVisibility>(
+    database?.access || "shared",
+  );
+  const [permissions, setPermissions] = useState<DatabasePermissions>(
+    database?.permissions || "read_write",
+  );
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setAccessLevel(database?.access || "shared");
+    setPermissions(database?.permissions || "read_write");
+  }, [database?.access, database?.permissions]);
+
+  const handleSave = async () => {
+    if (!database) return;
+    setSaving(true);
+    await shareDatabase(workspaceId, database.id, {
+      access: accessLevel,
+      permissions,
+    });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>Share Settings</DialogTitle>
+      <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <FormControl fullWidth sx={{ mt: 1 }}>
+          <InputLabel>Visibility</InputLabel>
+          <Select
+            value={accessLevel}
+            label="Visibility"
+            onChange={(e: SelectChangeEvent) =>
+              setAccessLevel(e.target.value as DatabaseVisibility)
+            }
+          >
+            <MenuItem value="shared">Shared with workspace</MenuItem>
+            <MenuItem value="private">Private (only me)</MenuItem>
+          </Select>
+        </FormControl>
+        {accessLevel === "shared" && (
+          <FormControl fullWidth>
+            <InputLabel>Permissions</InputLabel>
+            <Select
+              value={permissions}
+              label="Permissions"
+              onChange={(e: SelectChangeEvent) =>
+                setPermissions(e.target.value as DatabasePermissions)
+              }
+            >
+              <MenuItem value="read_write">Read & Write</MenuItem>
+              <MenuItem value="read_only">Read only</MenuItem>
+            </Select>
+          </FormControl>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button onClick={handleSave} variant="contained" disabled={saving}>
+          {saving ? "Saving..." : "Save"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 interface DatabaseExplorerProps {
   onCollectionSelect?: (
     databaseId: string,
@@ -95,9 +230,10 @@ function DatabaseExplorer({
 
   const { currentWorkspace } = useWorkspace();
 
-  const databases: Connection[] = currentWorkspace
-    ? connections[currentWorkspace.id] || []
-    : [];
+  const databases: Connection[] = useMemo(
+    () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
+    [connections, currentWorkspace],
+  );
 
   const isLoadingConnections = currentWorkspace
     ? !!loading[`connections:${currentWorkspace.id}`]
@@ -135,6 +271,21 @@ function DatabaseExplorer({
   const [editingDatabaseId, setEditingDatabaseId] = useState<
     string | undefined
   >(undefined);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [sharingDatabase, setSharingDatabase] = useState<Connection | null>(
+    null,
+  );
+  const [myDbsExpanded, setMyDbsExpanded] = useState(true);
+  const [workspaceDbsExpanded, setWorkspaceDbsExpanded] = useState(true);
+
+  const myDatabases = useMemo(
+    () => databases.filter(db => db.access === "private"),
+    [databases],
+  );
+  const sharedDatabases = useMemo(
+    () => databases.filter(db => db.access !== "private"),
+    [databases],
+  );
 
   // Initialize connections on mount
   useEffect(() => {
@@ -376,6 +527,18 @@ function DatabaseExplorer({
     }
   }, [databaseContextMenu, currentWorkspace, deleteConnection]);
 
+  const handleShareDatabase = useCallback(() => {
+    if (!databaseContextMenu) return;
+    const db = databases.find(
+      d => d.id === databaseContextMenu.item.databaseId,
+    );
+    if (db) {
+      setSharingDatabase(db);
+      setShareDialogOpen(true);
+    }
+    setDatabaseContextMenu(null);
+  }, [databaseContextMenu, databases]);
+
   const handleDropCollection = useCallback(() => {
     if (!contextMenu) return;
     const { databaseId, collectionName } = contextMenu.item;
@@ -580,80 +743,181 @@ function DatabaseExplorer({
               </Typography>
             </Box>
           ) : (
-            databases.map(database => {
-              const isDatabaseExpandedLocal = expandedDatabases.has(
-                database.id,
-              );
-              const isLoadingData = loadingData.has(database.id);
-              const dbRootNodes: TreeNode[] =
-                treeNodes[database.id]?.["root"] || [];
+            (() => {
+              const renderDatabaseItem = (database: Connection) => {
+                const isDatabaseExpandedLocal = expandedDatabases.has(
+                  database.id,
+                );
+                const isLoadingData = loadingData.has(database.id);
+                const dbRootNodes: TreeNode[] =
+                  treeNodes[database.id]?.["root"] || [];
 
-              return (
-                <React.Fragment key={database.id}>
-                  {/* Database Level */}
-                  <ListItem disablePadding>
-                    <ListItemButton
-                      onClick={() => handleDatabaseToggle(database.id)}
-                      onContextMenu={e =>
-                        handleDatabaseContextMenu(
-                          e,
-                          database.id,
-                          database.displayName,
-                        )
-                      }
-                      sx={{ py: 0.5, pl: 1 }}
-                    >
-                      <ListItemIcon sx={{ minWidth: 22 }}>
-                        {isDatabaseExpandedLocal ? (
-                          <ChevronDownIcon strokeWidth={1.5} size={20} />
-                        ) : (
-                          <ChevronRightIcon strokeWidth={1.5} size={20} />
-                        )}
-                      </ListItemIcon>
-                      <ListItemIcon sx={{ minWidth: 24 }}>
-                        <DatabaseTypeIcon
-                          type={database.type}
-                          typeToIconUrl={typeToIconUrl}
-                        />
-                      </ListItemIcon>
-                      <ListItemText
-                        primary={
-                          <Box
-                            sx={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 1,
-                              overflow: "hidden",
-                            }}
-                          >
-                            <Typography
-                              variant="body2"
+                return (
+                  <React.Fragment key={database.id}>
+                    <ListItem disablePadding>
+                      <ListItemButton
+                        onClick={() => handleDatabaseToggle(database.id)}
+                        onContextMenu={e =>
+                          handleDatabaseContextMenu(
+                            e,
+                            database.id,
+                            database.displayName,
+                          )
+                        }
+                        sx={{ py: 0.5, pl: 1 }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 22 }}>
+                          {isDatabaseExpandedLocal ? (
+                            <ChevronDownIcon strokeWidth={1.5} size={20} />
+                          ) : (
+                            <ChevronRightIcon strokeWidth={1.5} size={20} />
+                          )}
+                        </ListItemIcon>
+                        <ListItemIcon sx={{ minWidth: 24 }}>
+                          <DatabaseTypeIcon
+                            type={database.type}
+                            typeToIconUrl={typeToIconUrl}
+                          />
+                        </ListItemIcon>
+                        <ListItemText
+                          primary={
+                            <Box
                               sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 0.5,
                                 overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
                               }}
                             >
-                              {database.displayName}
-                            </Typography>
-                          </Box>
-                        }
-                      />
-                    </ListItemButton>
-                  </ListItem>
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {database.displayName}
+                              </Typography>
+                              <AccessBadge
+                                access={database.access}
+                                permissions={database.permissions}
+                                isOwner={database.isOwner}
+                              />
+                            </Box>
+                          }
+                        />
+                      </ListItemButton>
+                    </ListItem>
 
-                  {isDatabaseExpandedLocal && (
-                    <List dense disablePadding>
-                      {isLoadingData
-                        ? renderCollectionSkeletonItems()
-                        : dbRootNodes.map(node =>
-                            renderNode(database.id, node, 1),
-                          )}
-                    </List>
-                  )}
-                </React.Fragment>
+                    {isDatabaseExpandedLocal && (
+                      <List dense disablePadding>
+                        {isLoadingData
+                          ? renderCollectionSkeletonItems()
+                          : dbRootNodes.map(node =>
+                              renderNode(database.id, node, 1),
+                            )}
+                      </List>
+                    )}
+                  </React.Fragment>
+                );
+              };
+
+              return (
+                <>
+                  <ListItemButton
+                    onClick={() => setMyDbsExpanded(!myDbsExpanded)}
+                    sx={{ py: 0.25, pl: 0.5 }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                      {myDbsExpanded ? (
+                        <ChevronDownIcon strokeWidth={1.5} size={20} />
+                      ) : (
+                        <ChevronRightIcon strokeWidth={1.5} size={20} />
+                      )}
+                    </ListItemIcon>
+                    <ListItemIcon sx={{ minWidth: 24 }}>
+                      <DatabaseIcon size={18} strokeWidth={1.5} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="My Databases"
+                      primaryTypographyProps={{
+                        variant: "body2",
+                        fontWeight: 600,
+                        sx: {
+                          textTransform: "uppercase",
+                          fontSize: "0.75rem",
+                          letterSpacing: "0.05em",
+                        },
+                      }}
+                    />
+                    <Chip
+                      label={myDatabases.length}
+                      size="small"
+                      sx={{ height: 18, fontSize: "0.7rem" }}
+                    />
+                  </ListItemButton>
+                  {myDbsExpanded &&
+                    (myDatabases.length > 0 ? (
+                      myDatabases.map(renderDatabaseItem)
+                    ) : (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ pl: 5, py: 0.5, display: "block" }}
+                      >
+                        No databases yet
+                      </Typography>
+                    ))}
+                  <ListItemButton
+                    onClick={() =>
+                      setWorkspaceDbsExpanded(!workspaceDbsExpanded)
+                    }
+                    sx={{ py: 0.25, pl: 0.5 }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+                      {workspaceDbsExpanded ? (
+                        <ChevronDownIcon strokeWidth={1.5} size={20} />
+                      ) : (
+                        <ChevronRightIcon strokeWidth={1.5} size={20} />
+                      )}
+                    </ListItemIcon>
+                    <ListItemIcon sx={{ minWidth: 24 }}>
+                      <GlobeIcon strokeWidth={1.5} size={18} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="Workspace"
+                      primaryTypographyProps={{
+                        variant: "body2",
+                        fontWeight: 600,
+                        sx: {
+                          textTransform: "uppercase",
+                          fontSize: "0.75rem",
+                          letterSpacing: "0.05em",
+                        },
+                      }}
+                    />
+                    <Chip
+                      label={sharedDatabases.length}
+                      size="small"
+                      sx={{ height: 18, fontSize: "0.7rem" }}
+                    />
+                  </ListItemButton>
+                  {workspaceDbsExpanded &&
+                    (sharedDatabases.length > 0 ? (
+                      sharedDatabases.map(db => renderDatabaseItem(db))
+                    ) : (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ pl: 5, py: 0.5, display: "block" }}
+                      >
+                        No workspace databases yet
+                      </Typography>
+                    ))}
+                </>
               );
-            })
+            })()
           )}
         </List>
       </Box>
@@ -704,57 +968,93 @@ function DatabaseExplorer({
       </Menu>
 
       {/* Context Menu for database */}
-      <Menu
-        open={databaseContextMenu !== null}
-        onClose={() => setDatabaseContextMenu(null)}
-        anchorReference="anchorPosition"
-        anchorPosition={
-          databaseContextMenu !== null
-            ? {
-                top: databaseContextMenu.mouseY,
-                left: databaseContextMenu.mouseX,
-              }
-            : undefined
-        }
-        PaperProps={{
-          elevation: 2,
-          sx: {
-            boxShadow: "0px 2px 4px rgba(0,0,0,0.12)",
-            minWidth: 180,
-          },
-        }}
-      >
-        <MenuItem
-          onClick={handleEditDatabase}
-          sx={{
-            pl: 1,
-            pr: 1,
-            "& .MuiListItemIcon-root": {
-              minWidth: 26,
-            },
+      {(() => {
+        const contextDb = databaseContextMenu
+          ? databases.find(d => d.id === databaseContextMenu.item.databaseId)
+          : null;
+        const canManageCtx = contextDb?.canManage === true;
+
+        return (
+          <Menu
+            open={databaseContextMenu !== null && canManageCtx}
+            onClose={() => setDatabaseContextMenu(null)}
+            anchorReference="anchorPosition"
+            anchorPosition={
+              databaseContextMenu !== null
+                ? {
+                    top: databaseContextMenu.mouseY,
+                    left: databaseContextMenu.mouseX,
+                  }
+                : undefined
+            }
+            PaperProps={{
+              elevation: 2,
+              sx: {
+                boxShadow: "0px 2px 4px rgba(0,0,0,0.12)",
+                minWidth: 180,
+              },
+            }}
+          >
+            {canManageCtx && (
+              <MenuItem
+                onClick={handleEditDatabase}
+                sx={{
+                  pl: 1,
+                  pr: 1,
+                  "& .MuiListItemIcon-root": { minWidth: 26 },
+                }}
+              >
+                <ListItemIcon>
+                  <SettingsIcon size={18} strokeWidth={1.5} />
+                </ListItemIcon>
+                Edit connection
+              </MenuItem>
+            )}
+            {canManageCtx && (
+              <MenuItem
+                onClick={handleShareDatabase}
+                sx={{
+                  pl: 1,
+                  pr: 1,
+                  "& .MuiListItemIcon-root": { minWidth: 26 },
+                }}
+              >
+                <ListItemIcon>
+                  <ShareIcon size={18} strokeWidth={1.5} />
+                </ListItemIcon>
+                Share settings
+              </MenuItem>
+            )}
+            {canManageCtx && (
+              <MenuItem
+                onClick={handleDropDatabase}
+                sx={{
+                  pl: 1,
+                  pr: 1,
+                  "& .MuiListItemIcon-root": { minWidth: 26 },
+                }}
+              >
+                <ListItemIcon>
+                  <DeleteIcon size={18} strokeWidth={1.5} />
+                </ListItemIcon>
+                Delete database
+              </MenuItem>
+            )}
+          </Menu>
+        );
+      })()}
+
+      {currentWorkspace && (
+        <ShareDatabaseDialog
+          open={shareDialogOpen}
+          database={sharingDatabase}
+          onClose={() => {
+            setShareDialogOpen(false);
+            setSharingDatabase(null);
           }}
-        >
-          <ListItemIcon>
-            <SettingsIcon size={18} strokeWidth={1.5} />
-          </ListItemIcon>
-          Edit connection
-        </MenuItem>
-        <MenuItem
-          onClick={handleDropDatabase}
-          sx={{
-            pl: 1,
-            pr: 1,
-            "& .MuiListItemIcon-root": {
-              minWidth: 26,
-            },
-          }}
-        >
-          <ListItemIcon>
-            <DeleteIcon size={18} strokeWidth={1.5} />
-          </ListItemIcon>
-          Delete database
-        </MenuItem>
-      </Menu>
+          workspaceId={currentWorkspace.id}
+        />
+      )}
     </Box>
   );
 }

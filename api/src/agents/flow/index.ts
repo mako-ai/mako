@@ -24,6 +24,10 @@ import {
   checkQuerySafety,
 } from "../../services/destination-writer.service";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import {
+  canUserSeeDatabase,
+  checkQueryAccess,
+} from "../../services/database-access.service";
 
 // Import shared database discovery tools from agent-lib
 import {
@@ -163,7 +167,7 @@ const listFlowTabsSchema = z.object({});
  * Create tools for flow agent
  * Uses shared database discovery tools from agent-lib
  */
-export function createFlowTools(workspaceId: string) {
+export function createFlowTools(workspaceId: string, userId?: string) {
   return {
     // =========================================================================
     // Database Discovery Tools (from shared agent-lib module)
@@ -339,6 +343,15 @@ export function createFlowTools(workspaceId: string) {
             return { success: false, error: "Connection not found" };
           }
 
+          if (!canUserSeeDatabase(connection, userId)) {
+            return { success: false, error: "Connection not found" };
+          }
+
+          const accessCheck = checkQueryAccess(connection, userId, query);
+          if (!accessCheck.allowed) {
+            return { success: false, error: accessCheck.error };
+          }
+
           const result = await validateQueryService(
             connection,
             query,
@@ -387,6 +400,15 @@ export function createFlowTools(workspaceId: string) {
 
           if (!connection) {
             return { success: false, error: "Connection not found" };
+          }
+
+          if (!canUserSeeDatabase(connection, userId)) {
+            return { success: false, error: "Connection not found" };
+          }
+
+          const accessCheck = checkQueryAccess(connection, userId, query);
+          if (!accessCheck.allowed) {
+            return { success: false, error: accessCheck.error };
           }
 
           // Add LIMIT if missing from SELECT queries (safety measure)
@@ -575,11 +597,11 @@ function buildRuntimeContext(
 export const flowAgentFactory: AgentFactory = (
   context: AgentContext,
 ): AgentConfig => {
-  const { workspaceId, flowFormState, databases = [] } = context;
+  const { workspaceId, userId, flowFormState, databases = [] } = context;
 
   const runtimeContext = buildRuntimeContext(flowFormState, databases);
 
-  const tools = createFlowTools(workspaceId);
+  const tools = createFlowTools(workspaceId, userId);
 
   return {
     systemPrompt: [

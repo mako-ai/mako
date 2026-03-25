@@ -183,6 +183,9 @@ export interface IWorkspaceInvite extends Document {
   acceptedAt?: Date;
 }
 
+export type DatabaseVisibility = "private" | "shared";
+export type DatabasePermissions = "read_write" | "read_only";
+
 /**
  * DatabaseConnection model interface
  * Represents a saved connection to a database server (may contain multiple databases)
@@ -229,6 +232,10 @@ export interface IDatabaseConnection extends Document {
       privateKey?: string;
     };
   };
+  access: DatabaseVisibility;
+  permissions: DatabasePermissions;
+  ownerId: string;
+  sharedWith: Types.ObjectId[];
   isDemo?: boolean; // True if this is a demo database connection
   createdBy: string;
   createdAt: Date;
@@ -1046,6 +1053,26 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       set: encryptObject,
       get: decryptObject,
     },
+    access: {
+      type: String,
+      enum: ["private", "shared"],
+      default: "shared",
+    },
+    permissions: {
+      type: String,
+      enum: ["read_write", "read_only"],
+      default: "read_write",
+    },
+    ownerId: {
+      type: String,
+      ref: "User",
+    },
+    sharedWith: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     isDemo: {
       type: Boolean,
       default: false,
@@ -1070,6 +1097,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
 // Indexes
 DatabaseConnectionSchema.index({ workspaceId: 1 });
 DatabaseConnectionSchema.index({ workspaceId: 1, name: 1 });
+DatabaseConnectionSchema.index({ workspaceId: 1, access: 1, ownerId: 1 });
 
 /**
  * Connector Schema

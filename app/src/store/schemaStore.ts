@@ -8,6 +8,9 @@ import { apiClient } from "../lib/api-client";
 // Types
 // ============================================================================
 
+export type DatabaseVisibility = "private" | "shared";
+export type DatabasePermissions = "read_write" | "read_only";
+
 /** Database connection/server */
 export interface Connection {
   id: string;
@@ -24,6 +27,11 @@ export interface Connection {
   displayName: string;
   hostKey: string;
   hostName: string;
+  access?: DatabaseVisibility;
+  permissions?: DatabasePermissions;
+  isOwner?: boolean;
+  canManage?: boolean;
+  ownerId?: string;
 }
 
 /** Tree node for databases, datasets, schemas, tables, etc. */
@@ -166,6 +174,17 @@ interface SchemaState {
     payload: Record<string, unknown>,
     databaseId?: string,
   ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+
+  // === Sharing ===
+  shareDatabase: (
+    workspaceId: string,
+    databaseId: string,
+    settings: {
+      access?: DatabaseVisibility;
+      permissions?: DatabasePermissions;
+      sharedWith?: string[];
+    },
+  ) => Promise<{ success: boolean; error?: string }>;
 
   // === Console Template ===
   fetchConsoleTemplate: (
@@ -606,6 +625,31 @@ export const useSchemaStore = create<SchemaState>()(
 
           // Refresh connections list
           await get().refreshConnections(workspaceId);
+        }
+      },
+
+      shareDatabase: async (workspaceId, databaseId, settings) => {
+        try {
+          const res = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/databases/${databaseId}/share`,
+            settings,
+          );
+
+          if (res.success) {
+            await get().refreshConnections(workspaceId);
+          }
+          return { success: res.success, error: res.error };
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to update sharing settings",
+          };
         }
       },
 
