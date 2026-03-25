@@ -643,11 +643,11 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // Activities: use direct REST endpoint with date_created__lt cursor.
+    // Activities: use direct REST endpoint with date_created__lte cursor.
     // The search API cursor expires after ~30s; on expiry the code restarts
     // from an inclusive dateCursor, causing duplicate pages across chunks.
-    // The direct endpoint uses strict date_created__lt so there are no gaps
-    // or duplicates, and it has no 10k search-API skip limit.
+    // The direct endpoint uses date_created__lte to handle timestamp ties,
+    // and it has no 10k search-API skip limit. MERGE deduplicates on import.
     if (entity === "activities" || entity.startsWith("activities:")) {
       return await this.fetchActivitiesChunk(options);
     }
@@ -838,8 +838,8 @@ export class CloseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
 
-    // Cursor-based pagination ascending by date_created.
-    // Uses gte so ties are included — MERGE deduplicates on import.
+    // Cursor-based pagination descending by date_created.
+    // Uses lte so ties are included — MERGE deduplicates on import.
     let cursor: string | null = state?.metadata?.cursor ?? null;
     const endDate =
       since ||
@@ -856,7 +856,7 @@ export class CloseConnector extends BaseConnector {
           _order_by: "-date_created",
         };
         if (cursor) {
-          params.date_created__lt = cursor;
+          params.date_created__lte = cursor;
         }
         if (endDate) {
           params.date_created__gte = endDate.toISOString().split("T")[0];
@@ -1588,7 +1588,7 @@ export class CloseConnector extends BaseConnector {
           _order_by: "-date_created",
         };
         if (cursor) {
-          params.date_created__lt = cursor;
+          params.date_created__lte = cursor;
         }
         if (since) {
           params.date_created__gte = since.toISOString().split("T")[0];
