@@ -815,10 +815,10 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                   />
                 );
 
+              const rowsLabel =
+                loadedRows > 0 ? `${loadedRows.toLocaleString()} rows` : null;
               const statsSegments = [
-                loadedRows > 0
-                  ? `${loadedRows.toLocaleString()} rows`
-                  : null,
+                rowsLabel,
                 sizeLabel,
                 materializedAt,
               ].filter(Boolean);
