@@ -358,11 +358,6 @@ export class CdcBackfillService {
       flowId,
       event: { type: "PAUSE", reason: "Paused via API" },
     });
-    await cdcSyncStateService.applyStreamTransition({
-      workspaceId,
-      flowId,
-      event: { type: "PAUSE", reason: "Paused via API (backfill pause)" },
-    });
 
     const runningExecution = await FlowExecution.findOne({
       flowId: new Types.ObjectId(flowId),
