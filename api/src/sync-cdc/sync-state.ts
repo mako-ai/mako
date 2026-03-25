@@ -59,7 +59,9 @@ const STREAM_TRANSITIONS: Record<
     FAIL: "error",
   },
   paused: {
+    START: "active",
     RESUME: "active",
+    RECOVER: "active",
     FAIL: "error",
   },
   error: {
