@@ -10,6 +10,8 @@ import {
   updateDashboardWidget,
 } from "./commands";
 import { useDashboardStore } from "../store/dashboardStore";
+import { useConsoleStore } from "../store/consoleStore";
+import { useUIStore } from "../store/uiStore";
 import type { DashboardDataSource, DashboardWidget } from "./types";
 import { classifyDuckDBError, classifySourceError } from "./error-kinds";
 import {
@@ -34,6 +36,61 @@ export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<Record<string, unknown> | null> {
+  if (toolName === "create_dashboard") {
+    const ctx = getActiveContext();
+    const workspaceId =
+      ctx?.workspaceId ?? useUIStore.getState().currentWorkspaceId;
+    if (!workspaceId || typeof workspaceId !== "string") {
+      return { success: false, error: "No active workspace" };
+    }
+    if (typeof input.title !== "string" || !input.title.trim()) {
+      return { success: false, error: "title is required" };
+    }
+
+    try {
+      const dashboard = await useDashboardStore
+        .getState()
+        .createDashboard(workspaceId, {
+          title: input.title,
+          description:
+            typeof input.description === "string"
+              ? input.description
+              : undefined,
+        } as any);
+
+      if (!dashboard) {
+        return { success: false, error: "Failed to create dashboard" };
+      }
+
+      useDashboardStore.setState((state: any) => {
+        state.openDashboards[dashboard._id] = dashboard;
+        state.activeDashboardId = dashboard._id;
+        state.historyMap[dashboard._id] = { stack: [], index: -1 };
+      });
+
+      const consoleStore = useConsoleStore.getState();
+      const tabId = consoleStore.openTab({
+        title: dashboard.title,
+        content: "",
+        kind: "dashboard",
+        metadata: { dashboardId: dashboard._id },
+      });
+      consoleStore.setActiveTab(tabId);
+      useUIStore.getState().setLeftPane("dashboards");
+
+      return {
+        success: true,
+        dashboardId: dashboard._id,
+        _eventType: "dashboard_creation",
+        message: `Dashboard "${dashboard.title}" created successfully`,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to create dashboard";
+      return { success: false, error: message };
+    }
+  }
+
   if (
     toolName === "add_data_source" ||
     toolName === "import_console_as_data_source"
@@ -296,17 +353,27 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "dataSourceId is required" };
     }
 
-    const result = await previewDashboardQuery({
-      dataSourceId: input.dataSourceId,
-      sql: typeof input.sql === "string" ? input.sql : undefined,
-    });
+    try {
+      const result = await previewDashboardQuery({
+        dataSourceId: input.dataSourceId,
+        sql: typeof input.sql === "string" ? input.sql : undefined,
+      });
 
-    return {
-      success: true,
-      columns: result.fields,
-      rows: result.rows.slice(0, 50),
-      rowCount: result.rowCount,
-    };
+      return {
+        success: true,
+        columns: result.fields,
+        rows: result.rows.slice(0, 50),
+        rowCount: result.rowCount,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Query preview failed";
+      return {
+        success: false,
+        error: message,
+        errorKind: classifyDuckDBError(message),
+      };
+    }
   }
 
   if (toolName === "add_widget") {

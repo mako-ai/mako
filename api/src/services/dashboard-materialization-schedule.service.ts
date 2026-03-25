@@ -4,12 +4,14 @@ export interface DashboardMaterializationScheduleInput {
   enabled?: boolean;
   cron?: string | null;
   timezone?: string | null;
+  dataFreshnessTtlMs?: number | null;
 }
 
 export interface DashboardMaterializationSchedule {
   enabled: boolean;
   cron: string | null;
   timezone: string;
+  dataFreshnessTtlMs?: number | null;
 }
 
 export const DEFAULT_DASHBOARD_MATERIALIZATION_SCHEDULE: DashboardMaterializationSchedule =
@@ -32,6 +34,7 @@ export function normalizeDashboardMaterializationSchedule(
     timezone:
       input?.timezone?.trim() ||
       DEFAULT_DASHBOARD_MATERIALIZATION_SCHEDULE.timezone,
+    dataFreshnessTtlMs: input?.dataFreshnessTtlMs ?? null,
   };
 }
 

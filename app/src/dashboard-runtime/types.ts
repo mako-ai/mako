@@ -34,6 +34,13 @@ export interface DashboardDataSource
     | null;
 }
 
+export interface DashboardEditLock {
+  userId: string;
+  userName: string;
+  lockedAt: string;
+  expiresAt: string;
+}
+
 export interface Dashboard
   extends Omit<DashboardDefinition, "crossFilter" | "dataSources"> {
   _id: string;
@@ -48,7 +55,10 @@ export interface Dashboard
     enabled: boolean;
     cron: string | null;
     timezone?: string;
+    dataFreshnessTtlMs?: number | null;
   };
+  version: number;
+  editLock?: DashboardEditLock | null;
   access: "private" | "workspace";
   owner_id?: string;
   createdBy: string;
@@ -305,6 +315,8 @@ const DASHBOARD_METADATA_KEYS: ReadonlySet<string> = new Set([
   "readOnly",
   "createdAt",
   "updatedAt",
+  "version",
+  "editLock",
 ]);
 
 /**

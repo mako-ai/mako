@@ -2299,6 +2299,7 @@ export interface IDashboard extends Document {
     enabled: boolean;
     cron: string | null;
     timezone?: string;
+    dataFreshnessTtlMs?: number | null;
   };
 
   layout: {
@@ -2329,6 +2330,13 @@ export interface IDashboard extends Document {
     createdBy: string;
     message?: string;
   }>;
+
+  editLock?: {
+    userId: string;
+    userName: string;
+    lockedAt: Date;
+    expiresAt: Date;
+  };
 
   folderId?: Types.ObjectId;
   access: "private" | "workspace";
@@ -2613,6 +2621,7 @@ const DashboardSchema = new Schema<IDashboard>(
       enabled: { type: Boolean, default: true },
       cron: { type: String, default: "0 0 * * *" },
       timezone: { type: String, default: "UTC" },
+      dataFreshnessTtlMs: { type: Number, default: null },
     },
 
     layout: {
@@ -2636,6 +2645,13 @@ const DashboardSchema = new Schema<IDashboard>(
         message: { type: String },
       },
     ],
+
+    editLock: {
+      userId: { type: String },
+      userName: { type: String },
+      lockedAt: { type: Date },
+      expiresAt: { type: Date },
+    },
 
     folderId: {
       type: Schema.Types.ObjectId,

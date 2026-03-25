@@ -115,11 +115,22 @@ export function createSelfDirectiveTools(workspaceId: string) {
         "Read the current self-directive -- the workspace-specific rules and knowledge you've learned. Check this before updating to avoid duplicates.",
       inputSchema: readSelfDirectiveSchema,
       execute: async () => {
-        const ws =
-          await Workspace.findById(workspaceId).select("selfDirective");
-        return {
-          content: ws?.selfDirective || "(empty -- no self-directive set yet)",
-        };
+        try {
+          const ws =
+            await Workspace.findById(workspaceId).select("selfDirective");
+          return {
+            content:
+              ws?.selfDirective || "(empty -- no self-directive set yet)",
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to read self-directive",
+          };
+        }
       },
     },
     update_self_directive: {
@@ -136,80 +147,93 @@ export function createSelfDirectiveTools(workspaceId: string) {
       ].join("\n"),
       inputSchema: updateSelfDirectiveSchema,
       execute: async (input: UpdateInput) => {
-        const { operation, content, find, replace, after } = input;
+        try {
+          const { operation, content, find, replace, after } = input;
 
-        const ws =
-          await Workspace.findById(workspaceId).select("selfDirective");
-        if (!ws) return { success: false, error: "Workspace not found" };
+          const ws =
+            await Workspace.findById(workspaceId).select("selfDirective");
+          if (!ws) return { success: false, error: "Workspace not found" };
 
-        const current = ws.selfDirective || "";
-        let newValue: string;
+          const current = ws.selfDirective || "";
+          let newValue: string;
 
-        switch (operation) {
-          case "set":
-            newValue = content!;
-            break;
+          switch (operation) {
+            case "set":
+              newValue = content!;
+              break;
 
-          case "append":
-            newValue = current ? current + "\n" + content! : content!;
-            break;
+            case "append":
+              newValue = current ? current + "\n" + content! : content!;
+              break;
 
-          case "prepend":
-            newValue = current ? content! + "\n" + current : content!;
-            break;
+            case "prepend":
+              newValue = current ? content! + "\n" + current : content!;
+              break;
 
-          case "find_and_replace":
-            if (!current.includes(find!)) {
+            case "find_and_replace":
+              if (!current.includes(find!)) {
+                return {
+                  success: false,
+                  error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
+                };
+              }
+              newValue = literalReplace(current, find!, replace!);
+              break;
+
+            case "insert_after":
+              if (!current.includes(after!)) {
+                return {
+                  success: false,
+                  error: `Anchor text not found in self-directive: "${after!.slice(0, 80)}"`,
+                };
+              }
+              newValue = literalReplace(
+                current,
+                after!,
+                after! + "\n" + content!,
+              );
+              break;
+
+            case "delete_section":
+              if (!current.includes(find!)) {
+                return {
+                  success: false,
+                  error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
+                };
+              }
+              newValue = literalReplace(current, find!, "")
+                .replace(/\n{3,}/g, "\n\n")
+                .trim();
+              break;
+
+            default:
               return {
                 success: false,
-                error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
+                error: `Unknown operation: ${operation}`,
               };
-            }
-            newValue = literalReplace(current, find!, replace!);
-            break;
+          }
 
-          case "insert_after":
-            if (!current.includes(after!)) {
-              return {
-                success: false,
-                error: `Anchor text not found in self-directive: "${after!.slice(0, 80)}"`,
-              };
-            }
-            newValue = literalReplace(
-              current,
-              after!,
-              after! + "\n" + content!,
-            );
-            break;
+          if (newValue.length > MAX_SELF_DIRECTIVE_LENGTH) {
+            return {
+              success: false,
+              error: `Self-directive would exceed the ${MAX_SELF_DIRECTIVE_LENGTH} character limit (result: ${newValue.length} chars). Use 'set' to rewrite more concisely, or 'delete_section' to remove content first.`,
+            };
+          }
 
-          case "delete_section":
-            if (!current.includes(find!)) {
-              return {
-                success: false,
-                error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
-              };
-            }
-            newValue = literalReplace(current, find!, "")
-              .replace(/\n{3,}/g, "\n\n")
-              .trim();
-            break;
+          await Workspace.findByIdAndUpdate(workspaceId, {
+            $set: { selfDirective: newValue },
+          });
 
-          default:
-            return { success: false, error: `Unknown operation: ${operation}` };
-        }
-
-        if (newValue.length > MAX_SELF_DIRECTIVE_LENGTH) {
+          return { success: true, length: newValue.length };
+        } catch (error) {
           return {
             success: false,
-            error: `Self-directive would exceed the ${MAX_SELF_DIRECTIVE_LENGTH} character limit (result: ${newValue.length} chars). Use 'set' to rewrite more concisely, or 'delete_section' to remove content first.`,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to update self-directive",
           };
         }
-
-        await Workspace.findByIdAndUpdate(workspaceId, {
-          $set: { selfDirective: newValue },
-        });
-
-        return { success: true, length: newValue.length };
       },
     },
   };

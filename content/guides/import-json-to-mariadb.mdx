@@ -1,0 +1,170 @@
+---
+title: "How to Import JSON to MariaDB (3 Methods)"
+slug: import-json-to-mariadb
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mariadb
+  - json
+  - import
+  - data
+excerpt: "Three ways to import JSON data into MariaDB: LOAD DATA INFILE with LONGTEXT columns, a Python script, and Mako. Covers MariaDB's JSON alias, functions, and differences from MySQL."
+metaDescription: "Import JSON to MariaDB in 2026: LOAD DATA INFILE, Python scripting, and Mako. Covers MariaDB's JSON type, functions, and practical gotchas."
+database: mariadb
+category: import-export
+draft: false
+---
+
+MariaDB handles JSON differently from MySQL. While MySQL has a native binary JSON type, MariaDB's JSON is an alias for LONGTEXT with a CHECK constraint for validation. The import methods are similar, but there are important differences.
+
+## Method 1: LOAD DATA INFILE
+
+For NDJSON files (one JSON object per line), you can load directly into a LONGTEXT or JSON column:
+
+```sql
+CREATE TABLE events (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  data JSON NOT NULL
+);
+```
+
+In MariaDB, `JSON` creates a `LONGTEXT` column with a `CHECK (JSON_VALID(data))` constraint. This means invalid JSON is rejected on insert.
+
+```sql
+LOAD DATA INFILE '/var/lib/mysql/events.ndjson'
+INTO TABLE events
+LINES TERMINATED BY '\n'
+(data);
+```
+
+Each line becomes one row. For client-side files:
+
+```sql
+LOAD DATA LOCAL INFILE '/home/user/events.ndjson'
+INTO TABLE events
+LINES TERMINATED BY '\n'
+(data);
+```
+
+Requires `local_infile` enabled (MariaDB 10.6+ enables it by default on the server side).
+
+If your file is a JSON array rather than NDJSON, convert first:
+
+```bash
+cat data.json | jq -c '.[]' > data.ndjson
+```
+
+## Method 2: Python Script
+
+For complex transformations or flattening JSON into relational columns:
+
+```python
+import json
+import mariadb
+
+conn = mariadb.connect(
+    host='localhost', user='root',
+    password='pass', database='mydb'
+)
+cursor = conn.cursor()
+
+with open('users.json') as f:
+    records = json.load(f)
+
+for record in records:
+    cursor.execute(
+        "INSERT INTO users (name, email, metadata) VALUES (?, ?, ?)",
+        (record['name'], record['email'], json.dumps(record.get('metadata', {})))
+    )
+
+conn.commit()
+cursor.close()
+conn.close()
+```
+
+For better performance, use `executemany`:
+
+```python
+data = [(r['name'], r['email'], json.dumps(r.get('metadata', {})))
+        for r in records]
+cursor.executemany(
+    "INSERT INTO users (name, email, metadata) VALUES (?, ?, ?)",
+    data
+)
+```
+
+You can also use the `mysql-connector-python` package -- MariaDB is wire-compatible with MySQL's protocol.
+
+## Method 3: Mako (GUI)
+
+Mako connects to MariaDB and provides a visual interface for querying and managing data. Use Mako's AI-powered SQL editor to work with JSON data and explore your tables.
+
+## MariaDB's JSON Type vs MySQL's
+
+This is the key difference to understand:
+
+| Feature | MariaDB | MySQL 8.0+ |
+|---------|---------|------------|
+| Storage | LONGTEXT (text) | Binary format |
+| Validation | CHECK constraint | Native validation |
+| Partial update | No (rewrites full text) | Yes (in-place) |
+| Indexing | Virtual columns + index | Virtual columns + index |
+| Functions | JSON_EXTRACT, etc. | JSON_EXTRACT, etc. |
+
+MariaDB stores JSON as text, so it uses more space and is slower for partial updates. For read-heavy workloads where you query JSON fields, the performance difference is small because both databases use the same extraction functions.
+
+## MariaDB JSON Functions
+
+```sql
+-- Extract a value (returns JSON)
+SELECT JSON_EXTRACT(data, '$.name') FROM events;
+
+-- Extract as text (MariaDB 10.2.7+)
+SELECT JSON_UNQUOTE(JSON_EXTRACT(data, '$.name')) FROM events;
+
+-- Shorthand (MariaDB 10.2.7+)
+SELECT data->>'$.name' FROM events;
+
+-- Check if a key exists
+SELECT * FROM events WHERE JSON_CONTAINS_PATH(data, 'one', '$.email');
+
+-- Array access
+SELECT JSON_EXTRACT(data, '$.tags[0]') FROM events;
+```
+
+## Common Gotchas
+
+**JSON validation.** The `CHECK (JSON_VALID(data))` constraint means invalid JSON is rejected with an error. If you're loading messy data, use LONGTEXT instead of JSON and validate after:
+
+```sql
+CREATE TABLE events_raw (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  data LONGTEXT
+);
+
+-- Load first, validate later
+SELECT id FROM events_raw WHERE NOT JSON_VALID(data);
+```
+
+**String encoding.** JSON in MariaDB must be valid UTF-8. The `CHARACTER SET utf8mb4` on the column handles this, but source files with other encodings will cause errors. Convert first:
+
+```bash
+iconv -f ISO-8859-1 -t UTF-8 data.ndjson > data_utf8.ndjson
+```
+
+**The ->> operator.** MariaDB supports `->` and `->>` starting from 10.2.7. `->` returns a JSON value (quoted strings), `->>` returns unquoted text. If you're on an older version, use `JSON_UNQUOTE(JSON_EXTRACT(...))`.
+
+**LONGTEXT limit.** The maximum size for a JSON document in MariaDB is the LONGTEXT limit: 4 GB. In practice, documents over a few MB should be split or stored differently.
+
+**Indexing JSON fields.** You can't directly index a JSON extraction. Create a virtual column and index that:
+
+```sql
+ALTER TABLE events
+ADD COLUMN event_type VARCHAR(100) AS (data->>'$.type') VIRTUAL;
+
+CREATE INDEX idx_event_type ON events (event_type);
+```
+
+Use `VIRTUAL` (computed on read) or `STORED` (computed on write, uses disk space but faster reads).
+
+Mako connects to MariaDB, PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

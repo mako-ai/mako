@@ -817,23 +817,59 @@ export const createSqlToolsV2 = (
       description:
         "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",
       inputSchema: emptySchema,
-      execute: async () => listSqlConnectionsImpl(workspaceId),
+      execute: async () => {
+        try {
+          return await listSqlConnectionsImpl(workspaceId);
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list SQL connections",
+          };
+        }
+      },
     },
 
     sql_list_databases: {
       description:
         "List databases (PostgreSQL/MySQL), datasets (BigQuery), or database files (SQLite/D1) within a SQL connection. Returns array with 'name' and 'sqlDialect'. IMPORTANT for Cloudflare D1: returns 'id' (UUID) and 'name' (human-readable). Use the 'id' field (not 'name') for subsequent D1 tool calls.",
       inputSchema: connectionIdSchema,
-      execute: async (params: { connectionId: string }) =>
-        listDatabasesImpl(params.connectionId, workspaceId),
+      execute: async (params: { connectionId: string }) => {
+        try {
+          return await listDatabasesImpl(params.connectionId, workspaceId);
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list databases",
+          };
+        }
+      },
     },
 
     sql_list_tables: {
       description:
         "List tables and views in a database. For PostgreSQL with multiple schemas, returns schema-prefixed names (e.g., 'analytics.events'). Returns table names with type and sqlDialect. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: connectionAndDbSchema,
-      execute: async (params: { connectionId: string; database: string }) =>
-        listTablesImpl(params.connectionId, params.database, workspaceId),
+      execute: async (params: { connectionId: string; database: string }) => {
+        try {
+          return await listTablesImpl(
+            params.connectionId,
+            params.database,
+            workspaceId,
+          );
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error ? error.message : "Failed to list tables",
+          };
+        }
+      },
     },
 
     sql_inspect_table: {
@@ -844,13 +880,24 @@ export const createSqlToolsV2 = (
         connectionId: string;
         database: string;
         table: string;
-      }) =>
-        inspectTableImpl(
-          params.connectionId,
-          params.database,
-          params.table,
-          workspaceId,
-        ),
+      }) => {
+        try {
+          return await inspectTableImpl(
+            params.connectionId,
+            params.database,
+            params.table,
+            workspaceId,
+          );
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to inspect table",
+          };
+        }
+      },
     },
 
     sql_execute_query: {
@@ -861,13 +908,24 @@ export const createSqlToolsV2 = (
         connectionId: string;
         database: string;
         query: string;
-      }) =>
-        executeQueryImpl(
-          params.connectionId,
-          params.database,
-          params.query,
-          workspaceId,
-        ),
+      }) => {
+        try {
+          return await executeQueryImpl(
+            params.connectionId,
+            params.database,
+            params.query,
+            workspaceId,
+          );
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to execute query",
+          };
+        }
+      },
     },
   };
 };

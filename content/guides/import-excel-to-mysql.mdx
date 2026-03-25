@@ -1,0 +1,158 @@
+---
+title: "How to Import Excel to MySQL (4 Methods)"
+slug: import-excel-to-mysql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - mysql
+  - excel
+  - import
+  - data
+excerpt: "Four ways to import Excel data into MySQL: convert to CSV and use LOAD DATA INFILE, Python with pandas, MySQL Workbench's import wizard, and Mako. Covers character sets, date handling, and large files."
+metaDescription: "Import Excel to MySQL in 2026: LOAD DATA INFILE, Python pandas, MySQL Workbench wizard, and Mako. Step-by-step with type mapping and common gotchas."
+database: mysql
+category: import-export
+draft: false
+---
+
+MySQL doesn't read Excel files natively. You either convert to CSV first or use a programming language to parse the spreadsheet. Here are four approaches.
+
+## Method 1: Convert to CSV, Then LOAD DATA INFILE
+
+Export your Excel file as CSV (UTF-8), create the table, and load:
+
+```sql
+CREATE TABLE customers (
+  id INT,
+  name VARCHAR(200),
+  email VARCHAR(200),
+  signup_date DATE
+);
+
+LOAD DATA INFILE '/var/lib/mysql-files/customers.csv'
+INTO TABLE customers
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(id, name, email, @signup_date)
+SET signup_date = STR_TO_DATE(@signup_date, '%m/%d/%Y');
+```
+
+The `IGNORE 1 ROWS` skips the header. The `@signup_date` variable trick lets you transform dates during import.
+
+### Secure File Path Restriction
+
+MySQL only reads files from the directory specified by `secure_file_priv`. Check it with:
+
+```sql
+SHOW VARIABLES LIKE 'secure_file_priv';
+```
+
+Place your CSV in that directory, or use `LOAD DATA LOCAL INFILE` to read from the client machine (requires `local_infile=ON` in both server and client config).
+
+## Method 2: Python with pandas
+
+pandas reads Excel directly and writes to MySQL without CSV conversion:
+
+```python
+import pandas as pd
+from sqlalchemy import create_engine
+
+engine = create_engine("mysql+pymysql://user:pass@localhost/mydb?charset=utf8mb4")
+
+df = pd.read_excel("report.xlsx", sheet_name="Sales")
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+df.to_sql("sales", engine, if_exists="replace", index=False)
+```
+
+Install dependencies: `pip install pandas openpyxl pymysql sqlalchemy`.
+
+For large files, use `chunksize` and `method='multi'` for faster batch inserts:
+
+```python
+df.to_sql("big_table", engine, if_exists="append", index=False,
+          chunksize=5000, method="multi")
+```
+
+To control column types explicitly:
+
+```python
+from sqlalchemy import types
+
+df.to_sql("orders", engine, if_exists="replace", index=False, dtype={
+    "id": types.INTEGER(),
+    "total": types.DECIMAL(10, 2),
+    "notes": types.TEXT()
+})
+```
+
+## Method 3: MySQL Workbench Import Wizard
+
+MySQL Workbench has a built-in Table Data Import Wizard that accepts both CSV and JSON files (not Excel directly). The workflow:
+
+1. Export your Excel file as CSV
+2. In MySQL Workbench, right-click a table and select **Table Data Import Wizard**
+3. Select the CSV file
+4. Map columns and configure types
+5. Run the import
+
+The wizard works for smaller datasets (under ~1 million rows). For larger imports, `LOAD DATA INFILE` is significantly faster because the wizard uses individual `INSERT` statements.
+
+## Method 4: Mako
+
+Mako imports Excel files directly without conversion:
+
+1. Connect to your MySQL instance in Mako
+2. Click **Import** and select your `.xlsx` file
+3. Choose the sheet to import
+4. Review the column preview and type mappings
+5. Select the target table and run
+
+For quick, one-off imports without writing SQL or converting files, this is the simplest option.
+
+## Type Mapping: Excel to MySQL
+
+| Excel Type | MySQL Type | Notes |
+|---|---|---|
+| Number (integer) | `INT` or `BIGINT` | Excel stores all numbers as doubles internally |
+| Number (decimal) | `DECIMAL(p,s)` or `DOUBLE` | Use `DECIMAL` for currency |
+| Date | `DATE` or `DATETIME` | Handle locale-specific formats with `STR_TO_DATE` |
+| Text | `VARCHAR(n)` or `TEXT` | Set `charset=utf8mb4` for emoji and special characters |
+| Boolean | `TINYINT(1)` | TRUE=1, FALSE=0 |
+
+## Common Gotchas
+
+**Character set mismatch.** Excel CSV exports from Windows may use Windows-1252. MySQL defaults to utf8mb4 on modern versions. If you see garbled characters, specify the character set:
+
+```sql
+LOAD DATA INFILE '/path/to/file.csv'
+INTO TABLE t
+CHARACTER SET 'latin1'
+FIELDS TERMINATED BY ',';
+```
+
+**Date formatting.** Excel dates are locale-dependent. US exports use `MM/DD/YYYY`, European exports use `DD/MM/YYYY`. Use `STR_TO_DATE` with the matching format string during import.
+
+**NULL values.** Excel exports empty cells as empty strings, not NULL. To convert:
+
+```sql
+LOAD DATA INFILE '/path/file.csv'
+INTO TABLE t
+FIELDS TERMINATED BY ','
+(id, name, @amount)
+SET amount = NULLIF(@amount, '');
+```
+
+**Row count limits.** Excel `.xlsx` supports up to 1,048,576 rows per sheet. If your data exceeds this, it was already truncated before you exported. Check the source data.
+
+**LOAD DATA speed.** `LOAD DATA INFILE` is 10-20x faster than individual INSERTs. For millions of rows, always prefer it over the Workbench wizard or programmatic row-by-row inserts. Disable indexes before loading and rebuild after for even faster throughput:
+
+```sql
+ALTER TABLE big_table DISABLE KEYS;
+-- LOAD DATA here
+ALTER TABLE big_table ENABLE KEYS;
+```
+
+Mako connects to MySQL, PostgreSQL, MongoDB, BigQuery, Snowflake, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

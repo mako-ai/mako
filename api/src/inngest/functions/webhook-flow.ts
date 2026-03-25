@@ -138,7 +138,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
         // BigQuery interprets dots as struct field access which breaks queries
         const documentData = {
           ...normalizePayloadKeys(data),
-          _dataSourceId: dataSource._id,
+          _dataSourceId: dataSource.id,
           _dataSourceName: dataSource.name,
           _syncedAt: new Date(),
           _webhookEventId: webhookEvent.eventId,
@@ -324,7 +324,7 @@ export const webhookEventProcessFunction = inngest.createFunction(
             } else {
               const result = await writer.deleteByKeys({
                 id,
-                _dataSourceId: dataSource._id,
+                _dataSourceId: dataSource.id,
               });
               if (!result.success) {
                 throw new Error(`SQL hard delete failed: ${result.error}`);
@@ -553,7 +553,7 @@ export const webhookRetryFunction = inngest.createFunction(
       const failedEvents = await WebhookEvent.find({
         status: "failed",
         attempts: { $lt: 5 },
-      }).limit(100);
+      }).limit(500);
 
       const stalePendingCutoff = new Date(Date.now() - 2 * 60 * 1000); // 2 minutes
       const staleProcessingCutoff = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes
@@ -564,7 +564,7 @@ export const webhookRetryFunction = inngest.createFunction(
         status: "pending",
         attempts: { $lt: 5 },
         receivedAt: { $lt: stalePendingCutoff },
-      }).limit(100);
+      }).limit(500);
 
       // Safety net: processing rows can be left behind when a worker crashes
       // mid-flight before status is finalized.
@@ -572,7 +572,7 @@ export const webhookRetryFunction = inngest.createFunction(
         status: "processing",
         attempts: { $lt: 5 },
         receivedAt: { $lt: staleProcessingCutoff },
-      }).limit(100);
+      }).limit(500);
 
       const allEvents = [
         ...failedEvents,

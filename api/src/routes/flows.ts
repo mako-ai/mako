@@ -22,7 +22,7 @@ import {
   dryRunDbSync,
 } from "../services/destination-writer.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
-import { getCdcFlowStats } from "../sync-cdc/sync-state";
+import { getCdcFlowStats, syncMachineService } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
 import { cdcLiveTableName } from "../sync-cdc/normalization";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
@@ -2252,12 +2252,34 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     const oldestMaterialized =
       materializedDates.sort((a, b) => a.getTime() - b.getTime())[0] || null;
 
+    let backfillStatus = flow.backfillState?.status || "idle";
+    if (
+      backfillStatus === "paused" &&
+      entities.length > 0 &&
+      entities.every(e => e.backfillDone)
+    ) {
+      try {
+        await syncMachineService.applyBackfillTransition({
+          workspaceId,
+          flowId,
+          event: {
+            type: "COMPLETE",
+            reason: "All entities completed (auto-healed from paused)",
+          },
+          context: { backfillCursorExhausted: true },
+        });
+        backfillStatus = "completed";
+      } catch {
+        /* ignore guard failures */
+      }
+    }
+
     return c.json({
       success: true,
       data: {
         syncState: flow.syncState || "idle",
         streamState: flow.streamState || "idle",
-        backfillStatus: flow.backfillState?.status || "idle",
+        backfillStatus,
         backlogCount: totalBacklog,
         lagSeconds: toLagSeconds(oldestMaterialized),
         lastMaterializedAt:

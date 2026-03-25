@@ -199,6 +199,11 @@ const updateDataSourceQuerySchema = z.object({
   rowLimit: z.number().optional().describe("Updated row limit"),
 });
 
+const createDashboardSchema = z.object({
+  title: z.string().describe("Dashboard title"),
+  description: z.string().optional().describe("Brief description"),
+});
+
 const previewDataSourceSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
   dataSourceId: z.string().describe("Dashboard data source ID"),
@@ -209,6 +214,12 @@ const previewDataSourceSchema = z.object({
 });
 
 export const clientDashboardTools = {
+  create_dashboard: {
+    description:
+      "Create a new empty dashboard. After creation, use create_data_source to add data sources " +
+      "and add_widget to add charts, KPIs, or tables.",
+    inputSchema: createDashboardSchema,
+  },
   import_console_as_data_source: {
     description:
       "Import a saved console into the current dashboard by value. " +

@@ -1,0 +1,192 @@
+---
+title: "How to Import Excel to Snowflake (3 Methods)"
+slug: import-excel-to-snowflake
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - snowflake
+  - excel
+  - import
+  - data
+excerpt: "Three ways to import Excel data into Snowflake: convert to CSV and use COPY INTO with a stage, Python with snowflake-connector-python, and Mako. Covers staging, file formats, and Snowpark for direct Excel reading."
+metaDescription: "Import Excel to Snowflake in 2026: COPY INTO with stages, Python connector, and Mako. Step-by-step with file formats, type mapping, and gotchas."
+database: snowflake
+category: import-export
+draft: false
+---
+
+Snowflake doesn't read `.xlsx` files natively with `COPY INTO`. The standard path is converting to CSV or Parquet, staging the file, and loading it. There's also a Python-based approach using Snowpark that can read Excel directly. Here are three methods.
+
+## Method 1: Convert to CSV, Stage, and COPY INTO
+
+The standard Snowflake loading workflow: convert the Excel file to CSV, stage it, and load.
+
+```sql
+-- Create a file format
+CREATE OR REPLACE FILE FORMAT csv_format
+  TYPE = 'CSV'
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  SKIP_HEADER = 1
+  NULL_IF = ('', 'NULL');
+
+-- Create a stage (or use a named external stage)
+CREATE OR REPLACE STAGE my_stage
+  FILE_FORMAT = csv_format;
+```
+
+Upload the file with SnowSQL:
+
+```bash
+# PUT the file into the stage
+snowsql -q "PUT file://./sales.csv @my_stage AUTO_COMPRESS=TRUE"
+```
+
+Then load:
+
+```sql
+COPY INTO sales
+FROM @my_stage/sales.csv.gz
+FILE_FORMAT = csv_format
+ON_ERROR = 'CONTINUE';
+```
+
+For the Snowflake web UI (Snowsight), you can skip the stage step for small files:
+
+1. Open the target database and table
+2. Click **Load Data**
+3. Select your CSV file and configure options
+4. Run the load
+
+### Using Parquet Instead of CSV
+
+Parquet preserves types and compresses better. Convert in Python:
+
+```python
+import pandas as pd
+df = pd.read_excel("data.xlsx")
+df.to_parquet("data.parquet", index=False)
+```
+
+Then stage and load:
+
+```sql
+CREATE OR REPLACE FILE FORMAT parquet_format TYPE = 'PARQUET';
+
+-- After PUT file://./data.parquet @my_stage
+COPY INTO sales
+FROM (
+  SELECT $1:id::INT, $1:product::VARCHAR, $1:amount::DECIMAL(10,2), $1:sale_date::DATE
+  FROM @my_stage/data.parquet
+)
+FILE_FORMAT = parquet_format;
+```
+
+## Method 2: Python with snowflake-connector-python
+
+Python reads Excel directly and can write to Snowflake using the `write_pandas` helper:
+
+```python
+import pandas as pd
+import snowflake.connector
+from snowflake.connector.pandas_tools import write_pandas
+
+conn = snowflake.connector.connect(
+    user="myuser",
+    password="mypass",
+    account="myorg-myaccount",
+    database="mydb",
+    schema="public",
+    warehouse="compute_wh"
+)
+
+df = pd.read_excel("report.xlsx", sheet_name="Revenue")
+df.columns = [c.strip().upper().replace(" ", "_") for c in df.columns]
+
+# Create the table first
+cursor = conn.cursor()
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS revenue (
+        ID INTEGER,
+        PRODUCT VARCHAR,
+        AMOUNT DECIMAL(10,2),
+        SALE_DATE DATE
+    )
+""")
+
+# write_pandas stages a Parquet file internally and uses COPY INTO
+success, nchunks, nrows, _ = write_pandas(conn, df, "REVENUE")
+print(f"Loaded {nrows} rows in {nchunks} chunks")
+```
+
+`write_pandas` handles the staging and COPY internally. It converts the DataFrame to Parquet, uploads to a temporary stage, runs `COPY INTO`, and cleans up.
+
+For Snowpark (Snowflake's Python runtime that runs inside Snowflake), you can read Excel files from a stage using the `openpyxl` library, which is pre-installed:
+
+```python
+from snowflake.snowpark import Session
+import pandas as pd
+
+session = Session.builder.configs(connection_params).create()
+
+# Upload Excel to a stage first
+session.sql("PUT file://./data.xlsx @my_stage").collect()
+
+# Read in Snowpark (runs inside Snowflake)
+# Download from stage and parse
+import io
+stream = session.file.get_stream("@my_stage/data.xlsx")
+df = pd.read_excel(io.BytesIO(stream.read()))
+snowpark_df = session.create_dataframe(df)
+snowpark_df.write.save_as_table("my_table")
+```
+
+## Method 3: Mako
+
+Mako imports Excel files into Snowflake without manual staging:
+
+1. Connect to your Snowflake account in Mako
+2. Click **Import** and select the `.xlsx` file
+3. Choose the sheet and review the type preview
+4. Select the target database, schema, and table
+5. Run the import
+
+Mako handles the conversion and staging internally. For one-off imports, this avoids the CSV-stage-COPY pipeline.
+
+## Type Mapping: Excel to Snowflake
+
+| Excel Type | Snowflake Type | Notes |
+|---|---|---|
+| Integer | `INTEGER` (alias for `NUMBER(38,0)`) | Snowflake uses NUMBER with precision/scale internally |
+| Decimal | `DECIMAL(p,s)` or `FLOAT` | `DECIMAL` for exact arithmetic |
+| Date | `DATE` or `TIMESTAMP_NTZ` | NTZ = no timezone; use `TIMESTAMP_TZ` if timezone matters |
+| Text | `VARCHAR` | Default max is 16 MB per value |
+| Boolean | `BOOLEAN` | TRUE/FALSE |
+
+Snowflake column names are case-insensitive by default (stored as uppercase). If your Excel headers are lowercase, they'll be uppercased in the table. Use quoted identifiers if you need case preservation.
+
+## Common Gotchas
+
+**Case sensitivity.** Snowflake uppercases unquoted identifiers. A column named `sale_date` in your CSV becomes `SALE_DATE` in the table. This matters when using `write_pandas` -- make sure DataFrame column names match the table's column names (uppercase).
+
+**Warehouse must be running.** `COPY INTO` and `write_pandas` require an active warehouse. If your warehouse is suspended, the load will fail or auto-resume it (which incurs costs).
+
+**File format mismatches.** The most common load failures are from format issues: wrong delimiter, missing quotes around fields with commas, or encoding mismatches. Always test with a small sample first.
+
+**Date formatting.** Snowflake parses dates in `YYYY-MM-DD` format by default. For other formats, set the file format option:
+
+```sql
+CREATE FILE FORMAT csv_dates
+  TYPE = 'CSV'
+  DATE_FORMAT = 'MM/DD/YYYY'
+  SKIP_HEADER = 1;
+```
+
+**Stage cleanup.** Files uploaded with `PUT` remain in the stage until you remove them. Clean up after loading:
+
+```sql
+REMOVE @my_stage/sales.csv.gz;
+```
+
+**Costs.** Snowflake charges for active warehouse time during loads. For small Excel files, the minimum 1-minute charge applies regardless of how fast the load finishes. Batch multiple files into a single load to minimize cost.
+
+Mako connects to Snowflake, PostgreSQL, MySQL, MongoDB, BigQuery, and ClickHouse with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
