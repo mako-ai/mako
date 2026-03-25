@@ -23,7 +23,7 @@ const PREVIEW_DANGEROUS_PATTERNS = [
   { pattern: /^\s*REVOKE\s+/i, name: "REVOKE" },
   {
     pattern:
-      /;\s*(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|GRANT|REVOKE)\s+/i,
+      /;(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|GRANT|REVOKE)\s+/i,
     name: "multi-statement",
   },
   {

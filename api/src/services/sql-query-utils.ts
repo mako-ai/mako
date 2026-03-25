@@ -44,7 +44,10 @@ export function findTopLevelKeyword(
       continue;
     }
 
-    if (inSingleQuote) continue;
+    if (inSingleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
 
     // Handle double-quoted SQL identifiers ("" is the escape for a literal
     // double-quote inside an identifier, e.g. "col""name")
@@ -61,7 +64,10 @@ export function findTopLevelKeyword(
       continue;
     }
 
-    if (inDoubleQuote) continue;
+    if (inDoubleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
 
     // Handle line comments: -- through end of line
     if (ch === "-" && i + 1 < len && query[i + 1] === "-") {
@@ -187,7 +193,10 @@ export function countTopLevelSemicolons(query: string): {
       }
       continue;
     }
-    if (inSingleQuote) continue;
+    if (inSingleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
 
     if (ch === '"') {
       if (inDoubleQuote) {
@@ -201,7 +210,10 @@ export function countTopLevelSemicolons(query: string): {
       }
       continue;
     }
-    if (inDoubleQuote) continue;
+    if (inDoubleQuote) {
+      if (ch === "\\" && i + 1 < len) i++;
+      continue;
+    }
 
     if (ch === "-" && i + 1 < len && query[i + 1] === "-") {
       const nl = query.indexOf("\n", i + 2);
