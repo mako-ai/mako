@@ -633,9 +633,20 @@ export async function materializeDashboardDataSource(options: {
     ),
   );
 
-  // Skip if already loaded with the same version.
+  // Check if materialized data is stale based on age
+  const freshnessTtl =
+    (dashboard as any).materializationSchedule?.dataFreshnessTtlMs ?? null;
+  const isDataStale = (() => {
+    if (!cache.parquetBuiltAt) return false;
+    if (freshnessTtl == null) return false;
+    const ageMs = Date.now() - new Date(cache.parquetBuiltAt).getTime();
+    return ageMs > freshnessTtl;
+  })();
+
+  // Skip if already loaded with the same version and data isn't stale.
   if (
     !force &&
+    !isDataStale &&
     cachedVersion === version &&
     existingRuntime?.status === "ready"
   ) {

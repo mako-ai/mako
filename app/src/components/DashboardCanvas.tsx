@@ -14,6 +14,13 @@ import {
   LinearProgress,
   ToggleButton,
   ToggleButtonGroup,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  Button,
+  Alert,
 } from "@mui/material";
 import {
   RefreshCw,
@@ -121,6 +128,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const applyDefinition = useDashboardStore(state => state.applyDefinition);
   const undo = useDashboardStore(state => state.undo);
   const redo = useDashboardStore(state => state.redo);
+  const conflict = useDashboardStore(state =>
+    state.conflict?.dashboardId === dashboardId ? state.conflict : null,
+  );
+  const resolveConflict = useDashboardStore(state => state.resolveConflict);
+  const acquireLock = useDashboardStore(state => state.acquireLock);
+  const releaseLock = useDashboardStore(state => state.releaseLock);
+  const heartbeatLock = useDashboardStore(state => state.heartbeatLock);
   const historyEntry = useDashboardStore(state =>
     dashboardId ? state.historyMap[dashboardId] : undefined,
   );
@@ -134,18 +148,20 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
-  const [isEditModeLocal, setIsEditModeLocal] = useState(true);
+  const [isEditModeLocal, setIsEditModeLocal] = useState(false);
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const [dataSourcePanelOpen, setDataSourcePanelOpen] = useState(false);
   const [addWidgetOpen, setAddWidgetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showEventLog, setShowEventLog] = useState(false);
+  const [lockError, setLockError] = useState<string | null>(null);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
   const [mosaicInstance, setMosaicInstance] = useState<MosaicInstance | null>(
     null,
   );
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();
@@ -296,6 +312,53 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
     }
   }, [workspaceId, dashboardId]);
+
+  const handleEditModeToggle = useCallback(
+    async (mode: "edit" | "view") => {
+      if (!workspaceId || !dashboardId) return;
+      setLockError(null);
+
+      if (mode === "edit") {
+        const acquired = await acquireLock(workspaceId, dashboardId);
+        if (!acquired) {
+          const d = useDashboardStore.getState().openDashboards[dashboardId];
+          const lockedBy = d?.editLock?.userName || "another user";
+          setLockError(`${lockedBy} is currently editing this dashboard`);
+          return;
+        }
+        setIsEditModeLocal(true);
+      } else {
+        await releaseLock(workspaceId, dashboardId);
+        setIsEditModeLocal(false);
+      }
+    },
+    [workspaceId, dashboardId, acquireLock, releaseLock],
+  );
+
+  // Heartbeat to keep lock alive while editing
+  useEffect(() => {
+    if (isEditModeLocal && workspaceId && dashboardId) {
+      heartbeatRef.current = setInterval(() => {
+        heartbeatLock(workspaceId, dashboardId);
+      }, 30_000);
+    }
+    return () => {
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+    };
+  }, [isEditModeLocal, workspaceId, dashboardId, heartbeatLock]);
+
+  // Release lock on unmount
+  useEffect(() => {
+    return () => {
+      if (isEditModeLocal && workspaceId && dashboardId) {
+        void releaseLock(workspaceId, dashboardId);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLayoutChange = useCallback(
     (_layout: any, allLayouts: Record<string, any>) => {
@@ -489,6 +552,42 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         "Failed to load one or more data sources",
     };
   }, [dashboard, runtimeSession]);
+
+  const dataFreshness = useMemo(() => {
+    if (!dashboard || dashboard.dataSources.length === 0) return null;
+
+    const ttl = dashboard.materializationSchedule?.dataFreshnessTtlMs;
+    const defaultTtl = 24 * 60 * 60 * 1000; // 24 hours
+    const threshold = ttl ?? defaultTtl;
+
+    let oldestDate: Date | null = null;
+    for (const ds of dashboard.dataSources) {
+      const builtAt = ds.cache?.parquetBuiltAt;
+      if (!builtAt) continue;
+      const d = new Date(builtAt);
+      if (!oldestDate || d < oldestDate) oldestDate = d;
+    }
+
+    if (!oldestDate) {
+      const lr = dashboard.cache?.lastRefreshedAt;
+      if (lr) oldestDate = new Date(lr);
+    }
+
+    if (!oldestDate) return null;
+
+    const ageMs = Date.now() - oldestDate.getTime();
+    if (ageMs < threshold) return null;
+
+    const hours = Math.floor(ageMs / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    const label =
+      days > 0
+        ? `${days} day${days !== 1 ? "s" : ""} ago`
+        : `${hours} hour${hours !== 1 ? "s" : ""} ago`;
+
+    return { ageMs, label };
+  }, [dashboard]);
+
   const recentEventLog = useMemo(
     () => runtimeSession?.eventLog.slice(-10).reverse() || [],
     [runtimeSession?.eventLog],
@@ -674,7 +773,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           <ToggleButtonGroup
             value={isEditMode ? "edit" : "view"}
             exclusive
-            onChange={(_, v) => v && setIsEditModeLocal(v === "edit")}
+            onChange={(_, v) => v && handleEditModeToggle(v as "edit" | "view")}
             size="small"
             sx={{ height: 28 }}
           >
@@ -858,6 +957,40 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
       </Box>
+
+      {/* Lock / conflict banners */}
+      {lockError && (
+        <Alert
+          severity="warning"
+          sx={{ borderRadius: 0 }}
+          onClose={() => setLockError(null)}
+        >
+          {lockError}
+        </Alert>
+      )}
+      {!isEditMode && dashboard?.editLock && !isReadOnly && (
+        <Alert severity="info" sx={{ borderRadius: 0 }}>
+          {dashboard.editLock.userName} is currently editing this dashboard
+        </Alert>
+      )}
+      {dataFreshness && (
+        <Alert
+          severity="warning"
+          sx={{ borderRadius: 0 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={handleReloadData}
+              disabled={isMaterializationBuilding}
+            >
+              Refresh now
+            </Button>
+          }
+        >
+          Data was last refreshed {dataFreshness.label}
+        </Alert>
+      )}
 
       {/* Loading bar */}
       {someSourcesLoading && (
@@ -1185,6 +1318,37 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         onClose={() => setSettingsOpen(false)}
         dashboardId={dashboardId}
       />
+      <Dialog open={!!conflict} maxWidth="sm" fullWidth>
+        <DialogTitle>Save Conflict</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This dashboard was modified by another user while you were editing.
+            Your save was rejected to prevent overwriting their changes.
+          </DialogContentText>
+          <DialogContentText sx={{ mt: 1 }}>
+            You can discard your local changes and load the latest version, or
+            overwrite the server version with your changes.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() =>
+              workspaceId && resolveConflict("discard", workspaceId)
+            }
+          >
+            Discard my changes
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={() =>
+              workspaceId && resolveConflict("overwrite", workspaceId)
+            }
+          >
+            Overwrite with my changes
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

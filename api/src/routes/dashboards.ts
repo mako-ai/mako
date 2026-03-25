@@ -4,6 +4,7 @@ import {
   DashboardFolder,
   DatabaseConnection,
 } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -486,6 +487,40 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       );
     }
 
+    // Edit lock enforcement
+    const lock = dashboard.editLock;
+    if (lock && lock.expiresAt > new Date() && lock.userId !== userId) {
+      return c.json(
+        {
+          success: false,
+          error: "Dashboard is locked for editing",
+          code: "EDIT_LOCKED",
+          lockedBy: { userId: lock.userId, userName: lock.userName },
+        },
+        423,
+      );
+    }
+
+    // Optimistic concurrency check
+    const clientVersion =
+      typeof body.version === "number" ? body.version : null;
+    if (clientVersion !== null && dashboard.version !== clientVersion) {
+      const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
+      normalizeDashboardWidgetLayouts(plain);
+      return c.json(
+        {
+          success: false,
+          error: "Dashboard was modified by another user",
+          code: "VERSION_CONFLICT",
+          serverVersion: dashboard.version,
+          data: sanitizeDashboardResponse(
+            await hydrateDashboardArtifactUrls(plain as any),
+          ),
+        },
+        409,
+      );
+    }
+
     const previousDataSources = dashboard.toObject().dataSources || [];
 
     if (body.title !== undefined) {
@@ -548,6 +583,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       dashboard.access = body.access;
     }
 
+    dashboard.version = (dashboard.version || 1) + 1;
     await dashboard.save();
     if (
       didDashboardArtifactInputsChange(
@@ -612,6 +648,20 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       );
     }
 
+    // Edit lock enforcement: reject saves from users who don't own the lock
+    const lock = existing.editLock;
+    if (lock && lock.expiresAt > new Date() && lock.userId !== userId) {
+      return c.json(
+        {
+          success: false,
+          error: "Dashboard is locked for editing",
+          code: "EDIT_LOCKED",
+          lockedBy: { userId: lock.userId, userName: lock.userName },
+        },
+        423,
+      );
+    }
+
     const validation = DashboardDefinitionSchema.partial().safeParse(body);
     if (!validation.success) {
       return c.json(
@@ -665,17 +715,53 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
 
     const previousDataSources = existing.toObject().dataSources || [];
 
+    // Optimistic concurrency: if client sends a version, require it to match
+    const clientVersion =
+      typeof body.version === "number" ? body.version : null;
+    const filter: Record<string, unknown> = {
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    };
+    if (clientVersion !== null) {
+      filter.version = clientVersion;
+    }
+
     const dashboard = await Dashboard.findOneAndUpdate(
+      filter,
       {
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
+        $set: validatedBody,
+        $inc: { version: 1 },
       },
-      { $set: validatedBody },
       { new: true, runValidators: true },
     );
 
+    if (!dashboard) {
+      if (clientVersion !== null) {
+        const current = await Dashboard.findOne({
+          _id: new Types.ObjectId(id),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+        if (current) {
+          const plain = current.toObject ? current.toObject() : current;
+          normalizeDashboardWidgetLayouts(plain);
+          return c.json(
+            {
+              success: false,
+              error: "Dashboard was modified by another user",
+              code: "VERSION_CONFLICT",
+              serverVersion: current.version,
+              data: sanitizeDashboardResponse(
+                await hydrateDashboardArtifactUrls(plain as any),
+              ),
+            },
+            409,
+          );
+        }
+      }
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
     if (
-      dashboard &&
       didDashboardArtifactInputsChange(
         previousDataSources as any[],
         (dashboard.toObject().dataSources || []) as any[],
@@ -690,11 +776,9 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
 
     return c.json({
       success: true,
-      data: dashboard
-        ? sanitizeDashboardResponse(
-            await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
-          )
-        : dashboard,
+      data: sanitizeDashboardResponse(
+        await hydrateDashboardArtifactUrls(dashboard.toObject() as any),
+      ),
     });
   } catch (error) {
     logger.error("Error patching dashboard", { error });
@@ -882,6 +966,175 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
     });
   } catch (error) {
     logger.error("Error duplicating dashboard", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// ── Edit lock endpoints ──
+
+const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// POST /api/workspaces/:workspaceId/dashboards/:id/lock - Acquire edit lock
+app.post("/:id/lock", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const user = await User.findById(userId).lean();
+    const userName = user?.email || userId;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + LOCK_TTL_MS);
+
+    const dashboard = await Dashboard.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+        $or: [
+          { editLock: null },
+          { "editLock.userId": { $exists: false } },
+          { "editLock.expiresAt": { $lt: now } },
+          { "editLock.userId": userId },
+        ],
+      },
+      {
+        $set: {
+          editLock: {
+            userId,
+            userName,
+            lockedAt: now,
+            expiresAt,
+          },
+        },
+      },
+      { new: true },
+    );
+
+    if (!dashboard) {
+      const existing = await Dashboard.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!existing) {
+        return c.json({ success: false, error: "Dashboard not found" }, 404);
+      }
+      return c.json(
+        {
+          success: false,
+          error: "Dashboard is locked for editing",
+          code: "EDIT_LOCKED",
+          lockedBy: {
+            userId: existing.editLock?.userId,
+            userName: existing.editLock?.userName,
+          },
+          expiresAt: existing.editLock?.expiresAt,
+        },
+        409,
+      );
+    }
+
+    const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
+    normalizeDashboardWidgetLayouts(plain);
+
+    return c.json({
+      success: true,
+      data: sanitizeDashboardResponse(
+        await hydrateDashboardArtifactUrls(plain as any),
+      ),
+    });
+  } catch (error) {
+    logger.error("Error acquiring dashboard lock", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/dashboards/:id/lock/heartbeat - Extend lock
+app.post("/:id/lock/heartbeat", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + LOCK_TTL_MS);
+
+    const dashboard = await Dashboard.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+        "editLock.userId": userId,
+      },
+      {
+        $set: {
+          "editLock.expiresAt": expiresAt,
+        },
+      },
+      { new: true },
+    );
+
+    if (!dashboard) {
+      return c.json({ success: false, error: "Lock not held" }, 404);
+    }
+
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error("Error extending dashboard lock", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// DELETE /api/workspaces/:workspaceId/dashboards/:id/lock - Release lock
+app.delete("/:id/lock", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+
+    const filter: Record<string, unknown> = {
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    };
+    if (!isAdmin) {
+      filter["editLock.userId"] = userId;
+    }
+
+    await Dashboard.findOneAndUpdate(filter, {
+      $unset: { editLock: "" },
+    });
+
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error("Error releasing dashboard lock", { error });
     return c.json(
       {
         success: false,
