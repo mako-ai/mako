@@ -62,6 +62,12 @@ export async function executeDashboardAgentTool(
         return { success: false, error: "Failed to create dashboard" };
       }
 
+      useDashboardStore.setState((state: any) => {
+        state.openDashboards[dashboard._id] = dashboard;
+        state.activeDashboardId = dashboard._id;
+        state.historyMap[dashboard._id] = { stack: [], index: -1 };
+      });
+
       const consoleStore = useConsoleStore.getState();
       const tabId = consoleStore.openTab({
         title: dashboard.title,
