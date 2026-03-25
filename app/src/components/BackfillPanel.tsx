@@ -483,6 +483,12 @@ export function BackfillPanel({
       if (!ok) throw new Error("Failed to pause backfill");
     });
 
+  const handleResumeBackfill = () =>
+    withBusy(async () => {
+      const ok = await resumeCdcFlow(workspaceId, flowId);
+      if (!ok) throw new Error("Failed to resume backfill");
+    });
+
   const handleRecoverBackfill = () =>
     withBusy(async () => {
       const ok = await recoverCdcFlow(workspaceId, flowId, {
@@ -834,7 +840,7 @@ export function BackfillPanel({
                     size="small"
                     variant="outlined"
                     startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleResumeStream}
+                    onClick={handleResumeBackfill}
                     disabled={busy}
                     sx={{ textTransform: "none", fontSize: "0.72rem" }}
                   >

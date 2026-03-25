@@ -81,6 +81,7 @@ const BACKFILL_TRANSITIONS: Record<
   },
   paused: {
     RESUME: "running",
+    COMPLETE: "completed",
     FAIL: "error",
   },
   completed: {
