@@ -834,7 +834,7 @@ export class CloseConnector extends BaseConnector {
   private async fetchActivitiesChunk(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
-    const { entity, onBatch, onProgress, state } = options;
+    const { entity, onBatch, onProgress, state, since } = options;
     const api = this.getCloseClient();
     const batchSize = Math.min(options.batchSize || this.getBatchSize(), 100);
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
@@ -855,9 +855,13 @@ export class CloseConnector extends BaseConnector {
       state?.metadata?.windowGranularity || "month";
 
     if (!windowStart) {
-      windowStart = await this.resolveActivityWindowStart(
-        this.getActivityEndpointForType(activitySubType),
-      );
+      if (since) {
+        windowStart = since.toISOString().slice(0, 7) + "-01";
+      } else {
+        windowStart = await this.resolveActivityWindowStart(
+          this.getActivityEndpointForType(activitySubType),
+        );
+      }
     }
 
     const now = new Date();
@@ -872,12 +876,12 @@ export class CloseConnector extends BaseConnector {
     const advanceWindow = (empty: boolean) => {
       if (empty) {
         if (windowGranularity === "day") {
-          windowStart = CloseConnector.nextMonth(windowStart);
+          windowStart = CloseConnector.nextMonth(
+            windowStart.slice(0, 7) + "-01",
+          );
           windowGranularity = "month";
         } else {
-          const d = new Date(windowStart);
-          d.setUTCFullYear(d.getUTCFullYear() + 1);
-          windowStart = d.toISOString().slice(0, 10);
+          windowStart = CloseConnector.nextMonth(windowStart);
         }
       } else if (windowGranularity === "day") {
         windowStart = CloseConnector.nextDay(windowStart);
