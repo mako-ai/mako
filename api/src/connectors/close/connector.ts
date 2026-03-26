@@ -396,7 +396,6 @@ export class CloseConnector extends BaseConnector {
       supportedEntities: [
         "leads",
         "opportunities",
-        "activities",
         "contacts",
         "users",
         "custom_fields",
@@ -954,8 +953,6 @@ export class CloseConnector extends BaseConnector {
       "is_recurring",
       "attendees",
       "connected_account_id",
-      // Note
-      "note_html",
       // Status changes
       "old_status_id",
       "old_status_label",

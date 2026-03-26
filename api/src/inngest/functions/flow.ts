@@ -1764,7 +1764,7 @@ export const flowFunction = inngest.createFunction(
                   { entity },
                 );
                 try {
-                  return await performStagingMerge(bulkSyncOptions);
+                  await performStagingMerge(bulkSyncOptions);
                 } catch (err) {
                   const msg =
                     err instanceof Error ? err.message : String(err);
