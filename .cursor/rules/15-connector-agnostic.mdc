@@ -1,3 +1,8 @@
+---
+globs: api/src/connectors/**/*.ts
+description: Connector agnosticism and schema-driven UI rules for data source connectors
+---
+
 # Connector Agnosticism & Schema-Driven UI
 
 Purpose: Ensure adding a new connector requires only dropping a new folder under `api/src/connectors/**` and exposing a schema; no app code outside that folder needs changes.

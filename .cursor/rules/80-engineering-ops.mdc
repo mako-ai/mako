@@ -1,3 +1,8 @@
+---
+globs: api/src/**/*.ts
+description: Logging, error handling, and operational guidelines — use structured loggers, never console.log
+---
+
 # Engineering Ops
 
 ## Logging

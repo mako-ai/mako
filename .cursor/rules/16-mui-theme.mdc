@@ -1,3 +1,8 @@
+---
+globs: app/src/**/*.tsx
+description: MUI styling rules — use global theme for consistency, avoid per-component ad-hoc styles
+---
+
 # MUI Styling via Global Theme
 
 Purpose: Keep visual consistency by centralizing MUI component styling in the global theme.

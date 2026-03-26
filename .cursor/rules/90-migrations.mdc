@@ -1,3 +1,8 @@
+---
+globs: api/src/migrations/**/*.ts
+description: MongoDB migration system — naming, idempotency, index safety, and tracking
+---
+
 # Migrations
 
 MongoDB migration system for schema and data changes.

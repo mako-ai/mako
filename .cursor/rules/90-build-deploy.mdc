@@ -1,3 +1,8 @@
+---
+globs: Dockerfile*,deploy.sh,.github/**/*.yml,cloud-run-env.yaml,env.yaml
+description: Build outputs, deployment paths, and do-not-edit policy for dist
+---
+
 # Build & Deploy Rules
 
 - Do not edit generated files in `dist/**`. Sources live in `api/src/**` and `app/src/**`.
