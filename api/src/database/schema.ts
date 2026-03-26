@@ -341,9 +341,8 @@ const LlmUsageSchema = new Schema<ILlmUsage>(
     workspaceId: {
       type: Schema.Types.ObjectId,
       required: true,
-      index: true,
     },
-    userId: { type: String, required: true, index: true },
+    userId: { type: String, required: true },
     chatId: { type: Schema.Types.ObjectId, default: null },
     invocationType: {
       type: String,
