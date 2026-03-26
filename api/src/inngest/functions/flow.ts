@@ -1448,23 +1448,23 @@ export const flowFunction = inngest.createFunction(
                     switch (level) {
                       case "debug":
                         logger.debug(message, logData);
-                        appendExecutionLog("debug", message, logData);
+                        void appendExecutionLog("debug", message, logData);
                         break;
                       case "info":
                         logger.info(message, logData);
-                        appendExecutionLog("info", message, logData);
+                        void appendExecutionLog("info", message, logData);
                         break;
                       case "warn":
                         logger.warn(message, logData);
-                        appendExecutionLog("warn", message, logData);
+                        void appendExecutionLog("warn", message, logData);
                         break;
                       case "error":
                         logger.error(message, logData);
-                        appendExecutionLog("error", message, logData);
+                        void appendExecutionLog("error", message, logData);
                         break;
                       default:
                         logger.info(message, logData);
-                        appendExecutionLog("info", message, logData);
+                        void appendExecutionLog("info", message, logData);
                         break;
                     }
                     // Log to execution logger is handled by LogTape database sink
@@ -1720,7 +1720,7 @@ export const flowFunction = inngest.createFunction(
             });
             try {
               await step.run(`flush-final-${safeEntityStepId}`, async () => {
-                appendExecutionLog(
+                void appendExecutionLog(
                   "info",
                   `Flushing ${entity} buffer to BigQuery staging via Parquet`,
                   { entity },
@@ -1747,7 +1747,7 @@ export const flowFunction = inngest.createFunction(
               );
               throw err;
             }
-            appendExecutionLog(
+            void appendExecutionLog(
               "info",
               `${entity} buffer flushed to staging table`,
               { entity },
@@ -1758,7 +1758,7 @@ export const flowFunction = inngest.createFunction(
             });
             try {
               await step.run(`merge-staging-${safeEntityStepId}`, async () => {
-                appendExecutionLog(
+                void appendExecutionLog(
                   "info",
                   `Merging ${entity} staging table to live`,
                   { entity },
@@ -1785,7 +1785,7 @@ export const flowFunction = inngest.createFunction(
               );
               throw err;
             }
-            appendExecutionLog(
+            void appendExecutionLog(
               "info",
               `${entity} merged staging to live table`,
               { entity },
@@ -1799,7 +1799,7 @@ export const flowFunction = inngest.createFunction(
                 await performStagingCleanup(bulkSyncOptions);
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
-                appendExecutionLog(
+                void appendExecutionLog(
                   "error",
                   `Failed to cleanup ${entity} staging: ${msg}`,
                   { entity },
@@ -1811,7 +1811,7 @@ export const flowFunction = inngest.createFunction(
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
               { flowId, entity },
             );
-            appendExecutionLog(
+            void appendExecutionLog(
               "info",
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
               {
@@ -2297,7 +2297,7 @@ export const flowFunction = inngest.createFunction(
 
       return { success: true, message: "Sync completed successfully" };
     } catch (error: any) {
-      appendExecutionLog("error", "Flow execution failed", {
+      void appendExecutionLog("error", "Flow execution failed", {
         flowId,
         error: error?.message || String(error),
         errorName: error?.name,
