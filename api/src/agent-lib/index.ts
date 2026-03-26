@@ -32,5 +32,9 @@ export {
   getAvailableModels,
   getModelById,
   getDefaultModel,
-  getConfiguredProviders,
+  DEFAULT_MODEL_ID,
+  UTILITY_MODEL_ID,
 } from "./ai-models";
+
+// AI Gateway
+export { gateway, getModel, buildGatewayProviderOptions } from "./ai-gateway";

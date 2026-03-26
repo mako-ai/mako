@@ -612,6 +612,9 @@ export interface ChatUsageData {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
   model?: string;
 }
 
@@ -655,22 +658,25 @@ export const saveChat = async (
     },
   };
 
-  // If usage data is provided, update cumulative totals and append to history
   if (usage && usage.totalTokens > 0) {
-    // Use $inc for cumulative totals to handle concurrent updates correctly
     (updateOp as Record<string, Record<string, unknown>>).$inc = {
       "usage.promptTokens": usage.promptTokens,
       "usage.completionTokens": usage.completionTokens,
       "usage.totalTokens": usage.totalTokens,
+      "usage.cacheReadTokens": usage.cacheReadTokens ?? 0,
+      "usage.reasoningTokens": usage.reasoningTokens ?? 0,
+      "usage.costUsd": usage.costUsd ?? 0,
     };
 
-    // Append to usage history for per-turn tracking
     (updateOp as Record<string, Record<string, unknown>>).$push = {
       "usage.history": {
-        messageIndex: assistantMessageCount - 1, // 0-indexed
+        messageIndex: assistantMessageCount - 1,
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
         totalTokens: usage.totalTokens,
+        cacheReadTokens: usage.cacheReadTokens ?? 0,
+        reasoningTokens: usage.reasoningTokens ?? 0,
+        costUsd: usage.costUsd ?? 0,
         model: usage.model,
         timestamp: now,
       },

@@ -34,6 +34,7 @@ import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver"
 import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
+import { usageRoutes } from "./routes/usage";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
@@ -111,6 +112,7 @@ app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
+app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
 app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",

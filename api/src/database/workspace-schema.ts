@@ -390,11 +390,15 @@ export interface IMessagePart {
  * Useful for metered billing and cost analysis
  */
 export interface IUsageHistoryEntry {
-  messageIndex: number; // Index of the assistant message this usage corresponds to
+  messageIndex: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  model?: string; // Model used for this turn (for cost calculation)
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
+  model?: string;
   timestamp: Date;
 }
 
@@ -402,10 +406,13 @@ export interface IUsageHistoryEntry {
  * Chat usage tracking for token consumption
  */
 export interface IChatUsage {
-  promptTokens: number; // Total prompt tokens across all turns
-  completionTokens: number; // Total completion tokens across all turns
-  totalTokens: number; // Total tokens (prompt + completion)
-  history?: IUsageHistoryEntry[]; // Per-turn usage for detailed analytics
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cacheReadTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
+  history?: IUsageHistoryEntry[];
 }
 
 /**
@@ -1444,6 +1451,18 @@ const ChatSchema = new Schema<IChat>(
         type: Number,
         default: 0,
       },
+      cacheReadTokens: {
+        type: Number,
+        default: 0,
+      },
+      reasoningTokens: {
+        type: Number,
+        default: 0,
+      },
+      costUsd: {
+        type: Number,
+        default: 0,
+      },
       history: [
         {
           messageIndex: {
@@ -1461,6 +1480,22 @@ const ChatSchema = new Schema<IChat>(
           totalTokens: {
             type: Number,
             required: true,
+          },
+          cacheReadTokens: {
+            type: Number,
+            default: 0,
+          },
+          cacheWriteTokens: {
+            type: Number,
+            default: 0,
+          },
+          reasoningTokens: {
+            type: Number,
+            default: 0,
+          },
+          costUsd: {
+            type: Number,
+            default: 0,
           },
           model: {
             type: String,

@@ -285,6 +285,135 @@ export const EmailVerification =
     EmailVerificationSchema,
   );
 
+// ---------------------------------------------------------------------------
+// Model Pricing (global, not workspace-scoped)
+// ---------------------------------------------------------------------------
+
+export type TokenType =
+  | "input"
+  | "cache_read"
+  | "cache_write"
+  | "output"
+  | "reasoning";
+
+export interface IModelPricing extends Document {
+  modelId: string;
+  tokenType: TokenType;
+  pricePerMillion: number;
+  effectiveFrom: Date;
+  effectiveUntil?: Date | null;
+}
+
+const ModelPricingSchema = new Schema<IModelPricing>(
+  {
+    modelId: { type: String, required: true },
+    tokenType: {
+      type: String,
+      required: true,
+      enum: ["input", "cache_read", "cache_write", "output", "reasoning"],
+    },
+    pricePerMillion: { type: Number, required: true },
+    effectiveFrom: { type: Date, required: true, default: Date.now },
+    effectiveUntil: { type: Date, default: null },
+  },
+  { timestamps: false },
+);
+
+ModelPricingSchema.index(
+  { modelId: 1, tokenType: 1, effectiveFrom: -1 },
+  { unique: true },
+);
+
+export const ModelPricing =
+  (mongoose.models.ModelPricing as mongoose.Model<IModelPricing>) ||
+  mongoose.model<IModelPricing>("ModelPricing", ModelPricingSchema);
+
+// ---------------------------------------------------------------------------
+// LLM Usage — per-invocation tracking for cost analytics
+// ---------------------------------------------------------------------------
+
+export interface ILlmUsageStep {
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+}
+
+export interface ILlmUsage extends Document {
+  workspaceId: mongoose.Types.ObjectId;
+  userId: string;
+  chatId?: mongoose.Types.ObjectId;
+  invocationType:
+    | "chat"
+    | "title_generation"
+    | "description_generation"
+    | "embedding";
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  steps?: ILlmUsageStep[];
+  agentId?: string;
+  tags?: string[];
+  durationMs?: number;
+  createdAt: Date;
+}
+
+const LlmUsageStepSchema = new Schema<ILlmUsageStep>(
+  {
+    modelId: { type: String, required: true },
+    inputTokens: { type: Number, required: true, default: 0 },
+    outputTokens: { type: Number, required: true, default: 0 },
+    cacheReadTokens: { type: Number, required: true, default: 0 },
+    costUsd: { type: Number, required: true, default: 0 },
+  },
+  { _id: false },
+);
+
+const LlmUsageSchema = new Schema<ILlmUsage>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+      index: true,
+    },
+    userId: { type: String, required: true, index: true },
+    chatId: { type: Schema.Types.ObjectId, default: null },
+    invocationType: {
+      type: String,
+      required: true,
+      enum: ["chat", "title_generation", "description_generation", "embedding"],
+    },
+    modelId: { type: String, required: true },
+    inputTokens: { type: Number, required: true, default: 0 },
+    outputTokens: { type: Number, required: true, default: 0 },
+    cacheReadTokens: { type: Number, required: true, default: 0 },
+    cacheWriteTokens: { type: Number, required: true, default: 0 },
+    reasoningTokens: { type: Number, required: true, default: 0 },
+    totalTokens: { type: Number, required: true, default: 0 },
+    costUsd: { type: Number, required: true, default: 0 },
+    steps: { type: [LlmUsageStepSchema], default: undefined },
+    agentId: { type: String },
+    tags: { type: [String], default: undefined },
+    durationMs: { type: Number },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+LlmUsageSchema.index({ workspaceId: 1, createdAt: -1 });
+LlmUsageSchema.index({ userId: 1, createdAt: -1 });
+LlmUsageSchema.index({ chatId: 1 });
+LlmUsageSchema.index({ workspaceId: 1, userId: 1, createdAt: -1 });
+
+export const LlmUsage =
+  (mongoose.models.LlmUsage as mongoose.Model<ILlmUsage>) ||
+  mongoose.model<ILlmUsage>("LlmUsage", LlmUsageSchema);
+
 /**
  * Database connection helper
  */

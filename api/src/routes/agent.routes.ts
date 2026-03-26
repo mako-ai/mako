@@ -11,16 +11,17 @@ import {
   convertToModelMessages,
   stepCountIs,
   type UIMessage,
-  type LanguageModel,
 } from "ai";
-import { openai } from "@ai-sdk/openai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { google } from "@ai-sdk/google";
+import { getModel, buildGatewayProviderOptions } from "../agent-lib/ai-gateway";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import type { ConsoleDataV2 } from "../agent-lib/types";
-import { getModelById, getAvailableModels } from "../agent-lib/ai-models";
+import {
+  getModelById,
+  getAvailableModels,
+  DEFAULT_MODEL_ID,
+} from "../agent-lib/ai-models";
 import {
   Workspace,
   DatabaseConnection,
@@ -28,6 +29,7 @@ import {
   SavedConsole,
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
+import { trackUsage } from "../services/llm-usage.service";
 import { generateChatTitle } from "../services/title-generator";
 import {
   isDescriptionGenAvailable,
@@ -49,6 +51,11 @@ import {
 } from "../agents";
 
 const logger = loggers.agent();
+
+function toNum(val: unknown): number {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  return 0;
+}
 
 export const agentRoutes = new Hono();
 
@@ -72,33 +79,21 @@ agentRoutes.get("/agents", async (c: AuthenticatedContext) => {
 });
 
 /**
- * Get the AI SDK model instance based on the model ID
- * Note: Type assertion needed due to AI SDK beta version conflicts with @ai-sdk/provider
+ * Get the AI SDK model instance via the AI Gateway.
+ * Model IDs are in gateway format: "provider/model-name".
  */
-function getModelInstance(modelId?: string): LanguageModel {
+function getModelInstance(modelId?: string) {
   if (!modelId) {
-    return openai("gpt-5.2") as unknown as LanguageModel;
+    return getModel(DEFAULT_MODEL_ID);
   }
 
-  const model = getModelById(modelId);
-  if (!model) {
-    logger.warn("Model not found, falling back to gpt-5.2", { modelId });
-    return openai("gpt-5.2") as unknown as LanguageModel;
+  const known = getModelById(modelId);
+  if (!known) {
+    logger.warn("Model not found, falling back to default", { modelId });
+    return getModel(DEFAULT_MODEL_ID);
   }
 
-  switch (model.provider) {
-    case "openai":
-      return openai(modelId) as unknown as LanguageModel;
-    case "anthropic":
-      return anthropic(modelId) as unknown as LanguageModel;
-    case "google":
-      return google(modelId) as unknown as LanguageModel;
-    default:
-      logger.warn("Unknown provider for model, falling back to gpt-5.2", {
-        modelId,
-      });
-      return openai("gpt-5.2") as unknown as LanguageModel;
-  }
+  return getModel(known.id);
 }
 
 /**
@@ -420,9 +415,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const { systemPrompt, tools } = agentConfig;
 
   // Get model instance
+  const resolvedModelId = modelId || DEFAULT_MODEL_ID;
   const model = getModelInstance(modelId);
-  const modelDef = modelId ? getModelById(modelId) : undefined;
-  logger.info("Using model", { model: modelId || "gpt-5.2 (default)" });
+  const modelDef = getModelById(resolvedModelId);
+  logger.info("Using model", { model: resolvedModelId });
 
   // Sanitize messages to remove incomplete tool calls from interrupted streams
   // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
@@ -431,18 +427,34 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Convert UI messages (from useChat) to model messages (for streamText)
   const modelMessages = await convertToModelMessages(sanitizedMessages);
 
-  // Guardrail: prevent runaway multi-step tool loops in production.
-  // The AI SDK defaults to stopWhen: stepCountIs(1). We intentionally allow multi-step,
-  // but keep a firm upper bound.
   const MAX_STEPS = 256;
   let stepsCompleted = 0;
 
-  // Enable Anthropic extended thinking for models that support it.
-  // The @ai-sdk/anthropic provider computes max_tokens = maxOutputTokens + budgetTokens
-  // then clamps to the model's known cap. We must NOT set maxOutputTokens ourselves
-  // (let the SDK use its model default) and keep budgetTokens under that cap.
   const enableThinking = modelDef?.supportsThinking === true;
   const thinkingBudget = modelDef?.thinkingBudgetTokens ?? 10000;
+
+  // Build providerOptions: gateway metadata + optional provider-specific options
+  const gatewayOpts = buildGatewayProviderOptions({
+    userId: actorId,
+    workspaceId,
+    agentId: resolvedAgentId,
+    invocationType: "chat",
+  });
+  const providerOptions = {
+    ...gatewayOpts,
+    ...(enableThinking
+      ? {
+          anthropic: {
+            thinking: {
+              type: "enabled" as const,
+              budgetTokens: thinkingBudget,
+            },
+          },
+        }
+      : {}),
+  };
+
+  const startTime = Date.now();
 
   const result = streamText({
     model,
@@ -450,13 +462,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     messages: modelMessages,
     tools: tools as Record<string, any>,
     stopWhen: stepCountIs(MAX_STEPS),
-    providerOptions: enableThinking
-      ? {
-          anthropic: {
-            thinking: { type: "enabled", budgetTokens: thinkingBudget },
-          },
-        }
-      : undefined,
+    providerOptions: providerOptions as any,
     onStepFinish: ({ toolCalls }) => {
       stepsCompleted += 1;
 
@@ -483,54 +489,124 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
     sendReasoning: true,
     onFinish: async ({ messages: allMessages }) => {
-      // Get usage from the streamText result (not from toUIMessageStreamResponse callback)
-      // result.usage is a promise that resolves when the stream completes
-      let modelUsage: Record<string, unknown> | undefined;
+      const durationMs = Date.now() - startTime;
+
+      // Extract detailed per-step usage from result.steps
+      let steps: Array<Record<string, unknown>> = [];
       try {
-        const usage = await result.usage;
-        modelUsage = usage as unknown as Record<string, unknown>;
+        steps = (await result.steps) as unknown as Array<
+          Record<string, unknown>
+        >;
       } catch (err) {
-        logger.warn("Failed to get usage from model", { error: err });
+        logger.warn("Failed to get steps from result", { error: err });
       }
 
-      // Safely extract usage values
-      // Handle different provider naming conventions:
-      // - OpenAI/standard: promptTokens, completionTokens
-      // - Anthropic: may use input_tokens, output_tokens or similar
-      const getNumber = (val: unknown): number => {
-        if (typeof val === "number" && !isNaN(val)) return val;
-        return 0;
-      };
+      // Aggregate detailed token usage across all steps
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let cacheReadTokens = 0;
+      let cacheWriteTokens = 0;
+      let reasoningTokens = 0;
 
-      const promptTokens =
-        getNumber(modelUsage?.promptTokens) ||
-        getNumber(modelUsage?.input_tokens) ||
-        getNumber(modelUsage?.inputTokens) ||
-        0;
-      const completionTokens =
-        getNumber(modelUsage?.completionTokens) ||
-        getNumber(modelUsage?.output_tokens) ||
-        getNumber(modelUsage?.outputTokens) ||
-        0;
-      const totalTokens =
-        getNumber(modelUsage?.totalTokens) ||
-        getNumber(modelUsage?.total_tokens) ||
-        promptTokens + completionTokens;
+      const stepDetails: Array<{
+        modelId: string;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        costUsd: number;
+      }> = [];
+
+      for (const step of steps) {
+        const usage = step.usage as Record<string, unknown> | undefined;
+        if (!usage) continue;
+
+        const sInput = toNum(usage.promptTokens) || toNum(usage.inputTokens);
+        const sOutput =
+          toNum(usage.completionTokens) || toNum(usage.outputTokens);
+
+        const details = usage.inputTokenDetails as
+          | Record<string, unknown>
+          | undefined;
+        const outDetails = usage.outputTokenDetails as
+          | Record<string, unknown>
+          | undefined;
+
+        const sCacheRead = toNum(details?.cacheReadTokens);
+        const sCacheWrite = toNum(details?.cacheWriteTokens);
+        const sReasoning = toNum(outDetails?.reasoningTokens);
+
+        inputTokens += sInput;
+        outputTokens += sOutput;
+        cacheReadTokens += sCacheRead;
+        cacheWriteTokens += sCacheWrite;
+        reasoningTokens += sReasoning;
+
+        const stepModelId = (
+          step.response as Record<string, unknown> | undefined
+        )?.modelId as string | undefined;
+
+        stepDetails.push({
+          modelId: stepModelId || resolvedModelId,
+          inputTokens: sInput,
+          outputTokens: sOutput,
+          cacheReadTokens: sCacheRead,
+          costUsd: 0, // filled in by cost calculator
+        });
+      }
+
+      // Fallback to top-level usage if steps were empty
+      if (steps.length === 0) {
+        try {
+          const usage = (await result.usage) as unknown as Record<
+            string,
+            unknown
+          >;
+          inputTokens = toNum(usage?.promptTokens) || toNum(usage?.inputTokens);
+          outputTokens =
+            toNum(usage?.completionTokens) || toNum(usage?.outputTokens);
+        } catch (err) {
+          logger.warn("Failed to get usage from model", { error: err });
+        }
+      }
+
+      const totalTokens = inputTokens + outputTokens;
 
       logger.info("Stream finished, saving chat", {
         chatId,
         messageCount: allMessages.length,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        totalTokens,
+        durationMs,
       });
 
+      // Compute cost and track usage (fire-and-forget)
+      void trackUsage({
+        workspaceId,
+        userId: actorId,
+        chatId,
+        invocationType: "chat",
+        modelId: resolvedModelId,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        reasoningTokens,
+        totalTokens,
+        steps: stepDetails,
+        agentId: resolvedAgentId,
+        durationMs,
+      }).catch(err => logger.warn("Failed to track LLM usage", { error: err }));
+
       try {
-        // Save all messages in one atomic operation (AI SDK best practice)
-        // Title was already generated in parallel at the start for new chats
-        // Note: Draft consoles are saved client-side when modified (debounced)
         await saveChat(chatId, workspaceId, actorId, allMessages, {
-          promptTokens,
-          completionTokens,
+          promptTokens: inputTokens,
+          completionTokens: outputTokens,
           totalTokens,
-          model: modelId,
+          cacheReadTokens,
+          reasoningTokens,
+          model: resolvedModelId,
         });
       } catch (error) {
         logger.error("Error saving chat", { error });

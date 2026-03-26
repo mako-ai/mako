@@ -1,10 +1,11 @@
 /**
  * Title Generation Service
- * Uses AI SDK generateText for simple, fast title generation
+ * Uses AI Gateway + generateText for simple, fast title generation.
  */
 
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { getModel } from "../agent-lib/ai-gateway";
+import { UTILITY_MODEL_ID } from "../agent-lib/ai-models";
 import { loggers } from "../logging";
 
 const logger = loggers.agent();
@@ -39,24 +40,22 @@ const getMessageContent = (message: any): string => {
 };
 
 /**
- * Generate a title from the first user message content
- * Simple and fast - just needs the user's initial message
+ * Generate a title from the first user message content.
  */
 export const generateChatTitle = async (
   userMessageContent: string,
 ): Promise<string> => {
   try {
     const { text } = await generateText({
-      model: openai("gpt-4o-mini") as any,
+      model: getModel(UTILITY_MODEL_ID),
       system: TITLE_SYSTEM_PROMPT,
-      prompt: userMessageContent.substring(0, 2000), // Limit input length
+      prompt: userMessageContent.substring(0, 2000),
     });
 
     let title = text.trim();
-    title = title.replace(/^["']|["']$/g, ""); // Remove quotes
-    title = title.substring(0, 80); // Character limit
+    title = title.replace(/^["']|["']$/g, "");
+    title = title.substring(0, 80);
 
-    // Fallback if title is too short or empty
     if (title.length < 3) {
       return "New Conversation";
     }
@@ -69,8 +68,7 @@ export const generateChatTitle = async (
 };
 
 /**
- * Legacy function for backward compatibility with existing code
- * Extracts first user message and generates title
+ * Legacy function for backward compatibility with existing code.
  */
 export const generateChatTitleFromMessages = async (
   messages: any[],
@@ -89,8 +87,7 @@ export const generateChatTitleFromMessages = async (
 };
 
 /**
- * Check if we should generate a title (for backward compatibility)
- * Now simplified: generate if there's at least one user message with content
+ * Check if we should generate a title.
  */
 export const shouldGenerateTitle = (messages: any[]): boolean => {
   const firstUserMessage = messages.find(m => m.role === "user");

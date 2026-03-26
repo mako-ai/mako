@@ -1,7 +1,7 @@
-import { generateText, type LanguageModel } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { openai } from "@ai-sdk/openai";
-import { google } from "@ai-sdk/google";
+import { generateText } from "ai";
+import { getModel } from "../agent-lib/ai-gateway";
+import { UTILITY_MODEL_ID } from "../agent-lib/ai-models";
+import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
 import { loggers } from "../logging";
 import {
   embedText,
@@ -11,24 +11,12 @@ import {
 
 const logger = loggers.app();
 
-function getDescriptionModels(): LanguageModel[] {
-  const models: LanguageModel[] = [];
-  if (process.env.OPENAI_API_KEY) {
-    models.push(openai("gpt-4o-mini") as unknown as LanguageModel);
-  }
-  if (process.env.ANTHROPIC_API_KEY) {
-    models.push(
-      anthropic("claude-3-5-haiku-latest") as unknown as LanguageModel,
-    );
-  }
-  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    models.push(google("gemini-2.0-flash") as unknown as LanguageModel);
-  }
-  return models;
-}
-
+/**
+ * With the AI Gateway, description generation is always available.
+ * The gateway handles provider auth and routing.
+ */
 export function isDescriptionGenAvailable(): boolean {
-  return getDescriptionModels().length > 0;
+  return true;
 }
 
 const DESCRIPTION_SYSTEM_PROMPT = `You are a concise technical writer. Generate a 1-2 sentence description of the given database query.
@@ -55,9 +43,6 @@ export interface ConsoleDescriptionContext {
 export async function generateConsoleDescription(
   context: ConsoleDescriptionContext,
 ): Promise<string | null> {
-  const models = getDescriptionModels();
-  if (models.length === 0) return null;
-
   const parts: string[] = [];
 
   if (context.title) {
@@ -91,26 +76,31 @@ export async function generateConsoleDescription(
 
   const prompt = parts.join("\n");
 
-  for (const model of models) {
-    try {
-      const { text } = await generateText({
-        model: model as any,
-        system: DESCRIPTION_SYSTEM_PROMPT,
-        prompt,
-      });
+  try {
+    const { text } = await generateText({
+      model: getModel(UTILITY_MODEL_ID),
+      system: DESCRIPTION_SYSTEM_PROMPT,
+      prompt,
+      providerOptions: {
+        gateway: {
+          models: [
+            "anthropic/claude-3-5-haiku-latest",
+            "google/gemini-2.0-flash",
+          ],
+        } satisfies GatewayLanguageModelOptions,
+      },
+    });
 
-      let description = text.trim();
-      description = description.replace(/^["']|["']$/g, "");
-      description = description.substring(0, 500);
+    let description = text.trim();
+    description = description.replace(/^["']|["']$/g, "");
+    description = description.substring(0, 500);
 
-      if (description.length < 5) return null;
-      return description;
-    } catch (err) {
-      logger.error("Console description generation failed", { error: err });
-    }
+    if (description.length < 5) return null;
+    return description;
+  } catch (err) {
+    logger.error("Console description generation failed", { error: err });
+    return null;
   }
-
-  return null;
 }
 
 export interface DescriptionAndEmbeddingResult {
