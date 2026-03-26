@@ -59,7 +59,7 @@ interface ToolConfig {
   preview?: { field: string; language: string };
 }
 
-const I = 13;
+const ICON_SIZE = 13;
 
 const TOOL_CONFIG: Record<string, ToolConfig> = {
   // ── Console ──────────────────────────────────────────────
@@ -68,7 +68,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
       const action = (input as Record<string, unknown>)?.action;
       return action === "patch" ? "Patching console" : "Editing console";
     },
-    icon: <Pencil size={I} />,
+    icon: <Pencil size={ICON_SIZE} />,
     preview: { field: "content", language: "sql" },
   },
   create_console: {
@@ -76,94 +76,94 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
       const title = (input as Record<string, unknown>)?.title;
       return title ? `Creating "${title}"` : "Creating console";
     },
-    icon: <Plus size={I} />,
+    icon: <Plus size={ICON_SIZE} />,
     preview: { field: "content", language: "sql" },
   },
   read_console: {
     getLabel: () => "Reading console",
-    icon: <Eye size={I} />,
+    icon: <Eye size={ICON_SIZE} />,
   },
   list_open_consoles: {
     getLabel: () => "Listing open consoles",
-    icon: <List size={I} />,
+    icon: <List size={ICON_SIZE} />,
   },
   set_console_connection: {
     getLabel: () => "Setting connection",
-    icon: <Link size={I} />,
+    icon: <Link size={ICON_SIZE} />,
   },
   open_console: {
     getLabel: () => "Opening console",
-    icon: <ExternalLink size={I} />,
+    icon: <ExternalLink size={ICON_SIZE} />,
   },
 
   // ── SQL ──────────────────────────────────────────────────
   sql_execute_query: {
     getLabel: () => "Executing SQL query",
-    icon: <Play size={I} />,
+    icon: <Play size={ICON_SIZE} />,
     preview: { field: "query", language: "sql" },
   },
   sql_list_connections: {
     getLabel: () => "Listing SQL connections",
-    icon: <Database size={I} />,
+    icon: <Database size={ICON_SIZE} />,
   },
   sql_list_databases: {
     getLabel: () => "Listing databases",
-    icon: <Database size={I} />,
+    icon: <Database size={ICON_SIZE} />,
   },
   sql_list_tables: {
     getLabel: input => {
       const db = (input as Record<string, unknown>)?.database;
       return db ? `Listing tables in ${db}` : "Listing tables";
     },
-    icon: <Table2 size={I} />,
+    icon: <Table2 size={ICON_SIZE} />,
   },
   sql_inspect_table: {
     getLabel: input => {
       const table = (input as Record<string, unknown>)?.table;
       return table ? `Inspecting ${table}` : "Inspecting table";
     },
-    icon: <Search size={I} />,
+    icon: <Search size={ICON_SIZE} />,
   },
 
   // ── MongoDB ──────────────────────────────────────────────
   mongo_execute_query: {
     getLabel: () => "Executing MongoDB query",
-    icon: <Play size={I} />,
+    icon: <Play size={ICON_SIZE} />,
     preview: { field: "query", language: "javascript" },
   },
   mongo_list_connections: {
     getLabel: () => "Listing MongoDB connections",
-    icon: <Database size={I} />,
+    icon: <Database size={ICON_SIZE} />,
   },
   mongo_list_databases: {
     getLabel: () => "Listing databases",
-    icon: <Database size={I} />,
+    icon: <Database size={ICON_SIZE} />,
   },
   mongo_list_collections: {
     getLabel: input => {
       const db = (input as Record<string, unknown>)?.databaseName;
       return db ? `Listing collections in ${db}` : "Listing collections";
     },
-    icon: <Table2 size={I} />,
+    icon: <Table2 size={ICON_SIZE} />,
   },
   mongo_inspect_collection: {
     getLabel: input => {
       const coll = (input as Record<string, unknown>)?.collectionName;
       return coll ? `Inspecting ${coll}` : "Inspecting collection";
     },
-    icon: <Search size={I} />,
+    icon: <Search size={ICON_SIZE} />,
   },
 
   // ── Universal discovery ──────────────────────────────────
   list_connections: {
     getLabel: () => "Listing connections",
-    icon: <Database size={I} />,
+    icon: <Database size={ICON_SIZE} />,
   },
 
   // ── Chart ────────────────────────────────────────────────
   modify_chart_spec: {
     getLabel: () => "Setting chart specification",
-    icon: <BarChart3 size={I} />,
+    icon: <BarChart3 size={ICON_SIZE} />,
     preview: { field: "vegaLiteSpec", language: "json" },
   },
 
@@ -173,82 +173,82 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
       const title = (input as Record<string, unknown>)?.title;
       return title ? `Creating dashboard "${title}"` : "Creating dashboard";
     },
-    icon: <Plus size={I} />,
+    icon: <Plus size={ICON_SIZE} />,
   },
   add_widget: {
     getLabel: input => {
       const type = (input as Record<string, unknown>)?.type;
       return type ? `Adding ${type} widget` : "Adding widget";
     },
-    icon: <Plus size={I} />,
+    icon: <Plus size={ICON_SIZE} />,
     preview: { field: "localSql", language: "sql" },
   },
   modify_widget: {
     getLabel: () => "Modifying widget",
-    icon: <Pencil size={I} />,
+    icon: <Pencil size={ICON_SIZE} />,
     preview: { field: "localSql", language: "sql" },
   },
   remove_widget: {
     getLabel: () => "Removing widget",
-    icon: <Trash2 size={I} />,
+    icon: <Trash2 size={ICON_SIZE} />,
   },
   create_data_source: {
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
       return name ? `Creating data source "${name}"` : "Creating data source";
     },
-    icon: <Plus size={I} />,
+    icon: <Plus size={ICON_SIZE} />,
     preview: { field: "code", language: "sql" },
   },
   update_data_source_query: {
     getLabel: () => "Updating data source query",
-    icon: <Pencil size={I} />,
+    icon: <Pencil size={ICON_SIZE} />,
     preview: { field: "code", language: "sql" },
   },
   import_console_as_data_source: {
     getLabel: () => "Importing console as data source",
-    icon: <Download size={I} />,
+    icon: <Download size={ICON_SIZE} />,
   },
   add_data_source: {
     getLabel: () => "Importing data source",
-    icon: <Download size={I} />,
+    icon: <Download size={ICON_SIZE} />,
   },
   get_dashboard_state: {
     getLabel: () => "Reading dashboard state",
-    icon: <Eye size={I} />,
+    icon: <Eye size={ICON_SIZE} />,
   },
   preview_data_source: {
     getLabel: () => "Previewing data",
-    icon: <Eye size={I} />,
+    icon: <Eye size={ICON_SIZE} />,
     preview: { field: "sql", language: "sql" },
   },
   get_data_preview: {
     getLabel: () => "Previewing data",
-    icon: <Eye size={I} />,
+    icon: <Eye size={ICON_SIZE} />,
     preview: { field: "sql", language: "sql" },
   },
   suggest_charts: {
     getLabel: () => "Suggesting charts",
-    icon: <BarChart3 size={I} />,
+    icon: <BarChart3 size={ICON_SIZE} />,
   },
   add_global_filter: {
     getLabel: input => {
       const label = (input as Record<string, unknown>)?.label;
       return label ? `Adding filter "${label}"` : "Adding filter";
     },
-    icon: <Filter size={I} />,
+    icon: <Filter size={ICON_SIZE} />,
   },
   remove_global_filter: {
     getLabel: () => "Removing filter",
-    icon: <Trash2 size={I} />,
+    icon: <Trash2 size={ICON_SIZE} />,
   },
   link_tables: {
     getLabel: () => "Linking tables",
-    icon: <Link size={I} />,
+    icon: <Link size={ICON_SIZE} />,
   },
   set_time_dimension: {
     getLabel: () => "Setting time dimension",
-    icon: <Clock size={I} />,
+    icon: <Clock size={ICON_SIZE} />,
   },
 
   // ── Search ───────────────────────────────────────────────
@@ -257,30 +257,30 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
       const query = (input as Record<string, unknown>)?.query;
       return query ? `Searching "${query}"` : "Searching consoles";
     },
-    icon: <Search size={I} />,
+    icon: <Search size={ICON_SIZE} />,
   },
 
   // ── Self-directive / memory ──────────────────────────────
   read_self_directive: {
     getLabel: () => "Reading memory",
-    icon: <Brain size={I} />,
+    icon: <Brain size={ICON_SIZE} />,
   },
   update_self_directive: {
     getLabel: () => "Updating memory",
-    icon: <Brain size={I} />,
+    icon: <Brain size={ICON_SIZE} />,
   },
 
   // ── Flow tools ───────────────────────────────────────────
   get_form_state: {
     getLabel: () => "Reading form state",
-    icon: <Eye size={I} />,
+    icon: <Eye size={ICON_SIZE} />,
   },
   set_form_field: {
     getLabel: input => {
       const field = (input as Record<string, unknown>)?.fieldName;
       return field ? `Setting ${field}` : "Setting form field";
     },
-    icon: <Pencil size={I} />,
+    icon: <Pencil size={ICON_SIZE} />,
   },
   set_multiple_fields: {
     getLabel: input => {
@@ -289,41 +289,41 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
         fields && typeof fields === "object" ? Object.keys(fields).length : 0;
       return count > 0 ? `Setting ${count} fields` : "Setting form fields";
     },
-    icon: <Pencil size={I} />,
+    icon: <Pencil size={ICON_SIZE} />,
   },
   create_flow_tab: {
     getLabel: () => "Creating flow tab",
-    icon: <Plus size={I} />,
+    icon: <Plus size={ICON_SIZE} />,
   },
   list_flow_tabs: {
     getLabel: () => "Listing flow tabs",
-    icon: <List size={I} />,
+    icon: <List size={ICON_SIZE} />,
   },
 
   // ── Flow discovery ───────────────────────────────────────
   list_databases: {
     getLabel: () => "Listing databases",
-    icon: <Database size={I} />,
+    icon: <Database size={ICON_SIZE} />,
   },
   list_tables: {
     getLabel: () => "Listing tables",
-    icon: <Table2 size={I} />,
+    icon: <Table2 size={ICON_SIZE} />,
   },
   inspect_table: {
     getLabel: input => {
       const table = (input as Record<string, unknown>)?.table;
       return table ? `Inspecting ${table}` : "Inspecting table";
     },
-    icon: <Search size={I} />,
+    icon: <Search size={ICON_SIZE} />,
   },
   execute_query: {
     getLabel: () => "Executing query",
-    icon: <Play size={I} />,
+    icon: <Play size={ICON_SIZE} />,
     preview: { field: "query", language: "sql" },
   },
   validate_query: {
     getLabel: () => "Validating query",
-    icon: <ShieldCheck size={I} />,
+    icon: <ShieldCheck size={ICON_SIZE} />,
     preview: { field: "query", language: "sql" },
   },
   explain_template: {
@@ -331,7 +331,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
       const ph = (input as Record<string, unknown>)?.placeholder;
       return ph ? `Explaining {{${ph}}}` : "Explaining template";
     },
-    icon: <HelpCircle size={I} />,
+    icon: <HelpCircle size={ICON_SIZE} />,
   },
 };
 
@@ -345,7 +345,7 @@ function getToolConfig(toolName: string): ToolConfig {
   return (
     TOOL_CONFIG[toolName] ?? {
       getLabel: () => humanizeToolName(toolName),
-      icon: <Wrench size={I} />,
+      icon: <Wrench size={ICON_SIZE} />,
     }
   );
 }
@@ -494,8 +494,8 @@ export const StreamingToolCard = React.memo(function StreamingToolCard({
   const label = config.getLabel(input);
 
   const outputSummary = useMemo(
-    () => (isDone ? getOutputSummary(output) : null),
-    [isDone, output],
+    () => (isDone || isError ? getOutputSummary(output) : null),
+    [isDone, isError, output],
   );
 
   const formattedOutput = useMemo(
@@ -514,7 +514,7 @@ export const StreamingToolCard = React.memo(function StreamingToolCard({
       : isDone
         ? (outputSummary ?? "Done")
         : isError
-          ? "Error"
+          ? (outputSummary ?? "Error")
           : "";
 
   return (
