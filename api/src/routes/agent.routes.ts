@@ -419,7 +419,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Get model instance
   const defaultId = getDefaultModelId();
-  const resolvedModelId = modelId && getModelById(modelId) ? modelId : defaultId;
+  const resolvedModelId =
+    modelId && getModelById(modelId) ? modelId : defaultId;
   const model = getModelInstance(modelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
@@ -522,9 +523,14 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         const usage = step.usage as Record<string, unknown> | undefined;
         if (!usage) continue;
 
-        const sInput = toNum(usage.promptTokens) || toNum(usage.inputTokens);
+        const sInput =
+          usage.promptTokens !== undefined
+            ? toNum(usage.promptTokens)
+            : toNum(usage.inputTokens);
         const sOutput =
-          toNum(usage.completionTokens) || toNum(usage.outputTokens);
+          usage.completionTokens !== undefined
+            ? toNum(usage.completionTokens)
+            : toNum(usage.outputTokens);
 
         const details = usage.inputTokenDetails as
           | Record<string, unknown>
@@ -563,9 +569,14 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
             string,
             unknown
           >;
-          inputTokens = toNum(usage?.promptTokens) || toNum(usage?.inputTokens);
+          inputTokens =
+            usage?.promptTokens !== undefined
+              ? toNum(usage.promptTokens)
+              : toNum(usage?.inputTokens);
           outputTokens =
-            toNum(usage?.completionTokens) || toNum(usage?.outputTokens);
+            usage?.completionTokens !== undefined
+              ? toNum(usage.completionTokens)
+              : toNum(usage?.outputTokens);
         } catch (err) {
           logger.warn("Failed to get usage from model", { error: err });
         }

@@ -4,6 +4,7 @@ import {
   isGatewayMode,
   getUtilityModelId,
   getConfiguredProviders,
+  getAvailableModels,
 } from "../agent-lib/ai-models";
 import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
 import { loggers } from "../logging";
@@ -80,39 +81,73 @@ export async function generateConsoleDescription(
 
   const prompt = parts.join("\n");
 
-  try {
-    const utilityModel = getUtilityModelId();
+  if (!isDescriptionGenAvailable()) return null;
 
-    const gatewayFallback = isGatewayMode()
-      ? {
-          providerOptions: {
-            gateway: {
-              models: [
-                "anthropic/claude-3-5-haiku-latest",
-                "google/gemini-2.0-flash",
-              ],
-            } satisfies GatewayLanguageModelOptions,
-          },
-        }
-      : {};
+  if (isGatewayMode()) {
+    try {
+      const utilityModel = getUtilityModelId();
+      const { text } = await generateText({
+        model: getModel(utilityModel),
+        system: DESCRIPTION_SYSTEM_PROMPT,
+        prompt,
+        providerOptions: {
+          gateway: {
+            models: [
+              "anthropic/claude-3-5-haiku-latest",
+              "google/gemini-2.0-flash",
+            ],
+          } satisfies GatewayLanguageModelOptions,
+        },
+      });
 
-    const { text } = await generateText({
-      model: getModel(utilityModel),
-      system: DESCRIPTION_SYSTEM_PROMPT,
-      prompt,
-      ...gatewayFallback,
-    });
+      let description = text.trim();
+      description = description.replace(/^["']|["']$/g, "");
+      description = description.substring(0, 500);
 
-    let description = text.trim();
-    description = description.replace(/^["']|["']$/g, "");
-    description = description.substring(0, 500);
-
-    if (description.length < 5) return null;
-    return description;
-  } catch (err) {
-    logger.error("Console description generation failed", { error: err });
-    return null;
+      if (description.length < 5) return null;
+      return description;
+    } catch (err) {
+      logger.error("Console description generation failed", { error: err });
+      return null;
+    }
   }
+
+  const modelsToTry = getAvailableModels().map(m => m.id);
+  const preferredId = getUtilityModelId();
+  if (!modelsToTry.includes(preferredId)) {
+    modelsToTry.unshift(preferredId);
+  } else {
+    modelsToTry.splice(modelsToTry.indexOf(preferredId), 1);
+    modelsToTry.unshift(preferredId);
+  }
+
+  for (const modelId of modelsToTry) {
+    try {
+      const { text } = await generateText({
+        model: getModel(modelId),
+        system: DESCRIPTION_SYSTEM_PROMPT,
+        prompt,
+      });
+
+      let description = text.trim();
+      description = description.replace(/^["']|["']$/g, "");
+      description = description.substring(0, 500);
+
+      if (description.length < 5) return null;
+      return description;
+    } catch (err) {
+      logger.warn(
+        "Console description generation failed for model, trying next",
+        {
+          modelId,
+          error: err,
+        },
+      );
+    }
+  }
+
+  logger.error("Console description generation failed for all models");
+  return null;
 }
 
 export interface DescriptionAndEmbeddingResult {
