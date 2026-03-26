@@ -90,9 +90,10 @@ function getModelInstance(modelId?: string) {
     return getModel(defaultId);
   }
 
-  const known = getModelById(modelId);
+  const available = getAvailableModels();
+  const known = available.find(m => m.id === modelId);
   if (!known) {
-    logger.warn("Model not found, falling back to default", { modelId });
+    logger.warn("Model not available, falling back to default", { modelId });
     return getModel(defaultId);
   }
 
@@ -419,9 +420,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Get model instance
   const defaultId = getDefaultModelId();
+  const available = getAvailableModels();
   const resolvedModelId =
-    modelId && getModelById(modelId) ? modelId : defaultId;
-  const model = getModelInstance(modelId);
+    modelId && available.find(m => m.id === modelId) ? modelId : defaultId;
+  const model = getModelInstance(resolvedModelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
 

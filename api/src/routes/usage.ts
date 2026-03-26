@@ -132,6 +132,8 @@ usageRoutes.get("/by-user", async (c: AuthenticatedContext) => {
           totalInputTokens: { $sum: "$inputTokens" },
           totalOutputTokens: { $sum: "$outputTokens" },
           totalCacheReadTokens: { $sum: "$cacheReadTokens" },
+          totalCacheWriteTokens: { $sum: "$cacheWriteTokens" },
+          totalReasoningTokens: { $sum: "$reasoningTokens" },
           totalTokens: { $sum: "$totalTokens" },
           totalCostUsd: { $sum: "$costUsd" },
           invocationCount: { $sum: 1 },
@@ -144,6 +146,8 @@ usageRoutes.get("/by-user", async (c: AuthenticatedContext) => {
           totalInputTokens: 1,
           totalOutputTokens: 1,
           totalCacheReadTokens: 1,
+          totalCacheWriteTokens: 1,
+          totalReasoningTokens: 1,
           totalTokens: 1,
           totalCostUsd: 1,
           invocationCount: 1,
@@ -183,6 +187,8 @@ usageRoutes.get("/by-chat/:chatId", async (c: AuthenticatedContext) => {
         acc.inputTokens += r.inputTokens;
         acc.outputTokens += r.outputTokens;
         acc.cacheReadTokens += r.cacheReadTokens;
+        acc.cacheWriteTokens += r.cacheWriteTokens;
+        acc.reasoningTokens += r.reasoningTokens;
         acc.totalTokens += r.totalTokens;
         acc.costUsd += r.costUsd;
         return acc;
@@ -191,6 +197,8 @@ usageRoutes.get("/by-chat/:chatId", async (c: AuthenticatedContext) => {
         inputTokens: 0,
         outputTokens: 0,
         cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
         totalTokens: 0,
         costUsd: 0,
       },
@@ -229,6 +237,8 @@ usageRoutes.get("/by-model", async (c: AuthenticatedContext) => {
           totalInputTokens: { $sum: "$inputTokens" },
           totalOutputTokens: { $sum: "$outputTokens" },
           totalCacheReadTokens: { $sum: "$cacheReadTokens" },
+          totalCacheWriteTokens: { $sum: "$cacheWriteTokens" },
+          totalReasoningTokens: { $sum: "$reasoningTokens" },
           totalTokens: { $sum: "$totalTokens" },
           totalCostUsd: { $sum: "$costUsd" },
           invocationCount: { $sum: 1 },
@@ -241,6 +251,8 @@ usageRoutes.get("/by-model", async (c: AuthenticatedContext) => {
           totalInputTokens: 1,
           totalOutputTokens: 1,
           totalCacheReadTokens: 1,
+          totalCacheWriteTokens: 1,
+          totalReasoningTokens: 1,
           totalTokens: 1,
           totalCostUsd: 1,
           invocationCount: 1,
