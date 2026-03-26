@@ -72,6 +72,9 @@ export function computeCostFromTokens(
   }
 
   // --- Output side ---
+  // When explicit reasoning pricing is available (output_reasoning from gateway),
+  // reasoning tokens are split out and charged at their own rate. Otherwise they
+  // are included in outputTokens and charged at the standard output rate.
   const outputPrice = priceFor(pricing, "output");
   const reasoningPrice = priceFor(pricing, "reasoning");
 

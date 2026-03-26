@@ -7,6 +7,7 @@ import {
   getAvailableModels,
 } from "../agent-lib/ai-models";
 import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
+import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
 import {
   embedText,
@@ -45,8 +46,14 @@ export interface ConsoleDescriptionContext {
   resultSample?: string;
 }
 
+export interface DescriptionTrackingContext {
+  workspaceId: string;
+  userId: string;
+}
+
 export async function generateConsoleDescription(
   context: ConsoleDescriptionContext,
+  trackingCtx?: DescriptionTrackingContext,
 ): Promise<string | null> {
   const parts: string[] = [];
 
@@ -86,7 +93,7 @@ export async function generateConsoleDescription(
   if (isGatewayMode()) {
     try {
       const utilityModel = getUtilityModelId();
-      const { text } = await generateText({
+      const { text, usage } = await generateText({
         model: getModel(utilityModel),
         system: DESCRIPTION_SYSTEM_PROMPT,
         prompt,
@@ -99,6 +106,21 @@ export async function generateConsoleDescription(
           } satisfies GatewayLanguageModelOptions,
         },
       });
+
+      if (trackingCtx) {
+        const u = usage as Record<string, unknown>;
+        void trackUsage({
+          workspaceId: trackingCtx.workspaceId,
+          userId: trackingCtx.userId,
+          invocationType: "description_generation",
+          modelId: utilityModel,
+          inputTokens: (u.promptTokens as number) ?? 0,
+          outputTokens: (u.completionTokens as number) ?? 0,
+          totalTokens: (u.totalTokens as number) ?? 0,
+        }).catch(err =>
+          logger.warn("Failed to track description usage", { error: err }),
+        );
+      }
 
       let description = text.trim();
       description = description.replace(/^["']|["']$/g, "");
@@ -130,11 +152,26 @@ export async function generateConsoleDescription(
 
   for (const modelId of modelsToTry) {
     try {
-      const { text } = await generateText({
+      const { text, usage } = await generateText({
         model: getModel(modelId),
         system: DESCRIPTION_SYSTEM_PROMPT,
         prompt,
       });
+
+      if (trackingCtx) {
+        const u = usage as Record<string, unknown>;
+        void trackUsage({
+          workspaceId: trackingCtx.workspaceId,
+          userId: trackingCtx.userId,
+          invocationType: "description_generation",
+          modelId,
+          inputTokens: (u.promptTokens as number) ?? 0,
+          outputTokens: (u.completionTokens as number) ?? 0,
+          totalTokens: (u.totalTokens as number) ?? 0,
+        }).catch(err =>
+          logger.warn("Failed to track description usage", { error: err }),
+        );
+      }
 
       let description = text.trim();
       description = description.replace(/^["']|["']$/g, "");
@@ -165,8 +202,9 @@ export interface DescriptionAndEmbeddingResult {
 
 export async function generateDescriptionAndEmbedding(
   context: ConsoleDescriptionContext,
+  trackingCtx?: DescriptionTrackingContext,
 ): Promise<DescriptionAndEmbeddingResult> {
-  const description = await generateConsoleDescription(context);
+  const description = await generateConsoleDescription(context, trackingCtx);
 
   let embedding: number[] | null = null;
   let embeddingModel: string | null = null;

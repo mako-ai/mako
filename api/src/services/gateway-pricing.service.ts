@@ -25,6 +25,7 @@ interface GatewayModelPricing {
   output?: string;
   input_cache_read?: string;
   input_cache_write?: string;
+  output_reasoning?: string;
 }
 
 interface GatewayModel {
@@ -96,6 +97,12 @@ function parseModelPricing(model: GatewayModel): PricingRow[] {
     rows.push({
       tokenType: "cache_write",
       pricePerMillion: perTokenToPerMillion(p.input_cache_write),
+    });
+  }
+  if (p.output_reasoning) {
+    rows.push({
+      tokenType: "reasoning",
+      pricePerMillion: perTokenToPerMillion(p.output_reasoning),
     });
   }
 

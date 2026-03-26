@@ -80,27 +80,6 @@ agentRoutes.get("/agents", async (c: AuthenticatedContext) => {
 });
 
 /**
- * Get the AI SDK model instance (via gateway or direct provider).
- * Model IDs use "provider/model-name" format.
- */
-function getModelInstance(modelId?: string) {
-  const defaultId = getDefaultModelId();
-
-  if (!modelId) {
-    return getModel(defaultId);
-  }
-
-  const available = getAvailableModels();
-  const known = available.find(m => m.id === modelId);
-  if (!known) {
-    logger.warn("Model not available, falling back to default", { modelId });
-    return getModel(defaultId);
-  }
-
-  return getModel(known.id);
-}
-
-/**
  * POST /api/agent/chat
  * useChat-compatible endpoint using native AI SDK streaming
  */
@@ -293,7 +272,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     if (userContent.length >= 3) {
       void (async () => {
         try {
-          const title = await generateChatTitle(userContent);
+          const title = await generateChatTitle(userContent, {
+            workspaceId,
+            userId: actorId,
+          });
           await Chat.updateOne(
             { _id: new ObjectId(chatId), titleGenerated: false },
             { title, titleGenerated: true },
@@ -418,12 +400,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const agentConfig = agentFactory(agentContext);
   const { systemPrompt, tools } = agentConfig;
 
-  // Get model instance
+  // Resolve model: validate against available models, fall back to default
   const defaultId = getDefaultModelId();
   const available = getAvailableModels();
   const resolvedModelId =
     modelId && available.find(m => m.id === modelId) ? modelId : defaultId;
-  const model = getModelInstance(resolvedModelId);
+  const model = getModel(resolvedModelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
 
@@ -667,16 +649,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
                 : null;
 
               const { description, embedding, embeddingModel } =
-                await generateDescriptionAndEmbedding({
-                  code: console.code,
-                  title: console.name,
-                  connectionName: connDoc?.name,
-                  databaseType: connDoc?.type,
-                  databaseName: console.databaseName,
-                  language: console.language,
-                  conversationExcerpt: ctx.conversationExcerpt,
-                  resultSample: ctx.resultSample,
-                });
+                await generateDescriptionAndEmbedding(
+                  {
+                    code: console.code,
+                    title: console.name,
+                    connectionName: connDoc?.name,
+                    databaseType: connDoc?.type,
+                    databaseName: console.databaseName,
+                    language: console.language,
+                    conversationExcerpt: ctx.conversationExcerpt,
+                    resultSample: ctx.resultSample,
+                  },
+                  { workspaceId, userId: actorId },
+                );
 
               const $set: Record<string, any> = {
                 descriptionGeneratedAt: new Date(),

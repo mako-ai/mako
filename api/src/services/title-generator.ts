@@ -6,6 +6,7 @@
 import { generateText } from "ai";
 import { getModel } from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
+import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
 
 const logger = loggers.agent();
@@ -39,18 +40,40 @@ const getMessageContent = (message: any): string => {
   return "";
 };
 
+export interface TitleGenerationContext {
+  workspaceId: string;
+  userId: string;
+}
+
 /**
  * Generate a title from the first user message content.
  */
 export const generateChatTitle = async (
   userMessageContent: string,
+  ctx?: TitleGenerationContext,
 ): Promise<string> => {
   try {
-    const { text } = await generateText({
-      model: getModel(getUtilityModelId()),
+    const modelId = getUtilityModelId();
+    const { text, usage } = await generateText({
+      model: getModel(modelId),
       system: TITLE_SYSTEM_PROMPT,
       prompt: userMessageContent.substring(0, 2000),
     });
+
+    if (ctx) {
+      const u = usage as Record<string, unknown>;
+      void trackUsage({
+        workspaceId: ctx.workspaceId,
+        userId: ctx.userId,
+        invocationType: "title_generation",
+        modelId,
+        inputTokens: (u.promptTokens as number) ?? 0,
+        outputTokens: (u.completionTokens as number) ?? 0,
+        totalTokens: (u.totalTokens as number) ?? 0,
+      }).catch(err =>
+        logger.warn("Failed to track title generation usage", { error: err }),
+      );
+    }
 
     let title = text.trim();
     title = title.replace(/^["']|["']$/g, "");
