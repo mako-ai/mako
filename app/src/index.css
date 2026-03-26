@@ -91,17 +91,23 @@
   background-color: hsl(var(--muted) / 0.8);
 }
 
-/* 4. Table styling - consistent borders, compact, subtle backgrounds */
+/* 4. Table styling - consistent borders, compact, subtle backgrounds.
+   Streamdown applies Tailwind border-border / bg-background classes
+   whose color tokens don't match MUI's theme — override directly. */
 [data-streamdown="table-wrapper"] {
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
   overflow: hidden;
   padding: 0 !important;
-  border: 1px solid hsl(var(--border)) !important;
-  border-radius: 0.5rem;
+  border-color: hsl(240 5.9% 90%) !important;
+}
+
+.dark [data-streamdown="table-wrapper"] {
+  border-color: rgba(255, 255, 255, 0.12) !important;
 }
 
 [data-streamdown="table"] {
+  border: none !important;
   border-collapse: collapse;
 }
 
@@ -190,7 +196,9 @@
   display: none;
 }
 
-/* Streamdown requires shadcn/ui CSS variables for theming */
+/* Streamdown requires shadcn/ui CSS variables for theming.
+   Tailwind v4 utilities (border-border, bg-background, etc.) resolve to
+   --color-* tokens, so we bridge the shadcn HSL values to both formats. */
 :root {
   --background: 0 0% 100%;
   --foreground: 240 10% 3.9%;
@@ -212,6 +220,13 @@
   --input: 240 5.9% 90%;
   --ring: 240 5.9% 10%;
   --radius: 0.5rem;
+
+  --color-border: hsl(240 5.9% 90%);
+  --color-background: hsl(0 0% 100%);
+  --color-foreground: hsl(240 10% 3.9%);
+  --color-muted: hsl(240 4.8% 95.9%);
+  --color-muted-foreground: hsl(240 3.8% 46.1%);
+  --color-sidebar: hsl(240 4.8% 95.9%);
 }
 
 .dark {
@@ -234,4 +249,11 @@
   --border: 240 3.7% 15.9%;
   --input: 240 3.7% 15.9%;
   --ring: 240 4.9% 83.9%;
+
+  --color-border: hsl(240 3.7% 15.9%);
+  --color-background: hsl(240 10% 3.9%);
+  --color-foreground: hsl(0 0% 98%);
+  --color-muted: hsl(240 3.7% 15.9%);
+  --color-muted-foreground: hsl(240 5% 64.9%);
+  --color-sidebar: hsl(240 3.7% 15.9%);
 }
