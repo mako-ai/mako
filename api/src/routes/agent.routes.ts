@@ -303,11 +303,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Only enrich logging context after authorization succeeds
   enrichContextWithWorkspace(workspaceId);
 
-  // Check billing limits (model access + usage quota)
-  const resolvedModelForBilling = (modelId as string) || DEFAULT_MODEL_ID;
+  // Check billing limits (model access + usage quota).
+  // Only enforce model tier when the user explicitly chose a model;
+  // when modelId is absent the agent picks a default that may be pro-tier,
+  // but we don't want to block free users who never touched the selector.
   const billingCheck = await checkBillingLimits(
     workspaceId,
-    resolvedModelForBilling,
+    (modelId as string) || undefined,
   );
   if (!billingCheck.allowed) {
     return c.json(billingCheck.error, billingCheck.statusCode || 402);
