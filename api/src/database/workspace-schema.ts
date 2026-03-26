@@ -126,6 +126,23 @@ function decryptDataSourceConfig(config: any): any {
 /**
  * Workspace model interface
  */
+export interface IWorkspaceBilling {
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  subscriptionStatus:
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "trialing"
+    | "incomplete"
+    | null;
+  currentPeriodStart: Date | null;
+  currentPeriodEnd: Date | null;
+  usageQuotaUsd: number;
+  hardLimitUsd: number | null;
+  plan: "free" | "pro" | "enterprise";
+}
+
 export interface IWorkspace extends Document {
   _id: Types.ObjectId;
   name: string;
@@ -146,6 +163,7 @@ export interface IWorkspace extends Document {
       description?: string;
     }>;
   };
+  billing: IWorkspaceBilling;
   selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
 }
@@ -911,6 +929,31 @@ Add any specific instructions for how the AI should interpret your data or respo
           description: { type: String, default: "" },
         },
       ],
+    },
+    billing: {
+      stripeCustomerId: { type: String, default: null },
+      stripeSubscriptionId: { type: String, default: null },
+      subscriptionStatus: {
+        type: String,
+        enum: [
+          "active",
+          "past_due",
+          "canceled",
+          "trialing",
+          "incomplete",
+          null,
+        ],
+        default: null,
+      },
+      currentPeriodStart: { type: Date, default: null },
+      currentPeriodEnd: { type: Date, default: null },
+      usageQuotaUsd: { type: Number, default: 0.5 },
+      hardLimitUsd: { type: Number, default: 0.5 },
+      plan: {
+        type: String,
+        enum: ["free", "pro", "enterprise"],
+        default: "free",
+      },
     },
     selfDirective: {
       type: String,

@@ -278,6 +278,7 @@ export interface AIModel {
   name: string;
   provider: string;
   description?: string;
+  tier?: "free" | "pro";
   contextLength?: number;
   supportsTools?: boolean;
 }

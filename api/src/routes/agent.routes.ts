@@ -46,6 +46,7 @@ import {
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { loggers, enrichContextWithWorkspace } from "../logging";
+import { checkBillingLimits } from "../billing/usage-limit.middleware";
 import {
   getAgentFactory,
   detectAgentId,
@@ -301,6 +302,16 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Only enrich logging context after authorization succeeds
   enrichContextWithWorkspace(workspaceId);
+
+  // Check billing limits (model access + usage quota)
+  const resolvedModelForBilling = (modelId as string) || DEFAULT_MODEL_ID;
+  const billingCheck = await checkBillingLimits(
+    workspaceId,
+    resolvedModelForBilling,
+  );
+  if (!billingCheck.allowed) {
+    return c.json(billingCheck.error, billingCheck.statusCode || 402);
+  }
 
   if (!chatId || !ObjectId.isValid(chatId)) {
     return c.json(
