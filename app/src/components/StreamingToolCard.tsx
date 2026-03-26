@@ -503,7 +503,10 @@ export const StreamingToolCard = React.memo(function StreamingToolCard({
     () => (isDone || isError ? formatOutputForDisplay(output) : ""),
     [isDone, isError, output],
   );
-  const outputLang = typeof output === "string" ? "text" : "json";
+  const outputLang =
+    formattedOutput.startsWith("{") || formattedOutput.startsWith("[")
+      ? "json"
+      : "text";
 
   const hasVisibleBody =
     code.length > 0 || ((isDone || isError) && formattedOutput.length > 0);
