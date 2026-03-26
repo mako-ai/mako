@@ -129,7 +129,7 @@ export async function generateConsoleDescription(
           gateway: {
             models: [
               "anthropic/claude-3-5-haiku-latest",
-              "google/gemini-2.0-flash",
+              "google/gemini-2.5-flash",
             ],
           } satisfies GatewayLanguageModelOptions,
         },
