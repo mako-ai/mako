@@ -48,6 +48,12 @@ export const ALL_MODELS: AIModel[] = [
     name: "GPT-4o",
     description: "Previous generation, reliable and capable",
   },
+  {
+    id: "openai/gpt-4o-mini",
+    provider: "openai",
+    name: "GPT-4o Mini",
+    description: "Fast and affordable for lightweight tasks",
+  },
   // Anthropic
   {
     id: "anthropic/claude-opus-4-6",
