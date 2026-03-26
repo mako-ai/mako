@@ -59,6 +59,7 @@ export const ALL_MODELS: AIModel[] = [
     provider: "openai",
     name: "GPT-4o Mini",
     description: "Fast and affordable for lightweight tasks",
+    tier: "free",
   },
   // Anthropic
   {
