@@ -335,6 +335,7 @@ export async function syncSubscriptionToWorkspace(
     "billing.plan": plan,
     "billing.usageQuotaUsd": planDef.usageQuotaUsd,
     "billing.hardLimitUsd": planDef.hardLimitUsd,
+    "billing.lastReportedOverageCents": 0,
     "settings.billingTier": plan,
   };
 

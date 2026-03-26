@@ -58,6 +58,8 @@ export const ModelSelector: React.FC = () => {
   const error = useSettingsStore(s => s.modelsError);
   const fetchModels = useSettingsStore(s => s.fetchModels);
 
+  const billingStatus = useBillingStore(s => s.status);
+
   const open = Boolean(anchorEl);
 
   useEffect(() => {
@@ -191,7 +193,6 @@ export const ModelSelector: React.FC = () => {
             {PROVIDER_NAMES[provider] || provider}
           </ListSubheader>,
           ...providerModels.map(model => {
-            const billingStatus = useBillingStore.getState().status;
             const isProModel = model.tier === "pro";
             const billingEnabled = billingStatus?.billingEnabled ?? false;
             const isFreePlan = billingEnabled && billingStatus?.plan === "free";

@@ -10,6 +10,7 @@
  */
 
 import Stripe from "stripe";
+import { ObjectId } from "mongodb";
 import { inngest } from "../client";
 import { Workspace } from "../../database/workspace-schema";
 import { LlmUsage } from "../../database/schema";
@@ -50,6 +51,7 @@ export const usageReportingFunction = inngest.createFunction(
           ws.billing.currentPeriodStart?.toISOString() ?? null,
         usageQuotaUsd: ws.billing.usageQuotaUsd,
         plan: ws.billing.plan,
+        lastReportedOverageCents: ws.billing.lastReportedOverageCents ?? 0,
       }));
     });
 
@@ -69,7 +71,7 @@ export const usageReportingFunction = inngest.createFunction(
         const [result] = await LlmUsage.aggregate([
           {
             $match: {
-              workspaceId: { $toObjectId: ws.id },
+              workspaceId: new ObjectId(ws.id),
               createdAt: { $gte: periodStart },
             },
           },
@@ -88,15 +90,14 @@ export const usageReportingFunction = inngest.createFunction(
             ?.usageQuotaUsd ??
           0;
         const overageUsd = Math.max(0, totalCostUsd - includedQuota);
+        const overageCents = Math.round(overageUsd * 100);
 
-        if (overageUsd <= 0) {
+        const deltaCents = overageCents - ws.lastReportedOverageCents;
+
+        if (deltaCents <= 0) {
           skipped++;
           return;
         }
-
-        // Report overage to Stripe Meters
-        // Value is in cents (integer) to avoid floating-point issues
-        const overageCents = Math.round(overageUsd * 100);
 
         try {
           const stripe = new Stripe(getStripeSecretKey(), {
@@ -107,16 +108,22 @@ export const usageReportingFunction = inngest.createFunction(
             event_name: getStripeMeterEventName(),
             payload: {
               stripe_customer_id: ws.stripeCustomerId,
-              value: String(overageCents),
+              value: String(deltaCents),
             },
             timestamp: Math.floor(Date.now() / 1000),
           });
+
+          await Workspace.updateOne(
+            { _id: new ObjectId(ws.id) },
+            { $set: { "billing.lastReportedOverageCents": overageCents } },
+          );
 
           reported++;
           logger.info("Reported usage overage to Stripe meter", {
             workspaceId: ws.id,
             totalCostUsd,
             overageUsd,
+            deltaCents,
             overageCents,
           });
         } catch (err) {

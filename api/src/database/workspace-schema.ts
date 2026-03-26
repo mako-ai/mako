@@ -141,6 +141,7 @@ export interface IWorkspaceBilling {
   usageQuotaUsd: number;
   hardLimitUsd: number | null;
   plan: "free" | "pro" | "enterprise";
+  lastReportedOverageCents?: number;
 }
 
 export interface IWorkspace extends Document {
@@ -954,6 +955,7 @@ Add any specific instructions for how the AI should interpret your data or respo
         enum: ["free", "pro", "enterprise"],
         default: "free",
       },
+      lastReportedOverageCents: { type: Number, default: 0 },
     },
     selfDirective: {
       type: String,
