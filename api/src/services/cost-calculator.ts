@@ -14,30 +14,6 @@ import {
 export type { TokenType, PricingRow };
 
 // ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface DetailedTokenUsage {
-  inputTokens: number;
-  outputTokens: number;
-  inputTokenDetails?: {
-    noCacheTokens: number;
-    cacheReadTokens: number;
-    cacheWriteTokens: number;
-  };
-  outputTokenDetails?: {
-    textTokens: number;
-    reasoningTokens: number;
-  };
-}
-
-export interface StepUsage {
-  modelId: string;
-  tokens: DetailedTokenUsage;
-  costUsd: number;
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

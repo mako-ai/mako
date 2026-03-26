@@ -38,6 +38,7 @@ export interface TrackUsageParams {
   agentId?: string;
   tags?: string[];
   durationMs?: number;
+  costUsd?: number;
 }
 
 /**
@@ -49,15 +50,22 @@ export interface TrackUsageParams {
  */
 export async function trackUsage(params: TrackUsageParams): Promise<void> {
   try {
-    const { totalCostUsd, steps: costedSteps } = await computeInvocationCost({
-      modelId: params.modelId,
-      inputTokens: params.inputTokens,
-      outputTokens: params.outputTokens,
-      cacheReadTokens: params.cacheReadTokens,
-      cacheWriteTokens: params.cacheWriteTokens,
-      reasoningTokens: params.reasoningTokens,
-      steps: params.steps,
-    });
+    let totalCostUsd = params.costUsd ?? 0;
+    let costedSteps = params.steps;
+
+    if (params.costUsd == null) {
+      const result = await computeInvocationCost({
+        modelId: params.modelId,
+        inputTokens: params.inputTokens,
+        outputTokens: params.outputTokens,
+        cacheReadTokens: params.cacheReadTokens,
+        cacheWriteTokens: params.cacheWriteTokens,
+        reasoningTokens: params.reasoningTokens,
+        steps: params.steps,
+      });
+      totalCostUsd = result.totalCostUsd;
+      costedSteps = result.steps;
+    }
 
     await LlmUsage.create({
       workspaceId: new ObjectId(params.workspaceId),

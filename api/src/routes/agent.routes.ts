@@ -30,6 +30,7 @@ import {
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
 import { trackUsage } from "../services/llm-usage.service";
+import { computeInvocationCost } from "../services/cost-calculator";
 import { generateChatTitle } from "../services/title-generator";
 import {
   isDescriptionGenAvailable,
@@ -581,7 +582,24 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         durationMs,
       });
 
-      // Compute cost and track usage (fire-and-forget)
+      // Compute cost before saving so both trackUsage and saveChat receive it
+      let costUsd = 0;
+      try {
+        const { totalCostUsd } = await computeInvocationCost({
+          modelId: resolvedModelId,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          reasoningTokens,
+          steps: stepDetails,
+        });
+        costUsd = totalCostUsd;
+      } catch (err) {
+        logger.warn("Failed to compute invocation cost", { error: err });
+      }
+
+      // Track usage (fire-and-forget)
       void trackUsage({
         workspaceId,
         userId: actorId,
@@ -597,6 +615,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         steps: stepDetails,
         agentId: resolvedAgentId,
         durationMs,
+        costUsd,
       }).catch(err => logger.warn("Failed to track LLM usage", { error: err }));
 
       try {
@@ -606,6 +625,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           totalTokens,
           cacheReadTokens,
           reasoningTokens,
+          costUsd,
           model: resolvedModelId,
         });
       } catch (error) {
