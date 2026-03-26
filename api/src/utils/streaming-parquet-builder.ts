@@ -16,14 +16,6 @@ export interface StreamingParquetOptions {
   filenameBase?: string;
   rowLimit?: number;
   onBatchInserted?: (totalRows: number) => Promise<void>;
-  /**
-   * Column name → DuckDB type override. When a column appears here its type
-   * is used verbatim instead of being inferred from data samples.
-   *
-   * Typical use: read the live BQ table's INFORMATION_SCHEMA before building
-   * Parquet so staging types match the existing table exactly.
-   */
-  columnTypeOverrides?: Map<string, string>;
 }
 
 function escapeDuckDBValue(value: unknown): string {
@@ -70,31 +62,6 @@ function escapeIdentifier(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-/** Map BigQuery INFORMATION_SCHEMA data_type to a compatible DuckDB type for Parquet. */
-export function bigQueryTypeToDuckDb(bq: string): string {
-  const u = bq.trim().toUpperCase();
-  if (u === "STRING" || u === "TEXT") return "VARCHAR";
-  if (u === "INT64" || u === "INTEGER") return "BIGINT";
-  if (u === "INT32") return "INTEGER";
-  if (u === "FLOAT64" || u === "FLOAT" || u === "FLOAT32") return "DOUBLE";
-  if (u === "BOOL" || u === "BOOLEAN") return "BOOLEAN";
-  if (u === "BYTES") return "BLOB";
-  if (u === "DATE") return "DATE";
-  if (u.startsWith("TIMESTAMP")) return "TIMESTAMP";
-  if (u === "NUMERIC" || u === "BIGNUMERIC") return "DOUBLE";
-  return "VARCHAR";
-}
-
-function resolveColumnType(
-  column: string,
-  samples: unknown[],
-  overrides: Map<string, string>,
-): string {
-  const override = overrides.get(column);
-  if (override) return override;
-  return inferDuckDBType(samples);
-}
-
 export async function buildParquetFromBatches(
   options: StreamingParquetOptions & {
     streamBatches: (
@@ -120,7 +87,6 @@ export async function buildParquetFromBatches(
   let totalRows = 0;
   let tableCreated = false;
   let columns: string[] = [];
-  const overrides = options.columnTypeOverrides ?? new Map<string, string>();
 
   try {
     const insertBatch = async (rows: Record<string, unknown>[]) => {
@@ -143,7 +109,7 @@ export async function buildParquetFromBatches(
           for (let i = 0; i < sampleSize; i++) {
             samples.push(batch[i]?.[col]);
           }
-          return `${escapeIdentifier(col)} ${resolveColumnType(col, samples, overrides)}`;
+          return `${escapeIdentifier(col)} ${inferDuckDBType(samples)}`;
         });
         await connection.run(`CREATE TABLE _data (${colDefs.join(", ")})`);
         tableCreated = true;
@@ -166,7 +132,7 @@ export async function buildParquetFromBatches(
               samples.push(batch[i]?.[col]);
             }
             await connection.run(
-              `ALTER TABLE _data ADD COLUMN ${escapeIdentifier(col)} ${resolveColumnType(col, samples, overrides)}`,
+              `ALTER TABLE _data ADD COLUMN ${escapeIdentifier(col)} ${inferDuckDBType(samples)}`,
             );
           }
           columns.push(...newCols);

@@ -10,6 +10,7 @@ import { createDestinationWriter } from "../../services/destination-writer.servi
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
+import { buildParquetFromBatches } from "../../utils/streaming-parquet-builder";
 import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
@@ -19,57 +20,6 @@ import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 
 const log = loggers.sync("cdc.adapter.bigquery");
-
-function normalizeBqInfoSchemaType(t: string): string {
-  return t.trim().toUpperCase();
-}
-
-/**
- * When live and staging disagree on column type, cast staging values to the live column type for MERGE.
- * Webhook-created tables often used inferred types from early payloads; Parquet backfill may disagree.
- * - preferSafeCast: use SAFE_CAST so one bad cell does not fail the whole MERGE (non-key columns only).
- */
-function stagingExprForLiveColumn(
-  column: string,
-  liveTypes: Map<string, string>,
-  stagingTypes: Map<string, string>,
-  escId: (id: string) => string,
-  opts?: { preferSafeCast?: boolean },
-): string {
-  const sRef = `S.${escId(column)}`;
-  const liveT = liveTypes.get(column);
-  const stagingT = stagingTypes.get(column);
-  if (!liveT || !stagingT) {
-    return sRef;
-  }
-  const lt = normalizeBqInfoSchemaType(liveT);
-  const st = normalizeBqInfoSchemaType(stagingT);
-  if (lt === st) {
-    return sRef;
-  }
-  const fn = opts?.preferSafeCast ? "SAFE_CAST" : "CAST";
-  return `${fn}(${sRef} AS ${lt})`;
-}
-
-/** Join keys: coerce both sides to STRING when BQ types differ (e.g. INT64 id vs STRING id). */
-function mergeJoinExprForKey(
-  key: string,
-  liveTypes: Map<string, string>,
-  stagingTypes: Map<string, string>,
-  escId: (id: string) => string,
-): string {
-  const liveT = liveTypes.get(key);
-  const stagingT = stagingTypes.get(key);
-  if (!liveT || !stagingT) {
-    return `T.${escId(key)} = S.${escId(key)}`;
-  }
-  const lt = normalizeBqInfoSchemaType(liveT);
-  const st = normalizeBqInfoSchemaType(stagingT);
-  if (lt === st) {
-    return `T.${escId(key)} = S.${escId(key)}`;
-  }
-  return `CAST(T.${escId(key)} AS STRING) = CAST(S.${escId(key)} AS STRING)`;
-}
 
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
@@ -90,7 +40,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
+  private get useParquetPath(): boolean {
+    return process.env.BIGQUERY_CDC_WRITE_MODE !== "dml";
+  }
+
   async ensureLiveTable(layout: CdcEntityLayout): Promise<void> {
+    if (this.useParquetPath) {
+      await this.ensureDataset();
+      return;
+    }
     await this.createWriter(layout);
   }
 
@@ -151,23 +109,83 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       return { applied: 0 };
     }
 
-    const writer = await this.createWriter(params.layout);
-    (writer as any).config.deleteMode = params.flow.deleteMode;
-
     const latest = selectLatestChangePerRecord(params.events);
     const fallbackDataSourceId = params.flow.dataSourceId
       ? String(params.flow.dataSourceId)
       : undefined;
     const upserts = latest.filter(event => event.operation === "upsert");
     const deletes = latest.filter(event => event.operation === "delete");
+    const deleteMode =
+      params.flow.deleteMode || params.layout.deleteMode || "hard";
+
+    if (!this.useParquetPath) {
+      return this.applyEventsDml(params, latest, upserts, deletes, deleteMode, fallbackDataSourceId);
+    }
+
+    const rows: Record<string, unknown>[] = [];
+
+    for (const event of upserts) {
+      const payload = normalizePayloadKeys(event.payload || {});
+      const sourceTs = resolveSourceTimestamp(payload, new Date(event.sourceTs));
+      rows.push({
+        ...payload,
+        id: event.recordId,
+        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+        _mako_source_ts: sourceTs,
+        _mako_ingest_seq: Number(event.ingestSeq),
+        _mako_deleted_at: null,
+        is_deleted: false,
+        deleted_at: null,
+      });
+    }
+
+    if (deleteMode === "soft") {
+      for (const event of deletes) {
+        const payload = normalizePayloadKeys(event.payload || {});
+        const sourceTs = resolveSourceTimestamp(payload, new Date(event.sourceTs));
+        rows.push({
+          ...payload,
+          id: event.recordId,
+          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+          _mako_source_ts: sourceTs,
+          _mako_ingest_seq: Number(event.ingestSeq),
+          _mako_deleted_at: new Date(),
+          is_deleted: true,
+          deleted_at: new Date(),
+        });
+      }
+    }
+
+    if (rows.length > 0) {
+      await this.writeViaParquet({ records: rows, layout: params.layout, flow: params.flow });
+    }
+
+    if (deleteMode === "hard" && deletes.length > 0) {
+      await this.hardDeleteBatch(params.layout, deletes, fallbackDataSourceId);
+    }
+
+    return { applied: latest.length };
+  }
+
+  private async applyEventsDml(
+    params: {
+      events: CdcStoredEvent[];
+      layout: CdcEntityLayout;
+      flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    },
+    latest: CdcStoredEvent[],
+    upserts: CdcStoredEvent[],
+    deletes: CdcStoredEvent[],
+    deleteMode: string,
+    fallbackDataSourceId: string | undefined,
+  ): Promise<{ applied: number }> {
+    const writer = await this.createWriter(params.layout);
+    (writer as any).config.deleteMode = params.flow.deleteMode;
 
     if (upserts.length > 0) {
       const rows = upserts.map(event => {
         const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
+        const sourceTs = resolveSourceTimestamp(payload, new Date(event.sourceTs));
         return {
           ...payload,
           id: event.recordId,
@@ -179,7 +197,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           deleted_at: null,
         };
       });
-
       const write = await writer.writeBatch(rows, {
         keyColumns: params.layout.keyColumns,
         conflictStrategy: "update",
@@ -190,15 +207,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (deletes.length > 0) {
-      const deleteMode =
-        params.flow.deleteMode || params.layout.deleteMode || "hard";
       if (deleteMode === "soft") {
         const rows = deletes.map(event => {
           const payload = normalizePayloadKeys(event.payload || {});
-          const sourceTs = resolveSourceTimestamp(
-            payload,
-            new Date(event.sourceTs),
-          );
+          const sourceTs = resolveSourceTimestamp(payload, new Date(event.sourceTs));
           return {
             ...payload,
             id: event.recordId,
@@ -210,39 +222,30 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             deleted_at: new Date(),
           };
         });
-
         const write = await writer.writeBatch(rows, {
           keyColumns: params.layout.keyColumns,
           conflictStrategy: "update",
         });
         if (!write.success) {
-          throw new Error(
-            write.error || "Failed to apply BigQuery CDC soft deletes",
-          );
+          throw new Error(write.error || "Failed to apply BigQuery CDC soft deletes");
         }
       } else {
-        // Hard deletes: writer API is single-row deleteByKeys; upserts above already use writeBatch.
         for (const event of deletes) {
           const payload = normalizePayloadKeys(event.payload || {});
-          const dataSourceId =
-            payload._dataSourceId ?? fallbackDataSourceId ?? undefined;
+          const dataSourceId = payload._dataSourceId ?? fallbackDataSourceId ?? undefined;
           const keyFilters: Record<string, unknown> = { id: event.recordId };
           if (dataSourceId !== undefined) {
             keyFilters._dataSourceId = dataSourceId;
           }
           const remove = await writer.deleteByKeys(keyFilters);
           if (!remove.success) {
-            throw new Error(
-              remove.error || "Failed to apply BigQuery CDC hard delete",
-            );
+            throw new Error(remove.error || "Failed to apply BigQuery CDC hard delete");
           }
         }
       }
     }
 
-    return {
-      applied: latest.length,
-    };
+    return { applied: latest.length };
   }
 
   async applyBatch(params: {
@@ -254,8 +257,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       return { written: 0 };
     }
 
-    const writer = await this.createWriter(params.layout);
-    (writer as any).config.deleteMode = params.flow.deleteMode;
     const fallbackDataSourceId = params.flow.dataSourceId
       ? String(params.flow.dataSourceId)
       : undefined;
@@ -273,56 +274,25 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       };
     });
 
-    const write = await writer.writeBatch(rows, {
-      keyColumns: params.layout.keyColumns,
-      conflictStrategy: "update",
-    });
-    if (!write.success) {
-      log.error("BigQuery batch apply failed", {
-        table: params.layout.tableName,
-        rows: rows.length,
-        error: write.error,
+    if (!this.useParquetPath) {
+      const writer = await this.createWriter(params.layout);
+      (writer as any).config.deleteMode = params.flow.deleteMode;
+      const write = await writer.writeBatch(rows, {
+        keyColumns: params.layout.keyColumns,
+        conflictStrategy: "update",
       });
-      throw new Error(write.error || "Failed to apply BigQuery backfill batch");
-    }
-
-    return {
-      written: write.rowsWritten,
-    };
-  }
-
-  async getLiveTableColumnTypes(
-    layout: CdcEntityLayout,
-  ): Promise<Map<string, string> | undefined> {
-    try {
-      const destination = await this.resolveDestination();
-      const conn = destination.connection as any;
-      const projectId = conn.project_id;
-      const dataset = this.config.tableDestination.schema;
-      const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
-
-      const result = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${layout.tableName.replace(/'/g, "''")}'`,
-      );
-      if (!result.success || !result.data?.length) return undefined;
-
-      const types = new Map<string, string>();
-      for (const r of result.data as any[]) {
-        types.set(r.column_name as string, r.data_type as string);
+      if (!write.success) {
+        log.error("BigQuery batch apply failed", {
+          table: params.layout.tableName,
+          rows: rows.length,
+          error: write.error,
+        });
+        throw new Error(write.error || "Failed to apply BigQuery backfill batch");
       }
-      log.info("Read live table column types for Parquet alignment", {
-        table: layout.tableName,
-        columnCount: types.size,
-      });
-      return types;
-    } catch (err) {
-      log.warn("Could not read live table schema; Parquet will use inferred types", {
-        table: layout.tableName,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return undefined;
+      return { written: write.rowsWritten };
     }
+
+    return this.writeViaParquet({ records: rows, layout: params.layout, flow: params.flow });
   }
 
   async loadStagingFromParquet(
@@ -330,47 +300,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout,
     flowId: string,
   ): Promise<{ loaded: number }> {
-    await this.createWriter(layout);
-
-    const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
-    const credentials =
-      typeof conn.service_account_json === "string"
-        ? JSON.parse(conn.service_account_json)
-        : conn.service_account_json;
-    const projectId = conn.project_id;
-    const dataset = this.config.tableDestination.schema;
-    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
-
-    const bq = new BigQuery({ projectId, credentials });
-    const [metadata] = await bq
-      .dataset(dataset)
-      .table(stagingTable)
-      .load(parquetPath, {
-        sourceFormat: "PARQUET",
-        writeDisposition: "WRITE_APPEND",
-        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
-      });
-
-    const jobMeta = metadata as Record<string, any>;
-    if (jobMeta?.status?.errorResult) {
-      throw new Error(
-        jobMeta.status.errorResult.message || "BigQuery load job failed",
-      );
-    }
-
-    const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
-
-    await fs.rm(parquetPath, { force: true }).catch(() => undefined);
-
-    log.info("Loaded Parquet to BigQuery staging table", {
-      stagingTable,
-      dataset,
-      loaded,
-    });
-
-    return { loaded };
+    await this.ensureDataset();
+    const stagingTable = this.getStagingTableName(layout.tableName, flowId);
+    return this.loadParquetToStaging(parquetPath, stagingTable);
   }
 
   async mergeFromStaging(
@@ -378,59 +310,49 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
   ): Promise<{ written: number }> {
+    const stagingTable = this.getStagingTableName(layout.tableName, flowId);
+    return this.mergeStagingToLive(layout, stagingTable);
+  }
+
+  private async mergeStagingToLive(
+    layout: CdcEntityLayout,
+    stagingTable: string,
+  ): Promise<{ written: number }> {
     const destination = await this.resolveDestination();
     const conn = destination.connection as any;
     const projectId = conn.project_id;
     const dataset = this.config.tableDestination.schema;
     const liveTable = layout.tableName;
-    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
 
     const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
     const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
 
-    const stagingColumnsResult = await databaseConnectionService.executeQuery(
+    const schemaResult = await databaseConnectionService.executeQuery(
       destination,
-      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}'`,
+      `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`,
     );
-    const liveColumnsResult = await databaseConnectionService.executeQuery(
-      destination,
-      `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${liveTable.replace(/'/g, "''")}'`,
-    );
-
-    const stagingCols = new Set(
-      ((stagingColumnsResult.data as any[]) || []).map(
-        (r: any) => r.column_name as string,
-      ),
-    );
-    const liveCols = new Set(
-      ((liveColumnsResult.data as any[]) || []).map(
-        (r: any) => r.column_name as string,
-      ),
-    );
+    const stagingCols = new Set<string>();
+    const liveCols = new Set<string>();
+    const stagingTypes = new Map<string, string>();
+    const liveTypes = new Map<string, string>();
+    for (const r of (schemaResult.data as any[]) || []) {
+      const tbl = r.table_name as string;
+      const col = r.column_name as string;
+      const dt = r.data_type as string;
+      if (tbl === liveTable) {
+        liveCols.add(col);
+        liveTypes.set(col, dt);
+      } else if (tbl === stagingTable) {
+        stagingCols.add(col);
+        stagingTypes.set(col, dt);
+      }
+    }
 
     if (liveCols.size === 0) {
       await this.ensureLiveTableFromSourceSchema(layout, stagingTable);
       for (const col of stagingCols) {
         liveCols.add(col);
-      }
-    }
-
-    const schemaResult = await databaseConnectionService.executeQuery(
-      destination,
-      `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`,
-    );
-    const liveTypes = new Map<string, string>();
-    const stagingTypes = new Map<string, string>();
-    for (const r of (schemaResult.data as any[]) || []) {
-      const tableName = r.table_name as string;
-      const columnName = r.column_name as string;
-      const dataType = r.data_type as string;
-      if (tableName === liveTable) {
-        liveTypes.set(columnName, dataType);
-      } else if (tableName === stagingTable) {
-        stagingTypes.set(columnName, dataType);
       }
     }
 
@@ -469,9 +391,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const allColumns = Array.from(new Set([...stagingCols, ...liveCols]));
 
     const keyColumns = layout.keyColumns;
-    const keySet = new Set(keyColumns);
     const joinCondition = keyColumns
-      .map(k => mergeJoinExprForKey(k, liveTypes, stagingTypes, escId))
+      .map(k => `T.${escId(k)} = S.${escId(k)}`)
       .join(" AND ");
     const nonKeyColumns = allColumns.filter(c => !keyColumns.includes(c));
 
@@ -484,19 +405,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         : "";
 
     const updateSet = nonKeyColumns
-      .map(
-        c =>
-          `${escId(c)} = ${stagingExprForLiveColumn(c, liveTypes, stagingTypes, escId, { preferSafeCast: true })}`,
-      )
+      .map(c => `${escId(c)} = S.${escId(c)}`)
       .join(", ");
     const insertCols = allColumns.map(escId).join(", ");
-    const insertVals = allColumns
-      .map(c =>
-        stagingExprForLiveColumn(c, liveTypes, stagingTypes, escId, {
-          preferSafeCast: !keySet.has(c),
-        }),
-      )
-      .join(", ");
+    const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
 
     const dedupKey = keyColumns.map(escId).join(", ");
     const dedupSource = `(SELECT * FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
@@ -537,21 +449,22 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }
 
   async cleanupStaging(layout: CdcEntityLayout, flowId: string): Promise<void> {
-    const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
-    const projectId = conn.project_id;
-    const dataset = this.config.tableDestination.schema;
+    const stagingTable = this.getStagingTableName(layout.tableName, flowId);
+    await this.dropStagingTable(stagingTable);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
+
+  private getStagingTableName(
+    tableName: string,
+    flowId: string,
+    prefix?: string,
+  ): string {
     const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    const stagingTable = `${layout.tableName}__${flowToken}__staging`;
-    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
-    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
-
-    await databaseConnectionService.executeQuery(
-      destination,
-      `DROP TABLE IF EXISTS ${fullStaging}`,
-    );
-
-    log.info("Cleaned up staging table", { stagingTable, dataset });
+    const tag = prefix ? `${prefix}_${flowToken}` : flowToken;
+    return `${tableName}__${tag}__staging`;
   }
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
@@ -566,6 +479,158 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return doc;
   }
 
+  private async resolveBqClient(): Promise<{
+    bq: InstanceType<typeof BigQuery>;
+    projectId: string;
+    dataset: string;
+    destination: IDatabaseConnection;
+  }> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const credentials =
+      typeof conn.service_account_json === "string"
+        ? JSON.parse(conn.service_account_json)
+        : conn.service_account_json;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const bq = new BigQuery({ projectId, credentials });
+    return { bq, projectId, dataset, destination };
+  }
+
+  private async ensureDataset(): Promise<void> {
+    const { bq, dataset } = await this.resolveBqClient();
+    await bq.dataset(dataset).get({ autoCreate: true });
+  }
+
+  private async loadParquetToStaging(
+    parquetPath: string,
+    stagingTable: string,
+  ): Promise<{ loaded: number }> {
+    const { bq, dataset } = await this.resolveBqClient();
+
+    const [metadata] = await bq
+      .dataset(dataset)
+      .table(stagingTable)
+      .load(parquetPath, {
+        sourceFormat: "PARQUET",
+        writeDisposition: "WRITE_APPEND",
+        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
+      });
+
+    const jobMeta = metadata as Record<string, any>;
+    if (jobMeta?.status?.errorResult) {
+      throw new Error(
+        jobMeta.status.errorResult.message || "BigQuery load job failed",
+      );
+    }
+
+    const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
+
+    await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+
+    log.info("Loaded Parquet to BigQuery staging table", {
+      stagingTable,
+      dataset,
+      loaded,
+    });
+
+    return { loaded };
+  }
+
+  private async dropStagingTable(stagingTable: string): Promise<void> {
+    const { projectId, dataset, destination } = await this.resolveBqClient();
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
+
+    await databaseConnectionService.executeQuery(
+      destination,
+      `DROP TABLE IF EXISTS ${fullStaging}`,
+    );
+
+    log.info("Cleaned up staging table", { stagingTable, dataset });
+  }
+
+  private async writeViaParquet(params: {
+    records: Record<string, unknown>[];
+    layout: CdcEntityLayout;
+    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+  }): Promise<{ written: number }> {
+    if (params.records.length === 0) return { written: 0 };
+
+    const flowId = String(params.flow._id);
+    const stagingTable = this.getStagingTableName(
+      params.layout.tableName,
+      flowId,
+      `cdc_${Date.now().toString(36)}`,
+    );
+
+    await this.ensureDataset();
+
+    const parquet = await buildParquetFromBatches({
+      filenameBase: `cdc-${params.layout.entity}`,
+      streamBatches: async insertBatch => {
+        await insertBatch(params.records);
+      },
+    });
+
+    log.info("writeViaParquet: built Parquet for CDC batch", {
+      table: params.layout.tableName,
+      rows: params.records.length,
+      parquetBytes: parquet.byteSize,
+      stagingTable,
+    });
+
+    try {
+      await this.loadParquetToStaging(parquet.filePath, stagingTable);
+      await this.mergeStagingToLive(params.layout, stagingTable);
+    } finally {
+      await this.dropStagingTable(stagingTable).catch(err => {
+        log.warn("Failed to cleanup CDC staging table", {
+          stagingTable,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+
+    return { written: params.records.length };
+  }
+
+  private async hardDeleteBatch(
+    layout: CdcEntityLayout,
+    deletes: CdcStoredEvent[],
+    fallbackDataSourceId: string | undefined,
+  ): Promise<void> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
+
+    const ids = deletes.map(e => `'${String(e.recordId).replace(/'/g, "''")}'`);
+    const CHUNK = 10_000;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      let where = `\`id\` IN (${chunk.join(", ")})`;
+      if (fallbackDataSourceId) {
+        where += ` AND \`_dataSourceId\` = '${fallbackDataSourceId.replace(/'/g, "''")}'`;
+      }
+      const result = await databaseConnectionService.executeQuery(
+        destination,
+        `DELETE FROM ${fullLive} WHERE ${where}`,
+      );
+      if (!result.success) {
+        throw new Error(result.error || "BigQuery hard delete failed");
+      }
+    }
+
+    log.info("Hard-deleted records from live table", {
+      table: layout.tableName,
+      count: deletes.length,
+    });
+  }
+
+  /** DML fallback path -- kept behind BIGQUERY_CDC_WRITE_MODE=dml env flag */
   private async createWriter(layout: CdcEntityLayout) {
     const cacheKey = layout.tableName;
     const cached = this.writerCache.get(cacheKey);

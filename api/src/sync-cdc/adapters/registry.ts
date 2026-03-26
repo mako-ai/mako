@@ -33,14 +33,6 @@ export interface CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
   }): Promise<{ written: number }>;
 
-  /**
-   * Return the BQ column types of the live table (if it exists).
-   * Used by the bulk-flush path to match Parquet types to the existing table.
-   */
-  getLiveTableColumnTypes?(
-    layout: CdcEntityLayout,
-  ): Promise<Map<string, string> | undefined>;
-
   loadStagingFromParquet?(
     parquetPath: string,
     layout: CdcEntityLayout,
