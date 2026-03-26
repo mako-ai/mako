@@ -669,6 +669,14 @@ export const webhookRetryFunction = inngest.createFunction(
       // Reset events to pending and trigger reprocessing
       let totalRetried = 0;
       for (const event of uniqueEvents) {
+        const fid = event.flowId.toString();
+        const routing = routingByFlowId.get(fid);
+        
+        // Skip events for deleted flows
+        if (!routing) {
+          continue;
+        }
+
         // Ensure state is pending before re-drive.
         // For pending rows this is idempotent.
         await WebhookEvent.updateOne(
@@ -679,13 +687,11 @@ export const webhookRetryFunction = inngest.createFunction(
           },
         );
 
-        const fid = event.flowId.toString();
-        const routing = routingByFlowId.get(fid);
         await enqueueWebhookProcess({
           flowId: fid,
           eventId: event.eventId,
-          flow: routing?.flow,
-          destinationTypeHint: routing?.destinationType,
+          flow: routing.flow,
+          destinationTypeHint: routing.destinationType,
         });
 
         totalRetried++;

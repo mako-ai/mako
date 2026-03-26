@@ -186,7 +186,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           );
         });
 
-        const escStr = (v: string) => v.replace(/'/g, "\\'");
+        const escStr = (v: string) => v.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
         if (hasDataSourceId) {
           const tuples = deletes.map(event => {
