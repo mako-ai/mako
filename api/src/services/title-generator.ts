@@ -1,11 +1,14 @@
 /**
  * Title Generation Service
- * Uses AI SDK generateText for simple, fast title generation
+ * Uses AI Gateway + generateText for simple, fast title generation.
  */
 
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import { getUtilityModelId } from "../agent-lib/ai-models";
+import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
+import { extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.agent();
 
@@ -20,43 +23,58 @@ Rules:
 
 Return only the title, nothing else.`;
 
-/**
- * Extract text content from a message (handles both v2 .content and v6 .parts formats)
- */
-const getMessageContent = (message: any): string => {
-  if (typeof message.content === "string") {
-    return message.content;
-  }
-
-  if (Array.isArray(message.parts)) {
-    return message.parts
-      .filter((p: any) => p.type === "text" && typeof p.text === "string")
-      .map((p: any) => p.text)
-      .join("");
-  }
-
-  return "";
-};
+export interface TitleGenerationContext {
+  workspaceId: string;
+  userId: string;
+}
 
 /**
- * Generate a title from the first user message content
- * Simple and fast - just needs the user's initial message
+ * Generate a title from the first user message content.
  */
 export const generateChatTitle = async (
   userMessageContent: string,
+  ctx?: TitleGenerationContext,
 ): Promise<string> => {
   try {
-    const { text } = await generateText({
-      model: openai("gpt-4o-mini") as any,
+    const modelId = getUtilityModelId();
+    if (!modelId) {
+      logger.warn("No AI provider configured, skipping title generation");
+      return "New Conversation";
+    }
+    const { text, usage } = await generateText({
+      model: getModel(modelId),
       system: TITLE_SYSTEM_PROMPT,
-      prompt: userMessageContent.substring(0, 2000), // Limit input length
+      prompt: userMessageContent.substring(0, 2000),
+      providerOptions: {
+        ...buildProviderOptions({
+          userId: ctx?.userId ?? "unknown",
+          workspaceId: ctx?.workspaceId ?? "unknown",
+          invocationType: "title_generation",
+        }),
+      },
     });
 
-    let title = text.trim();
-    title = title.replace(/^["']|["']$/g, ""); // Remove quotes
-    title = title.substring(0, 80); // Character limit
+    if (ctx) {
+      const { inputTokens, outputTokens } = extractTokenCounts(
+        usage as Record<string, unknown>,
+      );
+      void trackUsage({
+        workspaceId: ctx.workspaceId,
+        userId: ctx.userId,
+        invocationType: "title_generation",
+        modelId,
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+      }).catch(err =>
+        logger.warn("Failed to track title generation usage", { error: err }),
+      );
+    }
 
-    // Fallback if title is too short or empty
+    let title = text.trim();
+    title = title.replace(/^["']|["']$/g, "");
+    title = title.substring(0, 80);
+
     if (title.length < 3) {
       return "New Conversation";
     }
@@ -66,36 +84,4 @@ export const generateChatTitle = async (
     logger.error("Title generation failed", { error });
     return "New Conversation";
   }
-};
-
-/**
- * Legacy function for backward compatibility with existing code
- * Extracts first user message and generates title
- */
-export const generateChatTitleFromMessages = async (
-  messages: any[],
-): Promise<string> => {
-  const firstUserMessage = messages.find(m => m.role === "user");
-  if (!firstUserMessage) {
-    return "New Conversation";
-  }
-
-  const content = getMessageContent(firstUserMessage);
-  if (!content || content.trim().length < 3) {
-    return "New Conversation";
-  }
-
-  return generateChatTitle(content);
-};
-
-/**
- * Check if we should generate a title (for backward compatibility)
- * Now simplified: generate if there's at least one user message with content
- */
-export const shouldGenerateTitle = (messages: any[]): boolean => {
-  const firstUserMessage = messages.find(m => m.role === "user");
-  if (!firstUserMessage) return false;
-
-  const content = getMessageContent(firstUserMessage);
-  return content.trim().length >= 3;
 };

@@ -404,14 +404,17 @@ consoleRoutes.post("/", async (c: Context) => {
             description: genDesc,
             embedding,
             embeddingModel,
-          } = await generateDescriptionAndEmbedding({
-            code: content,
-            title: consolePath.split("/").pop() || consolePath,
-            connectionName: connDoc?.name,
-            databaseType: connDoc?.type,
-            databaseName,
-            language: savedConsole.language,
-          });
+          } = await generateDescriptionAndEmbedding(
+            {
+              code: content,
+              title: consolePath.split("/").pop() || consolePath,
+              connectionName: connDoc?.name,
+              databaseType: connDoc?.type,
+              databaseName,
+              language: savedConsole.language,
+            },
+            { workspaceId, userId: user.id },
+          );
           if (genDesc || embedding) {
             const update: Record<string, unknown> = {};
             if (genDesc && !description) update.description = genDesc;
@@ -655,14 +658,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
                 description: genDesc,
                 embedding,
                 embeddingModel,
-              } = await generateDescriptionAndEmbedding({
-                code: body.content,
-                title: result.name,
-                connectionName: connDoc?.name,
-                databaseType: connDoc?.type,
-                databaseName: body.databaseName,
-                language: result.language,
-              });
+              } = await generateDescriptionAndEmbedding(
+                {
+                  code: body.content,
+                  title: result.name,
+                  connectionName: connDoc?.name,
+                  databaseType: connDoc?.type,
+                  databaseName: body.databaseName,
+                  language: result.language,
+                },
+                { workspaceId, userId: user.id },
+              );
               if (genDesc || embedding) {
                 const descUpdate: Record<string, unknown> = {};
                 if (genDesc) descUpdate.description = genDesc;
@@ -773,14 +779,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             description: genDesc,
             embedding,
             embeddingModel,
-          } = await generateDescriptionAndEmbedding({
-            code: body.content,
-            title: consolePath.split("/").pop() || consolePath,
-            connectionName: connDoc?.name,
-            databaseType: connDoc?.type,
-            databaseName: body.databaseName,
-            language: savedConsole.language,
-          });
+          } = await generateDescriptionAndEmbedding(
+            {
+              code: body.content,
+              title: consolePath.split("/").pop() || consolePath,
+              connectionName: connDoc?.name,
+              databaseType: connDoc?.type,
+              databaseName: body.databaseName,
+              language: savedConsole.language,
+            },
+            { workspaceId, userId: user.id },
+          );
           if (genDesc || embedding) {
             const update: Record<string, unknown> = {};
             if (genDesc) update.description = genDesc;

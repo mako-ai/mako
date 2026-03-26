@@ -28,7 +28,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       // Default model
-      selectedModelId: "claude-opus-4-6",
+      selectedModelId: "anthropic/claude-opus-4-6",
       setSelectedModelId: modelId => set({ selectedModelId: modelId }),
 
       // Models list
@@ -71,6 +71,23 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "settings-storage",
+      version: 1,
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as Record<string, unknown>;
+        if (version === 0 && state.selectedModelId) {
+          const id = state.selectedModelId as string;
+          if (!id.includes("/")) {
+            let provider = "anthropic";
+            if (/^(gpt|o[0-9])/.test(id)) {
+              provider = "openai";
+            } else if (id.startsWith("gemini")) {
+              provider = "google";
+            }
+            state.selectedModelId = `${provider}/${id}`;
+          }
+        }
+        return state as unknown as SettingsState;
+      },
       // Only persist specific fields
       partialize: state => ({
         selectedModelId: state.selectedModelId,

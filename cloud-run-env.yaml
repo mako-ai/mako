@@ -21,4 +21,7 @@ DASHBOARD_ARTIFACT_PREFIX: "dashboards"
 
 # Filesystem backend only:
 # DASHBOARD_ARTIFACT_DIR: "/data/dashboard-artifacts"
+# Vercel AI Gateway (centralized LLM billing)
+# AI_GATEWAY_API_KEY: "your_vercel_ai_gateway_key"
+
 # Add any other variables from your .env file here

@@ -1,34 +1,59 @@
-import { generateText, type LanguageModel } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { openai } from "@ai-sdk/openai";
-import { google } from "@ai-sdk/google";
+import { generateText } from "ai";
+import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import {
+  isGatewayMode,
+  getUtilityModelId,
+  getUtilityModelPreference,
+  getConfiguredProviders,
+  getAvailableModels,
+} from "../agent-lib/ai-models";
+import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
+import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
 import {
   embedText,
   isEmbeddingAvailable,
   getEmbeddingModelName,
 } from "./embedding.service";
+import { extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.app();
 
-function getDescriptionModels(): LanguageModel[] {
-  const models: LanguageModel[] = [];
-  if (process.env.OPENAI_API_KEY) {
-    models.push(openai("gpt-4o-mini") as unknown as LanguageModel);
-  }
-  if (process.env.ANTHROPIC_API_KEY) {
-    models.push(
-      anthropic("claude-3-5-haiku-latest") as unknown as LanguageModel,
+function processDescriptionResult(
+  text: string,
+  usage: Record<string, unknown>,
+  modelId: string,
+  trackingCtx?: DescriptionTrackingContext | null,
+): string | null {
+  if (trackingCtx) {
+    const { inputTokens, outputTokens } = extractTokenCounts(usage);
+    void trackUsage({
+      workspaceId: trackingCtx.workspaceId,
+      userId: trackingCtx.userId,
+      invocationType: "description_generation",
+      modelId,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+    }).catch(err =>
+      logger.warn("Failed to track description usage", { error: err }),
     );
   }
-  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    models.push(google("gemini-2.0-flash") as unknown as LanguageModel);
-  }
-  return models;
+
+  let description = text.trim();
+  description = description.replace(/^["']|["']$/g, "");
+  description = description.substring(0, 500);
+
+  if (description.length < 5) return null;
+  return description;
 }
 
+/**
+ * Description generation requires at least one configured LLM provider
+ * (or the AI Gateway).
+ */
 export function isDescriptionGenAvailable(): boolean {
-  return getDescriptionModels().length > 0;
+  return isGatewayMode() || getConfiguredProviders().length > 0;
 }
 
 const DESCRIPTION_SYSTEM_PROMPT = `You are a concise technical writer. Generate a 1-2 sentence description of the given database query.
@@ -52,12 +77,15 @@ export interface ConsoleDescriptionContext {
   resultSample?: string;
 }
 
+export interface DescriptionTrackingContext {
+  workspaceId: string;
+  userId: string;
+}
+
 export async function generateConsoleDescription(
   context: ConsoleDescriptionContext,
+  trackingCtx?: DescriptionTrackingContext,
 ): Promise<string | null> {
-  const models = getDescriptionModels();
-  if (models.length === 0) return null;
-
   const parts: string[] = [];
 
   if (context.title) {
@@ -91,25 +119,91 @@ export async function generateConsoleDescription(
 
   const prompt = parts.join("\n");
 
-  for (const model of models) {
+  if (!isDescriptionGenAvailable()) return null;
+
+  if (isGatewayMode()) {
     try {
-      const { text } = await generateText({
-        model: model as any,
+      const utilityModel = getUtilityModelId();
+      if (!utilityModel) return null;
+      const baseOpts = trackingCtx
+        ? buildProviderOptions({
+            userId: trackingCtx.userId,
+            workspaceId: trackingCtx.workspaceId,
+            invocationType: "description_generation",
+          })
+        : {};
+      const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
+      const { text, usage, response } = await generateText({
+        model: getModel(utilityModel),
+        system: DESCRIPTION_SYSTEM_PROMPT,
+        prompt,
+        providerOptions: {
+          gateway: {
+            ...gatewayBase,
+            models: [
+              utilityModel,
+              ...getUtilityModelPreference().filter(id => id !== utilityModel),
+            ],
+          } satisfies GatewayLanguageModelOptions,
+        },
+      });
+
+      const actualModelId = (response as Record<string, unknown>)?.modelId as
+        | string
+        | undefined;
+
+      return processDescriptionResult(
+        text,
+        usage as Record<string, unknown>,
+        actualModelId || utilityModel,
+        trackingCtx,
+      );
+    } catch (err) {
+      logger.error("Console description generation failed", { error: err });
+      return null;
+    }
+  }
+
+  const utilityIds = new Set(getUtilityModelPreference());
+  const available = getAvailableModels()
+    .filter(m => utilityIds.has(m.id))
+    .map(m => m.id);
+
+  const preferredId = getUtilityModelId();
+  if (!preferredId && available.length === 0) return null;
+  const modelsToTry =
+    preferredId && available.includes(preferredId)
+      ? [preferredId, ...available.filter(id => id !== preferredId)]
+      : preferredId
+        ? [preferredId, ...available]
+        : available;
+
+  for (const modelId of modelsToTry) {
+    try {
+      const { text, usage } = await generateText({
+        model: getModel(modelId),
         system: DESCRIPTION_SYSTEM_PROMPT,
         prompt,
       });
 
-      let description = text.trim();
-      description = description.replace(/^["']|["']$/g, "");
-      description = description.substring(0, 500);
-
-      if (description.length < 5) return null;
-      return description;
+      return processDescriptionResult(
+        text,
+        usage as Record<string, unknown>,
+        modelId,
+        trackingCtx,
+      );
     } catch (err) {
-      logger.error("Console description generation failed", { error: err });
+      logger.warn(
+        "Console description generation failed for model, trying next",
+        {
+          modelId,
+          error: err,
+        },
+      );
     }
   }
 
+  logger.error("Console description generation failed for all models");
   return null;
 }
 
@@ -121,8 +215,9 @@ export interface DescriptionAndEmbeddingResult {
 
 export async function generateDescriptionAndEmbedding(
   context: ConsoleDescriptionContext,
+  trackingCtx?: DescriptionTrackingContext,
 ): Promise<DescriptionAndEmbeddingResult> {
-  const description = await generateConsoleDescription(context);
+  const description = await generateConsoleDescription(context, trackingCtx);
 
   let embedding: number[] | null = null;
   let embeddingModel: string | null = null;

@@ -29,8 +29,13 @@ export { UNIVERSAL_PROMPT_V2 } from "./prompts/universal";
 export type { AIModel, AIProvider } from "./ai-models";
 export {
   ALL_MODELS,
+  isGatewayMode,
+  getConfiguredProviders,
   getAvailableModels,
   getModelById,
-  getDefaultModel,
-  getConfiguredProviders,
+  getDefaultModelId,
+  getUtilityModelId,
 } from "./ai-models";
+
+// AI Gateway / Provider resolution
+export { getModel, buildProviderOptions } from "./ai-gateway";

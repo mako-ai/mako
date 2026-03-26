@@ -34,6 +34,7 @@ import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver"
 import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
+import { usageRoutes } from "./routes/usage";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
@@ -42,6 +43,8 @@ import { cdcBackfillService } from "./sync-cdc/backfill";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
+import { warmPricingCache } from "./services/gateway-pricing.service";
+import { isGatewayMode } from "./agent-lib/ai-models";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
 
@@ -111,6 +114,7 @@ app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
+app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
 app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",
@@ -249,6 +253,14 @@ async function main(): Promise<void> {
     fetch: app.fetch,
     port,
   });
+
+  if (isGatewayMode()) {
+    warmPricingCache().catch(err => {
+      logger.warn("Startup pricing cache warm failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
 
   // Recover any CDC backfills that were interrupted by the previous shutdown.
   // Runs async after server is listening so it doesn't block startup.
