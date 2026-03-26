@@ -4,7 +4,7 @@
  */
 
 import { generateText } from "ai";
-import { getModel } from "../agent-lib/ai-gateway";
+import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
@@ -59,6 +59,13 @@ export const generateChatTitle = async (
       model: getModel(modelId),
       system: TITLE_SYSTEM_PROMPT,
       prompt: userMessageContent.substring(0, 2000),
+      providerOptions: {
+        ...buildProviderOptions({
+          userId: ctx?.userId ?? "unknown",
+          workspaceId: ctx?.workspaceId ?? "unknown",
+          invocationType: "title_generation",
+        }),
+      },
     });
 
     if (ctx) {

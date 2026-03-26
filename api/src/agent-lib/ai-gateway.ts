@@ -138,7 +138,7 @@ export function buildProviderOptions(opts: {
   workspaceId: string;
   agentId?: string;
   invocationType?: string;
-}): Record<string, unknown> {
+}): Record<string, any> {
   if (!isGatewayMode()) return {};
 
   const tags: string[] = [`ws:${opts.workspaceId}`];

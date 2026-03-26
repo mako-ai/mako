@@ -546,8 +546,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         });
       }
 
-      // Fallback to top-level usage if steps were empty
-      if (steps.length === 0) {
+      // Fallback to top-level usage if no steps produced usage data
+      if (stepDetails.length === 0) {
         try {
           const usage = (await result.usage) as unknown as Record<
             string,

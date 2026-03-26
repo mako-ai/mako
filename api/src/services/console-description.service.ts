@@ -1,5 +1,5 @@
 import { generateText } from "ai";
-import { getModel } from "../agent-lib/ai-gateway";
+import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import {
   isGatewayMode,
   getUtilityModelId,
@@ -130,12 +130,21 @@ export async function generateConsoleDescription(
   if (isGatewayMode()) {
     try {
       const utilityModel = getUtilityModelId();
+      const baseOpts = trackingCtx
+        ? buildProviderOptions({
+            userId: trackingCtx.userId,
+            workspaceId: trackingCtx.workspaceId,
+            invocationType: "description_generation",
+          })
+        : {};
+      const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
       const { text, usage, response } = await generateText({
         model: getModel(utilityModel),
         system: DESCRIPTION_SYSTEM_PROMPT,
         prompt,
         providerOptions: {
           gateway: {
+            ...gatewayBase,
             models: [
               "anthropic/claude-3-5-haiku-latest",
               "google/gemini-2.5-flash",
