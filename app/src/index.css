@@ -95,10 +95,12 @@
 [data-streamdown="table-wrapper"] {
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
+  overflow: hidden;
+  padding: 0 !important;
+  border-color: hsl(var(--border)) !important;
 }
 
 [data-streamdown="table"] {
-  border: 1px solid hsl(var(--border));
   border-collapse: collapse;
 }
 
