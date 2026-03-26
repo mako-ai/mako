@@ -368,7 +368,7 @@ authRoutes.get("/google", async c => {
 
   setCookie(c, "google_oauth_state", nonce, {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === "production",
     maxAge: 60 * 10,
     sameSite: "Lax",
     path: "/",
@@ -376,7 +376,7 @@ authRoutes.get("/google", async c => {
 
   setCookie(c, "google_code_verifier", codeVerifier, {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === "production",
     maxAge: 60 * 10,
     sameSite: "Lax",
     path: "/",
@@ -554,7 +554,7 @@ authRoutes.get("/github", async c => {
 
   setCookie(c, "github_oauth_state", nonce, {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === "production",
     maxAge: 60 * 10,
     sameSite: "Lax",
     path: "/",

@@ -1,4 +1,5 @@
 import { Google, GitHub } from "arctic";
+import { getProductionUrl } from "./oauth-proxy";
 
 /**
  * OAuth provider types
@@ -19,12 +20,13 @@ export function isOAuthDisabled(): boolean {
 
 /**
  * Get the callback base URL.
- * When PRODUCTION_URL is set, OAuth callbacks always route through
- * production because only production's URLs are registered with providers.
- * Falls back to BASE_URL for backward compatibility (single-deployment setups).
+ * Delegates to getProductionUrl() from oauth-proxy — when PRODUCTION_URL is
+ * set, OAuth callbacks always route through production because only
+ * production's URLs are registered with providers.  Falls back to BASE_URL
+ * for backward compatibility (single-deployment setups).
  */
 function getCallbackBaseUrl(): string {
-  return process.env.PRODUCTION_URL || process.env.BASE_URL || "";
+  return getProductionUrl();
 }
 
 /**

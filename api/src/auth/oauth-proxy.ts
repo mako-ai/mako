@@ -68,6 +68,10 @@ export function isAllowedOrigin(origin: string): boolean {
     if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
       return url.protocol === "http:" || url.protocol === "https:";
     }
+    const productionUrl = getProductionUrl();
+    if (productionUrl && url.origin === new URL(productionUrl).origin) {
+      return true;
+    }
     if (url.protocol !== "https:") return false;
     if (
       TRUSTED_DOMAIN_SUFFIXES.some(
