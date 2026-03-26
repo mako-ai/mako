@@ -80,6 +80,8 @@ export function bigQueryTypeToDuckDb(bq: string): string {
   if (u === "BOOL" || u === "BOOLEAN") return "BOOLEAN";
   if (u === "BYTES") return "BLOB";
   if (u === "DATE") return "DATE";
+  if (u === "DATETIME") return "TIMESTAMP";
+  if (u === "TIME") return "TIME";
   if (u.startsWith("TIMESTAMP")) return "TIMESTAMP";
   if (u === "NUMERIC" || u === "BIGNUMERIC") return "DOUBLE";
   return "VARCHAR";
