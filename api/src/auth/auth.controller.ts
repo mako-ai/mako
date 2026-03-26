@@ -352,15 +352,13 @@ authRoutes.get("/google", async c => {
 
   // Production: read the caller's origin (or default to production)
   const rawOrigin = c.req.query("origin");
-  const origin =
-    rawOrigin && isAllowedOrigin(rawOrigin) ? rawOrigin : productionUrl;
-
   if (rawOrigin && !isAllowedOrigin(rawOrigin)) {
     logger.warn("OAuth proxy: rejected untrusted origin", {
       origin: rawOrigin,
     });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
   }
+  const origin = rawOrigin || productionUrl;
 
   const nonce = generateState();
   const codeVerifier = generateCodeVerifier();
@@ -539,15 +537,13 @@ authRoutes.get("/github", async c => {
 
   // Production: read the caller's origin (or default to production)
   const rawOrigin = c.req.query("origin");
-  const origin =
-    rawOrigin && isAllowedOrigin(rawOrigin) ? rawOrigin : productionUrl;
-
   if (rawOrigin && !isAllowedOrigin(rawOrigin)) {
     logger.warn("OAuth proxy: rejected untrusted origin", {
       origin: rawOrigin,
     });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
   }
+  const origin = rawOrigin || productionUrl;
 
   const nonce = generateState();
   const state = encodeOAuthState(nonce, origin);

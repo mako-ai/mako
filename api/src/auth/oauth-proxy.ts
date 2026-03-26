@@ -4,7 +4,7 @@ import { loggers } from "../logging";
 
 const logger = loggers.auth();
 
-const TRUSTED_DOMAIN_SUFFIXES = [".mako.co"];
+const TRUSTED_DOMAIN_SUFFIXES = [".mako.co", ".mako.ai"];
 
 /**
  * Get the production URL. All OAuth callbacks route through production since
@@ -22,14 +22,14 @@ export function getRequestOrigin(c: Context): string {
   const forwarded = c.req.header("x-forwarded-host")?.split(",")[0]?.trim();
   const proto =
     c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
-  if (forwarded) return `${proto}://${forwarded}`;
+  if (forwarded) return new URL(`${proto}://${forwarded}`).origin;
   const host = c.req.header("host");
   if (host) {
     const scheme =
       host.startsWith("localhost") || host.startsWith("127.0.0.1")
         ? "http"
         : proto;
-    return `${scheme}://${host}`;
+    return new URL(`${scheme}://${host}`).origin;
   }
   return new URL(c.req.url).origin;
 }
