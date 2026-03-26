@@ -17,6 +17,11 @@ import {
 
 const logger = loggers.app();
 
+function toNum(val: unknown): number {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  return 0;
+}
+
 function processDescriptionResult(
   text: string,
   usage: Record<string, unknown>,
@@ -26,12 +31,12 @@ function processDescriptionResult(
   if (trackingCtx) {
     const inputTokens =
       usage.promptTokens !== undefined
-        ? (usage.promptTokens as number)
-        : ((usage.inputTokens as number) ?? 0);
+        ? toNum(usage.promptTokens)
+        : toNum(usage.inputTokens);
     const outputTokens =
       usage.completionTokens !== undefined
-        ? (usage.completionTokens as number)
-        : ((usage.outputTokens as number) ?? 0);
+        ? toNum(usage.completionTokens)
+        : toNum(usage.outputTokens);
     void trackUsage({
       workspaceId: trackingCtx.workspaceId,
       userId: trackingCtx.userId,
@@ -39,7 +44,7 @@ function processDescriptionResult(
       modelId,
       inputTokens,
       outputTokens,
-      totalTokens: (usage.totalTokens as number) ?? 0,
+      totalTokens: toNum(usage.totalTokens),
     }).catch(err =>
       logger.warn("Failed to track description usage", { error: err }),
     );

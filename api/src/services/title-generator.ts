@@ -11,6 +11,11 @@ import { loggers } from "../logging";
 
 const logger = loggers.agent();
 
+function toNum(val: unknown): number {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  return 0;
+}
+
 const TITLE_SYSTEM_PROMPT = `You are a title generator. Generate a concise 3-8 word title for a chat conversation.
 
 Rules:
@@ -64,12 +69,12 @@ export const generateChatTitle = async (
       const u = usage as Record<string, unknown>;
       const inputTokens =
         u.promptTokens !== undefined
-          ? (u.promptTokens as number)
-          : ((u.inputTokens as number) ?? 0);
+          ? toNum(u.promptTokens)
+          : toNum(u.inputTokens);
       const outputTokens =
         u.completionTokens !== undefined
-          ? (u.completionTokens as number)
-          : ((u.outputTokens as number) ?? 0);
+          ? toNum(u.completionTokens)
+          : toNum(u.outputTokens);
       void trackUsage({
         workspaceId: ctx.workspaceId,
         userId: ctx.userId,
@@ -77,7 +82,7 @@ export const generateChatTitle = async (
         modelId,
         inputTokens,
         outputTokens,
-        totalTokens: (u.totalTokens as number) ?? 0,
+        totalTokens: toNum(u.totalTokens),
       }).catch(err =>
         logger.warn("Failed to track title generation usage", { error: err }),
       );
