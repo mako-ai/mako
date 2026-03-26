@@ -666,42 +666,47 @@ authRoutes.get("/github/callback", async c => {
 // session cookie locally, and redirects to the frontend.
 
 authRoutes.get("/oauth-receive", async c => {
-  const token = c.req.query("token");
-  const newUser = c.req.query("new_user");
+  try {
+    const token = c.req.query("token");
+    const newUser = c.req.query("new_user");
 
-  if (!token) {
-    logger.warn("OAuth receive: missing token");
+    if (!token) {
+      logger.warn("OAuth receive: missing token");
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+    }
+
+    const sessionId = verifyTransferToken(token);
+    if (!sessionId) {
+      logger.warn("OAuth receive: invalid or expired transfer token");
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+    }
+
+    // Verify the session actually exists
+    const { session, user } = await authService.validateSession(sessionId);
+    if (!session || !user) {
+      logger.warn("OAuth receive: session not found for transfer token");
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+    }
+
+    const sessionCookie = sessionManager.createSessionCookie(sessionId);
+    setCookie(
+      c,
+      sessionCookie.name,
+      sessionCookie.value,
+      convertCookieAttributes(sessionCookie.attributes),
+    );
+
+    const allowedNewUserValues = ["google", "github"];
+    const sanitizedNewUser =
+      newUser && allowedNewUserValues.includes(newUser) ? newUser : undefined;
+    const redirectUrl = sanitizedNewUser
+      ? `${process.env.CLIENT_URL}/?new_user=${sanitizedNewUser}`
+      : `${process.env.CLIENT_URL}/`;
+    return c.redirect(redirectUrl);
+  } catch (error: any) {
+    logger.error("OAuth receive error", { error });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
   }
-
-  const sessionId = verifyTransferToken(token);
-  if (!sessionId) {
-    logger.warn("OAuth receive: invalid or expired transfer token");
-    return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
-  }
-
-  // Verify the session actually exists
-  const { session, user } = await authService.validateSession(sessionId);
-  if (!session || !user) {
-    logger.warn("OAuth receive: session not found for transfer token");
-    return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
-  }
-
-  const sessionCookie = sessionManager.createSessionCookie(sessionId);
-  setCookie(
-    c,
-    sessionCookie.name,
-    sessionCookie.value,
-    convertCookieAttributes(sessionCookie.attributes),
-  );
-
-  const allowedNewUserValues = ["google", "github"];
-  const sanitizedNewUser =
-    newUser && allowedNewUserValues.includes(newUser) ? newUser : undefined;
-  const redirectUrl = sanitizedNewUser
-    ? `${process.env.CLIENT_URL}/?new_user=${sanitizedNewUser}`
-    : `${process.env.CLIENT_URL}/`;
-  return c.redirect(redirectUrl);
 });
 
 export default authRoutes;

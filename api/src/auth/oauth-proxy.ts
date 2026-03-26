@@ -42,7 +42,11 @@ export function getRequestOrigin(c: Context): string {
 export function isProduction(c: Context): boolean {
   const productionUrl = process.env.PRODUCTION_URL;
   if (!productionUrl) return true;
-  return getRequestOrigin(c) === productionUrl;
+  try {
+    return getRequestOrigin(c) === new URL(productionUrl).origin;
+  } catch {
+    return false;
+  }
 }
 
 function getHmacSecret(): string {
