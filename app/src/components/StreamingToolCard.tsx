@@ -456,7 +456,7 @@ export const StreamingToolCard = React.memo(function StreamingToolCard({
   );
 
   useEffect(() => {
-    if (isDone || isError) {
+    if ((isDone || isError) && hasCodePreview) {
       const timer = setTimeout(() => setExpanded(false), 800);
       return () => clearTimeout(timer);
     }
