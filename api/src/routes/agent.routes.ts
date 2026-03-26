@@ -561,6 +561,16 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
             usage?.completionTokens !== undefined
               ? toNum(usage.completionTokens)
               : toNum(usage?.outputTokens);
+
+          const details = usage?.inputTokenDetails as
+            | Record<string, unknown>
+            | undefined;
+          const outDetails = usage?.outputTokenDetails as
+            | Record<string, unknown>
+            | undefined;
+          cacheReadTokens = toNum(details?.cacheReadTokens);
+          cacheWriteTokens = toNum(details?.cacheWriteTokens);
+          reasoningTokens = toNum(outDetails?.reasoningTokens);
         } catch (err) {
           logger.warn("Failed to get usage from model", { error: err });
         }
