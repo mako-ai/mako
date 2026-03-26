@@ -474,7 +474,9 @@ authRoutes.get("/google/callback", async c => {
     setCookie(c, "google_code_verifier", "", { maxAge: 0, path: "/" });
 
     const productionUrl = getProductionUrl();
-    const isCallerProduction = callerOrigin === productionUrl;
+    const isCallerProduction =
+      productionUrl &&
+      new URL(callerOrigin).origin === new URL(productionUrl).origin;
 
     if (isCallerProduction) {
       const { session, isNewUser } = await authService.handleOAuthCallback(
@@ -617,7 +619,9 @@ authRoutes.get("/github/callback", async c => {
     setCookie(c, "github_oauth_state", "", { maxAge: 0, path: "/" });
 
     const productionUrl = getProductionUrl();
-    const isCallerProduction = callerOrigin === productionUrl;
+    const isCallerProduction =
+      productionUrl &&
+      new URL(callerOrigin).origin === new URL(productionUrl).origin;
 
     if (isCallerProduction) {
       const { session, isNewUser } = await authService.handleOAuthCallback(
