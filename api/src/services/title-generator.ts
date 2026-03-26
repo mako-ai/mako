@@ -8,13 +8,9 @@ import { getModel } from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
+import { toNum } from "../utils/safe-num";
 
 const logger = loggers.agent();
-
-function toNum(val: unknown): number {
-  if (typeof val === "number" && !isNaN(val)) return val;
-  return 0;
-}
 
 const TITLE_SYSTEM_PROMPT = `You are a title generator. Generate a concise 3-8 word title for a chat conversation.
 
@@ -82,7 +78,7 @@ export const generateChatTitle = async (
         modelId,
         inputTokens,
         outputTokens,
-        totalTokens: toNum(u.totalTokens),
+        totalTokens: inputTokens + outputTokens,
       }).catch(err =>
         logger.warn("Failed to track title generation usage", { error: err }),
       );

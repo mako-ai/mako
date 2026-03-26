@@ -14,13 +14,9 @@ import {
   isEmbeddingAvailable,
   getEmbeddingModelName,
 } from "./embedding.service";
+import { toNum } from "../utils/safe-num";
 
 const logger = loggers.app();
-
-function toNum(val: unknown): number {
-  if (typeof val === "number" && !isNaN(val)) return val;
-  return 0;
-}
 
 function processDescriptionResult(
   text: string,
@@ -44,7 +40,7 @@ function processDescriptionResult(
       modelId,
       inputTokens,
       outputTokens,
-      totalTokens: toNum(usage.totalTokens),
+      totalTokens: inputTokens + outputTokens,
     }).catch(err =>
       logger.warn("Failed to track description usage", { error: err }),
     );
@@ -134,7 +130,7 @@ export async function generateConsoleDescription(
   if (isGatewayMode()) {
     try {
       const utilityModel = getUtilityModelId();
-      const { text, usage } = await generateText({
+      const { text, usage, response } = await generateText({
         model: getModel(utilityModel),
         system: DESCRIPTION_SYSTEM_PROMPT,
         prompt,
@@ -148,10 +144,14 @@ export async function generateConsoleDescription(
         },
       });
 
+      const actualModelId = (response as Record<string, unknown>)?.modelId as
+        | string
+        | undefined;
+
       return processDescriptionResult(
         text,
         usage as Record<string, unknown>,
-        utilityModel,
+        actualModelId || utilityModel,
         trackingCtx,
       );
     } catch (err) {

@@ -50,13 +50,9 @@ import {
   getAllAgentMeta,
   type AgentContext,
 } from "../agents";
+import { toNum } from "../utils/safe-num";
 
 const logger = loggers.agent();
-
-function toNum(val: unknown): number {
-  if (typeof val === "number" && !isNaN(val)) return val;
-  return 0;
-}
 
 export const agentRoutes = new Hono();
 
