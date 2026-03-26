@@ -543,9 +543,11 @@ export const StreamingToolCard = React.memo(function StreamingToolCard({
       {/* Header */}
       <Box
         onClick={() => {
-          if ((isDone || isError) && hasVisibleBody)
+          if ((isDone || isError) && hasVisibleBody) {
             setExpanded(prev => !prev);
-          else onDetailClick?.();
+          } else {
+            onDetailClick?.();
+          }
         }}
         sx={{
           display: "flex",
