@@ -166,8 +166,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const workspaceIdRef = useRef<string | undefined>(undefined);
   const dashboardIdRef = useRef<string | undefined>(dashboardId);
 
-  const { width: gridWidth, containerRef: gridContainerRef } =
-    useContainerWidth();
+  const {
+    width: gridWidth,
+    containerRef: gridContainerRef,
+    measureWidth,
+  } = useContainerWidth({ measureBeforeMount: true });
 
   const workspaceId = currentWorkspace?.id;
   isEditModeLocalRef.current = isEditModeLocal;
@@ -237,6 +240,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (!isDashboardLoaded || !workspaceId || !dashboardId) return;
     void activateDashboardSession(workspaceId, dashboardId, "viewer");
   }, [isDashboardLoaded, workspaceId, dashboardId]);
+
+  // The grid container ref only enters the DOM after the dashboard loads
+  // (the loading state early-return doesn't include it). Re-trigger
+  // useContainerWidth's measurement so it picks up the real element and
+  // attaches a ResizeObserver. measureBeforeMount: true above ensures the
+  // mounted→true transition re-fires the hook's internal effect.
+  useEffect(() => {
+    if (isDashboardLoaded) {
+      measureWidth();
+    }
+  }, [isDashboardLoaded, measureWidth]);
 
   useEffect(() => {
     if (viewMode === "code" && dashboard && !isUserEditingCodeRef.current) {
