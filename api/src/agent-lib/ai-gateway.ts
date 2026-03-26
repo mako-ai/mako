@@ -21,7 +21,7 @@ import {
   createGateway,
   type GatewayLanguageModelOptions,
 } from "@ai-sdk/gateway";
-import { isGatewayMode } from "./ai-models";
+import { isGatewayMode, PROVIDER_ENV_KEYS } from "./ai-models";
 
 export type { GatewayLanguageModelOptions };
 
@@ -47,14 +47,8 @@ interface CachedProvider {
 }
 const _directProviders = new Map<string, CachedProvider>();
 
-const PROVIDER_ENV_KEYS: Record<string, string> = {
-  openai: "OPENAI_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
-};
-
 function getDirectProvider(provider: string): DirectProviderFn | undefined {
-  const envKey = PROVIDER_ENV_KEYS[provider];
+  const envKey = PROVIDER_ENV_KEYS[provider as keyof typeof PROVIDER_ENV_KEYS];
   const currentApiKey = envKey ? process.env[envKey] : undefined;
 
   const cached = _directProviders.get(provider);

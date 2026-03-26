@@ -110,7 +110,7 @@ export const ALL_MODELS: AIModel[] = [
 // Provider detection
 // ---------------------------------------------------------------------------
 
-const PROVIDER_ENV_KEYS: Record<AIProvider, string> = {
+export const PROVIDER_ENV_KEYS: Record<AIProvider, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   google: "GOOGLE_GENERATIVE_AI_API_KEY",

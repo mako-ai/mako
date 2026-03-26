@@ -44,6 +44,7 @@ import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { loggers, loggingMiddleware } from "./logging";
 import { warmPricingCache } from "./services/gateway-pricing.service";
+import { isGatewayMode } from "./agent-lib/ai-models";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
 
@@ -253,13 +254,13 @@ async function main(): Promise<void> {
     port,
   });
 
-  // Pre-warm the gateway pricing cache so the first LLM call doesn't pay
-  // fetch latency. Runs async after server is listening.
-  warmPricingCache().catch(err => {
-    logger.warn("Startup pricing cache warm failed", {
-      error: err instanceof Error ? err.message : String(err),
+  if (isGatewayMode()) {
+    warmPricingCache().catch(err => {
+      logger.warn("Startup pricing cache warm failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     });
-  });
+  }
 
   // Recover any CDC backfills that were interrupted by the previous shutdown.
   // Runs async after server is listening so it doesn't block startup.
