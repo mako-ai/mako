@@ -41,42 +41,58 @@ function getGateway() {
 }
 
 type DirectProviderFn = (modelName: string) => LanguageModel;
-const _directProviders = new Map<string, DirectProviderFn>();
+interface CachedProvider {
+  factory: DirectProviderFn;
+  apiKey: string;
+}
+const _directProviders = new Map<string, CachedProvider>();
+
+const PROVIDER_ENV_KEYS: Record<string, string> = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+};
 
 function getDirectProvider(provider: string): DirectProviderFn | undefined {
-  if (_directProviders.has(provider)) {
-    return _directProviders.get(provider);
+  const envKey = PROVIDER_ENV_KEYS[provider];
+  const currentApiKey = envKey ? process.env[envKey] : undefined;
+
+  const cached = _directProviders.get(provider);
+  if (cached && currentApiKey && cached.apiKey === currentApiKey) {
+    return cached.factory;
   }
 
   let factory: DirectProviderFn | undefined;
 
   switch (provider) {
     case "openai": {
-      if (!process.env.OPENAI_API_KEY) break;
-      const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      if (!currentApiKey) break;
+      const openai = createOpenAI({ apiKey: currentApiKey });
       factory = (model: string) => openai(model) as unknown as LanguageModel;
       break;
     }
     case "anthropic": {
-      if (!process.env.ANTHROPIC_API_KEY) break;
+      if (!currentApiKey) break;
       const anthropic = createAnthropic({
-        apiKey: process.env.ANTHROPIC_API_KEY,
+        apiKey: currentApiKey,
       });
       factory = (model: string) => anthropic(model) as unknown as LanguageModel;
       break;
     }
     case "google": {
-      if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) break;
+      if (!currentApiKey) break;
       const google = createGoogleGenerativeAI({
-        apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+        apiKey: currentApiKey,
       });
       factory = (model: string) => google(model) as unknown as LanguageModel;
       break;
     }
   }
 
-  if (factory) {
-    _directProviders.set(provider, factory);
+  if (factory && currentApiKey) {
+    _directProviders.set(provider, { factory, apiKey: currentApiKey });
+  } else {
+    _directProviders.delete(provider);
   }
   return factory;
 }

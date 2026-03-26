@@ -24,13 +24,21 @@ function processDescriptionResult(
   trackingCtx?: DescriptionTrackingContext | null,
 ): string | null {
   if (trackingCtx) {
+    const inputTokens =
+      usage.promptTokens !== undefined
+        ? (usage.promptTokens as number)
+        : ((usage.inputTokens as number) ?? 0);
+    const outputTokens =
+      usage.completionTokens !== undefined
+        ? (usage.completionTokens as number)
+        : ((usage.outputTokens as number) ?? 0);
     void trackUsage({
       workspaceId: trackingCtx.workspaceId,
       userId: trackingCtx.userId,
       invocationType: "description_generation",
       modelId,
-      inputTokens: (usage.promptTokens as number) ?? 0,
-      outputTokens: (usage.completionTokens as number) ?? 0,
+      inputTokens,
+      outputTokens,
       totalTokens: (usage.totalTokens as number) ?? 0,
     }).catch(err =>
       logger.warn("Failed to track description usage", { error: err }),

@@ -62,13 +62,21 @@ export const generateChatTitle = async (
 
     if (ctx) {
       const u = usage as Record<string, unknown>;
+      const inputTokens =
+        u.promptTokens !== undefined
+          ? (u.promptTokens as number)
+          : ((u.inputTokens as number) ?? 0);
+      const outputTokens =
+        u.completionTokens !== undefined
+          ? (u.completionTokens as number)
+          : ((u.outputTokens as number) ?? 0);
       void trackUsage({
         workspaceId: ctx.workspaceId,
         userId: ctx.userId,
         invocationType: "title_generation",
         modelId,
-        inputTokens: (u.promptTokens as number) ?? 0,
-        outputTokens: (u.completionTokens as number) ?? 0,
+        inputTokens,
+        outputTokens,
         totalTokens: (u.totalTokens as number) ?? 0,
       }).catch(err =>
         logger.warn("Failed to track title generation usage", { error: err }),
