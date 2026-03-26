@@ -619,6 +619,14 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
+    // Bare "activities" without a subtype can't map to a Search API object type.
+    if (entity === "activities") {
+      logger.warn(
+        "Bare 'activities' entity not supported — use activities:Call etc.",
+      );
+      return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
+    }
+
     // Leads, contacts, opportunities, and activities all use the Search API
     // with native cursor pagination (no _skip limits).
     if (
@@ -954,8 +962,6 @@ export class CloseConnector extends BaseConnector {
       "is_recurring",
       "attendees",
       "connected_account_id",
-      // Note
-      "note_html",
       // Status changes
       "old_status_id",
       "old_status_label",

@@ -1728,8 +1728,7 @@ export const flowFunction = inngest.createFunction(
                 try {
                   await performBulkFlush(bulkSyncOptions);
                 } catch (err) {
-                  const msg =
-                    err instanceof Error ? err.message : String(err);
+                  const msg = err instanceof Error ? err.message : String(err);
                   await appendExecutionLog(
                     "error",
                     `Failed to flush ${entity} buffer to staging: ${msg}`,
@@ -1764,10 +1763,9 @@ export const flowFunction = inngest.createFunction(
                   { entity },
                 );
                 try {
-                  return await performStagingMerge(bulkSyncOptions);
+                  await performStagingMerge(bulkSyncOptions);
                 } catch (err) {
-                  const msg =
-                    err instanceof Error ? err.message : String(err);
+                  const msg = err instanceof Error ? err.message : String(err);
                   await appendExecutionLog(
                     "error",
                     `Failed to merge ${entity} staging to live: ${msg}`,
