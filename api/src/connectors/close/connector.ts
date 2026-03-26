@@ -207,6 +207,17 @@ export class CloseConnector extends BaseConnector {
       leads: "lead",
       contacts: "contact",
       opportunities: "opportunity",
+      "activities:Call": "activity.call",
+      "activities:Email": "activity.email",
+      "activities:EmailThread": "activity.email_thread",
+      "activities:SMS": "activity.sms",
+      "activities:Meeting": "activity.meeting",
+      "activities:Note": "activity.note",
+      "activities:LeadStatusChange": "activity.status_change.lead",
+      "activities:OpportunityStatusChange":
+        "activity.status_change.opportunity",
+      "activities:TaskCompleted": "activity.task_completed",
+      "activities:CustomActivity": "activity.custom",
     };
     return map[entity] || entity;
   }
@@ -221,23 +232,6 @@ export class CloseConnector extends BaseConnector {
     const endpoint = map[entity];
     if (!endpoint) throw new Error(`No endpoint for entity: ${entity}`);
     return endpoint;
-  }
-
-  private getActivityEndpointForType(subType?: string): string {
-    if (!subType) return "/activity/";
-    const map: Record<string, string> = {
-      LeadStatusChange: "/activity/status_change/lead/",
-      OpportunityStatusChange: "/activity/status_change/opportunity/",
-      Call: "/activity/call/",
-      Meeting: "/activity/meeting/",
-      Email: "/activity/email/",
-      EmailThread: "/activity/email_thread/",
-      SMS: "/activity/sms/",
-      Note: "/activity/note/",
-      TaskCompleted: "/activity/task_completed/",
-      CustomActivity: "/activity/custom/",
-    };
-    return map[subType] || "/activity/";
   }
 
   private async getLeadFieldSelection(): Promise<string> {
@@ -625,19 +619,13 @@ export class CloseConnector extends BaseConnector {
       return { totalProcessed: 0, hasMore: false, iterationsInChunk: 0 };
     }
 
-    // Activities: use direct REST endpoint with month-windowed _skip pagination.
-    // The Search API was previously used but drops records at chunk boundaries
-    // (the "before" date cursor silently skips rows sharing the cursor ts)
-    // and doesn't return data fields by default without _fields projection.
-    if (entity === "activities" || entity.startsWith("activities:")) {
-      return await this.fetchActivitiesChunk(options);
-    }
-
-    // Leads, contacts, opportunities use the search API with cursor pagination
+    // Leads, contacts, opportunities, and activities all use the Search API
+    // with native cursor pagination (no _skip limits).
     if (
       entity === "leads" ||
       entity === "contacts" ||
-      entity === "opportunities"
+      entity === "opportunities" ||
+      entity.startsWith("activities:")
     ) {
       return await this.fetchViaSearchApi(options);
     }
@@ -801,211 +789,6 @@ export class CloseConnector extends BaseConnector {
     };
   }
 
-  private static nextMonth(iso: string): string {
-    const d = new Date(iso);
-    d.setUTCMonth(d.getUTCMonth() + 1);
-    return d.toISOString().slice(0, 10);
-  }
-
-  private static nextDay(iso: string): string {
-    const d = new Date(iso);
-    d.setUTCDate(d.getUTCDate() + 1);
-    return d.toISOString().slice(0, 10);
-  }
-
-  private static readonly ACTIVITY_SKIP_LIMIT = 9900;
-
-  private async resolveActivityWindowStart(endpoint: string): Promise<string> {
-    try {
-      const api = this.getCloseClient();
-      const resp = await api.get(endpoint, {
-        params: { _limit: 1, _order_by: "date_created" },
-      });
-      const oldest = resp.data?.data?.[0]?.date_created;
-      if (typeof oldest === "string" && oldest.length >= 10) {
-        return oldest.slice(0, 7) + "-01";
-      }
-    } catch {
-      // Fall back to a safe default on error.
-    }
-    return "2015-01-01";
-  }
-
-  private async fetchActivitiesChunk(
-    options: ResumableFetchOptions,
-  ): Promise<FetchState> {
-    const { entity, onBatch, onProgress, state, since } = options;
-    const api = this.getCloseClient();
-    const batchSize = Math.min(options.batchSize || this.getBatchSize(), 100);
-    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
-    const maxIterations = options.maxIterations || 10;
-
-    let activitySubType: string | undefined;
-    if (entity.includes(":")) {
-      const [, activityType] = entity.split(":");
-      activitySubType = activityType;
-    }
-
-    let recordCount = state?.totalProcessed || 0;
-    let iterations = 0;
-
-    let windowStart: string = state?.metadata?.windowStart || "";
-    let skip: number = state?.metadata?.skip || 0;
-    let windowGranularity: "month" | "day" =
-      state?.metadata?.windowGranularity || "month";
-
-    if (!windowStart) {
-      if (since) {
-        windowStart = since.toISOString().slice(0, 7) + "-01";
-      } else {
-        windowStart = await this.resolveActivityWindowStart(
-          this.getActivityEndpointForType(activitySubType),
-        );
-      }
-    }
-
-    const now = new Date();
-    const endWindow = CloseConnector.nextMonth(
-      `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`,
-    );
-
-    if (!state && onProgress) {
-      onProgress(0, undefined);
-    }
-
-    const advanceWindow = (empty: boolean) => {
-      if (empty) {
-        if (windowGranularity === "day") {
-          windowStart = CloseConnector.nextMonth(
-            windowStart.slice(0, 7) + "-01",
-          );
-          windowGranularity = "month";
-        } else {
-          windowStart = CloseConnector.nextMonth(windowStart);
-        }
-      } else if (windowGranularity === "day") {
-        windowStart = CloseConnector.nextDay(windowStart);
-        const monthBoundary = CloseConnector.nextMonth(
-          windowStart.slice(0, 7) + "-01",
-        );
-        if (windowStart >= monthBoundary) {
-          windowGranularity = "month";
-        }
-      } else {
-        windowStart = CloseConnector.nextMonth(windowStart);
-      }
-      skip = 0;
-    };
-
-    while (iterations < maxIterations) {
-      if (windowStart >= endWindow) {
-        return {
-          totalProcessed: recordCount,
-          hasMore: false,
-          iterationsInChunk: iterations,
-          metadata: { windowStart, skip, windowGranularity },
-        };
-      }
-
-      try {
-        const windowEnd =
-          windowGranularity === "day"
-            ? CloseConnector.nextDay(windowStart)
-            : CloseConnector.nextMonth(windowStart);
-
-        const params: any = {
-          _limit: batchSize,
-          _skip: skip,
-          _order_by: "date_created",
-          date_created__gte: windowStart,
-          date_created__lt: windowEnd,
-        };
-
-        const response = await api.get(
-          this.getActivityEndpointForType(activitySubType),
-          { params },
-        );
-
-        const data = response.data.data || [];
-
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
-          skip += data.length;
-          if (onProgress) {
-            onProgress(recordCount, undefined);
-          }
-        }
-
-        if (!response.data.has_more || data.length === 0) {
-          advanceWindow(data.length === 0);
-          if (data.length > 0) iterations++;
-          continue;
-        }
-
-        // Guard against Close _skip ceiling: when skip approaches the limit,
-        // narrow the window to day-level granularity so pagination resets.
-        if (
-          windowGranularity === "month" &&
-          skip >= CloseConnector.ACTIVITY_SKIP_LIMIT
-        ) {
-          logger.warn("Approaching _skip limit, switching to day windows", {
-            entity,
-            windowStart,
-            skip,
-            recordsFetched: recordCount,
-          });
-          const lastRecord = data[data.length - 1];
-          const lastDateCreated =
-            typeof lastRecord?.date_created === "string"
-              ? lastRecord.date_created.slice(0, 10)
-              : windowStart;
-          windowStart = lastDateCreated;
-          skip = 0;
-          windowGranularity = "day";
-          iterations++;
-          continue;
-        }
-
-        iterations++;
-        await this.sleep(rateLimitDelay);
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-        } else if (
-          axios.isAxiosError(error) &&
-          error.response?.status === 400 &&
-          windowGranularity === "month" &&
-          skip > 0
-        ) {
-          logger.warn("400 on high skip, falling back to day windows", {
-            entity,
-            windowStart,
-            skip,
-          });
-          windowGranularity = "day";
-          skip = 0;
-          continue;
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    return {
-      totalProcessed: recordCount,
-      hasMore: true,
-      iterationsInChunk: iterations,
-      metadata: { windowStart, skip, windowGranularity },
-    };
-  }
-
   private async fetchViaSearchApi(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
@@ -1112,6 +895,79 @@ export class CloseConnector extends BaseConnector {
         "custom",
       ],
     };
+
+    // All activity types share common fields; the API ignores unknown fields per type.
+    const activityFields = [
+      "id",
+      "_type",
+      "lead_id",
+      "contact_id",
+      "user_id",
+      "user_name",
+      "created_by",
+      "created_by_name",
+      "updated_by",
+      "updated_by_name",
+      "organization_id",
+      "date_created",
+      "date_updated",
+      "activity_at",
+      // Call
+      "direction",
+      "duration",
+      "phone",
+      "local_phone",
+      "remote_phone",
+      "status",
+      "disposition",
+      "call_method",
+      "cost",
+      "note",
+      "note_html",
+      "recording_url",
+      "voicemail_url",
+      "voicemail_duration",
+      "outcome_id",
+      "transferred_from",
+      "transferred_to",
+      "source",
+      // Email
+      "subject",
+      "body_text",
+      "sender",
+      "to",
+      "cc",
+      "bcc",
+      "envelope",
+      "thread_id",
+      "template_id",
+      "opens",
+      // SMS
+      "text",
+      "local_phone_formatted",
+      "remote_phone_formatted",
+      // Meeting
+      "title",
+      "starts_at",
+      "ends_at",
+      "location",
+      "is_recurring",
+      "attendees",
+      "connected_account_id",
+      // Note
+      "note_html",
+      // Status changes
+      "old_status_id",
+      "old_status_label",
+      "old_status_type",
+      "new_status_id",
+      "new_status_label",
+      "new_status_type",
+    ];
+
+    if (objectType.startsWith("activity.")) {
+      fieldsMap[objectType] = activityFields;
+    }
 
     if (!state && onProgress) {
       try {
@@ -1263,9 +1119,12 @@ export class CloseConnector extends BaseConnector {
       return;
     }
 
-    // Special handling for activities (and sub-types) - use date-based pagination and type-specific endpoints
-    if (entity === "activities" || entity.startsWith("activities:")) {
-      await this.fetchAllActivities(options);
+    // Activities use the Search API (same as leads/contacts/opportunities)
+    if (entity.startsWith("activities:")) {
+      await this.fetchViaSearchApi({
+        ...options,
+        maxIterations: Number.MAX_SAFE_INTEGER,
+      });
       return;
     }
 
@@ -1484,15 +1343,6 @@ export class CloseConnector extends BaseConnector {
         }
       }
     }
-  }
-
-  private async fetchAllActivities(options: FetchOptions): Promise<void> {
-    // Delegate to fetchActivitiesChunk with unlimited iterations so the
-    // month-windowed _skip approach handles all activity types uniformly.
-    await this.fetchActivitiesChunk({
-      ...options,
-      maxIterations: Number.MAX_SAFE_INTEGER,
-    });
   }
 
   private static readonly SIMPLE_ENTITY_ENDPOINTS: Record<string, string> = {
