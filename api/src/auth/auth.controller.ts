@@ -695,8 +695,11 @@ authRoutes.get("/oauth-receive", async c => {
     convertCookieAttributes(sessionCookie.attributes),
   );
 
-  const redirectUrl = newUser
-    ? `${process.env.CLIENT_URL}/?new_user=${newUser}`
+  const allowedNewUserValues = ["google", "github"];
+  const sanitizedNewUser =
+    newUser && allowedNewUserValues.includes(newUser) ? newUser : undefined;
+  const redirectUrl = sanitizedNewUser
+    ? `${process.env.CLIENT_URL}/?new_user=${sanitizedNewUser}`
     : `${process.env.CLIENT_URL}/`;
   return c.redirect(redirectUrl);
 });

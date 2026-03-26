@@ -19,8 +19,9 @@ export function getProductionUrl(): string {
  * (as set by reverse proxies like Vercel, Cloudflare, etc.).
  */
 export function getRequestOrigin(c: Context): string {
-  const forwarded = c.req.header("x-forwarded-host");
-  const proto = c.req.header("x-forwarded-proto") || "https";
+  const forwarded = c.req.header("x-forwarded-host")?.split(",")[0]?.trim();
+  const proto =
+    c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
   if (forwarded) return `${proto}://${forwarded}`;
   const host = c.req.header("host");
   if (host) {
@@ -45,7 +46,13 @@ export function isProduction(c: Context): boolean {
 }
 
 function getHmacSecret(): string {
-  return process.env.SESSION_SECRET || process.env.ENCRYPTION_KEY || "";
+  const secret = process.env.SESSION_SECRET || process.env.ENCRYPTION_KEY;
+  if (!secret) {
+    throw new Error(
+      "Missing HMAC secret: set SESSION_SECRET or ENCRYPTION_KEY",
+    );
+  }
+  return secret;
 }
 
 function parseTrustedOrigins(): string[] {
