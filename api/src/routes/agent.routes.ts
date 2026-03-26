@@ -491,7 +491,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       let cacheWriteTokens = 0;
       let reasoningTokens = 0;
 
-      const stepDetails: Array<{
+      let stepDetails: Array<{
         modelId: string;
         inputTokens: number;
         outputTokens: number;
@@ -581,7 +581,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       // Compute cost before saving so both trackUsage and saveChat receive it
       let costUsd: number | undefined;
       try {
-        const { totalCostUsd } = await computeInvocationCost({
+        const costResult = await computeInvocationCost({
           modelId: resolvedModelId,
           inputTokens,
           outputTokens,
@@ -590,7 +590,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           reasoningTokens,
           steps: stepDetails,
         });
-        costUsd = totalCostUsd;
+        costUsd = costResult.totalCostUsd;
+        if (costResult.steps) {
+          stepDetails = costResult.steps;
+        }
       } catch (err) {
         logger.warn("Failed to compute invocation cost", { error: err });
       }
