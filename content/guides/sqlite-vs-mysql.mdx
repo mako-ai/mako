@@ -1,0 +1,153 @@
+---
+title: "SQLite vs MySQL in 2026: Embedded Simplicity vs Server Scalability"
+slug: sqlite-vs-mysql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - sqlite
+  - mysql
+  - comparison
+  - database
+excerpt: "SQLite vs MySQL: when a file-based database is enough and when you need a server. Architecture, concurrency, features, and practical guidance for choosing."
+metaDescription: "SQLite vs MySQL in 2026: architecture, concurrency, deployment, features, and real-world use cases. Know when embedded SQLite beats MySQL and when a server database is necessary."
+database: null
+category: database-comparison
+draft: false
+---
+
+SQLite and MySQL occupy different niches. SQLite is an embedded database -- a C library that stores data in a single file. MySQL is a client-server database that runs as a background process and handles connections from multiple clients. Choosing between them isn't about which is "better" but about what your application actually needs.
+
+This comparison uses SQLite 3.47+ and MySQL 8.x/9.x as of early 2026.
+
+## The Short Version
+
+Use SQLite when your application is the only thing accessing the database and you want zero operational overhead. Use MySQL when multiple users or applications need concurrent access, when you need network-accessible data, or when your application will scale beyond what a single file can serve.
+
+## Architecture
+
+**SQLite:** A library, not a server. You link it into your application. Reads and writes happen directly on a file. No daemon, no port, no authentication, no configuration. The entire database is one file you can copy, email, or commit to version control.
+
+**MySQL:** A server process (mysqld) that listens on a port (default 3306). Clients connect over TCP/IP or Unix sockets. The server manages authentication, connection pools, caching, query optimization, and storage. Multiple applications can connect simultaneously.
+
+This architectural difference is the deciding factor in most cases.
+
+## Concurrency
+
+**SQLite:**
+- Database-level locking (one writer at a time)
+- WAL mode allows concurrent reads during a write
+- No connection pooling (no server to pool)
+- Fine for single-user or single-process applications
+- Multiple readers work well; multiple writers queue up
+
+**MySQL (InnoDB):**
+- Row-level locking (multiple writers on different rows simultaneously)
+- MVCC for concurrent reads and writes
+- Connection pooling via ProxySQL or MySQL Router
+- Thread pool for handling thousands of connections (Enterprise edition, or use MariaDB's free thread pool)
+- Built for high-concurrency multi-user workloads
+
+A web application serving 100 concurrent users making purchases? MySQL handles this with row-level locking -- each user's transaction doesn't block others. SQLite would serialize all writes through a single lock, creating a bottleneck.
+
+A mobile app storing user preferences locally? SQLite is the standard choice -- no server needed, one user, one process.
+
+## Deployment
+
+**SQLite:**
+- Zero installation. It's a library.
+- The database is portable -- one file, any platform
+- No user management or authentication
+- Backup = copy the file
+- Perfect for development, testing, embedded systems, mobile apps
+- No network exposure (security by absence)
+
+**MySQL:**
+- Requires installation and configuration
+- Needs user/password management
+- Must configure bind addresses, character sets, connection limits
+- Backup requires mysqldump or Percona XtraBackup
+- Available as managed services (RDS, Cloud SQL, PlanetScale, etc.)
+- Network accessible by design
+
+For production web applications, MySQL's operational overhead is justified by the features you gain. For tools, scripts, prototypes, and embedded applications, SQLite's simplicity is a genuine advantage.
+
+## Data Types and Features
+
+| Feature | SQLite | MySQL |
+|---|---|---|
+| Type system | Dynamic (flexible by default, `STRICT` tables available) | Static (enforced) |
+| JSON | Functions since 3.38, no dedicated type | Native `JSON` type with binary storage |
+| Full-text search | FTS5 extension (included) | `FULLTEXT` indexes |
+| Stored procedures | Not supported | Supported |
+| Triggers | Supported (limited) | Supported (comprehensive) |
+| Views | Supported (read-only) | Supported (some updatable) |
+| User management | None (filesystem permissions only) | Full RBAC with `GRANT`/`REVOKE` |
+| Replication | Litestream, LiteFS (third-party) | Built-in binary log replication |
+| Transactions | ACID (serialized writes) | ACID with InnoDB (concurrent) |
+
+MySQL's type system catches errors at insert time. SQLite's dynamic typing means a TEXT value can end up in an INTEGER column unless you use STRICT tables (available since 3.37.0). For data integrity, MySQL's strict type enforcement is safer.
+
+MySQL's stored procedures, events, and comprehensive trigger support make it suitable for applications that push logic into the database. SQLite's approach is simpler -- it's a storage engine, not a programming environment.
+
+## Performance
+
+**SQLite is faster for:**
+- Single-threaded reads (no network roundtrip, no protocol overhead)
+- Small datasets that fit in the OS page cache
+- Applications where the database is accessed by one process
+- Read-heavy workloads with infrequent writes
+
+**MySQL is faster for:**
+- Concurrent read/write workloads
+- Large datasets with complex indexing requirements
+- Queries that benefit from MySQL's query optimizer and caching
+- Write-heavy workloads (row-level locking vs database-level locking)
+
+Benchmarks that test single-threaded read performance often show SQLite outperforming MySQL by 2-5x due to eliminated network overhead. But these benchmarks don't reflect multi-user production workloads where MySQL's concurrency model wins.
+
+## The SQLite Production Trend
+
+Frameworks like Rails 8, Laravel, and Phoenix have improved SQLite support, and tools like Litestream (streaming backup to S3), LiteFS (distributed SQLite on Fly.io), and Turso (libSQL, distributed SQLite) have made SQLite viable for small production web applications.
+
+This works when:
+- Concurrency is low (single-digit simultaneous writers)
+- The application runs on one server
+- Simplicity matters more than horizontal scaling
+- Cost sensitivity is high (no managed database needed)
+
+It breaks when:
+- Multiple application instances need to share state
+- Write concurrency exceeds what WAL mode can handle
+- You need role-based access control
+- The dataset outgrows a single server's disk
+
+## When to Choose SQLite
+
+- Mobile applications (Android, iOS -- SQLite is the standard)
+- Desktop applications (Electron, native apps)
+- CLI tools and scripts needing local structured storage
+- Prototyping and development
+- Testing (in-memory SQLite for fast test suites)
+- Small web applications with limited concurrency
+- Edge computing and IoT devices
+
+## When to Choose MySQL
+
+- Multi-user web applications
+- Any application requiring concurrent writes from multiple connections
+- Applications that need network-accessible data
+- Projects requiring stored procedures, events, or complex triggers
+- Applications that will scale to multiple servers (replication, sharding)
+- WordPress, Drupal, and most PHP framework applications
+- Anything that needs role-based access control
+
+## Starting with SQLite, Migrating Later
+
+This is a common and reasonable approach:
+1. Build with SQLite in development (fast, no setup)
+2. Deploy with SQLite if concurrency is low
+3. Migrate to MySQL when you outgrow it
+
+If you use an ORM and stick to standard SQL, migration is mostly configuration. Watch for: dynamic typing surprises, different date/time handling, and SQLite-specific behaviors around ALTER TABLE.
+
+Mako connects to both SQLite and MySQL with AI-assisted query editing. Try it free at [mako.ai](https://mako.ai).
