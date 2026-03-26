@@ -47,17 +47,28 @@ usageRoutes.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-function parseDateRange(c: AuthenticatedContext) {
+function parseDateRange(
+  c: AuthenticatedContext,
+): { ok: true; match: Record<string, unknown> } | { ok: false; error: string } {
   const from = c.req.query("from");
   const to = c.req.query("to");
   const match: Record<string, unknown> = {};
   if (from || to) {
     const dateFilter: Record<string, Date> = {};
-    if (from) dateFilter.$gte = new Date(from);
-    if (to) dateFilter.$lte = new Date(to);
+    if (from) {
+      const d = new Date(from);
+      if (isNaN(d.getTime()))
+        return { ok: false, error: "Invalid 'from' date" };
+      dateFilter.$gte = d;
+    }
+    if (to) {
+      const d = new Date(to);
+      if (isNaN(d.getTime())) return { ok: false, error: "Invalid 'to' date" };
+      dateFilter.$lte = d;
+    }
     match.createdAt = dateFilter;
   }
-  return match;
+  return { ok: true, match };
 }
 
 /**
@@ -66,7 +77,9 @@ function parseDateRange(c: AuthenticatedContext) {
  */
 usageRoutes.get("/summary", async (c: AuthenticatedContext) => {
   const workspaceId = c.req.param("workspaceId")!;
-  const dateFilter = parseDateRange(c);
+  const parsed = parseDateRange(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const dateFilter = parsed.match;
 
   try {
     const [result] = await LlmUsage.aggregate([
@@ -116,7 +129,9 @@ usageRoutes.get("/summary", async (c: AuthenticatedContext) => {
  */
 usageRoutes.get("/by-user", async (c: AuthenticatedContext) => {
   const workspaceId = c.req.param("workspaceId")!;
-  const dateFilter = parseDateRange(c);
+  const parsed = parseDateRange(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const dateFilter = parsed.match;
 
   try {
     const results = await LlmUsage.aggregate([
@@ -221,7 +236,9 @@ usageRoutes.get("/by-chat/:chatId", async (c: AuthenticatedContext) => {
  */
 usageRoutes.get("/by-model", async (c: AuthenticatedContext) => {
   const workspaceId = c.req.param("workspaceId")!;
-  const dateFilter = parseDateRange(c);
+  const parsed = parseDateRange(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const dateFilter = parsed.match;
 
   try {
     const results = await LlmUsage.aggregate([

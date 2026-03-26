@@ -146,6 +146,7 @@ export async function generateConsoleDescription(
           gateway: {
             ...gatewayBase,
             models: [
+              utilityModel,
               "anthropic/claude-3-5-haiku-latest",
               "google/gemini-2.5-flash",
             ],
