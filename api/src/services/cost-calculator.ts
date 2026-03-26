@@ -1,16 +1,17 @@
 /**
  * LLM Cost Calculator
  *
- * Computes USD cost from token usage, supporting cache-aware pricing.
- * Pricing is looked up from the ModelPricing collection with date-range support.
- *
- * Inspired by AuraHQ-ai/aura's cost-calculator.ts
+ * Computes USD cost from token usage using live pricing from the
+ * Vercel AI Gateway API (cached in memory).
  */
 
-import { ModelPricing, type TokenType } from "../database/schema";
-import { loggers } from "../logging";
+import {
+  lookupPricing,
+  type PricingRow,
+  type TokenType,
+} from "./gateway-pricing.service";
 
-const logger = loggers.app();
+export type { TokenType, PricingRow };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,66 +37,9 @@ export interface StepUsage {
   costUsd: number;
 }
 
-interface PricingRow {
-  tokenType: TokenType;
-  pricePerMillion: number;
-}
-
 // ---------------------------------------------------------------------------
-// In-memory cache for pricing rows (TTL: 5 minutes)
+// Helpers
 // ---------------------------------------------------------------------------
-
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const pricingCache = new Map<
-  string,
-  { rows: PricingRow[]; fetchedAt: number }
->();
-
-/**
- * Fetch the current pricing rows for a model.
- * Normalizes gateway-style IDs ("openai/gpt-5.2") to match stored pricing.
- */
-export async function lookupPricing(modelId: string): Promise<PricingRow[]> {
-  const normalizedId = normalizeModelId(modelId);
-
-  const cached = pricingCache.get(normalizedId);
-  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return cached.rows;
-  }
-
-  try {
-    const now = new Date();
-    const docs = await ModelPricing.find({
-      modelId: normalizedId,
-      effectiveFrom: { $lte: now },
-      $or: [{ effectiveUntil: null }, { effectiveUntil: { $gt: now } }],
-    })
-      .sort({ effectiveFrom: -1 })
-      .lean();
-
-    const rows = docs.map(d => ({
-      tokenType: d.tokenType,
-      pricePerMillion: d.pricePerMillion,
-    }));
-
-    pricingCache.set(normalizedId, { rows, fetchedAt: Date.now() });
-    return rows;
-  } catch (err) {
-    logger.warn("Failed to lookup pricing, returning empty", {
-      modelId: normalizedId,
-      error: err,
-    });
-    return [];
-  }
-}
-
-/**
- * The pricing collection stores IDs in gateway format ("openai/gpt-5.2").
- * This normalizer ensures we always match regardless of input format.
- */
-function normalizeModelId(id: string): string {
-  return id;
-}
 
 function priceFor(
   rows: PricingRow[],
@@ -189,7 +133,6 @@ export async function computeInvocationCost(params: {
 }> {
   const pricing = await lookupPricing(params.modelId);
 
-  // If we have steps, compute per-step and sum
   if (params.steps && params.steps.length > 0) {
     let total = 0;
     for (const step of params.steps) {
@@ -207,7 +150,6 @@ export async function computeInvocationCost(params: {
     return { totalCostUsd: total, steps: params.steps };
   }
 
-  // Single-step fallback
   const totalCostUsd = computeCostFromTokens(
     {
       inputTokens: params.inputTokens,
