@@ -406,6 +406,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }
 
   private _datasetLocation: string | undefined;
+  private _datasetLocationResolved = false;
 
   private async resolveBqClient(): Promise<{
     bq: InstanceType<typeof BigQuery>;
@@ -425,13 +426,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const connLocation: string | undefined = conn.location;
     const bq = new BigQuery({ projectId, credentials, location: connLocation });
 
-    if (!this._datasetLocation) {
+    if (!this._datasetLocationResolved) {
       try {
         const [meta] = await bq.dataset(dataset).getMetadata();
         this._datasetLocation = meta.location;
       } catch {
         this._datasetLocation = connLocation;
       }
+      this._datasetLocationResolved = true;
       log.info("Resolved dataset location", {
         dataset,
         location: this._datasetLocation,

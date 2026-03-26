@@ -800,7 +800,7 @@ export class CloseConnector extends BaseConnector {
   private async fetchViaSearchApi(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
-    const { entity, onBatch, onProgress, state } = options;
+    const { entity, onBatch, onProgress, state, since } = options;
     const api = this.getCloseClient();
     const batchSize = 200;
     const rateLimitDelay = Math.max(
@@ -1011,6 +1011,24 @@ export class CloseConnector extends BaseConnector {
               on_or_after: {
                 type: "fixed_utc",
                 value: cursor,
+                which: "start",
+              },
+              before: null,
+            },
+          });
+        } else if (since) {
+          queries.push({
+            type: "field_condition",
+            field: {
+              type: "regular_field",
+              object_type: objectType,
+              field_name: "date_created",
+            },
+            condition: {
+              type: "moment_range",
+              on_or_after: {
+                type: "fixed_utc",
+                value: since.toISOString(),
                 which: "start",
               },
               before: null,
