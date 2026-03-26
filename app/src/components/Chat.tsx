@@ -18,7 +18,6 @@ import {
   Menu,
   ListItemIcon,
   Alert,
-  CircularProgress,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -66,11 +65,7 @@ import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
-import {
-  StreamingToolCard,
-  hasStreamingPreview,
-  type ToolPartState,
-} from "./StreamingToolCard";
+import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 
 interface ChatSessionMeta {
   _id: string;
@@ -250,69 +245,6 @@ interface ToolInvocationInfo {
   input?: unknown;
   output?: unknown;
 }
-
-// ToolCallsDisplay for showing tool invocations from AI SDK
-const ToolCallsDisplay = React.memo(
-  ({
-    toolInvocations,
-    onToolClick,
-  }: {
-    toolInvocations?: ToolInvocationInfo[];
-    onToolClick?: (tool: ToolInvocationInfo) => void;
-  }) => {
-    if (!toolInvocations || toolInvocations.length === 0) return null;
-
-    return (
-      <Box sx={{ mt: 1, display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-        {toolInvocations.map(tool => (
-          <Chip
-            key={tool.toolCallId}
-            icon={
-              tool.state === "output-available" ? (
-                <Check size={16} />
-              ) : tool.state === "error" ? (
-                <Check
-                  size={16}
-                  style={{ color: "var(--mui-palette-error-main, #f44336)" }}
-                />
-              ) : (
-                <CircularProgress size={14} thickness={5} />
-              )
-            }
-            label={tool.toolName}
-            size="small"
-            variant="outlined"
-            sx={{
-              backgroundColor: "background.paper",
-              borderRadius: 2,
-              opacity: 0.8,
-              fontSize: "0.75rem",
-              cursor: onToolClick ? "pointer" : "default",
-              "& .MuiChip-icon": {
-                color:
-                  tool.state === "output-available"
-                    ? "success.main"
-                    : tool.state === "error"
-                      ? "error.main"
-                      : "primary.main",
-              },
-            }}
-            onClick={onToolClick ? () => onToolClick(tool) : undefined}
-            title={
-              tool.state === "output-available"
-                ? "Tool executed successfully"
-                : tool.state === "error"
-                  ? "Tool execution failed"
-                  : "Tool executing..."
-            }
-          />
-        ))}
-      </Box>
-    );
-  },
-);
-
-ToolCallsDisplay.displayName = "ToolCallsDisplay";
 
 // ReasoningDisplay for showing reasoning/thinking parts inline.
 // - Auto-opens while streaming, auto-collapses when done.
@@ -2183,67 +2115,14 @@ const Chat: React.FC<ChatProps> = ({
                             output: toolPart.output,
                           });
 
-                        // Rich streaming card for tools with code content
-                        if (hasStreamingPreview(toolName)) {
-                          return (
-                            <StreamingToolCard
-                              key={partIndex}
-                              toolName={toolName}
-                              state={toolPart.state as ToolPartState}
-                              input={toolPart.input}
-                              output={toolPart.output}
-                              onDetailClick={toolClickHandler}
-                            />
-                          );
-                        }
-
-                        // Compact chip for other tools
                         return (
-                          <Chip
+                          <StreamingToolCard
                             key={partIndex}
-                            icon={
-                              toolPart.state === "output-available" ? (
-                                <Check size={16} />
-                              ) : toolPart.state === "error" ? (
-                                <Check
-                                  size={16}
-                                  style={{
-                                    color:
-                                      "var(--mui-palette-error-main, #f44336)",
-                                  }}
-                                />
-                              ) : (
-                                <CircularProgress size={14} thickness={5} />
-                              )
-                            }
-                            label={toolName}
-                            size="small"
-                            variant="outlined"
-                            sx={{
-                              backgroundColor: "background.paper",
-                              borderRadius: 2,
-                              opacity: 0.8,
-                              fontSize: "0.75rem",
-                              cursor: "pointer",
-                              mr: 0.5,
-                              mb: 0.5,
-                              "& .MuiChip-icon": {
-                                color:
-                                  toolPart.state === "output-available"
-                                    ? "success.main"
-                                    : toolPart.state === "error"
-                                      ? "error.main"
-                                      : "primary.main",
-                              },
-                            }}
-                            onClick={toolClickHandler}
-                            title={
-                              toolPart.state === "output-available"
-                                ? "Tool executed successfully"
-                                : toolPart.state === "error"
-                                  ? "Tool execution failed"
-                                  : "Tool executing..."
-                            }
+                            toolName={toolName}
+                            state={toolPart.state as ToolPartState}
+                            input={toolPart.input}
+                            output={toolPart.output}
+                            onDetailClick={toolClickHandler}
                           />
                         );
                       }
