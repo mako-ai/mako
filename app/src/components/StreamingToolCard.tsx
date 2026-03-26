@@ -356,7 +356,13 @@ function getOutputSummary(output: unknown): string | null {
   const o = output as Record<string, unknown>;
 
   if (o.success === false || o.error) {
-    const err = String(o.error || "Failed");
+    const raw = o.error;
+    const err =
+      typeof raw === "string"
+        ? raw
+        : raw && typeof raw === "object" && "message" in raw
+          ? String((raw as { message: unknown }).message)
+          : "Failed";
     return err.length > 50 ? err.slice(0, 50) + "…" : err;
   }
 
