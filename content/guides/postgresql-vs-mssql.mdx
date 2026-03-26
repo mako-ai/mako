@@ -1,0 +1,150 @@
+---
+title: "PostgreSQL vs SQL Server in 2026: Open Source vs Enterprise"
+slug: postgresql-vs-mssql
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - postgresql
+  - mssql
+  - sql-server
+  - comparison
+  - database
+excerpt: "PostgreSQL vs SQL Server (MSSQL): licensing costs, T-SQL vs standard SQL, platform support, enterprise features, and when each makes sense."
+metaDescription: "PostgreSQL vs SQL Server in 2026: licensing, T-SQL differences, performance, enterprise features, .NET integration, and when to choose open source over Microsoft's database."
+database: null
+category: database-comparison
+draft: false
+---
+
+PostgreSQL and SQL Server represent two different approaches to enterprise databases. PostgreSQL is community-driven and free. SQL Server is Microsoft's commercial offering with deep .NET and Azure integration. Both are fully capable production databases, but they optimize for different ecosystems and budgets.
+
+This comparison uses PostgreSQL 17/18 and SQL Server 2022 as of early 2026.
+
+## The Short Version
+
+PostgreSQL is free, runs everywhere, and matches SQL Server's feature set for most workloads. SQL Server costs money but integrates tightly with Microsoft tools (SSMS, SSRS, SSIS, Azure, .NET). If your organization is already in the Microsoft ecosystem, SQL Server reduces friction. If you want to avoid licensing costs and vendor lock-in, PostgreSQL does everything you need.
+
+## Licensing and Cost
+
+The biggest practical difference:
+
+**PostgreSQL:** Free. The PostgreSQL License is permissive (similar to MIT). No per-core licensing, no CALs, no edition tiers. Enterprise support is available from companies like EDB, Crunchy Data, and cloud providers, but the software itself costs nothing.
+
+**SQL Server** editions and approximate pricing (as of 2026):
+- **Express**: Free, limited to 1 GB RAM, 10 GB database size, 4 cores
+- **Standard**: ~$3,945 per 2-core pack (server + CAL licensing also available)
+- **Enterprise**: ~$15,123 per 2-core pack
+- **Developer**: Free for development/testing only
+
+For an 8-core production server, SQL Server Enterprise costs roughly $60,000 in licensing alone. PostgreSQL costs zero. On Azure, SQL Server managed instances start around $300-800/month. PostgreSQL managed services (Azure Database for PostgreSQL, RDS) start around $50-200/month for comparable specs.
+
+This cost difference is real and significant. For startups and small teams, it can be the deciding factor.
+
+## SQL Dialects
+
+PostgreSQL follows the SQL standard more closely. SQL Server uses T-SQL, Microsoft's proprietary extension.
+
+Key syntax differences:
+
+| Feature | PostgreSQL | SQL Server (T-SQL) |
+|---|---|---|
+| Auto-increment | `SERIAL` / `GENERATED ALWAYS AS IDENTITY` | `IDENTITY(1,1)` |
+| String concatenation | `\|\|` operator | `+` operator |
+| Limiting results | `LIMIT 10 OFFSET 20` | `OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY` or `TOP 10` |
+| Boolean type | Native `BOOLEAN` | `BIT` (0/1) |
+| Current timestamp | `NOW()` or `CURRENT_TIMESTAMP` | `GETDATE()` or `SYSDATETIME()` |
+| Upsert | `INSERT ... ON CONFLICT DO UPDATE` | `MERGE` statement |
+| String quoting | Single quotes for strings, double quotes for identifiers | Single quotes for strings, brackets `[]` for identifiers |
+| Conditional logic | `CASE WHEN` (standard) | `CASE WHEN` + `IIF()` shortcut |
+
+T-SQL has some conveniences (like `IIF()`, `STRING_AGG()`, and robust error handling with `TRY...CATCH`), but these are proprietary. Code written in T-SQL doesn't port to other databases. PostgreSQL's closer adherence to standards makes migration easier.
+
+## Enterprise Features
+
+SQL Server's enterprise edition includes several features that PostgreSQL provides for free:
+
+| Feature | PostgreSQL | SQL Server |
+|---|---|---|
+| Partitioning | Built-in (free) | Enterprise edition only |
+| Column-store indexes | Not native (use extensions or ClickHouse) | Enterprise edition |
+| In-memory OLTP | Not native | Enterprise edition |
+| Row-level security | Built-in (free) | Built-in (all editions) |
+| Data masking | Extensions available | Dynamic data masking (Enterprise) |
+| Transparent encryption | `pgcrypto` extension (free) | TDE (Enterprise) |
+| Compression | TOAST compression, pg_lz4 | Page/row compression (Enterprise) |
+| Query store | `pg_stat_statements` (free) | Built-in Query Store |
+| Always On AG | Streaming replication + Patroni | Enterprise edition |
+
+PostgreSQL's extension ecosystem compensates for many gaps. PostGIS for geospatial, pgvector for vector search, pg_cron for scheduling. SQL Server includes SSRS (reporting), SSIS (ETL), and SSAS (analysis) as part of the platform -- PostgreSQL relies on third-party tools for these.
+
+## Platform Support
+
+**PostgreSQL:** Linux, macOS, Windows, FreeBSD. Cloud: AWS, GCP, Azure, plus dozens of managed providers (Supabase, Neon, Crunchy Bridge, Aiven).
+
+**SQL Server:** Windows (primary), Linux (since SQL Server 2017), Docker. Cloud: Azure SQL (primary), AWS RDS, GCP Cloud SQL. SQL Server on Linux is fully supported but some features (like SQL Agent, SSIS, SSRS) are Windows-only or require workarounds.
+
+If your infrastructure is Linux-based, PostgreSQL is the more natural fit. If you're running Windows Server with .NET applications, SQL Server integrates more tightly.
+
+## Tooling
+
+**SQL Server** has excellent first-party tools:
+- SQL Server Management Studio (SSMS) -- full-featured GUI, Windows-only
+- Azure Data Studio -- cross-platform, modern, extension-based
+- SQL Server Profiler for query tracing
+- SSRS for reporting, SSIS for ETL
+- Tight Visual Studio and .NET integration
+
+**PostgreSQL** relies on a diverse ecosystem:
+- pgAdmin (free, web-based GUI)
+- DBeaver, DataGrip, TablePlus (third-party GUIs)
+- psql (command-line client)
+- pg_stat_statements, EXPLAIN ANALYZE for performance tuning
+- No built-in reporting or ETL tools (use dbt, Airbyte, Metabase, etc.)
+
+SQL Server's integrated tooling is a genuine advantage for teams that use it. Everything works together -- monitoring, profiling, reporting, ETL. PostgreSQL's tooling is capable but requires assembling pieces from different sources.
+
+## Performance
+
+Both databases perform well for typical OLTP workloads. Differences emerge in specific scenarios:
+
+**SQL Server advantages:**
+- Columnstore indexes for analytical queries on the same server
+- In-memory OLTP (Hekaton) for extreme transaction throughput
+- Query Store for automatic performance regression detection
+- SQL Server's query optimizer handles some complex join patterns better
+
+**PostgreSQL advantages:**
+- Parallel query execution (since version 9.6, improved in every release)
+- JIT compilation for complex queries (since version 11)
+- Better full-text search built-in
+- More flexible indexing (partial indexes, expression indexes, GIN, GiST, BRIN)
+
+For most applications, the performance difference isn't large enough to drive the decision. Licensing cost, ecosystem fit, and team expertise matter more.
+
+## When to Choose PostgreSQL
+
+- Budget matters -- no licensing costs at any scale
+- Linux-based infrastructure
+- Need for extensions (PostGIS, pgvector, TimescaleDB)
+- Teams that value vendor independence
+- Multi-cloud or hybrid-cloud deployments
+- Startups and teams without a Microsoft EA agreement
+
+## When to Choose SQL Server
+
+- Deep Microsoft ecosystem (.NET, Azure, Power BI, SSRS, SSIS)
+- Teams with strong T-SQL expertise
+- Need for columnstore indexes or in-memory OLTP
+- Organizations with existing Microsoft Enterprise Agreements
+- Windows Server environments with Active Directory integration
+
+## Migration Considerations
+
+Migrating between PostgreSQL and SQL Server is doable but not trivial:
+- T-SQL stored procedures need rewriting (no automated converter is reliable)
+- Data types differ (e.g., `NVARCHAR` vs `TEXT`, `DATETIME2` vs `TIMESTAMPTZ`, `BIT` vs `BOOLEAN`)
+- SQL Server's `IDENTITY` vs PostgreSQL's `SERIAL`/`GENERATED` columns
+- Collation and string comparison behave differently
+- Tools like pgLoader and AWS SCT can help with schema and data migration
+
+Mako connects to both PostgreSQL and SQL Server with AI-assisted query editing. Try it free at [mako.ai](https://mako.ai).

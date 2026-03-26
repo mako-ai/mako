@@ -1,0 +1,165 @@
+---
+title: "PostgreSQL vs SQLite in 2026: When to Use Each"
+slug: postgresql-vs-sqlite
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - postgresql
+  - sqlite
+  - comparison
+  - database
+excerpt: "PostgreSQL vs SQLite: a server database vs an embedded one. When SQLite is enough, when you need PostgreSQL, and why the answer is less obvious than it used to be."
+metaDescription: "PostgreSQL vs SQLite in 2026: concurrency, data types, deployment, performance, and real-world use cases. Know when an embedded database is enough and when you need a server."
+database: null
+category: database-comparison
+draft: false
+---
+
+PostgreSQL and SQLite aren't really competitors. They solve different problems. PostgreSQL is a client-server database for multi-user applications. SQLite is an embedded database that lives inside your application process. But the question "do I need PostgreSQL or is SQLite enough?" comes up constantly, and the answer has shifted over the years.
+
+This comparison uses PostgreSQL 17/18 and SQLite 3.47+ as of early 2026.
+
+## The Short Version
+
+SQLite is the right choice when your application has a single writer, doesn't need network access to the database, and the dataset fits comfortably on one machine. PostgreSQL is the right choice for everything else -- multi-user web apps, concurrent writes, complex queries, and anything that needs to scale beyond a single process.
+
+## Architecture
+
+The fundamental difference:
+
+- **PostgreSQL** runs as a separate server process. Clients connect over TCP/IP or Unix sockets. Multiple users and applications can read and write simultaneously. It manages its own memory, caching, and storage.
+- **SQLite** is a C library linked into your application. The database is a single file on disk. There's no server, no network protocol, no separate process. Your application reads and writes the file directly.
+
+This architectural difference determines almost everything else.
+
+## Concurrency
+
+This is where the practical divide is clearest.
+
+**SQLite:**
+- One writer at a time (database-level lock)
+- WAL mode allows concurrent readers while one writer operates
+- No connection pooling (there's no server to pool connections to)
+- Fine for single-user apps, mobile apps, and read-heavy workloads with infrequent writes
+
+**PostgreSQL:**
+- Full MVCC -- readers never block writers, writers never block readers
+- Row-level locking for concurrent writes
+- Connection pooling via PgBouncer or built-in (PostgreSQL 17+)
+- Handles hundreds or thousands of concurrent connections
+
+If your web app has 50 users writing data simultaneously, SQLite will bottleneck on the write lock. PostgreSQL handles this without breaking a sweat. If your desktop app or CLI tool has one user, SQLite's simplicity is a significant advantage.
+
+## Data Types
+
+PostgreSQL's type system is dramatically richer:
+
+| Feature | PostgreSQL | SQLite |
+|---|---|---|
+| Integer types | `smallint`, `integer`, `bigint` | `INTEGER` (flexible) |
+| Floating point | `real`, `double precision`, `numeric` | `REAL` |
+| Strings | `varchar(n)`, `text`, `char(n)` | `TEXT` |
+| Boolean | Native `boolean` | Stored as 0/1 integers |
+| Date/time | `date`, `time`, `timestamp`, `interval`, `timestamptz` | Stored as TEXT, REAL, or INTEGER |
+| JSON | `json`, `jsonb` with indexing | JSON functions since 3.38, no indexing |
+| Arrays | Native `ARRAY` type | Not supported |
+| UUID | Native `uuid` type | Stored as TEXT or BLOB |
+| Custom types | `CREATE TYPE` | Not supported |
+
+SQLite uses dynamic typing -- any column can store any type regardless of the declared type (unless you use `STRICT` tables, available since 3.37). This flexibility can be an advantage in prototyping but becomes a liability in production where data integrity matters.
+
+PostgreSQL enforces types strictly, catches errors at insert time, and provides specialized operators for each type.
+
+## Performance
+
+They're fast in different ways:
+
+**SQLite is faster for:**
+- Single-connection reads with no network overhead
+- Embedded use cases where eliminating the client-server roundtrip matters
+- Small to medium datasets that fit in the OS page cache
+- Simple queries against well-indexed tables
+
+**PostgreSQL is faster for:**
+- Concurrent read/write workloads
+- Complex analytical queries (parallel query execution)
+- Large datasets with sophisticated indexing (partial indexes, expression indexes, GIN, GiST)
+- JSONB queries with GIN indexes
+
+SQLite's performance advantage in embedded scenarios is real -- eliminating the network layer and shared-memory coordination removes overhead. For benchmarks that measure single-threaded read throughput on small datasets, SQLite often beats PostgreSQL. But these benchmarks don't reflect multi-user production workloads.
+
+## Deployment and Operations
+
+This is SQLite's strongest advantage:
+
+**SQLite:**
+- Zero configuration. No server to install, configure, or maintain
+- The database is one file. Copy it, back it up, email it
+- No user management, no authentication (security comes from filesystem permissions)
+- Works on any platform that runs C
+- Database file is cross-platform (same file works on Linux, macOS, Windows)
+
+**PostgreSQL:**
+- Requires server installation and configuration
+- Needs user management, authentication, connection limits
+- Backups require `pg_dump`, `pg_basebackup`, or WAL archiving
+- Monitoring, vacuuming, and tuning needed for production use
+- Available as managed services (RDS, Cloud SQL, Supabase, Neon) to reduce operational burden
+
+For a developer building a CLI tool, a mobile app, or an Electron desktop application, SQLite removes an entire category of operational complexity. For a web application that needs to serve multiple users, PostgreSQL's operational overhead is justified.
+
+## Replication and Scaling
+
+**PostgreSQL:**
+- Streaming replication (synchronous or asynchronous)
+- Logical replication for selective table-level sync
+- Read replicas for scaling read traffic
+- Extensions like Citus for horizontal sharding
+- Mature HA solutions (Patroni, pg_auto_failover)
+
+**SQLite:**
+- No built-in replication
+- Litestream and LiteFS provide streaming replication to object storage or distributed filesystems
+- No read replicas (though you can open read-only connections to a copy)
+- Scales vertically only (one machine, one file)
+
+The Litestream/LiteFS ecosystem has made SQLite viable for small production web apps by providing backup and replication. But if you need multi-region failover, read replicas, or horizontal scaling, PostgreSQL is the only option.
+
+## The SQLite-in-Production Movement
+
+A notable 2025-2026 trend: frameworks like Rails, Laravel, and Phoenix have improved SQLite support, and platforms like Fly.io, Turso (libSQL), and Litestream make it practical to run SQLite in production for small to medium web applications.
+
+This is legitimate for:
+- Side projects and small SaaS apps with limited concurrency
+- Applications where simplicity and low cost outweigh scaling needs
+- Edge computing where each node has its own data
+
+It's not a substitute for PostgreSQL when you need:
+- Multi-user concurrent writes
+- Complex authorization (row-level security)
+- Connection from multiple application instances
+- Datasets exceeding a single server's storage
+
+## When to Choose SQLite
+
+- Embedded applications, mobile apps, desktop apps
+- CLI tools and scripts that need local structured storage
+- Prototyping and development (swap to PostgreSQL later if needed)
+- Small production web apps with limited concurrency
+- Testing environments where you want a disposable database
+- IoT and edge computing with local data storage
+
+## When to Choose PostgreSQL
+
+- Multi-user web applications
+- Any application needing concurrent writes from multiple connections
+- Complex data models with arrays, JSONB, custom types
+- Applications requiring replication, failover, or read scaling
+- Teams that need role-based access control and row-level security
+- Data analysis workloads with complex joins and window functions
+
+## Can You Start with SQLite and Switch Later?
+
+Yes, with caveats. If you use an ORM (SQLAlchemy, Prisma, ActiveRecord), the migration is mostly configuration. But SQLite-specific behaviors -- dynamic typing, lack of `ALTER TABLE` flexibility, different date handling -- can create subtle bugs during migration. Using `STRICT` tables in SQLite and sticking to standard SQL makes the eventual switch smoother.
+
+Mako connects to both PostgreSQL and SQLite with AI-assisted query editing. Try it free at [mako.ai](https://mako.ai).

@@ -66,6 +66,11 @@ import { applyModification } from "../utils/consoleModification";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
+import {
+  StreamingToolCard,
+  hasStreamingPreview,
+  type ToolPartState,
+} from "./StreamingToolCard";
 
 interface ChatSessionMeta {
   _id: string;
@@ -2157,7 +2162,7 @@ const Chat: React.FC<ChatProps> = ({
                       const partType = (part as Record<string, unknown>)
                         .type as string;
 
-                      // Render tool invocations inline (no box wrapper)
+                      // Render tool invocations
                       if (
                         partType?.startsWith("tool-") ||
                         partType === "dynamic-tool"
@@ -2168,6 +2173,31 @@ const Chat: React.FC<ChatProps> = ({
                                 .toolName as string)
                             : partType.split("-").slice(1).join("-");
                         const toolPart = part as Record<string, unknown>;
+                        const toolClickHandler = () =>
+                          handleToolClick({
+                            toolCallId: (toolPart.toolCallId as string) || "",
+                            toolName: toolName || "",
+                            state:
+                              toolPart.state as ToolInvocationInfo["state"],
+                            input: toolPart.input,
+                            output: toolPart.output,
+                          });
+
+                        // Rich streaming card for tools with code content
+                        if (hasStreamingPreview(toolName)) {
+                          return (
+                            <StreamingToolCard
+                              key={partIndex}
+                              toolName={toolName}
+                              state={toolPart.state as ToolPartState}
+                              input={toolPart.input}
+                              output={toolPart.output}
+                              onDetailClick={toolClickHandler}
+                            />
+                          );
+                        }
+
+                        // Compact chip for other tools
                         return (
                           <Chip
                             key={partIndex}
@@ -2206,17 +2236,7 @@ const Chat: React.FC<ChatProps> = ({
                                       : "primary.main",
                               },
                             }}
-                            onClick={() =>
-                              handleToolClick({
-                                toolCallId:
-                                  (toolPart.toolCallId as string) || "",
-                                toolName: toolName || "",
-                                state:
-                                  toolPart.state as ToolInvocationInfo["state"],
-                                input: toolPart.input,
-                                output: toolPart.output,
-                              })
-                            }
+                            onClick={toolClickHandler}
                             title={
                               toolPart.state === "output-available"
                                 ? "Tool executed successfully"

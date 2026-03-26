@@ -259,6 +259,7 @@ app.get("/api/user/profile", authMiddleware, async c => {
 | GET    | `/api/auth/google/callback` | Google OAuth callback     | No            |
 | GET    | `/api/auth/github`          | Initiate GitHub OAuth     | No            |
 | GET    | `/api/auth/github/callback` | GitHub OAuth callback     | No            |
+| GET    | `/api/auth/oauth-receive`   | Receive session from production OAuth proxy | No |
 
 ### Request/Response Examples
 
@@ -331,6 +332,77 @@ Response:
 - State parameter prevents CSRF
 - PKCE flow for Google OAuth
 - Secure token exchange
+- HMAC-signed OAuth state prevents origin tampering in cross-origin proxy flow
+- Short-lived HMAC-signed transfer tokens for cross-origin session transfer
+
+## OAuth Proxy Pattern (Cross-Origin Authentication)
+
+Google and GitHub OAuth require declared HTTPS redirect URIs. Non-production
+environments (localhost, PR previews) cannot register their own callback URLs.
+Instead, they route through the production instance which is the only origin
+registered with the OAuth providers.
+
+### Environment Variables
+
+| Variable | Where | Description |
+|---|---|---|
+| `PRODUCTION_URL` | Non-production only | Production API origin (e.g. `https://app.mako.co`). Unset in production. |
+| `TRUSTED_ORIGINS` | Production only | Comma-separated list of additional trusted origins for redirect validation. |
+| `DISABLE_OAUTH` | Any | Hard kill switch. Set `true` to completely disable OAuth. |
+
+### Flow: Production (unchanged)
+
+```
+Browser → GET /api/auth/google
+  → set state cookie (nonce)
+  → redirect to Google with redirect_uri = production callback
+Google → GET /api/auth/google/callback (on production)
+  → validate nonce, exchange code, create session
+  → set session cookie, redirect to CLIENT_URL
+```
+
+### Flow: Non-Production (localhost, PR previews)
+
+```
+Browser (preview) → GET /api/auth/google
+  → detect non-production
+  → redirect to PRODUCTION_URL/api/auth/google?origin=<preview_origin>
+
+Browser → GET /api/auth/google (on production)
+  → validate origin with isAllowedOrigin()
+  → encode { nonce, origin } into HMAC-signed state
+  → set state cookie, redirect to Google
+
+Google → GET /api/auth/google/callback (on production)
+  → decode state, validate HMAC signature
+  → validate nonce against cookie
+  → validate origin with isAllowedOrigin()
+  → exchange code, create session
+  → create HMAC-signed transfer token (60s TTL)
+  → redirect to <origin>/api/auth/oauth-receive?token=<transfer_token>
+
+Browser → GET /api/auth/oauth-receive (on preview)
+  → verify transfer token signature and expiry
+  → validate session exists in database
+  → set session cookie locally
+  → redirect to CLIENT_URL
+```
+
+### Security Properties
+
+- **CSRF protection**: The CSRF nonce is stored in an httpOnly cookie on the production domain and validated on callback.
+- **Origin validation**: All redirect targets are validated against a domain allowlist (`*.mako.co`), localhost, and the `TRUSTED_ORIGINS` env var.
+- **State integrity**: The OAuth state parameter is HMAC-signed with `SESSION_SECRET`/`ENCRYPTION_KEY` to prevent tampering with the caller origin.
+- **Transfer token security**: The session is transmitted via a short-lived (60s) HMAC-signed token, not the raw session ID.
+- **Backward compatible**: When `PRODUCTION_URL` is unset, the system behaves exactly as before (single-deployment mode).
+
+### Key Files
+
+| File | Purpose |
+|---|---|
+| `api/src/auth/oauth-proxy.ts` | Proxy helpers: origin detection, state encoding/decoding, transfer tokens, origin validation |
+| `api/src/auth/arctic.ts` | OAuth provider setup (callback URLs always point to production) |
+| `api/src/auth/auth.controller.ts` | OAuth routes with proxy-aware initiation, callback, and `/oauth-receive` endpoint |
 
 ## Customization
 

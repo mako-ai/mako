@@ -1,0 +1,142 @@
+---
+title: "PostgreSQL vs ClickHouse in 2026: OLTP Meets OLAP"
+slug: postgresql-vs-clickhouse
+date: "2026-03-25"
+author: Mako Team
+tags:
+  - postgresql
+  - clickhouse
+  - comparison
+  - analytics
+  - olap
+excerpt: "PostgreSQL vs ClickHouse: a general-purpose database vs a purpose-built analytics engine. When PostgreSQL's analytics are enough and when you need ClickHouse's columnar speed."
+metaDescription: "PostgreSQL vs ClickHouse in 2026: OLTP vs OLAP architecture, query performance, storage models, data ingestion, and when to use each for analytics workloads."
+database: null
+category: database-comparison
+draft: false
+---
+
+PostgreSQL and ClickHouse are built for different workloads. PostgreSQL is a general-purpose transactional database (OLTP) that can handle analytics. ClickHouse is a purpose-built columnar analytics database (OLAP) that does one thing exceptionally well. Comparing them directly is somewhat unfair to both, but the question "can PostgreSQL handle our analytics, or do we need ClickHouse?" comes up often enough to warrant a clear answer.
+
+This comparison uses PostgreSQL 17/18 and ClickHouse 24.x as of early 2026.
+
+## The Short Version
+
+If your analytical queries run on millions of rows and need sub-second response times, ClickHouse. If your analytics are one of several things your database does alongside transactions, user authentication, and CRUD operations, PostgreSQL. Many teams use both -- PostgreSQL for the application, ClickHouse for analytics.
+
+## Storage Architecture
+
+This is the fundamental difference that drives everything else.
+
+**PostgreSQL** uses row-oriented storage (heap tables). When you read a row, you get all columns. This is efficient when you need entire records (typical OLTP: "get user #1234 with all their details") but wasteful for analytics ("average order value across 50 million orders").
+
+**ClickHouse** uses column-oriented storage (MergeTree engine). Data for each column is stored contiguously. Analytical queries that touch 3 columns out of 50 read only those 3 columns. Combined with aggressive compression (typically 10-20x for columnar data), ClickHouse scans far less data per query.
+
+The result: on identical hardware with identical data, ClickHouse is typically 10-100x faster for analytical queries that scan large volumes of data.
+
+## Query Performance
+
+Real-world differences:
+
+| Query Type | PostgreSQL | ClickHouse |
+|---|---|---|
+| Point lookup by primary key | Sub-millisecond | Not optimized (no B-tree PK) |
+| Aggregate over 1M rows | Seconds | Milliseconds |
+| Aggregate over 100M rows | Minutes (with parallel query) | Seconds |
+| Aggregate over 1B rows | Impractical without partitioning | Seconds to low minutes |
+| Complex JOIN between 2 large tables | Seconds to minutes | Seconds (with proper data modeling) |
+| INSERT single row | Sub-millisecond | Not recommended (batch inserts) |
+| UPDATE single row | Sub-millisecond | Expensive (mutation, not in-place) |
+
+ClickHouse's parallel execution, vectorized query engine, and columnar compression combine to make it extraordinarily fast for scan-heavy queries. PostgreSQL's row-oriented storage, while improved with parallel query (available since 9.6), can't match this for pure analytical throughput.
+
+But PostgreSQL handles mixed workloads -- a user signs up (INSERT), updates their profile (UPDATE), and then you run an analytics query over all users. ClickHouse is designed for append-only data with infrequent updates.
+
+## Data Modeling
+
+**PostgreSQL:**
+- Traditional relational modeling with normalized tables
+- Foreign keys, constraints, triggers
+- Joins are first-class operations
+- UPDATE and DELETE are efficient
+- Schemas evolve with ALTER TABLE
+
+**ClickHouse:**
+- Denormalized, wide tables are the norm
+- No foreign keys, no constraints (data integrity is the application's job)
+- JOINs work but are less efficient than in PostgreSQL (especially distributed JOINs)
+- No UPDATE/DELETE in the traditional sense -- uses mutations (ALTER TABLE UPDATE/DELETE) that rewrite data asynchronously
+- Schema changes are fast for adding columns, but changing sort order requires data recreation
+
+ClickHouse's MergeTree engine family assumes data is append-only and sorted by specific keys. You choose a primary key (sorting key) at table creation that determines physical data layout. Getting this right is critical for performance; getting it wrong means slow queries.
+
+PostgreSQL's B-tree indexes handle any access pattern. You can add and drop indexes without restructuring the table. This flexibility makes PostgreSQL easier to work with for evolving schemas.
+
+## Ingestion
+
+**PostgreSQL:**
+- Single-row inserts are fast and efficient
+- Bulk loading with COPY command (hundreds of thousands of rows/second)
+- Full ACID transactions for every insert
+- Row-level locking -- inserts don't block reads
+
+**ClickHouse:**
+- Optimized for batch inserts (thousands to millions of rows per batch)
+- Single-row inserts are possible but create many small parts that need merging
+- Millions of rows per second ingestion on a single node
+- Native Kafka, S3, and HTTP ingestion
+- No transactions -- data is eventually consistent during merges
+
+ClickHouse's ingestion throughput is higher, but it expects batched data. An application that inserts one row at a time (typical web app) would create performance problems in ClickHouse. PostgreSQL handles both patterns equally well.
+
+## Extensions and Ecosystem
+
+**PostgreSQL:**
+- PostGIS for geospatial
+- pgvector for vector similarity search
+- TimescaleDB for time-series (builds on PostgreSQL's engine)
+- pg_cron, pg_partman, and hundreds of other extensions
+- Every BI tool, ETL platform, and ORM supports PostgreSQL
+
+**ClickHouse:**
+- Specialized functions for time-series, arrays, and JSON
+- MaterializedViews for real-time aggregation pipelines
+- Dictionaries for enrichment joins
+- Integrations with Kafka, S3, Hive, MySQL, PostgreSQL as external tables
+- Growing ecosystem of BI tools (Grafana, Metabase, Superset, Looker)
+
+PostgreSQL's extension ecosystem is broader. ClickHouse's built-in functions for analytics are deeper. For time-series aggregations, window functions over sorted event data, and array manipulations, ClickHouse provides specialized functions that don't exist in PostgreSQL.
+
+## When PostgreSQL's Analytics Are Enough
+
+PostgreSQL can handle analytics well enough for many teams:
+
+- Datasets under 10-50 million rows with proper indexing
+- Analytical queries that run in seconds, not milliseconds
+- Nightly batch reports, not real-time dashboards
+- When adding a separate analytics database isn't justified
+- When you need transactions and analytics on the same data
+
+Use `pg_stat_statements` to monitor query performance. When queries start taking too long despite indexing and query optimization, it's time to consider ClickHouse.
+
+## When You Need ClickHouse
+
+- Datasets with hundreds of millions to billions of rows
+- Sub-second query latency on aggregations
+- Real-time dashboards serving many concurrent users
+- Event data, logs, time-series, clickstream analysis
+- Query patterns that scan wide date ranges across few columns
+- When PostgreSQL's EXPLAIN ANALYZE shows sequential scans taking minutes
+
+## Using Both Together
+
+The most common pattern: PostgreSQL as the application database, ClickHouse for analytics.
+
+- Application writes to PostgreSQL (transactions, user data, orders)
+- CDC (change data capture) or ETL replicates relevant data to ClickHouse
+- Analytics, dashboards, and reports query ClickHouse
+- Real-time event data (logs, clicks, metrics) goes directly to ClickHouse
+
+Tools like Debezium, Airbyte, or ClickHouse's PostgreSQL engine make this pipeline straightforward. You get PostgreSQL's transactional reliability and ClickHouse's analytical speed without compromising either.
+
+Mako connects to both PostgreSQL and ClickHouse with AI-assisted query editing. Try it free at [mako.ai](https://mako.ai).
