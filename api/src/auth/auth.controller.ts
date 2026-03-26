@@ -469,12 +469,6 @@ authRoutes.get("/google/callback", async c => {
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
-    const { session, isNewUser } = await authService.handleOAuthCallback(
-      "google",
-      googleUser.sub.toString(),
-      googleUser.email,
-    );
-
     // Clear OAuth cookies
     setCookie(c, "google_oauth_state", "", { maxAge: 0, path: "/" });
     setCookie(c, "google_code_verifier", "", { maxAge: 0, path: "/" });
@@ -483,6 +477,12 @@ authRoutes.get("/google/callback", async c => {
     const isCallerProduction = callerOrigin === productionUrl;
 
     if (isCallerProduction) {
+      const { session, isNewUser } = await authService.handleOAuthCallback(
+        "google",
+        googleUser.sub.toString(),
+        googleUser.email,
+      );
+
       const sessionCookie = sessionManager.createSessionCookie(session.id);
       setCookie(
         c,
@@ -505,9 +505,6 @@ authRoutes.get("/google/callback", async c => {
     });
     const receiveUrl = new URL(`${callerOrigin}/api/auth/oauth-receive`);
     receiveUrl.searchParams.set("token", transferToken);
-    if (isNewUser) {
-      receiveUrl.searchParams.set("new_user", "google");
-    }
     logger.info("OAuth proxy: redirecting session to caller origin", {
       callerOrigin,
     });
@@ -616,12 +613,6 @@ authRoutes.get("/github/callback", async c => {
     const emails = (await emailResponse.json()) as any[];
     const primaryEmail = emails.find(e => e.primary)?.email;
 
-    const { session, isNewUser } = await authService.handleOAuthCallback(
-      "github",
-      githubUser.id.toString(),
-      primaryEmail || githubUser.email,
-    );
-
     // Clear OAuth cookie
     setCookie(c, "github_oauth_state", "", { maxAge: 0, path: "/" });
 
@@ -629,6 +620,12 @@ authRoutes.get("/github/callback", async c => {
     const isCallerProduction = callerOrigin === productionUrl;
 
     if (isCallerProduction) {
+      const { session, isNewUser } = await authService.handleOAuthCallback(
+        "github",
+        githubUser.id.toString(),
+        primaryEmail || githubUser.email,
+      );
+
       const sessionCookie = sessionManager.createSessionCookie(session.id);
       setCookie(
         c,
@@ -650,9 +647,6 @@ authRoutes.get("/github/callback", async c => {
     });
     const receiveUrl = new URL(`${callerOrigin}/api/auth/oauth-receive`);
     receiveUrl.searchParams.set("token", transferToken);
-    if (isNewUser) {
-      receiveUrl.searchParams.set("new_user", "github");
-    }
     logger.info("OAuth proxy: redirecting session to caller origin", {
       callerOrigin,
     });
@@ -671,7 +665,6 @@ authRoutes.get("/github/callback", async c => {
 authRoutes.get("/oauth-receive", async c => {
   try {
     const token = c.req.query("token");
-    const newUser = c.req.query("new_user");
 
     if (!token) {
       logger.warn("OAuth receive: missing token");
@@ -684,7 +677,7 @@ authRoutes.get("/oauth-receive", async c => {
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
-    const { session } = await authService.handleOAuthCallback(
+    const { session, isNewUser } = await authService.handleOAuthCallback(
       transferData.provider as "google" | "github",
       transferData.providerUserId,
       transferData.email,
@@ -698,11 +691,8 @@ authRoutes.get("/oauth-receive", async c => {
       convertCookieAttributes(sessionCookie.attributes),
     );
 
-    const allowedNewUserValues = ["google", "github"];
-    const sanitizedNewUser =
-      newUser && allowedNewUserValues.includes(newUser) ? newUser : undefined;
-    const redirectUrl = sanitizedNewUser
-      ? `${process.env.CLIENT_URL}/?new_user=${sanitizedNewUser}`
+    const redirectUrl = isNewUser
+      ? `${process.env.CLIENT_URL}/?new_user=${transferData.provider}`
       : `${process.env.CLIENT_URL}/`;
     return c.redirect(redirectUrl);
   } catch (error: any) {
