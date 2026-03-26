@@ -409,6 +409,7 @@ function formatOutputForDisplay(output: unknown): string {
   }
 
   const keys = Object.keys(o);
+  if (keys.length === 0) return "";
   if (keys.length === 1) {
     const val = o[keys[0]];
     if (typeof val === "string") return val;
