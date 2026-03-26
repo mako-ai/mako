@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { PLAN_DEFINITIONS } from "../billing/config";
 
 const log = loggers.migration();
 
@@ -34,9 +35,16 @@ export async function up(db: Db): Promise<void> {
 
   // Migrate any workspaces that had billingTier manually set to "pro" or "enterprise"
   for (const tier of ["pro", "enterprise"] as const) {
+    const planDef = PLAN_DEFINITIONS[tier];
     const tierResult = await workspaces.updateMany(
       { "settings.billingTier": tier, "billing.plan": "free" },
-      { $set: { "billing.plan": tier } },
+      {
+        $set: {
+          "billing.plan": tier,
+          "billing.usageQuotaUsd": planDef.usageQuotaUsd,
+          "billing.hardLimitUsd": planDef.hardLimitUsd,
+        },
+      },
     );
 
     if (tierResult.modifiedCount > 0) {

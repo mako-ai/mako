@@ -63,12 +63,12 @@ export const usageReportingFunction = inngest.createFunction(
     let skipped = 0;
 
     for (const ws of workspaces) {
-      await step.run(`report-usage-${ws.id}`, async () => {
+      const result = await step.run(`report-usage-${ws.id}`, async () => {
         const periodStart = ws.currentPeriodStart
           ? new Date(ws.currentPeriodStart)
           : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 
-        const [result] = await LlmUsage.aggregate([
+        const [agg] = await LlmUsage.aggregate([
           {
             $match: {
               workspaceId: new ObjectId(ws.id),
@@ -83,7 +83,7 @@ export const usageReportingFunction = inngest.createFunction(
           },
         ]);
 
-        const totalCostUsd = result?.totalCostUsd ?? 0;
+        const totalCostUsd = agg?.totalCostUsd ?? 0;
         const includedQuota =
           ws.usageQuotaUsd ??
           PLAN_DEFINITIONS[ws.plan as keyof typeof PLAN_DEFINITIONS]
@@ -95,8 +95,7 @@ export const usageReportingFunction = inngest.createFunction(
         const deltaCents = overageCents - ws.lastReportedOverageCents;
 
         if (deltaCents <= 0) {
-          skipped++;
-          return;
+          return "skipped" as const;
         }
 
         try {
@@ -118,7 +117,6 @@ export const usageReportingFunction = inngest.createFunction(
             { $set: { "billing.lastReportedOverageCents": overageCents } },
           );
 
-          reported++;
           logger.info("Reported usage overage to Stripe meter", {
             workspaceId: ws.id,
             totalCostUsd,
@@ -126,13 +124,22 @@ export const usageReportingFunction = inngest.createFunction(
             deltaCents,
             overageCents,
           });
+
+          return "reported" as const;
         } catch (err) {
           logger.error("Failed to report usage to Stripe meter", {
             workspaceId: ws.id,
             error: err,
           });
+          return "skipped" as const;
         }
       });
+
+      if (result === "reported") {
+        reported++;
+      } else {
+        skipped++;
+      }
     }
 
     return { total: workspaces.length, reported, skipped };
