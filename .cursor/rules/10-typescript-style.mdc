@@ -13,3 +13,9 @@ description: TypeScript and React code style guidance
 - Match existing formatting and do not reformat unrelated code in edits.
 - Frontend: co-locate components under `app/src/components/**` and hooks under `app/src/hooks/**`.
 - Backend: group routes under `api/src/routes/**` and services under `api/src/services/**`.
+
+## `any` Policy
+
+- **New code**: `any` is forbidden. Use `unknown` + type narrowing, generics, or specific types.
+- **Third-party boundaries** (Monaco Editor, MUI internals, chart libraries): use `unknown` with assertion or a thin typed wrapper. If `any` is truly unavoidable, add a `// eslint-disable-next-line @typescript-eslint/no-explicit-any` with a brief justification.
+- **Existing hotspots** (not blockers, but migrate when touching): `ResultsChart.tsx`, `Chat.tsx`, `workspace-context.tsx`, `ThemeContext.tsx`, `flowStore.ts`.

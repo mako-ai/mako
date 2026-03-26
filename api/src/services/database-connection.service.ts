@@ -75,6 +75,11 @@ export interface QueryExecuteOptions {
   signal?: AbortSignal;
   /** Execution ID for job tracking (enables cancellation) */
   executionId?: string;
+  /**
+   * BigQuery only: max time to poll jobs.query until jobComplete (default 5m).
+   * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
+   */
+  bigQueryJobMaxWaitMs?: number;
 }
 
 export interface QueryPreviewOptions extends QueryExecuteOptions {
@@ -1409,8 +1414,19 @@ export class DatabaseConnectionService {
         });
       }
 
-      // Wait for job completion
-      const maxWaitMs = 5 * 60 * 1000;
+      // Wait for job completion (interactive default 5m; sync MERGE etc. pass bigQueryJobMaxWaitMs)
+      const configuredMax = options?.bigQueryJobMaxWaitMs;
+      const maxWaitMs = Math.min(
+        Math.max(
+          typeof configuredMax === "number" &&
+            Number.isFinite(configuredMax) &&
+            configuredMax > 0
+            ? configuredMax
+            : 5 * 60 * 1000,
+          1000,
+        ),
+        60 * 60 * 1000,
+      );
       const pollIntervalMs = this.getBigQueryPollIntervalMs();
       let waitedMs = 0;
 
@@ -1436,6 +1452,24 @@ export class DatabaseConnectionService {
           success: false,
           error: `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
         };
+      }
+
+      if (Array.isArray(data.errors) && data.errors.length > 0) {
+        const fatalErrors = data.errors.filter(
+          (e: { reason?: string }) => e?.reason !== "warning",
+        );
+        if (fatalErrors.length > 0) {
+          return {
+            success: false,
+            error: fatalErrors
+              .map(
+                (e: { message?: string }) =>
+                  (e && typeof e.message === "string" && e.message) ||
+                  "BigQuery job error",
+              )
+              .join("; "),
+          };
+        }
       }
 
       // Collect results

@@ -1,3 +1,8 @@
+---
+globs: api/src/connectors/**/*.ts
+description: Connector agnosticism and schema-driven UI rules for data source connectors
+---
+
 # Connector Agnosticism & Schema-Driven UI
 
 Purpose: Ensure adding a new connector requires only dropping a new folder under `api/src/connectors/**` and exposing a schema; no app code outside that folder needs changes.
@@ -40,8 +45,21 @@ static getConfigSchema() {
 
 The frontend reads `schema.transferQueries` and dynamically renders the query editor in the Flow form. **Never** check connector types like `if (type === "graphql")` in UI code.
 
-Enforcement guidance:
+## HTTP & Rate Limiting
+
+- Connectors using HTTP APIs should handle 429 (rate limit) and 5xx errors with retry + exponential backoff.
+- Prefer a shared retry pattern within the connector (e.g., `executeWithRetry` wrapper) rather than ad-hoc retry loops in each method.
+- Respect `Retry-After` headers when present.
+- Do NOT log raw request/response headers — they may contain API keys or auth tokens.
+
+## Schema Wiring
+
+- **Every field in `getConfigSchema()` must be read at runtime.** If the schema exposes `api_base_url`, the connector client must use `this.dataSource.config.api_base_url` — never hardcode the URL.
+- Credentials live on `this.dataSource.config` (decrypted at sync time). Fields with `type: "password"` or `encrypted: true` are encrypted at rest automatically.
+
+## Enforcement Guidance
 
 - During reviews, reject edits that add `if (type === "xyz")` checks outside connector folders.
 - Prefer updating connector schemas over UI code to change field order, visibility, or control types.
 - Check for `transferQueries` schema property presence, not connector type names.
+- Verify that all schema fields are wired to the connector client — dead schema fields confuse users.

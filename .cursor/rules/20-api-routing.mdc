@@ -24,10 +24,32 @@ const logger = loggers.api("chats"); // Creates logger for "mako.api.chats"
 logger.error("Error creating chat", { error, workspaceId });
 ```
 
+## Error Response Standard
+
+Use this envelope for all error responses:
+
+```typescript
+return c.json({ success: false, error: "Human-readable message" }, 400);
+```
+
+For success responses returning data, use either `c.json(data)` or `c.json({ success: true, data })` — be consistent within a route file.
+
+**Exceptions**: Streaming endpoints (agent chat) and webhook acknowledgments (`200 OK` with no body) may deviate.
+
+## Route Classification
+
+| Type | Auth | Example |
+|------|------|---------|
+| Authenticated + workspace-scoped | `unifiedAuthMiddleware` + workspace verification | `/api/workspaces/:id/consoles` |
+| Authenticated (no workspace) | `unifiedAuthMiddleware` only | `/api/workspaces` (list) |
+| Intentionally public | None | `/api/connectors/:type/schema`, `/api/webhooks/:id`, health checks |
+
+Document the classification in a comment at the top of each route file when it's not obvious.
+
 ## Rules
 
 - Validate inputs at the route boundary; prefer zod or schema validation if present.
-- Return consistent error shapes; do not leak stack traces in responses.
+- Return `{ success: false, error }` for errors; do not leak stack traces in responses.
 - Keep route files minimal: parameter parsing, auth, and delegating to services.
 - Use `loggers.api("<route-name>")` for route-specific logging.
 - Apply `unifiedAuthMiddleware` before workspace verification middleware.

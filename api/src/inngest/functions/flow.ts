@@ -505,7 +505,7 @@ export const flowFunction = inngest.createFunction(
         ] = "syncing";
       }
 
-      void collection
+      return collection
         .updateOne({ _id: new Types.ObjectId(executionId) }, updateDoc)
         .catch(error => {
           logger.warn("Failed to append execution log", {
@@ -1448,23 +1448,23 @@ export const flowFunction = inngest.createFunction(
                     switch (level) {
                       case "debug":
                         logger.debug(message, logData);
-                        appendExecutionLog("debug", message, logData);
+                        void appendExecutionLog("debug", message, logData);
                         break;
                       case "info":
                         logger.info(message, logData);
-                        appendExecutionLog("info", message, logData);
+                        void appendExecutionLog("info", message, logData);
                         break;
                       case "warn":
                         logger.warn(message, logData);
-                        appendExecutionLog("warn", message, logData);
+                        void appendExecutionLog("warn", message, logData);
                         break;
                       case "error":
                         logger.error(message, logData);
-                        appendExecutionLog("error", message, logData);
+                        void appendExecutionLog("error", message, logData);
                         break;
                       default:
                         logger.info(message, logData);
-                        appendExecutionLog("info", message, logData);
+                        void appendExecutionLog("info", message, logData);
                         break;
                     }
                     // Log to execution logger is handled by LogTape database sink
@@ -1718,63 +1718,77 @@ export const flowFunction = inngest.createFunction(
               flowId,
               entity,
             });
-            appendExecutionLog(
-              "info",
-              `Flushing ${entity} buffer to BigQuery staging via Parquet`,
-              {
-                entity,
-              },
-            );
-            await step.run(`flush-final-${safeEntityStepId}`, async () => {
-              try {
-                await performBulkFlush(bulkSyncOptions);
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                appendExecutionLog(
-                  "error",
-                  `Failed to flush ${entity} buffer to staging: ${msg}`,
+            try {
+              await step.run(`flush-final-${safeEntityStepId}`, async () => {
+                void appendExecutionLog(
+                  "info",
+                  `Flushing ${entity} buffer to BigQuery staging via Parquet`,
                   { entity },
                 );
-                throw err;
-              }
-            });
-            appendExecutionLog(
+                try {
+                  await performBulkFlush(bulkSyncOptions);
+                } catch (err) {
+                  const msg =
+                    err instanceof Error ? err.message : String(err);
+                  await appendExecutionLog(
+                    "error",
+                    `Failed to flush ${entity} buffer to staging: ${msg}`,
+                    { entity },
+                  );
+                  throw err;
+                }
+              });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              await appendExecutionLog(
+                "error",
+                `Flush step failed for ${entity}: ${msg}`,
+                { entity },
+              );
+              throw err;
+            }
+            void appendExecutionLog(
               "info",
               `${entity} buffer flushed to staging table`,
-              {
-                entity,
-              },
+              { entity },
             );
             logger.info(`Merging ${entity} staging table to live`, {
               flowId,
               entity,
             });
-            appendExecutionLog(
-              "info",
-              `Merging ${entity} staging table to live`,
-              {
-                entity,
-              },
-            );
-            await step.run(`merge-staging-${safeEntityStepId}`, async () => {
-              try {
-                return await performStagingMerge(bulkSyncOptions);
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                appendExecutionLog(
-                  "error",
-                  `Failed to merge ${entity} staging to live: ${msg}`,
+            try {
+              await step.run(`merge-staging-${safeEntityStepId}`, async () => {
+                void appendExecutionLog(
+                  "info",
+                  `Merging ${entity} staging table to live`,
                   { entity },
                 );
-                throw err;
-              }
-            });
-            appendExecutionLog(
+                try {
+                  return await performStagingMerge(bulkSyncOptions);
+                } catch (err) {
+                  const msg =
+                    err instanceof Error ? err.message : String(err);
+                  await appendExecutionLog(
+                    "error",
+                    `Failed to merge ${entity} staging to live: ${msg}`,
+                    { entity },
+                  );
+                  throw err;
+                }
+              });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              await appendExecutionLog(
+                "error",
+                `Merge step failed for ${entity}: ${msg}`,
+                { entity },
+              );
+              throw err;
+            }
+            void appendExecutionLog(
               "info",
               `${entity} merged staging to live table`,
-              {
-                entity,
-              },
+              { entity },
             );
             logger.info(`Cleaning up ${entity} staging table`, {
               flowId,
@@ -1785,7 +1799,7 @@ export const flowFunction = inngest.createFunction(
                 await performStagingCleanup(bulkSyncOptions);
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
-                appendExecutionLog(
+                void appendExecutionLog(
                   "error",
                   `Failed to cleanup ${entity} staging: ${msg}`,
                   { entity },
@@ -1797,7 +1811,7 @@ export const flowFunction = inngest.createFunction(
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
               { flowId, entity },
             );
-            appendExecutionLog(
+            void appendExecutionLog(
               "info",
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
               {
@@ -2283,7 +2297,7 @@ export const flowFunction = inngest.createFunction(
 
       return { success: true, message: "Sync completed successfully" };
     } catch (error: any) {
-      appendExecutionLog("error", "Flow execution failed", {
+      void appendExecutionLog("error", "Flow execution failed", {
         flowId,
         error: error?.message || String(error),
         errorName: error?.name,

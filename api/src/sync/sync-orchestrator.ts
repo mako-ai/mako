@@ -8,8 +8,8 @@ import {
 import { SyncLogger, FetchState } from "../connectors/base/BaseConnector";
 import {
   DatabaseConnection,
-  ITableDestination,
   Flow,
+  ITableDestination,
 } from "../database/workspace-schema";
 import { createDestinationWriter } from "../services/destination-writer.service";
 import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";

@@ -1,8 +1,0 @@
----
-alwaysApply: true
----
-This file contains a list of helpful information and context that the agent can reference when working in this codebase. Each entry provides specific guidance or rules for different aspects of the project. You can read these files using the readFile tool if the users prompt seems related.
-
-- [Build outputs, do-not-edit policy for dist, and deployment entry points](./90-build-deploy.md)
-- [Operational guidance for logging, error handling, and testing](./80-engineering-ops.md)
-- [MongoDB migrations system for schema changes](./90-migrations.mdc)
