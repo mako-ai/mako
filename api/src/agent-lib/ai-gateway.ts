@@ -34,7 +34,7 @@ let _gateway: ReturnType<typeof createGateway> | null = null;
 function getGateway() {
   if (!_gateway) {
     _gateway = createGateway({
-      apiKey: process.env.AI_GATEWAY_API_KEY!,
+      apiKey: process.env.AI_GATEWAY_API_KEY ?? "",
     });
   }
   return _gateway;

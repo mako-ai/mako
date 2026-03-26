@@ -163,26 +163,28 @@ const UTILITY_PREFERENCE: string[] = [
 function pickFirstAvailable(
   preference: string[],
   available: AIModel[],
-): string {
+): string | undefined {
   const ids = new Set(available.map(m => m.id));
   for (const id of preference) {
     if (ids.has(id)) return id;
   }
-  return available[0]?.id ?? preference[0];
+  return available[0]?.id;
 }
 
 /**
  * Best chat-quality model available in this deployment.
+ * Returns undefined when no providers are configured.
  */
-export function getDefaultModelId(): string {
+export function getDefaultModelId(): string | undefined {
   return pickFirstAvailable(DEFAULT_PREFERENCE, getAvailableModels());
 }
 
 /**
  * Cheapest / fastest model available — used for background tasks like
  * title generation and console descriptions.
+ * Returns undefined when no providers are configured.
  */
-export function getUtilityModelId(): string {
+export function getUtilityModelId(): string | undefined {
   return pickFirstAvailable(UTILITY_PREFERENCE, getAvailableModels());
 }
 

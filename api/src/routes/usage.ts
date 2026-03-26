@@ -57,8 +57,9 @@ function parseDateRange(
     const dateFilter: Record<string, Date> = {};
     if (from) {
       const d = new Date(from);
-      if (isNaN(d.getTime()))
+      if (isNaN(d.getTime())) {
         return { ok: false, error: "Invalid 'from' date" };
+      }
       dateFilter.$gte = d;
     }
     if (to) {

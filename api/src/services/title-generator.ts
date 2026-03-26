@@ -23,24 +23,6 @@ Rules:
 
 Return only the title, nothing else.`;
 
-/**
- * Extract text content from a message (handles both v2 .content and v6 .parts formats)
- */
-const getMessageContent = (message: any): string => {
-  if (typeof message.content === "string") {
-    return message.content;
-  }
-
-  if (Array.isArray(message.parts)) {
-    return message.parts
-      .filter((p: any) => p.type === "text" && typeof p.text === "string")
-      .map((p: any) => p.text)
-      .join("");
-  }
-
-  return "";
-};
-
 export interface TitleGenerationContext {
   workspaceId: string;
   userId: string;
@@ -55,6 +37,10 @@ export const generateChatTitle = async (
 ): Promise<string> => {
   try {
     const modelId = getUtilityModelId();
+    if (!modelId) {
+      logger.warn("No AI provider configured, skipping title generation");
+      return "New Conversation";
+    }
     const { text, usage } = await generateText({
       model: getModel(modelId),
       system: TITLE_SYSTEM_PROMPT,
@@ -104,34 +90,4 @@ export const generateChatTitle = async (
     logger.error("Title generation failed", { error });
     return "New Conversation";
   }
-};
-
-/**
- * Legacy function for backward compatibility with existing code.
- */
-export const generateChatTitleFromMessages = async (
-  messages: any[],
-): Promise<string> => {
-  const firstUserMessage = messages.find(m => m.role === "user");
-  if (!firstUserMessage) {
-    return "New Conversation";
-  }
-
-  const content = getMessageContent(firstUserMessage);
-  if (!content || content.trim().length < 3) {
-    return "New Conversation";
-  }
-
-  return generateChatTitle(content);
-};
-
-/**
- * Check if we should generate a title.
- */
-export const shouldGenerateTitle = (messages: any[]): boolean => {
-  const firstUserMessage = messages.find(m => m.role === "user");
-  if (!firstUserMessage) return false;
-
-  const content = getMessageContent(firstUserMessage);
-  return content.trim().length >= 3;
 };

@@ -398,6 +398,14 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Resolve model: validate against available models, fall back to default
   const defaultId = getDefaultModelId();
+  if (!defaultId) {
+    return c.json(
+      {
+        error: "No AI providers configured. Set at least one provider API key.",
+      },
+      503,
+    );
+  }
   const available = getAvailableModels();
   const resolvedModelId =
     modelId && available.find(m => m.id === modelId) ? modelId : defaultId;

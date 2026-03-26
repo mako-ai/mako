@@ -130,6 +130,7 @@ export async function generateConsoleDescription(
   if (isGatewayMode()) {
     try {
       const utilityModel = getUtilityModelId();
+      if (!utilityModel) return null;
       const baseOpts = trackingCtx
         ? buildProviderOptions({
             userId: trackingCtx.userId,
@@ -182,9 +183,13 @@ export async function generateConsoleDescription(
     .map(m => m.id);
 
   const preferredId = getUtilityModelId();
-  const modelsToTry = available.includes(preferredId)
-    ? [preferredId, ...available.filter(id => id !== preferredId)]
-    : [preferredId, ...available];
+  if (!preferredId && available.length === 0) return null;
+  const modelsToTry =
+    preferredId && available.includes(preferredId)
+      ? [preferredId, ...available.filter(id => id !== preferredId)]
+      : preferredId
+        ? [preferredId, ...available]
+        : available;
 
   for (const modelId of modelsToTry) {
     try {
