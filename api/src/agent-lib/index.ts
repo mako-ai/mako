@@ -36,8 +36,6 @@ export {
   getDefaultModel,
   getDefaultModelId,
   getUtilityModelId,
-  DEFAULT_MODEL_ID,
-  UTILITY_MODEL_ID,
 } from "./ai-models";
 
 // AI Gateway / Provider resolution

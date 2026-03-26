@@ -419,7 +419,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Get model instance
   const defaultId = getDefaultModelId();
-  const resolvedModelId = modelId || defaultId;
+  const resolvedModelId = modelId && getModelById(modelId) ? modelId : defaultId;
   const model = getModelInstance(modelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });

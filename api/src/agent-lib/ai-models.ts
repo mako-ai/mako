@@ -186,11 +186,6 @@ export function getUtilityModelId(): string {
   return pickFirstAvailable(UTILITY_PREFERENCE, getAvailableModels());
 }
 
-// Legacy constants kept for quick reference; prefer the functions above
-// since they adapt to the deployment's configured providers.
-export const DEFAULT_MODEL_ID = "anthropic/claude-opus-4-6";
-export const UTILITY_MODEL_ID = "openai/gpt-4o-mini";
-
 /**
  * Get a specific model by its ID.
  */
