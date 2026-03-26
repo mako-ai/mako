@@ -77,7 +77,13 @@ export const useSettingsStore = create<SettingsState>()(
         if (version === 0 && state.selectedModelId) {
           const id = state.selectedModelId as string;
           if (!id.includes("/")) {
-            state.selectedModelId = `anthropic/${id}`;
+            let provider = "anthropic";
+            if (/^(gpt|o[0-9])/.test(id)) {
+              provider = "openai";
+            } else if (id.startsWith("gemini")) {
+              provider = "google";
+            }
+            state.selectedModelId = `${provider}/${id}`;
           }
         }
         return state as unknown as SettingsState;
