@@ -504,7 +504,10 @@ function MainApp() {
         {/* Sidebar Navigation */}
         <Sidebar />
 
-        <Box ref={panelContainerRef} sx={{ height: "100%", width: "100%" }}>
+        <Box
+          ref={panelContainerRef}
+          sx={{ height: "100%", flex: 1, minWidth: 0 }}
+        >
           <PanelGroup
             direction="horizontal"
             style={{ height: "100%", width: "100%" }}
