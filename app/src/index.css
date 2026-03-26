@@ -97,7 +97,8 @@
   margin-bottom: 0.5rem;
   overflow: hidden;
   padding: 0 !important;
-  border-color: hsl(var(--border)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 0.5rem;
 }
 
 [data-streamdown="table"] {
