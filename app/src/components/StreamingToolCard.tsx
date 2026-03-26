@@ -581,7 +581,14 @@ export const StreamingToolCard = React.memo(function StreamingToolCard({
 
         <Typography
           variant="caption"
-          sx={{ fontWeight: 500, flex: 1, color: "text.primary" }}
+          sx={{
+            fontWeight: 500,
+            flex: 1,
+            color: "text.primary",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
         >
           {label}
         </Typography>
