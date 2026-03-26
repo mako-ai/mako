@@ -200,6 +200,12 @@ const DEFAULT_PREFERENCE: string[] = [
   "google/gemini-2.5-pro",
 ];
 
+const FREE_PREFERENCE: string[] = [
+  "anthropic/claude-3-5-haiku-latest",
+  "openai/gpt-4o-mini",
+  "google/gemini-2.5-flash",
+];
+
 const UTILITY_PREFERENCE: string[] = [
   "openai/gpt-4o-mini",
   "anthropic/claude-3-5-haiku-latest",
@@ -226,6 +232,14 @@ function pickFirstAvailable(
  */
 export function getDefaultModelId(): string | undefined {
   return pickFirstAvailable(DEFAULT_PREFERENCE, getAvailableModels());
+}
+
+/**
+ * Best free-tier model available in this deployment.
+ * Returns undefined when no providers are configured.
+ */
+export function getDefaultFreeModelId(): string | undefined {
+  return pickFirstAvailable(FREE_PREFERENCE, getAvailableModels());
 }
 
 /**
