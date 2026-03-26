@@ -34,8 +34,61 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
-  async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
+  async ensureLiveTable(layout: CdcEntityLayout): Promise<void> {
     await this.ensureDataset();
+    
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const projectId = conn.project_id;
+    const dataset = this.config.tableDestination.schema;
+    const liveTable = layout.tableName;
+    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+    
+    const schemaResult = await databaseConnectionService.executeQuery(
+      destination,
+      `SELECT table_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.TABLES WHERE table_name = '${liveTable.replace(/'/g, "''")}'`,
+    );
+    
+    const tableExists = (schemaResult.data as any[])?.length > 0;
+    if (!tableExists) {
+      const keyColumnsDdl = layout.keyColumns
+        .map(col => `${escId(col)} STRING`)
+        .join(", ");
+      const partitionClause = layout.partitioning
+        ? `PARTITION BY ${layout.partitioning.type === "time" ? `DATE(${escId(layout.partitioning.field)})` : escId(layout.partitioning.field)}`
+        : "";
+      const clusterClause =
+        layout.clustering?.fields?.length
+          ? `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`
+          : "";
+      
+      const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
+      const createTableSql = `CREATE TABLE IF NOT EXISTS ${fullLive} (
+        ${keyColumnsDdl},
+        _mako_deleted_at TIMESTAMP,
+        is_deleted BOOL,
+        deleted_at TIMESTAMP
+      )
+      ${partitionClause}
+      ${clusterClause}`.trim();
+      
+      const createResult = await databaseConnectionService.executeQuery(
+        destination,
+        createTableSql,
+      );
+      
+      if (!createResult.success) {
+        throw new Error(
+          createResult.error || "Failed to create BigQuery live table",
+        );
+      }
+      
+      log.info("Created BigQuery live table", {
+        liveTable,
+        dataset,
+        keyColumns: layout.keyColumns,
+      });
+    }
   }
 
   async ensureLiveTableFromSourceSchema(
