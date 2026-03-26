@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepare": "tsc"
+    "prepare": "if command -v tsc >/dev/null 2>&1; then tsc; fi"
   },
   "dependencies": {
     "zod": "^4.2.1"
