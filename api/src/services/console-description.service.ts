@@ -17,6 +17,34 @@ import {
 
 const logger = loggers.app();
 
+function processDescriptionResult(
+  text: string,
+  usage: Record<string, unknown>,
+  modelId: string,
+  trackingCtx?: DescriptionTrackingContext | null,
+): string | null {
+  if (trackingCtx) {
+    void trackUsage({
+      workspaceId: trackingCtx.workspaceId,
+      userId: trackingCtx.userId,
+      invocationType: "description_generation",
+      modelId,
+      inputTokens: (usage.promptTokens as number) ?? 0,
+      outputTokens: (usage.completionTokens as number) ?? 0,
+      totalTokens: (usage.totalTokens as number) ?? 0,
+    }).catch(err =>
+      logger.warn("Failed to track description usage", { error: err }),
+    );
+  }
+
+  let description = text.trim();
+  description = description.replace(/^["']|["']$/g, "");
+  description = description.substring(0, 500);
+
+  if (description.length < 5) return null;
+  return description;
+}
+
 /**
  * Description generation requires at least one configured LLM provider
  * (or the AI Gateway).
@@ -107,27 +135,12 @@ export async function generateConsoleDescription(
         },
       });
 
-      if (trackingCtx) {
-        const u = usage as Record<string, unknown>;
-        void trackUsage({
-          workspaceId: trackingCtx.workspaceId,
-          userId: trackingCtx.userId,
-          invocationType: "description_generation",
-          modelId: utilityModel,
-          inputTokens: (u.promptTokens as number) ?? 0,
-          outputTokens: (u.completionTokens as number) ?? 0,
-          totalTokens: (u.totalTokens as number) ?? 0,
-        }).catch(err =>
-          logger.warn("Failed to track description usage", { error: err }),
-        );
-      }
-
-      let description = text.trim();
-      description = description.replace(/^["']|["']$/g, "");
-      description = description.substring(0, 500);
-
-      if (description.length < 5) return null;
-      return description;
+      return processDescriptionResult(
+        text,
+        usage as Record<string, unknown>,
+        utilityModel,
+        trackingCtx,
+      );
     } catch (err) {
       logger.error("Console description generation failed", { error: err });
       return null;
@@ -158,27 +171,12 @@ export async function generateConsoleDescription(
         prompt,
       });
 
-      if (trackingCtx) {
-        const u = usage as Record<string, unknown>;
-        void trackUsage({
-          workspaceId: trackingCtx.workspaceId,
-          userId: trackingCtx.userId,
-          invocationType: "description_generation",
-          modelId,
-          inputTokens: (u.promptTokens as number) ?? 0,
-          outputTokens: (u.completionTokens as number) ?? 0,
-          totalTokens: (u.totalTokens as number) ?? 0,
-        }).catch(err =>
-          logger.warn("Failed to track description usage", { error: err }),
-        );
-      }
-
-      let description = text.trim();
-      description = description.replace(/^["']|["']$/g, "");
-      description = description.substring(0, 500);
-
-      if (description.length < 5) return null;
-      return description;
+      return processDescriptionResult(
+        text,
+        usage as Record<string, unknown>,
+        modelId,
+        trackingCtx,
+      );
     } catch (err) {
       logger.warn(
         "Console description generation failed for model, trying next",

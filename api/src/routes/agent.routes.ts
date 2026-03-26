@@ -583,7 +583,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       });
 
       // Compute cost before saving so both trackUsage and saveChat receive it
-      let costUsd = 0;
+      let costUsd: number | undefined;
       try {
         const { totalCostUsd } = await computeInvocationCost({
           modelId: resolvedModelId,
