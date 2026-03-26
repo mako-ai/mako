@@ -32,15 +32,34 @@ export async function up(db: Db): Promise<void> {
   ];
 
   const existingLlmIdx = await llmUsage.indexes();
+
+  function keySpecExists(
+    existing: Awaited<ReturnType<typeof llmUsage.indexes>>,
+    keySpec: Record<string, 1 | -1>,
+  ): boolean {
+    const specKeys = Object.keys(keySpec);
+    return existing.some(e => {
+      if (!e.key) return false;
+      const eKeys = Object.keys(e.key);
+      return (
+        eKeys.length === specKeys.length &&
+        specKeys.every(k => e.key[k] === keySpec[k])
+      );
+    });
+  }
+
   for (const idx of llmIndexes) {
-    const exists = existingLlmIdx.some(e => e.name === idx.name);
-    if (!exists) {
-      await llmUsage.createIndex(idx.key, {
-        name: idx.name,
-        background: true,
-      });
-      log.info(`Created index '${idx.name}' on llmusages`);
+    if (keySpecExists(existingLlmIdx, idx.key)) {
+      log.info(
+        `Index on ${JSON.stringify(idx.key)} already exists on llmusages, skipping`,
+      );
+      continue;
     }
+    await llmUsage.createIndex(idx.key, {
+      name: idx.name,
+      background: true,
+    });
+    log.info(`Created index '${idx.name}' on llmusages`);
   }
 
   // Drop the old modelpricings collection if it exists from a previous
