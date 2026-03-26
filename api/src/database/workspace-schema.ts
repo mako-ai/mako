@@ -410,6 +410,7 @@ export interface IChatUsage {
   completionTokens: number;
   totalTokens: number;
   cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   reasoningTokens?: number;
   costUsd?: number;
   history?: IUsageHistoryEntry[];
@@ -1452,6 +1453,10 @@ const ChatSchema = new Schema<IChat>(
         default: 0,
       },
       cacheReadTokens: {
+        type: Number,
+        default: 0,
+      },
+      cacheWriteTokens: {
         type: Number,
         default: 0,
       },
