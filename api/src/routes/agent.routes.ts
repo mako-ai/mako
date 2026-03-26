@@ -304,13 +304,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Only enrich logging context after authorization succeeds
   enrichContextWithWorkspace(workspaceId);
 
+  // Load billing plan + enabled model IDs for plan-appropriate defaults and allowlists.
+  const wsForModels = await Workspace.findById(workspaceId).select(
+    "billing.plan settings.enabledModelIds",
+  );
+  const plan = wsForModels?.billing?.plan || "free";
+  const wsEnabledModelIdsEarly = wsForModels?.settings?.enabledModelIds?.length
+    ? wsForModels.settings.enabledModelIds
+    : undefined;
+
   // When no model is explicitly requested, pick a plan-appropriate default
   // so free-plan users get a free-tier model instead of the pro-tier default.
   let effectiveDefaultModelId: string | undefined;
   if (!modelId) {
-    const wsForPlan =
-      await Workspace.findById(workspaceId).select("billing.plan");
-    const plan = wsForPlan?.billing?.plan || "free";
     effectiveDefaultModelId =
       plan === "free" ? DEFAULT_FREE_MODEL_ID : getDefaultModelId();
   } else {
@@ -326,13 +332,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     );
   }
 
+  // Resolve model early so billing checks run against the actual model used.
+  // If the requested modelId isn't available (e.g. provider not configured),
+  // the fallback is effectiveDefaultModelId which may be a different tier.
+  const available = getAvailableModels(wsEnabledModelIdsEarly);
+  const isModelAllowed =
+    isGatewayMode() && wsEnabledModelIdsEarly?.length
+      ? wsEnabledModelIdsEarly.includes(modelId || "")
+      : available.some(m => m.id === modelId);
+  const resolvedModelId =
+    modelId && isModelAllowed ? (modelId as string) : effectiveDefaultModelId;
+
   // Check billing limits (model access + usage quota)
-  const resolvedModelForBilling =
-    (modelId as string) || effectiveDefaultModelId;
-  const billingCheck = await checkBillingLimits(
-    workspaceId,
-    resolvedModelForBilling,
-  );
+  const billingCheck = await checkBillingLimits(workspaceId, resolvedModelId);
   if (!billingCheck.allowed) {
     return c.json(billingCheck.error, billingCheck.statusCode || 402);
   }
@@ -392,10 +404,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     }
   }
 
-  // Load workspace for custom prompt, self-directive, and enabled models
+  // Load workspace for custom prompt and self-directive
   let workspaceCustomPrompt = "";
   let selfDirective = "";
-  let wsEnabledModelIds: string[] | undefined;
   try {
     const workspace = await Workspace.findById(workspaceId).select({
       settings: 1,
@@ -403,9 +414,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     });
     workspaceCustomPrompt = workspace?.settings?.customPrompt || "";
     selfDirective = workspace?.selfDirective || "";
-    if (workspace?.settings?.enabledModelIds?.length) {
-      wsEnabledModelIds = workspace.settings.enabledModelIds;
-    }
   } catch (err) {
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
@@ -563,14 +571,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const agentConfig = agentFactory(agentContext);
   const { systemPrompt, tools } = agentConfig;
 
-  // Resolve model: validate against available models, fall back to plan-appropriate default
-  const available = getAvailableModels(wsEnabledModelIds);
-  const isModelAllowed =
-    isGatewayMode() && wsEnabledModelIds?.length
-      ? wsEnabledModelIds.includes(modelId || "")
-      : available.some(m => m.id === modelId);
-  const resolvedModelId =
-    modelId && isModelAllowed ? modelId : effectiveDefaultModelId;
   const model = getModel(resolvedModelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });

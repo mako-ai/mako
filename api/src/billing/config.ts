@@ -6,6 +6,8 @@
  * giving self-hosted / open-source users unlimited access.
  */
 
+import { ALL_MODELS } from "../agent-lib/ai-models";
+
 export function isBillingEnabled(): boolean {
   return process.env.BILLING_ENABLED === "true";
 }
@@ -59,24 +61,13 @@ export const PLAN_DEFINITIONS: Record<BillingPlan, PlanDefinition> = {
 };
 
 /**
- * Map model IDs to billing tiers.
- * "free" models are available on the free plan.
- * "pro" models require a paid subscription.
+ * Map model IDs to billing tiers, derived from ALL_MODELS to avoid
+ * maintaining a duplicate mapping that can silently diverge.
+ * Unknown models default to "pro" in getModelTier().
  */
-const MODEL_TIER_MAP: Record<string, ModelTier> = {
-  "openai/gpt-4o-mini": "free",
-  "google/gemini-2.5-flash": "free",
-  "anthropic/claude-3-5-haiku-latest": "free",
-
-  "openai/gpt-5.2": "pro",
-  "openai/gpt-5.2-codex": "pro",
-  "openai/gpt-4o": "pro",
-  "anthropic/claude-opus-4-6": "pro",
-  "anthropic/claude-opus-4-5": "pro",
-  "anthropic/claude-sonnet-4-5": "pro",
-  "google/gemini-3-pro-preview": "pro",
-  "google/gemini-2.5-pro": "pro",
-};
+const MODEL_TIER_MAP: Record<string, ModelTier> = Object.fromEntries(
+  ALL_MODELS.map(m => [m.id, m.tier]),
+);
 
 export function getModelTier(modelId: string): ModelTier {
   return MODEL_TIER_MAP[modelId] ?? "pro";
