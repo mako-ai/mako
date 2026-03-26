@@ -666,7 +666,7 @@ export default function ResourceTree({
         ) : (
           <ChevronRight size={16} strokeWidth={1.5} />
         )}
-        {section.icon}
+        <Box sx={{ display: "flex", flexShrink: 0 }}>{section.icon}</Box>
         <Typography
           variant="body2"
           sx={{
@@ -675,6 +675,9 @@ export default function ResourceTree({
             fontSize: "0.7rem",
             letterSpacing: "0.05em",
             flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
           }}
         >
           {section.label}
