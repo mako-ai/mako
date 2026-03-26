@@ -516,6 +516,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         inputTokens: number;
         outputTokens: number;
         cacheReadTokens: number;
+        cacheWriteTokens: number;
+        reasoningTokens: number;
         costUsd: number;
       }> = [];
 
@@ -558,6 +560,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           inputTokens: sInput,
           outputTokens: sOutput,
           cacheReadTokens: sCacheRead,
+          cacheWriteTokens: sCacheWrite,
+          reasoningTokens: sReasoning,
           costUsd: 0, // filled in by cost calculator
         });
       }

@@ -101,6 +101,8 @@ export async function computeInvocationCost(params: {
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
+    cacheWriteTokens: number;
+    reasoningTokens: number;
     costUsd: number;
   }>;
 }): Promise<{
@@ -118,6 +120,8 @@ export async function computeInvocationCost(params: {
           inputTokens: step.inputTokens,
           outputTokens: step.outputTokens,
           cacheReadTokens: step.cacheReadTokens,
+          cacheWriteTokens: step.cacheWriteTokens,
+          reasoningTokens: step.reasoningTokens,
         },
         stepPricing.length > 0 ? stepPricing : pricing,
       );

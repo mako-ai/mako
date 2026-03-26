@@ -294,6 +294,8 @@ export interface ILlmUsageStep {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
   costUsd: number;
 }
 
@@ -327,6 +329,8 @@ const LlmUsageStepSchema = new Schema<ILlmUsageStep>(
     inputTokens: { type: Number, required: true, default: 0 },
     outputTokens: { type: Number, required: true, default: 0 },
     cacheReadTokens: { type: Number, required: true, default: 0 },
+    cacheWriteTokens: { type: Number, required: true, default: 0 },
+    reasoningTokens: { type: Number, required: true, default: 0 },
     costUsd: { type: Number, required: true, default: 0 },
   },
   { _id: false },
