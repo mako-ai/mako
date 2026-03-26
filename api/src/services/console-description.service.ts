@@ -164,15 +164,9 @@ export async function generateConsoleDescription(
     }
   }
 
-  const CHEAP_MODEL_IDS = new Set([
-    "openai/gpt-4o-mini",
-    "anthropic/claude-3-5-haiku-latest",
-    "google/gemini-2.5-flash",
-    "openai/gpt-4o",
-    "google/gemini-2.5-pro",
-  ]);
+  const utilityIds = new Set(getUtilityModelPreference());
   const available = getAvailableModels()
-    .filter(m => CHEAP_MODEL_IDS.has(m.id))
+    .filter(m => utilityIds.has(m.id))
     .map(m => m.id);
 
   const preferredId = getUtilityModelId();
