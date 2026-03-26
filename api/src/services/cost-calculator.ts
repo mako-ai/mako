@@ -116,9 +116,10 @@ export async function computeInvocationCost(params: {
 
   if (params.steps && params.steps.length > 0) {
     let total = 0;
+    const costedSteps = [];
     for (const step of params.steps) {
       const stepPricing = await lookupPricing(step.modelId);
-      step.costUsd = computeCostFromTokens(
+      const costUsd = computeCostFromTokens(
         {
           inputTokens: step.inputTokens,
           outputTokens: step.outputTokens,
@@ -128,9 +129,10 @@ export async function computeInvocationCost(params: {
         },
         stepPricing.length > 0 ? stepPricing : pricing,
       );
-      total += step.costUsd;
+      costedSteps.push({ ...step, costUsd });
+      total += costUsd;
     }
-    return { totalCostUsd: total, steps: params.steps };
+    return { totalCostUsd: total, steps: costedSteps };
   }
 
   const totalCostUsd = computeCostFromTokens(

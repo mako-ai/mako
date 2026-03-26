@@ -12,6 +12,7 @@
  * We convert to per-million-token numbers for internal use.
  */
 
+import { isGatewayMode } from "../agent-lib/ai-models";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
@@ -177,6 +178,8 @@ async function getPricingMap(): Promise<Map<string, PricingRow[]>> {
  * uses dash notation ("claude-opus-4-6"). We try both forms.
  */
 export async function lookupPricing(modelId: string): Promise<PricingRow[]> {
+  if (!isGatewayMode()) return [];
+
   const map = await getPricingMap();
 
   const direct = map.get(modelId);
