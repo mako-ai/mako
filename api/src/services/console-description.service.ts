@@ -1,6 +1,10 @@
 import { generateText } from "ai";
 import { getModel } from "../agent-lib/ai-gateway";
-import { UTILITY_MODEL_ID } from "../agent-lib/ai-models";
+import {
+  isGatewayMode,
+  getUtilityModelId,
+  getConfiguredProviders,
+} from "../agent-lib/ai-models";
 import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
 import { loggers } from "../logging";
 import {
@@ -12,11 +16,11 @@ import {
 const logger = loggers.app();
 
 /**
- * With the AI Gateway, description generation is always available.
- * The gateway handles provider auth and routing.
+ * Description generation requires at least one configured LLM provider
+ * (or the AI Gateway).
  */
 export function isDescriptionGenAvailable(): boolean {
-  return true;
+  return isGatewayMode() || getConfiguredProviders().length > 0;
 }
 
 const DESCRIPTION_SYSTEM_PROMPT = `You are a concise technical writer. Generate a 1-2 sentence description of the given database query.
@@ -77,18 +81,26 @@ export async function generateConsoleDescription(
   const prompt = parts.join("\n");
 
   try {
+    const utilityModel = getUtilityModelId();
+
+    const gatewayFallback = isGatewayMode()
+      ? {
+          providerOptions: {
+            gateway: {
+              models: [
+                "anthropic/claude-3-5-haiku-latest",
+                "google/gemini-2.0-flash",
+              ],
+            } satisfies GatewayLanguageModelOptions,
+          },
+        }
+      : {};
+
     const { text } = await generateText({
-      model: getModel(UTILITY_MODEL_ID),
+      model: getModel(utilityModel),
       system: DESCRIPTION_SYSTEM_PROMPT,
       prompt,
-      providerOptions: {
-        gateway: {
-          models: [
-            "anthropic/claude-3-5-haiku-latest",
-            "google/gemini-2.0-flash",
-          ],
-        } satisfies GatewayLanguageModelOptions,
-      },
+      ...gatewayFallback,
     });
 
     let description = text.trim();

@@ -1,14 +1,16 @@
 /**
  * AI Model Definitions
  *
- * All model IDs use the gateway format ("provider/model-name") so they can
- * be passed directly to the Vercel AI Gateway via getModel().
+ * All model IDs use the "provider/model-name" format. When the Vercel AI
+ * Gateway is configured (AI_GATEWAY_API_KEY), IDs are passed directly to
+ * the gateway. In direct mode, the provider prefix is parsed and the
+ * corresponding @ai-sdk/* package is used.
  */
 
 export type AIProvider = "openai" | "anthropic" | "google";
 
 export interface AIModel {
-  id: string; // Gateway-format: "provider/model-name"
+  id: string; // "provider/model-name"
   provider: AIProvider;
   name: string;
   description?: string;
@@ -26,10 +28,6 @@ export interface AIModel {
   thinkingBudgetTokens?: number;
 }
 
-/**
- * All supported AI models across providers.
- * IDs are in gateway format so they route through Vercel AI Gateway.
- */
 export const ALL_MODELS: AIModel[] = [
   // OpenAI
   {
@@ -102,37 +100,102 @@ export const ALL_MODELS: AIModel[] = [
   },
 ];
 
-/**
- * Default model ID (gateway format) used when no model is specified.
- */
-export const DEFAULT_MODEL_ID = "openai/gpt-5.2";
+// ---------------------------------------------------------------------------
+// Provider detection
+// ---------------------------------------------------------------------------
 
-/**
- * Lightweight models used for background tasks (title gen, descriptions).
- */
-export const UTILITY_MODEL_ID = "openai/gpt-4o-mini";
+const PROVIDER_ENV_KEYS: Record<AIProvider, string> = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+};
 
-/**
- * Get list of all available models.
- * With the AI Gateway, provider API keys are managed centrally --
- * all models are available regardless of local env vars.
- */
-export function getAvailableModels(): AIModel[] {
-  return ALL_MODELS;
+export function isGatewayMode(): boolean {
+  return !!process.env.AI_GATEWAY_API_KEY;
+}
+
+export function getConfiguredProviders(): AIProvider[] {
+  return (Object.entries(PROVIDER_ENV_KEYS) as [AIProvider, string][])
+    .filter(([, envKey]) => !!process.env[envKey])
+    .map(([provider]) => provider);
 }
 
 /**
- * Get a specific model by its gateway ID.
+ * Models available to the current deployment. In gateway mode every model
+ * is accessible because the gateway manages provider keys. In direct mode
+ * only models whose provider API key is present are returned.
+ */
+export function getAvailableModels(): AIModel[] {
+  if (isGatewayMode()) return ALL_MODELS;
+
+  const configured = new Set(getConfiguredProviders());
+  return ALL_MODELS.filter(m => configured.has(m.provider));
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic defaults (pick best available)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PREFERENCE: string[] = [
+  "anthropic/claude-opus-4-6",
+  "openai/gpt-5.2",
+  "google/gemini-3-pro-preview",
+  "anthropic/claude-sonnet-4-5",
+  "openai/gpt-4o",
+  "google/gemini-2.5-pro",
+];
+
+const UTILITY_PREFERENCE: string[] = [
+  "openai/gpt-4o-mini",
+  "anthropic/claude-3-5-haiku-latest",
+  "google/gemini-2.5-flash",
+  "openai/gpt-4o",
+  "anthropic/claude-sonnet-4-5",
+  "google/gemini-2.5-pro",
+];
+
+function pickFirstAvailable(
+  preference: string[],
+  available: AIModel[],
+): string {
+  const ids = new Set(available.map(m => m.id));
+  for (const id of preference) {
+    if (ids.has(id)) return id;
+  }
+  return available[0]?.id ?? preference[0];
+}
+
+/**
+ * Best chat-quality model available in this deployment.
+ */
+export function getDefaultModelId(): string {
+  return pickFirstAvailable(DEFAULT_PREFERENCE, getAvailableModels());
+}
+
+/**
+ * Cheapest / fastest model available — used for background tasks like
+ * title generation and console descriptions.
+ */
+export function getUtilityModelId(): string {
+  return pickFirstAvailable(UTILITY_PREFERENCE, getAvailableModels());
+}
+
+// Legacy constants kept for quick reference; prefer the functions above
+// since they adapt to the deployment's configured providers.
+export const DEFAULT_MODEL_ID = "anthropic/claude-opus-4-6";
+export const UTILITY_MODEL_ID = "openai/gpt-4o-mini";
+
+/**
+ * Get a specific model by its ID.
  */
 export function getModelById(modelId: string): AIModel | undefined {
   return ALL_MODELS.find(model => model.id === modelId);
 }
 
 /**
- * Get the default model.
+ * Get the default model definition.
  */
 export function getDefaultModel(): AIModel {
-  return (
-    ALL_MODELS.find(m => m.id === "anthropic/claude-opus-4-6") || ALL_MODELS[0]
-  );
+  const id = getDefaultModelId();
+  return ALL_MODELS.find(m => m.id === id) || ALL_MODELS[0];
 }

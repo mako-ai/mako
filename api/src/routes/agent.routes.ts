@@ -12,7 +12,7 @@ import {
   stepCountIs,
   type UIMessage,
 } from "ai";
-import { getModel, buildGatewayProviderOptions } from "../agent-lib/ai-gateway";
+import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -20,7 +20,7 @@ import type { ConsoleDataV2 } from "../agent-lib/types";
 import {
   getModelById,
   getAvailableModels,
-  DEFAULT_MODEL_ID,
+  getDefaultModelId,
 } from "../agent-lib/ai-models";
 import {
   Workspace,
@@ -80,18 +80,20 @@ agentRoutes.get("/agents", async (c: AuthenticatedContext) => {
 });
 
 /**
- * Get the AI SDK model instance via the AI Gateway.
- * Model IDs are in gateway format: "provider/model-name".
+ * Get the AI SDK model instance (via gateway or direct provider).
+ * Model IDs use "provider/model-name" format.
  */
 function getModelInstance(modelId?: string) {
+  const defaultId = getDefaultModelId();
+
   if (!modelId) {
-    return getModel(DEFAULT_MODEL_ID);
+    return getModel(defaultId);
   }
 
   const known = getModelById(modelId);
   if (!known) {
     logger.warn("Model not found, falling back to default", { modelId });
-    return getModel(DEFAULT_MODEL_ID);
+    return getModel(defaultId);
   }
 
   return getModel(known.id);
@@ -416,7 +418,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const { systemPrompt, tools } = agentConfig;
 
   // Get model instance
-  const resolvedModelId = modelId || DEFAULT_MODEL_ID;
+  const defaultId = getDefaultModelId();
+  const resolvedModelId = modelId || defaultId;
   const model = getModelInstance(modelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
@@ -434,15 +437,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const enableThinking = modelDef?.supportsThinking === true;
   const thinkingBudget = modelDef?.thinkingBudgetTokens ?? 10000;
 
-  // Build providerOptions: gateway metadata + optional provider-specific options
-  const gatewayOpts = buildGatewayProviderOptions({
-    userId: actorId,
-    workspaceId,
-    agentId: resolvedAgentId,
-    invocationType: "chat",
-  });
   const providerOptions = {
-    ...gatewayOpts,
+    ...buildProviderOptions({
+      userId: actorId,
+      workspaceId,
+      agentId: resolvedAgentId,
+      invocationType: "chat",
+    }),
     ...(enableThinking
       ? {
           anthropic: {

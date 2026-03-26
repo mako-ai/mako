@@ -5,7 +5,7 @@
 
 import { generateText } from "ai";
 import { getModel } from "../agent-lib/ai-gateway";
-import { UTILITY_MODEL_ID } from "../agent-lib/ai-models";
+import { getUtilityModelId } from "../agent-lib/ai-models";
 import { loggers } from "../logging";
 
 const logger = loggers.agent();
@@ -47,7 +47,7 @@ export const generateChatTitle = async (
 ): Promise<string> => {
   try {
     const { text } = await generateText({
-      model: getModel(UTILITY_MODEL_ID),
+      model: getModel(getUtilityModelId()),
       system: TITLE_SYSTEM_PROMPT,
       prompt: userMessageContent.substring(0, 2000),
     });
