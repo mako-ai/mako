@@ -155,8 +155,8 @@ jobs:
       INNGEST_ENV: pr-${{ needs.detect-changes.outputs.pr_number }}
       # Keep preview costs predictable; manual/webhook triggers still work
       DISABLE_SCHEDULED_SYNC: "true"
-      # PR previews disable OAuth since redirect URLs can't be dynamically registered
-      DISABLE_OAUTH: "true"
+      # OAuth proxy pattern: PR previews route OAuth through production
+      PRODUCTION_URL: https://app.mako.ai
       # Staging secrets (from staging environment)
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
@@ -225,7 +225,6 @@ jobs:
           VITE_API_URL: ${{ env.VITE_API_URL }}
           VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
-          VITE_DISABLE_OAUTH: "true"
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -258,7 +257,6 @@ jobs:
           VITE_API_URL=${VITE_API_URL}
           VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
           VITE_GTM_ID=${VITE_GTM_ID}
-          VITE_DISABLE_OAUTH=true
           EOF
 
       - name: Build Docker image
@@ -466,8 +464,8 @@ jobs:
             --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
             --set-env-vars DATABASE_URL=${{ steps.db-url.outputs.db_url }} \
             --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
-            --set-env-vars DISABLE_OAUTH=true \
             --set-env-vars DISABLE_SCHEDULED_SYNC=true \
+            --set-env-vars PRODUCTION_URL=${PRODUCTION_URL} \
             --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
             --set-env-vars GH_CLIENT_ID=${GH_CLIENT_ID} \
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
@@ -574,9 +572,9 @@ jobs:
             | **Preview URL** | [${previewUrl}](${previewUrl}) |
             | **Cloud Run URL** | [${cloudRunUrl}](${cloudRunUrl}) |
             | **Database** | ${dbInfo} |
-            | **OAuth** | ❌ Disabled (use email/password) |
+            | **OAuth** | ✅ Enabled (via production proxy) |
 
-            > **Note:** OAuth login is disabled for PR previews. Use email/password authentication for testing.
+            > **Note:** OAuth login routes through production (\`app.mako.ai\`) using the OAuth proxy pattern. Email/password also works.
             `;
 
             // Find existing comment

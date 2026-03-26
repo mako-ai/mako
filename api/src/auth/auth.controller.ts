@@ -5,11 +5,20 @@ import { sessionManager } from "./session";
 import { getGoogle, getGitHub, isOAuthDisabled } from "./arctic";
 import { AuthService } from "./auth.service";
 import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
+import {
+  getRequestOrigin,
+  getProductionUrl,
+  isProduction,
+  isAllowedOrigin,
+  encodeOAuthState,
+  decodeOAuthState,
+  createTransferToken,
+  verifyTransferToken,
+} from "./oauth-proxy";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
 
-// Type definitions for extended Hono context
 type Variables = {
   user: any;
   session: any;
@@ -18,7 +27,6 @@ type Variables = {
 const authService = new AuthService();
 export const authRoutes = new Hono<{ Variables: Variables }>();
 
-// Helper to convert session cookie attributes to Hono format
 const convertCookieAttributes = (attributes: any) => ({
   ...attributes,
   sameSite: attributes.sameSite
@@ -27,16 +35,13 @@ const convertCookieAttributes = (attributes: any) => ({
     : undefined,
 });
 
-// Apply rate limiting to auth endpoints
 const authRateLimiter = rateLimitMiddleware(
-  parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"), // 15 minutes
+  parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"),
   parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "5"),
 );
 
-/**
- * Get auth configuration (OAuth enabled/disabled status)
- * Used by frontend to conditionally show OAuth buttons
- */
+// ── Auth config ──────────────────────────────────────────────────────────────
+
 authRoutes.get("/config", async c => {
   return c.json({
     oauthEnabled: !isOAuthDisabled(),
@@ -44,10 +49,8 @@ authRoutes.get("/config", async c => {
   });
 });
 
-/**
- * Register new user
- * Creates an unverified user and sends verification email
- */
+// ── Email/password routes (unchanged) ────────────────────────────────────────
+
 authRoutes.post("/register", authRateLimiter, async c => {
   try {
     const { email, password } = await c.req.json();
@@ -72,9 +75,6 @@ authRoutes.post("/register", authRateLimiter, async c => {
   }
 });
 
-/**
- * Verify email with code
- */
 authRoutes.post("/verify-email", authRateLimiter, async c => {
   try {
     const { email, code } = await c.req.json();
@@ -85,7 +85,6 @@ authRoutes.post("/verify-email", authRateLimiter, async c => {
 
     const { user, session } = await authService.verifyEmail(email, code);
 
-    // Set session cookie
     const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
@@ -108,9 +107,6 @@ authRoutes.post("/verify-email", authRateLimiter, async c => {
   }
 });
 
-/**
- * Resend verification email
- */
 authRoutes.post("/resend-verification", authRateLimiter, async c => {
   try {
     const { email } = await c.req.json();
@@ -129,16 +125,12 @@ authRoutes.post("/resend-verification", authRateLimiter, async c => {
   }
 });
 
-/**
- * Login user
- */
 authRoutes.post("/login", authRateLimiter, async c => {
   try {
     const { email, password } = await c.req.json();
 
     const { user, session } = await authService.login(email, password);
 
-    // Set session cookie
     const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
@@ -159,16 +151,12 @@ authRoutes.post("/login", authRateLimiter, async c => {
   }
 });
 
-/**
- * Logout user
- */
 authRoutes.post("/logout", authMiddleware, async c => {
   try {
     const session = c.get("session");
 
     await authService.logout(session.id);
 
-    // Clear session cookie
     const sessionCookie = sessionManager.createBlankSessionCookie();
     setCookie(
       c,
@@ -183,14 +171,10 @@ authRoutes.post("/logout", authMiddleware, async c => {
   }
 });
 
-/**
- * Get current user
- */
 authRoutes.get("/me", authMiddleware, async c => {
   try {
     const user = c.get("user");
 
-    // Get linked accounts
     const linkedAccounts = await authService.getLinkedAccounts(user.id);
 
     return c.json({
@@ -205,9 +189,6 @@ authRoutes.get("/me", authMiddleware, async c => {
   }
 });
 
-/**
- * Update onboarding qualification data
- */
 authRoutes.put("/onboarding", authMiddleware, async c => {
   try {
     const user = c.get("user");
@@ -230,9 +211,6 @@ authRoutes.put("/onboarding", authMiddleware, async c => {
   }
 });
 
-/**
- * Refresh session
- */
 authRoutes.post("/refresh", async c => {
   try {
     const sessionId = sessionManager.readSessionCookie(
@@ -249,7 +227,6 @@ authRoutes.post("/refresh", async c => {
       return c.json({ error: "Invalid session" }, 401);
     }
 
-    // Refresh session if needed
     if (session.fresh) {
       const sessionCookie = sessionManager.createSessionCookie(session.id);
       setCookie(
@@ -271,9 +248,6 @@ authRoutes.post("/refresh", async c => {
   }
 });
 
-/**
- * Request to set password for OAuth-only account
- */
 authRoutes.post("/request-set-password", authMiddleware, async c => {
   try {
     const user = c.get("user");
@@ -288,9 +262,6 @@ authRoutes.post("/request-set-password", authMiddleware, async c => {
   }
 });
 
-/**
- * Set password for OAuth-only account (with verification code)
- */
 authRoutes.post("/set-password", authMiddleware, async c => {
   try {
     const user = c.get("user");
@@ -314,9 +285,6 @@ authRoutes.post("/set-password", authMiddleware, async c => {
   }
 });
 
-/**
- * Request password reset
- */
 authRoutes.post("/forgot-password", authRateLimiter, async c => {
   try {
     const { email } = await c.req.json();
@@ -327,13 +295,11 @@ authRoutes.post("/forgot-password", authRateLimiter, async c => {
 
     await authService.requestPasswordReset(email);
 
-    // Always return success for security (don't reveal if email exists)
     return c.json({
       message:
         "If an account exists with this email, you will receive a password reset link.",
     });
   } catch (error: any) {
-    // Log but don't expose internal errors
     logger.error("Password reset request error", { error });
     return c.json({
       message:
@@ -342,9 +308,6 @@ authRoutes.post("/forgot-password", authRateLimiter, async c => {
   }
 });
 
-/**
- * Reset password with code
- */
 authRoutes.post("/reset-password", authRateLimiter, async c => {
   try {
     const { email, code, password } = await c.req.json();
@@ -367,31 +330,54 @@ authRoutes.post("/reset-password", authRateLimiter, async c => {
   }
 });
 
-/**
- * Google OAuth initiation
- */
+// ── Google OAuth initiation (proxy-aware) ────────────────────────────────────
+
 authRoutes.get("/google", async c => {
-  // Check if OAuth is disabled (PR preview environments)
   if (isOAuthDisabled()) {
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_disabled`);
   }
 
-  const state = generateState();
-  const codeVerifier = generateCodeVerifier();
+  const productionUrl = getProductionUrl();
 
-  // Store state and code verifier in cookies
-  setCookie(c, "google_oauth_state", state, {
+  // Non-production: redirect to production's /google with ?origin=<caller>
+  if (!isProduction(c)) {
+    const callerOrigin = getRequestOrigin(c);
+    const target = new URL(`${productionUrl}/api/auth/google`);
+    target.searchParams.set("origin", callerOrigin);
+    logger.info("OAuth proxy: redirecting to production for Google login", {
+      callerOrigin,
+    });
+    return c.redirect(target.toString());
+  }
+
+  // Production: read the caller's origin (or default to production)
+  const rawOrigin = c.req.query("origin");
+  if (rawOrigin && !isAllowedOrigin(rawOrigin)) {
+    logger.warn("OAuth proxy: rejected untrusted origin", {
+      origin: rawOrigin,
+    });
+    return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+  }
+  const origin = rawOrigin || productionUrl;
+
+  const nonce = generateState();
+  const codeVerifier = generateCodeVerifier();
+  const state = encodeOAuthState(nonce, origin);
+
+  setCookie(c, "google_oauth_state", nonce, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 10, // 10 minutes
+    maxAge: 60 * 10,
     sameSite: "Lax",
+    path: "/",
   });
 
   setCookie(c, "google_code_verifier", codeVerifier, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 10, // 10 minutes
+    maxAge: 60 * 10,
     sameSite: "Lax",
+    path: "/",
   });
 
   const url = await getGoogle().createAuthorizationURL(state, codeVerifier, [
@@ -402,23 +388,33 @@ authRoutes.get("/google", async c => {
   return c.redirect(url.toString());
 });
 
-/**
- * Google OAuth callback
- */
+// ── Google OAuth callback (always runs on production) ────────────────────────
+
 authRoutes.get("/google/callback", async c => {
   try {
     const code = c.req.query("code");
-    const state = c.req.query("state");
-    const storedState = getCookie(c, "google_oauth_state");
+    const stateParam = c.req.query("state");
+    const storedNonce = getCookie(c, "google_oauth_state");
     const codeVerifier = getCookie(c, "google_code_verifier");
 
+    // Decode and verify HMAC-signed state
+    const stateData = stateParam ? decodeOAuthState(stateParam) : null;
     if (
       !code ||
-      !state ||
-      !storedState ||
+      !stateData ||
+      !storedNonce ||
       !codeVerifier ||
-      state !== storedState
+      stateData.nonce !== storedNonce
     ) {
+      logger.warn("Google OAuth callback: invalid state or missing params");
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+    }
+
+    const callerOrigin = stateData.origin;
+    if (!isAllowedOrigin(callerOrigin)) {
+      logger.warn("Google OAuth callback: untrusted caller origin", {
+        origin: callerOrigin,
+      });
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
@@ -427,7 +423,6 @@ authRoutes.get("/google/callback", async c => {
       codeVerifier,
     );
 
-    // Attempt to extract user info from ID token first to reduce external calls
     let googleUser: any;
 
     const rawIdToken =
@@ -447,7 +442,6 @@ authRoutes.get("/google/callback", async c => {
       }
     }
 
-    // Fallback to userinfo endpoint if needed
     if (!googleUser || !googleUser.sub) {
       const response = await fetch(
         "https://openidconnect.googleapis.com/v1/userinfo",
@@ -475,52 +469,93 @@ authRoutes.get("/google/callback", async c => {
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
-    const { session, isNewUser } = await authService.handleOAuthCallback(
-      "google",
-      googleUser.sub.toString(),
-      googleUser.email,
-    );
-
-    // Set session cookie
-    const sessionCookie = sessionManager.createSessionCookie(session.id);
-    setCookie(
-      c,
-      sessionCookie.name,
-      sessionCookie.value,
-      convertCookieAttributes(sessionCookie.attributes),
-    );
-
     // Clear OAuth cookies
-    setCookie(c, "google_oauth_state", "", { maxAge: 0 });
-    setCookie(c, "google_code_verifier", "", { maxAge: 0 });
+    setCookie(c, "google_oauth_state", "", { maxAge: 0, path: "/" });
+    setCookie(c, "google_code_verifier", "", { maxAge: 0, path: "/" });
 
-    // Include new_user flag for analytics tracking on client
-    const redirectUrl = isNewUser
-      ? `${process.env.CLIENT_URL}/?new_user=google`
-      : `${process.env.CLIENT_URL}/`;
-    return c.redirect(redirectUrl);
+    const productionUrl = getProductionUrl();
+    const isCallerProduction =
+      productionUrl &&
+      new URL(callerOrigin).origin === new URL(productionUrl).origin;
+
+    if (isCallerProduction) {
+      const { session, isNewUser } = await authService.handleOAuthCallback(
+        "google",
+        googleUser.sub.toString(),
+        googleUser.email,
+      );
+
+      const sessionCookie = sessionManager.createSessionCookie(session.id);
+      setCookie(
+        c,
+        sessionCookie.name,
+        sessionCookie.value,
+        convertCookieAttributes(sessionCookie.attributes),
+      );
+
+      const redirectUrl = isNewUser
+        ? `${process.env.CLIENT_URL}/?new_user=google`
+        : `${process.env.CLIENT_URL}/`;
+      return c.redirect(redirectUrl);
+    }
+
+    // Cross-origin: send OAuth identity so the receiver can create its own local session
+    const transferToken = createTransferToken({
+      provider: "google",
+      providerUserId: googleUser.sub.toString(),
+      email: googleUser.email,
+    });
+    const receiveUrl = new URL(`${callerOrigin}/api/auth/oauth-receive`);
+    receiveUrl.searchParams.set("token", transferToken);
+    logger.info("OAuth proxy: redirecting session to caller origin", {
+      callerOrigin,
+    });
+    return c.redirect(receiveUrl.toString());
   } catch (error: any) {
     logger.error("Google OAuth error", { error });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
   }
 });
 
-/**
- * GitHub OAuth initiation
- */
+// ── GitHub OAuth initiation (proxy-aware) ────────────────────────────────────
+
 authRoutes.get("/github", async c => {
-  // Check if OAuth is disabled (PR preview environments)
   if (isOAuthDisabled()) {
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_disabled`);
   }
 
-  const state = generateState();
+  const productionUrl = getProductionUrl();
 
-  setCookie(c, "github_oauth_state", state, {
+  // Non-production: redirect to production's /github with ?origin=<caller>
+  if (!isProduction(c)) {
+    const callerOrigin = getRequestOrigin(c);
+    const target = new URL(`${productionUrl}/api/auth/github`);
+    target.searchParams.set("origin", callerOrigin);
+    logger.info("OAuth proxy: redirecting to production for GitHub login", {
+      callerOrigin,
+    });
+    return c.redirect(target.toString());
+  }
+
+  // Production: read the caller's origin (or default to production)
+  const rawOrigin = c.req.query("origin");
+  if (rawOrigin && !isAllowedOrigin(rawOrigin)) {
+    logger.warn("OAuth proxy: rejected untrusted origin", {
+      origin: rawOrigin,
+    });
+    return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+  }
+  const origin = rawOrigin || productionUrl;
+
+  const nonce = generateState();
+  const state = encodeOAuthState(nonce, origin);
+
+  setCookie(c, "github_oauth_state", nonce, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 10, // 10 minutes
+    maxAge: 60 * 10,
     sameSite: "Lax",
+    path: "/",
   });
 
   const url = await getGitHub().createAuthorizationURL(state, ["user:email"]);
@@ -528,22 +563,36 @@ authRoutes.get("/github", async c => {
   return c.redirect(url.toString());
 });
 
-/**
- * GitHub OAuth callback
- */
+// ── GitHub OAuth callback (always runs on production) ────────────────────────
+
 authRoutes.get("/github/callback", async c => {
   try {
     const code = c.req.query("code");
-    const state = c.req.query("state");
-    const storedState = getCookie(c, "github_oauth_state");
+    const stateParam = c.req.query("state");
+    const storedNonce = getCookie(c, "github_oauth_state");
 
-    if (!code || !state || !storedState || state !== storedState) {
+    // Decode and verify HMAC-signed state
+    const stateData = stateParam ? decodeOAuthState(stateParam) : null;
+    if (
+      !code ||
+      !stateData ||
+      !storedNonce ||
+      stateData.nonce !== storedNonce
+    ) {
+      logger.warn("GitHub OAuth callback: invalid state or missing params");
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+    }
+
+    const callerOrigin = stateData.origin;
+    if (!isAllowedOrigin(callerOrigin)) {
+      logger.warn("GitHub OAuth callback: untrusted caller origin", {
+        origin: callerOrigin,
+      });
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
     const tokens = await getGitHub().validateAuthorizationCode(code);
 
-    // Get user info from GitHub
     const userResponse = await fetch("https://api.github.com/user", {
       headers: {
         Authorization: `Bearer ${tokens.accessToken()}`,
@@ -557,7 +606,6 @@ authRoutes.get("/github/callback", async c => {
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
-    // Get primary email
     const emailResponse = await fetch("https://api.github.com/user/emails", {
       headers: {
         Authorization: `Bearer ${tokens.accessToken()}`,
@@ -567,13 +615,78 @@ authRoutes.get("/github/callback", async c => {
     const emails = (await emailResponse.json()) as any[];
     const primaryEmail = emails.find(e => e.primary)?.email;
 
+    // Clear OAuth cookie
+    setCookie(c, "github_oauth_state", "", { maxAge: 0, path: "/" });
+
+    const productionUrl = getProductionUrl();
+    const isCallerProduction =
+      productionUrl &&
+      new URL(callerOrigin).origin === new URL(productionUrl).origin;
+
+    if (isCallerProduction) {
+      const { session, isNewUser } = await authService.handleOAuthCallback(
+        "github",
+        githubUser.id.toString(),
+        primaryEmail || githubUser.email,
+      );
+
+      const sessionCookie = sessionManager.createSessionCookie(session.id);
+      setCookie(
+        c,
+        sessionCookie.name,
+        sessionCookie.value,
+        convertCookieAttributes(sessionCookie.attributes),
+      );
+
+      const redirectUrl = isNewUser
+        ? `${process.env.CLIENT_URL}/?new_user=github`
+        : `${process.env.CLIENT_URL}/`;
+      return c.redirect(redirectUrl);
+    }
+
+    const transferToken = createTransferToken({
+      provider: "github",
+      providerUserId: githubUser.id.toString(),
+      email: primaryEmail || githubUser.email,
+    });
+    const receiveUrl = new URL(`${callerOrigin}/api/auth/oauth-receive`);
+    receiveUrl.searchParams.set("token", transferToken);
+    logger.info("OAuth proxy: redirecting session to caller origin", {
+      callerOrigin,
+    });
+    return c.redirect(receiveUrl.toString());
+  } catch (error: any) {
+    logger.error("GitHub OAuth error", { error });
+    return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+  }
+});
+
+// ── OAuth receive endpoint (non-production instances) ────────────────────────
+// After the production callback completes OAuth, it redirects the user here
+// with a signed transfer token. This endpoint verifies the token, sets the
+// session cookie locally, and redirects to the frontend.
+
+authRoutes.get("/oauth-receive", async c => {
+  try {
+    const token = c.req.query("token");
+
+    if (!token) {
+      logger.warn("OAuth receive: missing token");
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+    }
+
+    const transferData = verifyTransferToken(token);
+    if (!transferData) {
+      logger.warn("OAuth receive: invalid or expired transfer token");
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+    }
+
     const { session, isNewUser } = await authService.handleOAuthCallback(
-      "github",
-      githubUser.id.toString(),
-      primaryEmail || githubUser.email,
+      transferData.provider as "google" | "github",
+      transferData.providerUserId,
+      transferData.email,
     );
 
-    // Set session cookie
     const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
@@ -582,16 +695,12 @@ authRoutes.get("/github/callback", async c => {
       convertCookieAttributes(sessionCookie.attributes),
     );
 
-    // Clear OAuth cookie
-    setCookie(c, "github_oauth_state", "", { maxAge: 0 });
-
-    // Include new_user flag for analytics tracking on client
     const redirectUrl = isNewUser
-      ? `${process.env.CLIENT_URL}/?new_user=github`
+      ? `${process.env.CLIENT_URL}/?new_user=${transferData.provider}`
       : `${process.env.CLIENT_URL}/`;
     return c.redirect(redirectUrl);
   } catch (error: any) {
-    logger.error("GitHub OAuth error", { error });
+    logger.error("OAuth receive error", { error });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
   }
 });
