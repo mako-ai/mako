@@ -50,7 +50,7 @@ import {
   getAllAgentMeta,
   type AgentContext,
 } from "../agents";
-import { toNum } from "../utils/safe-num";
+import { toNum, extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.agent();
 
@@ -513,14 +513,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         const usage = step.usage as Record<string, unknown> | undefined;
         if (!usage) continue;
 
-        const sInput =
-          usage.promptTokens !== undefined
-            ? toNum(usage.promptTokens)
-            : toNum(usage.inputTokens);
-        const sOutput =
-          usage.completionTokens !== undefined
-            ? toNum(usage.completionTokens)
-            : toNum(usage.outputTokens);
+        const { inputTokens: sInput, outputTokens: sOutput } =
+          extractTokenCounts(usage);
 
         const details = usage.inputTokenDetails as
           | Record<string, unknown>
@@ -561,14 +555,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
             string,
             unknown
           >;
-          inputTokens =
-            usage?.promptTokens !== undefined
-              ? toNum(usage.promptTokens)
-              : toNum(usage?.inputTokens);
-          outputTokens =
-            usage?.completionTokens !== undefined
-              ? toNum(usage.completionTokens)
-              : toNum(usage?.outputTokens);
+          const extracted = extractTokenCounts(usage ?? {});
+          inputTokens = extracted.inputTokens;
+          outputTokens = extracted.outputTokens;
 
           const details = usage?.inputTokenDetails as
             | Record<string, unknown>

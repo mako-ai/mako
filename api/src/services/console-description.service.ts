@@ -3,6 +3,7 @@ import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import {
   isGatewayMode,
   getUtilityModelId,
+  getUtilityModelPreference,
   getConfiguredProviders,
   getAvailableModels,
 } from "../agent-lib/ai-models";
@@ -14,7 +15,7 @@ import {
   isEmbeddingAvailable,
   getEmbeddingModelName,
 } from "./embedding.service";
-import { toNum } from "../utils/safe-num";
+import { extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.app();
 
@@ -25,14 +26,7 @@ function processDescriptionResult(
   trackingCtx?: DescriptionTrackingContext | null,
 ): string | null {
   if (trackingCtx) {
-    const inputTokens =
-      usage.promptTokens !== undefined
-        ? toNum(usage.promptTokens)
-        : toNum(usage.inputTokens);
-    const outputTokens =
-      usage.completionTokens !== undefined
-        ? toNum(usage.completionTokens)
-        : toNum(usage.outputTokens);
+    const { inputTokens, outputTokens } = extractTokenCounts(usage);
     void trackUsage({
       workspaceId: trackingCtx.workspaceId,
       userId: trackingCtx.userId,
@@ -148,8 +142,7 @@ export async function generateConsoleDescription(
             ...gatewayBase,
             models: [
               utilityModel,
-              "anthropic/claude-3-5-haiku-latest",
-              "google/gemini-2.5-flash",
+              ...getUtilityModelPreference().filter(id => id !== utilityModel),
             ],
           } satisfies GatewayLanguageModelOptions,
         },

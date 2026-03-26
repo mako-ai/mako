@@ -189,6 +189,14 @@ export function getUtilityModelId(): string | undefined {
 }
 
 /**
+ * Returns the ordered utility model preference list.
+ * Useful for building gateway failover lists that stay in sync.
+ */
+export function getUtilityModelPreference(): readonly string[] {
+  return UTILITY_PREFERENCE;
+}
+
+/**
  * Get a specific model by its ID.
  */
 export function getModelById(modelId: string): AIModel | undefined {

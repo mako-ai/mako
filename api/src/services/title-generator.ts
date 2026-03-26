@@ -8,7 +8,7 @@ import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
-import { toNum } from "../utils/safe-num";
+import { extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.agent();
 
@@ -55,15 +55,9 @@ export const generateChatTitle = async (
     });
 
     if (ctx) {
-      const u = usage as Record<string, unknown>;
-      const inputTokens =
-        u.promptTokens !== undefined
-          ? toNum(u.promptTokens)
-          : toNum(u.inputTokens);
-      const outputTokens =
-        u.completionTokens !== undefined
-          ? toNum(u.completionTokens)
-          : toNum(u.outputTokens);
+      const { inputTokens, outputTokens } = extractTokenCounts(
+        usage as Record<string, unknown>,
+      );
       void trackUsage({
         workspaceId: ctx.workspaceId,
         userId: ctx.userId,
