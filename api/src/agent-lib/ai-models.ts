@@ -192,4 +192,3 @@ export function getUtilityModelId(): string {
 export function getModelById(modelId: string): AIModel | undefined {
   return ALL_MODELS.find(model => model.id === modelId);
 }
-

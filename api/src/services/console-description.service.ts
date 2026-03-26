@@ -112,14 +112,21 @@ export async function generateConsoleDescription(
     }
   }
 
-  const modelsToTry = getAvailableModels().map(m => m.id);
+  const CHEAP_MODEL_IDS = new Set([
+    "openai/gpt-4o-mini",
+    "anthropic/claude-3-5-haiku-latest",
+    "google/gemini-2.5-flash",
+    "openai/gpt-4o",
+    "google/gemini-2.5-pro",
+  ]);
+  const available = getAvailableModels()
+    .filter(m => CHEAP_MODEL_IDS.has(m.id))
+    .map(m => m.id);
+
   const preferredId = getUtilityModelId();
-  if (!modelsToTry.includes(preferredId)) {
-    modelsToTry.unshift(preferredId);
-  } else {
-    modelsToTry.splice(modelsToTry.indexOf(preferredId), 1);
-    modelsToTry.unshift(preferredId);
-  }
+  const modelsToTry = available.includes(preferredId)
+    ? [preferredId, ...available.filter(id => id !== preferredId)]
+    : [preferredId, ...available];
 
   for (const modelId of modelsToTry) {
     try {
