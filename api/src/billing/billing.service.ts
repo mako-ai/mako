@@ -323,21 +323,34 @@ export async function syncSubscriptionToWorkspace(
     status === "active" || status === "trialing" ? "pro" : "free";
   const planDef = PLAN_DEFINITIONS[plan];
 
+  const newPeriodStart = new Date(subscription.current_period_start * 1000);
+
   const update: Record<string, unknown> = {
     "billing.stripeSubscriptionId": subscription.id,
     "billing.subscriptionStatus": status,
-    "billing.currentPeriodStart": new Date(
-      subscription.current_period_start * 1000,
-    ),
+    "billing.currentPeriodStart": newPeriodStart,
     "billing.currentPeriodEnd": new Date(
       subscription.current_period_end * 1000,
     ),
     "billing.plan": plan,
     "billing.usageQuotaUsd": planDef.usageQuotaUsd,
     "billing.hardLimitUsd": planDef.hardLimitUsd,
-    "billing.lastReportedOverageCents": 0,
     "settings.billingTier": plan,
   };
+
+  // Only reset the overage tracker when the billing period actually changes
+  // (i.e. subscription renewal), not on every subscription.updated event
+  // (which also fires for card updates, metadata edits, etc.)
+  const ws = await Workspace.findById(wsId).select(
+    "billing.currentPeriodStart",
+  );
+  const existingPeriodStart = ws?.billing?.currentPeriodStart;
+  const periodChanged =
+    !existingPeriodStart ||
+    existingPeriodStart.getTime() !== newPeriodStart.getTime();
+  if (periodChanged) {
+    update["billing.lastReportedOverageCents"] = 0;
+  }
 
   // Also store customer ID if present
   const customerId =
