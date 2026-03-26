@@ -22,7 +22,7 @@ import {
   getAvailableModels,
   getDefaultModelId,
   isGatewayMode,
-  DEFAULT_FREE_MODEL_ID,
+  getDefaultFreeModelId,
 } from "../agent-lib/ai-models";
 import { getGatewayModels } from "../services/gateway-models.service";
 import {
@@ -318,7 +318,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   let effectiveDefaultModelId: string | undefined;
   if (!modelId) {
     effectiveDefaultModelId =
-      plan === "free" ? DEFAULT_FREE_MODEL_ID : getDefaultModelId();
+      plan === "free" ? getDefaultFreeModelId() : getDefaultModelId();
   } else {
     effectiveDefaultModelId = getDefaultModelId();
   }
