@@ -503,6 +503,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         `DELETE FROM ${fullLive} WHERE ${where}`,
       );
       if (!result.success) {
+        const notFound =
+          result.error &&
+          /not found|does not exist/i.test(result.error);
+        if (notFound) {
+          log.info("Skipping hard delete — live table does not exist yet", {
+            table: layout.tableName,
+          });
+          return;
+        }
         throw new Error(result.error || "BigQuery hard delete failed");
       }
     }
