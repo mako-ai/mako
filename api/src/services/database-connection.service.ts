@@ -1455,16 +1455,21 @@ export class DatabaseConnectionService {
       }
 
       if (Array.isArray(data.errors) && data.errors.length > 0) {
-        return {
-          success: false,
-          error: data.errors
-            .map(
-              (e: { message?: string }) =>
-                (e && typeof e.message === "string" && e.message) ||
-                "BigQuery job error",
-            )
-            .join("; "),
-        };
+        const fatalErrors = data.errors.filter(
+          (e: { reason?: string }) => e?.reason !== "warning",
+        );
+        if (fatalErrors.length > 0) {
+          return {
+            success: false,
+            error: fatalErrors
+              .map(
+                (e: { message?: string }) =>
+                  (e && typeof e.message === "string" && e.message) ||
+                  "BigQuery job error",
+              )
+              .join("; "),
+          };
+        }
       }
 
       // Collect results
