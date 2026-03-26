@@ -170,18 +170,54 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           );
         }
       } else {
-        for (const event of deletes) {
+        // Batch hard deletes into a single DELETE ... WHERE (id, _dataSourceId) IN (...) statement
+        // instead of N sequential deleteByKeys calls.
+        const destination = await this.resolveDestination();
+        const conn = destination.connection as any;
+        const projectId = conn.project_id;
+        const dataset = this.config.tableDestination.schema;
+        const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+        const fullTableName = `${escId(projectId)}.${escId(dataset)}.${escId(params.layout.tableName)}`;
+
+        const hasDataSourceId = deletes.some(event => {
           const payload = normalizePayloadKeys(event.payload || {});
-          const dataSourceId =
-            payload._dataSourceId ?? fallbackDataSourceId ?? undefined;
-          const keyFilters: Record<string, unknown> = { id: event.recordId };
-          if (dataSourceId !== undefined) {
-            keyFilters._dataSourceId = dataSourceId;
-          }
-          const remove = await writer.deleteByKeys(keyFilters);
-          if (!remove.success) {
+          return (
+            (payload._dataSourceId ?? fallbackDataSourceId) !== undefined
+          );
+        });
+
+        const escStr = (v: string) => v.replace(/'/g, "\\'");
+
+        if (hasDataSourceId) {
+          const tuples = deletes.map(event => {
+            const payload = normalizePayloadKeys(event.payload || {});
+            const dsId = String(
+              payload._dataSourceId ?? fallbackDataSourceId ?? "",
+            );
+            return `('${escStr(event.recordId)}', '${escStr(dsId)}')`;
+          });
+          const deleteQuery = `DELETE FROM ${fullTableName} WHERE (${escId("id")}, ${escId("_dataSourceId")}) IN (${tuples.join(", ")})`;
+          const result = await databaseConnectionService.executeQuery(
+            destination,
+            deleteQuery,
+          );
+          if (!result.success) {
             throw new Error(
-              remove.error || "Failed to apply BigQuery CDC hard delete",
+              result.error || "Failed to apply BigQuery CDC hard deletes",
+            );
+          }
+        } else {
+          const ids = deletes.map(
+            event => `'${escStr(event.recordId)}'`,
+          );
+          const deleteQuery = `DELETE FROM ${fullTableName} WHERE ${escId("id")} IN (${ids.join(", ")})`;
+          const result = await databaseConnectionService.executeQuery(
+            destination,
+            deleteQuery,
+          );
+          if (!result.success) {
+            throw new Error(
+              result.error || "Failed to apply BigQuery CDC hard deletes",
             );
           }
         }

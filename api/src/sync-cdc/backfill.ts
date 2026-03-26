@@ -1,6 +1,7 @@
 import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
+import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
 import {
   CdcEntityState,
   CdcStateTransition,
@@ -462,14 +463,23 @@ export class CdcBackfillService {
         .lean();
 
       if (stuckWebhookEvents.length > 0) {
+        const destConn = flow.destinationDatabaseId
+          ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+              .select("type")
+              .lean()
+          : null;
         for (const evt of stuckWebhookEvents) {
-          await inngest.send({
-            name: "webhook/event.process",
-            data: {
-              flowId,
-              eventId: (evt as any).eventId,
-              isReplay: true,
+          await enqueueWebhookProcess({
+            flowId,
+            workspaceId,
+            eventId: (evt as { eventId: string }).eventId,
+            isReplay: true,
+            flow: {
+              syncEngine: flow.syncEngine,
+              destinationDatabaseId: flow.destinationDatabaseId,
+              tableDestination: flow.tableDestination,
             },
+            destinationTypeHint: destConn?.type,
           });
         }
         webhookEventsDrained = stuckWebhookEvents.length;

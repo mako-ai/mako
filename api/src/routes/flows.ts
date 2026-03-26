@@ -11,6 +11,10 @@ import {
 } from "../database/workspace-schema";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
+import {
+  enqueueWebhookProcess,
+  type WebhookFlowRoutingHint,
+} from "../inngest/webhook-process-enqueue";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -2857,13 +2861,21 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
     event.status = "pending";
     await event.save();
 
-    // Trigger processing
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
-        flowId: event.flowId.toString(),
-        eventId: event.eventId,
-      },
+    const flowDoc = await Flow.findById(event.flowId)
+      .select("syncEngine destinationDatabaseId tableDestination")
+      .lean();
+    const destConn =
+      flowDoc?.destinationDatabaseId != null
+        ? await DatabaseConnection.findById(flowDoc.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
+    await enqueueWebhookProcess({
+      flowId: event.flowId.toString(),
+      eventId: event.eventId,
+      flow: flowDoc as WebhookFlowRoutingHint,
+      destinationTypeHint: destConn?.type,
     });
 
     return c.json({
