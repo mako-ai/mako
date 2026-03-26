@@ -1454,19 +1454,6 @@ export class DatabaseConnectionService {
         };
       }
 
-      if (Array.isArray(data.errors) && data.errors.length > 0) {
-        return {
-          success: false,
-          error: data.errors
-            .map(
-              (e: { message?: string }) =>
-                (e && typeof e.message === "string" && e.message) ||
-                "BigQuery job error",
-            )
-            .join("; "),
-        };
-      }
-
       // Collect results
       if (Array.isArray(data.rows) && schema) {
         rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
