@@ -139,7 +139,17 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (rows.length > 0) {
-      await this.writeViaParquet({ records: rows, layout: params.layout, flow: params.flow });
+      const cdcBatchThreshold = Number.parseInt(
+        process.env.BIGQUERY_CDC_BATCH_THRESHOLD || "1000",
+        10,
+      );
+      const threshold = Number.isFinite(cdcBatchThreshold) ? cdcBatchThreshold : 1000;
+
+      if (rows.length <= threshold) {
+        await this.writeViaStreamingInsert({ records: rows, layout: params.layout });
+      } else {
+        await this.writeViaParquet({ records: rows, layout: params.layout, flow: params.flow });
+      }
     }
 
     if (deleteMode === "hard" && deletes.length > 0) {
@@ -274,10 +284,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const allColumns = Array.from(new Set([...stagingCols, ...liveCols]));
 
     const keyColumns = layout.keyColumns;
-    const joinCondition = keyColumns
-      .map(k => `T.${escId(k)} = S.${escId(k)}`)
-      .join(" AND ");
     const nonKeyColumns = allColumns.filter(c => !keyColumns.includes(c));
+
+    const joinCondition = keyColumns
+      .map(k => {
+        const stagingType = stagingTypes.get(k);
+        const liveType = liveTypes.get(k);
+        if (stagingType && liveType && stagingType !== liveType) {
+          return `CAST(T.${escId(k)} AS STRING) = CAST(S.${escId(k)} AS STRING)`;
+        }
+        return `T.${escId(k)} = S.${escId(k)}`;
+      })
+      .join(" AND ");
 
     const hasSourceTs = allColumns.includes("_mako_source_ts");
     const hasIngestSeq = allColumns.includes("_mako_ingest_seq");
@@ -288,10 +306,26 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         : "";
 
     const updateSet = nonKeyColumns
-      .map(c => `${escId(c)} = S.${escId(c)}`)
+      .map(c => {
+        const stagingType = stagingTypes.get(c);
+        const liveType = liveTypes.get(c);
+        if (stagingType && liveType && stagingType !== liveType) {
+          return `${escId(c)} = SAFE_CAST(S.${escId(c)} AS ${liveType})`;
+        }
+        return `${escId(c)} = S.${escId(c)}`;
+      })
       .join(", ");
     const insertCols = allColumns.map(escId).join(", ");
-    const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
+    const insertVals = allColumns
+      .map(c => {
+        const stagingType = stagingTypes.get(c);
+        const liveType = liveTypes.get(c);
+        if (stagingType && liveType && stagingType !== liveType) {
+          return `SAFE_CAST(S.${escId(c)} AS ${liveType})`;
+        }
+        return `S.${escId(c)}`;
+      })
+      .join(", ");
 
     const dedupKey = keyColumns.map(escId).join(", ");
     const dedupSource = `(SELECT * FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
@@ -431,6 +465,41 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     );
 
     log.info("Cleaned up staging table", { stagingTable, dataset });
+  }
+
+  private async writeViaStreamingInsert(params: {
+    records: Record<string, unknown>[];
+    layout: CdcEntityLayout;
+  }): Promise<{ written: number }> {
+    if (params.records.length === 0) return { written: 0 };
+
+    const destination = await this.resolveDestination();
+    const driver = databaseRegistry.getDriver(destination.type);
+    if (!driver?.insertBatch) {
+      throw new Error(
+        `Driver ${destination.type} does not support insertBatch`,
+      );
+    }
+
+    const result = await driver.insertBatch(
+      destination,
+      params.layout.tableName,
+      params.records,
+      {
+        schema: this.config.tableDestination.schema,
+      },
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || "BigQuery streaming insert failed");
+    }
+
+    log.info("CDC events written via streaming INSERT", {
+      table: params.layout.tableName,
+      rows: params.records.length,
+    });
+
+    return { written: params.records.length };
   }
 
   private async writeViaParquet(params: {
