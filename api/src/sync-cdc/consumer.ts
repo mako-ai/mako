@@ -112,7 +112,7 @@ export class CdcConsumerService {
       flowId: params.flowId,
       entity: params.entity,
       afterIngestSeq,
-      limit: params.maxEvents || 500,
+      limit: params.maxEvents || 7500,
     });
 
     if (pending.length === 0) {

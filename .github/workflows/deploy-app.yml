@@ -451,7 +451,7 @@ jobs:
           gcloud run deploy ${SERVICE_NAME} \
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
-            --timeout=600 \
+            --timeout=3600 \
             --memory=1Gi \
             --min-instances=0 \
             --max-instances=2 \
@@ -786,7 +786,7 @@ jobs:
           gcloud run deploy ${SERVICE_NAME} \
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
-            --timeout=600 \
+            --timeout=3600 \
             --memory=1Gi \
             --min-instances=1 \
             --network=mako-vpc \

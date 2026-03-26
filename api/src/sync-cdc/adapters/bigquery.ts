@@ -20,6 +20,57 @@ import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 
 const log = loggers.sync("cdc.adapter.bigquery");
 
+function normalizeBqInfoSchemaType(t: string): string {
+  return t.trim().toUpperCase();
+}
+
+/**
+ * When live and staging disagree on column type, cast staging values to the live column type for MERGE.
+ * Webhook-created tables often used inferred types from early payloads; Parquet backfill may disagree.
+ * - preferSafeCast: use SAFE_CAST so one bad cell does not fail the whole MERGE (non-key columns only).
+ */
+function stagingExprForLiveColumn(
+  column: string,
+  liveTypes: Map<string, string>,
+  stagingTypes: Map<string, string>,
+  escId: (id: string) => string,
+  opts?: { preferSafeCast?: boolean },
+): string {
+  const sRef = `S.${escId(column)}`;
+  const liveT = liveTypes.get(column);
+  const stagingT = stagingTypes.get(column);
+  if (!liveT || !stagingT) {
+    return sRef;
+  }
+  const lt = normalizeBqInfoSchemaType(liveT);
+  const st = normalizeBqInfoSchemaType(stagingT);
+  if (lt === st) {
+    return sRef;
+  }
+  const fn = opts?.preferSafeCast ? "SAFE_CAST" : "CAST";
+  return `${fn}(${sRef} AS ${lt})`;
+}
+
+/** Join keys: coerce both sides to STRING when BQ types differ (e.g. INT64 id vs STRING id). */
+function mergeJoinExprForKey(
+  key: string,
+  liveTypes: Map<string, string>,
+  stagingTypes: Map<string, string>,
+  escId: (id: string) => string,
+): string {
+  const liveT = liveTypes.get(key);
+  const stagingT = stagingTypes.get(key);
+  if (!liveT || !stagingT) {
+    return `T.${escId(key)} = S.${escId(key)}`;
+  }
+  const lt = normalizeBqInfoSchemaType(liveT);
+  const st = normalizeBqInfoSchemaType(stagingT);
+  if (lt === st) {
+    return `T.${escId(key)} = S.${escId(key)}`;
+  }
+  return `CAST(T.${escId(key)} AS STRING) = CAST(S.${escId(key)} AS STRING)`;
+}
+
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
@@ -170,6 +221,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           );
         }
       } else {
+        // Hard deletes: writer API is single-row deleteByKeys; upserts above already use writeBatch.
         for (const event of deletes) {
           const payload = normalizePayloadKeys(event.payload || {});
           const dataSourceId =
@@ -237,6 +289,40 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return {
       written: write.rowsWritten,
     };
+  }
+
+  async getLiveTableColumnTypes(
+    layout: CdcEntityLayout,
+  ): Promise<Map<string, string> | undefined> {
+    try {
+      const destination = await this.resolveDestination();
+      const conn = destination.connection as any;
+      const projectId = conn.project_id;
+      const dataset = this.config.tableDestination.schema;
+      const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+
+      const result = await databaseConnectionService.executeQuery(
+        destination,
+        `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${layout.tableName.replace(/'/g, "''")}'`,
+      );
+      if (!result.success || !result.data?.length) return undefined;
+
+      const types = new Map<string, string>();
+      for (const r of result.data as any[]) {
+        types.set(r.column_name as string, r.data_type as string);
+      }
+      log.info("Read live table column types for Parquet alignment", {
+        table: layout.tableName,
+        columnCount: types.size,
+      });
+      return types;
+    } catch (err) {
+      log.warn("Could not read live table schema; Parquet will use inferred types", {
+        table: layout.tableName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
   }
 
   async loadStagingFromParquet(
@@ -333,18 +419,24 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const schemaResult = await databaseConnectionService.executeQuery(
       destination,
-      `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`,
+      `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`,
     );
-    const columnTypeMap = new Map<string, string>();
+    const liveTypes = new Map<string, string>();
+    const stagingTypes = new Map<string, string>();
     for (const r of (schemaResult.data as any[]) || []) {
-      if (!columnTypeMap.has(r.column_name)) {
-        columnTypeMap.set(r.column_name as string, r.data_type as string);
+      const tableName = r.table_name as string;
+      const columnName = r.column_name as string;
+      const dataType = r.data_type as string;
+      if (tableName === liveTable) {
+        liveTypes.set(columnName, dataType);
+      } else if (tableName === stagingTable) {
+        stagingTypes.set(columnName, dataType);
       }
     }
 
     const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
     for (const col of missingInLive) {
-      const colType = columnTypeMap.get(col) || "STRING";
+      const colType = stagingTypes.get(col) || "STRING";
       await databaseConnectionService.executeQuery(
         destination,
         `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
@@ -360,7 +452,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const missingInStaging = [...liveCols].filter(c => !stagingCols.has(c));
     for (const col of missingInStaging) {
-      const colType = columnTypeMap.get(col) || "STRING";
+      const colType = liveTypes.get(col) || "STRING";
       await databaseConnectionService.executeQuery(
         destination,
         `ALTER TABLE ${fullStaging} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
@@ -377,8 +469,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const allColumns = Array.from(new Set([...stagingCols, ...liveCols]));
 
     const keyColumns = layout.keyColumns;
+    const keySet = new Set(keyColumns);
     const joinCondition = keyColumns
-      .map(k => `T.${escId(k)} = S.${escId(k)}`)
+      .map(k => mergeJoinExprForKey(k, liveTypes, stagingTypes, escId))
       .join(" AND ");
     const nonKeyColumns = allColumns.filter(c => !keyColumns.includes(c));
 
@@ -391,10 +484,19 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         : "";
 
     const updateSet = nonKeyColumns
-      .map(c => `${escId(c)} = S.${escId(c)}`)
+      .map(
+        c =>
+          `${escId(c)} = ${stagingExprForLiveColumn(c, liveTypes, stagingTypes, escId, { preferSafeCast: true })}`,
+      )
       .join(", ");
     const insertCols = allColumns.map(escId).join(", ");
-    const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
+    const insertVals = allColumns
+      .map(c =>
+        stagingExprForLiveColumn(c, liveTypes, stagingTypes, escId, {
+          preferSafeCast: !keySet.has(c),
+        }),
+      )
+      .join(", ");
 
     const dedupKey = keyColumns.map(escId).join(", ");
     const dedupSource = `(SELECT * FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
@@ -407,9 +509,19 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       WHEN NOT MATCHED THEN INSERT (${insertCols}) VALUES (${insertVals})
     `;
 
+    const mergeMaxWaitEnv = Number.parseInt(
+      process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
+      10,
+    );
+    const mergeMaxWaitMs =
+      Number.isFinite(mergeMaxWaitEnv) && mergeMaxWaitEnv >= 10_000
+        ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
+        : 50 * 60 * 1000;
+
     const result = await databaseConnectionService.executeQuery(
       destination,
       mergeQuery,
+      { bigQueryJobMaxWaitMs: mergeMaxWaitMs },
     );
     if (!result.success) {
       throw new Error(result.error || "BigQuery staging MERGE failed");

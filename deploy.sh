@@ -202,13 +202,13 @@ docker push $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest
   awk -F= '/^[^#]/ && NF==2 && $1!="NODE_ENV" && $1!="BASE_URL" && $1!="CLIENT_URL" && $1!="VITE_API_URL" && $1!="DASHBOARD_ARTIFACT_STORE" && $1!="GCS_DASHBOARD_BUCKET" && $1!="DASHBOARD_ARTIFACT_PREFIX" && $1!="INNGEST_SERVE_ORIGIN" && $1!="DISABLE_SCHEDULED_SYNC" && $1!="INNGEST_ENV" {print $1": \""$2"\""}' .env
 } > env.yaml
 
-# Update Cloud Run service
+# Update Cloud Run service (3600s: Inngest bulk Parquet → BigQuery can exceed 10m)
 gcloud run deploy mako \
   --image $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest \
   --region $REGION \
   --env-vars-file env.yaml \
   --min-instances=1 \
-  --timeout=600 \
+  --timeout=3600 \
   --network=mako-vpc \
   --subnet=mako-subnet \
   --vpc-egress=all-traffic

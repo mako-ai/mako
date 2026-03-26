@@ -8,11 +8,14 @@ import {
 import { SyncLogger, FetchState } from "../connectors/base/BaseConnector";
 import {
   DatabaseConnection,
-  ITableDestination,
   Flow,
+  ITableDestination,
 } from "../database/workspace-schema";
 import { createDestinationWriter } from "../services/destination-writer.service";
-import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";
+import {
+  buildParquetFromBatches,
+  bigQueryTypeToDuckDb,
+} from "../utils/streaming-parquet-builder";
 import { Db, Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
@@ -921,8 +924,21 @@ async function flushBulkBuffer(
   const count = await tempCollection.countDocuments();
   if (count === 0) return;
 
+  // Read the live table's column types so Parquet staging matches exactly.
+  let columnTypeOverrides: Map<string, string> | undefined;
+  if (cdcAdapter.getLiveTableColumnTypes) {
+    const bqTypes = await cdcAdapter.getLiveTableColumnTypes(cdcLayout);
+    if (bqTypes && bqTypes.size > 0) {
+      columnTypeOverrides = new Map<string, string>();
+      for (const [col, bqType] of bqTypes) {
+        columnTypeOverrides.set(col, bigQueryTypeToDuckDb(bqType));
+      }
+    }
+  }
+
   const parquet = await buildParquetFromBatches({
     filenameBase: `backfill-${entity}`,
+    columnTypeOverrides,
     streamBatches: async insertBatch => {
       const cursor = tempCollection.find(
         {},
