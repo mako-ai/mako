@@ -136,6 +136,11 @@ export const PROVIDER_ENV_KEYS: Record<AIProvider, string> = {
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
 };
 
+/**
+ * Default model for free-plan users who don't specify a model.
+ */
+export const DEFAULT_FREE_MODEL_ID = "anthropic/claude-3-5-haiku-latest";
+
 export function isGatewayMode(): boolean {
   return !!process.env.AI_GATEWAY_API_KEY;
 }
