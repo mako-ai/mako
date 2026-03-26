@@ -13,11 +13,14 @@
  *    This is the default for self-hosted / open-source deployments.
  */
 
-import { createGateway, type LanguageModel } from "ai";
+import { type LanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
+import {
+  createGateway,
+  type GatewayLanguageModelOptions,
+} from "@ai-sdk/gateway";
 import { isGatewayMode } from "./ai-models";
 
 export type { GatewayLanguageModelOptions };

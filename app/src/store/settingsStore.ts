@@ -71,6 +71,17 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "settings-storage",
+      version: 1,
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as Record<string, unknown>;
+        if (version === 0 && state.selectedModelId) {
+          const id = state.selectedModelId as string;
+          if (!id.includes("/")) {
+            state.selectedModelId = `anthropic/${id}`;
+          }
+        }
+        return state as unknown as SettingsState;
+      },
       // Only persist specific fields
       partialize: state => ({
         selectedModelId: state.selectedModelId,
