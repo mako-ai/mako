@@ -187,14 +187,14 @@ export async function lookupPricing(modelId: string): Promise<PricingRow[]> {
 
   // Try converting dashes to dots for Anthropic-style IDs:
   // "anthropic/claude-opus-4-6" → "anthropic/claude-opus-4.6"
-  const dotVariant = modelId.replace(/(\d)-(\d)/g, "$1.$2");
+  const dotVariant = modelId.replace(/(\d)-(?=\d)/g, "$1.");
   if (dotVariant !== modelId) {
     const dotMatch = map.get(dotVariant);
     if (dotMatch) return dotMatch;
   }
 
   // Try converting dots to dashes for the reverse case
-  const dashVariant = modelId.replace(/(\d)\.(\d)/g, "$1-$2");
+  const dashVariant = modelId.replace(/(\d)\.(?=\d)/g, "$1-");
   if (dashVariant !== modelId) {
     const dashMatch = map.get(dashVariant);
     if (dashMatch) return dashMatch;
