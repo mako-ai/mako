@@ -113,6 +113,18 @@ billingRoutes.post("/checkout", async (c: AuthenticatedContext) => {
   const successUrl = body.successUrl || `${clientUrl}/settings?billing=success`;
   const cancelUrl = body.cancelUrl || `${clientUrl}/settings?billing=cancel`;
 
+  const allowedOrigin = new URL(clientUrl).origin;
+  try {
+    if (new URL(successUrl).origin !== allowedOrigin) {
+      return c.json({ error: "Invalid successUrl" }, 400);
+    }
+    if (new URL(cancelUrl).origin !== allowedOrigin) {
+      return c.json({ error: "Invalid cancelUrl" }, 400);
+    }
+  } catch {
+    return c.json({ error: "Invalid redirect URL" }, 400);
+  }
+
   try {
     const workspace = await Workspace.findById(workspaceId);
     if (!workspace) {
@@ -168,6 +180,15 @@ billingRoutes.post("/portal", async (c: AuthenticatedContext) => {
 
   const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
   const returnUrl = body.returnUrl || `${clientUrl}/settings`;
+
+  const allowedOrigin = new URL(clientUrl).origin;
+  try {
+    if (new URL(returnUrl).origin !== allowedOrigin) {
+      return c.json({ error: "Invalid returnUrl" }, 400);
+    }
+  } catch {
+    return c.json({ error: "Invalid redirect URL" }, 400);
+  }
 
   try {
     const workspace = await Workspace.findById(workspaceId);
