@@ -97,7 +97,7 @@
 [data-streamdown="table-wrapper"] {
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
-  overflow: hidden;
+  overflow: auto;
   padding: 0 !important;
   border-color: hsl(240 5.9% 90%) !important;
 }
