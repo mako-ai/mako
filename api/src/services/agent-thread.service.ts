@@ -613,6 +613,7 @@ export interface ChatUsageData {
   completionTokens: number;
   totalTokens: number;
   cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   reasoningTokens?: number;
   costUsd?: number;
   model?: string;
@@ -664,6 +665,7 @@ export const saveChat = async (
       "usage.completionTokens": usage.completionTokens,
       "usage.totalTokens": usage.totalTokens,
       "usage.cacheReadTokens": usage.cacheReadTokens ?? 0,
+      "usage.cacheWriteTokens": usage.cacheWriteTokens ?? 0,
       "usage.reasoningTokens": usage.reasoningTokens ?? 0,
       "usage.costUsd": usage.costUsd ?? 0,
     };
@@ -675,6 +677,7 @@ export const saveChat = async (
         completionTokens: usage.completionTokens,
         totalTokens: usage.totalTokens,
         cacheReadTokens: usage.cacheReadTokens ?? 0,
+        cacheWriteTokens: usage.cacheWriteTokens ?? 0,
         reasoningTokens: usage.reasoningTokens ?? 0,
         costUsd: usage.costUsd ?? 0,
         model: usage.model,

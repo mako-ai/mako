@@ -193,10 +193,3 @@ export function getModelById(modelId: string): AIModel | undefined {
   return ALL_MODELS.find(model => model.id === modelId);
 }
 
-/**
- * Get the default model definition.
- */
-export function getDefaultModel(): AIModel {
-  const id = getDefaultModelId();
-  return ALL_MODELS.find(m => m.id === id) || ALL_MODELS[0];
-}

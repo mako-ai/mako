@@ -33,7 +33,6 @@ export {
   getConfiguredProviders,
   getAvailableModels,
   getModelById,
-  getDefaultModel,
   getDefaultModelId,
   getUtilityModelId,
 } from "./ai-models";

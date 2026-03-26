@@ -640,6 +640,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           completionTokens: outputTokens,
           totalTokens,
           cacheReadTokens,
+          cacheWriteTokens,
           reasoningTokens,
           costUsd,
           model: resolvedModelId,
