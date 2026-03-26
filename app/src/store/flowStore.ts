@@ -877,7 +877,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC backfill");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -904,7 +903,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to reset column");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -926,7 +924,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to reset entity table");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -947,7 +944,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC stream");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -968,7 +964,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to pause CDC stream");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -987,7 +982,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to pause CDC flow");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -1006,7 +1000,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to resume CDC flow");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -1028,7 +1021,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to resync CDC flow");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {
@@ -1052,7 +1044,6 @@ export const useFlowStore = create<FlowStore>()(
           if (!response.success) {
             throw new Error(response.error || "Failed to recover CDC flow");
           }
-          await get().refresh(workspaceId);
           return true;
         } catch (error) {
           set(state => {

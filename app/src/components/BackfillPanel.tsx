@@ -308,24 +308,48 @@ export function BackfillPanel({
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const executionIdRef = useRef(executionId);
+  executionIdRef.current = executionId;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
 
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
 
   const streamState: StreamState = cdc?.streamState || "idle";
   const bfStatus: BackfillStatus = cdc?.backfillStatus || "idle";
+  const isActive =
+    streamState === "active" || bfStatus === "running" || executionId !== null;
 
   const pollCdc = useCallback(async () => {
-    const [status, eventsResult, history] = await Promise.all([
-      fetchCdcStatus(workspaceId, flowId),
-      fetchWebhookEvents(workspaceId, flowId, 50, 0),
-      fetchFlowHistory(workspaceId, flowId, 20),
-    ]);
-    if (status) setCdc(status);
-    if (eventsResult) {
-      setWebhookEvents(eventsResult.events);
-      setWebhookEventsTotal(eventsResult.total);
+    const activeTab = tabRef.current;
+    const promises: Promise<unknown>[] = [fetchCdcStatus(workspaceId, flowId)];
+    const shouldPollEvents = activeTab === 2;
+    const shouldPollHistory = activeTab === 1;
+    if (shouldPollEvents) {
+      promises.push(fetchWebhookEvents(workspaceId, flowId, 50, 0));
     }
-    if (history) setRuns(history as typeof runs);
+    if (shouldPollHistory) {
+      promises.push(fetchFlowHistory(workspaceId, flowId, 20));
+    }
+
+    const results = await Promise.all(promises);
+    const status = results[0] as Awaited<ReturnType<typeof fetchCdcStatus>>;
+    if (status) setCdc(status);
+    if (shouldPollEvents) {
+      const eventsResult = results[shouldPollHistory ? 2 : 1] as Awaited<
+        ReturnType<typeof fetchWebhookEvents>
+      >;
+      if (eventsResult) {
+        setWebhookEvents(eventsResult.events);
+        setWebhookEventsTotal(eventsResult.total);
+      }
+    }
+    if (shouldPollHistory) {
+      const history = results[1] as Awaited<
+        ReturnType<typeof fetchFlowHistory>
+      >;
+      if (history) setRuns(history as typeof runs);
+    }
   }, [
     fetchCdcStatus,
     fetchWebhookEvents,
@@ -335,7 +359,8 @@ export function BackfillPanel({
   ]);
 
   const pollLogs = useCallback(async () => {
-    if (!executionId) {
+    const currentExecId = executionIdRef.current;
+    if (!currentExecId) {
       const statusResp = await fetchFlowStatus(workspaceId, flowId);
       if (statusResp?.isRunning && statusResp.runningExecution) {
         setExecutionId(statusResp.runningExecution.executionId);
@@ -346,7 +371,7 @@ export function BackfillPanel({
     const details = await fetchExecutionDetails(
       workspaceId,
       flowId,
-      executionId,
+      currentExecId,
     );
     if (details?.logs && details.logs.length > 0) {
       setLiveLogs(details.logs as LogEntry[]);
@@ -368,13 +393,7 @@ export function BackfillPanel({
     if (details?.status && details.status !== "running") {
       setExecutionId(null);
     }
-  }, [
-    executionId,
-    workspaceId,
-    flowId,
-    fetchFlowStatus,
-    fetchExecutionDetails,
-  ]);
+  }, [workspaceId, flowId, fetchFlowStatus, fetchExecutionDetails]);
 
   const loadRunLogs = useCallback(
     async (runId: string) => {
@@ -392,19 +411,25 @@ export function BackfillPanel({
 
   useEffect(() => {
     pollCdc();
-    cdcPollRef.current = setInterval(pollCdc, 5000);
+    const interval = isActive ? 3_000 : 8_000;
+    cdcPollRef.current = setInterval(pollCdc, interval);
     return () => {
       if (cdcPollRef.current) clearInterval(cdcPollRef.current);
     };
-  }, [pollCdc]);
+  }, [pollCdc, isActive]);
 
   useEffect(() => {
+    if (!isActive) return;
     pollLogs();
-    logPollRef.current = setInterval(pollLogs, 3000);
+    logPollRef.current = setInterval(pollLogs, 2_000);
     return () => {
       if (logPollRef.current) clearInterval(logPollRef.current);
     };
-  }, [pollLogs]);
+  }, [pollLogs, isActive]);
+
+  useEffect(() => {
+    pollCdc();
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pollDestCounts = useCallback(async () => {
     const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
@@ -419,92 +444,125 @@ export function BackfillPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, flowId]);
 
-  const withBusy = async (fn: () => Promise<unknown>) => {
+  const withBusy = async (
+    fn: () => Promise<unknown>,
+    optimisticCdcPatch?: Partial<typeof cdc>,
+  ) => {
     setBusy(true);
     setError(null);
+    if (optimisticCdcPatch && cdc) {
+      setCdc((prev: any) => (prev ? { ...prev, ...optimisticCdcPatch } : prev));
+    }
     try {
       await fn();
-      await pollCdc();
+      pollCdc();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      if (optimisticCdcPatch && cdc) {
+        pollCdc();
+      }
     } finally {
       setBusy(false);
     }
   };
 
   const handleStartBackfill = (entities?: string[]) =>
-    withBusy(async () => {
-      const ok = await startCdcBackfill(workspaceId, flowId, entities);
-      if (!ok) throw new Error("Failed to start backfill");
-      if (entities?.length) {
-        setExecStats(prev => {
-          const next = { ...prev };
-          for (const entity of entities) {
-            next[entity] = 0;
-          }
-          return next;
-        });
-        setExecStatus(prev => {
-          const next = { ...prev };
-          for (const entity of entities) {
-            next[entity] = "pending";
-          }
-          return next;
-        });
-      } else {
-        setExecStats({});
-        setExecStatus({});
-      }
-      setTimeout(() => pollLogs(), 3000);
-    });
+    withBusy(
+      async () => {
+        const ok = await startCdcBackfill(workspaceId, flowId, entities);
+        if (!ok) throw new Error("Failed to start backfill");
+        if (entities?.length) {
+          setExecStats(prev => {
+            const next = { ...prev };
+            for (const entity of entities) {
+              next[entity] = 0;
+            }
+            return next;
+          });
+          setExecStatus(prev => {
+            const next = { ...prev };
+            for (const entity of entities) {
+              next[entity] = "pending";
+            }
+            return next;
+          });
+        } else {
+          setExecStats({});
+          setExecStatus({});
+        }
+        setTimeout(() => pollLogs(), 500);
+      },
+      { backfillStatus: "running" },
+    );
 
   const handleStartStream = () =>
-    withBusy(async () => {
-      const ok = await startCdcStream(workspaceId, flowId);
-      if (!ok) throw new Error("Failed to start stream");
-    });
+    withBusy(
+      async () => {
+        const ok = await startCdcStream(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to start stream");
+      },
+      { streamState: "active" },
+    );
 
   const handlePauseStream = () =>
-    withBusy(async () => {
-      const ok = await pauseCdcStream(workspaceId, flowId);
-      if (!ok) throw new Error("Failed to pause stream");
-    });
+    withBusy(
+      async () => {
+        const ok = await pauseCdcStream(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to pause stream");
+      },
+      { streamState: "paused" },
+    );
 
   const handleResumeStream = () =>
-    withBusy(async () => {
-      const ok = await startCdcStream(workspaceId, flowId);
-      if (!ok) throw new Error("Failed to resume stream");
-    });
+    withBusy(
+      async () => {
+        const ok = await startCdcStream(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to resume stream");
+      },
+      { streamState: "active" },
+    );
 
   const handleRecoverStream = () =>
-    withBusy(async () => {
-      const ok = await recoverCdcFlow(workspaceId, flowId, {
-        retryFailedMaterialization: true,
-        resumeBackfill: false,
-      });
-      if (!ok) throw new Error("Failed to recover stream");
-    });
+    withBusy(
+      async () => {
+        const ok = await recoverCdcFlow(workspaceId, flowId, {
+          retryFailedMaterialization: true,
+          resumeBackfill: false,
+        });
+        if (!ok) throw new Error("Failed to recover stream");
+      },
+      { streamState: "active" },
+    );
 
   const handlePauseBackfill = () =>
-    withBusy(async () => {
-      const ok = await pauseCdcFlow(workspaceId, flowId);
-      if (!ok) throw new Error("Failed to pause backfill");
-    });
+    withBusy(
+      async () => {
+        const ok = await pauseCdcFlow(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to pause backfill");
+      },
+      { backfillStatus: "paused" },
+    );
 
   const handleResumeBackfill = () =>
-    withBusy(async () => {
-      const ok = await resumeCdcFlow(workspaceId, flowId);
-      if (!ok) throw new Error("Failed to resume backfill");
-    });
+    withBusy(
+      async () => {
+        const ok = await resumeCdcFlow(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to resume backfill");
+      },
+      { backfillStatus: "running" },
+    );
 
   const handleRecoverBackfill = () =>
-    withBusy(async () => {
-      const ok = await recoverCdcFlow(workspaceId, flowId, {
-        retryFailedMaterialization: true,
-        resumeBackfill: true,
-      });
-      if (!ok) throw new Error("Failed to recover backfill");
-    });
+    withBusy(
+      async () => {
+        const ok = await recoverCdcFlow(workspaceId, flowId, {
+          retryFailedMaterialization: true,
+          resumeBackfill: true,
+        });
+        if (!ok) throw new Error("Failed to recover backfill");
+      },
+      { backfillStatus: "running" },
+    );
 
   const handleResync = async () => {
     if (resyncConfirm !== "RESET") return;
@@ -519,7 +577,7 @@ export function BackfillPanel({
     setResyncConfirm("");
     setResyncOpts({ deleteDestination: false, clearWebhookEvents: false });
     setDestinationCounts(null);
-    await pollCdc();
+    pollCdc();
     pollDestCounts();
   };
 
@@ -529,19 +587,22 @@ export function BackfillPanel({
   };
 
   const handleResetEntityTable = () =>
-    withBusy(async () => {
-      const ok = await resetCdcEntityTable(
-        workspaceId,
-        flowId,
-        entityResetEntity,
-      );
-      if (!ok) {
-        throw new Error("Failed to reset table and start backfill");
-      }
-      setEntityResetOpen(false);
-      setEntityResetEntity("");
-      setTimeout(() => pollLogs(), 3000);
-    });
+    withBusy(
+      async () => {
+        const ok = await resetCdcEntityTable(
+          workspaceId,
+          flowId,
+          entityResetEntity,
+        );
+        if (!ok) {
+          throw new Error("Failed to reset table and start backfill");
+        }
+        setEntityResetOpen(false);
+        setEntityResetEntity("");
+        setTimeout(() => pollLogs(), 500);
+      },
+      { backfillStatus: "running" },
+    );
 
   const webhookUrl = flow?.webhookConfig?.endpoint;
   const copyWebhook = async () => {
@@ -1373,6 +1434,7 @@ export function BackfillPanel({
                         <TableCell>Status</TableCell>
                         <TableCell>Started</TableCell>
                         <TableCell align="right">Duration</TableCell>
+                        <TableCell align="right">Logs</TableCell>
                         <TableCell>Error</TableCell>
                       </TableRow>
                     </TableHead>
@@ -1433,6 +1495,15 @@ export function BackfillPanel({
                                 sx={{ fontFamily: "monospace" }}
                               >
                                 {durationStr}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ fontFamily: "monospace" }}
+                              >
+                                {(run as any).logCount ?? "—"}
                               </Typography>
                             </TableCell>
                             <TableCell sx={{ maxWidth: 280 }}>

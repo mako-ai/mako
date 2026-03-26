@@ -1623,7 +1623,13 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       database,
       `SELECT column_name, data_type FROM ${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${sourceTableName.replace(/'/g, "''")}' ORDER BY ordinal_position`,
     );
-    if (!schemaResult.success || !schemaResult.data?.length) {
+    if (!schemaResult.success) {
+      return {
+        success: false,
+        error: `Schema discovery failed for ${fullSource}: ${schemaResult.error}`,
+      };
+    }
+    if (!schemaResult.data?.length) {
       return {
         success: false,
         error: `Source table ${fullSource} not found or has no columns`,

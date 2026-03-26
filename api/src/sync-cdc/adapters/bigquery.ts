@@ -108,7 +108,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     for (const event of upserts) {
       const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(payload, new Date(event.sourceTs));
+      const sourceTs = resolveSourceTimestamp(
+        payload,
+        new Date(event.sourceTs),
+      );
       rows.push({
         ...payload,
         id: event.recordId,
@@ -124,7 +127,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     if (deleteMode === "soft") {
       for (const event of deletes) {
         const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(payload, new Date(event.sourceTs));
+        const sourceTs = resolveSourceTimestamp(
+          payload,
+          new Date(event.sourceTs),
+        );
         rows.push({
           ...payload,
           id: event.recordId,
@@ -139,7 +145,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (rows.length > 0) {
-      await this.writeViaParquet({ records: rows, layout: params.layout, flow: params.flow });
+      await this.writeViaParquet({
+        records: rows,
+        layout: params.layout,
+        flow: params.flow,
+      });
     }
 
     if (deleteMode === "hard" && deletes.length > 0) {
@@ -175,7 +185,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       };
     });
 
-    return this.writeViaParquet({ records: rows, layout: params.layout, flow: params.flow });
+    return this.writeViaParquet({
+      records: rows,
+      layout: params.layout,
+      flow: params.flow,
+    });
   }
 
   async loadStagingFromParquet(
@@ -201,20 +215,38 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout,
     stagingTable: string,
   ): Promise<{ written: number }> {
-    const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
-    const projectId = conn.project_id;
-    const dataset = this.config.tableDestination.schema;
+    const { projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
     const liveTable = layout.tableName;
 
     const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
     const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
 
+    const infoSchemaQuery = `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`;
     const schemaResult = await databaseConnectionService.executeQuery(
       destination,
-      `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`,
+      infoSchemaQuery,
+      { location: datasetLocation },
     );
+
+    if (!schemaResult.success) {
+      log.error("INFORMATION_SCHEMA query failed in mergeStagingToLive", {
+        stagingTable,
+        liveTable,
+        dataset,
+        error: schemaResult.error,
+      });
+      throw new Error(`Schema discovery failed: ${schemaResult.error}`);
+    }
+
+    log.info("INFORMATION_SCHEMA result", {
+      stagingTable,
+      liveTable,
+      dataset,
+      rowCount: Array.isArray(schemaResult.data) ? schemaResult.data.length : 0,
+    });
+
     const stagingCols = new Set<string>();
     const liveCols = new Set<string>();
     const stagingTypes = new Map<string, string>();
@@ -232,6 +264,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
+    if (stagingCols.size === 0) {
+      log.info("Staging table not found or empty, nothing to merge", {
+        stagingTable,
+        liveTable,
+        dataset,
+      });
+      return { written: 0 };
+    }
+
     if (liveCols.size === 0) {
       await this.ensureLiveTableFromSourceSchema(layout, stagingTable);
       for (const col of stagingCols) {
@@ -245,6 +286,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       await databaseConnectionService.executeQuery(
         destination,
         `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
+        { location: datasetLocation },
       );
       liveCols.add(col);
     }
@@ -261,6 +303,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       await databaseConnectionService.executeQuery(
         destination,
         `ALTER TABLE ${fullStaging} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
+        { location: datasetLocation },
       );
       stagingCols.add(col);
     }
@@ -316,7 +359,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const result = await databaseConnectionService.executeQuery(
       destination,
       mergeQuery,
-      { bigQueryJobMaxWaitMs: mergeMaxWaitMs },
+      { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
     );
     if (!result.success) {
       throw new Error(result.error || "BigQuery staging MERGE failed");
@@ -362,11 +405,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return doc;
   }
 
+  private _datasetLocation: string | undefined;
+
   private async resolveBqClient(): Promise<{
     bq: InstanceType<typeof BigQuery>;
     projectId: string;
     dataset: string;
     destination: IDatabaseConnection;
+    datasetLocation: string | undefined;
   }> {
     const destination = await this.resolveDestination();
     const conn = destination.connection as any;
@@ -376,8 +422,30 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         : conn.service_account_json;
     const projectId = conn.project_id;
     const dataset = this.config.tableDestination.schema;
-    const bq = new BigQuery({ projectId, credentials });
-    return { bq, projectId, dataset, destination };
+    const connLocation: string | undefined = conn.location;
+    const bq = new BigQuery({ projectId, credentials, location: connLocation });
+
+    if (!this._datasetLocation) {
+      try {
+        const [meta] = await bq.dataset(dataset).getMetadata();
+        this._datasetLocation = meta.location;
+      } catch {
+        this._datasetLocation = connLocation;
+      }
+      log.info("Resolved dataset location", {
+        dataset,
+        location: this._datasetLocation,
+        connLocation,
+      });
+    }
+
+    return {
+      bq,
+      projectId,
+      dataset,
+      destination,
+      datasetLocation: this._datasetLocation,
+    };
   }
 
   private async ensureDataset(): Promise<void> {
@@ -421,13 +489,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }
 
   private async dropStagingTable(stagingTable: string): Promise<void> {
-    const { projectId, dataset, destination } = await this.resolveBqClient();
+    const { projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
     const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
     const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
 
     await databaseConnectionService.executeQuery(
       destination,
       `DROP TABLE IF EXISTS ${fullStaging}`,
+      { location: datasetLocation },
     );
 
     log.info("Cleaned up staging table", { stagingTable, dataset });
@@ -483,10 +553,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     deletes: CdcStoredEvent[],
     fallbackDataSourceId: string | undefined,
   ): Promise<void> {
-    const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
-    const projectId = conn.project_id;
-    const dataset = this.config.tableDestination.schema;
+    const { projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
     const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
 
@@ -501,11 +569,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       const result = await databaseConnectionService.executeQuery(
         destination,
         `DELETE FROM ${fullLive} WHERE ${where}`,
+        { location: datasetLocation },
       );
       if (!result.success) {
         const notFound =
-          result.error &&
-          /not found|does not exist/i.test(result.error);
+          result.error && /not found|does not exist/i.test(result.error);
         if (notFound) {
           log.info("Skipping hard delete — live table does not exist yet", {
             table: layout.tableName,
@@ -521,5 +589,4 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       count: deletes.length,
     });
   }
-
 }

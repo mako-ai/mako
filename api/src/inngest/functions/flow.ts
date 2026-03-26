@@ -1728,8 +1728,7 @@ export const flowFunction = inngest.createFunction(
                 try {
                   await performBulkFlush(bulkSyncOptions);
                 } catch (err) {
-                  const msg =
-                    err instanceof Error ? err.message : String(err);
+                  const msg = err instanceof Error ? err.message : String(err);
                   await appendExecutionLog(
                     "error",
                     `Failed to flush ${entity} buffer to staging: ${msg}`,
@@ -1737,6 +1736,11 @@ export const flowFunction = inngest.createFunction(
                   );
                   throw err;
                 }
+                void appendExecutionLog(
+                  "info",
+                  `${entity} buffer flushed to staging table`,
+                  { entity },
+                );
               });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
@@ -1747,11 +1751,6 @@ export const flowFunction = inngest.createFunction(
               );
               throw err;
             }
-            void appendExecutionLog(
-              "info",
-              `${entity} buffer flushed to staging table`,
-              { entity },
-            );
             logger.info(`Merging ${entity} staging table to live`, {
               flowId,
               entity,
@@ -1764,10 +1763,9 @@ export const flowFunction = inngest.createFunction(
                   { entity },
                 );
                 try {
-                  return await performStagingMerge(bulkSyncOptions);
+                  await performStagingMerge(bulkSyncOptions);
                 } catch (err) {
-                  const msg =
-                    err instanceof Error ? err.message : String(err);
+                  const msg = err instanceof Error ? err.message : String(err);
                   await appendExecutionLog(
                     "error",
                     `Failed to merge ${entity} staging to live: ${msg}`,
@@ -1775,6 +1773,11 @@ export const flowFunction = inngest.createFunction(
                   );
                   throw err;
                 }
+                void appendExecutionLog(
+                  "info",
+                  `${entity} merged staging to live table`,
+                  { entity },
+                );
               });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
@@ -1785,11 +1788,6 @@ export const flowFunction = inngest.createFunction(
               );
               throw err;
             }
-            void appendExecutionLog(
-              "info",
-              `${entity} merged staging to live table`,
-              { entity },
-            );
             logger.info(`Cleaning up ${entity} staging table`, {
               flowId,
               entity,
@@ -1806,17 +1804,15 @@ export const flowFunction = inngest.createFunction(
                 );
                 throw err;
               }
+              void appendExecutionLog(
+                "info",
+                `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
+                { entity },
+              );
             });
             logger.info(
               `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
               { flowId, entity },
-            );
-            void appendExecutionLog(
-              "info",
-              `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
-              {
-                entity,
-              },
             );
 
             if (executionId) {

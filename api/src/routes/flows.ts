@@ -2555,8 +2555,9 @@ flowRoutes.get("/:flowId/history", async c => {
       executedAt: ex.startedAt,
       status: ex.status,
       success: ex.success,
-      error: ex.error?.message,
+      error: ex.error,
       duration: ex.duration,
+      logCount: Array.isArray(ex.logs) ? ex.logs.length : 0,
     }));
 
     return c.json({
