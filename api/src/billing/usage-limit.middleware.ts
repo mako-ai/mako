@@ -23,13 +23,11 @@ interface UsageLimitResult {
 
 /**
  * Check whether a workspace is allowed to make an agent request
- * for the given model. When modelId is undefined (user didn't explicitly
- * select a model), the model tier check is skipped -- only usage quota
- * is enforced.
+ * for the given model. Returns { allowed: true } or an error payload.
  */
 export async function checkBillingLimits(
   workspaceId: string,
-  modelId?: string,
+  modelId: string,
 ): Promise<UsageLimitResult> {
   if (!isBillingEnabled()) {
     return { allowed: true };
@@ -75,20 +73,18 @@ export async function checkBillingLimits(
         : billing.hardLimitUsd,
   };
 
-  // Check model access (only when user explicitly selected a model)
-  if (modelId) {
-    const modelCheck = canUseModel(effectiveBilling, modelId);
-    if (!modelCheck.allowed) {
-      return {
-        allowed: false,
-        statusCode: 403,
-        error: {
-          code: "model_not_available",
-          message: modelCheck.reason || "Model not available on current plan",
-          plan: effectivePlan,
-        },
-      };
-    }
+  // Check model access
+  const modelCheck = canUseModel(effectiveBilling, modelId);
+  if (!modelCheck.allowed) {
+    return {
+      allowed: false,
+      statusCode: 403,
+      error: {
+        code: "model_not_available",
+        message: modelCheck.reason || "Model not available on current plan",
+        plan: effectivePlan,
+      },
+    };
   }
 
   // Check usage limit
