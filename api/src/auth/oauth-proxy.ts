@@ -153,14 +153,26 @@ export function decodeOAuthState(
   }
 }
 
+export interface TransferPayload {
+  provider: string;
+  providerUserId: string;
+  email?: string;
+}
+
 /**
- * Create a short-lived HMAC-signed transfer token wrapping a session ID.
- * Used to securely transmit session credentials from the production
- * OAuth callback to a non-production environment's /oauth-receive endpoint.
+ * Create a short-lived HMAC-signed transfer token wrapping OAuth user info.
+ * Used to securely transmit OAuth identity from the production callback
+ * to a non-production environment's /oauth-receive endpoint, which then
+ * creates its own local user and session.
  */
-export function createTransferToken(sessionId: string): string {
+export function createTransferToken(payload: TransferPayload): string {
   const data = Buffer.from(
-    JSON.stringify({ sid: sessionId, exp: Date.now() + 60_000 }),
+    JSON.stringify({
+      p: payload.provider,
+      pid: payload.providerUserId,
+      e: payload.email,
+      exp: Date.now() + 60_000,
+    }),
   ).toString("base64url");
   const signature = createHmac("sha256", getHmacSecret())
     .update(data)
@@ -169,10 +181,10 @@ export function createTransferToken(sessionId: string): string {
 }
 
 /**
- * Verify and decode a transfer token. Returns the session ID if the
+ * Verify and decode a transfer token. Returns the OAuth identity if the
  * signature is valid and the token has not expired; null otherwise.
  */
-export function verifyTransferToken(token: string): string | null {
+export function verifyTransferToken(token: string): TransferPayload | null {
   try {
     const dotIndex = token.lastIndexOf(".");
     if (dotIndex === -1) return null;
@@ -194,14 +206,22 @@ export function verifyTransferToken(token: string): string | null {
     }
 
     const payload = JSON.parse(Buffer.from(data, "base64url").toString());
-    if (typeof payload.sid !== "string" || typeof payload.exp !== "number") {
+    if (
+      typeof payload.p !== "string" ||
+      typeof payload.pid !== "string" ||
+      typeof payload.exp !== "number"
+    ) {
       return null;
     }
     if (payload.exp < Date.now()) {
       logger.warn("Transfer token expired");
       return null;
     }
-    return payload.sid;
+    return {
+      provider: payload.p,
+      providerUserId: payload.pid,
+      email: payload.e,
+    };
   } catch {
     return null;
   }

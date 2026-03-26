@@ -483,7 +483,6 @@ authRoutes.get("/google/callback", async c => {
     const isCallerProduction = callerOrigin === productionUrl;
 
     if (isCallerProduction) {
-      // Same-origin: set cookie directly and redirect
       const sessionCookie = sessionManager.createSessionCookie(session.id);
       setCookie(
         c,
@@ -498,8 +497,12 @@ authRoutes.get("/google/callback", async c => {
       return c.redirect(redirectUrl);
     }
 
-    // Cross-origin: redirect to caller's /api/auth/oauth-receive with signed transfer token
-    const transferToken = createTransferToken(session.id);
+    // Cross-origin: send OAuth identity so the receiver can create its own local session
+    const transferToken = createTransferToken({
+      provider: "google",
+      providerUserId: googleUser.sub.toString(),
+      email: googleUser.email,
+    });
     const receiveUrl = new URL(`${callerOrigin}/api/auth/oauth-receive`);
     receiveUrl.searchParams.set("token", transferToken);
     if (isNewUser) {
@@ -640,7 +643,11 @@ authRoutes.get("/github/callback", async c => {
       return c.redirect(redirectUrl);
     }
 
-    const transferToken = createTransferToken(session.id);
+    const transferToken = createTransferToken({
+      provider: "github",
+      providerUserId: githubUser.id.toString(),
+      email: primaryEmail || githubUser.email,
+    });
     const receiveUrl = new URL(`${callerOrigin}/api/auth/oauth-receive`);
     receiveUrl.searchParams.set("token", transferToken);
     if (isNewUser) {
@@ -671,20 +678,19 @@ authRoutes.get("/oauth-receive", async c => {
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
-    const sessionId = verifyTransferToken(token);
-    if (!sessionId) {
+    const transferData = verifyTransferToken(token);
+    if (!transferData) {
       logger.warn("OAuth receive: invalid or expired transfer token");
       return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
     }
 
-    // Verify the session actually exists
-    const { session, user } = await authService.validateSession(sessionId);
-    if (!session || !user) {
-      logger.warn("OAuth receive: session not found for transfer token");
-      return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
-    }
+    const { session } = await authService.handleOAuthCallback(
+      transferData.provider as "google" | "github",
+      transferData.providerUserId,
+      transferData.email,
+    );
 
-    const sessionCookie = sessionManager.createSessionCookie(sessionId);
+    const sessionCookie = sessionManager.createSessionCookie(session.id);
     setCookie(
       c,
       sessionCookie.name,
