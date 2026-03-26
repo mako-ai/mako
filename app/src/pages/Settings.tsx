@@ -30,6 +30,7 @@ import ThemeSelector from "../components/ThemeSelector";
 import { useCustomPrompt } from "../hooks/useCustomPrompt";
 import { WorkspaceMembers } from "../components/WorkspaceMembers";
 import { ApiKeyManager } from "../components/ApiKeyManager";
+import { BillingSection } from "../components/BillingSection";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSettingsStore } from "../store/settingsStore";
 import type { GatewayModelInfo } from "../lib/api-types";
@@ -215,6 +216,10 @@ function Settings() {
           }}
         />
 
+        {/* Billing */}
+        <Box sx={{ mb: 4 }}>
+          <BillingSection />
+        </Box>
         {/* Workspace Members */}
         <Box sx={{ mb: 4 }}>
           <WorkspaceMembers />

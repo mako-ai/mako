@@ -9,11 +9,14 @@
 
 export type AIProvider = "openai" | "anthropic" | "google";
 
+export type ModelTier = "free" | "pro";
+
 export interface AIModel {
   id: string; // "provider/model-name"
   provider: AIProvider;
   name: string;
   description?: string;
+  tier: ModelTier;
   supportsThinking?: boolean;
   /**
    * Token budget for extended thinking (when supportsThinking is true).
@@ -35,18 +38,21 @@ export const ALL_MODELS: AIModel[] = [
     provider: "openai",
     name: "GPT-5.2 Codex",
     description: "Previous flagship model with enhanced intelligence",
+    tier: "pro",
   },
   {
     id: "openai/gpt-5.2",
     provider: "openai",
     name: "GPT-5.2",
     description: "Previous flagship model with enhanced intelligence",
+    tier: "pro",
   },
   {
     id: "openai/gpt-4o",
     provider: "openai",
     name: "GPT-4o",
     description: "Previous generation, reliable and capable",
+    tier: "pro",
   },
   {
     id: "openai/gpt-4o-mini",
@@ -60,6 +66,7 @@ export const ALL_MODELS: AIModel[] = [
     provider: "anthropic",
     name: "Claude Opus 4.6",
     description: "Most capable, latest flagship with enhanced reasoning",
+    tier: "pro",
     supportsThinking: true,
     thinkingBudgetTokens: 30000,
   },
@@ -68,6 +75,7 @@ export const ALL_MODELS: AIModel[] = [
     provider: "anthropic",
     name: "Claude Opus 4.5",
     description: "Previous flagship, autonomous coding for 30+ hours",
+    tier: "pro",
     supportsThinking: true,
     thinkingBudgetTokens: 60000,
   },
@@ -76,6 +84,7 @@ export const ALL_MODELS: AIModel[] = [
     provider: "anthropic",
     name: "Claude Sonnet 4.5",
     description: "Best balance of speed and intelligence",
+    tier: "pro",
     supportsThinking: true,
     thinkingBudgetTokens: 60000,
   },
@@ -84,6 +93,7 @@ export const ALL_MODELS: AIModel[] = [
     provider: "anthropic",
     name: "Claude Haiku 4",
     description: "Fastest Claude model",
+    tier: "free",
   },
   // Google
   {
@@ -91,18 +101,21 @@ export const ALL_MODELS: AIModel[] = [
     provider: "google",
     name: "Gemini 3 Pro",
     description: "Flagship multimodal reasoning across text, code, images",
+    tier: "pro",
   },
   {
     id: "google/gemini-2.5-pro",
     provider: "google",
     name: "Gemini 3 Pro DeepThink",
     description: "Previous generation, reliable performance",
+    tier: "pro",
   },
   {
     id: "google/gemini-2.5-flash",
     provider: "google",
     name: "Gemini 2.5 Flash",
     description: "Fast and efficient for quick tasks",
+    tier: "free",
   },
   {
     id: "google/gemma-4-26b-a4b-it",

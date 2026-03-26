@@ -35,6 +35,8 @@ import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
 import { flowRoutes } from "./routes/flows";
 import { usageRoutes } from "./routes/usage";
+import { billingRoutes } from "./routes/billing";
+import { stripeWebhookRoutes } from "./routes/stripe-webhook";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
@@ -115,6 +117,7 @@ app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
+app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
 app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",
@@ -139,6 +142,7 @@ databaseRegistry.register(new CloudflareKVDatabaseDriver());
 databaseRegistry.register(new ClickHouseDatabaseDriver());
 databaseRegistry.register(new RedshiftDatabaseDriver());
 app.route("/api", webhookRoutes);
+app.route("/api/webhooks/stripe", stripeWebhookRoutes);
 
 // Inngest endpoint
 app.on(

@@ -7,6 +7,7 @@ import React, { useEffect, useState } from "react";
 import {
   Box,
   Button,
+  Chip,
   Menu,
   MenuItem,
   ListSubheader,
@@ -16,6 +17,7 @@ import {
 } from "@mui/material";
 import { KeyboardArrowDown } from "@mui/icons-material";
 import { useSettingsStore } from "../store/settingsStore";
+import { useBillingStore } from "../store/billingStore";
 
 import type { AIModel } from "../lib/api-types";
 
@@ -188,33 +190,62 @@ export const ModelSelector: React.FC = () => {
           >
             {PROVIDER_NAMES[provider] || provider}
           </ListSubheader>,
-          ...providerModels.map(model => (
-            <MenuItem
-              key={model.id}
-              selected={model.id === selectedModelId}
-              onClick={() => handleSelectModel(model.id)}
-              sx={{
-                py: 1,
-                px: 2,
-              }}
-            >
-              <Box sx={{ minWidth: 0, width: "100%" }}>
-                <Typography variant="body2" noWrap>
-                  {model.name}
-                </Typography>
-                {model.description && (
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block" }}
-                    noWrap
-                  >
-                    {model.description}
-                  </Typography>
-                )}
-              </Box>
-            </MenuItem>
-          )),
+          ...providerModels.map(model => {
+            const billingStatus = useBillingStore.getState().status;
+            const isProModel = model.tier === "pro";
+            const billingEnabled = billingStatus?.billingEnabled ?? false;
+            const isFreePlan = billingEnabled && billingStatus?.plan === "free";
+            const isRestricted = isProModel && isFreePlan;
+
+            return (
+              <MenuItem
+                key={model.id}
+                selected={model.id === selectedModelId}
+                onClick={() => handleSelectModel(model.id)}
+                disabled={isRestricted}
+                sx={{
+                  py: 1,
+                  px: 2,
+                  opacity: isRestricted ? 0.5 : 1,
+                }}
+              >
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    minWidth: 0,
+                    width: "100%",
+                  }}
+                >
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="body2" noWrap>
+                      {model.name}
+                    </Typography>
+                    {model.description && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                        noWrap
+                      >
+                        {model.description}
+                      </Typography>
+                    )}
+                  </Box>
+                  {isProModel && billingEnabled && (
+                    <Chip
+                      label="Pro"
+                      size="small"
+                      color={isRestricted ? "default" : "primary"}
+                      variant="outlined"
+                      sx={{ height: 18, fontSize: 10 }}
+                    />
+                  )}
+                </Box>
+              </MenuItem>
+            );
+          }),
         ])}
       </Menu>
     </>

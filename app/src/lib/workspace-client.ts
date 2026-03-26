@@ -5,6 +5,23 @@
 import { apiClient } from "./api-client";
 
 // Types
+export interface WorkspaceBilling {
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  subscriptionStatus:
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "trialing"
+    | "incomplete"
+    | null;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  usageQuotaUsd: number;
+  hardLimitUsd: number | null;
+  plan: "free" | "pro" | "enterprise";
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -17,6 +34,7 @@ export interface Workspace {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
   };
+  billing?: WorkspaceBilling;
 }
 
 export interface WorkspaceMember {

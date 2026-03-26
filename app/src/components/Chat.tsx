@@ -84,6 +84,7 @@ import {
   LONG_RUNNING_DASHBOARD_TOOL_NAMES,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
+import { UpgradePrompt } from "./UpgradePrompt";
 
 interface ChatSessionMeta {
   _id: string;
@@ -2063,12 +2064,35 @@ const Chat: React.FC<ChatProps> = ({
         )}
       </Menu>
 
-      {/* Error display */}
+      {/* Error display — billing errors get an upgrade prompt */}
       {error && (
         <Box sx={{ p: 1 }}>
-          <Alert severity="error" sx={{ fontSize: "0.875rem" }}>
-            {error.message}
-          </Alert>
+          {(() => {
+            try {
+              const parsed = JSON.parse(error.message);
+              if (
+                parsed.code === "usage_limit_exceeded" ||
+                parsed.code === "model_not_available"
+              ) {
+                return (
+                  <UpgradePrompt
+                    errorCode={parsed.code}
+                    message={parsed.message}
+                    plan={parsed.plan}
+                    currentUsageUsd={parsed.currentUsageUsd}
+                    quotaUsd={parsed.quotaUsd}
+                  />
+                );
+              }
+            } catch {
+              // not JSON, fall through to generic
+            }
+            return (
+              <Alert severity="error" sx={{ fontSize: "0.875rem" }}>
+                {error.message}
+              </Alert>
+            );
+          })()}
         </Box>
       )}
 
