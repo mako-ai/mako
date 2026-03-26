@@ -131,9 +131,10 @@ billingRoutes.post("/checkout", async (c: AuthenticatedContext) => {
       return c.json({ error: "Workspace not found" }, 404);
     }
 
+    const subStatus = workspace.billing?.subscriptionStatus;
     if (
       workspace.billing?.plan === "pro" &&
-      workspace.billing?.subscriptionStatus === "active"
+      (subStatus === "active" || subStatus === "trialing")
     ) {
       return c.json({ error: "Workspace already has an active Pro plan" }, 400);
     }
