@@ -45,7 +45,8 @@ function inferDuckDBType(values: unknown[]): string {
     if (val == null) continue;
     if (typeof val === "boolean") return "BOOLEAN";
     if (typeof val === "number") {
-      if (Number.isInteger(val) && Math.abs(val) < 2147483647) return "INTEGER";
+      // Preserve integer semantics for BigQuery INT64-compatible values.
+      if (Number.isInteger(val)) return "BIGINT";
       return "DOUBLE";
     }
     if (val instanceof Date) return "TIMESTAMP";

@@ -360,6 +360,50 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       .map(k => `T.${escId(k)} = S.${escId(k)}`)
       .join(" AND ");
     const dedupKey = keyColumns.map(escId).join(", ");
+    const normalizeBqType = (type: string | undefined): string =>
+      (type || "").trim().toUpperCase();
+    const isNumericBqType = (type: string): boolean =>
+      [
+        "INT64",
+        "INTEGER",
+        "NUMERIC",
+        "BIGNUMERIC",
+        "FLOAT64",
+        "FLOAT",
+        "DOUBLE",
+        "DECIMAL",
+        "BIGDECIMAL",
+      ].includes(type);
+    const isIntegerBqType = (type: string): boolean =>
+      ["INT64", "INTEGER"].includes(type);
+    const coerceSourceExpression = (column: string): string => {
+      const sourceExpr = `S_RAW.${escId(column)}`;
+      const targetType = normalizeBqType(liveTypes.get(column));
+      const sourceType = normalizeBqType(stagingTypes.get(column));
+
+      if (!targetType || targetType === sourceType || targetType === "JSON") {
+        return `${sourceExpr} AS ${escId(column)}`;
+      }
+
+      if (targetType === "TIMESTAMP" && isNumericBqType(sourceType)) {
+        // Handle numeric epoch values safely (ms/us/ns/s), defaulting to seconds.
+        return `
+          CASE
+            WHEN SAFE_CAST(${sourceExpr} AS INT64) IS NULL THEN NULL
+            WHEN ABS(SAFE_CAST(${sourceExpr} AS INT64)) >= 1000000000000000000 THEN TIMESTAMP_MILLIS(CAST(SAFE_CAST(${sourceExpr} AS INT64) / 1000000 AS INT64))
+            WHEN ABS(SAFE_CAST(${sourceExpr} AS INT64)) >= 1000000000000000 THEN TIMESTAMP_MILLIS(CAST(SAFE_CAST(${sourceExpr} AS INT64) / 1000 AS INT64))
+            WHEN ABS(SAFE_CAST(${sourceExpr} AS INT64)) >= 100000000000 THEN TIMESTAMP_MILLIS(SAFE_CAST(${sourceExpr} AS INT64))
+            ELSE TIMESTAMP_SECONDS(SAFE_CAST(${sourceExpr} AS INT64))
+          END AS ${escId(column)}
+        `;
+      }
+
+      if (isIntegerBqType(targetType) && isNumericBqType(sourceType)) {
+        return `SAFE_CAST(${sourceExpr} AS INT64) AS ${escId(column)}`;
+      }
+
+      return `SAFE_CAST(${sourceExpr} AS ${targetType}) AS ${escId(column)}`;
+    };
     const buildMergeQuery = (columns: string[]): string => {
       const nonKeyColumns = columns.filter(c => !keyColumns.includes(c));
       const hasSourceTs = columns.includes("_mako_source_ts");
@@ -375,9 +419,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       const insertCols = columns.map(escId).join(", ");
       const insertVals = columns.map(c => `S.${escId(c)}`).join(", ");
       const selectCols = columns
-        .map(c => (stagingCols.has(c) ? escId(c) : `NULL AS ${escId(c)}`))
+        .map(c =>
+          stagingCols.has(c)
+            ? coerceSourceExpression(c)
+            : `NULL AS ${escId(c)}`,
+        )
         .join(", ");
-      const dedupSource = `(SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
+      const dedupSource = `(SELECT ${selectCols} FROM ${fullStaging} S_RAW QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
       return `
       MERGE INTO ${fullLive} T
       USING ${dedupSource} S
