@@ -282,6 +282,7 @@ export function BackfillPanel({
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
   const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
+  const [webhookEventsTotalAll, setWebhookEventsTotalAll] = useState(0);
   const [eventsFilter, setEventsFilter] = useState<string>("all");
   const [entityResetOpen, setEntityResetOpen] = useState(false);
   const [entityResetEntity, setEntityResetEntity] = useState("");
@@ -331,17 +332,7 @@ export function BackfillPanel({
     if (shouldPollEvents) {
       const filter = eventsFilterRef.current;
       const filterParams =
-        filter === "all"
-          ? undefined
-          : filter === "failed"
-            ? { applyStatus: "failed" }
-            : filter === "dropped"
-              ? { applyStatus: "dropped" }
-              : filter === "pending"
-                ? { applyStatus: "pending" }
-                : filter === "applied"
-                  ? { applyStatus: "applied" }
-                  : undefined;
+        filter !== "all" ? { applyStatus: filter } : undefined;
       promises.push(
         fetchWebhookEvents(workspaceId, flowId, 50, 0, filterParams),
       );
@@ -360,6 +351,9 @@ export function BackfillPanel({
       if (eventsResult) {
         setWebhookEvents(eventsResult.events);
         setWebhookEventsTotal(eventsResult.total);
+        if (eventsFilterRef.current === "all") {
+          setWebhookEventsTotalAll(eventsResult.total);
+        }
       }
     }
     if (shouldPollHistory) {
@@ -1039,7 +1033,7 @@ export function BackfillPanel({
           }}
         />
         <Tab
-          label={`Events (${webhookEventsTotal})`}
+          label={`Events (${webhookEventsTotalAll})`}
           sx={{
             minHeight: 36,
             py: 0.5,
@@ -1662,7 +1656,7 @@ export function BackfillPanel({
                 <Chip
                   key={f.key}
                   label={
-                    f.key === "all" ? `All (${webhookEventsTotal})` : f.label
+                    f.key === "all" ? `All (${webhookEventsTotalAll})` : f.label
                   }
                   size="small"
                   variant={eventsFilter === f.key ? "filled" : "outlined"}

@@ -7,6 +7,17 @@ export type WebhookFlowRoutingHint = {
   tableDestination?: { connectionId?: unknown };
 };
 
+export function resolveWebhookEventName(
+  flow?: WebhookFlowRoutingHint,
+  destinationTypeHint?: string,
+): "webhook/event.process" | "webhook/event.process.cdc" {
+  const isCdc =
+    flow?.syncEngine === "cdc" &&
+    Boolean(flow.tableDestination?.connectionId) &&
+    hasCdcDestinationAdapter(destinationTypeHint);
+  return isCdc ? "webhook/event.process.cdc" : "webhook/event.process";
+}
+
 export async function enqueueWebhookProcess(params: {
   flowId: string;
   workspaceId?: string;
@@ -16,19 +27,10 @@ export async function enqueueWebhookProcess(params: {
   flow?: WebhookFlowRoutingHint;
   destinationTypeHint?: string;
 }): Promise<void> {
-  const { flowId, workspaceId, eventId, isReplay, isTest, flow } = params;
-
-  const isCdcPath =
-    flow?.syncEngine === "cdc" &&
-    Boolean(flow.tableDestination?.connectionId) &&
-    hasCdcDestinationAdapter(params.destinationTypeHint);
-
-  const eventName = isCdcPath
-    ? "webhook/event.process.cdc"
-    : "webhook/event.process";
+  const { flowId, workspaceId, eventId, isReplay, isTest } = params;
 
   await inngest.send({
-    name: eventName,
+    name: resolveWebhookEventName(params.flow, params.destinationTypeHint),
     data: {
       flowId,
       ...(workspaceId ? { workspaceId } : {}),

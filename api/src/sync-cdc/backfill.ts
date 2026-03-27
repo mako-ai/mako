@@ -1,7 +1,7 @@
 import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
-import { hasCdcDestinationAdapter } from "./adapters/registry";
+import { resolveWebhookEventName } from "../inngest/webhook-process-enqueue";
 import {
   CdcEntityState,
   CdcStateTransition,
@@ -647,20 +647,22 @@ export class CdcBackfillService {
             .lean()
         : null;
 
-      const isCdc =
-        flow?.syncEngine === "cdc" &&
-        Boolean(flow.tableDestination?.connectionId) &&
-        hasCdcDestinationAdapter(destConn?.type);
-      const eventName = isCdc
-        ? "webhook/event.process.cdc"
-        : "webhook/event.process";
+      const eventName = resolveWebhookEventName(
+        flow
+          ? {
+              syncEngine: flow.syncEngine,
+              tableDestination: flow.tableDestination,
+            }
+          : undefined,
+        destConn?.type,
+      );
 
       const CHUNK = 100;
       for (let i = 0; i < stuckWebhookEvents.length; i += CHUNK) {
         const batch = stuckWebhookEvents.slice(i, i + CHUNK);
         await inngest.send(
           batch.map(evt => ({
-            name: eventName as "webhook/event.process",
+            name: eventName,
             data: {
               flowId,
               workspaceId,
