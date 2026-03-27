@@ -4,14 +4,18 @@
  */
 
 import { z } from "zod";
+import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import { queryExecutionService } from "../../services/query-execution.service";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
   truncateSamples,
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
+  AGENT_QUERY_TIMEOUT_MS,
+  withAgentTimeout,
 } from "./shared/truncation";
 import {
   ALL_SQL_TYPES,
@@ -446,6 +450,26 @@ async function inspectTableImpl(
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
 
+  return withAgentTimeout(
+    `agent-inspect-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    async executionId =>
+      inspectTableInner(
+        database,
+        dialect,
+        databaseName,
+        tableName,
+        executionId,
+      ),
+  );
+}
+
+async function inspectTableInner(
+  database: Awaited<ReturnType<typeof fetchSqlDatabase>>,
+  dialect: ReturnType<typeof getDialect>,
+  databaseName: string,
+  tableName: string,
+  executionId?: string,
+) {
   let columns: Array<{
     name: string;
     types: string[];
@@ -477,7 +501,7 @@ async function inspectTableImpl(
        WHERE table_schema = ${escapePostgresLiteral(schema)}
          AND table_name = ${escapePostgresLiteral(table)}
        ORDER BY ordinal_position;`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (!columnsResult.success) {
@@ -499,7 +523,7 @@ async function inspectTableImpl(
       `SELECT table_type FROM information_schema.tables
        WHERE table_schema = ${escapePostgresLiteral(schema)}
          AND table_name = ${escapePostgresLiteral(table)};`,
-      { databaseName },
+      { databaseName, executionId },
     );
     if (typeResult.success && typeResult.data?.[0]?.table_type === "VIEW") {
       entityKind = "view";
@@ -510,7 +534,7 @@ async function inspectTableImpl(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -553,6 +577,7 @@ async function inspectTableImpl(
        WHERE table_name = '${safeTableForQuery}'
        ORDER BY ordinal_position
        LIMIT 1000`,
+      { executionId },
     );
 
     if (!columnsResult.success) {
@@ -567,11 +592,12 @@ async function inspectTableImpl(
       }),
     );
 
-    // Get samples
+    // Get samples — use TABLESAMPLE to avoid full table scans on large unpartitioned tables
     const qualifiedName = `${safeProject}.${safeDataset}.${escapeBigQueryIdentifier(table)}`;
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS}`,
+      { executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -589,6 +615,7 @@ async function inspectTableImpl(
        FROM system.columns
        WHERE database = '${safeDatabase}' AND table = '${safeTable}'
        ORDER BY position`,
+      { executionId },
     );
 
     if (!columnsResult.success) {
@@ -609,6 +636,7 @@ async function inspectTableImpl(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT engine FROM system.tables 
        WHERE database = '${safeDatabase}' AND name = '${safeTable}'`,
+      { executionId },
     );
     if (
       typeResult.success &&
@@ -622,6 +650,7 @@ async function inspectTableImpl(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM "${databaseName.replace(/"/g, '""')}"."${tableName.replace(/"/g, '""')}" LIMIT ${MAX_SAMPLE_ROWS}`,
+      { executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -638,7 +667,7 @@ async function inspectTableImpl(
        WHERE table_schema = '${safeDb}'
          AND table_name = '${safeTable}'
        ORDER BY ordinal_position;`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (!columnsResult.success) {
@@ -681,7 +710,7 @@ async function inspectTableImpl(
        FROM information_schema.tables
        WHERE table_schema = '${safeDb}'
          AND table_name = '${safeTable}';`,
-      { databaseName },
+      { databaseName, executionId },
     );
     const typeValue =
       (typeResult.success && typeResult.data?.[0]?.table_type) ||
@@ -694,7 +723,7 @@ async function inspectTableImpl(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -706,7 +735,7 @@ async function inspectTableImpl(
     const columnsResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `PRAGMA table_info(${escapeSqliteLiteral(tableName)});`,
-      { databaseId: databaseName },
+      { databaseId: databaseName, executionId },
     );
 
     if (!columnsResult.success) {
@@ -726,7 +755,7 @@ async function inspectTableImpl(
     const typeResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT type FROM sqlite_master WHERE name = ${escapeSqliteLiteral(tableName)};`,
-      { databaseId: databaseName },
+      { databaseId: databaseName, executionId },
     );
     if (typeResult.success && typeResult.data?.[0]?.type === "view") {
       entityKind = "view";
@@ -736,7 +765,7 @@ async function inspectTableImpl(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${escapeSqliteIdentifier(tableName)} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseId: databaseName },
+      { databaseId: databaseName, executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -768,7 +797,10 @@ async function executeQueryImpl(
   databaseName: string,
   query: string,
   workspaceId: string,
+  userId?: string,
 ) {
+  const startTime = Date.now();
+
   if (!databaseName) {
     throw new Error("'database' is required");
   }
@@ -786,20 +818,106 @@ async function executeQueryImpl(
   } else if (dialect === "sqlite") {
     options = { databaseId: databaseName };
   }
-  // BigQuery doesn't need options - dataset is in the query
 
-  const result = await databaseConnectionService.executeQuery(
-    database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-    safeQuery,
-    options,
-  );
+  try {
+    const result = await withAgentTimeout(
+      `agent-sql-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      executionId =>
+        databaseConnectionService.executeQuery(
+          database as Parameters<
+            typeof databaseConnectionService.executeQuery
+          >[0],
+          safeQuery,
+          { ...options, executionId },
+        ),
+    );
 
-  if (result && result.success && result.data) {
-    const truncatedData = truncateQueryResults(result.data);
-    return { ...result, data: truncatedData, sqlDialect: dialect };
+    // Track successful/error query execution (fire-and-forget)
+    if (userId) {
+      const rowCount = result.success
+        ? (result.rowCount ??
+          (Array.isArray(result.data) ? result.data.length : undefined))
+        : undefined;
+
+      let errorType: string | undefined;
+      if (!result.success) {
+        const errorMsg = result.error?.toLowerCase() || "";
+        if (errorMsg.includes("syntax")) {
+          errorType = "syntax";
+        } else if (
+          errorMsg.includes("timeout") ||
+          errorMsg.includes("timed out")
+        ) {
+          errorType = "timeout";
+        } else if (
+          errorMsg.includes("connection") ||
+          errorMsg.includes("connect")
+        ) {
+          errorType = "connection";
+        } else if (
+          errorMsg.includes("permission") ||
+          errorMsg.includes("access denied")
+        ) {
+          errorType = "permission";
+        } else {
+          errorType = "unknown";
+        }
+      }
+
+      let executionStatus: "success" | "error" | "timeout" | "cancelled" =
+        result.success ? "success" : "error";
+      if (!result.success && errorType === "timeout") {
+        executionStatus = "timeout";
+      } else if (!result.success && errorType === "cancelled") {
+        executionStatus = "cancelled";
+      }
+
+      queryExecutionService.track({
+        userId,
+        workspaceId: new Types.ObjectId(workspaceId),
+        connectionId: database._id,
+        databaseName,
+        source: "agent",
+        databaseType: database.type,
+        queryLanguage: "sql",
+        status: executionStatus,
+        executionTimeMs: Date.now() - startTime,
+        rowCount,
+        errorType,
+      });
+    }
+
+    if (result && result.success && result.data) {
+      const truncatedData = truncateQueryResults(result.data);
+      return { ...result, data: truncatedData, sqlDialect: dialect };
+    }
+
+    return { ...result, sqlDialect: dialect };
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
+      if (userId) {
+        queryExecutionService.track({
+          userId,
+          workspaceId: new Types.ObjectId(workspaceId),
+          connectionId: database._id,
+          databaseName,
+          source: "agent",
+          databaseType: database.type,
+          queryLanguage: "sql",
+          status: "timeout",
+          executionTimeMs: Date.now() - startTime,
+          errorType: "timeout",
+        });
+      }
+      return {
+        success: false,
+        status: "timeout",
+        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The query may be valid but slow. Consider: (1) Add LIMIT for exploration, (2) Narrow date range, (3) Write the full query to console and use run_console to execute in the UI where there's no timeout.`,
+        sqlDialect: dialect,
+      };
+    }
+    throw err;
   }
-
-  return { ...result, sqlDialect: dialect };
 }
 
 // ============================================================================
@@ -809,6 +927,7 @@ export const createSqlToolsV2 = (
   workspaceId: string,
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
+  userId?: string,
 ) => {
   return {
     ...clientConsoleTools,
@@ -889,10 +1008,13 @@ export const createSqlToolsV2 = (
             workspaceId,
           );
         } catch (error) {
+          const isTimeout =
+            error instanceof Error && error.message === "AGENT_QUERY_TIMEOUT";
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isTimeout
+              ? `Table inspection timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The table may be very large or the database is slow. Try using execute_query with a targeted INFORMATION_SCHEMA query instead.`
+              : error instanceof Error
                 ? error.message
                 : "Failed to inspect table",
           };
@@ -915,6 +1037,7 @@ export const createSqlToolsV2 = (
             params.database,
             params.query,
             workspaceId,
+            userId,
           );
         } catch (error) {
           return {

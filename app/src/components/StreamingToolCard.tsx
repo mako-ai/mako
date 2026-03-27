@@ -433,278 +433,285 @@ const pulseKf = keyframes`
 
 // ── Component ────────────────────────────────────────────────
 
-export const StreamingToolCard = React.memo(function StreamingToolCard({
-  toolName,
-  state,
-  input,
-  output,
-  onDetailClick,
-}: StreamingToolCardProps) {
-  const config = getToolConfig(toolName);
-  const muiTheme = useMuiTheme();
-  const isDark = muiTheme.palette.mode === "dark";
-  const syntaxTheme = isDark ? tomorrow : prism;
+export const StreamingToolCard = React.memo(
+  function StreamingToolCard({
+    toolName,
+    state,
+    input,
+    output,
+    onDetailClick,
+  }: StreamingToolCardProps) {
+    const config = getToolConfig(toolName);
+    const muiTheme = useMuiTheme();
+    const isDark = muiTheme.palette.mode === "dark";
+    const syntaxTheme = isDark ? tomorrow : prism;
 
-  const codeContainerRef = useRef<HTMLDivElement>(null);
-  const [userScrolled, setUserScrolled] = useState(false);
+    const codeContainerRef = useRef<HTMLDivElement>(null);
+    const [userScrolled, setUserScrolled] = useState(false);
 
-  const isStreaming = state === "input-streaming";
-  const isExecuting =
-    state === "input-available" || state === "output-streaming";
-  const isDone = state === "output-available";
-  const isError = state === "error";
-  const isActive = isStreaming || isExecuting;
+    const isStreaming = state === "input-streaming";
+    const isExecuting =
+      state === "input-available" || state === "output-streaming";
+    const isDone = state === "output-available";
+    const isError = state === "error";
+    const isActive = isStreaming || isExecuting;
 
-  const hasCodePreview = Boolean(config.preview);
+    const hasCodePreview = Boolean(config.preview);
 
-  const [expanded, setExpanded] = useState(
-    hasCodePreview ? !isDone && !isError : false,
-  );
+    const [expanded, setExpanded] = useState(
+      hasCodePreview ? !isDone && !isError : false,
+    );
 
-  useEffect(() => {
-    if ((isDone || isError) && hasCodePreview) {
-      const timer = setTimeout(() => setExpanded(false), 800);
-      return () => clearTimeout(timer);
-    }
-    if (isActive && hasCodePreview) {
-      setExpanded(true);
-      setUserScrolled(false);
-    }
-  }, [isDone, isError, isActive, hasCodePreview]);
+    useEffect(() => {
+      if ((isDone || isError) && hasCodePreview) {
+        const timer = setTimeout(() => setExpanded(false), 800);
+        return () => clearTimeout(timer);
+      }
+      if (isActive && hasCodePreview) {
+        setExpanded(true);
+        setUserScrolled(false);
+      }
+    }, [isDone, isError, isActive, hasCodePreview]);
 
-  // Resolve code preview content (supports both string and object fields)
-  const inputObj = input as Record<string, unknown> | undefined;
-  const rawContent = config.preview
-    ? inputObj?.[config.preview.field]
-    : undefined;
-  const code =
-    typeof rawContent === "string"
-      ? rawContent
-      : rawContent && typeof rawContent === "object"
-        ? JSON.stringify(rawContent, null, 2)
-        : "";
-
-  useEffect(() => {
-    if (isStreaming && !userScrolled && codeContainerRef.current) {
-      codeContainerRef.current.scrollTop =
-        codeContainerRef.current.scrollHeight;
-    }
-  }, [code, isStreaming, userScrolled]);
-
-  const handleScroll = useCallback(() => {
-    if (!codeContainerRef.current) return;
-    const el = codeContainerRef.current;
-    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-    setUserScrolled(!isAtBottom);
-  }, []);
-
-  const label = config.getLabel(input);
-
-  const outputSummary = useMemo(
-    () => (isDone || isError ? getOutputSummary(output) : null),
-    [isDone, isError, output],
-  );
-
-  const formattedOutput = useMemo(
-    () => (isDone || isError ? formatOutputForDisplay(output) : ""),
-    [isDone, isError, output],
-  );
-  const outputLang =
-    formattedOutput.startsWith("{") || formattedOutput.startsWith("[")
-      ? "json"
-      : "text";
-
-  const hasVisibleBody =
-    code.length > 0 || ((isDone || isError) && formattedOutput.length > 0);
-
-  const statusText = isStreaming
-    ? "Generating…"
-    : isExecuting
-      ? "Running…"
-      : isDone
-        ? (outputSummary ?? "Done")
-        : isError
-          ? (outputSummary ?? "Error")
+    // Resolve code preview content (supports both string and object fields)
+    const inputObj = input as Record<string, unknown> | undefined;
+    const rawContent = config.preview
+      ? inputObj?.[config.preview.field]
+      : undefined;
+    const code =
+      typeof rawContent === "string"
+        ? rawContent
+        : rawContent && typeof rawContent === "object"
+          ? JSON.stringify(rawContent, null, 2)
           : "";
 
-  return (
-    <Box
-      sx={{
-        my: 0.75,
-        borderRadius: 1.5,
-        border: 1,
-        borderColor: isActive
-          ? "primary.main"
+    useEffect(() => {
+      if (isStreaming && !userScrolled && codeContainerRef.current) {
+        codeContainerRef.current.scrollTop =
+          codeContainerRef.current.scrollHeight;
+      }
+    }, [code, isStreaming, userScrolled]);
+
+    const handleScroll = useCallback(() => {
+      if (!codeContainerRef.current) return;
+      const el = codeContainerRef.current;
+      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+      setUserScrolled(!isAtBottom);
+    }, []);
+
+    const label = config.getLabel(input);
+
+    const outputSummary = useMemo(
+      () => (isDone || isError ? getOutputSummary(output) : null),
+      [isDone, isError, output],
+    );
+
+    const formattedOutput = useMemo(
+      () => (isDone || isError ? formatOutputForDisplay(output) : ""),
+      [isDone, isError, output],
+    );
+    const outputLang =
+      formattedOutput.startsWith("{") || formattedOutput.startsWith("[")
+        ? "json"
+        : "text";
+
+    const hasVisibleBody =
+      code.length > 0 || ((isDone || isError) && formattedOutput.length > 0);
+
+    const statusText = isStreaming
+      ? "Generating…"
+      : isExecuting
+        ? "Running…"
+        : isDone
+          ? (outputSummary ?? "Done")
           : isError
-            ? "error.main"
-            : "divider",
-        overflow: "hidden",
-        transition: "border-color 0.3s, opacity 0.3s",
-        opacity: isDone || isError ? 0.85 : 1,
-        backgroundColor: isDark
-          ? "rgba(255,255,255,0.02)"
-          : "rgba(0,0,0,0.015)",
-      }}
-    >
-      {/* Header */}
+            ? (outputSummary ?? "Error")
+            : "";
+
+    return (
       <Box
-        onClick={() => {
-          if ((isDone || isError) && hasVisibleBody) {
-            setExpanded(prev => !prev);
-          } else {
-            onDetailClick?.();
-          }
-        }}
         sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          px: 1.5,
-          py: 0.75,
-          cursor: "pointer",
-          userSelect: "none",
-          "&:hover": {
-            backgroundColor: isDark
-              ? "rgba(255,255,255,0.04)"
-              : "rgba(0,0,0,0.03)",
-          },
+          my: 0.75,
+          borderRadius: 1.5,
+          border: 1,
+          borderColor: isActive
+            ? "primary.main"
+            : isError
+              ? "error.main"
+              : "divider",
+          overflow: "hidden",
+          transition: "border-color 0.3s, opacity 0.3s",
+          opacity: isDone || isError ? 0.85 : 1,
+          backgroundColor: isDark
+            ? "rgba(255,255,255,0.02)"
+            : "rgba(0,0,0,0.015)",
         }}
       >
+        {/* Header */}
         <Box
+          onClick={() => {
+            if ((isDone || isError) && hasVisibleBody) {
+              setExpanded(prev => !prev);
+            } else {
+              onDetailClick?.();
+            }
+          }}
           sx={{
             display: "flex",
             alignItems: "center",
-            color: isActive ? "primary.main" : "text.secondary",
+            gap: 1,
+            px: 1.5,
+            py: 0.75,
+            cursor: "pointer",
+            userSelect: "none",
+            "&:hover": {
+              backgroundColor: isDark
+                ? "rgba(255,255,255,0.04)"
+                : "rgba(0,0,0,0.03)",
+            },
           }}
         >
-          {(isDone || isError) && hasVisibleBody ? (
-            expanded ? (
-              <ChevronDown size={14} />
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              color: isActive ? "primary.main" : "text.secondary",
+            }}
+          >
+            {(isDone || isError) && hasVisibleBody ? (
+              expanded ? (
+                <ChevronDown size={14} />
+              ) : (
+                <ChevronRight size={14} />
+              )
             ) : (
-              <ChevronRight size={14} />
-            )
-          ) : (
-            config.icon
-          )}
-        </Box>
+              config.icon
+            )}
+          </Box>
 
-        <Typography
-          variant="caption"
-          sx={{
-            fontWeight: 500,
-            flex: 1,
-            color: "text.primary",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {label}
-        </Typography>
-
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
           <Typography
             variant="caption"
             sx={{
-              color: isError ? "error.main" : "text.secondary",
-              fontSize: "0.7rem",
-              maxWidth: 180,
+              fontWeight: 500,
+              flex: 1,
+              color: "text.primary",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
             }}
           >
-            {statusText}
+            {label}
           </Typography>
-          {isStreaming ? (
+
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+            <Typography
+              variant="caption"
+              sx={{
+                color: isError ? "error.main" : "text.secondary",
+                fontSize: "0.7rem",
+                maxWidth: 180,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {statusText}
+            </Typography>
+            {isStreaming ? (
+              <Box
+                sx={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  backgroundColor: "primary.main",
+                  animation: `${pulseKf} 1s infinite ease-in-out`,
+                }}
+              />
+            ) : isExecuting ? (
+              <CircularProgress size={12} thickness={5} />
+            ) : isDone ? (
+              <Check
+                size={14}
+                style={{ color: "var(--mui-palette-success-main, #4caf50)" }}
+              />
+            ) : isError ? (
+              <X
+                size={14}
+                style={{ color: "var(--mui-palette-error-main, #f44336)" }}
+              />
+            ) : null}
+          </Box>
+        </Box>
+
+        {/* Expandable body: code preview + output */}
+        <Collapse in={expanded && hasVisibleBody} timeout={300}>
+          {/* Code preview */}
+          {code.length > 0 && (
+            <Box
+              ref={codeContainerRef}
+              onScroll={handleScroll}
+              sx={{
+                maxHeight: 220,
+                overflow: "auto",
+                borderTop: 1,
+                borderColor: "divider",
+              }}
+            >
+              <SyntaxHighlighter
+                style={syntaxTheme}
+                language={config.preview?.language ?? "text"}
+                PreTag="div"
+                customStyle={{
+                  fontSize: "0.78rem",
+                  margin: 0,
+                  padding: "0.75rem",
+                  background: "transparent",
+                  overflow: "visible",
+                }}
+              >
+                {code || " "}
+              </SyntaxHighlighter>
+            </Box>
+          )}
+
+          {/* Output */}
+          {(isDone || isError) && formattedOutput.length > 0 && (
             <Box
               sx={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                backgroundColor: "primary.main",
-                animation: `${pulseKf} 1s infinite ease-in-out`,
+                maxHeight: 200,
+                overflow: "auto",
+                borderTop: 1,
+                borderColor: isError ? "error.main" : "divider",
+                ...(isError && {
+                  backgroundColor: isDark
+                    ? "rgba(244,67,54,0.06)"
+                    : "rgba(244,67,54,0.04)",
+                }),
               }}
-            />
-          ) : isExecuting ? (
-            <CircularProgress size={12} thickness={5} />
-          ) : isDone ? (
-            <Check
-              size={14}
-              style={{ color: "var(--mui-palette-success-main, #4caf50)" }}
-            />
-          ) : isError ? (
-            <X
-              size={14}
-              style={{ color: "var(--mui-palette-error-main, #f44336)" }}
-            />
-          ) : null}
-        </Box>
+            >
+              <SyntaxHighlighter
+                style={syntaxTheme}
+                language={outputLang}
+                PreTag="div"
+                customStyle={{
+                  fontSize: "0.75rem",
+                  margin: 0,
+                  padding: "0.75rem",
+                  background: "transparent",
+                  overflow: "visible",
+                }}
+              >
+                {formattedOutput}
+              </SyntaxHighlighter>
+            </Box>
+          )}
+        </Collapse>
       </Box>
-
-      {/* Expandable body: code preview + output */}
-      <Collapse in={expanded && hasVisibleBody} timeout={300}>
-        {/* Code preview */}
-        {code.length > 0 && (
-          <Box
-            ref={codeContainerRef}
-            onScroll={handleScroll}
-            sx={{
-              maxHeight: 220,
-              overflow: "auto",
-              borderTop: 1,
-              borderColor: "divider",
-            }}
-          >
-            <SyntaxHighlighter
-              style={syntaxTheme}
-              language={config.preview?.language ?? "text"}
-              PreTag="div"
-              customStyle={{
-                fontSize: "0.78rem",
-                margin: 0,
-                padding: "0.75rem",
-                background: "transparent",
-                overflow: "visible",
-              }}
-            >
-              {code || " "}
-            </SyntaxHighlighter>
-          </Box>
-        )}
-
-        {/* Output */}
-        {(isDone || isError) && formattedOutput.length > 0 && (
-          <Box
-            sx={{
-              maxHeight: 200,
-              overflow: "auto",
-              borderTop: 1,
-              borderColor: isError ? "error.main" : "divider",
-              ...(isError && {
-                backgroundColor: isDark
-                  ? "rgba(244,67,54,0.06)"
-                  : "rgba(244,67,54,0.04)",
-              }),
-            }}
-          >
-            <SyntaxHighlighter
-              style={syntaxTheme}
-              language={outputLang}
-              PreTag="div"
-              customStyle={{
-                fontSize: "0.75rem",
-                margin: 0,
-                padding: "0.75rem",
-                background: "transparent",
-                overflow: "visible",
-              }}
-            >
-              {formattedOutput}
-            </SyntaxHighlighter>
-          </Box>
-        )}
-      </Collapse>
-    </Box>
-  );
-});
+    );
+  },
+  (prev, next) =>
+    prev.toolName === next.toolName &&
+    prev.state === next.state &&
+    prev.input === next.input &&
+    prev.output === next.output,
+);

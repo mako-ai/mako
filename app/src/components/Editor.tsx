@@ -409,6 +409,42 @@ function Editor({
     };
   }, [activeConsoleId, consoleTabs]);
 
+  // Listen for console execution events from AI (run_console tool)
+  useEffect(() => {
+    const handleExecutionStart = (event: Event) => {
+      const { consoleId } = (event as CustomEvent<{ consoleId: string }>)
+        .detail;
+      if (consoleId) {
+        setExecutingTabs(prev => ({ ...prev, [consoleId]: true }));
+      }
+    };
+
+    const handleExecutionResult = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        consoleId: string;
+        result: QueryResult | null;
+      }>;
+      const { consoleId, result } = customEvent.detail;
+      if (consoleId) {
+        setTabResults(prev => ({ ...prev, [consoleId]: result }));
+        setExecutingTabs(prev => ({ ...prev, [consoleId]: false }));
+      }
+    };
+
+    window.addEventListener("console-execution-start", handleExecutionStart);
+    window.addEventListener("console-execution-result", handleExecutionResult);
+    return () => {
+      window.removeEventListener(
+        "console-execution-start",
+        handleExecutionStart,
+      );
+      window.removeEventListener(
+        "console-execution-result",
+        handleExecutionResult,
+      );
+    };
+  }, []);
+
   /* ------------------------ Console Actions ------------------------ */
   const handleTabChange = (_: React.SyntheticEvent, newValue: string) => {
     setActiveTab(newValue);
