@@ -29,8 +29,7 @@ const WEBHOOK_SQL_PROCESS_CONCURRENCY = Math.max(
 );
 
 const WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY = Math.max(
-  parseInt(process.env.WEBHOOK_CDC_WEBHOOK_PROCESS_CONCURRENCY || "25", 10) ||
-    25,
+  parseInt(process.env.WEBHOOK_CDC_PROCESS_CONCURRENCY || "25", 10) || 25,
   5,
 );
 

@@ -8,7 +8,10 @@ import {
 import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
 import { v4 as uuidv4 } from "uuid";
 import { connectorRegistry } from "../connectors/registry";
-import { isEntityEnabledForFlow } from "../sync-cdc/entity-selection";
+import {
+  isEntityEnabledForFlow,
+  resolveConfiguredEntities,
+} from "../sync-cdc/entity-selection";
 import { loggers } from "../logging";
 
 const logger = loggers.inngest("webhook");
@@ -139,10 +142,19 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
 
     // 5b. Early entity filtering — drop events for disabled entities
     //     immediately without burning an Inngest concurrency slot.
+    //     Skip when sub-types exist (e.g. activities → activities:Call) since
+    //     we can't resolve the sub-type without extracting payload data.
     const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
     if (mapping) {
       const baseEntity = mapping.entity.split(":")[0];
-      if (!isEntityEnabledForFlow(flow, mapping.entity, baseEntity)) {
+      const { entities: configuredEntities } = resolveConfiguredEntities(flow);
+      const hasSubTypes = configuredEntities.some(e =>
+        e.startsWith(baseEntity + ":"),
+      );
+      if (
+        !hasSubTypes &&
+        !isEntityEnabledForFlow(flow, mapping.entity, baseEntity)
+      ) {
         await WebhookEvent.updateOne(
           { _id: webhookEvent._id },
           {
