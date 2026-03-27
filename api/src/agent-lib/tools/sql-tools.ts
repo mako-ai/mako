@@ -795,12 +795,13 @@ async function executeQueryImpl(
   }
   // BigQuery doesn't need options - dataset is in the query
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(
+  let timeoutTimer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutTimer = setTimeout(
       () => reject(new Error("AGENT_QUERY_TIMEOUT")),
       AGENT_QUERY_TIMEOUT_MS,
-    ),
-  );
+    );
+  });
 
   try {
     const result = await Promise.race([
@@ -813,6 +814,61 @@ async function executeQueryImpl(
       ),
       timeoutPromise,
     ]);
+
+    // Track successful/error query execution (fire-and-forget)
+    if (userId) {
+      const rowCount = result.success
+        ? (result.rowCount ??
+          (Array.isArray(result.data) ? result.data.length : undefined))
+        : undefined;
+
+      let errorType: string | undefined;
+      if (!result.success) {
+        const errorMsg = result.error?.toLowerCase() || "";
+        if (errorMsg.includes("syntax")) {
+          errorType = "syntax";
+        } else if (
+          errorMsg.includes("timeout") ||
+          errorMsg.includes("timed out")
+        ) {
+          errorType = "timeout";
+        } else if (
+          errorMsg.includes("connection") ||
+          errorMsg.includes("connect")
+        ) {
+          errorType = "connection";
+        } else if (
+          errorMsg.includes("permission") ||
+          errorMsg.includes("access denied")
+        ) {
+          errorType = "permission";
+        } else {
+          errorType = "unknown";
+        }
+      }
+
+      let executionStatus: "success" | "error" | "timeout" | "cancelled" =
+        result.success ? "success" : "error";
+      if (!result.success && errorType === "timeout") {
+        executionStatus = "timeout";
+      } else if (!result.success && errorType === "cancelled") {
+        executionStatus = "cancelled";
+      }
+
+      queryExecutionService.track({
+        userId,
+        workspaceId: new Types.ObjectId(workspaceId),
+        connectionId: database._id,
+        databaseName,
+        source: "agent",
+        databaseType: database.type,
+        queryLanguage: "sql",
+        status: executionStatus,
+        executionTimeMs: Date.now() - startTime,
+        rowCount,
+        errorType,
+      });
+    }
 
     if (result && result.success && result.data) {
       const truncatedData = truncateQueryResults(result.data);
@@ -844,6 +900,8 @@ async function executeQueryImpl(
       };
     }
     throw err;
+  } finally {
+    clearTimeout(timeoutTimer!);
   }
 }
 

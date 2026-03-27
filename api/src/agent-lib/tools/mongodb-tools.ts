@@ -227,12 +227,13 @@ async function executeQueryImpl(
   });
   if (!database) throw new Error("Connection not found or access denied");
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(
+  let timeoutTimer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutTimer = setTimeout(
       () => reject(new Error("AGENT_QUERY_TIMEOUT")),
       AGENT_QUERY_TIMEOUT_MS,
-    ),
-  );
+    );
+  });
 
   let result: Awaited<
     ReturnType<typeof databaseConnectionService.executeQuery>
@@ -272,6 +273,8 @@ async function executeQueryImpl(
       };
     }
     throw err;
+  } finally {
+    clearTimeout(timeoutTimer!);
   }
 
   // Track query execution (fire-and-forget)
