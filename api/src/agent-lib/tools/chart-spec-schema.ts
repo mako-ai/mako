@@ -255,7 +255,9 @@ export const Transform = z.union([
   z.object({
     fold: z.array(z.string()).describe("Columns to unpivot"),
     as: z
-      .tuple([z.string(), z.string()])
+      .array(z.string())
+      .min(2)
+      .max(2)
       .optional()
       .describe("Output field names [key, value]"),
   }),
@@ -267,7 +269,7 @@ export const Transform = z.union([
         as: z.string(),
       }),
     ),
-    frame: z.tuple([z.number().nullable(), z.number().nullable()]).optional(),
+    frame: z.array(z.number().nullable()).min(2).max(2).optional(),
     groupby: z.array(z.string()).optional(),
     sort: z
       .array(
