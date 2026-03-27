@@ -452,7 +452,14 @@ async function inspectTableImpl(
 
   return withAgentTimeout(
     `agent-inspect-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    async () => inspectTableInner(database, dialect, databaseName, tableName),
+    async executionId =>
+      inspectTableInner(
+        database,
+        dialect,
+        databaseName,
+        tableName,
+        executionId,
+      ),
   );
 }
 
@@ -461,6 +468,7 @@ async function inspectTableInner(
   dialect: ReturnType<typeof getDialect>,
   databaseName: string,
   tableName: string,
+  executionId?: string,
 ) {
   let columns: Array<{
     name: string;
@@ -493,7 +501,7 @@ async function inspectTableInner(
        WHERE table_schema = ${escapePostgresLiteral(schema)}
          AND table_name = ${escapePostgresLiteral(table)}
        ORDER BY ordinal_position;`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (!columnsResult.success) {
@@ -515,7 +523,7 @@ async function inspectTableInner(
       `SELECT table_type FROM information_schema.tables
        WHERE table_schema = ${escapePostgresLiteral(schema)}
          AND table_name = ${escapePostgresLiteral(table)};`,
-      { databaseName },
+      { databaseName, executionId },
     );
     if (typeResult.success && typeResult.data?.[0]?.table_type === "VIEW") {
       entityKind = "view";
@@ -526,7 +534,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -569,6 +577,7 @@ async function inspectTableInner(
        WHERE table_name = '${safeTableForQuery}'
        ORDER BY ordinal_position
        LIMIT 1000`,
+      { executionId },
     );
 
     if (!columnsResult.success) {
@@ -588,6 +597,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS}`,
+      { executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -605,6 +615,7 @@ async function inspectTableInner(
        FROM system.columns
        WHERE database = '${safeDatabase}' AND table = '${safeTable}'
        ORDER BY position`,
+      { executionId },
     );
 
     if (!columnsResult.success) {
@@ -625,6 +636,7 @@ async function inspectTableInner(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT engine FROM system.tables 
        WHERE database = '${safeDatabase}' AND name = '${safeTable}'`,
+      { executionId },
     );
     if (
       typeResult.success &&
@@ -638,6 +650,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM "${databaseName.replace(/"/g, '""')}"."${tableName.replace(/"/g, '""')}" LIMIT ${MAX_SAMPLE_ROWS}`,
+      { executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -654,7 +667,7 @@ async function inspectTableInner(
        WHERE table_schema = '${safeDb}'
          AND table_name = '${safeTable}'
        ORDER BY ordinal_position;`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (!columnsResult.success) {
@@ -697,7 +710,7 @@ async function inspectTableInner(
        FROM information_schema.tables
        WHERE table_schema = '${safeDb}'
          AND table_name = '${safeTable}';`,
-      { databaseName },
+      { databaseName, executionId },
     );
     const typeValue =
       (typeResult.success && typeResult.data?.[0]?.table_type) ||
@@ -710,7 +723,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseName },
+      { databaseName, executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -722,7 +735,7 @@ async function inspectTableInner(
     const columnsResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `PRAGMA table_info(${escapeSqliteLiteral(tableName)});`,
-      { databaseId: databaseName },
+      { databaseId: databaseName, executionId },
     );
 
     if (!columnsResult.success) {
@@ -742,7 +755,7 @@ async function inspectTableInner(
     const typeResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT type FROM sqlite_master WHERE name = ${escapeSqliteLiteral(tableName)};`,
-      { databaseId: databaseName },
+      { databaseId: databaseName, executionId },
     );
     if (typeResult.success && typeResult.data?.[0]?.type === "view") {
       entityKind = "view";
@@ -752,7 +765,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${escapeSqliteIdentifier(tableName)} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseId: databaseName },
+      { databaseId: databaseName, executionId },
     );
 
     if (samplesResult.success && samplesResult.data) {

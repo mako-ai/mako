@@ -166,7 +166,7 @@ async function inspectCollectionImpl(
 
   return withAgentTimeout(
     `agent-inspect-mongo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    async () => {
+    async _executionId => {
       const connection = await databaseConnectionService.getConnection(
         database as Parameters<
           typeof databaseConnectionService.getConnection
