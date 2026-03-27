@@ -831,10 +831,11 @@ export class CloseConnector extends BaseConnector {
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
-    const SEARCH_SKIP_LIMIT = 9800;
 
-    // Resume cursor: last record's date_created timestamp from previous chunk.
-    let cursor: string | null = state?.metadata?.cursor ?? null;
+    // Date-window cursor: "before" boundary for descending pagination.
+    // Close's Search API ignores _skip — we use native cursor tokens for
+    // page-to-page navigation and date-based windowing to avoid the 10k limit.
+    let dateWindowCursor: string | null = state?.metadata?.cursor ?? null;
 
     const objectType = this.getSearchObjectType(entity);
 
@@ -1011,14 +1012,16 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
-    let skip = state?.metadata?.skip || 0;
+    let pageCursor: string | null = state?.metadata?.pageCursor ?? null;
+    let windowRecords: number = state?.metadata?.windowRecords ?? 0;
+    const WINDOW_SIZE = 8000;
 
     while (iterations < maxIterations) {
       try {
         const queries: any[] = [
           { type: "object_type", object_type: objectType },
         ];
-        if (cursor) {
+        if (dateWindowCursor) {
           queries.push({
             type: "field_condition",
             field: {
@@ -1028,12 +1031,11 @@ export class CloseConnector extends BaseConnector {
             },
             condition: {
               type: "moment_range",
-              on_or_after: {
+              on_or_after: null,
+              before: {
                 type: "fixed_utc",
-                value: cursor,
-                which: "start",
+                value: dateWindowCursor,
               },
-              before: null,
             },
           });
         }
@@ -1041,10 +1043,9 @@ export class CloseConnector extends BaseConnector {
         const body: any = {
           query: { type: "and", queries },
           _limit: batchSize,
-          _skip: skip,
           sort: [
             {
-              direction: "asc",
+              direction: "desc",
               field: {
                 object_type: objectType,
                 type: "regular_field",
@@ -1065,38 +1066,55 @@ export class CloseConnector extends BaseConnector {
         } else if (fieldsMap[objectType]) {
           body._fields = { [objectType]: fieldsMap[objectType] };
         }
+        if (pageCursor) {
+          body.cursor = pageCursor;
+        }
 
         const response = await api.post("/data/search/", body);
         const data = response.data.data || [];
-        const nextCursor = response.data.cursor || null;
+        pageCursor = response.data.cursor || null;
 
         if (data.length > 0) {
           const records =
             entity === "leads" ? this.normalizeLeadBatch(data) : data;
           await onBatch(records);
           recordCount += records.length;
-          skip += data.length;
+          windowRecords += data.length;
 
-          const rawCursor = data[data.length - 1].date_created || "";
-          cursor = rawCursor.replace(/\+00:00$/, "Z").replace(/\.000000/, "");
+          const firstDateCreated = data[0].date_created;
+          const lastDateCreated = data[data.length - 1].date_created;
+
+          // Proactive window reset: use firstDateCreated (newest in desc batch)
+          // as the exclusive "before" boundary. Only reset when the batch spans
+          // multiple dates — if all records share one timestamp (cluster), keep
+          // the cursor going to avoid re-scanning.
+          if (
+            windowRecords >= WINDOW_SIZE &&
+            firstDateCreated &&
+            firstDateCreated !== dateWindowCursor &&
+            firstDateCreated !== lastDateCreated
+          ) {
+            dateWindowCursor = firstDateCreated;
+            pageCursor = null;
+            windowRecords = 0;
+          }
 
           if (onProgress) {
             onProgress(recordCount, undefined);
           }
         }
 
-        if (!nextCursor || data.length === 0) {
+        if (!pageCursor || data.length === 0) {
           return {
             totalProcessed: recordCount,
             hasMore: false,
             iterationsInChunk: iterations + 1,
-            metadata: { cursor, skip },
+            metadata: {
+              cursor: dateWindowCursor,
+              pageCursor,
+              windowRecords,
+            },
           };
-        }
-
-        // Near Close 10k skip limit: window by date_created
-        if (skip >= SEARCH_SKIP_LIMIT) {
-          skip = 0;
         }
 
         iterations++;
@@ -1118,6 +1136,18 @@ export class CloseConnector extends BaseConnector {
             recordsFetched: recordCount,
           });
           await this.sleep(retryAfter * 1000);
+        } else if (
+          axios.isAxiosError(error) &&
+          error.response?.status === 400 &&
+          error.response?.data?.["field-errors"]?.cursor
+        ) {
+          this.emitSyncLog(
+            "info",
+            "Close cursor limit reached, resetting date window",
+            { entity, recordsFetched: recordCount, windowRecords },
+          );
+          pageCursor = null;
+          windowRecords = 0;
         } else {
           throw error;
         }
@@ -1128,7 +1158,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { cursor, skip },
+      metadata: { cursor: dateWindowCursor, pageCursor, windowRecords },
     };
   }
 
