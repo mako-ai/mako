@@ -1579,6 +1579,8 @@ const Chat: React.FC<ChatProps> = ({
                       executedAt: new Date().toISOString(),
                       resultCount: rowCount,
                       executionTime,
+                      fields: result.fields,
+                      pageInfo: result.pageInfo || null,
                     },
                   },
                 }),
@@ -1595,6 +1597,12 @@ const Chat: React.FC<ChatProps> = ({
                 },
               });
             } else {
+              window.dispatchEvent(
+                new CustomEvent("console-execution-result", {
+                  detail: { consoleId, result: null },
+                }),
+              );
+
               addToolOutput({
                 tool: "run_console",
                 toolCallId: toolCall.toolCallId,
