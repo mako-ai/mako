@@ -273,8 +273,6 @@ async function executeQueryImpl(
       };
     }
     throw err;
-  } finally {
-    clearTimeout(timeoutTimer!);
   }
 
   // Track query execution (fire-and-forget)

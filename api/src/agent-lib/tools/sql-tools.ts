@@ -587,7 +587,7 @@ async function inspectTableInner(
     const qualifiedName = `${safeProject}.${safeDataset}.${escapeBigQueryIdentifier(table)}`;
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      `SELECT * FROM ${qualifiedName} TABLESAMPLE SYSTEM (${MAX_SAMPLE_ROWS} ROWS)`,
+      `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS}`,
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -904,8 +904,6 @@ async function executeQueryImpl(
       };
     }
     throw err;
-  } finally {
-    clearTimeout(timeoutTimer!);
   }
 }
 
