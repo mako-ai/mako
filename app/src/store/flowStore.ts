@@ -290,6 +290,13 @@ export interface CdcStatus {
   syncState?: string;
   streamState: "idle" | "active" | "paused" | "error";
   backfillStatus: "idle" | "running" | "paused" | "completed" | "error";
+  consecutiveFailures: number;
+  lastError: {
+    message: string | null;
+    code: string | null;
+    reason: string | null;
+    event: string | null;
+  } | null;
   backlogCount: number;
   lagSeconds: number | null;
   lastMaterializedAt: string | null;

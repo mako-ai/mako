@@ -98,6 +98,18 @@ interface FlowExecutionLog {
   metadata?: any;
 }
 
+function touchHeartbeat(executionId: string | undefined): Promise<void> {
+  if (!executionId) return Promise.resolve();
+  return Flow.db
+    .collection("flow_executions")
+    .updateOne(
+      { _id: new Types.ObjectId(executionId) },
+      { $set: { lastHeartbeat: new Date() } },
+    )
+    .then(() => {})
+    .catch(() => {});
+}
+
 interface FlowExecutionData {
   _id?: Types.ObjectId;
   flowId: Types.ObjectId;
@@ -1724,15 +1736,7 @@ export const flowFunction = inngest.createFunction(
             });
             try {
               await step.run(`flush-final-${safeEntityStepId}`, async () => {
-                if (executionId) {
-                  await Flow.db
-                    .collection("flow_executions")
-                    .updateOne(
-                      { _id: new Types.ObjectId(executionId) },
-                      { $set: { lastHeartbeat: new Date() } },
-                    )
-                    .catch(() => {});
-                }
+                await touchHeartbeat(executionId);
                 void appendExecutionLog(
                   "info",
                   `Flushing ${entity} buffer to BigQuery staging via Parquet`,
@@ -1770,15 +1774,7 @@ export const flowFunction = inngest.createFunction(
             });
             try {
               await step.run(`merge-staging-${safeEntityStepId}`, async () => {
-                if (executionId) {
-                  await Flow.db
-                    .collection("flow_executions")
-                    .updateOne(
-                      { _id: new Types.ObjectId(executionId) },
-                      { $set: { lastHeartbeat: new Date() } },
-                    )
-                    .catch(() => {});
-                }
+                await touchHeartbeat(executionId);
                 void appendExecutionLog(
                   "info",
                   `Merging ${entity} staging table to live`,
@@ -1815,15 +1811,7 @@ export const flowFunction = inngest.createFunction(
               entity,
             });
             await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
-              if (executionId) {
-                await Flow.db
-                  .collection("flow_executions")
-                  .updateOne(
-                    { _id: new Types.ObjectId(executionId) },
-                    { $set: { lastHeartbeat: new Date() } },
-                  )
-                  .catch(() => {});
-              }
+              await touchHeartbeat(executionId);
               try {
                 await performStagingCleanup(bulkSyncOptions);
               } catch (err) {
@@ -2038,15 +2026,7 @@ export const flowFunction = inngest.createFunction(
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
-            if (executionId) {
-              await Flow.db
-                .collection("flow_executions")
-                .updateOne(
-                  { _id: new Types.ObjectId(executionId) },
-                  { $set: { lastHeartbeat: new Date() } },
-                )
-                .catch(() => {});
-            }
+            await touchHeartbeat(executionId);
             const flowObjectId = new Types.ObjectId(flowId);
             const replayBatchSize = Math.max(
               parseInt(process.env.WEBHOOK_REPLAY_BATCH_SIZE || "1000", 10) ||
@@ -2183,15 +2163,7 @@ export const flowFunction = inngest.createFunction(
           });
         });
         await step.run("drain-bigquery-cdc-pending-events", async () => {
-          if (executionId) {
-            await Flow.db
-              .collection("flow_executions")
-              .updateOne(
-                { _id: new Types.ObjectId(executionId) },
-                { $set: { lastHeartbeat: new Date() } },
-              )
-              .catch(() => {});
-          }
+          await touchHeartbeat(executionId);
           await forceDrainCdcFlow({
             workspaceId: String(flow.workspaceId),
             flowId: String(flowId),
