@@ -415,6 +415,220 @@ const StreamingIndicator = React.memo(() => {
 
 StreamingIndicator.displayName = "StreamingIndicator";
 
+// ── Memoized message row ─────────────────────────────────────────
+// Prevents completed messages from re-rendering on every streaming chunk.
+interface ChatMessageRowProps {
+  message: { id: string; role: string; parts?: Array<Record<string, unknown>> };
+  isLastMessage: boolean;
+  isStreaming: boolean;
+  onToolClick: (tool: ToolInvocationInfo) => void;
+}
+
+const userMessageSx = { flex: 1, mt: 2 } as const;
+const userMessagePaperSx = {
+  p: 1,
+  borderRadius: 1,
+  backgroundColor: "background.paper",
+  overflow: "hidden",
+} as const;
+const userMessageBoxSx = { overflow: "auto", maxWidth: "100%" } as const;
+const userMessageTextSx = {
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  overflowWrap: "break-word",
+} as const;
+const assistantMessageSx = {
+  flex: 1,
+  overflow: "hidden",
+  fontSize: "0.875rem",
+  mt: 1,
+  "& pre": { margin: 0, overflow: "hidden" },
+} as const;
+const listItemSx = { p: 0 } as const;
+
+function computeReasoningGroups(parts: Array<Record<string, unknown>>) {
+  const groups = new Map<number, { text: string; lastIndex: number }>();
+
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.type !== "reasoning") continue;
+    const text = typeof p.text === "string" ? p.text.trim() : "";
+    if (!text) {
+      for (const [, group] of groups) {
+        if (group.lastIndex === i - 1) {
+          group.lastIndex = i;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const prevIndex = i - 1;
+    let groupStart = i;
+    for (const [start, group] of groups) {
+      if (group.lastIndex === prevIndex) {
+        groupStart = start;
+        break;
+      }
+    }
+
+    if (groupStart === i) {
+      groups.set(i, { text: (p.text as string).trim(), lastIndex: i });
+    } else {
+      const existing = groups.get(groupStart);
+      if (existing) {
+        existing.text += "\n\n" + (p.text as string).trim();
+        existing.lastIndex = i;
+      }
+    }
+  }
+
+  return groups;
+}
+
+const ChatMessageRow = React.memo(
+  function ChatMessageRow({
+    message,
+    isLastMessage,
+    isStreaming,
+    onToolClick,
+  }: ChatMessageRowProps) {
+    if (message.role === "user") {
+      return (
+        <ListItem alignItems="flex-start" sx={listItemSx}>
+          <Box sx={userMessageSx}>
+            <Paper variant="outlined" sx={userMessagePaperSx}>
+              <Box sx={userMessageBoxSx}>
+                <ListItemText
+                  primary={
+                    (message.parts || [])
+                      .filter(
+                        (p): p is { type: "text"; text: string } =>
+                          p.type === "text" && "text" in p,
+                      )
+                      .map(p => p.text)
+                      .join("") || ""
+                  }
+                  primaryTypographyProps={{
+                    variant: "body2",
+                    color: "text.primary",
+                    sx: userMessageTextSx,
+                  }}
+                />
+              </Box>
+            </Paper>
+          </Box>
+        </ListItem>
+      );
+    }
+
+    const parts = (message.parts || []) as Array<Record<string, unknown>>;
+    const isStreamingNow = isStreaming;
+
+    const reasoningGroups = computeReasoningGroups(parts);
+
+    const lastPart = parts.at(-1);
+    const isLastPartReasoning =
+      isLastMessage && isStreamingNow && lastPart?.type === "reasoning";
+
+    let lastGroupStart = -1;
+    for (const [start] of reasoningGroups) {
+      if (start > lastGroupStart) lastGroupStart = start;
+    }
+
+    return (
+      <ListItem alignItems="flex-start" sx={listItemSx}>
+        <Box sx={assistantMessageSx}>
+          {parts.map((part, partIndex) => {
+            const partType = part.type as string;
+
+            if (partType?.startsWith("tool-") || partType === "dynamic-tool") {
+              const toolName =
+                partType === "dynamic-tool"
+                  ? (part.toolName as string)
+                  : partType.split("-").slice(1).join("-");
+              return (
+                <StreamingToolCard
+                  key={partIndex}
+                  toolName={toolName}
+                  state={part.state as ToolPartState}
+                  input={part.input}
+                  output={part.output}
+                  onDetailClick={() =>
+                    onToolClick({
+                      toolCallId: (part.toolCallId as string) || "",
+                      toolName: toolName || "",
+                      state: part.state as ToolInvocationInfo["state"],
+                      input: part.input,
+                      output: part.output,
+                    })
+                  }
+                />
+              );
+            }
+
+            if (partType === "reasoning") {
+              const group = reasoningGroups.get(partIndex);
+              if (!group) return null;
+              const isGroupStreaming =
+                isLastPartReasoning && partIndex === lastGroupStart;
+              return (
+                <ReasoningDisplay
+                  key={`reasoning-${partIndex}`}
+                  reasoningText={group.text}
+                  isStreaming={isGroupStreaming}
+                />
+              );
+            }
+
+            if (partType === "text" && (part as { text?: string }).text) {
+              return (
+                <StreamingMarkdown key={partIndex}>
+                  {(part as { text: string }).text}
+                </StreamingMarkdown>
+              );
+            }
+
+            return null;
+          })}
+          {isStreaming && isLastMessage && <StreamingIndicator />}
+        </Box>
+      </ListItem>
+    );
+  },
+  (prev, next) => {
+    if (prev.isLastMessage !== next.isLastMessage) return false;
+    if (prev.isStreaming !== next.isStreaming) return false;
+    if (prev.message === next.message) return true;
+
+    const prevParts = prev.message.parts || [];
+    const nextParts = next.message.parts || [];
+    if (prevParts.length !== nextParts.length) return false;
+
+    for (let i = 0; i < nextParts.length; i++) {
+      const pp = prevParts[i];
+      const np = nextParts[i];
+      if (pp.type !== np.type) return false;
+      if (pp.state !== np.state) return false;
+      // Actively streaming parts have changing content — must re-render
+      if (np.state === "input-streaming" || np.state === "output-streaming") {
+        return false;
+      }
+      if (
+        (pp.type === "text" || pp.type === "reasoning") &&
+        (pp as { text?: string }).text?.length !==
+          (np as { text?: string }).text?.length
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  },
+);
+
+ChatMessageRow.displayName = "ChatMessageRow";
+
 // Isolated input component — owns its own `input` state so keystrokes
 // never re-render the (expensive) message list above it.
 interface ChatInputAreaProps {
@@ -1552,6 +1766,19 @@ const Chat: React.FC<ChatProps> = ({
             return;
           }
 
+          const QUERY_TIMEOUT_MS = 120_000; // 2 minutes
+          const abortController = new AbortController();
+          const timeoutId = setTimeout(
+            () => abortController.abort(),
+            QUERY_TIMEOUT_MS,
+          );
+
+          window.dispatchEvent(
+            new CustomEvent("console-execution-start", {
+              detail: { consoleId },
+            }),
+          );
+
           try {
             const startTime = Date.now();
             const result = await currentStore.executeQuery(
@@ -1561,8 +1788,10 @@ const Chat: React.FC<ChatProps> = ({
               {
                 databaseName: targetConsole.databaseName,
                 databaseId: targetConsole.databaseId,
+                signal: abortController.signal,
               },
             );
+            clearTimeout(timeoutId);
             const executionTime = Date.now() - startTime;
 
             if (result.success) {
@@ -1613,18 +1842,24 @@ const Chat: React.FC<ChatProps> = ({
               });
             }
           } catch (e: any) {
+            clearTimeout(timeoutId);
+
             window.dispatchEvent(
               new CustomEvent("console-execution-result", {
                 detail: { consoleId, result: null },
               }),
             );
 
+            const isTimeout =
+              e?.name === "AbortError" && abortController.signal.aborted;
             addToolOutput({
               tool: "run_console",
               toolCallId: toolCall.toolCallId,
               output: {
                 success: false,
-                error: e?.message || "Query execution failed unexpectedly.",
+                error: isTimeout
+                  ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
+                  : e?.message || "Query execution failed unexpectedly.",
               },
             });
           }
@@ -2024,10 +2259,10 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   // Tool debug dialog handlers
-  const handleToolClick = (tool: ToolInvocationInfo) => {
+  const handleToolClick = useCallback((tool: ToolInvocationInfo) => {
     setSelectedTool(tool);
     setToolDialogOpen(true);
-  };
+  }, []);
 
   const handleCloseToolDialog = () => {
     setToolDialogOpen(false);
@@ -2296,208 +2531,14 @@ const Chat: React.FC<ChatProps> = ({
       {/* Messages */}
       <Box sx={{ flex: messages.length > 0 ? 1 : 0, overflow: "auto", p: 1 }}>
         <List dense>
-          {messages.map(message => (
-            <ListItem key={message.id} alignItems="flex-start" sx={{ p: 0 }}>
-              {message.role === "user" ? (
-                <Box sx={{ flex: 1, mt: 2 }}>
-                  <Paper
-                    variant="outlined"
-                    sx={{
-                      p: 1,
-                      borderRadius: 1,
-                      backgroundColor: "background.paper",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        overflow: "auto",
-                        maxWidth: "100%",
-                      }}
-                    >
-                      <ListItemText
-                        primary={
-                          // Extract text from parts
-                          (message.parts || [])
-                            .filter(
-                              (p): p is { type: "text"; text: string } =>
-                                p.type === "text" && "text" in p,
-                            )
-                            .map(p => p.text)
-                            .join("") || ""
-                        }
-                        primaryTypographyProps={{
-                          variant: "body2",
-                          color: "text.primary",
-                          sx: {
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            overflowWrap: "break-word",
-                          },
-                        }}
-                      />
-                    </Box>
-                  </Paper>
-                </Box>
-              ) : (
-                <Box
-                  sx={{
-                    flex: 1,
-                    overflow: "hidden",
-                    fontSize: "0.875rem",
-                    mt: 1,
-                    "& pre": { margin: 0, overflow: "hidden" },
-                  }}
-                >
-                  {/* Render message parts in chronological order */}
-                  {/* Groups consecutive reasoning parts into collapsible blocks */}
-                  {(() => {
-                    const parts = message.parts || [];
-                    const isLastMessage =
-                      message.id === messages[messages.length - 1]?.id;
-                    const isStreamingNow = status === "streaming";
-
-                    // Pre-compute reasoning groups: consecutive runs of reasoning parts
-                    // Each group maps from the index of the first part in the run
-                    // to the combined text of all parts in that run.
-                    const reasoningGroups = new Map<
-                      number,
-                      { text: string; lastIndex: number }
-                    >();
-
-                    for (let i = 0; i < parts.length; i++) {
-                      const p = parts[i] as Record<string, unknown>;
-                      if (p.type !== "reasoning") continue;
-                      const text =
-                        typeof p.text === "string" ? p.text.trim() : "";
-                      if (!text) {
-                        // Extend the preceding group's lastIndex so the next
-                        // non-empty reasoning part can still find it as adjacent.
-                        for (const [, group] of reasoningGroups) {
-                          if (group.lastIndex === i - 1) {
-                            group.lastIndex = i;
-                            break;
-                          }
-                        }
-                        continue;
-                      }
-
-                      // Check if previous part was also reasoning (extend group)
-                      const prevIndex = i - 1;
-                      let groupStart = i;
-                      for (const [start, group] of reasoningGroups) {
-                        if (group.lastIndex === prevIndex) {
-                          groupStart = start;
-                          break;
-                        }
-                      }
-
-                      if (groupStart === i) {
-                        // New group
-                        reasoningGroups.set(i, {
-                          text: (p.text as string).trim(),
-                          lastIndex: i,
-                        });
-                      } else {
-                        // Extend existing group
-                        const existing = reasoningGroups.get(groupStart);
-                        if (existing) {
-                          existing.text += "\n\n" + (p.text as string).trim();
-                          existing.lastIndex = i;
-                        }
-                      }
-                    }
-
-                    // The last reasoning group is streaming if the message
-                    // is the last one, we're streaming, and the very last
-                    // part in the message is a reasoning part.
-                    const lastPart = parts.at(-1);
-                    const isLastPartReasoning =
-                      isLastMessage &&
-                      isStreamingNow &&
-                      lastPart?.type === "reasoning";
-
-                    // Find the start index of the last group (if any)
-                    let lastGroupStart = -1;
-                    for (const [start] of reasoningGroups) {
-                      if (start > lastGroupStart) lastGroupStart = start;
-                    }
-
-                    return parts.map((part, partIndex) => {
-                      const partType = (part as Record<string, unknown>)
-                        .type as string;
-
-                      // Render tool invocations
-                      if (
-                        partType?.startsWith("tool-") ||
-                        partType === "dynamic-tool"
-                      ) {
-                        const toolName =
-                          partType === "dynamic-tool"
-                            ? ((part as Record<string, unknown>)
-                                .toolName as string)
-                            : partType.split("-").slice(1).join("-");
-                        const toolPart = part as Record<string, unknown>;
-                        const toolClickHandler = () =>
-                          handleToolClick({
-                            toolCallId: (toolPart.toolCallId as string) || "",
-                            toolName: toolName || "",
-                            state:
-                              toolPart.state as ToolInvocationInfo["state"],
-                            input: toolPart.input,
-                            output: toolPart.output,
-                          });
-
-                        return (
-                          <StreamingToolCard
-                            key={partIndex}
-                            toolName={toolName}
-                            state={toolPart.state as ToolPartState}
-                            input={toolPart.input}
-                            output={toolPart.output}
-                            onDetailClick={toolClickHandler}
-                          />
-                        );
-                      }
-
-                      // Render reasoning: each consecutive group renders at the first part's position
-                      if (partType === "reasoning") {
-                        const group = reasoningGroups.get(partIndex);
-                        if (!group) return null; // part of a group but not the start
-                        const isGroupStreaming =
-                          isLastPartReasoning && partIndex === lastGroupStart;
-                        return (
-                          <ReasoningDisplay
-                            key={`reasoning-${partIndex}`}
-                            reasoningText={group.text}
-                            isStreaming={isGroupStreaming}
-                          />
-                        );
-                      }
-
-                      // Render text parts using StreamingMarkdown for optimized streaming
-                      if (
-                        partType === "text" &&
-                        (part as { text?: string }).text
-                      ) {
-                        return (
-                          <StreamingMarkdown key={partIndex}>
-                            {(part as { text: string }).text}
-                          </StreamingMarkdown>
-                        );
-                      }
-
-                      return null;
-                    });
-                  })()}
-                  {/* Show streaming indicator on last message while streaming */}
-                  {status === "streaming" &&
-                    message.id === messages[messages.length - 1]?.id && (
-                      <StreamingIndicator />
-                    )}
-                </Box>
-              )}
-            </ListItem>
+          {messages.map((message, msgIdx) => (
+            <ChatMessageRow
+              key={message.id}
+              message={message}
+              isLastMessage={msgIdx === messages.length - 1}
+              isStreaming={status === "streaming"}
+              onToolClick={handleToolClick}
+            />
           ))}
         </List>
         <div ref={messagesEndRef} />

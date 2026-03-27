@@ -14,6 +14,8 @@ import {
   truncateSamples,
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
+  AGENT_QUERY_TIMEOUT_MS,
+  withAgentTimeout,
 } from "./shared/truncation";
 import {
   ALL_SQL_TYPES,
@@ -27,8 +29,6 @@ import {
   escapeSqliteIdentifier,
 } from "./shared/sql-dialects";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
-
-const AGENT_QUERY_TIMEOUT_MS = 15_000;
 
 // LIMIT enforcement (kept local as it has sql-tools specific logic)
 const needsDefaultLimit = (sql: string): boolean => {
@@ -450,6 +450,18 @@ async function inspectTableImpl(
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
 
+  return withAgentTimeout(
+    `agent-inspect-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    async () => inspectTableInner(database, dialect, databaseName, tableName),
+  );
+}
+
+async function inspectTableInner(
+  database: Awaited<ReturnType<typeof fetchSqlDatabase>>,
+  dialect: ReturnType<typeof getDialect>,
+  databaseName: string,
+  tableName: string,
+) {
   let columns: Array<{
     name: string;
     types: string[];
@@ -571,11 +583,11 @@ async function inspectTableImpl(
       }),
     );
 
-    // Get samples
+    // Get samples — use TABLESAMPLE to avoid full table scans on large unpartitioned tables
     const qualifiedName = `${safeProject}.${safeDataset}.${escapeBigQueryIdentifier(table)}`;
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS}`,
+      `SELECT * FROM ${qualifiedName} TABLESAMPLE SYSTEM (${MAX_SAMPLE_ROWS} ROWS)`,
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -793,27 +805,19 @@ async function executeQueryImpl(
   } else if (dialect === "sqlite") {
     options = { databaseId: databaseName };
   }
-  // BigQuery doesn't need options - dataset is in the query
-
-  let timeoutTimer: ReturnType<typeof setTimeout>;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutTimer = setTimeout(
-      () => reject(new Error("AGENT_QUERY_TIMEOUT")),
-      AGENT_QUERY_TIMEOUT_MS,
-    );
-  });
 
   try {
-    const result = await Promise.race([
-      databaseConnectionService.executeQuery(
-        database as Parameters<
-          typeof databaseConnectionService.executeQuery
-        >[0],
-        safeQuery,
-        options,
-      ),
-      timeoutPromise,
-    ]);
+    const result = await withAgentTimeout(
+      `agent-sql-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      executionId =>
+        databaseConnectionService.executeQuery(
+          database as Parameters<
+            typeof databaseConnectionService.executeQuery
+          >[0],
+          safeQuery,
+          { ...options, executionId },
+        ),
+    );
 
     // Track successful/error query execution (fire-and-forget)
     if (userId) {
@@ -993,10 +997,13 @@ export const createSqlToolsV2 = (
             workspaceId,
           );
         } catch (error) {
+          const isTimeout =
+            error instanceof Error && error.message === "AGENT_QUERY_TIMEOUT";
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isTimeout
+              ? `Table inspection timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The table may be very large or the database is slow. Try using execute_query with a targeted INFORMATION_SCHEMA query instead.`
+              : error instanceof Error
                 ? error.message
                 : "Failed to inspect table",
           };

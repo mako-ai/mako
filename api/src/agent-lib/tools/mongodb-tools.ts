@@ -16,6 +16,8 @@ import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
   MAX_TOTAL_OUTPUT_SIZE,
+  AGENT_QUERY_TIMEOUT_MS,
+  withAgentTimeout,
 } from "./shared/truncation";
 
 // Define schemas separately to avoid inline inference overhead
@@ -37,8 +39,6 @@ const executeQuerySchema = z.object({
   connectionId: z.string().describe("The target connection ID"),
   databaseName: z.string().describe("The target database name"),
 });
-
-const AGENT_QUERY_TIMEOUT_MS = 15_000;
 
 // Helper implementations
 async function listMongoConnectionsImpl(workspaceId: string) {
@@ -163,44 +163,51 @@ async function inspectCollectionImpl(
       "Collection inspection only supported for MongoDB databases",
     );
   }
-  const connection = await databaseConnectionService.getConnection(
-    database as Parameters<typeof databaseConnectionService.getConnection>[0],
+
+  return withAgentTimeout(
+    `agent-inspect-mongo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    async () => {
+      const connection = await databaseConnectionService.getConnection(
+        database as Parameters<
+          typeof databaseConnectionService.getConnection
+        >[0],
+      );
+      const db = connection.db(databaseName);
+      const collection = db.collection(collectionName);
+
+      const SAMPLE_SIZE = 100;
+      const sampleDocuments = await collection
+        .aggregate([{ $sample: { size: SAMPLE_SIZE } }])
+        .toArray();
+
+      const fieldTypeMap: Record<string, Set<string>> = {};
+      for (const doc of sampleDocuments) {
+        for (const [field, value] of Object.entries(doc)) {
+          if (!fieldTypeMap[field]) fieldTypeMap[field] = new Set<string>();
+          fieldTypeMap[field].add(inferBsonType(value));
+        }
+      }
+
+      const fields = Object.entries(fieldTypeMap).map(([name, types]) => ({
+        name,
+        types: Array.from(types),
+      }));
+
+      const { samples, _note } = truncateSamples(
+        sampleDocuments,
+        MAX_SAMPLE_ROWS,
+      );
+
+      return {
+        entityKind: "collection" as const,
+        entityName: collectionName,
+        database: databaseName,
+        fields,
+        samples,
+        _note,
+      };
+    },
   );
-  const db = connection.db(databaseName);
-  const collection = db.collection(collectionName);
-
-  // Sample more documents for better field inference
-  const SAMPLE_SIZE = 100;
-  const sampleDocuments = await collection
-    .aggregate([{ $sample: { size: SAMPLE_SIZE } }])
-    .toArray();
-
-  // Infer field types from samples
-  const fieldTypeMap: Record<string, Set<string>> = {};
-  for (const doc of sampleDocuments) {
-    for (const [field, value] of Object.entries(doc)) {
-      if (!fieldTypeMap[field]) fieldTypeMap[field] = new Set<string>();
-      fieldTypeMap[field].add(inferBsonType(value));
-    }
-  }
-
-  // Normalize output: use 'fields' instead of 'schema', 'name' instead of 'field'
-  const fields = Object.entries(fieldTypeMap).map(([name, types]) => ({
-    name,
-    types: Array.from(types),
-  }));
-
-  // Truncate samples using shared utilities
-  const { samples, _note } = truncateSamples(sampleDocuments, MAX_SAMPLE_ROWS);
-
-  return {
-    entityKind: "collection" as const,
-    entityName: collectionName,
-    database: databaseName,
-    fields,
-    samples,
-    _note,
-  };
 }
 
 async function executeQueryImpl(
@@ -227,28 +234,21 @@ async function executeQueryImpl(
   });
   if (!database) throw new Error("Connection not found or access denied");
 
-  let timeoutTimer: ReturnType<typeof setTimeout>;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutTimer = setTimeout(
-      () => reject(new Error("AGENT_QUERY_TIMEOUT")),
-      AGENT_QUERY_TIMEOUT_MS,
-    );
-  });
-
   let result: Awaited<
     ReturnType<typeof databaseConnectionService.executeQuery>
   >;
   try {
-    result = await Promise.race([
-      databaseConnectionService.executeQuery(
-        database as Parameters<
-          typeof databaseConnectionService.executeQuery
-        >[0],
-        query,
-        { databaseName },
-      ),
-      timeoutPromise,
-    ]);
+    result = await withAgentTimeout(
+      `agent-mongo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      executionId =>
+        databaseConnectionService.executeQuery(
+          database as Parameters<
+            typeof databaseConnectionService.executeQuery
+          >[0],
+          query,
+          { databaseName, executionId },
+        ),
+    );
   } catch (err: unknown) {
     if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
       // Track timeout (fire-and-forget)
@@ -440,10 +440,13 @@ export const createMongoToolsV2 = (
             workspaceId,
           );
         } catch (error) {
+          const isTimeout =
+            error instanceof Error && error.message === "AGENT_QUERY_TIMEOUT";
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isTimeout
+              ? `Collection inspection timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The collection may be very large. Try using execute_query with a targeted query instead.`
+              : error instanceof Error
                 ? error.message
                 : "Failed to inspect collection",
           };

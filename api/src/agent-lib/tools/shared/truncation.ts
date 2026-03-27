@@ -3,6 +3,41 @@
  * Prevents context overflow by limiting string lengths, array sizes, object depths, etc.
  */
 
+import { databaseConnectionService } from "../../../services/database-connection.service";
+
+// Agent query timeout: how long server-side agent tools wait before aborting
+export const AGENT_QUERY_TIMEOUT_MS = 60_000; // 60 seconds
+
+/**
+ * Run a database operation with a timeout. On timeout, cancels the query
+ * server-side (e.g. kills the BigQuery job) via the executionId.
+ */
+export async function withAgentTimeout<T>(
+  executionId: string,
+  fn: (execId: string) => Promise<T>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("AGENT_QUERY_TIMEOUT")),
+      AGENT_QUERY_TIMEOUT_MS,
+    );
+  });
+
+  try {
+    const result = await Promise.race([fn(executionId), timeoutPromise]);
+    return result;
+  } catch (err) {
+    if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
+      databaseConnectionService.cancelQuery(executionId).catch(() => {});
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Truncation constants
 export const MAX_STRING_LENGTH = 200;
 export const MAX_ARRAY_ITEMS = 10;
