@@ -2775,6 +2775,8 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
       return c.json({ success: false, error: "Webhook flow not found" }, 404);
     }
 
+    const applyStatus = c.req.query("applyStatus");
+
     const query: any = {
       flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -2782,6 +2784,9 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
 
     if (status) {
       query.status = status;
+    }
+    if (applyStatus) {
+      query.applyStatus = applyStatus;
     }
 
     const events = await WebhookEvent.find(query)
@@ -2808,6 +2813,9 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
           applyStatus: event.applyStatus,
           attempts: event.attempts,
           error: event.error,
+          applyError: event.applyError,
+          entity: event.entity,
+          operation: event.operation,
           processingDurationMs: event.processingDurationMs,
         })),
       },

@@ -484,6 +484,7 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     limit: number,
     offset: number,
+    filters?: { status?: string; applyStatus?: string },
   ) => Promise<{ total: number; events: WebhookEvent[] } | null>;
   fetchWebhookEventDetails: (
     workspaceId: string,
@@ -1186,8 +1187,22 @@ export const useFlowStore = create<FlowStore>()(
         }
       },
 
-      fetchWebhookEvents: async (workspaceId, flowId, limit, offset) => {
+      fetchWebhookEvents: async (
+        workspaceId,
+        flowId,
+        limit,
+        offset,
+        filters,
+      ) => {
         try {
+          const params = new URLSearchParams({
+            limit: String(limit),
+            offset: String(offset),
+          });
+          if (filters?.status) params.set("status", filters.status);
+          if (filters?.applyStatus) {
+            params.set("applyStatus", filters.applyStatus);
+          }
           const response = await apiClient.get<{
             success: boolean;
             data: {
@@ -1195,7 +1210,7 @@ export const useFlowStore = create<FlowStore>()(
               events: WebhookEvent[];
             };
           }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events?limit=${limit}&offset=${offset}`,
+            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events?${params}`,
           );
 
           return response.success ? response.data : null;

@@ -282,6 +282,7 @@ export function BackfillPanel({
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
   const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
+  const [eventsFilter, setEventsFilter] = useState<string>("all");
   const [entityResetOpen, setEntityResetOpen] = useState(false);
   const [entityResetEntity, setEntityResetEntity] = useState("");
   const [runs, setRuns] = useState<
@@ -312,6 +313,8 @@ export function BackfillPanel({
   executionIdRef.current = executionId;
   const tabRef = useRef(tab);
   tabRef.current = tab;
+  const eventsFilterRef = useRef(eventsFilter);
+  eventsFilterRef.current = eventsFilter;
 
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
 
@@ -326,7 +329,22 @@ export function BackfillPanel({
     const shouldPollEvents = activeTab === 2;
     const shouldPollHistory = activeTab === 1;
     if (shouldPollEvents) {
-      promises.push(fetchWebhookEvents(workspaceId, flowId, 50, 0));
+      const filter = eventsFilterRef.current;
+      const filterParams =
+        filter === "all"
+          ? undefined
+          : filter === "failed"
+            ? { applyStatus: "failed" }
+            : filter === "dropped"
+              ? { applyStatus: "dropped" }
+              : filter === "pending"
+                ? { applyStatus: "pending" }
+                : filter === "applied"
+                  ? { applyStatus: "applied" }
+                  : undefined;
+      promises.push(
+        fetchWebhookEvents(workspaceId, flowId, 50, 0, filterParams),
+      );
     }
     if (shouldPollHistory) {
       promises.push(fetchFlowHistory(workspaceId, flowId, 20));
@@ -429,7 +447,7 @@ export function BackfillPanel({
 
   useEffect(() => {
     pollCdc();
-  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tab, eventsFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pollDestCounts = useCallback(async () => {
     const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
@@ -1623,6 +1641,53 @@ export function BackfillPanel({
                     )}
                 </Alert>
               )}
+            <Box
+              sx={{
+                display: "flex",
+                gap: 0.5,
+                mb: 1.5,
+                flexWrap: "wrap",
+                alignItems: "center",
+              }}
+            >
+              {(
+                [
+                  { key: "all", label: "All" },
+                  { key: "applied", label: "Applied" },
+                  { key: "pending", label: "Pending" },
+                  { key: "failed", label: "Failed" },
+                  { key: "dropped", label: "Dropped" },
+                ] as const
+              ).map(f => (
+                <Chip
+                  key={f.key}
+                  label={
+                    f.key === "all" ? `All (${webhookEventsTotal})` : f.label
+                  }
+                  size="small"
+                  variant={eventsFilter === f.key ? "filled" : "outlined"}
+                  color={
+                    eventsFilter === f.key
+                      ? f.key === "failed"
+                        ? "error"
+                        : f.key === "dropped"
+                          ? "warning"
+                          : f.key === "pending"
+                            ? "info"
+                            : f.key === "applied"
+                              ? "success"
+                              : "default"
+                      : "default"
+                  }
+                  onClick={() => setEventsFilter(f.key)}
+                  sx={{
+                    fontSize: "0.72rem",
+                    fontWeight: eventsFilter === f.key ? 600 : 400,
+                    cursor: "pointer",
+                  }}
+                />
+              ))}
+            </Box>
             {webhookEvents.length === 0 ? (
               <Typography
                 variant="body2"
@@ -1630,7 +1695,9 @@ export function BackfillPanel({
                 textAlign="center"
                 py={2}
               >
-                No webhook events received yet.
+                {eventsFilter === "all"
+                  ? "No webhook events received yet."
+                  : `No ${eventsFilter} events.`}
               </Typography>
             ) : (
               <TableContainer
