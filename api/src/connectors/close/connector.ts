@@ -1014,6 +1014,7 @@ export class CloseConnector extends BaseConnector {
 
     let pageCursor: string | null = state?.metadata?.pageCursor ?? null;
     let windowRecords: number = state?.metadata?.windowRecords ?? 0;
+    let lastSeenDateCreated: string | null = null;
     const WINDOW_SIZE = 8000;
 
     while (iterations < maxIterations) {
@@ -1074,37 +1075,14 @@ export class CloseConnector extends BaseConnector {
         const data = response.data.data || [];
         pageCursor = response.data.cursor || null;
 
-        if (data.length > 0) {
-          const records =
-            entity === "leads" ? this.normalizeLeadBatch(data) : data;
-          await onBatch(records);
-          recordCount += records.length;
-          windowRecords += data.length;
-
-          const firstDateCreated = data[0].date_created;
-          const lastDateCreated = data[data.length - 1].date_created;
-
-          // Proactive window reset: use firstDateCreated (newest in desc batch)
-          // as the exclusive "before" boundary. Only reset when the batch spans
-          // multiple dates — if all records share one timestamp (cluster), keep
-          // the cursor going to avoid re-scanning.
-          if (
-            windowRecords >= WINDOW_SIZE &&
-            firstDateCreated &&
-            firstDateCreated !== dateWindowCursor &&
-            firstDateCreated !== lastDateCreated
-          ) {
-            dateWindowCursor = firstDateCreated;
-            pageCursor = null;
-            windowRecords = 0;
+        if (data.length === 0 || !pageCursor) {
+          if (data.length > 0) {
+            const records =
+              entity === "leads" ? this.normalizeLeadBatch(data) : data;
+            await onBatch(records);
+            recordCount += records.length;
+            if (onProgress) onProgress(recordCount, undefined);
           }
-
-          if (onProgress) {
-            onProgress(recordCount, undefined);
-          }
-        }
-
-        if (!pageCursor || data.length === 0) {
           return {
             totalProcessed: recordCount,
             hasMore: false,
@@ -1115,6 +1093,34 @@ export class CloseConnector extends BaseConnector {
               windowRecords,
             },
           };
+        }
+
+        const records =
+          entity === "leads" ? this.normalizeLeadBatch(data) : data;
+        await onBatch(records);
+        recordCount += records.length;
+        windowRecords += data.length;
+
+        const firstDateCreated = data[0].date_created;
+        lastSeenDateCreated = data[data.length - 1].date_created;
+
+        // Proactive window reset: use firstDateCreated (newest in desc batch)
+        // as the exclusive "before" boundary. Only reset when the batch spans
+        // multiple dates — if all records share one timestamp (cluster), keep
+        // the cursor going to avoid re-scanning.
+        if (
+          windowRecords >= WINDOW_SIZE &&
+          firstDateCreated &&
+          firstDateCreated !== dateWindowCursor &&
+          firstDateCreated !== lastSeenDateCreated
+        ) {
+          dateWindowCursor = firstDateCreated;
+          pageCursor = null;
+          windowRecords = 0;
+        }
+
+        if (onProgress) {
+          onProgress(recordCount, undefined);
         }
 
         iterations++;
@@ -1146,6 +1152,9 @@ export class CloseConnector extends BaseConnector {
             "Close cursor limit reached, resetting date window",
             { entity, recordsFetched: recordCount, windowRecords },
           );
+          if (lastSeenDateCreated && lastSeenDateCreated !== dateWindowCursor) {
+            dateWindowCursor = lastSeenDateCreated;
+          }
           pageCursor = null;
           windowRecords = 0;
         } else {
