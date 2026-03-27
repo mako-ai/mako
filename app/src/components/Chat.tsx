@@ -1433,12 +1433,6 @@ const Chat: React.FC<ChatProps> = ({
               },
             });
           } else {
-            window.dispatchEvent(
-              new CustomEvent("console-execution-result", {
-                detail: { consoleId, result: null },
-              }),
-            );
-
             addToolOutput({
               tool: "modify_chart_spec",
               toolCallId: toolCall.toolCallId,
@@ -1572,7 +1566,7 @@ const Chat: React.FC<ChatProps> = ({
             const executionTime = Date.now() - startTime;
 
             if (result.success) {
-              const data = (result.data as any[]) || [];
+              const data = result.rows || [];
               const rowCount = Array.isArray(data) ? data.length : 1;
               const preview = Array.isArray(data) ? data.slice(0, 50) : data;
 
