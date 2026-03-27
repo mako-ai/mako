@@ -2,6 +2,34 @@
 /* Include streamdown styles */
 @source "../node_modules/streamdown/dist/*.js";
 
+/* Register shadcn color tokens with Tailwind v4.
+   `inline` inlines the hsl(var(--xxx)) expression into each utility,
+   so .dark overrides on the raw HSL variables work at runtime. */
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-sidebar: hsl(var(--sidebar));
+  --radius: 0.5rem;
+  --default-border-color: hsl(var(--border));
+}
+
 /* Custom streamdown overrides */
 
 /* 1. Text size - match user message size (0.875rem = 14px = MUI body2) */
@@ -91,19 +119,16 @@
   background-color: hsl(var(--muted) / 0.8);
 }
 
-/* 4. Table styling - consistent borders, compact, subtle backgrounds.
-   Streamdown applies Tailwind border-border / bg-background classes
-   whose color tokens don't match MUI's theme — override directly. */
+/* 4. Table styling - consistent borders, compact, subtle backgrounds. */
 [data-streamdown="table-wrapper"] {
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
   overflow: auto;
   padding: 0 !important;
-  border-color: hsl(240 5.9% 90%) !important;
 }
 
-.dark [data-streamdown="table-wrapper"] {
-  border-color: rgba(255, 255, 255, 0.12) !important;
+[data-streamdown="table-wrapper"] > div {
+  border: none !important;
 }
 
 [data-streamdown="table"] {
@@ -196,9 +221,8 @@
   display: none;
 }
 
-/* Streamdown requires shadcn/ui CSS variables for theming.
-   Tailwind v4 utilities (border-border, bg-background, etc.) resolve to
-   --color-* tokens, so we bridge the shadcn HSL values to both formats. */
+/* shadcn/ui HSL primitives — light and dark palettes.
+   The @theme inline block above references these via hsl(var(--xxx)). */
 :root {
   --background: 0 0% 100%;
   --foreground: 240 10% 3.9%;
@@ -220,13 +244,7 @@
   --input: 240 5.9% 90%;
   --ring: 240 5.9% 10%;
   --radius: 0.5rem;
-
-  --color-border: hsl(240 5.9% 90%);
-  --color-background: hsl(0 0% 100%);
-  --color-foreground: hsl(240 10% 3.9%);
-  --color-muted: hsl(240 4.8% 95.9%);
-  --color-muted-foreground: hsl(240 3.8% 46.1%);
-  --color-sidebar: hsl(240 4.8% 95.9%);
+  --sidebar: 240 4.8% 95.9%;
 }
 
 .dark {
@@ -249,11 +267,5 @@
   --border: 240 3.7% 15.9%;
   --input: 240 3.7% 15.9%;
   --ring: 240 4.9% 83.9%;
-
-  --color-border: hsl(240 3.7% 15.9%);
-  --color-background: hsl(240 10% 3.9%);
-  --color-foreground: hsl(0 0% 98%);
-  --color-muted: hsl(240 3.7% 15.9%);
-  --color-muted-foreground: hsl(240 5% 64.9%);
-  --color-sidebar: hsl(240 3.7% 15.9%);
+  --sidebar: 240 3.7% 15.9%;
 }

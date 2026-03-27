@@ -177,25 +177,23 @@ function Editor({
   );
   const executionIdsRef = useRef<Record<string, string | null>>({});
 
-  // Tab store
-  const {
-    tabs,
-    activeTabId,
-    closeTab,
-    updateContent,
-    updateConnection,
-    updateDatabase,
-    updateFilePath,
-    updateTitle,
-    updateDirty,
-    updateSavedState,
-    setActiveTab,
-    executeQuery,
-    cancelQuery,
-    saveConsole,
-    deleteConsole,
-    openTab,
-  } = useConsoleStore();
+  // Tab store — individual selectors to avoid full-store re-renders
+  const tabs = useConsoleStore(state => state.tabs);
+  const activeTabId = useConsoleStore(state => state.activeTabId);
+  const closeTab = useConsoleStore(state => state.closeTab);
+  const updateContent = useConsoleStore(state => state.updateContent);
+  const updateConnection = useConsoleStore(state => state.updateConnection);
+  const updateDatabase = useConsoleStore(state => state.updateDatabase);
+  const updateFilePath = useConsoleStore(state => state.updateFilePath);
+  const updateTitle = useConsoleStore(state => state.updateTitle);
+  const updateDirty = useConsoleStore(state => state.updateDirty);
+  const updateSavedState = useConsoleStore(state => state.updateSavedState);
+  const setActiveTab = useConsoleStore(state => state.setActiveTab);
+  const executeQuery = useConsoleStore(state => state.executeQuery);
+  const cancelQuery = useConsoleStore(state => state.cancelQuery);
+  const saveConsole = useConsoleStore(state => state.saveConsole);
+  const deleteConsole = useConsoleStore(state => state.deleteConsole);
+  const openTab = useConsoleStore(state => state.openTab);
   const consoleTabs = Object.values(tabs);
   const activeConsoleId = activeTabId;
 

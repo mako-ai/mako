@@ -941,7 +941,7 @@ export async function previewDashboardDataSource(options: {
 
   const sql =
     options.sql ||
-    `SELECT * FROM "${runtime.tableRef || dataSource.tableRef}" LIMIT 10`;
+    `SELECT * FROM "${runtime.tableRef || dataSource.tableRef}" LIMIT 100`;
   return await queryDashboardRuntime({
     dashboard: options.dashboard,
     sql,

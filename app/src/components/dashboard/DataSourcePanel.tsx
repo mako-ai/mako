@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Drawer,
   Dialog,
@@ -37,6 +37,7 @@ import {
   FileCode,
   Import,
   ChevronUp,
+  Eye,
 } from "lucide-react";
 import {
   useDashboardStore,
@@ -44,6 +45,7 @@ import {
 } from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { apiClient } from "../../lib/api-client";
+import { DataGridPremium, type GridColDef } from "@mui/x-data-grid-premium";
 import {
   createDashboardDataSource,
   importConsoleAsDashboardDataSource,
@@ -51,6 +53,7 @@ import {
   refreshDashboardDataSourceCommand,
   removeDashboardDataSource,
   updateDashboardDataSourceQuery,
+  previewDashboardQuery,
 } from "../../dashboard-runtime/commands";
 import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
 import { useSchemaStore } from "../../store/schemaStore";
@@ -403,6 +406,107 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
     setDirectLanguage("sql");
     setDirectQuery("");
   };
+
+  const [previewDataSourceId, setPreviewDataSourceId] = useState<string | null>(
+    null,
+  );
+  const [previewDataSourceName, setPreviewDataSourceName] = useState("");
+  const [previewData, setPreviewData] = useState<{
+    rows: Record<string, unknown>[];
+    fields: Array<{ name: string; type: string }>;
+    rowCount: number;
+  } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const handlePreviewDataSource = async (
+    dataSourceId: string,
+    dataSourceName: string,
+  ) => {
+    if (!dashboardId) return;
+    setPreviewDataSourceId(dataSourceId);
+    setPreviewDataSourceName(dataSourceName);
+    setPreviewData(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
+    try {
+      const result = await previewDashboardQuery({
+        dataSourceId,
+        dashboardId,
+        sql: undefined,
+      });
+      setPreviewData(result);
+    } catch (err) {
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to load preview data",
+      );
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const closePreview = () => {
+    setPreviewDataSourceId(null);
+    setPreviewData(null);
+    setPreviewError(null);
+    setPreviewLoading(false);
+  };
+
+  const previewColumns = useMemo<GridColDef[]>(() => {
+    if (!previewData?.fields?.length && !previewData?.rows?.length) return [];
+
+    const fields = previewData.fields;
+    if (fields.length > 0) {
+      return fields.map(f => {
+        const sampleValues = previewData.rows
+          .slice(0, 20)
+          .map(r => r[f.name])
+          .filter(v => v !== undefined && v !== null);
+        const isNumeric =
+          sampleValues.length > 0 &&
+          sampleValues.every(v => typeof v === "number");
+        const maxLen = Math.max(
+          f.name.length,
+          ...sampleValues.map(v =>
+            typeof v === "object" ? JSON.stringify(v).length : String(v).length,
+          ),
+          0,
+        );
+        return {
+          field: f.name,
+          headerName: f.name,
+          width: Math.min(Math.max(maxLen * 8 + 24, 80), 400),
+          align: isNumeric ? ("right" as const) : ("left" as const),
+          headerAlign: isNumeric ? ("right" as const) : ("left" as const),
+          renderCell: (params: { value: unknown }) => {
+            const val = params.value;
+            if (val === null) return "null";
+            if (val === undefined) return "";
+            if (typeof val === "object") return JSON.stringify(val);
+            return String(val);
+          },
+        };
+      });
+    }
+
+    const keys = new Set<string>();
+    previewData.rows.slice(0, 50).forEach(r => {
+      Object.keys(r).forEach(k => keys.add(k));
+    });
+    return Array.from(keys).map(k => ({
+      field: k,
+      headerName: k,
+      width: 150,
+    }));
+  }, [previewData]);
+
+  const previewRows = useMemo(() => {
+    if (!previewData?.rows) return [];
+    return previewData.rows.map((row, i) => ({
+      ...row,
+      __preview_id: row.id !== undefined ? `${row.id}_${i}` : i,
+    }));
+  }, [previewData]);
 
   const [addMode, setAddMode] = useState<null | "scratch" | "import">(null);
   const [addMenuAnchor, setAddMenuAnchor] = useState<null | HTMLElement>(null);
@@ -868,6 +972,15 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     </IconButton>
                     <IconButton
                       size="small"
+                      onClick={() => handlePreviewDataSource(ds.id, ds.name)}
+                      disabled={status === "loading"}
+                      sx={{ p: 0.5 }}
+                      title="Preview rows"
+                    >
+                      <Eye size={14} />
+                    </IconButton>
+                    <IconButton
+                      size="small"
                       onClick={() => handleStartEdit(ds.id)}
                       sx={{ p: 0.5 }}
                     >
@@ -1160,6 +1273,129 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               )}
             </Box>
           </Box>
+        </DialogContent>
+      </Dialog>
+
+      {/* Data Source Preview Dialog */}
+      <Dialog
+        open={Boolean(previewDataSourceId)}
+        onClose={closePreview}
+        fullWidth
+        maxWidth="lg"
+        PaperProps={{ sx: { height: "80vh" } }}
+      >
+        <DialogTitle
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            py: 1.5,
+          }}
+        >
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Eye size={18} />
+            <Typography variant="subtitle1" fontWeight={600} component="span">
+              Preview:{" "}
+              <Typography
+                component="span"
+                fontFamily="monospace"
+                fontWeight={600}
+              >
+                {previewDataSourceName}
+              </Typography>
+            </Typography>
+            {previewData && (
+              <Chip
+                label={`${previewData.rowCount} row${previewData.rowCount === 1 ? "" : "s"}`}
+                size="small"
+                sx={{ ml: 1, height: 22, fontSize: "0.75rem" }}
+              />
+            )}
+          </Box>
+          <IconButton size="small" onClick={closePreview}>
+            <X size={18} />
+          </IconButton>
+        </DialogTitle>
+        <Divider />
+        <DialogContent sx={{ p: 0, display: "flex", flexDirection: "column" }}>
+          {previewLoading && (
+            <Box
+              sx={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <CircularProgress size={32} />
+            </Box>
+          )}
+          {previewError && (
+            <Box
+              sx={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexDirection: "column",
+                gap: 1,
+              }}
+            >
+              <XCircle size={32} style={{ opacity: 0.4 }} />
+              <Typography variant="body2" color="error.main">
+                {previewError}
+              </Typography>
+            </Box>
+          )}
+          {!previewLoading && !previewError && previewData && (
+            <Box sx={{ flex: 1, minHeight: 0 }}>
+              {previewRows.length === 0 ? (
+                <Box
+                  sx={{
+                    height: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    No rows returned
+                  </Typography>
+                </Box>
+              ) : (
+                <DataGridPremium
+                  rows={previewRows}
+                  columns={previewColumns}
+                  getRowId={row => row.__preview_id}
+                  density="compact"
+                  disableRowSelectionOnClick
+                  hideFooter
+                  columnHeaderHeight={40}
+                  rowHeight={36}
+                  sx={{
+                    height: "100%",
+                    border: "none",
+                    "& .MuiDataGrid-cell": {
+                      fontSize: "12px",
+                      fontFamily: "monospace",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      borderRight: "1px solid",
+                      borderColor: "divider",
+                    },
+                    "& .MuiDataGrid-columnHeaders": {
+                      backgroundColor: "background.default",
+                      fontFamily: "monospace",
+                    },
+                    "& .MuiDataGrid-columnHeader": {
+                      backgroundColor: "background.default",
+                      fontFamily: "monospace",
+                    },
+                  }}
+                />
+              )}
+            </Box>
+          )}
         </DialogContent>
       </Dialog>
     </Drawer>

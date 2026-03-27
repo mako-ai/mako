@@ -24,13 +24,16 @@ export function UrlSync() {
   // We need access to store methods but we don't want to trigger re-renders of this component
   // when the store changes, so we'll use the hooks but rely on the useEffect dependencies
   // to control when updates happen.
-  const { activeTabId, tabs, loadConsole, openTab, setActiveTab } =
-    useConsoleStore();
+  const activeTabId = useConsoleStore(state => state.activeTabId);
+  const tabs = useConsoleStore(state => state.tabs);
+  const loadConsole = useConsoleStore(state => state.loadConsole);
+  const openTab = useConsoleStore(state => state.openTab);
+  const setActiveTab = useConsoleStore(state => state.setActiveTab);
   const consoleTabs = Object.values(tabs);
   const activeConsoleId = activeTabId;
 
   const activeView = useUIStore(state => state.leftPane);
-  const { setLeftPane } = useUIStore();
+  const setLeftPane = useUIStore(state => state.setLeftPane);
 
   // Ref to track if hydration has occurred to prevent double-hydration
   const isHydrated = useRef(false);
