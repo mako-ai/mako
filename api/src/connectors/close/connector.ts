@@ -1104,17 +1104,21 @@ export class CloseConnector extends BaseConnector {
         const firstDateCreated = data[0].date_created;
         lastSeenDateCreated = data[data.length - 1].date_created;
 
-        // Proactive window reset: use firstDateCreated (newest in desc batch)
-        // as the exclusive "before" boundary. Only reset when the batch spans
-        // multiple dates — if all records share one timestamp (cluster), keep
-        // the cursor going to avoid re-scanning.
+        // Proactive window reset: bump firstDateCreated by 1ms so the
+        // exclusive "before" boundary still includes records sharing the
+        // exact same timestamp that the cursor hadn't reached yet.
+        // Only reset when the batch spans multiple dates — if all records
+        // share one timestamp (cluster), keep the cursor going.
         if (
           windowRecords >= WINDOW_SIZE &&
           firstDateCreated &&
           firstDateCreated !== dateWindowCursor &&
           firstDateCreated !== lastSeenDateCreated
         ) {
-          dateWindowCursor = firstDateCreated;
+          const bumped = new Date(
+            new Date(firstDateCreated).getTime() + 1,
+          ).toISOString();
+          dateWindowCursor = bumped;
           pageCursor = null;
           windowRecords = 0;
         }
@@ -1153,7 +1157,10 @@ export class CloseConnector extends BaseConnector {
             { entity, recordsFetched: recordCount, windowRecords },
           );
           if (lastSeenDateCreated && lastSeenDateCreated !== dateWindowCursor) {
-            dateWindowCursor = lastSeenDateCreated;
+            const bumped = new Date(
+              new Date(lastSeenDateCreated).getTime() + 1,
+            ).toISOString();
+            dateWindowCursor = bumped;
           }
           pageCursor = null;
           windowRecords = 0;
