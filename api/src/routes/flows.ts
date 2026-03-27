@@ -2274,12 +2274,24 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       }
     }
 
+    const lastError =
+      flow.syncStateMeta?.lastErrorMessage || flow.syncStateMeta?.lastErrorCode
+        ? {
+            message: flow.syncStateMeta.lastErrorMessage || null,
+            code: flow.syncStateMeta.lastErrorCode || null,
+            reason: flow.syncStateMeta.lastReason || null,
+            event: flow.syncStateMeta.lastEvent || null,
+          }
+        : null;
+
     return c.json({
       success: true,
       data: {
         syncState: flow.syncState || "idle",
         streamState: flow.streamState || "idle",
         backfillStatus,
+        consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
+        lastError,
         backlogCount: totalBacklog,
         lagSeconds: toLagSeconds(oldestMaterialized),
         lastMaterializedAt:

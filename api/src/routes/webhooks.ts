@@ -7,6 +7,7 @@ import {
 import { inngest } from "../inngest/client";
 import { v4 as uuidv4 } from "uuid";
 import { connectorRegistry } from "../connectors/registry";
+import { isEntityEnabledForFlow } from "../sync-cdc/entity-selection";
 import { loggers } from "../logging";
 
 const logger = loggers.inngest("webhook");
@@ -134,6 +135,42 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
         $inc: { "webhookConfig.totalReceived": 1 },
       },
     );
+
+    // 5b. Early entity filtering — drop events for disabled entities
+    //     immediately without burning an Inngest concurrency slot.
+    const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
+    if (mapping) {
+      const baseEntity = mapping.entity.split(":")[0];
+      if (!isEntityEnabledForFlow(flow, mapping.entity, baseEntity)) {
+        await WebhookEvent.updateOne(
+          { _id: webhookEvent._id },
+          {
+            $set: {
+              status: "completed",
+              applyStatus: "dropped",
+              entity: mapping.entity,
+              applyError: {
+                code: "ENTITY_DISABLED",
+                message: `Entity ${mapping.entity} is disabled or not selected in flow configuration`,
+              },
+              processedAt: new Date(),
+              processingDurationMs:
+                Date.now() - webhookEvent.receivedAt.getTime(),
+            },
+            $unset: { appliedAt: "" },
+          },
+        );
+        logger.debug("Webhook event dropped early (entity disabled)", {
+          eventId: webhookEvent.eventId,
+          entity: mapping.entity,
+          eventType: webhookEvent.eventType,
+        });
+        return c.json(
+          { received: true, eventId: webhookEvent.eventId, dropped: true },
+          200,
+        );
+      }
+    }
 
     // 6. Trigger immediate processing via Inngest
     try {

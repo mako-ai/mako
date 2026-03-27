@@ -1560,6 +1560,69 @@ export function BackfillPanel({
 
         {tab === 2 && (
           <Box sx={{ p: 2 }}>
+            {cdc?.lastError &&
+              (streamState === "error" || bfStatus === "error") && (
+                <Alert
+                  severity="error"
+                  sx={{
+                    mb: 1.5,
+                    "& .MuiAlert-message": { width: "100%" },
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    sx={{ fontWeight: 600, fontSize: "0.8rem", mb: 0.25 }}
+                  >
+                    {streamState === "error" && bfStatus === "error"
+                      ? "Stream & backfill error"
+                      : streamState === "error"
+                        ? "Stream error"
+                        : "Backfill error"}
+                    {cdc.consecutiveFailures > 0 && (
+                      <Chip
+                        label={`${cdc.consecutiveFailures} consecutive failures`}
+                        size="small"
+                        color="error"
+                        variant="outlined"
+                        sx={{
+                          ml: 1,
+                          height: 18,
+                          fontSize: "0.65rem",
+                          fontWeight: 500,
+                        }}
+                      />
+                    )}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontFamily: "monospace",
+                      fontSize: "0.72rem",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      display: "block",
+                    }}
+                  >
+                    {cdc.lastError.message ||
+                      cdc.lastError.code ||
+                      "Unknown error"}
+                  </Typography>
+                  {cdc.lastError.reason &&
+                    cdc.lastError.reason !== cdc.lastError.message && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{
+                          fontSize: "0.68rem",
+                          display: "block",
+                          mt: 0.25,
+                        }}
+                      >
+                        Reason: {cdc.lastError.reason}
+                      </Typography>
+                    )}
+                </Alert>
+              )}
             {webhookEvents.length === 0 ? (
               <Typography
                 variant="body2"
@@ -1589,6 +1652,7 @@ export function BackfillPanel({
                       <TableCell>Event type</TableCell>
                       <TableCell>Status</TableCell>
                       <TableCell>Apply</TableCell>
+                      <TableCell>Error</TableCell>
                       <TableCell>Received</TableCell>
                       <TableCell align="right">Duration</TableCell>
                     </TableRow>
@@ -1649,6 +1713,45 @@ export function BackfillPanel({
                                 fontWeight: 500,
                               }}
                             />
+                          )}
+                        </TableCell>
+                        <TableCell sx={{ maxWidth: 240 }}>
+                          {(evt.applyError?.message || evt.error?.message) && (
+                            <Tooltip
+                              title={
+                                evt.applyError?.message ||
+                                evt.error?.message ||
+                                ""
+                              }
+                              placement="bottom-start"
+                              slotProps={{
+                                tooltip: {
+                                  sx: {
+                                    maxWidth: 420,
+                                    fontFamily: "monospace",
+                                    fontSize: "0.72rem",
+                                    whiteSpace: "pre-wrap",
+                                    wordBreak: "break-word",
+                                  },
+                                },
+                              }}
+                            >
+                              <Typography
+                                variant="caption"
+                                color="error.main"
+                                sx={{
+                                  fontSize: "0.68rem",
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: "vertical",
+                                  overflow: "hidden",
+                                  wordBreak: "break-word",
+                                  cursor: "help",
+                                }}
+                              >
+                                {evt.applyError?.message || evt.error?.message}
+                              </Typography>
+                            </Tooltip>
                           )}
                         </TableCell>
                         <TableCell>
