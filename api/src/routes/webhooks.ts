@@ -4,7 +4,7 @@ import {
   WebhookEvent,
   Connector as DataSource,
 } from "../database/workspace-schema";
-import { inngest } from "../inngest/client";
+import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
 import { v4 as uuidv4 } from "uuid";
 import { connectorRegistry } from "../connectors/registry";
 import { isEntityEnabledForFlow } from "../sync-cdc/entity-selection";
@@ -174,12 +174,14 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
 
     // 6. Trigger immediate processing via Inngest
     try {
-      await inngest.send({
-        name: "webhook/event.process",
-        data: {
-          flowId,
-          workspaceId,
-          eventId: webhookEvent.eventId,
+      await enqueueWebhookProcess({
+        flowId,
+        workspaceId,
+        eventId: webhookEvent.eventId,
+        flow: {
+          syncEngine: flow.syncEngine,
+          destinationDatabaseId: flow.destinationDatabaseId,
+          tableDestination: flow.tableDestination,
         },
       });
     } catch (enqueueError) {
@@ -289,14 +291,15 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
 
     await webhookEvent.save();
 
-    // Trigger processing
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
-        flowId,
-        workspaceId,
-        eventId: webhookEvent.eventId,
-        isTest: true,
+    await enqueueWebhookProcess({
+      flowId,
+      workspaceId,
+      eventId: webhookEvent.eventId,
+      isTest: true,
+      flow: {
+        syncEngine: flow.syncEngine,
+        destinationDatabaseId: flow.destinationDatabaseId,
+        tableDestination: flow.tableDestination,
       },
     });
 

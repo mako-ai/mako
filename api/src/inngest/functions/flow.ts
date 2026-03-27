@@ -1,4 +1,5 @@
 import { inngest } from "../client";
+import { enqueueWebhookProcess } from "../webhook-process-enqueue";
 import {
   Flow,
   IFlow,
@@ -2059,6 +2060,13 @@ export const flowFunction = inngest.createFunction(
             );
             const replayCutoff = new Date();
 
+            const routingConn = flow.destinationDatabaseId
+              ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+                  .select("type")
+                  .lean()
+              : null;
+            const webhookDestinationTypeHint = routingConn?.type;
+
             const replayFilter: Record<string, unknown> = {
               flowId: flowObjectId,
               applyStatus: "pending",
@@ -2109,13 +2117,16 @@ export const flowFunction = inngest.createFunction(
 
               for (const pendingEvent of pendingBatch) {
                 if (maxReplayEvents > 0 && queued >= maxReplayEvents) break;
-                await inngest.send({
-                  name: "webhook/event.process",
-                  data: {
-                    flowId,
-                    eventId: pendingEvent.eventId,
-                    isReplay: true,
+                await enqueueWebhookProcess({
+                  flowId,
+                  eventId: pendingEvent.eventId,
+                  isReplay: true,
+                  flow: {
+                    syncEngine: flow.syncEngine,
+                    destinationDatabaseId: flow.destinationDatabaseId,
+                    tableDestination: flow.tableDestination,
                   },
+                  destinationTypeHint: webhookDestinationTypeHint,
                 });
                 queued += 1;
               }

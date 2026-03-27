@@ -34,27 +34,31 @@ class CdcIngestService {
       })),
     });
 
-    for (const entity of result.entities) {
-      await cdcSyncStateService.updateIngestState({
-        workspaceId: params.workspaceId,
-        flowId: params.flowId,
-        entity: entity.entity,
-        sourceKind: entity.source,
-        runId: entity.runId,
-        lastIngestSeq: entity.lastIngestSeq,
-      });
+    await Promise.all(
+      result.entities.map(entity =>
+        cdcSyncStateService.updateIngestState({
+          workspaceId: params.workspaceId,
+          flowId: params.flowId,
+          entity: entity.entity,
+          sourceKind: entity.source,
+          runId: entity.runId,
+          lastIngestSeq: entity.lastIngestSeq,
+        }),
+      ),
+    );
 
-      if (params.enqueue !== false) {
-        await inngest.send({
-          name: "cdc/materialize",
+    if (params.enqueue !== false && result.entities.length > 0) {
+      await inngest.send(
+        result.entities.map(entity => ({
+          name: "cdc/materialize" as const,
           data: {
             workspaceId: params.workspaceId,
             flowId: params.flowId,
             entity: entity.entity,
             force: false,
           },
-        });
-      }
+        })),
+      );
     }
 
     log.info("CDC webhook events appended", {
