@@ -281,72 +281,111 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
+    const skippedLiveAdds: string[] = [];
+    const addedToLive: string[] = [];
     for (const col of missingInLive) {
       const colType = stagingTypes.get(col) || "STRING";
-      await databaseConnectionService.executeQuery(
+      const addToLive = await databaseConnectionService.executeQuery(
         destination,
         `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
         { location: datasetLocation },
       );
+      if (!addToLive.success) {
+        skippedLiveAdds.push(col);
+        log.warn(
+          "Skipping live column add; column will be omitted from MERGE",
+          {
+            liveTable,
+            column: col,
+            error: addToLive.error,
+          },
+        );
+        continue;
+      }
       liveCols.add(col);
+      addedToLive.push(col);
     }
-    if (missingInLive.length > 0) {
+    if (addedToLive.length > 0) {
       log.info("Added missing columns to live table from staging", {
         liveTable,
-        addedColumns: missingInLive,
+        addedColumns: addedToLive,
       });
     }
 
     const missingInStaging = [...liveCols].filter(c => !stagingCols.has(c));
+    const skippedStagingAdds: string[] = [];
+    const addedToStaging: string[] = [];
     for (const col of missingInStaging) {
       const colType = liveTypes.get(col) || "STRING";
-      await databaseConnectionService.executeQuery(
+      const addToStaging = await databaseConnectionService.executeQuery(
         destination,
         `ALTER TABLE ${fullStaging} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
         { location: datasetLocation },
       );
+      if (!addToStaging.success) {
+        skippedStagingAdds.push(col);
+        log.warn(
+          "Skipping staging column add; MERGE will project NULL for this column",
+          {
+            stagingTable,
+            column: col,
+            error: addToStaging.error,
+          },
+        );
+        continue;
+      }
       stagingCols.add(col);
+      addedToStaging.push(col);
     }
-    if (missingInStaging.length > 0) {
+    if (addedToStaging.length > 0) {
       log.info("Added missing columns to staging table from live", {
         stagingTable,
-        addedColumns: missingInStaging,
+        addedColumns: addedToStaging,
       });
     }
 
-    const allColumns = Array.from(new Set([...stagingCols, ...liveCols]));
+    // Target columns must exist on live table.
+    const allColumns = Array.from(liveCols);
 
     const keyColumns = layout.keyColumns;
+    const missingKeyInLive = keyColumns.filter(k => !liveCols.has(k));
+    const missingKeyInStaging = keyColumns.filter(k => !stagingCols.has(k));
+    if (missingKeyInLive.length > 0 || missingKeyInStaging.length > 0) {
+      throw new Error(
+        `Missing key columns for MERGE (live: [${missingKeyInLive.join(", ")}], staging: [${missingKeyInStaging.join(", ")}])`,
+      );
+    }
+
     const joinCondition = keyColumns
       .map(k => `T.${escId(k)} = S.${escId(k)}`)
       .join(" AND ");
-    const nonKeyColumns = allColumns.filter(c => !keyColumns.includes(c));
-
-    const hasSourceTs = allColumns.includes("_mako_source_ts");
-    const hasIngestSeq = allColumns.includes("_mako_ingest_seq");
-    const matchedGuard = hasSourceTs
-      ? ` AND COALESCE(S.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(T.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
-      : hasIngestSeq
-        ? ` AND COALESCE(S.\`_mako_ingest_seq\`, -1) >= COALESCE(T.\`_mako_ingest_seq\`, -1)`
-        : "";
-
-    const updateSet = nonKeyColumns
-      .map(c => `${escId(c)} = S.${escId(c)}`)
-      .join(", ");
-    const insertCols = allColumns.map(escId).join(", ");
-    const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
-
     const dedupKey = keyColumns.map(escId).join(", ");
-    const selectCols = allColumns.map(escId).join(", ");
-    const dedupSource = `(SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
-
-    const mergeQuery = `
+    const buildMergeQuery = (columns: string[]): string => {
+      const nonKeyColumns = columns.filter(c => !keyColumns.includes(c));
+      const hasSourceTs = columns.includes("_mako_source_ts");
+      const hasIngestSeq = columns.includes("_mako_ingest_seq");
+      const matchedGuard = hasSourceTs
+        ? ` AND COALESCE(S.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(T.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
+        : hasIngestSeq
+          ? ` AND COALESCE(S.\`_mako_ingest_seq\`, -1) >= COALESCE(T.\`_mako_ingest_seq\`, -1)`
+          : "";
+      const updateSet = nonKeyColumns
+        .map(c => `${escId(c)} = S.${escId(c)}`)
+        .join(", ");
+      const insertCols = columns.map(escId).join(", ");
+      const insertVals = columns.map(c => `S.${escId(c)}`).join(", ");
+      const selectCols = columns
+        .map(c => (stagingCols.has(c) ? escId(c) : `NULL AS ${escId(c)}`))
+        .join(", ");
+      const dedupSource = `(SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
+      return `
       MERGE INTO ${fullLive} T
       USING ${dedupSource} S
       ON ${joinCondition}
       ${nonKeyColumns.length > 0 ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateSet}` : ""}
       WHEN NOT MATCHED THEN INSERT (${insertCols}) VALUES (${insertVals})
     `;
+    };
 
     const mergeMaxWaitEnv = Number.parseInt(
       process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
@@ -357,19 +396,122 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
         : 50 * 60 * 1000;
 
-    const result = await databaseConnectionService.executeQuery(
-      destination,
-      mergeQuery,
-      { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
-    );
-    if (!result.success) {
-      throw new Error(result.error || "BigQuery staging MERGE failed");
+    const droppedMergeColumns: string[] = [];
+    const retryAddedColumns: string[] = [];
+    let mergeColumns = [...allColumns];
+    let result: { success: boolean; error?: string } | null = null;
+    const fallbackTypeForColumn = (column: string): string => {
+      if (column === "_mako_ingest_seq") return "INT64";
+      if (column === "is_deleted") return "BOOL";
+      if (
+        column === "_mako_source_ts" ||
+        column === "_mako_deleted_at" ||
+        column === "deleted_at"
+      ) {
+        return "TIMESTAMP";
+      }
+      return "STRING";
+    };
+    const ensureColumnOnTable = async (
+      tableKind: "live" | "staging",
+      column: string,
+      dataType: string,
+    ): Promise<boolean> => {
+      const targetTable = tableKind === "live" ? fullLive : fullStaging;
+      const alter = await databaseConnectionService.executeQuery(
+        destination,
+        `ALTER TABLE ${targetTable} ADD COLUMN IF NOT EXISTS ${escId(column)} ${dataType}`,
+        { location: datasetLocation },
+      );
+      if (!alter.success) {
+        log.warn("Failed to add missing MERGE column on retry", {
+          tableKind,
+          liveTable,
+          stagingTable,
+          column,
+          dataType,
+          error: alter.error,
+        });
+        return false;
+      }
+      if (tableKind === "live") {
+        liveCols.add(column);
+        liveTypes.set(column, dataType);
+      } else {
+        stagingCols.add(column);
+        stagingTypes.set(column, dataType);
+      }
+      return true;
+    };
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const mergeQuery = buildMergeQuery(mergeColumns);
+      result = await databaseConnectionService.executeQuery(
+        destination,
+        mergeQuery,
+        { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
+      );
+      if (result.success) {
+        break;
+      }
+
+      const errorText = result.error || "BigQuery staging MERGE failed";
+      const unrecognized = errorText.match(
+        /Unrecognized name:\s*([A-Za-z0-9_]+)/i,
+      );
+      const badColumn = unrecognized?.[1];
+      if (
+        !badColumn ||
+        keyColumns.includes(badColumn) ||
+        !mergeColumns.includes(badColumn)
+      ) {
+        throw new Error(errorText);
+      }
+
+      const targetType =
+        liveTypes.get(badColumn) ||
+        stagingTypes.get(badColumn) ||
+        fallbackTypeForColumn(badColumn);
+      const ensuredLive = liveCols.has(badColumn)
+        ? true
+        : await ensureColumnOnTable("live", badColumn, targetType);
+      const ensuredStaging = stagingCols.has(badColumn)
+        ? true
+        : await ensureColumnOnTable("staging", badColumn, targetType);
+
+      if (ensuredLive && ensuredStaging) {
+        retryAddedColumns.push(badColumn);
+        log.info("Retrying MERGE after adding missing column", {
+          liveTable,
+          stagingTable,
+          column: badColumn,
+          dataType: targetType,
+          attempt: attempt + 1,
+        });
+        continue;
+      }
+
+      mergeColumns = mergeColumns.filter(col => col !== badColumn);
+      droppedMergeColumns.push(badColumn);
+      log.warn("Retrying MERGE without unrecognized column (auto-add failed)", {
+        liveTable,
+        stagingTable,
+        column: badColumn,
+        attempt: attempt + 1,
+        error: errorText,
+      });
+    }
+    if (!result?.success) {
+      throw new Error(result?.error || "BigQuery staging MERGE failed");
     }
 
     log.info("Merged staging to live table", {
       liveTable,
       stagingTable,
       dataset,
+      skippedLiveAdds,
+      skippedStagingAdds,
+      retryAddedColumns,
+      droppedMergeColumns,
     });
 
     return { written: 0 };
