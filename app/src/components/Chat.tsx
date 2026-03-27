@@ -2,7 +2,13 @@
  * Chat Component - Using Vercel AI SDK useChat hook
  * Native AI SDK streaming protocol for improved compatibility
  */
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+} from "react";
 import {
   Box,
   Button,
@@ -409,6 +415,171 @@ const StreamingIndicator = React.memo(() => {
 
 StreamingIndicator.displayName = "StreamingIndicator";
 
+// Isolated input component — owns its own `input` state so keystrokes
+// never re-render the (expensive) message list above it.
+interface ChatInputAreaProps {
+  onSubmit: (text: string) => void;
+  onStop: () => void;
+  isLoading: boolean;
+  disabled: boolean;
+  focusKey: string | number;
+}
+
+const ChatInputArea = React.memo(
+  ({ onSubmit, onStop, isLoading, disabled, focusKey }: ChatInputAreaProps) => {
+    const [input, setInput] = useState("");
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+      const timer = setTimeout(() => inputRef.current?.focus(), 100);
+      return () => clearTimeout(timer);
+    }, [focusKey]);
+
+    return (
+      <Paper
+        elevation={0}
+        sx={{
+          border: 1,
+          borderColor: "divider",
+          borderRadius: 2.5,
+          p: 1,
+          m: 1,
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+        }}
+      >
+        <form
+          onSubmit={e => {
+            e.preventDefault();
+            if (input.trim() && !isLoading) {
+              onSubmit(input);
+              setInput("");
+            }
+          }}
+        >
+          <TextField
+            fullWidth
+            autoFocus
+            multiline
+            minRows={1}
+            maxRows={6}
+            placeholder="Ask Chat..."
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (input.trim() && !isLoading) {
+                  onSubmit(input);
+                  setInput("");
+                }
+              }
+            }}
+            disabled={isLoading}
+            variant="outlined"
+            inputRef={inputRef}
+            sx={{
+              m: 0.5,
+              maxHeight: "50vh",
+              overflowY: "auto",
+              "& .MuiInputBase-input": {
+                fontSize: 14,
+              },
+              "& .MuiInputBase-root": {
+                p: 0,
+                fontSize: 14,
+              },
+              "& .MuiOutlinedInput-notchedOutline": {
+                border: "none",
+              },
+              "& .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline":
+                {
+                  border: "none",
+                },
+              "& .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline":
+                {
+                  border: "none",
+                },
+            }}
+          />
+
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <ModelSelector />
+            </Box>
+
+            {isLoading ? (
+              <IconButton
+                onClick={onStop}
+                size="small"
+                sx={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  backgroundColor: "action.hover",
+                  border: 1,
+                  borderColor: "divider",
+                  "&:hover": {
+                    backgroundColor: "action.selected",
+                  },
+                }}
+              >
+                <Box
+                  sx={{
+                    width: 10,
+                    height: 10,
+                    backgroundColor: "text.primary",
+                    borderRadius: 0.5,
+                  }}
+                />
+              </IconButton>
+            ) : (
+              <IconButton
+                type="submit"
+                disabled={!input.trim() || disabled}
+                size="small"
+                sx={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  backgroundColor:
+                    input.trim() && !disabled
+                      ? "primary.main"
+                      : "action.disabledBackground",
+                  color:
+                    input.trim() && !disabled
+                      ? "primary.contrastText"
+                      : "text.disabled",
+                  "&:hover": {
+                    backgroundColor:
+                      input.trim() && !disabled
+                        ? "primary.dark"
+                        : "action.disabledBackground",
+                  },
+                  "&.Mui-disabled": {
+                    backgroundColor: "action.disabledBackground",
+                    color: "text.disabled",
+                  },
+                }}
+              >
+                <ArrowUp size={18} />
+              </IconButton>
+            )}
+          </Box>
+        </form>
+      </Paper>
+    );
+  },
+);
+ChatInputArea.displayName = "ChatInputArea";
+
 // DbFlowFormRef is imported from ./DbFlowForm
 
 interface ChatProps {
@@ -487,7 +658,6 @@ const Chat: React.FC<ChatProps> = ({
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
-  const inputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Track if we're viewing an existing chat from history (vs a new chat)
@@ -536,9 +706,6 @@ const Chat: React.FC<ChatProps> = ({
       ),
     [consoleTabs],
   );
-
-  // Local input state
-  const [input, setInput] = useState("");
 
   // Get the captured console's title for the visual indicator
   const capturedConsoleTitle = useMemo(() => {
@@ -1657,12 +1824,6 @@ const Chat: React.FC<ChatProps> = ({
     loadSession();
   }, [chatId, isExistingChat, currentWorkspace, setMessages]);
 
-  // Focus input
-  useEffect(() => {
-    const timer = setTimeout(() => inputRef.current?.focus(), 100);
-    return () => clearTimeout(timer);
-  }, [chatId, messages.length]);
-
   // Create new chat session - just generate a new ID locally (no API call needed)
   const createNewSession = () => {
     setChatId(generateObjectId());
@@ -1716,6 +1877,22 @@ const Chat: React.FC<ChatProps> = ({
     setToolDialogOpen(false);
     setSelectedTool(null);
   };
+
+  // Stable submit handler — uses refs to avoid stale closures and minimize deps
+  const handleChatSubmit = useCallback(
+    (text: string) => {
+      capturedConsoleIdRef.current = activeConsoleIdRef.current;
+      const store = useConsoleStore.getState();
+      const currentTabs = Object.values(store.tabs);
+      const activeConsole = currentTabs.find(t => t.id === store.activeTabId);
+      trackEvent("ai_chat_message_sent", {
+        model: modelIdRef.current,
+        has_context: !!activeConsole?.content,
+      });
+      sendMessage({ text });
+    },
+    [sendMessage],
+  );
 
   // Copy chat history handler
   const [copiedChat, setCopiedChat] = useState(false);
@@ -2200,168 +2377,14 @@ const Chat: React.FC<ChatProps> = ({
         </Box>
       )}
 
-      {/* Input */}
-      <Paper
-        elevation={0}
-        sx={{
-          border: 1,
-          borderColor: "divider",
-          borderRadius: 2.5,
-          p: 1,
-          m: 1,
-          display: "flex",
-          flexDirection: "column",
-          gap: 1,
-        }}
-      >
-        <form
-          onSubmit={e => {
-            e.preventDefault();
-            if (input.trim() && !isLoading) {
-              // Capture the active console ID at message submission time
-              // This prevents the race condition where user switches consoles while agent is thinking
-              capturedConsoleIdRef.current = activeConsoleId;
-              const activeConsole = consoleTabs.find(
-                t => t.id === activeConsoleId,
-              );
-              trackEvent("ai_chat_message_sent", {
-                model: selectedModelId,
-                has_context: !!activeConsole?.content,
-              });
-              sendMessage({ text: input });
-              setInput("");
-            }
-          }}
-        >
-          <TextField
-            fullWidth
-            autoFocus
-            multiline
-            minRows={1}
-            maxRows={6}
-            placeholder="Ask Chat..."
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (input.trim() && !isLoading) {
-                  // Capture the active console ID at message submission time
-                  // This prevents the race condition where user switches consoles while agent is thinking
-                  capturedConsoleIdRef.current = activeConsoleId;
-                  const activeConsole = consoleTabs.find(
-                    t => t.id === activeConsoleId,
-                  );
-                  trackEvent("ai_chat_message_sent", {
-                    model: selectedModelId,
-                    has_context: !!activeConsole?.content,
-                  });
-                  sendMessage({ text: input });
-                  setInput("");
-                }
-              }
-            }}
-            disabled={isLoading}
-            variant="outlined"
-            inputRef={inputRef}
-            sx={{
-              m: 0.5,
-              maxHeight: "50vh",
-              overflowY: "auto",
-              "& .MuiInputBase-input": {
-                fontSize: 14,
-              },
-              "& .MuiInputBase-root": {
-                p: 0,
-                fontSize: 14,
-              },
-              "& .MuiOutlinedInput-notchedOutline": {
-                border: "none",
-              },
-              "& .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline":
-                {
-                  border: "none",
-                },
-              "& .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline":
-                {
-                  border: "none",
-                },
-            }}
-          />
-
-          {/* Bottom action bar with Mode + Model Selector on left, Send/Stop button on right */}
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-              <ModelSelector />
-            </Box>
-
-            {isLoading ? (
-              <IconButton
-                onClick={stop}
-                size="small"
-                sx={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: "50%",
-                  backgroundColor: "action.hover",
-                  border: 1,
-                  borderColor: "divider",
-                  "&:hover": {
-                    backgroundColor: "action.selected",
-                  },
-                }}
-              >
-                {/* Square stop icon */}
-                <Box
-                  sx={{
-                    width: 10,
-                    height: 10,
-                    backgroundColor: "text.primary",
-                    borderRadius: 0.5,
-                  }}
-                />
-              </IconButton>
-            ) : (
-              <IconButton
-                type="submit"
-                disabled={!input.trim() || !currentWorkspace}
-                size="small"
-                sx={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: "50%",
-                  backgroundColor:
-                    input.trim() && currentWorkspace
-                      ? "primary.main"
-                      : "action.disabledBackground",
-                  color:
-                    input.trim() && currentWorkspace
-                      ? "primary.contrastText"
-                      : "text.disabled",
-                  "&:hover": {
-                    backgroundColor:
-                      input.trim() && currentWorkspace
-                        ? "primary.dark"
-                        : "action.disabledBackground",
-                  },
-                  "&.Mui-disabled": {
-                    backgroundColor: "action.disabledBackground",
-                    color: "text.disabled",
-                  },
-                }}
-              >
-                <ArrowUp size={18} />
-              </IconButton>
-            )}
-          </Box>
-        </form>
-      </Paper>
+      {/* Input — isolated component so keystrokes don't re-render messages */}
+      <ChatInputArea
+        onSubmit={handleChatSubmit}
+        onStop={stop}
+        isLoading={isLoading}
+        disabled={!currentWorkspace}
+        focusKey={`${chatId}-${messages.length}`}
+      />
 
       {/* Tool Debug Dialog */}
       <Dialog
