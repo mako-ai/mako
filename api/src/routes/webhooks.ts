@@ -3,10 +3,15 @@ import {
   Flow,
   WebhookEvent,
   Connector as DataSource,
+  DatabaseConnection,
 } from "../database/workspace-schema";
-import { inngest } from "../inngest/client";
+import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
 import { v4 as uuidv4 } from "uuid";
 import { connectorRegistry } from "../connectors/registry";
+import {
+  isEntityEnabledForFlow,
+  resolveConfiguredEntities,
+} from "../sync-cdc/entity-selection";
 import { loggers } from "../logging";
 
 const logger = loggers.inngest("webhook");
@@ -135,15 +140,69 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       },
     );
 
+    // 5b. Early entity filtering — drop events for disabled entities
+    //     immediately without burning an Inngest concurrency slot.
+    //     Skip when sub-types exist (e.g. activities → activities:Call) since
+    //     we can't resolve the sub-type without extracting payload data.
+    const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
+    if (mapping) {
+      const baseEntity = mapping.entity.split(":")[0];
+      const { entities: configuredEntities } = resolveConfiguredEntities(flow);
+      const hasSubTypes = configuredEntities.some(e =>
+        e.startsWith(baseEntity + ":"),
+      );
+      if (
+        !hasSubTypes &&
+        !isEntityEnabledForFlow(flow, mapping.entity, baseEntity)
+      ) {
+        await WebhookEvent.updateOne(
+          { _id: webhookEvent._id },
+          {
+            $set: {
+              status: "completed",
+              applyStatus: "dropped",
+              entity: mapping.entity,
+              applyError: {
+                code: "ENTITY_DISABLED",
+                message: `Entity ${mapping.entity} is disabled or not selected in flow configuration`,
+              },
+              processedAt: new Date(),
+              processingDurationMs:
+                Date.now() - webhookEvent.receivedAt.getTime(),
+            },
+            $unset: { appliedAt: "" },
+          },
+        );
+        logger.debug("Webhook event dropped early (entity disabled)", {
+          eventId: webhookEvent.eventId,
+          entity: mapping.entity,
+          eventType: webhookEvent.eventType,
+        });
+        return c.json(
+          { received: true, eventId: webhookEvent.eventId, dropped: true },
+          200,
+        );
+      }
+    }
+
     // 6. Trigger immediate processing via Inngest
     try {
-      await inngest.send({
-        name: "webhook/event.process",
-        data: {
-          flowId,
-          workspaceId,
-          eventId: webhookEvent.eventId,
+      const destConn = flow.destinationDatabaseId
+        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
+      await enqueueWebhookProcess({
+        flowId,
+        workspaceId,
+        eventId: webhookEvent.eventId,
+        flow: {
+          syncEngine: flow.syncEngine,
+          destinationDatabaseId: flow.destinationDatabaseId,
+          tableDestination: flow.tableDestination,
         },
+        destinationTypeHint: destConn?.type,
       });
     } catch (enqueueError) {
       await WebhookEvent.updateOne(
@@ -252,15 +311,23 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
 
     await webhookEvent.save();
 
-    // Trigger processing
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
-        flowId,
-        workspaceId,
-        eventId: webhookEvent.eventId,
-        isTest: true,
+    const destConn = flow.destinationDatabaseId
+      ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+          .select("type")
+          .lean()
+      : null;
+
+    await enqueueWebhookProcess({
+      flowId,
+      workspaceId,
+      eventId: webhookEvent.eventId,
+      isTest: true,
+      flow: {
+        syncEngine: flow.syncEngine,
+        destinationDatabaseId: flow.destinationDatabaseId,
+        tableDestination: flow.tableDestination,
       },
+      destinationTypeHint: destConn?.type,
     });
 
     return c.json({

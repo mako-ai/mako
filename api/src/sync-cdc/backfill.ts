@@ -1,6 +1,7 @@
 import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
+import { resolveWebhookEventName } from "../inngest/webhook-process-enqueue";
 import {
   CdcEntityState,
   CdcStateTransition,
@@ -20,12 +21,53 @@ import { cdcSyncStateService } from "./sync-state";
 
 const log = loggers.sync("cdc.backfill");
 
+const STALE_HEARTBEAT_MS = 10 * 60 * 1000; // 10 minutes
+
 async function hasActiveExecution(workspaceId: string, flowId: string) {
   return FlowExecution.exists({
     workspaceId: new Types.ObjectId(workspaceId),
     flowId: new Types.ObjectId(flowId),
     status: "running",
   });
+}
+
+async function abandonStaleExecutions(
+  workspaceId: string,
+  flowId: string,
+): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
+  const result = await FlowExecution.updateMany(
+    {
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      status: "running",
+      $or: [
+        { lastHeartbeat: { $lt: cutoff } },
+        { lastHeartbeat: { $exists: false }, startedAt: { $lt: cutoff } },
+      ],
+    },
+    {
+      $set: {
+        status: "abandoned",
+        completedAt: new Date(),
+        error: {
+          message:
+            "Execution abandoned during recovery — no heartbeat for 10+ minutes",
+          code: "RECOVERY_ABANDON",
+        },
+      },
+    },
+  );
+
+  if (result.modifiedCount > 0) {
+    log.warn("Abandoned stale executions during recovery", {
+      flowId,
+      workspaceId,
+      abandonedCount: result.modifiedCount,
+    });
+  }
+
+  return result.modifiedCount;
 }
 
 function createBackfillRunId(flowId: string): string {
@@ -174,9 +216,13 @@ export class CdcBackfillService {
       throw new Error("Resync requires syncEngine=cdc");
     }
 
+    await abandonStaleExecutions(workspaceId, flowId);
+
     const running = await hasActiveExecution(workspaceId, flowId);
     if (running) {
-      throw new Error("Cannot resync while a CDC execution is active");
+      throw new Error(
+        "Cannot resync while a CDC execution is active (execution has a recent heartbeat — wait or cancel it from the Inngest dashboard)",
+      );
     }
 
     await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId });
@@ -217,6 +263,10 @@ export class CdcBackfillService {
     await flow.save();
 
     await this.startBackfill(workspaceId, flowId);
+
+    if (!clearWebhookEvents) {
+      await this.drainPendingWebhookEvents(workspaceId, flowId, "resync");
+    }
   }
 
   async retryFailedMaterialization(params: {
@@ -294,9 +344,22 @@ export class CdcBackfillService {
       throw new Error("Recover requires syncEngine=cdc");
     }
 
+    const abandoned = await abandonStaleExecutions(
+      params.workspaceId,
+      params.flowId,
+    );
+
     const running = await hasActiveExecution(params.workspaceId, params.flowId);
     if (running) {
-      throw new Error("Cannot recover while a CDC execution is active");
+      throw new Error(
+        "Cannot recover while a CDC execution is active (execution has a recent heartbeat — wait or cancel it from the Inngest dashboard)",
+      );
+    }
+
+    if (abandoned > 0) {
+      await Flow.findByIdAndUpdate(params.flowId, {
+        $set: { "backfillState.active": false },
+      });
     }
 
     const streamResult = await cdcSyncStateService.applyStreamTransition({
@@ -336,12 +399,19 @@ export class CdcBackfillService {
       });
     }
 
+    const webhookEventsDrained = await this.drainPendingWebhookEvents(
+      params.workspaceId,
+      params.flowId,
+      "recover",
+    );
+
     return {
       retriedFailedRows: retried.resetCount,
       retriedEntities: retried.entities,
       resumedRunId: resumedRun?.runId || null,
       resumedBackfill: Boolean(resumedRun),
       reusedRunId: resumedRun?.reusedRunId || false,
+      webhookEventsDrained,
     };
   }
 
@@ -455,44 +525,11 @@ export class CdcBackfillService {
       }
     }
 
-    let webhookEventsDrained = 0;
-    try {
-      const flowObjectId = new Types.ObjectId(flowId);
-      const stuckWebhookEvents = await WebhookEvent.find({
-        flowId: flowObjectId,
-        status: "pending",
-        attempts: { $lt: 5 },
-      })
-        .sort({ receivedAt: 1 })
-        .limit(500)
-        .select({ eventId: 1 })
-        .lean();
-
-      if (stuckWebhookEvents.length > 0) {
-        for (const evt of stuckWebhookEvents) {
-          await inngest.send({
-            name: "webhook/event.process",
-            data: {
-              flowId,
-              eventId: (evt as any).eventId,
-              isReplay: true,
-            },
-          });
-        }
-        webhookEventsDrained = stuckWebhookEvents.length;
-        log.info("Drained pending WebhookEvents on resume", {
-          flowId,
-          workspaceId,
-          count: webhookEventsDrained,
-        });
-      }
-    } catch (error) {
-      log.warn("Failed to drain pending WebhookEvents on resume", {
-        flowId,
-        workspaceId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    const webhookEventsDrained = await this.drainPendingWebhookEvents(
+      workspaceId,
+      flowId,
+      "resume",
+    );
 
     let resumedRun: { runId: string; reusedRunId: boolean } | undefined;
     if (flow.backfillState?.runId) {
@@ -507,6 +544,7 @@ export class CdcBackfillService {
       resumedRunId: resumedRun?.runId || null,
       reusedRunId: resumedRun?.reusedRunId || false,
       resumedBackfill: Boolean(resumedRun),
+      webhookEventsDrained,
     };
   }
 
@@ -580,6 +618,78 @@ export class CdcBackfillService {
       drainQueued: pending > 0,
       webhookEventsDrained: 0,
     };
+  }
+
+  private async drainPendingWebhookEvents(
+    workspaceId: string,
+    flowId: string,
+    trigger: string,
+  ): Promise<number> {
+    try {
+      const stuckWebhookEvents = await WebhookEvent.find({
+        flowId: new Types.ObjectId(flowId),
+        status: "pending",
+        attempts: { $lt: 5 },
+      })
+        .sort({ receivedAt: 1 })
+        .limit(500)
+        .select({ eventId: 1 })
+        .lean();
+
+      if (stuckWebhookEvents.length === 0) return 0;
+
+      const flow = await Flow.findById(flowId)
+        .select("syncEngine destinationDatabaseId tableDestination")
+        .lean();
+      const destConn = flow?.destinationDatabaseId
+        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
+      const eventName = resolveWebhookEventName(
+        flow
+          ? {
+              syncEngine: flow.syncEngine,
+              tableDestination: flow.tableDestination,
+            }
+          : undefined,
+        destConn?.type,
+      );
+
+      const CHUNK = 100;
+      for (let i = 0; i < stuckWebhookEvents.length; i += CHUNK) {
+        const batch = stuckWebhookEvents.slice(i, i + CHUNK);
+        await inngest.send(
+          batch.map(evt => ({
+            name: eventName,
+            data: {
+              flowId,
+              workspaceId,
+              eventId: (evt as any).eventId,
+              isReplay: true,
+            },
+          })),
+        );
+      }
+
+      log.info("Drained pending WebhookEvents", {
+        flowId,
+        workspaceId,
+        trigger,
+        count: stuckWebhookEvents.length,
+      });
+
+      return stuckWebhookEvents.length;
+    } catch (error) {
+      log.warn("Failed to drain pending WebhookEvents", {
+        flowId,
+        workspaceId,
+        trigger,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 0;
+    }
   }
 
   private async deleteDestinationTables(

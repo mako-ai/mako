@@ -11,6 +11,10 @@ import {
 } from "../database/workspace-schema";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
+import {
+  enqueueWebhookProcess,
+  type WebhookFlowRoutingHint,
+} from "../inngest/webhook-process-enqueue";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -2274,12 +2278,24 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       }
     }
 
+    const lastError =
+      flow.syncStateMeta?.lastErrorMessage || flow.syncStateMeta?.lastErrorCode
+        ? {
+            message: flow.syncStateMeta.lastErrorMessage || null,
+            code: flow.syncStateMeta.lastErrorCode || null,
+            reason: flow.syncStateMeta.lastReason || null,
+            event: flow.syncStateMeta.lastEvent || null,
+          }
+        : null;
+
     return c.json({
       success: true,
       data: {
         syncState: flow.syncState || "idle",
         streamState: flow.streamState || "idle",
         backfillStatus,
+        consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
+        lastError,
         backlogCount: totalBacklog,
         lagSeconds: toLagSeconds(oldestMaterialized),
         lastMaterializedAt:
@@ -2763,6 +2779,8 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
       return c.json({ success: false, error: "Webhook flow not found" }, 404);
     }
 
+    const applyStatus = c.req.query("applyStatus");
+
     const query: any = {
       flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -2770,6 +2788,9 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
 
     if (status) {
       query.status = status;
+    }
+    if (applyStatus) {
+      query.applyStatus = applyStatus;
     }
 
     const events = await WebhookEvent.find(query)
@@ -2796,6 +2817,9 @@ flowRoutes.get("/:flowId/webhook/events", async c => {
           applyStatus: event.applyStatus,
           attempts: event.attempts,
           error: event.error,
+          applyError: event.applyError,
+          entity: event.entity,
+          operation: event.operation,
           processingDurationMs: event.processingDurationMs,
         })),
       },
@@ -2858,13 +2882,21 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
     event.status = "pending";
     await event.save();
 
-    // Trigger processing
-    await inngest.send({
-      name: "webhook/event.process",
-      data: {
-        flowId: event.flowId.toString(),
-        eventId: event.eventId,
-      },
+    const flowDoc = await Flow.findById(event.flowId)
+      .select("syncEngine destinationDatabaseId tableDestination")
+      .lean();
+    const destConn =
+      flowDoc?.destinationDatabaseId != null
+        ? await DatabaseConnection.findById(flowDoc.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
+    await enqueueWebhookProcess({
+      flowId: event.flowId.toString(),
+      eventId: event.eventId,
+      flow: flowDoc as WebhookFlowRoutingHint,
+      destinationTypeHint: destConn?.type,
     });
 
     return c.json({

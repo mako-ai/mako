@@ -18,61 +18,66 @@ import {
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
+import {
+  enqueueWebhookProcess,
+  type WebhookFlowRoutingHint,
+} from "../webhook-process-enqueue";
 
-/**
- * Process a single webhook event immediately
- */
-export const webhookEventProcessFunction = inngest.createFunction(
-  {
-    id: "webhook-event-process",
-    name: "Process Webhook Event",
-    concurrency: {
-      limit: 5, // Keep low to avoid BigQuery DML concurrency limits
-      key: "event.data.flowId", // Avoid global throttling across all flows
-    },
-  },
-  { event: "webhook/event.process" },
-  async ({ event, step }) => {
-    const { flowId, eventId } = event.data as {
-      flowId: string;
-      eventId: string;
-    };
-    const logger = getSyncLogger(`webhook.${flowId}`);
+const WEBHOOK_SQL_PROCESS_CONCURRENCY = Math.max(
+  parseInt(process.env.WEBHOOK_SQL_PROCESS_CONCURRENCY || "5", 10) || 5,
+  1,
+);
 
-    logger.debug("Processing webhook event", { flowId, eventId });
+const WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY = Math.max(
+  parseInt(process.env.WEBHOOK_CDC_PROCESS_CONCURRENCY || "25", 10) || 25,
+  5,
+);
 
-    // Get the webhook event
-    const webhookEvent = (await step.run("fetch-webhook-event", async () => {
-      const event = await WebhookEvent.findOne({ flowId, eventId });
-      if (!event) {
-        throw new Error(`Webhook event not found: ${eventId}`);
-      }
-      return event;
-    })) as any; // Type assertion needed due to Inngest step typing
+async function runWebhookEventProcess({
+  event,
+  step,
+}: {
+  event: { data: Record<string, unknown> };
+  step: {
+    run: (name: string, fn: () => Promise<unknown>) => Promise<unknown>;
+  };
+}) {
+  const { flowId, eventId } = event.data as {
+    flowId: string;
+    eventId: string;
+  };
+  const logger = getSyncLogger(`webhook.${flowId}`);
 
-    // Mark event as processing
-    await step.run("mark-event-processing", async () => {
-      await WebhookEvent.updateOne(
-        { _id: webhookEvent._id },
-        {
-          $set: { status: "processing" },
-          $inc: { attempts: 1 },
-        },
-      );
-    });
+  logger.debug("Processing webhook event", { flowId, eventId });
 
-    // Get flow details
-    const flow: any = await step.run("fetch-flow-details", async () => {
-      const found = await Flow.findById(flowId);
-      if (!found) {
-        throw new Error(`Flow not found: ${flowId}`);
-      }
-      return found.toObject();
-    });
+  // Load webhook row and flip to processing in one step (fewer Inngest round-trips).
+  const webhookEvent = (await step.run("prepare-webhook-event", async () => {
+    const doc = await WebhookEvent.findOne({ flowId, eventId });
+    if (!doc) {
+      throw new Error(`Webhook event not found: ${eventId}`);
+    }
+    await WebhookEvent.updateOne(
+      { _id: doc._id },
+      {
+        $set: { status: "processing" },
+        $inc: { attempts: 1 },
+      },
+    );
+    return doc.toObject();
+  })) as any; // Type assertion needed due to Inngest step typing
 
-    // Process the event
-    const result = await step.run("process-event", async () => {
+  // Process the event (load Flow here so we do not pay a separate step.run for it).
+  const result = (await step.run("process-event", async () => {
+    const stepStartedAt = Date.now();
+
+    const processWebhookJob = async () => {
       try {
+        const flowDoc = await Flow.findById(flowId);
+        if (!flowDoc) {
+          throw new Error(`Flow not found: ${flowId}`);
+        }
+        const flow: any = flowDoc.toObject();
+
         const dataSource = await DataSource.findById(flow.dataSourceId);
         const database = await DatabaseConnection.findById(
           flow.destinationDatabaseId,
@@ -141,7 +146,6 @@ export const webhookEventProcessFunction = inngest.createFunction(
           _dataSourceId: dataSource.id,
           _dataSourceName: dataSource.name,
           _syncedAt: new Date(),
-          _webhookEventId: webhookEvent.eventId,
         };
 
         const destinationType = database.type;
@@ -480,31 +484,81 @@ export const webhookEventProcessFunction = inngest.createFunction(
 
         throw error;
       }
-    });
+    };
 
-    // Update flow stats
-    await step.run("update-flow-stats", async () => {
+    try {
+      const jobResult = (await processWebhookJob()) as {
+        processed: boolean;
+        [key: string]: unknown;
+      };
       await Flow.updateOne(
         { _id: flowId },
         {
           $set: {
             lastRunAt: new Date(),
-            lastSuccessAt: result.processed ? new Date() : undefined,
+            lastSuccessAt: jobResult.processed ? new Date() : undefined,
           },
-          $inc: {
-            runCount: 1,
-          },
+          $inc: { runCount: 1 },
         },
       );
-    });
+      logger.info("webhook_process_step_completed", {
+        flowId,
+        eventId,
+        stepDurationMs: Date.now() - stepStartedAt,
+        processed: jobResult.processed,
+      });
+      return jobResult;
+    } catch (error) {
+      logger.warn("webhook_process_step_failed", {
+        flowId,
+        eventId,
+        stepDurationMs: Date.now() - stepStartedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  })) as any;
 
-    return {
-      success: true,
-      eventId: webhookEvent.eventId,
-      processed: result.processed,
-      details: result,
-    };
+  return {
+    success: true,
+    eventId: webhookEvent.eventId,
+    processed: (result as { processed: boolean }).processed,
+    details: result,
+  };
+}
+
+/**
+ * Process webhook events that apply directly to the warehouse (non-CDC table path).
+ * Keep concurrency low — each run can issue DML against BigQuery/SQL.
+ */
+export const webhookEventProcessFunction = inngest.createFunction(
+  {
+    id: "webhook-event-process",
+    name: "Process Webhook Event",
+    concurrency: {
+      limit: WEBHOOK_SQL_PROCESS_CONCURRENCY,
+      key: "event.data.flowId",
+    },
   },
+  { event: "webhook/event.process" },
+  runWebhookEventProcess,
+);
+
+/**
+ * CDC ingest path: Mongo staging + cdc/materialize only (no warehouse DML here).
+ * Higher per-flow concurrency is safe; materialization stays serialized per entity.
+ */
+export const webhookEventProcessCdcFunction = inngest.createFunction(
+  {
+    id: "webhook-event-process-cdc",
+    name: "Process Webhook Event (CDC ingest)",
+    concurrency: {
+      limit: WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY,
+      key: "event.data.flowId",
+    },
+  },
+  { event: "webhook/event.process.cdc" },
+  runWebhookEventProcess,
 );
 
 /**
@@ -587,6 +641,29 @@ export const webhookRetryFunction = inngest.createFunction(
         return { retried: 0, failed: 0, stalePending: 0, staleProcessing: 0 };
       }
 
+      const flowIds = Array.from(
+        new Set(uniqueEvents.map(e => e.flowId.toString())),
+      );
+      const routingByFlowId = new Map<
+        string,
+        { flow: WebhookFlowRoutingHint; destinationType?: string }
+      >();
+      for (const fid of flowIds) {
+        const flowDoc = await Flow.findById(fid)
+          .select("syncEngine destinationDatabaseId tableDestination")
+          .lean();
+        if (!flowDoc) continue;
+        const destId = flowDoc.destinationDatabaseId;
+        const destConn =
+          destId != null
+            ? await DatabaseConnection.findById(destId).select("type").lean()
+            : null;
+        routingByFlowId.set(fid, {
+          flow: flowDoc as WebhookFlowRoutingHint,
+          destinationType: destConn?.type,
+        });
+      }
+
       // Reset events to pending and trigger reprocessing
       let totalRetried = 0;
       for (const event of uniqueEvents) {
@@ -600,13 +677,13 @@ export const webhookRetryFunction = inngest.createFunction(
           },
         );
 
-        // Trigger processing
-        await inngest.send({
-          name: "webhook/event.process",
-          data: {
-            flowId: event.flowId.toString(),
-            eventId: event.eventId,
-          },
+        const fid = event.flowId.toString();
+        const routing = routingByFlowId.get(fid);
+        await enqueueWebhookProcess({
+          flowId: fid,
+          eventId: event.eventId,
+          flow: routing?.flow,
+          destinationTypeHint: routing?.destinationType,
         });
 
         totalRetried++;
@@ -644,11 +721,12 @@ async function runCdcMaterialization(params: {
     force?: boolean;
   };
   const maxEvents = Math.max(
-    parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "5000", 10) ||
-      5000,
+    parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "7500", 10) ||
+      7500,
     100,
   );
 
+  const materializeStartedAt = Date.now();
   const result = await params.step.run("materialize-cdc-entity", async () => {
     return cdcConsumerService.materializeEntity({
       workspaceId,
@@ -657,11 +735,13 @@ async function runCdcMaterialization(params: {
       maxEvents,
     });
   });
+  const materializeStepDurationMs = Date.now() - materializeStartedAt;
 
   params.logger.info("CDC materialization completed", {
     flowId,
     entity,
     force: Boolean(force),
+    materializeStepDurationMs,
     processed: (result as any).processed,
     applied: (result as any).applied,
     latestIngestSeq: (result as any).latestIngestSeq,

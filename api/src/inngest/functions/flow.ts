@@ -1,4 +1,5 @@
 import { inngest } from "../client";
+import { enqueueWebhookProcess } from "../webhook-process-enqueue";
 import {
   Flow,
   IFlow,
@@ -95,6 +96,18 @@ interface FlowExecutionLog {
   level: "debug" | "info" | "warn" | "error";
   message: string;
   metadata?: any;
+}
+
+function touchHeartbeat(executionId: string | undefined): Promise<void> {
+  if (!executionId) return Promise.resolve();
+  return Flow.db
+    .collection("flow_executions")
+    .updateOne(
+      { _id: new Types.ObjectId(executionId) },
+      { $set: { lastHeartbeat: new Date() } },
+    )
+    .then(() => {})
+    .catch(() => {});
 }
 
 interface FlowExecutionData {
@@ -1063,7 +1076,10 @@ export const flowFunction = inngest.createFunction(
             const completedAt = new Date();
 
             const updateResult = await collection.updateOne(
-              { _id: new Types.ObjectId(executionId), status: "running" },
+              {
+                _id: new Types.ObjectId(executionId),
+                status: { $in: ["running", "abandoned", "failed"] },
+              },
               {
                 $set: {
                   completedAt,
@@ -1720,6 +1736,7 @@ export const flowFunction = inngest.createFunction(
             });
             try {
               await step.run(`flush-final-${safeEntityStepId}`, async () => {
+                await touchHeartbeat(executionId);
                 void appendExecutionLog(
                   "info",
                   `Flushing ${entity} buffer to BigQuery staging via Parquet`,
@@ -1757,6 +1774,7 @@ export const flowFunction = inngest.createFunction(
             });
             try {
               await step.run(`merge-staging-${safeEntityStepId}`, async () => {
+                await touchHeartbeat(executionId);
                 void appendExecutionLog(
                   "info",
                   `Merging ${entity} staging table to live`,
@@ -1793,6 +1811,7 @@ export const flowFunction = inngest.createFunction(
               entity,
             });
             await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
+              await touchHeartbeat(executionId);
               try {
                 await performStagingCleanup(bulkSyncOptions);
               } catch (err) {
@@ -2007,6 +2026,7 @@ export const flowFunction = inngest.createFunction(
         const replayResult = await step.run(
           "trigger-webhook-replay",
           async () => {
+            await touchHeartbeat(executionId);
             const flowObjectId = new Types.ObjectId(flowId);
             const replayBatchSize = Math.max(
               parseInt(process.env.WEBHOOK_REPLAY_BATCH_SIZE || "1000", 10) ||
@@ -2019,6 +2039,13 @@ export const flowFunction = inngest.createFunction(
               0,
             );
             const replayCutoff = new Date();
+
+            const routingConn = flow.destinationDatabaseId
+              ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+                  .select("type")
+                  .lean()
+              : null;
+            const webhookDestinationTypeHint = routingConn?.type;
 
             const replayFilter: Record<string, unknown> = {
               flowId: flowObjectId,
@@ -2070,13 +2097,16 @@ export const flowFunction = inngest.createFunction(
 
               for (const pendingEvent of pendingBatch) {
                 if (maxReplayEvents > 0 && queued >= maxReplayEvents) break;
-                await inngest.send({
-                  name: "webhook/event.process",
-                  data: {
-                    flowId,
-                    eventId: pendingEvent.eventId,
-                    isReplay: true,
+                await enqueueWebhookProcess({
+                  flowId,
+                  eventId: pendingEvent.eventId,
+                  isReplay: true,
+                  flow: {
+                    syncEngine: flow.syncEngine,
+                    destinationDatabaseId: flow.destinationDatabaseId,
+                    tableDestination: flow.tableDestination,
                   },
+                  destinationTypeHint: webhookDestinationTypeHint,
                 });
                 queued += 1;
               }
@@ -2133,6 +2163,7 @@ export const flowFunction = inngest.createFunction(
           });
         });
         await step.run("drain-bigquery-cdc-pending-events", async () => {
+          await touchHeartbeat(executionId);
           await forceDrainCdcFlow({
             workspaceId: String(flow.workspaceId),
             flowId: String(flowId),
@@ -2209,9 +2240,14 @@ export const flowFunction = inngest.createFunction(
             const collection = db.collection("flow_executions");
             const completedAt = new Date();
 
-            // Update the execution to completed
+            // Reclaim executions that were falsely marked "abandoned" by the cleanup
+            // cron (stale heartbeat while a step was still running) or "failed" by the
+            // error handler on a previous retry attempt that hit the status mismatch.
             const result = await collection.updateOne(
-              { _id: new Types.ObjectId(executionId), status: "running" },
+              {
+                _id: new Types.ObjectId(executionId),
+                status: { $in: ["running", "abandoned", "failed"] },
+              },
               {
                 $set: {
                   completedAt,
@@ -2823,7 +2859,7 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
     const result = await step.run("cleanup-abandoned-flows", async () => {
       const db = Flow.db;
       const now = new Date();
-      const heartbeatTimeout = new Date(now.getTime() - 120000); // 2 minutes ago
+      const heartbeatTimeout = new Date(now.getTime() - 600000); // 10 minutes ago
 
       const executionsCollection = db.collection("flow_executions");
       const locksCollection = db.collection("flow_execution_locks");

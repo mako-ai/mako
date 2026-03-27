@@ -8,6 +8,7 @@ import {
 } from "./functions/flow";
 import {
   webhookEventProcessFunction,
+  webhookEventProcessCdcFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
@@ -31,6 +32,7 @@ const baseFunctions = [
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
   webhookEventProcessFunction,
+  webhookEventProcessCdcFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
   dashboardRefreshFunction,
@@ -65,6 +67,7 @@ export {
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
   webhookEventProcessFunction,
+  webhookEventProcessCdcFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
