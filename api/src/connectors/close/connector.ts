@@ -322,6 +322,26 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
+    // Flatten nested `custom` object into individual `custom_<cfId>` columns
+    // so that webhook payloads (which carry a nested object) produce the same
+    // flat column structure as backfill payloads (which use _fields=custom.cf_xxx).
+    if (
+      normalized.custom &&
+      typeof normalized.custom === "object" &&
+      !Array.isArray(normalized.custom)
+    ) {
+      const customObj = normalized.custom as Record<string, unknown>;
+      for (const [cfKey, cfValue] of Object.entries(customObj)) {
+        if (!/^cf_[A-Za-z0-9]+$/.test(cfKey)) {
+          continue;
+        }
+        const flatKey = `custom_${cfKey}`;
+        if (!(flatKey in normalized)) {
+          normalized[flatKey] = cfValue;
+        }
+      }
+    }
+
     const contactIds = this.extractLeadContactIds(record);
     if (contactIds.length > 0) {
       normalized.contact_ids = contactIds;
@@ -1033,7 +1053,16 @@ export class CloseConnector extends BaseConnector {
             },
           ],
         };
-        if (fieldsMap[objectType]) {
+        if (
+          objectType === "lead" ||
+          objectType === "contact" ||
+          objectType === "opportunity"
+        ) {
+          const baseFields = fieldsMap[objectType] || [];
+          body._fields = {
+            [objectType]: Array.from(new Set([...baseFields, "custom"])),
+          };
+        } else if (fieldsMap[objectType]) {
           body._fields = { [objectType]: fieldsMap[objectType] };
         }
 
