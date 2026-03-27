@@ -337,7 +337,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const insertVals = allColumns.map(c => `S.${escId(c)}`).join(", ");
 
     const dedupKey = keyColumns.map(escId).join(", ");
-    const dedupSource = `(SELECT * FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
+    const selectCols = allColumns.map(escId).join(", ");
+    const dedupSource = `(SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
 
     const mergeQuery = `
       MERGE INTO ${fullLive} T

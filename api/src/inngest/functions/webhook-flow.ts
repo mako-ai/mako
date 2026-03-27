@@ -147,7 +147,6 @@ async function runWebhookEventProcess({
           _dataSourceId: dataSource.id,
           _dataSourceName: dataSource.name,
           _syncedAt: new Date(),
-          _webhookEventId: webhookEvent.eventId,
         };
 
         const destinationType = database.type;
