@@ -3,6 +3,7 @@ import {
   Flow,
   WebhookEvent,
   Connector as DataSource,
+  DatabaseConnection,
 } from "../database/workspace-schema";
 import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
 import { v4 as uuidv4 } from "uuid";
@@ -174,6 +175,12 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
 
     // 6. Trigger immediate processing via Inngest
     try {
+      const destConn = flow.destinationDatabaseId
+        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
       await enqueueWebhookProcess({
         flowId,
         workspaceId,
@@ -183,6 +190,7 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
           destinationDatabaseId: flow.destinationDatabaseId,
           tableDestination: flow.tableDestination,
         },
+        destinationTypeHint: destConn?.type,
       });
     } catch (enqueueError) {
       await WebhookEvent.updateOne(
@@ -291,6 +299,12 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
 
     await webhookEvent.save();
 
+    const destConn = flow.destinationDatabaseId
+      ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+          .select("type")
+          .lean()
+      : null;
+
     await enqueueWebhookProcess({
       flowId,
       workspaceId,
@@ -301,6 +315,7 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
         destinationDatabaseId: flow.destinationDatabaseId,
         tableDestination: flow.tableDestination,
       },
+      destinationTypeHint: destConn?.type,
     });
 
     return c.json({
