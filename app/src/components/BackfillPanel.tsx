@@ -281,7 +281,6 @@ export function BackfillPanel({
   });
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
-  const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
   const [webhookEventsTotalAll, setWebhookEventsTotalAll] = useState(0);
   const [eventsFilter, setEventsFilter] = useState<string>("all");
   const [entityResetOpen, setEntityResetOpen] = useState(false);
@@ -350,7 +349,6 @@ export function BackfillPanel({
       >;
       if (eventsResult) {
         setWebhookEvents(eventsResult.events);
-        setWebhookEventsTotal(eventsResult.total);
         if (eventsFilterRef.current === "all") {
           setWebhookEventsTotalAll(eventsResult.total);
         }
