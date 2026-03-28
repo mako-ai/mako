@@ -406,16 +406,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           if (!stagingCols.has(c)) {
             return `NULL AS ${escId(c)}`;
           }
-          if (c === "deleted_at") {
-            const liveType = liveTypes.get(c);
-            const stagingType = stagingTypes.get(c);
-            if (
-              liveType &&
-              stagingType &&
-              liveType.toUpperCase() !== stagingType.toUpperCase()
-            ) {
-              return `SAFE_CAST(${escId(c)} AS ${liveType}) AS ${escId(c)}`;
-            }
+          const liveType = liveTypes.get(c);
+          const stagingType = stagingTypes.get(c);
+          if (
+            liveType &&
+            stagingType &&
+            liveType.toUpperCase() !== stagingType.toUpperCase()
+          ) {
+            return `SAFE_CAST(${escId(c)} AS ${liveType}) AS ${escId(c)}`;
           }
           return escId(c);
         })
