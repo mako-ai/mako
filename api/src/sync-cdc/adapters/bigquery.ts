@@ -34,6 +34,20 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
+  private coerceToDate(value: unknown): Date | null {
+    if (value == null) return null;
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const epochMs = value > 1e12 ? value : value * 1000;
+      const parsed = new Date(epochMs);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
   async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
     await this.ensureDataset();
   }
@@ -131,15 +145,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           payload,
           new Date(event.sourceTs),
         );
+        const deletedAt = new Date();
         rows.push({
           ...payload,
           id: event.recordId,
           _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
           _mako_source_ts: sourceTs,
           _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: new Date(),
+          _mako_deleted_at: deletedAt,
           is_deleted: true,
-          deleted_at: new Date(),
+          deleted_at: deletedAt,
         });
       }
     }
@@ -174,14 +189,26 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const rows = params.records.map(record => {
       const payload = normalizePayloadKeys(record || {});
+      const {
+        deleted_at: _ignoredDeletedAt,
+        deletedAt: _ignoredDeletedAtCamel,
+        date_deleted: _ignoredDateDeleted,
+        ...payloadWithoutDeletedAt
+      } = payload as Record<string, unknown> & {
+        deletedAt?: unknown;
+        date_deleted?: unknown;
+      };
+      const makoDeletedAt = this.coerceToDate(payload._mako_deleted_at);
       return {
-        ...payload,
+        ...payloadWithoutDeletedAt,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
         _mako_ingest_seq:
           typeof payload._mako_ingest_seq === "number"
             ? payload._mako_ingest_seq
             : undefined,
+        _mako_deleted_at: makoDeletedAt,
+        deleted_at: makoDeletedAt,
       };
     });
 
@@ -375,7 +402,21 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       const insertCols = columns.map(escId).join(", ");
       const insertVals = columns.map(c => `S.${escId(c)}`).join(", ");
       const selectCols = columns
-        .map(c => (stagingCols.has(c) ? escId(c) : `NULL AS ${escId(c)}`))
+        .map(c => {
+          if (!stagingCols.has(c)) {
+            return `NULL AS ${escId(c)}`;
+          }
+          const liveType = liveTypes.get(c);
+          const stagingType = stagingTypes.get(c);
+          if (
+            liveType &&
+            stagingType &&
+            liveType.toUpperCase() !== stagingType.toUpperCase()
+          ) {
+            return `SAFE_CAST(${escId(c)} AS ${liveType}) AS ${escId(c)}`;
+          }
+          return escId(c);
+        })
         .join(", ");
       const dedupSource = `(SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
       return `
