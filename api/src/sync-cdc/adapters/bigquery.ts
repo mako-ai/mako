@@ -441,6 +441,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const retryAddedColumns: string[] = [];
     let mergeColumns = [...allColumns];
     let result: { success: boolean; error?: string } | null = null;
+    let lastMergeQuery = "";
     const fallbackTypeForColumn = (column: string): string => {
       if (column === "_mako_ingest_seq") return "INT64";
       if (column === "is_deleted") return "BOOL";
@@ -486,6 +487,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     };
     for (let attempt = 0; attempt < 6; attempt++) {
       const mergeQuery = buildMergeQuery(mergeColumns);
+      lastMergeQuery = mergeQuery;
       result = await databaseConnectionService.executeQuery(
         destination,
         mergeQuery,
@@ -496,6 +498,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
 
       const errorText = result.error || "BigQuery staging MERGE failed";
+      const typeMismatch = errorText.match(
+        /Value of type\s+([A-Z0-9_]+)\s+cannot be assigned to\s+([A-Za-z0-9_]+),\s+which has type\s+([A-Z0-9_]+)/i,
+      );
       const unrecognized = errorText.match(
         /Unrecognized name:\s*([A-Za-z0-9_]+)/i,
       );
@@ -505,6 +510,44 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         keyColumns.includes(badColumn) ||
         !mergeColumns.includes(badColumn)
       ) {
+        const mismatchedColumns = mergeColumns
+          .map(column => {
+            const liveType = liveTypes.get(column);
+            const stagingType = stagingTypes.get(column);
+            if (
+              liveType &&
+              stagingType &&
+              liveType.toUpperCase() !== stagingType.toUpperCase()
+            ) {
+              return { column, stagingType, liveType };
+            }
+            return null;
+          })
+          .filter(
+            (
+              entry,
+            ): entry is {
+              column: string;
+              stagingType: string;
+              liveType: string;
+            } => entry !== null,
+          );
+        log.error("BigQuery MERGE failed with schema/type mismatch context", {
+          liveTable,
+          stagingTable,
+          attempt: attempt + 1,
+          error: errorText,
+          parsedMismatch: typeMismatch
+            ? {
+                sourceType: typeMismatch[1],
+                column: typeMismatch[2],
+                targetType: typeMismatch[3],
+              }
+            : null,
+          mismatchedColumns,
+          mergeColumnsCount: mergeColumns.length,
+          mergeQueryPreview: lastMergeQuery.slice(0, 900),
+        });
         throw new Error(errorText);
       }
 
@@ -542,6 +585,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       });
     }
     if (!result?.success) {
+      log.error("BigQuery staging MERGE exhausted retries", {
+        liveTable,
+        stagingTable,
+        error: result?.error || "BigQuery staging MERGE failed",
+        retryAddedColumns,
+        droppedMergeColumns,
+        mergeColumnsCount: mergeColumns.length,
+        mergeQueryPreview: lastMergeQuery.slice(0, 900),
+      });
       throw new Error(result?.error || "BigQuery staging MERGE failed");
     }
 
