@@ -213,11 +213,11 @@ export class CloseConnector extends BaseConnector {
       "activities:SMS": "activity.sms",
       "activities:Meeting": "activity.meeting",
       "activities:Note": "activity.note",
-      "activities:LeadStatusChange": "activity.status_change.lead",
+      "activities:LeadStatusChange": "activity.lead_status_change",
       "activities:OpportunityStatusChange":
-        "activity.status_change.opportunity",
+        "activity.opportunity_status_change",
       "activities:TaskCompleted": "activity.task_completed",
-      "activities:CustomActivity": "activity.custom",
+      "activities:CustomActivity": "activity.custom_activity",
     };
     return map[entity] || entity;
   }
