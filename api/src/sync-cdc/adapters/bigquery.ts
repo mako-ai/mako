@@ -164,6 +164,23 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         records: rows,
         layout: params.layout,
         flow: params.flow,
+        debugContext: {
+          sourceKind: "events",
+          sampleRecordIds: latest
+            .slice(0, 20)
+            .map(event => String(event.recordId)),
+          sampleChangeIds: latest
+            .slice(0, 20)
+            .map(event => event.webhookEventId || event.id)
+            .filter(
+              (id): id is string => typeof id === "string" && id.length > 0,
+            ),
+          counts: {
+            total: latest.length,
+            upserts: upserts.length,
+            deletes: deletes.length,
+          },
+        },
       });
     }
 
@@ -216,6 +233,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       records: rows,
       layout: params.layout,
       flow: params.flow,
+      debugContext: {
+        sourceKind: "backfill",
+        sampleRecordIds: params.records
+          .slice(0, 20)
+          .map(record => record.id || record.recordId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+        counts: {
+          total: rows.length,
+        },
+      },
     });
   }
 
@@ -389,6 +418,19 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const dedupKey = keyColumns.map(escId).join(", ");
     const buildMergeQuery = (columns: string[]): string => {
       const nonKeyColumns = columns.filter(c => !keyColumns.includes(c));
+      const sourceExprWithCast = (column: string): string => {
+        const sourceExpr = `S.${escId(column)}`;
+        const liveType = liveTypes.get(column);
+        const stagingType = stagingTypes.get(column);
+        if (
+          liveType &&
+          stagingType &&
+          liveType.toUpperCase() !== stagingType.toUpperCase()
+        ) {
+          return `SAFE_CAST(${sourceExpr} AS ${liveType})`;
+        }
+        return sourceExpr;
+      };
       const hasSourceTs = columns.includes("_mako_source_ts");
       const hasIngestSeq = columns.includes("_mako_ingest_seq");
       const matchedGuard = hasSourceTs
@@ -397,10 +439,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           ? ` AND COALESCE(S.\`_mako_ingest_seq\`, -1) >= COALESCE(T.\`_mako_ingest_seq\`, -1)`
           : "";
       const updateSet = nonKeyColumns
-        .map(c => `${escId(c)} = S.${escId(c)}`)
+        .map(c => `${escId(c)} = ${sourceExprWithCast(c)}`)
         .join(", ");
       const insertCols = columns.map(escId).join(", ");
-      const insertVals = columns.map(c => `S.${escId(c)}`).join(", ");
+      const insertVals = columns.map(c => sourceExprWithCast(c)).join(", ");
       const selectCols = columns
         .map(c => {
           if (!stagingCols.has(c)) {
@@ -691,6 +733,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     records: Record<string, unknown>[];
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    debugContext?: {
+      sourceKind: "events" | "backfill";
+      sampleRecordIds?: string[];
+      sampleChangeIds?: string[];
+      counts?: Record<string, number>;
+    };
   }): Promise<{ written: number }> {
     if (params.records.length === 0) return { written: 0 };
 
@@ -720,6 +768,21 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     try {
       await this.loadParquetToStaging(parquet.filePath, stagingTable);
       await this.mergeStagingToLive(params.layout, stagingTable);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("CDC materialization batch failed", {
+        table: params.layout.tableName,
+        entity: params.layout.entity,
+        stagingTable,
+        sourceKind: params.debugContext?.sourceKind,
+        sampleRecordIds: params.debugContext?.sampleRecordIds || [],
+        sampleChangeIds: params.debugContext?.sampleChangeIds || [],
+        counts: params.debugContext?.counts || {},
+        error: message,
+      });
+      throw new Error(
+        `${message} | entity=${params.layout.entity} source=${params.debugContext?.sourceKind || "unknown"} sample_record_ids=${(params.debugContext?.sampleRecordIds || []).join(",")} sample_change_ids=${(params.debugContext?.sampleChangeIds || []).join(",")}`,
+      );
     } finally {
       await this.dropStagingTable(stagingTable).catch(err => {
         log.warn("Failed to cleanup CDC staging table", {
