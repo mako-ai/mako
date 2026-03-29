@@ -418,19 +418,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const dedupKey = keyColumns.map(escId).join(", ");
     const buildMergeQuery = (columns: string[]): string => {
       const nonKeyColumns = columns.filter(c => !keyColumns.includes(c));
-      const sourceExprWithCast = (column: string): string => {
-        const sourceExpr = `S.${escId(column)}`;
-        const liveType = liveTypes.get(column);
-        const stagingType = stagingTypes.get(column);
-        if (
-          liveType &&
-          stagingType &&
-          liveType.toUpperCase() !== stagingType.toUpperCase()
-        ) {
-          return `SAFE_CAST(${sourceExpr} AS ${liveType})`;
-        }
-        return sourceExpr;
-      };
       const hasSourceTs = columns.includes("_mako_source_ts");
       const hasIngestSeq = columns.includes("_mako_ingest_seq");
       const matchedGuard = hasSourceTs
@@ -439,10 +426,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           ? ` AND COALESCE(S.\`_mako_ingest_seq\`, -1) >= COALESCE(T.\`_mako_ingest_seq\`, -1)`
           : "";
       const updateSet = nonKeyColumns
-        .map(c => `${escId(c)} = ${sourceExprWithCast(c)}`)
+        .map(c => `${escId(c)} = S.${escId(c)}`)
         .join(", ");
       const insertCols = columns.map(escId).join(", ");
-      const insertVals = columns.map(c => sourceExprWithCast(c)).join(", ");
+      const insertVals = columns.map(c => `S.${escId(c)}`).join(", ");
       const selectCols = columns
         .map(c => {
           if (!stagingCols.has(c)) {
@@ -834,6 +821,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       });
       throw new Error(
         `${message} | entity=${params.layout.entity} source=${params.debugContext?.sourceKind || "unknown"} sample_record_ids=${(params.debugContext?.sampleRecordIds || []).join(",")} sample_change_ids=${(params.debugContext?.sampleChangeIds || []).join(",")}`,
+        { cause: error },
       );
     } finally {
       await this.dropStagingTable(stagingTable).catch(err => {
