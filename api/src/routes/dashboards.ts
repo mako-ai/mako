@@ -1014,6 +1014,17 @@ app.post("/:id/lock", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
 
+    if (force) {
+      const memberRole = c.get("memberRole");
+      const isAdmin = memberRole === "owner" || memberRole === "admin";
+      if (!isAdmin) {
+        return c.json(
+          { success: false, error: "Only admins can force-lock a dashboard" },
+          403,
+        );
+      }
+    }
+
     const user = c.get("user");
     const userName = user?.email || userId;
     const now = new Date();

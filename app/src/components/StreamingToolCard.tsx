@@ -460,7 +460,9 @@ export const StreamingToolCard = React.memo(
       output !== null &&
       output !== undefined &&
       ((output as Record<string, unknown>).success === false ||
-        Boolean((output as Record<string, unknown>).error));
+        Boolean((output as Record<string, unknown>).error) ||
+        Boolean((output as Record<string, unknown>).queryError) ||
+        Boolean((output as Record<string, unknown>).renderError));
 
     const isDone = isOutputAvailable && !hasFailedOutput;
     const isError = isStateError || hasFailedOutput;
