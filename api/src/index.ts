@@ -299,15 +299,6 @@ process.on("unhandledRejection", reason => {
 });
 
 process.on("uncaughtException", err => {
-  const msg = err instanceof Error ? err.message : String(err);
-  const isStreamRace =
-    msg.includes("ReadableStream is already closed") ||
-    msg.includes("ReadableStream is already locked") ||
-    msg.includes("ReadableStream has already been consumed");
-  if (isStreamRace) {
-    logger.warn("Non-fatal stream error (suppressed)", { error: err });
-    return;
-  }
   logger.error("Uncaught Exception", { error: err });
   void gracefulShutdown("SIGTERM", 1);
 });

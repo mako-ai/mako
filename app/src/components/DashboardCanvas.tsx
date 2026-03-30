@@ -261,7 +261,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       !dashboardId ||
       !dashboard ||
       dashboard.readOnly ||
-      dashboard.isSaved ||
       isEditModeLocal
     ) {
       return;
