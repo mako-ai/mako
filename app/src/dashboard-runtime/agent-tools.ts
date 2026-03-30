@@ -130,6 +130,11 @@ export function releaseAgentLocks(): void {
     }
   }
   agentLockHeld.clear();
+
+  for (const [id, heartbeat] of agentLockHeartbeats) {
+    clearInterval(heartbeat);
+    agentLockHeartbeats.delete(id);
+  }
 }
 
 export async function executeDashboardAgentTool(
