@@ -18,6 +18,8 @@ export interface ConsoleContentResponse {
   path?: string;
   name?: string;
   isSaved?: boolean;
+  chartSpec?: Record<string, unknown>;
+  resultsViewMode?: "table" | "json" | "chart";
   access?: "private" | "workspace";
   owner_id?: string;
   readOnly?: boolean;

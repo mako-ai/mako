@@ -56,6 +56,8 @@ import {
 } from "../dashboard-runtime/commands";
 import { useDashboardRuntimeStore } from "../dashboard-runtime/store";
 import { serializeDashboardDefinition } from "../dashboard-runtime/types";
+import { useAuth } from "../contexts/auth-context";
+import { computeDashboardStateHash } from "../utils/stateHash";
 import type { MosaicInstance } from "../lib/mosaic";
 import WidgetContainer from "./widgets/WidgetContainer";
 import MosaicChart from "./widgets/MosaicChart";
@@ -115,12 +117,22 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   onCreated,
 }) => {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const { effectiveMode } = useTheme();
   const dashboard = useDashboardStore(state =>
     dashboardId ? state.openDashboards[dashboardId] : undefined,
   );
   const openDashboard = useDashboardStore(state => state.openDashboard);
   const saveDashboard = useDashboardStore(state => state.saveDashboard);
+  const markDashboardSaved = useDashboardStore(
+    state => state.markDashboardSaved,
+  );
+  const getDashboardSavedStateHash = useDashboardStore(
+    state => state.getDashboardSavedStateHash,
+  );
+  const materializeDashboard = useDashboardStore(
+    state => state.materializeDashboard,
+  );
   const createDashboard = useDashboardStore(state => state.createDashboard);
   const addWidget = useDashboardStore(state => state.addWidget);
   const modifyWidget = useDashboardStore(state => state.modifyWidget);
@@ -133,6 +145,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
   const resolveConflict = useDashboardStore(state => state.resolveConflict);
   const acquireLock = useDashboardStore(state => state.acquireLock);
+  const forceAcquireLock = useDashboardStore(state => state.forceAcquireLock);
   const releaseLock = useDashboardStore(state => state.releaseLock);
   const heartbeatLock = useDashboardStore(state => state.heartbeatLock);
   const historyEntry = useDashboardStore(state =>
@@ -163,6 +176,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isEditModeLocalRef = useRef(false);
+  const autoEditAttemptedForDashboardRef = useRef<string | null>(null);
   const workspaceIdRef = useRef<string | undefined>(undefined);
   const dashboardIdRef = useRef<string | undefined>(dashboardId);
 
@@ -240,6 +254,40 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (!isDashboardLoaded || !workspaceId || !dashboardId) return;
     void activateDashboardSession(workspaceId, dashboardId, "viewer");
   }, [isDashboardLoaded, workspaceId, dashboardId]);
+
+  useEffect(() => {
+    if (
+      !workspaceId ||
+      !dashboardId ||
+      !dashboard ||
+      dashboard.readOnly ||
+      dashboard.isSaved ||
+      isEditModeLocal
+    ) {
+      return;
+    }
+
+    if (autoEditAttemptedForDashboardRef.current === dashboardId) {
+      return;
+    }
+    autoEditAttemptedForDashboardRef.current = dashboardId;
+
+    void (async () => {
+      const acquired = await acquireLock(workspaceId, dashboardId);
+      if (acquired) {
+        setIsEditModeLocal(true);
+        return;
+      }
+      setLockError("Failed to acquire edit lock. Please try again.");
+    })();
+  }, [
+    workspaceId,
+    dashboardId,
+    dashboard,
+    isEditModeLocal,
+    acquireLock,
+    setLockError,
+  ]);
 
   // The grid container ref only enters the DOM after the dashboard loads
   // (the loading state early-return doesn't include it). Re-trigger
@@ -334,6 +382,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
   }, [workspaceId, dashboardId]);
 
+  const handleForceEditMode = useCallback(async () => {
+    if (!workspaceId || !dashboardId) return;
+    setLockError(null);
+    const acquired = await forceAcquireLock(workspaceId, dashboardId);
+    if (!acquired) {
+      setLockError("Failed to acquire edit lock. Please try again.");
+      return;
+    }
+    setIsEditModeLocal(true);
+  }, [workspaceId, dashboardId, forceAcquireLock]);
+
   const handleEditModeToggle = useCallback(
     async (mode: "edit" | "view") => {
       if (!workspaceId || !dashboardId) return;
@@ -343,8 +402,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         const acquired = await acquireLock(workspaceId, dashboardId);
         if (!acquired) {
           const d = useDashboardStore.getState().openDashboards[dashboardId];
-          const lockedBy = d?.editLock?.userName || "another user";
-          setLockError(`${lockedBy} is currently editing this dashboard`);
+          const lock = d?.editLock;
+          if (lock && lock.userId !== user?.id) {
+            setLockError(
+              `${lock.userName || "Another user"} is currently editing this dashboard`,
+            );
+          } else {
+            setLockError("Failed to acquire edit lock. Please try again.");
+          }
           return;
         }
         setIsEditModeLocal(true);
@@ -663,6 +728,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     return result;
   }, [widgets]);
 
+  const hasUnsavedChanges = useMemo(() => {
+    if (!dashboard || !dashboardId) return false;
+    const savedHash = getDashboardSavedStateHash(dashboardId);
+    if (!savedHash) return true;
+    return computeDashboardStateHash(dashboard) !== savedHash;
+  }, [dashboard, dashboardId, getDashboardSavedStateHash]);
+
   if (!dashboard) {
     return (
       <Box
@@ -937,17 +1009,28 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         {isEditMode && (
           <>
             <Tooltip
-              title={hasCodeError ? "Fix JSON errors before saving" : "Save"}
+              title={
+                hasCodeError
+                  ? "Fix JSON errors before saving"
+                  : hasUnsavedChanges
+                    ? "Save (Ctrl+S)"
+                    : "No changes to save"
+              }
             >
               <span>
                 <IconButton
                   size="small"
-                  disabled={viewMode === "code" && hasCodeError}
-                  onClick={() =>
-                    workspaceId &&
-                    dashboardId &&
-                    saveDashboard(workspaceId, dashboardId)
+                  disabled={
+                    !hasUnsavedChanges || (viewMode === "code" && hasCodeError)
                   }
+                  onClick={async () => {
+                    if (!workspaceId || !dashboardId) return;
+                    await saveDashboard(workspaceId, dashboardId);
+                    markDashboardSaved(dashboardId);
+                    void materializeDashboard(workspaceId, dashboardId, {
+                      force: true,
+                    });
+                  }}
                 >
                   <Save size={16} />
                 </IconButton>
@@ -989,6 +1072,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           severity="warning"
           sx={{ borderRadius: 0 }}
           onClose={() => setLockError(null)}
+          action={
+            <Button color="inherit" size="small" onClick={handleForceEditMode}>
+              Force take over
+            </Button>
+          }
         >
           {lockError}
         </Alert>
@@ -996,11 +1084,44 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       {!isEditMode &&
         dashboard?.editLock &&
         new Date(dashboard.editLock.expiresAt) > new Date() &&
-        !isReadOnly && (
-          <Alert severity="info" sx={{ borderRadius: 0 }}>
-            {dashboard.editLock.userName} is currently editing this dashboard
-          </Alert>
-        )}
+        !isReadOnly &&
+        (() => {
+          const isSelfLock = dashboard.editLock!.userId === user?.id;
+          return (
+            <Alert
+              severity={isSelfLock ? "warning" : "info"}
+              sx={{ borderRadius: 0 }}
+              action={
+                <Box sx={{ display: "flex", gap: 0.5 }}>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    onClick={
+                      isSelfLock
+                        ? handleForceEditMode
+                        : () => handleEditModeToggle("edit")
+                    }
+                  >
+                    {isSelfLock ? "Resume editing" : "Enter edit mode"}
+                  </Button>
+                  {!isSelfLock && (
+                    <Button
+                      color="inherit"
+                      size="small"
+                      onClick={handleForceEditMode}
+                    >
+                      Force take over
+                    </Button>
+                  )}
+                </Box>
+              }
+            >
+              {isSelfLock
+                ? "You have unsaved changes from a previous session"
+                : `${dashboard.editLock!.userName} is currently editing this dashboard`}
+            </Alert>
+          );
+        })()}
       {dataFreshness && (
         <Alert
           severity="warning"

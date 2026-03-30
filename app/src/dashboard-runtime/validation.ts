@@ -2,6 +2,15 @@ import { MakoChartSpec } from "../lib/chart-spec";
 import { executeDashboardSql } from "./commands";
 import { classifyDuckDBError, type DashboardErrorKind } from "./error-kinds";
 
+type CompileFn = (spec: any) => unknown;
+let compileVegaLitePromise: Promise<CompileFn> | null = null;
+function getCompileVegaLite(): Promise<CompileFn> {
+  if (!compileVegaLitePromise) {
+    compileVegaLitePromise = import("vega-lite").then(m => m.compile);
+  }
+  return compileVegaLitePromise;
+}
+
 function stripTrailingSemicolons(sql: string): string {
   return sql.trim().replace(/;+$/, "");
 }
@@ -47,25 +56,43 @@ export async function validateDuckDBQuery(options: {
   }
 }
 
-export function validateVegaSpec(spec: unknown):
+export async function validateVegaSpec(spec: unknown): Promise<
   | { valid: true }
   | {
       valid: false;
       errors: string[];
-      errorKind: "vega_schema_invalid";
-    } {
+      errorKind: "vega_schema_invalid" | "vega_compile_failed";
+    }
+> {
   const parsed = MakoChartSpec.safeParse(spec);
-  if (parsed.success) {
-    return { valid: true };
+  if (!parsed.success) {
+    return {
+      valid: false,
+      errors: parsed.error.issues
+        .slice(0, 10)
+        .map(issue => `${issue.path.join(".") || "<root>"}: ${issue.message}`),
+      errorKind: "vega_schema_invalid",
+    };
   }
 
-  return {
-    valid: false,
-    errors: parsed.error.issues
-      .slice(0, 10)
-      .map(issue => `${issue.path.join(".") || "<root>"}: ${issue.message}`),
-    errorKind: "vega_schema_invalid",
-  };
+  try {
+    const compile = await getCompileVegaLite();
+    const fullSpec = {
+      ...parsed.data,
+      $schema: "https://vega.github.io/schema/vega-lite/v6.json",
+      data: { values: [] },
+    };
+    compile(fullSpec as any);
+  } catch (e: any) {
+    const message = e?.message || "Vega-Lite compilation failed";
+    return {
+      valid: false,
+      errors: [message],
+      errorKind: "vega_compile_failed",
+    };
+  }
+
+  return { valid: true };
 }
 
 function splitTopLevelCsv(value: string): string[] {

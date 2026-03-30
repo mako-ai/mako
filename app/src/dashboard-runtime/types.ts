@@ -59,6 +59,8 @@ export interface Dashboard
   };
   version: number;
   editLock?: DashboardEditLock | null;
+  /** false = draft (auto-save enabled), true = saved (no auto-save) */
+  isSaved?: boolean;
   access: "private" | "workspace";
   owner_id?: string;
   createdBy: string;

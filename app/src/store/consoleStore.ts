@@ -50,6 +50,11 @@ interface ConsoleActions {
     isSaved: boolean,
     savedStateHash: string,
   ) => void;
+  updateChartSpec: (
+    id: string,
+    chartSpec: Record<string, unknown> | null,
+  ) => void;
+  updateResultsViewMode: (id: string, mode: "table" | "json" | "chart") => void;
 
   // Versioning
   getVersionManager: (consoleId: string) => ConsoleVersionManager | null;
@@ -68,6 +73,8 @@ interface ConsoleActions {
     connectionId?: string,
     databaseName?: string,
     databaseId?: string,
+    chartSpec?: Record<string, unknown>,
+    resultsViewMode?: string,
   ) => Promise<ConsoleSaveResponse>;
   deleteConsole: (
     workspaceId: string,
@@ -273,6 +280,22 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
         }),
 
+      updateChartSpec: (id, chartSpec) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.chartSpec = chartSpec ?? undefined;
+          }
+        }),
+
+      updateResultsViewMode: (id, mode) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.resultsViewMode = mode;
+          }
+        }),
+
       // Versioning
       getVersionManager: consoleId => versionManagers.get(consoleId) || null,
 
@@ -309,6 +332,8 @@ export const useConsoleStore = create<ConsoleStore>()(
               databaseName: res.databaseName,
               filePath,
               kind: "console",
+              chartSpec: res.chartSpec,
+              resultsViewMode: res.resultsViewMode,
             });
             get().setActiveTab(res.id);
           } else {
@@ -378,6 +403,8 @@ export const useConsoleStore = create<ConsoleStore>()(
         connectionId,
         databaseName,
         databaseId,
+        chartSpec,
+        resultsViewMode,
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
@@ -394,6 +421,8 @@ export const useConsoleStore = create<ConsoleStore>()(
                 databaseName,
                 databaseId,
                 isSaved: true,
+                chartSpec: chartSpec ?? null,
+                resultsViewMode,
               }),
             },
           );

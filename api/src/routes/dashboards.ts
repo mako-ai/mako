@@ -1004,10 +1004,12 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
 const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // POST /api/workspaces/:workspaceId/dashboards/:id/lock - Acquire edit lock
+// Query params: ?force=true to forcefully take the lock from another user
 app.post("/:id/lock", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
+    const force = c.req.query("force") === "true";
     const userId = c.get("user")?.id;
     if (!userId) {
       return c.json({ success: false, error: "Unauthorized" }, 401);
@@ -1018,17 +1020,21 @@ app.post("/:id/lock", async (c: AuthenticatedContext) => {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + LOCK_TTL_MS);
 
+    const filter: Record<string, unknown> = {
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    };
+    if (!force) {
+      filter.$or = [
+        { editLock: null },
+        { "editLock.userId": { $exists: false } },
+        { "editLock.expiresAt": { $lt: now } },
+        { "editLock.userId": userId },
+      ];
+    }
+
     const dashboard = await Dashboard.findOneAndUpdate(
-      {
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-        $or: [
-          { editLock: null },
-          { "editLock.userId": { $exists: false } },
-          { "editLock.expiresAt": { $lt: now } },
-          { "editLock.userId": userId },
-        ],
-      },
+      filter,
       {
         $set: {
           editLock: {

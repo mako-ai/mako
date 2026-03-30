@@ -6,6 +6,7 @@ import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
 } from "@mako/schemas";
+import { computeDashboardStateHash } from "../utils/stateHash";
 import type {
   Dashboard,
   DashboardDataSource,
@@ -207,23 +208,22 @@ interface DashboardStoreState {
     runId: string,
   ) => Promise<MaterializationRunRecord | null>;
 
+  markDashboardSaved: (dashboardId: string) => void;
+  getDashboardSavedStateHash: (dashboardId: string) => string | undefined;
+
   acquireLock: (workspaceId: string, dashboardId: string) => Promise<boolean>;
+  forceAcquireLock: (
+    workspaceId: string,
+    dashboardId: string,
+  ) => Promise<boolean>;
   releaseLock: (workspaceId: string, dashboardId: string) => Promise<void>;
+  autoSaveDashboard: (workspaceId: string, dashboardId: string) => void;
   heartbeatLock: (workspaceId: string, dashboardId: string) => Promise<void>;
 }
 
-const saveTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
-
-function debouncedSave(
-  get: () => DashboardStoreState,
-  workspaceId: string,
-  dashboardId: string,
-) {
-  if (saveTimeouts[dashboardId]) clearTimeout(saveTimeouts[dashboardId]);
-  saveTimeouts[dashboardId] = setTimeout(() => {
-    get().saveDashboard(workspaceId, dashboardId);
-  }, 500);
-}
+const savedStateHashes: Record<string, string> = {};
+const draftSaveTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const DRAFT_SAVE_DEBOUNCE_MS = 2000;
 
 export const useDashboardStore = create<DashboardStoreState>()(
   persist(
@@ -403,6 +403,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
           if (response.data) {
             const dashboard = response.data;
+            dashboard.isSaved = true;
             if (Array.isArray(dashboard.widgets)) {
               dashboard.widgets = dashboard.widgets.map(
                 w =>
@@ -416,6 +417,8 @@ export const useDashboardStore = create<DashboardStoreState>()(
               state.activeDashboardId = dashboardId;
               state.historyMap[dashboardId] = { stack: [], index: -1 };
             });
+            savedStateHashes[dashboardId] =
+              computeDashboardStateHash(dashboard);
           }
         } catch {
           // silent
@@ -430,6 +433,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             state.activeDashboardId = null;
           }
         });
+        delete savedStateHashes[dashboardId];
       },
 
       saveDashboard: async (workspaceId: string, dashboardId: string) => {
@@ -449,7 +453,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             description: dashboard.description,
             version: dashboard.version,
           };
-          const response = await apiClient.patch<{
+          const response = await apiClient.put<{
             success: boolean;
             data: Dashboard;
           }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`, payload);
@@ -523,9 +527,8 @@ export const useDashboardStore = create<DashboardStoreState>()(
             Object.assign(d, result.data);
           }
         });
-
         const workspaceId = dashboard.workspaceId;
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
         return null;
       },
 
@@ -536,7 +539,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) d.dataSources.push(dataSource);
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       updateDataSource: (
@@ -568,7 +571,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             }
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeDataSource: (dashboardId: string, dataSourceId: string) => {
@@ -589,7 +592,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             );
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       addWidget: (dashboardId: string, widget: DashboardWidget) => {
@@ -599,7 +602,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) d.widgets.push(widget);
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       modifyWidget: (
@@ -618,7 +621,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             }
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeWidget: (dashboardId: string, widgetId: string) => {
@@ -630,7 +633,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.widgets = d.widgets.filter(w => w.id !== widgetId);
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       addRelationship: (dashboardId: string, rel: TableRelationship) => {
@@ -640,7 +643,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) d.relationships.push(rel);
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeRelationship: (dashboardId: string, relId: string) => {
@@ -652,7 +655,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.relationships = d.relationships.filter(r => r.id !== relId);
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       addGlobalFilter: (dashboardId: string, filter: GlobalFilter) => {
@@ -662,7 +665,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) d.globalFilters.push(filter);
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeGlobalFilter: (dashboardId: string, filterId: string) => {
@@ -674,7 +677,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.globalFilters = d.globalFilters.filter(f => f.id !== filterId);
           }
         });
-        if (workspaceId) debouncedSave(get, workspaceId, dashboardId);
+        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       setAutoRefreshInterval: (interval: number | null) => {
@@ -818,6 +821,37 @@ export const useDashboardStore = create<DashboardStoreState>()(
         }
       },
 
+      autoSaveDashboard: (workspaceId: string, dashboardId: string) => {
+        const dashboard = get().openDashboards[dashboardId];
+        if (!dashboard || dashboard.isSaved) return;
+
+        if (draftSaveTimers[dashboardId]) {
+          clearTimeout(draftSaveTimers[dashboardId]);
+        }
+        draftSaveTimers[dashboardId] = setTimeout(() => {
+          delete draftSaveTimers[dashboardId];
+          const current = get().openDashboards[dashboardId];
+          if (current && !current.isSaved) {
+            get().saveDashboard(workspaceId, dashboardId);
+          }
+        }, DRAFT_SAVE_DEBOUNCE_MS);
+      },
+
+      markDashboardSaved: (dashboardId: string) => {
+        const dashboard = get().openDashboards[dashboardId];
+        if (dashboard) {
+          set(state => {
+            const d = state.openDashboards[dashboardId];
+            if (d) d.isSaved = true;
+          });
+          savedStateHashes[dashboardId] = computeDashboardStateHash(dashboard);
+        }
+      },
+
+      getDashboardSavedStateHash: (dashboardId: string) => {
+        return savedStateHashes[dashboardId];
+      },
+
       acquireLock: async (workspaceId: string, dashboardId: string) => {
         try {
           const response = await apiClient.post<{
@@ -838,6 +872,28 @@ export const useDashboardStore = create<DashboardStoreState>()(
           if (dash) {
             await get().reloadDashboard(workspaceId, dashboardId);
           }
+          return false;
+        }
+      },
+
+      forceAcquireLock: async (workspaceId: string, dashboardId: string) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: Dashboard;
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock?force=true`,
+          );
+          if (response.data) {
+            set(state => {
+              const d = state.openDashboards[dashboardId];
+              if (d) {
+                d.editLock = response.data.editLock;
+              }
+            });
+          }
+          return true;
+        } catch {
           return false;
         }
       },

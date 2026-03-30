@@ -486,6 +486,8 @@ export class ConsoleManager {
     name?: string;
     path?: string;
     isSaved?: boolean;
+    chartSpec?: Record<string, unknown>;
+    resultsViewMode?: "table" | "json" | "chart";
     access?: ConsoleAccessLevel;
     owner_id?: string;
     _raw?: ISavedConsole;
@@ -525,6 +527,8 @@ export class ConsoleManager {
           name: savedConsole.name,
           path: consolePath,
           isSaved: savedConsole.isSaved,
+          chartSpec: savedConsole.chartSpec,
+          resultsViewMode: savedConsole.resultsViewMode,
           access: ConsoleManager.resolveAccess(savedConsole),
           owner_id: savedConsole.owner_id || savedConsole.createdBy,
           _raw: savedConsole,

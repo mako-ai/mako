@@ -304,4 +304,13 @@ export const clientDashboardTools = {
     description: "Set the default time column for a data source.",
     inputSchema: setTimeDimensionSchema,
   },
+  save_dashboard: {
+    description:
+      "Persist the current dashboard to the server and rebuild cached data (Parquet artifacts). " +
+      "Call after finishing a batch of changes. " +
+      "Unsaved changes are reflected live in the dashboard but not persisted until you call this.",
+    inputSchema: z.object({
+      dashboardId: z.string().describe("The dashboard ID to save"),
+    }),
+  },
 };

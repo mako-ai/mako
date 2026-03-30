@@ -344,6 +344,8 @@ export interface ISavedConsole extends Document {
   descriptionGeneratedAt?: Date;
   code: string;
   language: "sql" | "javascript" | "mongodb";
+  chartSpec?: Record<string, unknown>;
+  resultsViewMode?: "table" | "json" | "chart";
   mongoOptions?: {
     collection: string;
     operation:
@@ -1256,6 +1258,13 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: String,
       enum: ["sql", "javascript", "mongodb"],
       required: true,
+    },
+    chartSpec: {
+      type: Schema.Types.Mixed,
+    },
+    resultsViewMode: {
+      type: String,
+      enum: ["table", "json", "chart"],
     },
     mongoOptions: {
       collection: String,

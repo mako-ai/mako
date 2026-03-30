@@ -42,6 +42,7 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 * \`remove_global_filter\` — Remove a global filter
 * \`link_tables\` — Define a relationship between two data sources for cross-filtering
 * \`set_time_dimension\` — Set the default time column for a data source
+* \`save_dashboard\` — Persist all unsaved changes to the server and rebuild cached data
 
 ### DuckDB SQL Reference
 
@@ -78,7 +79,8 @@ When creating chart widgets:
 - If you need a derived dimension for cross-filtering (e.g., \`week_start\`), add it to the **data source extraction query** so it becomes a canonical field in DuckDB. Do not compute it in widget SQL.
 - Source query rewrites are allowed when genuinely needed for new canonical fields, but prefer widget SQL and Vega label changes for presentation-only issues.
 - Available mark types: bar, line, area, point, arc, boxplot, rect, rule, text, tick, trail
-- Use \`fold\` transforms to unpivot multiple numeric columns for multi-line charts
+- When data has a categorical dimension (e.g., country, status, type) and you want separate lines/areas/bars per category, use \`color: { field: "...", type: "nominal" }\` encoding. Always include the categorical column in \`localSql\`.
+- Use \`fold\` transforms only when multiple numeric columns need unpivoting into a single series dimension (wide-to-long format)
 - For time series, use \`temporal\` type on the x-axis with appropriate \`timeUnit\`
 - For donut/pie charts, use \`arc\` mark with \`theta\` encoding and \`innerRadius\`
 - Always include tooltips for interactivity
@@ -151,6 +153,25 @@ vegaLiteSpec: {
 layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
 \`\`\`
 
+**Multi-series line chart (one line per category):**
+\`\`\`
+localSql: SELECT day, country, rate FROM ds_xxx ORDER BY day, country
+vegaLiteSpec: {
+  mark: { type: "line", strokeWidth: 2 },
+  encoding: {
+    x: { field: "day", type: "temporal", title: "Date" },
+    y: { field: "rate", type: "quantitative", title: "Rate (%)" },
+    color: { field: "country", type: "nominal", title: "Country" },
+    tooltip: [
+      { field: "day", type: "temporal", format: "%Y-%m-%d" },
+      { field: "country", type: "nominal" },
+      { field: "rate", type: "quantitative", format: ".1f" }
+    ]
+  }
+}
+layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+\`\`\`
+
 **Horizontal bar (ranking / funnel):**
 \`\`\`
 localSql: SELECT category, COUNT(*) AS count FROM "events" GROUP BY category
@@ -215,6 +236,14 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
 - Use datasource \`tableRef\` values in local DuckDB SQL, not display names
 - When working on an existing dashboard, prefer datasource and widget tools over \`create_dashboard\`.
 - If the user asks for something unrelated to the current dashboard's topic, use \`create_dashboard\` to start a new one rather than adding unrelated widgets to the existing dashboard.
+- Call \`save_dashboard\` after you finish a batch of changes. You do NOT need to save after every single tool call — batch your changes and save once at the end.
+- Changes are immediately reflected in the live preview but are NOT persisted to the server until you call \`save_dashboard\`.
+
+**Handling render errors:**
+- \`add_widget\` and \`modify_widget\` will return \`success: false\` with a \`renderError\` if the chart fails to render, even if the spec passes schema validation.
+- When you receive a render error, read the error message and the \`query.fields\` / \`query.sampleRow\` in the response to understand the data shape, then fix the spec with \`modify_widget\`.
+- Common render failures: encoding field names don't match query output columns, incompatible mark type with data types, or invalid encoding combinations.
+- If the current dashboard context shows widgets with render or query errors (marked with ⚠), proactively offer to fix them.
 `;
 
 /**
@@ -325,6 +354,12 @@ export function buildDashboardRuntimeContext(context: AgentContext): string {
       }
       if (w.crossFilter && !w.crossFilter.enabled) {
         parts.push(`  - cross-filter: disabled`);
+      }
+      if (w.renderError) {
+        parts.push(`  - ⚠ render error: ${w.renderError}`);
+      }
+      if (w.queryError) {
+        parts.push(`  - ⚠ query error: ${w.queryError}`);
       }
     }
     parts.push("");

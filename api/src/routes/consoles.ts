@@ -242,6 +242,8 @@ consoleRoutes.get("/content", async (c: Context) => {
       name: consoleData.name,
       path: consoleData.path,
       isSaved: consoleData.isSaved,
+      chartSpec: consoleData.chartSpec,
+      resultsViewMode: consoleData.resultsViewMode,
       access: consoleAccess,
       owner_id: ownerId,
       ownerDisplayName,
@@ -392,6 +394,18 @@ consoleRoutes.post("/", async (c: Context) => {
         isPrivate,
       },
     );
+
+    // Persist chart spec and view mode if provided
+    if (body.chartSpec !== undefined || body.resultsViewMode !== undefined) {
+      const chartUpdate: Record<string, unknown> = {};
+      if (body.chartSpec !== undefined) chartUpdate.chartSpec = body.chartSpec;
+      if (body.resultsViewMode !== undefined) {
+        chartUpdate.resultsViewMode = body.resultsViewMode;
+      }
+      await SavedConsole.findByIdAndUpdate(savedConsole._id, {
+        $set: chartUpdate,
+      });
+    }
 
     // Fire-and-forget: generate description + embedding for searchability
     if (isDescriptionGenAvailable() && content.trim()) {
@@ -568,6 +582,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           isSaved: true,
           updatedAt: now,
         };
+        if (body.chartSpec !== undefined) setFields.chartSpec = body.chartSpec;
+        if (body.resultsViewMode !== undefined) {
+          setFields.resultsViewMode = body.resultsViewMode;
+        }
 
         const result = await SavedConsole.findOneAndUpdate(
           {
@@ -613,6 +631,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // Only update name if explicitly provided
       if (body.title !== undefined) {
         setFields.name = body.title || "Untitled";
+      }
+
+      if (body.chartSpec !== undefined) setFields.chartSpec = body.chartSpec;
+      if (body.resultsViewMode !== undefined) {
+        setFields.resultsViewMode = body.resultsViewMode;
       }
 
       // If this is an explicit save without path (e.g., Cmd+S on already saved), mark as saved

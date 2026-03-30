@@ -33,6 +33,13 @@ export const modifyConsoleSchema = z.object({
     .describe(
       "Target console ID (required). Get IDs from list_open_consoles or create_console.",
     ),
+  title: z
+    .string()
+    .optional()
+    .describe(
+      "Short descriptive title for the console (e.g. 'Monthly Revenue by Region'). " +
+        "Set this when the console content changes significantly or when the current title is generic like 'New Console'.",
+    ),
   startLine: z
     .number()
     .optional()
