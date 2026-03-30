@@ -561,11 +561,11 @@ export async function executeDashboardAgentTool(
 
       if (renderResult?.renderError) {
         return {
-          success: false,
+          success: true,
           widgetId: widget.id,
-          error: `Chart render failed: ${renderResult.renderError}`,
-          errorKind: renderResult.renderErrorKind ?? "vega_render_failed",
-          hint: "The Vega-Lite spec passed schema validation but failed to render. Check encoding field names match the query output columns, and ensure the mark type is compatible with the data types.",
+          renderError: `Chart render failed: ${renderResult.renderError}`,
+          renderErrorKind: renderResult.renderErrorKind ?? "vega_render_failed",
+          hint: "The widget was added but the Vega-Lite spec failed to render. Use modify_widget to fix the spec. Check encoding field names match the query output columns, and ensure the mark type is compatible with the data types.",
           query: {
             rowCount: result.rowCount,
             fields: result.fields.map(field => field.name),
@@ -587,9 +587,9 @@ export async function executeDashboardAgentTool(
       const message =
         error instanceof Error ? error.message : "Widget query failed";
       return {
-        success: false,
+        success: true,
         widgetId: widget.id,
-        error: message,
+        queryError: message,
         errorKind: classifyDuckDBError(message),
       };
     }
@@ -700,11 +700,11 @@ export async function executeDashboardAgentTool(
 
       if (renderResult?.renderError) {
         return {
-          success: false,
+          success: true,
           widgetId: input.widgetId,
-          error: `Chart render failed: ${renderResult.renderError}`,
-          errorKind: renderResult.renderErrorKind ?? "vega_render_failed",
-          hint: "The Vega-Lite spec passed schema validation but failed to render. Check encoding field names match the query output columns, and ensure the mark type is compatible with the data types.",
+          renderError: `Chart render failed: ${renderResult.renderError}`,
+          renderErrorKind: renderResult.renderErrorKind ?? "vega_render_failed",
+          hint: "The widget was modified but the Vega-Lite spec failed to render. Use modify_widget to fix the spec. Check encoding field names match the query output columns, and ensure the mark type is compatible with the data types.",
           query: {
             rowCount: result.rowCount,
             fields: result.fields.map(field => field.name),
@@ -726,9 +726,9 @@ export async function executeDashboardAgentTool(
       const message =
         error instanceof Error ? error.message : "Widget query failed";
       return {
-        success: false,
+        success: true,
         widgetId: input.widgetId,
-        error: message,
+        queryError: message,
         errorKind: classifyDuckDBError(message),
       };
     }
