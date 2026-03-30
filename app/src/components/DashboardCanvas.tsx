@@ -1011,7 +1011,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   }
                   onClick={async () => {
                     if (!workspaceId || !dashboardId) return;
-                    await saveDashboard(workspaceId, dashboardId);
+                    const saved = await saveDashboard(workspaceId, dashboardId);
+                    if (!saved) return;
                     markDashboardSaved(dashboardId);
                     void materializeDashboard(workspaceId, dashboardId, {
                       force: true,

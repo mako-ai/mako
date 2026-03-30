@@ -818,7 +818,10 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "No active dashboard" };
     }
     const store = useDashboardStore.getState();
-    await store.saveDashboard(ctx.workspaceId, ctx.dashboardId);
+    const saved = await store.saveDashboard(ctx.workspaceId, ctx.dashboardId);
+    if (!saved) {
+      return { success: false, error: "Failed to save dashboard" };
+    }
     store.markDashboardSaved(ctx.dashboardId);
     void store.materializeDashboard(ctx.workspaceId, ctx.dashboardId, {
       force: true,
