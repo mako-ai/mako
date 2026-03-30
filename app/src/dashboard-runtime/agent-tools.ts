@@ -74,6 +74,9 @@ const READ_ONLY_TOOLS = new Set([
 ]);
 
 const agentLockHeld = new Set<string>();
+const agentLockHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
+
+const AGENT_LOCK_HEARTBEAT_MS = 30_000;
 
 async function ensureAgentLock(
   workspaceId: string,
@@ -102,6 +105,14 @@ async function ensureAgentLock(
   if (!userAlreadyHoldsLock) {
     agentLockHeld.add(dashboardId);
   }
+
+  if (!agentLockHeartbeats.has(dashboardId)) {
+    const interval = setInterval(() => {
+      useDashboardStore.getState().heartbeatLock(workspaceId, dashboardId);
+    }, AGENT_LOCK_HEARTBEAT_MS);
+    agentLockHeartbeats.set(dashboardId, interval);
+  }
+
   return { success: true };
 }
 
@@ -111,6 +122,11 @@ export function releaseAgentLocks(): void {
     const workspaceId = state.openDashboards[dashboardId]?.workspaceId;
     if (workspaceId) {
       void state.releaseLock(workspaceId, dashboardId);
+    }
+    const heartbeat = agentLockHeartbeats.get(dashboardId);
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      agentLockHeartbeats.delete(dashboardId);
     }
   }
   agentLockHeld.clear();

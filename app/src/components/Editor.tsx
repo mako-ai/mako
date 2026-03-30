@@ -252,17 +252,24 @@ function Editor({
   // Seed local chart spec / view mode state when tabs are loaded from the server
   useEffect(() => {
     for (const tab of consoleTabs) {
-      if (tab.chartSpec && !tabChartSpecs[tab.id]) {
-        setTabChartSpecs(prev => ({
-          ...prev,
-          [tab.id]: tab.chartSpec as import("../lib/chart-spec").MakoChartSpec,
-        }));
+      if (tab.chartSpec) {
+        setTabChartSpecs(prev => {
+          if (prev[tab.id]) return prev;
+          return {
+            ...prev,
+            [tab.id]:
+              tab.chartSpec as import("../lib/chart-spec").MakoChartSpec,
+          };
+        });
       }
-      if (tab.resultsViewMode && !tabViewModes[tab.id]) {
-        setTabViewModes(prev => ({ ...prev, [tab.id]: tab.resultsViewMode! }));
+      if (tab.resultsViewMode) {
+        setTabViewModes(prev => {
+          if (prev[tab.id]) return prev;
+          return { ...prev, [tab.id]: tab.resultsViewMode! };
+        });
       }
     }
-  }, [consoleTabs, tabChartSpecs, tabViewModes]);
+  }, [consoleTabs]);
 
   // Keep activeEditorContent in app store updated so Chat can use it
   const setActiveEditorContent = useUIStore(

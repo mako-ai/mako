@@ -111,12 +111,6 @@ function formatZodErrors(error: {
     .join(" | ");
 }
 
-function fingerprintWidgetConfig(widget: DashboardWidget): string {
-  const sql = widget.localSql ?? "";
-  const spec = widget.vegaLiteSpec ? JSON.stringify(widget.vegaLiteSpec) : "";
-  return `${sql}::${spec}`;
-}
-
 const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   dashboardId,
   isNew,
@@ -752,16 +746,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     const widgetRuntime = runtimeSession?.widgets[widget.id];
     const refreshGeneration = widgetRuntime?.refreshGeneration ?? 0;
     const widgetLayout = resolveWidgetLayout(widget);
-    const widgetQueryFieldsKey = (widgetRuntime?.queryFields ?? []).join("|");
     const widgetRenderKey = [
       widget.id,
       widgetLayout.x,
       widgetLayout.y,
       widgetLayout.w,
       widgetLayout.h,
-      fingerprintWidgetConfig(widget),
-      widgetQueryFieldsKey,
-      widgetRuntime?.queryRowCount ?? "",
       refreshGeneration,
     ].join(":");
 
