@@ -1582,7 +1582,7 @@ const Chat: React.FC<ChatProps> = ({
 
         // Handle get_chart_template — pure lookup, no side effects
         if (toolName === "get_chart_template") {
-          const { getTemplate } = await import("../lib/chart-templates");
+          const { getTemplate } = await import("@mako/schemas");
           const templateId = (input as Record<string, unknown>).templateId as
             | string
             | undefined;

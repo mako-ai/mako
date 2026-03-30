@@ -182,7 +182,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isEditModeLocalRef = useRef(false);
-  const autoEditAttemptedForDashboardRef = useRef<string | null>(null);
   const workspaceIdRef = useRef<string | undefined>(undefined);
   const dashboardIdRef = useRef<string | undefined>(dashboardId);
 
@@ -260,39 +259,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (!isDashboardLoaded || !workspaceId || !dashboardId) return;
     void activateDashboardSession(workspaceId, dashboardId, "viewer");
   }, [isDashboardLoaded, workspaceId, dashboardId]);
-
-  useEffect(() => {
-    if (
-      !workspaceId ||
-      !dashboardId ||
-      !dashboard ||
-      dashboard.readOnly ||
-      isEditModeLocal
-    ) {
-      return;
-    }
-
-    if (autoEditAttemptedForDashboardRef.current === dashboardId) {
-      return;
-    }
-    autoEditAttemptedForDashboardRef.current = dashboardId;
-
-    void (async () => {
-      const acquired = await acquireLock(workspaceId, dashboardId);
-      if (acquired) {
-        setIsEditModeLocal(true);
-        return;
-      }
-      setLockError("Failed to acquire edit lock. Please try again.");
-    })();
-  }, [
-    workspaceId,
-    dashboardId,
-    dashboard,
-    isEditModeLocal,
-    acquireLock,
-    setLockError,
-  ]);
 
   // The grid container ref only enters the DOM after the dashboard loads
   // (the loading state early-return doesn't include it). Re-trigger

@@ -20,7 +20,7 @@ import {
   validateVegaSpec,
 } from "./validation";
 import { selectWidgetRuntime } from "./selectors";
-import { getAllTemplates, getTemplate } from "../lib/chart-templates";
+import { getAllTemplates, getTemplate } from "@mako/schemas";
 
 /**
  * Poll the runtime store for widget render status after adding/modifying a
@@ -82,7 +82,7 @@ async function ensureAgentLock(
   if (agentLockHeld.has(dashboardId)) return { success: true };
 
   const store = useDashboardStore.getState();
-  const userAlreadyHoldsLock = !!store.openDashboards[dashboardId]?.editLock;
+  const preExistingLock = store.openDashboards[dashboardId]?.editLock;
 
   const acquired = await store.forceAcquireLock(workspaceId, dashboardId);
   if (!acquired) {
@@ -91,6 +91,12 @@ async function ensureAgentLock(
       error: "Failed to acquire edit lock for the dashboard",
     };
   }
+
+  const currentUserId =
+    useDashboardStore.getState().openDashboards[dashboardId]?.editLock?.userId;
+  const userAlreadyHoldsLock =
+    !!preExistingLock && preExistingLock.userId === currentUserId;
+
   if (!userAlreadyHoldsLock) {
     agentLockHeld.add(dashboardId);
   }
