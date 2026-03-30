@@ -86,7 +86,7 @@ export function createMakoTooltipFormatter(
       }
       const color = colorMap[series] || "#888";
       rows.push(
-        `<tr><td style="${kStyle}">${svgDot(color)} ${sanitize(series)}</td><td style="${vStyle}">${fmtNum(raw)}</td></tr>`,
+        `<tr><td style="${kStyle}">${svgDot(color)} ${sanitize(series)}</td><td style="${vStyle}">${sanitize(fmtNum(raw))}</td></tr>`,
       );
     }
 
@@ -94,7 +94,7 @@ export function createMakoTooltipFormatter(
     if (count > 1) {
       const sep = "border-top:1px solid rgba(128,128,128,0.3);padding-top:3px";
       rows.push(
-        `<tr><td style="${kStyle};${sep}">${svgDot("#888")} Total</td><td style="${vStyle};${sep}">${fmtNum(total)}</td></tr>`,
+        `<tr><td style="${kStyle};${sep}">${svgDot("#888")} Total</td><td style="${vStyle};${sep}">${sanitize(fmtNum(total))}</td></tr>`,
       );
     }
 

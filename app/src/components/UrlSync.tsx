@@ -204,9 +204,9 @@ export function UrlSync() {
       }
     }
 
-    // Fallback: if no view-specific path was set but there's an active console tab,
-    // still reflect it in the URL so the link is shareable/bookmarkable.
-    if (newPath === "/" && activeConsoleId) {
+    // Fallback: if the consoles view is active but no console-specific path was set,
+    // still reflect the active console in the URL so the link is shareable/bookmarkable.
+    if (newPath === "/" && activeView === "consoles" && activeConsoleId) {
       const tab = consoleTabs.find(t => t.id === activeConsoleId);
       if (tab && (tab.kind === "console" || !tab.kind)) {
         newPath = `/c/${activeConsoleId}`;
