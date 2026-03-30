@@ -95,7 +95,9 @@ async function ensureAgentLock(
   const currentUserId =
     useDashboardStore.getState().openDashboards[dashboardId]?.editLock?.userId;
   const userAlreadyHoldsLock =
-    !!preExistingLock && preExistingLock.userId === currentUserId;
+    !!preExistingLock &&
+    preExistingLock.userId === currentUserId &&
+    new Date(preExistingLock.expiresAt) > new Date();
 
   if (!userAlreadyHoldsLock) {
     agentLockHeld.add(dashboardId);

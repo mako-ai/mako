@@ -453,7 +453,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             description: dashboard.description,
             version: dashboard.version,
           };
-          const response = await apiClient.put<{
+          const response = await apiClient.patch<{
             success: boolean;
             data: Dashboard;
           }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`, payload);
