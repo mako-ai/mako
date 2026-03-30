@@ -391,6 +391,9 @@ export function reduceDashboardRuntimeEvent(
       const session = ensureSessionState(state, event.dashboardId);
       const widget = ensureWidgetState(session, event.widgetId);
       widget.refreshGeneration += 1;
+      widget.renderStatus = "idle";
+      widget.renderError = null;
+      widget.renderErrorKind = null;
       appendLog(session, {
         timestamp: Date.now(),
         level: "info",

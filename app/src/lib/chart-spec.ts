@@ -14,6 +14,7 @@
 import { z } from "zod";
 
 // --- Primitives ---
+const LooseObject = z.record(z.string(), z.unknown());
 
 export const FieldType = z.enum([
   "quantitative",
@@ -70,71 +71,77 @@ const StackOption = z
 
 // --- Encoding channel ---
 
-export const FieldDef = z.object({
-  field: z.string().describe("Column name from the data"),
-  type: FieldType.describe("Vega-Lite data type"),
-  aggregate: AggregateOp.describe("Aggregation function"),
-  timeUnit: TimeUnit.describe("Time unit for temporal fields"),
-  bin: z
-    .union([z.boolean(), z.object({ maxbins: z.number().optional() })])
-    .optional()
-    .describe("Bin quantitative values"),
-  sort: z
-    .union([
-      SortOrder,
-      z.object({
-        field: z.string().optional(),
-        op: AggregateOp,
-        order: SortOrder,
-      }),
-    ])
-    .optional()
-    .describe("Sort order"),
-  title: z.string().optional().describe("Axis / legend title override"),
-  format: z
-    .string()
-    .optional()
-    .describe("D3 format string (e.g. '$,.0f', '.1%')"),
-  axis: z
-    .object({
-      title: z.string().optional(),
-      format: z.string().optional(),
-      labelAngle: z.number().optional(),
-      grid: z.boolean().optional(),
-      tickCount: z.number().optional(),
-    })
-    .optional()
-    .describe("Axis configuration"),
-  scale: z
-    .object({
-      type: z
-        .enum(["linear", "log", "sqrt", "symlog", "pow", "time", "utc"])
-        .optional(),
-      domain: z.array(z.any()).optional(),
-      range: z.array(z.any()).optional(),
-      zero: z.boolean().optional(),
-      nice: z.boolean().optional(),
-    })
-    .optional()
-    .describe("Scale configuration"),
-  stack: StackOption.describe("Stack mode for bar/area charts"),
-  legend: z
-    .union([
-      z.object({
+export const FieldDef = z
+  .object({
+    field: z.string().describe("Column name from the data"),
+    type: FieldType.describe("Vega-Lite data type"),
+    aggregate: AggregateOp.describe("Aggregation function"),
+    timeUnit: TimeUnit.describe("Time unit for temporal fields"),
+    bin: z
+      .union([z.boolean(), z.object({ maxbins: z.number().optional() })])
+      .optional()
+      .describe("Bin quantitative values"),
+    sort: z
+      .union([
+        SortOrder,
+        z.object({
+          field: z.string().optional(),
+          op: AggregateOp,
+          order: SortOrder,
+        }),
+      ])
+      .optional()
+      .describe("Sort order"),
+    title: z.string().optional().describe("Axis / legend title override"),
+    format: z
+      .string()
+      .optional()
+      .describe("D3 format string (e.g. '$,.0f', '.1%')"),
+    axis: z
+      .object({
         title: z.string().optional(),
-        orient: z.enum(["left", "right", "top", "bottom", "none"]).optional(),
-      }),
-      z.literal(null),
-    ])
-    .optional()
-    .describe("Legend configuration, null to hide"),
-});
+        format: z.string().optional(),
+        labelAngle: z.number().optional(),
+        grid: z.boolean().optional(),
+        tickCount: z.number().optional(),
+      })
+      .optional()
+      .describe("Axis configuration"),
+    scale: z
+      .object({
+        type: z
+          .enum(["linear", "log", "sqrt", "symlog", "pow", "time", "utc"])
+          .optional(),
+        domain: z.array(z.any()).optional(),
+        range: z.array(z.any()).optional(),
+        zero: z.boolean().optional(),
+        nice: z.boolean().optional(),
+      })
+      .optional()
+      .describe("Scale configuration"),
+    stack: StackOption.describe("Stack mode for bar/area charts"),
+    legend: z
+      .union([
+        z.object({
+          title: z.string().optional(),
+          orient: z.enum(["left", "right", "top", "bottom", "none"]).optional(),
+        }),
+        z.literal(null),
+      ])
+      .optional()
+      .describe("Legend configuration, null to hide"),
+  })
+  .passthrough();
 
-const ValueDef = z.object({
-  value: z.union([z.string(), z.number()]).describe("Constant value"),
-});
+const ValueDef = z
+  .object({
+    value: z
+      .union([z.string(), z.number(), z.boolean(), z.null()])
+      .describe("Constant value"),
+  })
+  .passthrough();
 
-const EncodingChannel = z.union([FieldDef, ValueDef]);
+const EncodingChannel = z.union([FieldDef, ValueDef, LooseObject]);
 
 // --- Encoding object ---
 
@@ -155,6 +162,7 @@ export const Encoding = z
     theta: EncodingChannel.optional(),
     radius: EncodingChannel.optional(),
   })
+  .passthrough()
   .describe("Vega-Lite encoding channels");
 
 // --- Mark ---
@@ -177,44 +185,49 @@ export const MarkType = z.enum([
 
 export const MarkDef = z.union([
   MarkType,
-  z.object({
-    type: MarkType,
-    tooltip: z
-      .union([z.boolean(), z.object({ content: z.enum(["data", "encoding"]) })])
-      .optional(),
-    point: z
-      .union([
-        z.boolean(),
-        z.object({
-          filled: z.boolean().optional(),
-          size: z.number().optional(),
-        }),
-      ])
-      .optional()
-      .describe("Show points on line/area marks"),
-    opacity: z.number().min(0).max(1).optional(),
-    color: z.string().optional(),
-    filled: z.boolean().optional(),
-    strokeWidth: z.number().optional(),
-    cornerRadiusEnd: z.number().optional(),
-    interpolate: z
-      .enum([
-        "linear",
-        "step",
-        "step-before",
-        "step-after",
-        "basis",
-        "cardinal",
-        "monotone",
-      ])
-      .optional(),
-    line: z.boolean().optional().describe("Show line on area marks"),
-    size: z.number().optional(),
-    innerRadius: z
-      .number()
-      .optional()
-      .describe("Inner radius for arc/donut charts"),
-  }),
+  z
+    .object({
+      type: MarkType,
+      tooltip: z
+        .union([
+          z.boolean(),
+          z.object({ content: z.enum(["data", "encoding"]) }),
+        ])
+        .optional(),
+      point: z
+        .union([
+          z.boolean(),
+          z.object({
+            filled: z.boolean().optional(),
+            size: z.number().optional(),
+          }),
+        ])
+        .optional()
+        .describe("Show points on line/area marks"),
+      opacity: z.number().min(0).max(1).optional(),
+      color: z.string().optional(),
+      filled: z.boolean().optional(),
+      strokeWidth: z.number().optional(),
+      cornerRadiusEnd: z.number().optional(),
+      interpolate: z
+        .enum([
+          "linear",
+          "step",
+          "step-before",
+          "step-after",
+          "basis",
+          "cardinal",
+          "monotone",
+        ])
+        .optional(),
+      line: z.boolean().optional().describe("Show line on area marks"),
+      size: z.number().optional(),
+      innerRadius: z
+        .number()
+        .optional()
+        .describe("Inner radius for arc/donut charts"),
+    })
+    .passthrough(),
 ]);
 
 // --- Transform ---
@@ -287,15 +300,18 @@ export const Transform = z.union([
     ),
     groupby: z.array(z.string()).optional(),
   }),
+  LooseObject,
 ]);
 
 // --- Layer spec (for multi-mark charts) ---
 
-const LayerSpec = z.object({
-  mark: MarkDef,
-  encoding: Encoding.optional(),
-  transform: z.array(Transform).optional(),
-});
+const LayerSpec = z
+  .object({
+    mark: MarkDef,
+    encoding: Encoding.optional(),
+    transform: z.array(Transform).optional(),
+  })
+  .passthrough();
 
 // --- Top-level chart spec ---
 
@@ -337,6 +353,7 @@ export const MakoChartSpec = z
     // Multi-mark chart (layers)
     layer: z.array(LayerSpec).optional(),
   })
+  .passthrough()
   .refine(
     spec =>
       spec.mark !== undefined ||

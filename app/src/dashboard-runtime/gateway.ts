@@ -257,6 +257,7 @@ async function loadDashboardDataSourceWithFallback(options: {
   preserveExistingData?: boolean;
   onRowsLoaded: (loaded: number) => void;
   runtimeContext?: DashboardRuntimeContext;
+  skipParquet?: boolean;
 }): Promise<number> {
   const {
     session,
@@ -267,9 +268,12 @@ async function loadDashboardDataSourceWithFallback(options: {
     targetTableRef,
     onRowsLoaded,
     runtimeContext = "builder",
+    skipParquet = false,
   } = options;
 
-  const parquetUrl = getParquetArtifactUrl(dataSource);
+  const parquetUrl = skipParquet
+    ? undefined
+    : getParquetArtifactUrl(dataSource);
 
   // Try parquet artifact first (download into in-memory table).
   if (parquetUrl) {
@@ -589,6 +593,7 @@ export async function materializeDashboardDataSource(options: {
   dataSource: DashboardDataSource;
   force?: boolean;
   runtimeContext?: DashboardRuntimeContext;
+  skipParquet?: boolean;
 }): Promise<void> {
   const {
     workspaceId,
@@ -596,6 +601,7 @@ export async function materializeDashboardDataSource(options: {
     dataSource,
     force = false,
     runtimeContext = "builder",
+    skipParquet = false,
   } = options;
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
@@ -699,6 +705,7 @@ export async function materializeDashboardDataSource(options: {
         rowsLoaded = loaded;
       },
       runtimeContext,
+      skipParquet,
     });
 
     const { schema, sampleRows } = await introspectDataSource(

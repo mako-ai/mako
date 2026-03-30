@@ -57,7 +57,10 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
-import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
+import {
+  executeDashboardAgentTool,
+  releaseAgentLocks,
+} from "../dashboard-runtime/agent-tools";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -1199,6 +1202,7 @@ const Chat: React.FC<ChatProps> = ({
           const content = input.content as string;
           const position = input.position as number | null;
           const consoleId = input.consoleId as string | undefined;
+          const modifyTitle = input.title as string | undefined;
           const startLine = input.startLine as number | undefined;
           const endLine = input.endLine as number | undefined;
 
@@ -1312,6 +1316,10 @@ const Chat: React.FC<ChatProps> = ({
           };
           const newContent = applyModification(currentContent, modification);
           currentStore.updateContent(consoleId, newContent);
+
+          if (modifyTitle) {
+            currentStore.updateTitle(consoleId, modifyTitle);
+          }
 
           addToolOutput({
             tool: "modify_console",
@@ -1569,6 +1577,43 @@ const Chat: React.FC<ChatProps> = ({
               },
             });
           }
+          return;
+        }
+
+        // Handle get_chart_template — pure lookup, no side effects
+        if (toolName === "get_chart_template") {
+          const { getTemplate } = await import("@mako/schemas");
+          const templateId = (input as Record<string, unknown>).templateId as
+            | string
+            | undefined;
+          if (!templateId) {
+            addToolOutput({
+              tool: "get_chart_template",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: "templateId is required.",
+              },
+            });
+            return;
+          }
+          const tpl = getTemplate(templateId);
+          if (!tpl) {
+            addToolOutput({
+              tool: "get_chart_template",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Template "${templateId}" not found. Available IDs: multi-series-line-hover, time-series-area, grouped-bar, stacked-bar, horizontal-ranking, donut, kpi-sparkline.`,
+              },
+            });
+            return;
+          }
+          addToolOutput({
+            tool: "get_chart_template",
+            toolCallId: toolCall.toolCallId,
+            output: { success: true, template: tpl },
+          });
           return;
         }
 
@@ -2044,10 +2089,10 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
+      releaseAgentLocks();
     },
     onFinish: () => {
-      // When a new chat's first message exchange completes, refresh the sessions list
-      // so the newly saved chat appears in the history menu
+      releaseAgentLocks();
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }

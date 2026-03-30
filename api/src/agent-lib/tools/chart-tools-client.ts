@@ -36,4 +36,15 @@ export const clientChartTools = {
       "Use fold transforms to unpivot multiple numeric columns into a single series for multi-line charts.",
     inputSchema: modifyChartSpecSchema,
   },
+  get_chart_template: {
+    description:
+      "Get a best-practice chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
+      "Use for complex patterns (e.g. multi-series hover rule, stacked bar, donut) instead of inventing specs from scratch. " +
+      "Available IDs: multi-series-line-hover, time-series-area, grouped-bar, stacked-bar, horizontal-ranking, donut, kpi-sparkline.",
+    inputSchema: z.object({
+      templateId: z
+        .string()
+        .describe("Template ID (e.g. 'multi-series-line-hover', 'donut')"),
+    }),
+  },
 };

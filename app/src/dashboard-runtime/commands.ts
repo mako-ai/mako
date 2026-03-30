@@ -253,29 +253,13 @@ export async function createDashboardDataSource(options: {
   });
 
   store.addDataSource(dashboard._id, dataSource);
-  await store.saveDashboard(options.workspaceId, dashboard._id);
   await materializeDashboardDataSource({
     workspaceId: options.workspaceId,
-    dashboard,
+    dashboard: getDashboardOrThrow(dashboard._id),
     dataSource,
     force: true,
+    skipParquet: true,
   });
-  void useDashboardStore
-    .getState()
-    .materializeDashboardDataSource(
-      options.workspaceId,
-      dashboard._id,
-      dataSource.id,
-      {
-        force: true,
-      },
-    )
-    .then(() =>
-      waitForDashboardMaterialization({
-        workspaceId: options.workspaceId,
-        dashboardId: dashboard._id,
-      }),
-    );
 
   return dataSource;
 }
@@ -323,29 +307,13 @@ export async function importConsoleAsDashboardDataSource(options: {
   });
 
   store.addDataSource(dashboard._id, dataSource);
-  await store.saveDashboard(options.workspaceId, dashboard._id);
   await materializeDashboardDataSource({
     workspaceId: options.workspaceId,
-    dashboard,
+    dashboard: getDashboardOrThrow(dashboard._id),
     dataSource,
     force: true,
+    skipParquet: true,
   });
-  void useDashboardStore
-    .getState()
-    .materializeDashboardDataSource(
-      options.workspaceId,
-      dashboard._id,
-      dataSource.id,
-      {
-        force: true,
-      },
-    )
-    .then(() =>
-      waitForDashboardMaterialization({
-        workspaceId: options.workspaceId,
-        dashboardId: dashboard._id,
-      }),
-    );
 
   return dataSource;
 }
@@ -360,7 +328,6 @@ export async function updateDashboardDataSourceQuery(options: {
   const store = useDashboardStore.getState();
   const dashboard = getDashboardOrThrow(options.dashboardId);
   store.updateDataSource(dashboard._id, options.dataSourceId, options.changes);
-  await store.saveDashboard(options.workspaceId, dashboard._id);
 
   if (options.rematerialize !== false) {
     const updatedDashboard = getDashboardOrThrow(dashboard._id);
@@ -373,21 +340,8 @@ export async function updateDashboardDataSourceQuery(options: {
         dashboard: updatedDashboard,
         dataSource,
         force: true,
+        skipParquet: true,
       });
-      void useDashboardStore
-        .getState()
-        .materializeDashboardDataSource(
-          options.workspaceId,
-          updatedDashboard._id,
-          dataSource.id,
-          { force: true },
-        )
-        .then(() =>
-          waitForDashboardMaterialization({
-            workspaceId: options.workspaceId,
-            dashboardId: updatedDashboard._id,
-          }),
-        );
     }
   }
 }
@@ -407,7 +361,6 @@ export async function removeDashboardDataSource(options: {
   }
 
   store.removeDataSource(dashboard._id, options.dataSourceId);
-  await store.saveDashboard(options.workspaceId, dashboard._id);
   await removeDashboardDataSourceRuntime({
     dashboardId: dashboard._id,
     dataSourceId: dataSource.id,
@@ -587,6 +540,25 @@ export function updateDashboardWidget(
 ): void {
   const id = dashboardId ?? resolveActiveDashboardId();
   useDashboardStore.getState().modifyWidget(id, widgetId, changes);
+  const shouldInvalidateQueries =
+    changes.localSql !== undefined ||
+    changes.vegaLiteSpec !== undefined ||
+    changes.dataSourceId !== undefined;
+
+  if (shouldInvalidateQueries) {
+    const mosaicInstance = getMosaicInstance(id);
+    if (mosaicInstance) {
+      try {
+        // Ensure stale cached query plans/results are invalidated before refetch.
+        mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+      } catch {
+        // best-effort cache clear
+      }
+    }
+    useDashboardRuntimeStore
+      .getState()
+      .dispatch(dashboardRuntimeEvents.bumpQueryGeneration(id));
+  }
   useDashboardRuntimeStore
     .getState()
     .dispatch(dashboardRuntimeEvents.bumpWidgetRefresh(id, widgetId));

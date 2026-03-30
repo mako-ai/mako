@@ -104,7 +104,7 @@ export function generateAutoSpec(
 
     if (numCols.length === 1) {
       return {
-        mark: { type: "line", point: true, tooltip: true },
+        mark: { type: "line", strokeWidth: 2, tooltip: true },
         encoding: {
           x: { field: timeCol.name, type: "temporal" },
           y: { field: numCols[0].name, type: "quantitative" },
@@ -123,7 +123,7 @@ export function generateAutoSpec(
           as: ["series", "value"],
         },
       ],
-      mark: { type: "line", point: true, tooltip: true },
+      mark: { type: "line", strokeWidth: 2, tooltip: true },
       encoding: {
         x: { field: timeCol.name, type: "temporal" },
         y: { field: "value", type: "quantitative" },
@@ -140,7 +140,7 @@ export function generateAutoSpec(
   // 1 temporal + 1 numeric → line chart
   if (temporal.length >= 1 && quantitative.length === 1) {
     return {
-      mark: { type: "line", point: true, tooltip: true },
+      mark: { type: "line", strokeWidth: 2, tooltip: true },
       encoding: {
         x: { field: temporal[0].name, type: "temporal" },
         y: { field: quantitative[0].name, type: "quantitative" },
@@ -159,7 +159,7 @@ export function generateAutoSpec(
     nominal.length >= 1
   ) {
     return {
-      mark: { type: "line", point: true, tooltip: true },
+      mark: { type: "line", strokeWidth: 2, tooltip: true },
       encoding: {
         x: { field: temporal[0].name, type: "temporal" },
         y: { field: quantitative[0].name, type: "quantitative" },

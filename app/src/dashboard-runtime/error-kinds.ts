@@ -6,6 +6,7 @@ export type DashboardErrorKind =
   | "duckdb_sql_syntax"
   | "duckdb_sql_runtime"
   | "vega_schema_invalid"
+  | "vega_compile_failed"
   | "vega_render_failed"
   | "crossfilter_invalid"
   | "stale_dependency";

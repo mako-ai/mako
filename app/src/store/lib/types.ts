@@ -51,6 +51,10 @@ export interface ConsoleTab {
   icon?: string;
   /** Additional data for special tab types */
   metadata?: Record<string, unknown>;
+  /** Persisted Vega-Lite chart spec (restored when re-opening saved consoles) */
+  chartSpec?: Record<string, unknown>;
+  /** Last active results view mode */
+  resultsViewMode?: "table" | "json" | "chart";
   /** Access level: private or workspace */
   access?: ConsoleAccessLevel;
   /** User ID of the console owner */

@@ -452,8 +452,20 @@ export const StreamingToolCard = React.memo(
     const isStreaming = state === "input-streaming";
     const isExecuting =
       state === "input-available" || state === "output-streaming";
-    const isDone = state === "output-available";
-    const isError = state === "error";
+    const isOutputAvailable = state === "output-available";
+    const isStateError = state === "error";
+
+    const hasFailedOutput =
+      isOutputAvailable &&
+      output !== null &&
+      output !== undefined &&
+      ((output as Record<string, unknown>).success === false ||
+        Boolean((output as Record<string, unknown>).error) ||
+        Boolean((output as Record<string, unknown>).queryError) ||
+        Boolean((output as Record<string, unknown>).renderError));
+
+    const isDone = isOutputAvailable && !hasFailedOutput;
+    const isError = isStateError || hasFailedOutput;
     const isActive = isStreaming || isExecuting;
 
     const hasCodePreview = Boolean(config.preview);

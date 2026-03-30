@@ -19,6 +19,38 @@ import {
   validateDuckDBQuery,
   validateVegaSpec,
 } from "./validation";
+import { selectWidgetRuntime } from "./selectors";
+import { getAllTemplates, getTemplate } from "@mako/schemas";
+
+/**
+ * Poll the runtime store for widget render status after adding/modifying a
+ * chart widget. Returns the render error if the chart fails, or null on
+ * success / timeout (we don't block the agent indefinitely).
+ */
+async function waitForWidgetRenderResult(
+  dashboardId: string,
+  widgetId: string,
+  maxWaitMs = 3000,
+): Promise<{ renderError: string | null; renderErrorKind: string | null }> {
+  const POLL_INTERVAL = 150;
+  const deadline = Date.now() + maxWaitMs;
+
+  while (Date.now() < deadline) {
+    const runtime = selectWidgetRuntime(dashboardId, widgetId);
+    if (runtime?.renderStatus === "error") {
+      return {
+        renderError: runtime.renderError,
+        renderErrorKind: runtime.renderErrorKind,
+      };
+    }
+    if (runtime?.renderStatus === "ready") {
+      return { renderError: null, renderErrorKind: null };
+    }
+    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+  }
+
+  return { renderError: null, renderErrorKind: null };
+}
 
 function getActiveContext(): {
   dashboardId: string;
@@ -30,6 +62,79 @@ function getActiveContext(): {
   const workspaceId = state.openDashboards[dashboardId]?.workspaceId;
   if (!workspaceId) return null;
   return { dashboardId, workspaceId };
+}
+
+const READ_ONLY_TOOLS = new Set([
+  "get_dashboard_state",
+  "preview_data_source",
+  "get_data_preview",
+  "suggest_charts",
+  "get_chart_templates",
+  "get_chart_template",
+]);
+
+const agentLockHeld = new Set<string>();
+const agentLockHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
+
+const AGENT_LOCK_HEARTBEAT_MS = 30_000;
+
+async function ensureAgentLock(
+  workspaceId: string,
+  dashboardId: string,
+): Promise<{ success: true } | { success: false; error: string }> {
+  if (agentLockHeld.has(dashboardId)) return { success: true };
+
+  const store = useDashboardStore.getState();
+  const preExistingLock = store.openDashboards[dashboardId]?.editLock;
+
+  const acquired = await store.forceAcquireLock(workspaceId, dashboardId);
+  if (!acquired) {
+    return {
+      success: false,
+      error: "Failed to acquire edit lock for the dashboard",
+    };
+  }
+
+  const currentUserId =
+    useDashboardStore.getState().openDashboards[dashboardId]?.editLock?.userId;
+  const userAlreadyHoldsLock =
+    !!preExistingLock &&
+    preExistingLock.userId === currentUserId &&
+    new Date(preExistingLock.expiresAt) > new Date();
+
+  if (!userAlreadyHoldsLock) {
+    agentLockHeld.add(dashboardId);
+  }
+
+  if (!agentLockHeartbeats.has(dashboardId)) {
+    const interval = setInterval(() => {
+      useDashboardStore.getState().heartbeatLock(workspaceId, dashboardId);
+    }, AGENT_LOCK_HEARTBEAT_MS);
+    agentLockHeartbeats.set(dashboardId, interval);
+  }
+
+  return { success: true };
+}
+
+export function releaseAgentLocks(): void {
+  for (const dashboardId of agentLockHeld) {
+    const state = useDashboardStore.getState();
+    const workspaceId = state.openDashboards[dashboardId]?.workspaceId;
+    if (workspaceId) {
+      void state.releaseLock(workspaceId, dashboardId);
+    }
+    const heartbeat = agentLockHeartbeats.get(dashboardId);
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      agentLockHeartbeats.delete(dashboardId);
+    }
+  }
+  agentLockHeld.clear();
+
+  for (const [id, heartbeat] of agentLockHeartbeats) {
+    clearInterval(heartbeat);
+    agentLockHeartbeats.delete(id);
+  }
 }
 
 export async function executeDashboardAgentTool(
@@ -88,6 +193,19 @@ export async function executeDashboardAgentTool(
       const message =
         error instanceof Error ? error.message : "Failed to create dashboard";
       return { success: false, error: message };
+    }
+  }
+
+  if (!READ_ONLY_TOOLS.has(toolName) && toolName !== "create_dashboard") {
+    const ctx = getActiveContext();
+    if (ctx) {
+      const lockResult = await ensureAgentLock(
+        ctx.workspaceId,
+        ctx.dashboardId,
+      );
+      if (!lockResult.success) {
+        return { success: false, error: lockResult.error };
+      }
     }
   }
 
@@ -295,6 +413,24 @@ export async function executeDashboardAgentTool(
     }
   }
 
+  if (toolName === "get_chart_templates") {
+    return { success: true, templates: getAllTemplates() };
+  }
+
+  if (toolName === "get_chart_template") {
+    if (typeof input.templateId !== "string") {
+      return { success: false, error: "templateId is required" };
+    }
+    const tpl = getTemplate(input.templateId);
+    if (!tpl) {
+      return {
+        success: false,
+        error: `Template "${input.templateId}" not found. Call get_chart_templates to see available IDs.`,
+      };
+    }
+    return { success: true, template: tpl };
+  }
+
   if (toolName === "get_dashboard_state") {
     const snapshot = getDashboardStateSnapshot(
       typeof input.dashboardId === "string" ? input.dashboardId : undefined,
@@ -383,7 +519,7 @@ export async function executeDashboardAgentTool(
     }
 
     if (input.vegaLiteSpec !== undefined) {
-      const specValidation = validateVegaSpec(input.vegaLiteSpec);
+      const specValidation = await validateVegaSpec(input.vegaLiteSpec);
       if (!specValidation.valid) {
         return {
           success: false,
@@ -438,6 +574,27 @@ export async function executeDashboardAgentTool(
         dataSourceId: widget.dataSourceId,
         sql: widget.localSql,
       });
+
+      const renderResult =
+        widget.type === "chart" && widget.vegaLiteSpec
+          ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id)
+          : null;
+
+      if (renderResult?.renderError) {
+        return {
+          success: true,
+          widgetId: widget.id,
+          renderError: `Chart render failed: ${renderResult.renderError}`,
+          renderErrorKind: renderResult.renderErrorKind ?? "vega_render_failed",
+          hint: "The widget was added but the Vega-Lite spec failed to render. Use modify_widget to fix the spec. Check encoding field names match the query output columns, and ensure the mark type is compatible with the data types.",
+          query: {
+            rowCount: result.rowCount,
+            fields: result.fields.map(field => field.name),
+            sampleRow: result.rows[0] ?? null,
+          },
+        };
+      }
+
       return {
         success: true,
         widgetId: widget.id,
@@ -446,15 +603,14 @@ export async function executeDashboardAgentTool(
           fields: result.fields.map(field => field.name),
           sampleRow: result.rows[0] ?? null,
         },
-        specValidation: input.vegaLiteSpec ? { valid: true } : undefined,
       };
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Widget query failed";
       return {
-        success: false,
+        success: true,
         widgetId: widget.id,
-        error: message,
+        queryError: message,
         errorKind: classifyDuckDBError(message),
       };
     }
@@ -488,7 +644,7 @@ export async function executeDashboardAgentTool(
         : input.layouts;
     }
     if (changes.vegaLiteSpec !== undefined) {
-      const specValidation = validateVegaSpec(changes.vegaLiteSpec);
+      const specValidation = await validateVegaSpec(changes.vegaLiteSpec);
       if (!specValidation.valid) {
         return {
           success: false,
@@ -555,6 +711,29 @@ export async function executeDashboardAgentTool(
         dataSourceId: widget.dataSourceId,
         sql: widget.localSql,
       });
+
+      const isChartWithSpec =
+        widget.type === "chart" &&
+        (changes.vegaLiteSpec || widget.vegaLiteSpec);
+      const renderResult = isChartWithSpec
+        ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id)
+        : null;
+
+      if (renderResult?.renderError) {
+        return {
+          success: true,
+          widgetId: input.widgetId,
+          renderError: `Chart render failed: ${renderResult.renderError}`,
+          renderErrorKind: renderResult.renderErrorKind ?? "vega_render_failed",
+          hint: "The widget was modified but the Vega-Lite spec failed to render. Use modify_widget to fix the spec. Check encoding field names match the query output columns, and ensure the mark type is compatible with the data types.",
+          query: {
+            rowCount: result.rowCount,
+            fields: result.fields.map(field => field.name),
+            sampleRow: result.rows[0] ?? null,
+          },
+        };
+      }
+
       return {
         success: true,
         widgetId: input.widgetId,
@@ -568,9 +747,9 @@ export async function executeDashboardAgentTool(
       const message =
         error instanceof Error ? error.message : "Widget query failed";
       return {
-        success: false,
+        success: true,
         widgetId: input.widgetId,
-        error: message,
+        queryError: message,
         errorKind: classifyDuckDBError(message),
       };
     }
@@ -652,6 +831,26 @@ export async function executeDashboardAgentTool(
         timeDimension: input.column,
       });
     return { success: true };
+  }
+
+  if (toolName === "save_dashboard") {
+    const ctx = getActiveContext();
+    if (!ctx) {
+      return { success: false, error: "No active dashboard" };
+    }
+    const store = useDashboardStore.getState();
+    const saved = await store.saveDashboard(ctx.workspaceId, ctx.dashboardId);
+    if (!saved) {
+      return { success: false, error: "Failed to save dashboard" };
+    }
+    store.markDashboardSaved(ctx.dashboardId);
+    void store.materializeDashboard(ctx.workspaceId, ctx.dashboardId, {
+      force: true,
+    });
+    return {
+      success: true,
+      message: "Dashboard saved and materialization queued.",
+    };
   }
 
   return null;

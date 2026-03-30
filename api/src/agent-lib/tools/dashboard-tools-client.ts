@@ -304,4 +304,28 @@ export const clientDashboardTools = {
     description: "Set the default time column for a data source.",
     inputSchema: setTimeDimensionSchema,
   },
+  save_dashboard: {
+    description:
+      "Persist the current dashboard to the server and rebuild cached data (Parquet artifacts). " +
+      "Call after finishing a batch of changes. " +
+      "Unsaved changes are reflected live in the dashboard but not persisted until you call this.",
+    inputSchema: z.object({
+      dashboardId: z.string().describe("The dashboard ID to save"),
+    }),
+  },
+  get_chart_templates: {
+    description:
+      "List available best-practice chart templates with IDs and descriptions. " +
+      "Call before creating complex or layered charts to discover proven patterns " +
+      "(e.g. multi-series line with hover rule, donut, stacked bar).",
+    inputSchema: z.object({}),
+  },
+  get_chart_template: {
+    description:
+      "Get a specific chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
+      "Use for complex layered charts instead of inventing specs from scratch.",
+    inputSchema: z.object({
+      templateId: z.string().describe("Template ID from get_chart_templates"),
+    }),
+  },
 };

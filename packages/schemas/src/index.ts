@@ -21,3 +21,9 @@ export {
   type GlobalFilter,
   type DashboardDefinition,
 } from "./dashboard.schema";
+
+export {
+  getAllTemplates,
+  getTemplate,
+  type ChartTemplate,
+} from "./chart-templates";

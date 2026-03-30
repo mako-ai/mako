@@ -92,7 +92,7 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
   const enhancedSpec = useMemo(() => {
     if (!vegaLiteSpec) return undefined;
 
-    const spec = { ...vegaLiteSpec } as any;
+    const spec = JSON.parse(JSON.stringify(vegaLiteSpec));
 
     const hasTemporalX =
       spec.encoding?.x?.type === "temporal" || spec.encoding?.x?.timeUnit;
@@ -106,13 +106,11 @@ const MosaicChart: React.FC<MosaicChartProps> = ({
           select: { type: "interval", encodings: ["x"] },
         });
 
-        if (spec.encoding) {
-          if (!spec.encoding.opacity) {
-            spec.encoding.opacity = {
-              condition: { param: "brush", value: 1 },
-              value: 0.3,
-            };
-          }
+        if (spec.encoding && !spec.encoding.opacity) {
+          spec.encoding.opacity = {
+            condition: { param: "brush", value: 1 },
+            value: 0.3,
+          };
         }
       }
     }

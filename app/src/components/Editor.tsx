@@ -123,12 +123,33 @@ function Editor({
   const [tabPagination, setTabPagination] = useState<
     Record<string, TabPaginationState | null>
   >({});
+  const tabs = useConsoleStore(state => state.tabs);
   const [tabChartSpecs, setTabChartSpecs] = useState<
     Record<string, import("../lib/chart-spec").MakoChartSpec | null>
-  >({});
+  >(() => {
+    const initial: Record<
+      string,
+      import("../lib/chart-spec").MakoChartSpec | null
+    > = {};
+    for (const tab of Object.values(tabs)) {
+      if (tab.chartSpec) {
+        initial[tab.id] =
+          tab.chartSpec as import("../lib/chart-spec").MakoChartSpec;
+      }
+    }
+    return initial;
+  });
   const [tabViewModes, setTabViewModes] = useState<
     Record<string, ResultsViewMode>
-  >({});
+  >(() => {
+    const initial: Record<string, ResultsViewMode> = {};
+    for (const tab of Object.values(tabs)) {
+      if (tab.resultsViewMode) {
+        initial[tab.id] = tab.resultsViewMode;
+      }
+    }
+    return initial;
+  });
   const pendingRenderCallbackRef = useRef<
     Record<
       string,
@@ -178,7 +199,6 @@ function Editor({
   const executionIdsRef = useRef<Record<string, string | null>>({});
 
   // Tab store — individual selectors to avoid full-store re-renders
-  const tabs = useConsoleStore(state => state.tabs);
   const activeTabId = useConsoleStore(state => state.activeTabId);
   const closeTab = useConsoleStore(state => state.closeTab);
   const updateContent = useConsoleStore(state => state.updateContent);
@@ -188,6 +208,10 @@ function Editor({
   const updateTitle = useConsoleStore(state => state.updateTitle);
   const updateDirty = useConsoleStore(state => state.updateDirty);
   const updateSavedState = useConsoleStore(state => state.updateSavedState);
+  const updateChartSpec = useConsoleStore(state => state.updateChartSpec);
+  const updateResultsViewMode = useConsoleStore(
+    state => state.updateResultsViewMode,
+  );
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
   const executeQuery = useConsoleStore(state => state.executeQuery);
   const cancelQuery = useConsoleStore(state => state.cancelQuery);
@@ -196,6 +220,22 @@ function Editor({
   const openTab = useConsoleStore(state => state.openTab);
   const consoleTabs = Object.values(tabs);
   const activeConsoleId = activeTabId;
+
+  const setChartSpecForTab = useCallback(
+    (tabId: string, spec: import("../lib/chart-spec").MakoChartSpec | null) => {
+      setTabChartSpecs(prev => ({ ...prev, [tabId]: spec }));
+      updateChartSpec(tabId, spec as Record<string, unknown> | null);
+    },
+    [updateChartSpec],
+  );
+
+  const setViewModeForTab = useCallback(
+    (tabId: string, mode: ResultsViewMode) => {
+      setTabViewModes(prev => ({ ...prev, [tabId]: mode }));
+      updateResultsViewMode(tabId, mode);
+    },
+    [updateResultsViewMode],
+  );
 
   // Refs for each Console instance
   const consoleRefs = useRef<Record<string, React.RefObject<ConsoleRef>>>({});
@@ -207,6 +247,28 @@ function Editor({
         consoleRefs.current[tab.id] = React.createRef<ConsoleRef>();
       }
     });
+  }, [consoleTabs]);
+
+  // Seed local chart spec / view mode state when tabs are loaded from the server
+  useEffect(() => {
+    for (const tab of consoleTabs) {
+      if (tab.chartSpec) {
+        setTabChartSpecs(prev => {
+          if (prev[tab.id]) return prev;
+          return {
+            ...prev,
+            [tab.id]:
+              tab.chartSpec as import("../lib/chart-spec").MakoChartSpec,
+          };
+        });
+      }
+      if (tab.resultsViewMode) {
+        setTabViewModes(prev => {
+          if (prev[tab.id]) return prev;
+          return { ...prev, [tab.id]: tab.resultsViewMode! };
+        });
+      }
+    }
   }, [consoleTabs]);
 
   // Keep activeEditorContent in app store updated so Chat can use it
@@ -241,8 +303,8 @@ function Editor({
         if (payload.onRenderResult) {
           pendingRenderCallbackRef.current[tabId] = payload.onRenderResult;
         }
-        setTabChartSpecs(prev => ({ ...prev, [tabId]: payload.spec }));
-        setTabViewModes(prev => ({ ...prev, [tabId]: "chart" }));
+        setChartSpecForTab(tabId, payload.spec);
+        setViewModeForTab(tabId, "chart");
       };
     }
     return () => {
@@ -250,7 +312,12 @@ function Editor({
         onChartSpecChangeRef.current = undefined;
       }
     };
-  }, [activeTabId, onChartSpecChangeRef]);
+  }, [
+    activeTabId,
+    onChartSpecChangeRef,
+    setChartSpecForTab,
+    setViewModeForTab,
+  ]);
 
   // Keep resultsContextRef up to date so Chat can read results state at request time
   useEffect(() => {
@@ -737,6 +804,8 @@ function Editor({
         connectionId,
         databaseName,
         databaseId,
+        tabChartSpecs[tabId] ?? undefined,
+        tabViewModes[tabId],
       );
 
       // Handle conflict - show resolution dialog
@@ -863,6 +932,8 @@ function Editor({
         pendingSaveData.connectionId,
         pendingSaveData.databaseName,
         pendingSaveData.databaseId,
+        tabChartSpecs[pendingSaveData.tabId] ?? undefined,
+        tabViewModes[pendingSaveData.tabId],
       );
 
       if (result.success) {
@@ -945,6 +1016,8 @@ function Editor({
             databaseName,
             databaseId,
             folderId: folderId || undefined,
+            chartSpec: tabChartSpecs[saveDialogTabId] ?? null,
+            resultsViewMode: tabViewModes[saveDialogTabId],
           }),
         },
       );
@@ -1251,17 +1324,11 @@ function Editor({
                           results={tabResults[tab.id] || null}
                           chartSpec={tabChartSpecs[tab.id] ?? null}
                           onChartSpecChange={spec =>
-                            setTabChartSpecs(prev => ({
-                              ...prev,
-                              [tab.id]: spec,
-                            }))
+                            setChartSpecForTab(tab.id, spec)
                           }
                           viewMode={tabViewModes[tab.id] ?? "table"}
                           onViewModeChange={mode =>
-                            setTabViewModes(prev => ({
-                              ...prev,
-                              [tab.id]: mode,
-                            }))
+                            setViewModeForTab(tab.id, mode)
                           }
                           onChartRenderError={error => {
                             const cb = pendingRenderCallbackRef.current[tab.id];

@@ -17,3 +17,47 @@ export function computeConsoleStateHash(
     `${content}|${connectionId || ""}|${databaseId || ""}|${databaseName || ""}`,
   );
 }
+
+/**
+ * Compute a hash of the dashboard definition for dirty state tracking.
+ * Includes all user-editable fields; excludes runtime/cache metadata.
+ * When current hash !== savedStateHash, the dashboard has unsaved changes.
+ */
+export function computeDashboardStateHash(dashboard: {
+  title?: string;
+  description?: string;
+  widgets: unknown[];
+  dataSources: Array<{
+    id: string;
+    name: string;
+    query: unknown;
+    computedColumns?: unknown[];
+    timeDimension?: string;
+    rowLimit?: number;
+  }>;
+  relationships: unknown[];
+  globalFilters: unknown[];
+  crossFilter: unknown;
+  layout: unknown;
+  materializationSchedule?: unknown;
+}): string {
+  const payload = {
+    title: dashboard.title,
+    description: dashboard.description,
+    widgets: dashboard.widgets,
+    dataSources: dashboard.dataSources.map(ds => ({
+      id: ds.id,
+      name: ds.name,
+      query: ds.query,
+      computedColumns: ds.computedColumns,
+      timeDimension: ds.timeDimension,
+      rowLimit: ds.rowLimit,
+    })),
+    relationships: dashboard.relationships,
+    globalFilters: dashboard.globalFilters,
+    crossFilter: dashboard.crossFilter,
+    layout: dashboard.layout,
+    materializationSchedule: dashboard.materializationSchedule,
+  };
+  return hashContent(JSON.stringify(payload));
+}

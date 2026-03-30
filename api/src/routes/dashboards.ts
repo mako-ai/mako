@@ -4,7 +4,6 @@ import {
   DashboardFolder,
   DatabaseConnection,
 } from "../database/workspace-schema";
-import { User } from "../database/schema";
 import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -265,15 +264,15 @@ app.use("*", async (c: AuthenticatedContext, next) => {
       }
       c.set("memberRole", "admin");
     } else if (user) {
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
+      // Single membership lookup (used for both access check + role extraction).
+      const member = await workspaceService.getMember(workspaceId, user.id);
+      if (!member) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
         );
       }
-      const member = await workspaceService.getMember(workspaceId, user.id);
-      if (member) c.set("memberRole", member.role);
+      c.set("memberRole", member.role);
     } else {
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
@@ -1004,31 +1003,48 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
 const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // POST /api/workspaces/:workspaceId/dashboards/:id/lock - Acquire edit lock
+// Query params: ?force=true to forcefully take the lock from another user
 app.post("/:id/lock", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
+    const force = c.req.query("force") === "true";
     const userId = c.get("user")?.id;
     if (!userId) {
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
 
-    const user = await User.findById(userId).lean();
+    if (force) {
+      const memberRole = c.get("memberRole");
+      const isAdmin = memberRole === "owner" || memberRole === "admin";
+      if (!isAdmin) {
+        return c.json(
+          { success: false, error: "Only admins can force-lock a dashboard" },
+          403,
+        );
+      }
+    }
+
+    const user = c.get("user");
     const userName = user?.email || userId;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + LOCK_TTL_MS);
 
+    const filter: Record<string, unknown> = {
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    };
+    if (!force) {
+      filter.$or = [
+        { editLock: null },
+        { "editLock.userId": { $exists: false } },
+        { "editLock.expiresAt": { $lt: now } },
+        { "editLock.userId": userId },
+      ];
+    }
+
     const dashboard = await Dashboard.findOneAndUpdate(
-      {
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-        $or: [
-          { editLock: null },
-          { "editLock.userId": { $exists: false } },
-          { "editLock.expiresAt": { $lt: now } },
-          { "editLock.userId": userId },
-        ],
-      },
+      filter,
       {
         $set: {
           editLock: {
@@ -1039,14 +1055,26 @@ app.post("/:id/lock", async (c: AuthenticatedContext) => {
           },
         },
       },
-      { new: true },
+      {
+        new: true,
+        projection: {
+          _id: 1,
+          editLock: 1,
+        },
+      },
     );
 
     if (!dashboard) {
-      const existing = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const existing = await Dashboard.findOne(
+        {
+          _id: new Types.ObjectId(id),
+          workspaceId: new Types.ObjectId(workspaceId),
+        },
+        {
+          _id: 1,
+          editLock: 1,
+        },
+      );
       if (!existing) {
         return c.json({ success: false, error: "Dashboard not found" }, 404);
       }
@@ -1065,14 +1093,11 @@ app.post("/:id/lock", async (c: AuthenticatedContext) => {
       );
     }
 
-    const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
-    normalizeDashboardWidgetLayouts(plain);
-
     return c.json({
       success: true,
-      data: sanitizeDashboardResponse(
-        await hydrateDashboardArtifactUrls(plain as any),
-      ),
+      data: {
+        editLock: dashboard.editLock,
+      },
     });
   } catch (error) {
     logger.error("Error acquiring dashboard lock", { error });

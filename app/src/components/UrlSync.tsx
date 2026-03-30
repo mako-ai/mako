@@ -204,6 +204,15 @@ export function UrlSync() {
       }
     }
 
+    // Fallback: if the consoles view is active but no console-specific path was set,
+    // still reflect the active console in the URL so the link is shareable/bookmarkable.
+    if (newPath === "/" && activeView === "consoles" && activeConsoleId) {
+      const tab = consoleTabs.find(t => t.id === activeConsoleId);
+      if (tab && (tab.kind === "console" || !tab.kind)) {
+        newPath = `/c/${activeConsoleId}`;
+      }
+    }
+
     // Only update if changed to avoid noise (though replaceState is cheap)
     if (window.location.pathname !== newPath) {
       window.history.replaceState(null, "", newPath);
