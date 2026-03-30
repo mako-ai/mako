@@ -23,7 +23,9 @@ function getMarkType(spec: Spec): string {
  */
 export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
   if (!spec || data.length === 0) return spec;
-  if (spec.layer) return spec;
+  if (spec.__mako_tooltip_meta) return spec;
+
+  if (spec.layer) return extractMetaFromLayeredSpec(spec);
 
   const mark = getMarkType(spec);
   if (mark !== "line" && mark !== "area") return spec;
@@ -62,6 +64,8 @@ export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
 
   const lineLayer: Spec = { ...rest };
 
+  const seriesFieldStrs = seriesValues.map(String);
+
   const tooltipEntries: Spec[] = [
     {
       field: xField,
@@ -69,10 +73,9 @@ export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
       ...(xEnc.title ? { title: xEnc.title } : {}),
       ...(xEnc.timeUnit ? { timeUnit: xEnc.timeUnit } : {}),
     },
-    ...seriesValues.map(v => ({
-      field: String(v),
+    ...seriesFieldStrs.map(v => ({
+      field: v,
       type: "quantitative" as const,
-      format: enc.y?.format || ".2f",
     })),
   ];
 
@@ -114,5 +117,76 @@ export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
   return {
     ...outer,
     layer: [lineLayer, hoverRuleLayer],
+    __mako_tooltip_meta: {
+      xField,
+      xTitle: xEnc.title || undefined,
+      seriesFields: seriesFieldStrs,
+    },
+  };
+}
+
+/**
+ * For already-layered specs (e.g. built by the agent using the template),
+ * detect the `__mako_tooltip` hover-rule layer and extract enough metadata
+ * for the custom tooltip handler to render SVG dots + total.
+ */
+function extractMetaFromLayeredSpec(spec: Spec): Spec {
+  if (!Array.isArray(spec.layer)) return spec;
+
+  const hoverLayerIdx = spec.layer.findIndex(
+    (layer: Spec) =>
+      Array.isArray(layer.params) &&
+      layer.params.some((p: any) => p?.name?.startsWith("__mako_tooltip")),
+  );
+  if (hoverLayerIdx === -1) return spec;
+
+  const hoverLayer = spec.layer[hoverLayerIdx];
+  const tooltipEntries = hoverLayer.encoding?.tooltip;
+  if (!Array.isArray(tooltipEntries) || tooltipEntries.length === 0) {
+    return spec;
+  }
+
+  const temporalEntry = tooltipEntries.find((e: any) => e.type === "temporal");
+  if (!temporalEntry) return spec;
+
+  const isMetaField = (f: string) =>
+    /^(__mako_|—\s*total$|total$)/i.test(f.trim());
+
+  const seriesFields = tooltipEntries
+    .filter(
+      (e: any) => e.type === "quantitative" && !isMetaField(String(e.field)),
+    )
+    .map((e: any) => String(e.field));
+
+  if (seriesFields.length === 0) return spec;
+
+  // Strip title + format from series tooltip entries and drop any
+  // agent-injected total/meta fields — the custom handler renders its own.
+  const cleanedTooltips = tooltipEntries
+    .filter(
+      (e: any) => e.type !== "quantitative" || !isMetaField(String(e.field)),
+    )
+    .map((e: any) => {
+      if (e.type === "temporal") return e;
+      const { title: _t, format: _f, ...rest } = e;
+      return rest;
+    });
+
+  const cleanedLayers = spec.layer.map((layer: Spec, i: number) => {
+    if (i !== hoverLayerIdx) return layer;
+    return {
+      ...layer,
+      encoding: { ...layer.encoding, tooltip: cleanedTooltips },
+    };
+  });
+
+  return {
+    ...spec,
+    layer: cleanedLayers,
+    __mako_tooltip_meta: {
+      xField: temporalEntry.field,
+      xTitle: temporalEntry.title || undefined,
+      seriesFields,
+    },
   };
 }

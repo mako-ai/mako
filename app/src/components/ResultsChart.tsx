@@ -11,6 +11,11 @@ import { MakoChartSpec } from "../lib/chart-spec";
 import { generateAutoSpec } from "../lib/chart-auto-spec";
 import { getVegaThemeConfig } from "../lib/chart-theme";
 import { enhanceMultiSeriesHover } from "../lib/chart-enhance";
+import {
+  createMakoTooltipFormatter,
+  populateColorMap,
+  type TooltipMeta,
+} from "../lib/chart-tooltip";
 
 type VegaEmbedModule = typeof import("vega-embed");
 
@@ -355,7 +360,25 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         const withHover = enhanceMultiSeriesHover(withActiveSel, data);
 
-        const baseSpec = stabilizeColorDomain(withHover, data);
+        const withColors = stabilizeColorDomain(withHover, data);
+
+        // Extract tooltip metadata (injected by enhanceMultiSeriesHover)
+        // and strip it from the spec before passing to Vega-Lite.
+        const { __mako_tooltip_meta: tooltipMetaRaw, ...baseSpec } =
+          withColors as Record<string, any>;
+        const tooltipMeta = tooltipMetaRaw as TooltipMeta | undefined;
+
+        const colorMapRef: { current: Record<string, string> } = {
+          current: {},
+        };
+        const tooltipOpt = tooltipMeta
+          ? {
+              formatTooltip: createMakoTooltipFormatter(
+                tooltipMeta,
+                colorMapRef,
+              ),
+            }
+          : undefined;
 
         // Shallow-clone each row so Vega can attach its internal
         // Symbol(vega_id) property.  Data arriving from Zustand/Immer
@@ -380,7 +403,16 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
           actions: false,
           renderer: "canvas",
           config: themeConfig,
+          ...(tooltipOpt ? { tooltip: tooltipOpt } : {}),
         });
+
+        if (tooltipMeta) {
+          populateColorMap(
+            result.view as any,
+            tooltipMeta.seriesFields,
+            colorMapRef,
+          );
+        }
 
         if (cancelled) {
           result.view.finalize();
