@@ -1580,6 +1580,43 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
+        // Handle get_chart_template — pure lookup, no side effects
+        if (toolName === "get_chart_template") {
+          const { getTemplate } = await import("../lib/chart-templates");
+          const templateId = (input as Record<string, unknown>).templateId as
+            | string
+            | undefined;
+          if (!templateId) {
+            addToolOutput({
+              tool: "get_chart_template",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: "templateId is required.",
+              },
+            });
+            return;
+          }
+          const tpl = getTemplate(templateId);
+          if (!tpl) {
+            addToolOutput({
+              tool: "get_chart_template",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error: `Template "${templateId}" not found. Available IDs: multi-series-line-hover, time-series-area, grouped-bar, stacked-bar, horizontal-ranking, donut, kpi-sparkline.`,
+              },
+            });
+            return;
+          }
+          addToolOutput({
+            tool: "get_chart_template",
+            toolCallId: toolCall.toolCallId,
+            output: { success: true, template: tpl },
+          });
+          return;
+        }
+
         // Handle modify_chart_spec - set chart visualization for current results
         if (toolName === "modify_chart_spec") {
           const vegaLiteSpec = input.vegaLiteSpec as

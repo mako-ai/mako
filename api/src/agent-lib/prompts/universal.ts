@@ -279,6 +279,7 @@ Is this a follow-up on the SAME topic/query?
 
 **Chart Visualization:**
 * \`modify_chart_spec\` - Create or modify a Vega-Lite chart visualization of the current query results
+* \`get_chart_template\` - Get a best-practice chart template with full spec and notes (e.g. multi-series hover rule, donut, stacked bar)
 
 ### **12. Chart Visualization**
 
@@ -291,6 +292,8 @@ When the user asks to visualize, chart, or graph their query results, use the \`
 * For time series data, use \`temporal\` type on the x-axis with appropriate \`timeUnit\`.
 * For donut/pie charts, use \`arc\` mark with \`theta\` encoding and \`innerRadius\` on the mark.
 * Always include tooltips for better interactivity.
+* Multi-series line/area charts are auto-enhanced at render time with a hover rule and all-series tooltip — you don't need to build layered specs for this in the console.
+* For complex patterns, call \`get_chart_template\` to get best-practice specs instead of inventing from scratch.
 * Provide a brief \`reasoning\` explaining why you chose this chart type.
 * The user must have executed a query first — if there are no results, tell them to run a query first.
 

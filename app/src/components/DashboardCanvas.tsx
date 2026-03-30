@@ -111,6 +111,12 @@ function formatZodErrors(error: {
     .join(" | ");
 }
 
+function fingerprintWidgetConfig(widget: DashboardWidget): string {
+  const sql = widget.localSql ?? "";
+  const spec = widget.vegaLiteSpec ? JSON.stringify(widget.vegaLiteSpec) : "";
+  return `${sql}::${spec}`;
+}
+
 const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   dashboardId,
   isNew,
@@ -384,12 +390,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const handleForceEditMode = useCallback(async () => {
     if (!workspaceId || !dashboardId) return;
     setLockError(null);
+    setIsEditModeLocal(true);
     const acquired = await forceAcquireLock(workspaceId, dashboardId);
     if (!acquired) {
+      setIsEditModeLocal(false);
       setLockError("Failed to acquire edit lock. Please try again.");
       return;
     }
-    setIsEditModeLocal(true);
   }, [workspaceId, dashboardId, forceAcquireLock]);
 
   const handleEditModeToggle = useCallback(
@@ -398,8 +405,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       setLockError(null);
 
       if (mode === "edit") {
+        // Optimistic toggle to avoid blocking the UI on network latency.
+        setIsEditModeLocal(true);
         const acquired = await acquireLock(workspaceId, dashboardId);
         if (!acquired) {
+          setIsEditModeLocal(false);
           const d = useDashboardStore.getState().openDashboards[dashboardId];
           const lock = d?.editLock;
           if (lock && lock.userId !== user?.id) {
@@ -411,10 +421,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           }
           return;
         }
-        setIsEditModeLocal(true);
       } else {
-        await releaseLock(workspaceId, dashboardId);
+        // Optimistic toggle; release happens in background.
         setIsEditModeLocal(false);
+        void releaseLock(workspaceId, dashboardId);
       }
     },
     [workspaceId, dashboardId, acquireLock, releaseLock, user],
@@ -776,6 +786,18 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     const widgetRuntime = runtimeSession?.widgets[widget.id];
     const refreshGeneration = widgetRuntime?.refreshGeneration ?? 0;
     const widgetLayout = resolveWidgetLayout(widget);
+    const widgetQueryFieldsKey = (widgetRuntime?.queryFields ?? []).join("|");
+    const widgetRenderKey = [
+      widget.id,
+      widgetLayout.x,
+      widgetLayout.y,
+      widgetLayout.w,
+      widgetLayout.h,
+      fingerprintWidgetConfig(widget),
+      widgetQueryFieldsKey,
+      widgetRuntime?.queryRowCount ?? "",
+      refreshGeneration,
+    ].join(":");
 
     switch (widget.type) {
       case "chart":
@@ -793,8 +815,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
-            // Force rerenders when legacy widgets are normalized.
-            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
+            key={widgetRenderKey}
           />
         );
       case "kpi":
@@ -815,7 +836,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
-            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
+            key={widgetRenderKey}
           />
         );
       case "table":
@@ -833,7 +854,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             crossFilterResolution={crossFilterResolution}
             queryGeneration={queryGeneration}
             refreshGeneration={refreshGeneration}
-            key={`${widget.id}:${widgetLayout.x}:${widgetLayout.y}:${widgetLayout.w}:${widgetLayout.h}`}
+            key={widgetRenderKey}
           />
         );
       default:

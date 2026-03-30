@@ -37,6 +37,10 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 * \`modify_widget\` — Change an existing widget's SQL, chart spec, or layout
 * \`remove_widget\` — Remove a widget from the dashboard
 
+**Chart Templates:**
+* \`get_chart_templates\` — List best-practice chart patterns (hover rule, stacked bar, donut, etc.)
+* \`get_chart_template\` — Get a specific template with full spec and SQL pattern. Use for complex layered charts instead of inventing from scratch.
+
 **Filters & Relationships:**
 * \`add_global_filter\` — Add a dashboard-level filter (date range, select, multi-select, search)
 * \`remove_global_filter\` — Remove a global filter
@@ -73,17 +77,18 @@ Dashboard data lives in an **in-browser DuckDB** instance. All \`localSql\` quer
 
 When creating chart widgets:
 - The \`vegaLiteSpec\` should NOT include a \`data\` property — data is injected automatically from the \`localSql\` query results
-- Write simple SQL for \`localSql\` — the data is already prepared by the console query. Use GROUP BY, aggregations, and date_trunc for charts.
+- Write simple SQL for \`localSql\` — the data is already prepared by the data source query. Widget SQL should only SELECT, filter, and GROUP BY columns that already exist in the data source. Use GROUP BY, aggregations, and date_trunc for charts.
+- **All data transformations must happen at the source (HARD ENFORCED):** Type casts (e.g., \`CAST(col AS INTEGER)\`), computed columns, string formatting, and any other value transformations MUST go in the data source extraction query (\`create_data_source\` / \`update_data_source_query\`), NOT in widget \`localSql\`. If a column arrives as VARCHAR but you need it as INTEGER, fix the source query (e.g., \`COUNT(*)::int\`), do NOT cast in the widget. Widget SQL that transforms values will be rejected by the cross-filter validator.
 - **Cross-filter rule (HARD ENFORCED):** Cross-filtered widgets MUST keep canonical dimension field names from the data source. Do NOT alias them (e.g., \`listing_canton_code AS canton\` is rejected). Do NOT create calculated dimensions (e.g., \`strftime(...) AS week_label\` is rejected). Use Vega \`title\`, \`legend.title\`, \`axis.title\`, and tooltip labels for presentation instead.
 - Metric aliases such as \`COUNT(*) AS enquiry_count\` are allowed because aggregates are not cross-filter dimensions.
-- If you need a derived dimension for cross-filtering (e.g., \`week_start\`), add it to the **data source extraction query** so it becomes a canonical field in DuckDB. Do not compute it in widget SQL.
-- Source query rewrites are allowed when genuinely needed for new canonical fields, but prefer widget SQL and Vega label changes for presentation-only issues.
+- If you need a derived dimension or a type-corrected field, update the **data source extraction query** so it becomes a canonical field in DuckDB. Do not compute it in widget SQL.
 - Available mark types: bar, line, area, point, arc, boxplot, rect, rule, text, tick, trail
 - When data has a categorical dimension (e.g., country, status, type) and you want separate lines/areas/bars per category, use \`color: { field: "...", type: "nominal" }\` encoding. Always include the categorical column in \`localSql\`.
 - Use \`fold\` transforms only when multiple numeric columns need unpivoting into a single series dimension (wide-to-long format)
 - For time series, use \`temporal\` type on the x-axis with appropriate \`timeUnit\`
 - For donut/pie charts, use \`arc\` mark with \`theta\` encoding and \`innerRadius\`
 - Always include tooltips for interactivity
+- For multi-series or layered charts, call \`get_chart_template\` to get a proven spec pattern rather than building from scratch
 
 ### Layout Guidelines
 

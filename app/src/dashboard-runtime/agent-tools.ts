@@ -20,6 +20,7 @@ import {
   validateVegaSpec,
 } from "./validation";
 import { selectWidgetRuntime } from "./selectors";
+import { getAllTemplates, getTemplate } from "../lib/chart-templates";
 
 /**
  * Poll the runtime store for widget render status after adding/modifying a
@@ -68,6 +69,8 @@ const READ_ONLY_TOOLS = new Set([
   "preview_data_source",
   "get_data_preview",
   "suggest_charts",
+  "get_chart_templates",
+  "get_chart_template",
 ]);
 
 const agentLockHeld = new Set<string>();
@@ -379,6 +382,24 @@ export async function executeDashboardAgentTool(
         errorKind: classifySourceError(message),
       };
     }
+  }
+
+  if (toolName === "get_chart_templates") {
+    return { success: true, templates: getAllTemplates() };
+  }
+
+  if (toolName === "get_chart_template") {
+    if (typeof input.templateId !== "string") {
+      return { success: false, error: "templateId is required" };
+    }
+    const tpl = getTemplate(input.templateId);
+    if (!tpl) {
+      return {
+        success: false,
+        error: `Template "${input.templateId}" not found. Call get_chart_templates to see available IDs.`,
+      };
+    }
+    return { success: true, template: tpl };
   }
 
   if (toolName === "get_dashboard_state") {

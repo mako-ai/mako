@@ -10,6 +10,7 @@ import { useTheme } from "../contexts/ThemeContext";
 import { MakoChartSpec } from "../lib/chart-spec";
 import { generateAutoSpec } from "../lib/chart-auto-spec";
 import { getVegaThemeConfig } from "../lib/chart-theme";
+import { enhanceMultiSeriesHover } from "../lib/chart-enhance";
 
 type VegaEmbedModule = typeof import("vega-embed");
 
@@ -352,7 +353,9 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
           ? injectActiveSelection(withSelection, activeSelection)
           : withSelection;
 
-        const baseSpec = stabilizeColorDomain(withActiveSel, data);
+        const withHover = enhanceMultiSeriesHover(withActiveSel, data);
+
+        const baseSpec = stabilizeColorDomain(withHover, data);
 
         // Shallow-clone each row so Vega can attach its internal
         // Symbol(vega_id) property.  Data arriving from Zustand/Immer

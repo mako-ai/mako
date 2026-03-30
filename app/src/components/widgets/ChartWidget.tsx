@@ -57,9 +57,11 @@ const ChartWidgetComponent: React.FC<ChartWidgetProps> = ({
     );
   }
 
+  const renderKey = `${layoutSignature ?? "chart"}:${localSql}:${vegaLiteSpec ? JSON.stringify(vegaLiteSpec) : ""}:${(result?.fields || []).map(field => field.name).join("|")}`;
+
   return (
     <ResultsChart
-      key={layoutSignature ?? "chart"}
+      key={renderKey}
       data={result?.rows || []}
       fields={result?.fields || []}
       spec={vegaLiteSpec as MakoChartSpec | undefined}

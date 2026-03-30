@@ -878,7 +878,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
         try {
           const response = await apiClient.post<{
             success: boolean;
-            data: Dashboard;
+            data: Pick<Dashboard, "editLock">;
           }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}/lock`);
           if (response.data) {
             set(state => {
@@ -902,7 +902,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
         try {
           const response = await apiClient.post<{
             success: boolean;
-            data: Dashboard;
+            data: Pick<Dashboard, "editLock">;
           }>(
             `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock?force=true`,
           );

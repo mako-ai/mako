@@ -540,6 +540,25 @@ export function updateDashboardWidget(
 ): void {
   const id = dashboardId ?? resolveActiveDashboardId();
   useDashboardStore.getState().modifyWidget(id, widgetId, changes);
+  const shouldInvalidateQueries =
+    changes.localSql !== undefined ||
+    changes.vegaLiteSpec !== undefined ||
+    changes.dataSourceId !== undefined;
+
+  if (shouldInvalidateQueries) {
+    const mosaicInstance = getMosaicInstance(id);
+    if (mosaicInstance) {
+      try {
+        // Ensure stale cached query plans/results are invalidated before refetch.
+        mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+      } catch {
+        // best-effort cache clear
+      }
+    }
+    useDashboardRuntimeStore
+      .getState()
+      .dispatch(dashboardRuntimeEvents.bumpQueryGeneration(id));
+  }
   useDashboardRuntimeStore
     .getState()
     .dispatch(dashboardRuntimeEvents.bumpWidgetRefresh(id, widgetId));
