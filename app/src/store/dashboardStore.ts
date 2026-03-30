@@ -525,6 +525,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             Object.assign(d, result.data);
+            d.isSaved = false;
           }
         });
         const workspaceId = dashboard.workspaceId;
@@ -537,7 +538,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
-          if (d) d.dataSources.push(dataSource);
+          if (d) {
+            d.dataSources.push(dataSource);
+            d.isSaved = false;
+          }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
@@ -569,6 +573,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
                   : current.origin,
               };
             }
+            d.isSaved = false;
           }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
@@ -590,6 +595,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.globalFilters = d.globalFilters.filter(
               f => f.dataSourceId !== dataSourceId,
             );
+            d.isSaved = false;
           }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
@@ -600,7 +606,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
-          if (d) d.widgets.push(widget);
+          if (d) {
+            d.widgets.push(widget);
+            d.isSaved = false;
+          }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
@@ -619,6 +628,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             if (idx !== -1) {
               Object.assign(d.widgets[idx], changes);
             }
+            d.isSaved = false;
           }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
@@ -631,6 +641,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.widgets = d.widgets.filter(w => w.id !== widgetId);
+            d.isSaved = false;
           }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
@@ -641,7 +652,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
-          if (d) d.relationships.push(rel);
+          if (d) {
+            d.relationships.push(rel);
+            d.isSaved = false;
+          }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
@@ -653,6 +667,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.relationships = d.relationships.filter(r => r.id !== relId);
+            d.isSaved = false;
           }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
@@ -663,7 +678,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
-          if (d) d.globalFilters.push(filter);
+          if (d) {
+            d.globalFilters.push(filter);
+            d.isSaved = false;
+          }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
@@ -675,6 +693,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.globalFilters = d.globalFilters.filter(f => f.id !== filterId);
+            d.isSaved = false;
           }
         });
         if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);

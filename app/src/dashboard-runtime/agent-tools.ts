@@ -79,6 +79,8 @@ async function ensureAgentLock(
   if (agentLockHeld.has(dashboardId)) return { success: true };
 
   const store = useDashboardStore.getState();
+  const userAlreadyHoldsLock = !!store.openDashboards[dashboardId]?.editLock;
+
   const acquired = await store.forceAcquireLock(workspaceId, dashboardId);
   if (!acquired) {
     return {
@@ -86,7 +88,9 @@ async function ensureAgentLock(
       error: "Failed to acquire edit lock for the dashboard",
     };
   }
-  agentLockHeld.add(dashboardId);
+  if (!userAlreadyHoldsLock) {
+    agentLockHeld.add(dashboardId);
+  }
   return { success: true };
 }
 
