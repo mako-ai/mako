@@ -844,7 +844,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
             const d = state.openDashboards[dashboardId];
             if (d) d.isSaved = true;
           });
-          savedStateHashes[dashboardId] = computeDashboardStateHash(dashboard);
+          const updated = get().openDashboards[dashboardId];
+          if (updated) {
+            savedStateHashes[dashboardId] = computeDashboardStateHash(updated);
+          }
         }
       },
 

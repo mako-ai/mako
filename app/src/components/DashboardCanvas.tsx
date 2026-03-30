@@ -418,7 +418,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         setIsEditModeLocal(false);
       }
     },
-    [workspaceId, dashboardId, acquireLock, releaseLock],
+    [workspaceId, dashboardId, acquireLock, releaseLock, user],
   );
 
   // Heartbeat to keep lock alive while editing

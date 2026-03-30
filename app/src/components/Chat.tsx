@@ -2052,6 +2052,7 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
+      releaseAgentLocks();
     },
     onFinish: () => {
       releaseAgentLocks();
