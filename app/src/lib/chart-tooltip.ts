@@ -61,6 +61,10 @@ export function createMakoTooltipFormatter(
     if (!value || typeof value !== "object") return "";
 
     const colorMap = colorMapRef.current;
+    const dateKeys = new Set([dateKey, meta.xField]);
+    const skipKey = (k: string) =>
+      dateKeys.has(k) || /^(__mako_|—\s*total$|total$)/i.test(k.trim());
+
     const rows: string[] = [];
     const kStyle = `white-space:nowrap;padding:1px 8px 1px 0`;
     const vStyle = `text-align:right;font-variant-numeric:tabular-nums;padding:1px 0`;
@@ -73,20 +77,29 @@ export function createMakoTooltipFormatter(
       );
     }
 
-    // Series rows with colored SVG dots
+    // Series rows: iterate the value's own keys, display labels verbatim,
+    // and match colors by trying exact key then fuzzy substring against
+    // the color scale entries.
     let total = 0;
     let count = 0;
-    for (const series of meta.seriesFields) {
-      const raw = value[series];
-      if (raw == null) continue;
-      const num = typeof raw === "number" ? raw : parseFloat(String(raw));
-      if (!isNaN(num)) {
-        total += num;
-        count++;
-      }
-      const color = colorMap[series] || "#888";
+    for (const [key, raw] of Object.entries(value)) {
+      if (raw == null || skipKey(key)) continue;
+      const num =
+        typeof raw === "number"
+          ? raw
+          : parseFloat(String(raw).replace(/,/g, ""));
+      if (isNaN(num)) continue;
+      total += num;
+      count++;
+      const color =
+        colorMap[key] ||
+        Object.keys(colorMap).reduce<string | null>(
+          (found, f) => found || (key.includes(f) ? colorMap[f] : null),
+          null,
+        ) ||
+        "#888";
       rows.push(
-        `<tr><td style="${kStyle}">${svgDot(color)} ${sanitize(series)}</td><td style="${vStyle}">${sanitize(fmtNum(raw))}</td></tr>`,
+        `<tr><td style="${kStyle}">${svgDot(color)} ${sanitize(key)}</td><td style="${vStyle}">${sanitize(fmtNum(raw))}</td></tr>`,
       );
     }
 

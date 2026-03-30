@@ -133,14 +133,13 @@ export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
 function extractMetaFromLayeredSpec(spec: Spec): Spec {
   if (!Array.isArray(spec.layer)) return spec;
 
-  const hoverLayerIdx = spec.layer.findIndex(
+  const hoverLayer = spec.layer.find(
     (layer: Spec) =>
       Array.isArray(layer.params) &&
       layer.params.some((p: any) => p?.name?.startsWith("__mako_tooltip")),
   );
-  if (hoverLayerIdx === -1) return spec;
+  if (!hoverLayer) return spec;
 
-  const hoverLayer = spec.layer[hoverLayerIdx];
   const tooltipEntries = hoverLayer.encoding?.tooltip;
   if (!Array.isArray(tooltipEntries) || tooltipEntries.length === 0) {
     return spec;
@@ -160,29 +159,9 @@ function extractMetaFromLayeredSpec(spec: Spec): Spec {
 
   if (seriesFields.length === 0) return spec;
 
-  // Strip title + format from series tooltip entries and drop any
-  // agent-injected total/meta fields — the custom handler renders its own.
-  const cleanedTooltips = tooltipEntries
-    .filter(
-      (e: any) => e.type !== "quantitative" || !isMetaField(String(e.field)),
-    )
-    .map((e: any) => {
-      if (e.type === "temporal") return e;
-      const { title: _t, format: _f, ...rest } = e;
-      return rest;
-    });
-
-  const cleanedLayers = spec.layer.map((layer: Spec, i: number) => {
-    if (i !== hoverLayerIdx) return layer;
-    return {
-      ...layer,
-      encoding: { ...layer.encoding, tooltip: cleanedTooltips },
-    };
-  });
-
+  // Attach metadata only — never mutate the spec's layers or tooltip entries.
   return {
     ...spec,
-    layer: cleanedLayers,
     __mako_tooltip_meta: {
       xField: temporalEntry.field,
       xTitle: temporalEntry.title || undefined,
