@@ -376,12 +376,10 @@ export async function refreshDashboardDataSourceCommand(options: {
   const dashboard = getDashboardOrThrow(options.dashboardId);
   await useDashboardStore
     .getState()
-    .materializeDashboardDataSource(
-      options.workspaceId,
-      dashboard._id,
-      options.dataSourceId,
-      { force: true },
-    );
+    .materializeDashboard(options.workspaceId, dashboard._id, {
+      force: true,
+      dataSourceIds: [options.dataSourceId],
+    });
   await waitForDashboardMaterialization({
     workspaceId: options.workspaceId,
     dashboardId: dashboard._id,
@@ -427,20 +425,17 @@ export async function applyFreshMaterializationCommand(options: {
 }
 
 export async function refreshDashboardCommand(
+  workspaceId: string,
   dashboardId?: string,
 ): Promise<void> {
   const dashboard = getDashboardOrThrow(dashboardId);
-  const mosaicInstance = getMosaicInstance(dashboard._id);
-  if (mosaicInstance) {
-    try {
-      mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
-    } catch {
-      // best-effort selection clear
-    }
-  }
-  useDashboardRuntimeStore
-    .getState()
-    .dispatch(dashboardRuntimeEvents.resetDashboard(dashboard._id));
+  await disposeDashboardRuntime(dashboard._id);
+  await activateDashboardRuntime(dashboard, "viewer");
+  await syncDashboardRuntime({
+    workspaceId,
+    dashboard,
+    runtimeContext: "viewer",
+  });
 }
 
 export function refreshDashboardWidgetCommand(options: {
@@ -448,6 +443,14 @@ export function refreshDashboardWidgetCommand(options: {
   widgetId: string;
 }): void {
   const dashboard = getDashboardOrThrow(options.dashboardId);
+  const mosaicInstance = getMosaicInstance(dashboard._id);
+  if (mosaicInstance) {
+    try {
+      mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+    } catch {
+      // best-effort cache clear
+    }
+  }
   useDashboardRuntimeStore
     .getState()
     .dispatch(

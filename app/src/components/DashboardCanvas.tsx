@@ -334,8 +334,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [dashboard?.title]);
 
   const handleRefresh = useCallback(() => {
-    void refreshDashboardCommand(dashboardId);
-  }, [dashboardId]);
+    if (workspaceId) {
+      void refreshDashboardCommand(workspaceId, dashboardId);
+    }
+  }, [workspaceId, dashboardId]);
 
   const handleReloadData = useCallback(() => {
     if (workspaceId) {
@@ -752,6 +754,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     const widgetRuntime = runtimeSession?.widgets[widget.id];
     const refreshGeneration = widgetRuntime?.refreshGeneration ?? 0;
+    const sessionId = runtimeSession?.sessionId ?? "";
     const widgetLayout = resolveWidgetLayout(widget);
     const widgetRenderKey = [
       widget.id,
@@ -760,6 +763,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       widgetLayout.w,
       widgetLayout.h,
       refreshGeneration,
+      sessionId,
     ].join(":");
 
     switch (widget.type) {

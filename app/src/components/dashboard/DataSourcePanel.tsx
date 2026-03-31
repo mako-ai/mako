@@ -1057,20 +1057,53 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     </Typography>
                   )}
 
-                  <Button
-                    size="small"
+                  <Box
                     sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1,
                       mt: 0.5,
-                      minWidth: 0,
-                      fontSize: "0.7rem",
-                      textTransform: "none",
-                      py: 0,
-                      px: 0,
                     }}
-                    onClick={() => void openHistory(ds.id)}
                   >
-                    Materialization history
-                  </Button>
+                    <Button
+                      size="small"
+                      sx={{
+                        minWidth: 0,
+                        fontSize: "0.7rem",
+                        textTransform: "none",
+                        py: 0,
+                        px: 0,
+                      }}
+                      onClick={() => void openHistory(ds.id)}
+                    >
+                      Materialization history
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="text"
+                      disabled={
+                        status === "loading" ||
+                        materializationStatus === "building"
+                      }
+                      startIcon={
+                        materializationStatus === "building" ? (
+                          <CircularProgress size={12} />
+                        ) : (
+                          <RefreshCw size={12} />
+                        )
+                      }
+                      sx={{
+                        minWidth: 0,
+                        fontSize: "0.7rem",
+                        textTransform: "none",
+                        py: 0,
+                        px: 0.5,
+                      }}
+                      onClick={() => handleRefreshDataSource(ds.id)}
+                    >
+                      Materialize
+                    </Button>
+                  </Box>
                 </Box>
               );
             })}
