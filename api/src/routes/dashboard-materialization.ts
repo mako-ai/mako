@@ -27,6 +27,39 @@ import {
 const logger = loggers.api("dashboard-materialization");
 const app = new Hono();
 
+function nodeStreamToWeb(
+  nodeStream: NodeJS.ReadableStream,
+): ReadableStream<Uint8Array> {
+  let closed = false;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      nodeStream.on("data", (chunk: Buffer) => {
+        if (!closed) {
+          controller.enqueue(new Uint8Array(chunk));
+        }
+      });
+      nodeStream.on("end", () => {
+        if (!closed) {
+          closed = true;
+          controller.close();
+        }
+      });
+      nodeStream.on("error", (err: Error) => {
+        if (!closed) {
+          closed = true;
+          controller.error(err);
+        }
+      });
+    },
+    cancel() {
+      closed = true;
+      if ("destroy" in nodeStream && typeof nodeStream.destroy === "function") {
+        (nodeStream as any).destroy();
+      }
+    },
+  });
+}
+
 function parseRangeHeader(rangeHeader: string, size: number) {
   const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
   if (!match) return null;
@@ -427,12 +460,10 @@ app.get(
         if (!rangeHeader) {
           headers["Content-Length"] = String(stat.size);
           headers["X-Row-Count"] = String(status.rowCount || "");
-          const stream = await store.openReadStream(status.artifactKey);
-          return c.body(
-            (stream || fs.createReadStream(filePath)) as any,
-            200,
-            headers,
-          );
+          const nodeStream =
+            (await store.openReadStream(status.artifactKey)) ||
+            fs.createReadStream(filePath);
+          return c.body(nodeStreamToWeb(nodeStream), 200, headers);
         }
 
         const range = parseRangeHeader(rangeHeader, stat.size);
@@ -445,10 +476,12 @@ app.get(
         headers["Content-Length"] = String(range.end - range.start + 1);
         headers["X-Row-Count"] = String(status.rowCount || "");
         return c.body(
-          fs.createReadStream(filePath, {
-            start: range.start,
-            end: range.end,
-          }) as any,
+          nodeStreamToWeb(
+            fs.createReadStream(filePath, {
+              start: range.start,
+              end: range.end,
+            }),
+          ),
           206,
           headers,
         );
@@ -470,7 +503,7 @@ app.get(
           headers["Content-Length"] = String(size);
         }
 
-        return c.body(stream as any, 200, headers);
+        return c.body(nodeStreamToWeb(stream), 200, headers);
       }
 
       return c.json({ success: false, error: "Artifact not available" }, 404);

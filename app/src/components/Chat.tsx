@@ -693,7 +693,6 @@ const ChatInputArea = React.memo(
                 }
               }
             }}
-            disabled={isLoading}
             variant="outlined"
             inputRef={inputRef}
             sx={{
