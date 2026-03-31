@@ -52,12 +52,16 @@ async function waitForWidgetRenderResult(
   return { renderError: null, renderErrorKind: null };
 }
 
-function getActiveContext(): {
+export interface AgentToolContext {
+  dashboardId?: string;
+}
+
+function getActiveContext(pinned?: AgentToolContext): {
   dashboardId: string;
   workspaceId: string;
 } | null {
   const state = useDashboardStore.getState();
-  const dashboardId = state.activeDashboardId;
+  const dashboardId = pinned?.dashboardId ?? state.activeDashboardId;
   if (!dashboardId) return null;
   const workspaceId = state.openDashboards[dashboardId]?.workspaceId;
   if (!workspaceId) return null;
@@ -78,9 +82,10 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set(["enter_edit_mode", "create_dashboard"]);
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
+  pinned?: AgentToolContext,
 ): Promise<Record<string, unknown> | null> {
   if (toolName === "create_dashboard") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     const workspaceId =
       ctx?.workspaceId ?? useUIStore.getState().currentWorkspaceId;
     if (!workspaceId || typeof workspaceId !== "string") {
@@ -140,7 +145,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "enter_edit_mode") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -194,7 +199,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (!READ_ONLY_TOOLS.has(toolName) && !EDIT_MODE_EXEMPT_TOOLS.has(toolName)) {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (ctx && !useDashboardStore.getState().isEditMode(ctx.dashboardId)) {
       return {
         success: false,
@@ -209,7 +214,7 @@ export async function executeDashboardAgentTool(
     toolName === "add_data_source" ||
     toolName === "import_console_as_data_source"
   ) {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -259,7 +264,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "create_data_source") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -325,7 +330,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "update_data_source_query") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -509,7 +514,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "add_widget") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -631,7 +636,7 @@ export async function executeDashboardAgentTool(
       changes.tableConfig = input.tableConfig;
     }
     if (input.layouts !== undefined) {
-      const ctx = getActiveContext();
+      const ctx = getActiveContext(pinned);
       const existingDashboard = ctx
         ? useDashboardStore.getState().openDashboards[ctx.dashboardId]
         : null;
@@ -654,7 +659,7 @@ export async function executeDashboardAgentTool(
       }
     }
     if (changes.localSql !== undefined) {
-      const ctx = getActiveContext();
+      const ctx = getActiveContext(pinned);
       if (!ctx) {
         return { success: false, error: "No active dashboard" };
       }
@@ -675,7 +680,7 @@ export async function executeDashboardAgentTool(
       }
     }
     {
-      const ctx2 = getActiveContext();
+      const ctx2 = getActiveContext(pinned);
       const dashboard2 = ctx2
         ? useDashboardStore.getState().openDashboards[ctx2.dashboardId]
         : null;
@@ -698,7 +703,7 @@ export async function executeDashboardAgentTool(
     updateDashboardWidget(input.widgetId, changes as Partial<DashboardWidget>);
 
     try {
-      const ctx = getActiveContext();
+      const ctx = getActiveContext(pinned);
       const dashboard = ctx
         ? useDashboardStore.getState().openDashboards[ctx.dashboardId]
         : null;
@@ -768,7 +773,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "add_global_filter") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -790,7 +795,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "remove_global_filter") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -801,7 +806,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "link_tables") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
@@ -816,7 +821,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "set_time_dimension") {
-    const ctx = getActiveContext();
+    const ctx = getActiveContext(pinned);
     if (!ctx) {
       return { success: false, error: "No active dashboard" };
     }
