@@ -615,9 +615,10 @@ function Editor({
     const tab = tabs[pendingDashboardCloseTabId];
     const dbId = tab?.metadata?.dashboardId as string | undefined;
     if (dbId) {
-      await useDashboardStore
+      const saved = await useDashboardStore
         .getState()
         .saveDashboard(currentWorkspace.id, dbId);
+      if (!saved) return;
     }
     finalizeDashboardClose(pendingDashboardCloseTabId);
     setPendingDashboardCloseTabId(null);
