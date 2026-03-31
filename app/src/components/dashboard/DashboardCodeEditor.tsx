@@ -1,0 +1,141 @@
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Box, Typography } from "@mui/material";
+import Editor from "@monaco-editor/react";
+import { useDashboardStore } from "../../store/dashboardStore";
+import {
+  serializeDashboardDefinition,
+  type Dashboard,
+} from "../../dashboard-runtime/types";
+
+const { applyDefinition: applyDefinitionAction } = useDashboardStore.getState();
+
+function formatZodErrors(error: {
+  issues: Array<{ path: PropertyKey[]; message: string }>;
+}): string {
+  return error.issues
+    .slice(0, 5)
+    .map(issue => `${issue.path.join(".")}: ${issue.message}`)
+    .join(" | ");
+}
+
+interface DashboardCodeEditorProps {
+  dashboard: Dashboard;
+  dashboardId?: string;
+  effectiveMode: "light" | "dark";
+}
+
+const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
+  dashboard,
+  dashboardId,
+  effectiveMode,
+}) => {
+  const [codeValue, setCodeValue] = useState("");
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const [isEditorFocused, setIsEditorFocused] = useState(false);
+  const pendingExternalUpdate = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!dashboard) return;
+    const serialized = JSON.stringify(
+      serializeDashboardDefinition(dashboard),
+      null,
+      2,
+    );
+    if (isEditorFocused) {
+      pendingExternalUpdate.current = serialized;
+    } else {
+      setCodeValue(serialized);
+      setCodeError(null);
+    }
+  }, [dashboard, isEditorFocused]);
+
+  const handleBlur = useCallback(() => {
+    setIsEditorFocused(false);
+    if (pendingExternalUpdate.current) {
+      setCodeValue(pendingExternalUpdate.current);
+      pendingExternalUpdate.current = null;
+    }
+  }, []);
+
+  const handleFocus = useCallback(() => {
+    setIsEditorFocused(true);
+  }, []);
+
+  const handleCodeChange = useCallback(
+    (val: string | undefined) => {
+      const newVal = val || "";
+      setCodeValue(newVal);
+
+      if (!dashboardId) return;
+
+      try {
+        const parsed = JSON.parse(newVal);
+        const zodError = applyDefinitionAction(dashboardId, parsed);
+        if (zodError) {
+          setCodeError(formatZodErrors(zodError));
+        } else {
+          setCodeError(null);
+        }
+      } catch (e: any) {
+        setCodeError(e?.message || "Invalid JSON");
+      }
+    },
+    [dashboardId],
+  );
+
+  return (
+    <Box
+      sx={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <Box
+        sx={{
+          px: 1.5,
+          py: 0.5,
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          backgroundColor: "background.paper",
+        }}
+      >
+        <Typography variant="caption" color="text.secondary">
+          Dashboard Definition (JSON)
+        </Typography>
+        <Box sx={{ flex: 1 }} />
+        {codeError && (
+          <Typography variant="caption" color="error">
+            {codeError}
+          </Typography>
+        )}
+      </Box>
+      <Box sx={{ flex: 1 }}>
+        <Editor
+          height="100%"
+          language="json"
+          value={codeValue}
+          onChange={handleCodeChange}
+          theme={effectiveMode === "dark" ? "vs-dark" : "light"}
+          options={{
+            minimap: { enabled: false },
+            fontSize: 12,
+            scrollBeyondLastLine: false,
+            wordWrap: "on",
+            formatOnPaste: true,
+            tabSize: 2,
+          }}
+          onMount={editor => {
+            editor.onDidFocusEditorWidget(handleFocus);
+            editor.onDidBlurEditorWidget(handleBlur);
+          }}
+        />
+      </Box>
+    </Box>
+  );
+};
+
+export default DashboardCodeEditor;
