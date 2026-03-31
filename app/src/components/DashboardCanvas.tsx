@@ -40,8 +40,10 @@ import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import Editor from "@monaco-editor/react";
+import { useShallow } from "zustand/react/shallow";
 import {
   useDashboardStore,
+  selectIsDirty,
   type DashboardWidget,
 } from "../store/dashboardStore";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -67,7 +69,26 @@ import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
 import WidgetInspector from "./dashboard/WidgetInspector";
+
 type ViewMode = "canvas" | "code";
+
+const {
+  openDashboard: openDashboardAction,
+  saveDashboard: saveDashboardAction,
+  markDashboardSaved: markDashboardSavedAction,
+  materializeDashboard: materializeDashboardAction,
+  createDashboard: createDashboardAction,
+  addWidget: addWidgetAction,
+  modifyWidget: modifyWidgetAction,
+  removeWidget: removeWidgetAction,
+  applyDefinition: applyDefinitionAction,
+  undo: undoAction,
+  redo: redoAction,
+  resolveConflict: resolveConflictAction,
+  enterEditMode: enterEditModeAction,
+  exitEditMode: exitEditModeAction,
+  heartbeatLock: heartbeatLockAction,
+} = useDashboardStore.getState();
 
 interface DashboardCanvasProps {
   dashboardId?: string;
@@ -119,40 +140,21 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const { effectiveMode } = useTheme();
-  const dashboard = useDashboardStore(state =>
-    dashboardId ? state.openDashboards[dashboardId] : undefined,
-  );
-  const openDashboard = useDashboardStore(state => state.openDashboard);
-  const saveDashboard = useDashboardStore(state => state.saveDashboard);
-  const markDashboardSaved = useDashboardStore(
-    state => state.markDashboardSaved,
-  );
-  const getDashboardSavedStateHash = useDashboardStore(
-    state => state.getDashboardSavedStateHash,
-  );
-  const materializeDashboard = useDashboardStore(
-    state => state.materializeDashboard,
-  );
-  const createDashboard = useDashboardStore(state => state.createDashboard);
-  const addWidget = useDashboardStore(state => state.addWidget);
-  const modifyWidget = useDashboardStore(state => state.modifyWidget);
-  const removeWidget = useDashboardStore(state => state.removeWidget);
-  const applyDefinition = useDashboardStore(state => state.applyDefinition);
-  const undo = useDashboardStore(state => state.undo);
-  const redo = useDashboardStore(state => state.redo);
-  const conflict = useDashboardStore(state =>
-    state.conflict?.dashboardId === dashboardId ? state.conflict : null,
-  );
-  const resolveConflict = useDashboardStore(state => state.resolveConflict);
-  const enterEditMode = useDashboardStore(state => state.enterEditMode);
-  const exitEditMode = useDashboardStore(state => state.exitEditMode);
-  const heartbeatLock = useDashboardStore(state => state.heartbeatLock);
-  const isStoreEditMode = useDashboardStore(state =>
-    dashboardId ? (state.editingDashboards[dashboardId] ?? false) : false,
-  );
-  const historyEntry = useDashboardStore(state =>
-    dashboardId ? state.historyMap[dashboardId] : undefined,
-  );
+
+  const { dashboard, isStoreEditMode, historyEntry, conflict } =
+    useDashboardStore(
+      useShallow(state => ({
+        dashboard: dashboardId ? state.openDashboards[dashboardId] : undefined,
+        isStoreEditMode: dashboardId
+          ? (state.editingDashboards[dashboardId] ?? false)
+          : false,
+        historyEntry: dashboardId ? state.historyMap[dashboardId] : undefined,
+        conflict:
+          state.conflict?.dashboardId === dashboardId ? state.conflict : null,
+      })),
+    );
+
+  const hasUnsavedChanges = useDashboardStore(selectIsDirty(dashboardId));
   const isMaterializationBuilding = (dashboard?.dataSources || []).some(
     dataSource => dataSource.cache?.parquetBuildStatus === "building",
   );
@@ -200,7 +202,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
     if (isNew && !dashboardId) {
       (async () => {
-        const created = await createDashboard(workspaceId, {
+        const created = await createDashboardAction(workspaceId, {
           title: "Untitled Dashboard",
           dataSources: [],
           widgets: [],
@@ -233,16 +235,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
 
     if (dashboardId) {
-      openDashboard(workspaceId, dashboardId);
+      openDashboardAction(workspaceId, dashboardId);
     }
-  }, [
-    workspaceId,
-    dashboardId,
-    isNew,
-    openDashboard,
-    createDashboard,
-    onCreated,
-  ]);
+  }, [workspaceId, dashboardId, isNew, onCreated]);
 
   const isDashboardLoaded = !!dashboard;
   useEffect(() => {
@@ -261,29 +256,18 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
   }, [isDashboardLoaded, measureWidth]);
 
-  useEffect(() => {
-    if (viewMode === "code" && dashboard && !isUserEditingCodeRef.current) {
-      setCodeValue(
-        JSON.stringify(serializeDashboardDefinition(dashboard), null, 2),
-      );
-      setCodeError(null);
-    }
-  }, [viewMode, dashboard]);
-
-  // When switching to code mode, always serialize fresh
   const prevViewModeRef = useRef(viewMode);
   useEffect(() => {
-    if (
-      viewMode === "code" &&
-      prevViewModeRef.current !== "code" &&
-      dashboard
-    ) {
+    const switchedToCode =
+      viewMode === "code" && prevViewModeRef.current !== "code";
+    prevViewModeRef.current = viewMode;
+    if (viewMode !== "code" || !dashboard) return;
+    if (switchedToCode || !isUserEditingCodeRef.current) {
       setCodeValue(
         JSON.stringify(serializeDashboardDefinition(dashboard), null, 2),
       );
       setCodeError(null);
     }
-    prevViewModeRef.current = viewMode;
   }, [viewMode, dashboard]);
 
   const handleCodeChange = useCallback(
@@ -296,7 +280,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
       try {
         const parsed = JSON.parse(newVal);
-        const zodError = applyDefinition(dashboardId, parsed);
+        const zodError = applyDefinitionAction(dashboardId, parsed);
         if (zodError) {
           setCodeError(formatZodErrors(zodError));
         } else {
@@ -306,13 +290,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         setCodeError(e?.message || "Invalid JSON");
       }
 
-      // Reset the flag after a short delay to allow store-triggered re-renders
-      // to not fight with user typing
       setTimeout(() => {
         isUserEditingCodeRef.current = false;
       }, 100);
     },
-    [dashboardId, applyDefinition],
+    [dashboardId],
   );
 
   const handleExportPng = useCallback(async () => {
@@ -348,13 +330,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const handleForceEditMode = useCallback(async () => {
     if (!workspaceId || !dashboardId) return;
     setLockError(null);
-    const result = await enterEditMode(workspaceId, dashboardId, {
+    const result = await enterEditModeAction(workspaceId, dashboardId, {
       force: true,
     });
     if (!result.ok) {
       setLockError("Failed to acquire edit lock. Please try again.");
     }
-  }, [workspaceId, dashboardId, enterEditMode]);
+  }, [workspaceId, dashboardId]);
 
   const handleEditModeToggle = useCallback(
     async (mode: "edit" | "view") => {
@@ -362,7 +344,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       setLockError(null);
 
       if (mode === "edit") {
-        const result = await enterEditMode(workspaceId, dashboardId);
+        const result = await enterEditModeAction(workspaceId, dashboardId);
         if (!result.ok) {
           if (result.lockedBy) {
             setLockError(
@@ -375,7 +357,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       } else {
         const store = useDashboardStore.getState();
         const dash = store.openDashboards[dashboardId];
-        const savedHash = store.getDashboardSavedStateHash(dashboardId);
+        const savedHash = store.savedStateHashes[dashboardId];
         if (
           dash &&
           savedHash !== undefined &&
@@ -384,10 +366,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           setExitEditConfirmOpen(true);
           return;
         }
-        void exitEditMode(workspaceId, dashboardId);
+        void exitEditModeAction(workspaceId, dashboardId);
       }
     },
-    [workspaceId, dashboardId, enterEditMode, exitEditMode],
+    [workspaceId, dashboardId],
   );
 
   const handleExitEditSave = useCallback(async () => {
@@ -397,18 +379,18 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       .getState()
       .saveDashboard(workspaceId, dashboardId);
     if (saved) {
-      void exitEditMode(workspaceId, dashboardId);
+      void exitEditModeAction(workspaceId, dashboardId);
     }
-  }, [workspaceId, dashboardId, exitEditMode]);
+  }, [workspaceId, dashboardId]);
 
   const handleExitEditDiscard = useCallback(async () => {
     if (!workspaceId || !dashboardId) return;
     setExitEditConfirmOpen(false);
-    await exitEditMode(workspaceId, dashboardId);
+    await exitEditModeAction(workspaceId, dashboardId);
     await useDashboardStore
       .getState()
       .reloadDashboard(workspaceId, dashboardId);
-  }, [workspaceId, dashboardId, exitEditMode]);
+  }, [workspaceId, dashboardId]);
 
   const handleExitEditCancel = useCallback(() => {
     setExitEditConfirmOpen(false);
@@ -418,7 +400,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   useEffect(() => {
     if (isStoreEditMode && workspaceId && dashboardId) {
       heartbeatRef.current = setInterval(() => {
-        heartbeatLock(workspaceId, dashboardId);
+        heartbeatLockAction(workspaceId, dashboardId);
       }, 30_000);
     }
     return () => {
@@ -427,7 +409,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         heartbeatRef.current = null;
       }
     };
-  }, [isStoreEditMode, workspaceId, dashboardId, heartbeatLock]);
+  }, [isStoreEditMode, workspaceId, dashboardId]);
 
   const handleLayoutChange = useCallback(
     (_layout: any, allLayouts: Record<string, any>) => {
@@ -464,13 +446,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         }
 
         if (changed) {
-          modifyWidget(dashboardId, widget.id, {
+          modifyWidgetAction(dashboardId, widget.id, {
             layouts: { ...currentLayouts, ...updatedLayouts },
           } as any);
         }
       }
     },
-    [dashboard, dashboardId, modifyWidget, isStoreEditMode],
+    [dashboard, dashboardId, isStoreEditMode],
   );
 
   const handleDuplicateWidget = useCallback(
@@ -490,9 +472,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           },
         },
       };
-      addWidget(dashboardId, newWidget);
+      addWidgetAction(dashboardId, newWidget);
     },
-    [dashboardId, addWidget],
+    [dashboardId],
   );
 
   const allSourcesReady = useMemo(() => {
@@ -706,13 +688,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
     return result;
   }, [widgets]);
-
-  const hasUnsavedChanges = useMemo(() => {
-    if (!dashboard || !dashboardId) return false;
-    const savedHash = getDashboardSavedStateHash(dashboardId);
-    if (!savedHash) return true;
-    return computeDashboardStateHash(dashboard) !== savedHash;
-  }, [dashboard, dashboardId, getDashboardSavedStateHash]);
 
   if (!dashboard) {
     return (
@@ -946,7 +921,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               <span>
                 <IconButton
                   size="small"
-                  onClick={() => dashboardId && undo(dashboardId)}
+                  onClick={() => dashboardId && undoAction(dashboardId)}
                   disabled={historyIndex <= 0}
                 >
                   <Undo2 size={16} />
@@ -957,7 +932,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               <span>
                 <IconButton
                   size="small"
-                  onClick={() => dashboardId && redo(dashboardId)}
+                  onClick={() => dashboardId && redoAction(dashboardId)}
                   disabled={historyIndex >= historyLength - 1}
                 >
                   <Redo2 size={16} />
@@ -1013,10 +988,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   }
                   onClick={async () => {
                     if (!workspaceId || !dashboardId) return;
-                    const saved = await saveDashboard(workspaceId, dashboardId);
+                    const saved = await saveDashboardAction(
+                      workspaceId,
+                      dashboardId,
+                    );
                     if (!saved) return;
-                    markDashboardSaved(dashboardId);
-                    void materializeDashboard(workspaceId, dashboardId, {
+                    markDashboardSavedAction(dashboardId);
+                    void materializeDashboardAction(workspaceId, dashboardId, {
                       force: true,
                     });
                   }}
@@ -1364,7 +1342,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                             }
                             onRemove={() =>
                               dashboardId &&
-                              removeWidget(dashboardId, widget.id)
+                              removeWidgetAction(dashboardId, widget.id)
                             }
                             onDuplicate={() => handleDuplicateWidget(widget)}
                             onInspect={() => setInspectedWidget(widget)}
@@ -1471,7 +1449,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         <DialogActions>
           <Button
             onClick={() =>
-              workspaceId && resolveConflict("discard", workspaceId)
+              workspaceId && resolveConflictAction("discard", workspaceId)
             }
           >
             Discard my changes
@@ -1480,7 +1458,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             variant="contained"
             color="warning"
             onClick={() =>
-              workspaceId && resolveConflict("overwrite", workspaceId)
+              workspaceId && resolveConflictAction("overwrite", workspaceId)
             }
           >
             Overwrite with my changes
