@@ -378,7 +378,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         const savedHash = store.getDashboardSavedStateHash(dashboardId);
         if (
           dash &&
-          (!savedHash || computeDashboardStateHash(dash) !== savedHash)
+          savedHash !== undefined &&
+          computeDashboardStateHash(dash) !== savedHash
         ) {
           setExitEditConfirmOpen(true);
           return;

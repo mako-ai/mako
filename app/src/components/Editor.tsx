@@ -118,6 +118,16 @@ function LockConflictDialog() {
   const prompt = useDashboardStore(state => state.lockConflictPrompt);
   const setPrompt = useDashboardStore(state => state.setLockConflictPrompt);
 
+  useEffect(() => {
+    return () => {
+      const current = useDashboardStore.getState().lockConflictPrompt;
+      if (current) {
+        current.resolve(false);
+        useDashboardStore.getState().setLockConflictPrompt(null);
+      }
+    };
+  }, []);
+
   const handleTakeOver = () => {
     prompt?.resolve(true);
     setPrompt(null);
@@ -583,7 +593,7 @@ function Editor({
         if (dashboard) {
           const savedHash = store.getDashboardSavedStateHash(dbId);
           const currentHash = computeDashboardStateHash(dashboard);
-          if (!savedHash || currentHash !== savedHash) {
+          if (savedHash !== undefined && currentHash !== savedHash) {
             setPendingDashboardCloseTabId(id);
             return;
           }
