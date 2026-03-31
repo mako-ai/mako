@@ -36,6 +36,9 @@ function nodeStreamToWeb(
       nodeStream.on("data", (chunk: Buffer) => {
         if (!closed) {
           controller.enqueue(new Uint8Array(chunk));
+          if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+            (nodeStream as NodeJS.ReadableStream & { pause?: () => void }).pause?.();
+          }
         }
       });
       nodeStream.on("end", () => {
@@ -50,6 +53,9 @@ function nodeStreamToWeb(
           controller.error(err);
         }
       });
+    },
+    pull() {
+      (nodeStream as NodeJS.ReadableStream & { resume?: () => void }).resume?.();
     },
     cancel() {
       closed = true;
