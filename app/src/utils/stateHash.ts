@@ -26,7 +26,18 @@ export function computeConsoleStateHash(
 export function computeDashboardStateHash(dashboard: {
   title?: string;
   description?: string;
-  widgets: unknown[];
+  widgets: Array<{
+    id: string;
+    title?: string;
+    type: string;
+    dataSourceId: string;
+    localSql: string;
+    vegaLiteSpec?: unknown;
+    kpiConfig?: unknown;
+    tableConfig?: unknown;
+    crossFilter?: unknown;
+    layouts?: unknown;
+  }>;
   dataSources: Array<{
     id: string;
     name: string;
@@ -44,7 +55,18 @@ export function computeDashboardStateHash(dashboard: {
   const payload = {
     title: dashboard.title,
     description: dashboard.description,
-    widgets: dashboard.widgets,
+    widgets: dashboard.widgets.map(w => ({
+      id: w.id,
+      title: w.title,
+      type: w.type,
+      dataSourceId: w.dataSourceId,
+      localSql: w.localSql,
+      vegaLiteSpec: w.vegaLiteSpec,
+      kpiConfig: w.kpiConfig,
+      tableConfig: w.tableConfig,
+      crossFilter: w.crossFilter,
+      layouts: w.layouts,
+    })),
     dataSources: dashboard.dataSources.map(ds => ({
       id: ds.id,
       name: ds.name,

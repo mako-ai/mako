@@ -144,10 +144,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     state.conflict?.dashboardId === dashboardId ? state.conflict : null,
   );
   const resolveConflict = useDashboardStore(state => state.resolveConflict);
-  const acquireLock = useDashboardStore(state => state.acquireLock);
-  const forceAcquireLock = useDashboardStore(state => state.forceAcquireLock);
-  const releaseLock = useDashboardStore(state => state.releaseLock);
+  const enterEditMode = useDashboardStore(state => state.enterEditMode);
+  const exitEditMode = useDashboardStore(state => state.exitEditMode);
   const heartbeatLock = useDashboardStore(state => state.heartbeatLock);
+  const isStoreEditMode = useDashboardStore(state =>
+    dashboardId ? (state.editingDashboards[dashboardId] ?? false) : false,
+  );
   const historyEntry = useDashboardStore(state =>
     dashboardId ? state.historyMap[dashboardId] : undefined,
   );
@@ -161,7 +163,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
-  const [isEditModeLocal, setIsEditModeLocal] = useState(false);
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const [dataSourcePanelOpen, setDataSourcePanelOpen] = useState(false);
@@ -169,15 +170,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showEventLog, setShowEventLog] = useState(false);
   const [lockError, setLockError] = useState<string | null>(null);
+  const [exitEditConfirmOpen, setExitEditConfirmOpen] = useState(false);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
   const [mosaicInstance, setMosaicInstance] = useState<MosaicInstance | null>(
     null,
   );
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isEditModeLocalRef = useRef(false);
-  const workspaceIdRef = useRef<string | undefined>(undefined);
-  const dashboardIdRef = useRef<string | undefined>(dashboardId);
 
   const {
     width: gridWidth,
@@ -186,9 +185,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   } = useContainerWidth({ measureBeforeMount: true });
 
   const workspaceId = currentWorkspace?.id;
-  isEditModeLocalRef.current = isEditModeLocal;
-  workspaceIdRef.current = workspaceId;
-  dashboardIdRef.current = dashboardId;
 
   const crossFilterResolution =
     dashboard?.crossFilter.resolution ?? "intersect";
@@ -350,14 +346,13 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const handleForceEditMode = useCallback(async () => {
     if (!workspaceId || !dashboardId) return;
     setLockError(null);
-    setIsEditModeLocal(true);
-    const acquired = await forceAcquireLock(workspaceId, dashboardId);
-    if (!acquired) {
-      setIsEditModeLocal(false);
+    const result = await enterEditMode(workspaceId, dashboardId, {
+      force: true,
+    });
+    if (!result.ok) {
       setLockError("Failed to acquire edit lock. Please try again.");
-      return;
     }
-  }, [workspaceId, dashboardId, forceAcquireLock]);
+  }, [workspaceId, dashboardId, enterEditMode]);
 
   const handleEditModeToggle = useCallback(
     async (mode: "edit" | "view") => {
@@ -365,34 +360,57 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       setLockError(null);
 
       if (mode === "edit") {
-        // Optimistic toggle to avoid blocking the UI on network latency.
-        setIsEditModeLocal(true);
-        const acquired = await acquireLock(workspaceId, dashboardId);
-        if (!acquired) {
-          setIsEditModeLocal(false);
-          const d = useDashboardStore.getState().openDashboards[dashboardId];
-          const lock = d?.editLock;
-          if (lock && lock.userId !== user?.id) {
+        const result = await enterEditMode(workspaceId, dashboardId);
+        if (!result.ok) {
+          if (result.lockedBy) {
             setLockError(
-              `${lock.userName || "Another user"} is currently editing this dashboard`,
+              `${result.lockedBy} is currently editing this dashboard`,
             );
           } else {
             setLockError("Failed to acquire edit lock. Please try again.");
           }
-          return;
         }
       } else {
-        // Optimistic toggle; release happens in background.
-        setIsEditModeLocal(false);
-        void releaseLock(workspaceId, dashboardId);
+        const store = useDashboardStore.getState();
+        const dash = store.openDashboards[dashboardId];
+        const savedHash = store.getDashboardSavedStateHash(dashboardId);
+        if (
+          dash &&
+          savedHash &&
+          computeDashboardStateHash(dash) !== savedHash
+        ) {
+          setExitEditConfirmOpen(true);
+          return;
+        }
+        void exitEditMode(workspaceId, dashboardId);
       }
     },
-    [workspaceId, dashboardId, acquireLock, releaseLock, user],
+    [workspaceId, dashboardId, enterEditMode, exitEditMode],
   );
+
+  const handleExitEditSave = useCallback(async () => {
+    if (!workspaceId || !dashboardId) return;
+    setExitEditConfirmOpen(false);
+    await useDashboardStore.getState().saveDashboard(workspaceId, dashboardId);
+    void exitEditMode(workspaceId, dashboardId);
+  }, [workspaceId, dashboardId, exitEditMode]);
+
+  const handleExitEditDiscard = useCallback(async () => {
+    if (!workspaceId || !dashboardId) return;
+    setExitEditConfirmOpen(false);
+    void exitEditMode(workspaceId, dashboardId);
+    await useDashboardStore
+      .getState()
+      .reloadDashboard(workspaceId, dashboardId);
+  }, [workspaceId, dashboardId, exitEditMode]);
+
+  const handleExitEditCancel = useCallback(() => {
+    setExitEditConfirmOpen(false);
+  }, []);
 
   // Heartbeat to keep lock alive while editing
   useEffect(() => {
-    if (isEditModeLocal && workspaceId && dashboardId) {
+    if (isStoreEditMode && workspaceId && dashboardId) {
       heartbeatRef.current = setInterval(() => {
         heartbeatLock(workspaceId, dashboardId);
       }, 30_000);
@@ -403,25 +421,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         heartbeatRef.current = null;
       }
     };
-  }, [isEditModeLocal, workspaceId, dashboardId, heartbeatLock]);
-
-  // Release lock on unmount
-  useEffect(() => {
-    return () => {
-      if (
-        isEditModeLocalRef.current &&
-        workspaceIdRef.current &&
-        dashboardIdRef.current
-      ) {
-        void releaseLock(workspaceIdRef.current, dashboardIdRef.current);
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isStoreEditMode, workspaceId, dashboardId, heartbeatLock]);
 
   const handleLayoutChange = useCallback(
     (_layout: any, allLayouts: Record<string, any>) => {
-      if (!dashboard || !dashboardId || !allLayouts) return;
+      if (!dashboard || !dashboardId || !allLayouts || !isStoreEditMode) return;
 
       for (const widget of dashboard.widgets) {
         const currentLayouts =
@@ -460,7 +464,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         }
       }
     },
-    [dashboard, dashboardId, modifyWidget],
+    [dashboard, dashboardId, modifyWidget, isStoreEditMode],
   );
 
   const handleDuplicateWidget = useCallback(
@@ -722,7 +726,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const hasCodeError = Boolean(codeError);
   const isReadOnly = dashboard.readOnly === true;
-  const isEditMode = isEditModeLocal && !isReadOnly;
+  const isEditMode = isStoreEditMode && !isReadOnly;
   const renderWidget = (widget: DashboardWidget) => {
     const snapshot = dashboard.snapshots?.[widget.id];
     if (!runtimeSession && !snapshot) {
@@ -1472,6 +1476,26 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             }
           >
             Overwrite with my changes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Exit Edit Mode — unsaved changes confirmation */}
+      <Dialog open={exitEditConfirmOpen} onClose={handleExitEditCancel}>
+        <DialogTitle>Unsaved Changes</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            You have unsaved changes. Do you want to save before leaving edit
+            mode?
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleExitEditDiscard} color="error">
+            Discard
+          </Button>
+          <Button onClick={handleExitEditCancel}>Cancel</Button>
+          <Button onClick={handleExitEditSave} variant="contained">
+            Save
           </Button>
         </DialogActions>
       </Dialog>

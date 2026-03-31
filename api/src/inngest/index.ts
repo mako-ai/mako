@@ -20,30 +20,40 @@ import {
 } from "./functions/dashboard-refresh";
 import { loggers } from "../logging";
 
-// Check if we're running in development mode
 const isDevelopment =
   process.env.NODE_ENV !== "production" ||
   process.env.DISABLE_SCHEDULED_SYNC === "true";
 
-// Base functions that should always be available
+const disableWebhookProcessing =
+  process.env.DISABLE_WEBHOOK_PROCESSING === "true";
+
 const baseFunctions = [
   flowFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
-  webhookEventProcessFunction,
-  webhookEventProcessCdcFunction,
-  webhookCleanupFunction,
-  webhookRetryFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
-  cdcMaterializeFunction,
 ];
 
-// Conditionally add schedulers (only in production)
+const webhookFunctions = disableWebhookProcessing
+  ? []
+  : [
+      webhookEventProcessFunction,
+      webhookEventProcessCdcFunction,
+      webhookCleanupFunction,
+      webhookRetryFunction,
+      cdcMaterializeFunction,
+    ];
+
 export const functions = isDevelopment
-  ? baseFunctions
-  : [...baseFunctions, flowSchedulerFunction, dashboardSchedulerFunction];
+  ? [...baseFunctions, ...webhookFunctions]
+  : [
+      ...baseFunctions,
+      ...webhookFunctions,
+      flowSchedulerFunction,
+      dashboardSchedulerFunction,
+    ];
 
 /**
  * Log Inngest configuration status
@@ -55,6 +65,11 @@ export function logInngestStatus(): void {
     logger.warn("Scheduled flows are DISABLED in development mode");
   } else {
     logger.info("Scheduled flows are ENABLED in production mode");
+  }
+  if (disableWebhookProcessing) {
+    logger.warn(
+      "Webhook processing is DISABLED (DISABLE_WEBHOOK_PROCESSING=true)",
+    );
   }
 }
 

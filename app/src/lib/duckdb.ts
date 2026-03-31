@@ -338,11 +338,6 @@ async function insertArrowStreamWithChunks(
   }
 }
 
-function isZeroColumnArrowError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  return message.includes("at least one column");
-}
-
 /**
  * Load an Arrow IPC ReadableStream into DuckDB with bounded browser memory.
  * Falls back to buffering the full stream if the current DuckDB-WASM build
@@ -382,13 +377,6 @@ export async function loadArrowStreamTable(
         );
         return rowCount;
       } catch (error) {
-        if (isZeroColumnArrowError(error)) {
-          console.warn(
-            `[opfs-diag] loadArrowStreamTable treating zero-column Arrow stream as empty result: table="${tableName}"`,
-            error,
-          );
-          return 0;
-        }
         if (fallbackStream) {
           console.warn(
             `[opfs-diag] loadArrowStreamTable streaming path failed; starting buffered Arrow fallback for table="${tableName}"`,
@@ -654,6 +642,12 @@ function normalizeDuckDBValue(value: unknown): unknown {
   }
 
   if (value && typeof value === "object") {
+    // Arrow Decimal128/typed-array values: coerce to number via toString()
+    if (ArrayBuffer.isView(value)) {
+      const num = Number(value.toString());
+      return Number.isNaN(num) ? value.toString() : num;
+    }
+
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, nested]) => [
         key,

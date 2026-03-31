@@ -126,19 +126,50 @@ export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
 }
 
 /**
+ * Detect whether a layer is a hover-rule layer by structure:
+ * rule mark + at least one param with point selection on a single field.
+ */
+function isHoverRuleLayer(layer: Spec): boolean {
+  if (getMarkType(layer) !== "rule") return false;
+  if (!Array.isArray(layer.params) || layer.params.length === 0) return false;
+  return layer.params.some(
+    (p: any) =>
+      p?.select?.type === "point" &&
+      Array.isArray(p.select.fields) &&
+      p.select.fields.length === 1,
+  );
+}
+
+/**
  * For already-layered specs (e.g. built by the agent using the template),
- * detect the `__mako_tooltip` hover-rule layer and extract enough metadata
- * for the custom tooltip handler to render SVG dots + total.
+ * detect the hover-rule layer and extract enough metadata for the custom
+ * tooltip handler to render SVG dots + total.
+ *
+ * Detection is structural (rule mark + point selection), not name-based,
+ * so agent-generated specs with non-standard param names are handled.
+ * Non-standard names are auto-corrected to `__mako_tooltip` so the
+ * condition reference stays in sync.
  */
 function extractMetaFromLayeredSpec(spec: Spec): Spec {
   if (!Array.isArray(spec.layer)) return spec;
 
-  const hoverLayer = spec.layer.find(
-    (layer: Spec) =>
-      Array.isArray(layer.params) &&
-      layer.params.some((p: any) => p?.name?.startsWith("__mako_tooltip")),
-  );
+  const hoverLayer = spec.layer.find(isHoverRuleLayer);
   if (!hoverLayer) return spec;
+
+  const hoverParam = hoverLayer.params.find(
+    (p: any) =>
+      p?.select?.type === "point" &&
+      Array.isArray(p.select.fields) &&
+      p.select.fields.length === 1,
+  );
+  if (hoverParam && hoverParam.name !== "__mako_tooltip") {
+    const oldName = hoverParam.name;
+    hoverParam.name = "__mako_tooltip";
+    const cond = hoverLayer.encoding?.opacity?.condition;
+    if (cond && cond.param === oldName) {
+      cond.param = "__mako_tooltip";
+    }
+  }
 
   const tooltipEntries = hoverLayer.encoding?.tooltip;
   if (!Array.isArray(tooltipEntries) || tooltipEntries.length === 0) {
