@@ -91,7 +91,7 @@ const templates: ChartTemplate[] = [
     notes: [
       "Replace {{series_1}}, {{series_2}}, etc. in the tooltip with the actual unique values of the category column.",
       "The pivot transform converts long-format data (one row per series per date) to wide-format (one row per date, one column per series) — needed so the tooltip can show all series at once.",
-      "Use param name '__mako_tooltip' or another unique name starting with '__mako_' to avoid collision with the dashboard cross-filter params ('brush', 'crossfilter').",
+      "ALWAYS use param name '__mako_tooltip' for the hover-rule selection. The custom tooltip renderer (colored SVG dots, Total row) detects layers by this prefix. Using a different name will fall back to Vega's plain-text tooltip.",
       "Alternative to Vega pivot: pivot in SQL using MAX(value) FILTER (WHERE category = '...') OVER (PARTITION BY day) AS \"Series Name\", then reference the pivoted columns directly in tooltip.",
       "For dashboard widgets, this layered spec disables the temporal brush cross-filter (because encoding.x is per-layer, not top-level). This is an acceptable trade-off.",
       "Colored SVG dots and a Total row are auto-injected at render time by the custom tooltip handler. Do NOT add emoji circles or manual total fields — the renderer handles it.",

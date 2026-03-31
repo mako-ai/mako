@@ -20,30 +20,51 @@ import {
 } from "./functions/dashboard-refresh";
 import { loggers } from "../logging";
 
-// Check if we're running in development mode
-const isDevelopment =
-  process.env.NODE_ENV !== "production" ||
-  process.env.DISABLE_SCHEDULED_SYNC === "true";
-
-// Base functions that should always be available
 const baseFunctions = [
   flowFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
+  dashboardRefreshFunction,
+  cleanupAbandonedMaterializationRunsFunction,
+];
+
+const allWebhookFunctions = [
   webhookEventProcessFunction,
   webhookEventProcessCdcFunction,
   webhookCleanupFunction,
   webhookRetryFunction,
-  dashboardRefreshFunction,
-  cleanupAbandonedMaterializationRunsFunction,
   cdcMaterializeFunction,
 ];
 
-// Conditionally add schedulers (only in production)
-export const functions = isDevelopment
-  ? baseFunctions
-  : [...baseFunctions, flowSchedulerFunction, dashboardSchedulerFunction];
+/**
+ * Build the function list lazily so it reads env vars AFTER dotenv.config() runs.
+ * Cached after first call.
+ */
+let _functions: typeof baseFunctions | null = null;
+export function getFunctions() {
+  if (_functions) return _functions;
+
+  const isDevelopment =
+    process.env.NODE_ENV !== "production" ||
+    process.env.DISABLE_SCHEDULED_SYNC === "true";
+
+  const disableWebhookProcessing =
+    process.env.DISABLE_WEBHOOK_PROCESSING === "true";
+
+  const webhookFunctions = disableWebhookProcessing ? [] : allWebhookFunctions;
+
+  _functions = isDevelopment
+    ? [...baseFunctions, ...webhookFunctions]
+    : [
+        ...baseFunctions,
+        ...webhookFunctions,
+        flowSchedulerFunction,
+        dashboardSchedulerFunction,
+      ];
+
+  return _functions;
+}
 
 /**
  * Log Inngest configuration status
@@ -51,10 +72,20 @@ export const functions = isDevelopment
  */
 export function logInngestStatus(): void {
   const logger = loggers.inngest();
-  if (isDevelopment) {
+
+  const isDev =
+    process.env.NODE_ENV !== "production" ||
+    process.env.DISABLE_SCHEDULED_SYNC === "true";
+  if (isDev) {
     logger.warn("Scheduled flows are DISABLED in development mode");
   } else {
     logger.info("Scheduled flows are ENABLED in production mode");
+  }
+
+  if (process.env.DISABLE_WEBHOOK_PROCESSING === "true") {
+    logger.warn(
+      "Webhook processing is DISABLED (DISABLE_WEBHOOK_PROCESSING=true)",
+    );
   }
 }
 

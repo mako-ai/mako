@@ -73,69 +73,7 @@ const READ_ONLY_TOOLS = new Set([
   "get_chart_template",
 ]);
 
-const agentLockHeld = new Set<string>();
-const agentLockHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
-
-const AGENT_LOCK_HEARTBEAT_MS = 30_000;
-
-async function ensureAgentLock(
-  workspaceId: string,
-  dashboardId: string,
-): Promise<{ success: true } | { success: false; error: string }> {
-  if (agentLockHeld.has(dashboardId)) return { success: true };
-
-  const store = useDashboardStore.getState();
-  const preExistingLock = store.openDashboards[dashboardId]?.editLock;
-
-  const acquired = await store.forceAcquireLock(workspaceId, dashboardId);
-  if (!acquired) {
-    return {
-      success: false,
-      error: "Failed to acquire edit lock for the dashboard",
-    };
-  }
-
-  const currentUserId =
-    useDashboardStore.getState().openDashboards[dashboardId]?.editLock?.userId;
-  const userAlreadyHoldsLock =
-    !!preExistingLock &&
-    preExistingLock.userId === currentUserId &&
-    new Date(preExistingLock.expiresAt) > new Date();
-
-  if (!userAlreadyHoldsLock) {
-    agentLockHeld.add(dashboardId);
-  }
-
-  if (!agentLockHeartbeats.has(dashboardId)) {
-    const interval = setInterval(() => {
-      useDashboardStore.getState().heartbeatLock(workspaceId, dashboardId);
-    }, AGENT_LOCK_HEARTBEAT_MS);
-    agentLockHeartbeats.set(dashboardId, interval);
-  }
-
-  return { success: true };
-}
-
-export function releaseAgentLocks(): void {
-  for (const dashboardId of agentLockHeld) {
-    const state = useDashboardStore.getState();
-    const workspaceId = state.openDashboards[dashboardId]?.workspaceId;
-    if (workspaceId) {
-      void state.releaseLock(workspaceId, dashboardId);
-    }
-    const heartbeat = agentLockHeartbeats.get(dashboardId);
-    if (heartbeat) {
-      clearInterval(heartbeat);
-      agentLockHeartbeats.delete(dashboardId);
-    }
-  }
-  agentLockHeld.clear();
-
-  for (const [id, heartbeat] of agentLockHeartbeats) {
-    clearInterval(heartbeat);
-    agentLockHeartbeats.delete(id);
-  }
-}
+const EDIT_MODE_EXEMPT_TOOLS = new Set(["enter_edit_mode", "create_dashboard"]);
 
 export async function executeDashboardAgentTool(
   toolName: string,
@@ -173,6 +111,11 @@ export async function executeDashboardAgentTool(
         state.historyMap[dashboard._id] = { stack: [], index: -1 };
       });
 
+      await useDashboardStore
+        .getState()
+        .enterEditMode(workspaceId, dashboard._id)
+        .catch(() => {});
+
       const consoleStore = useConsoleStore.getState();
       const tabId = consoleStore.openTab({
         title: dashboard.title,
@@ -196,16 +139,69 @@ export async function executeDashboardAgentTool(
     }
   }
 
-  if (!READ_ONLY_TOOLS.has(toolName) && toolName !== "create_dashboard") {
+  if (toolName === "enter_edit_mode") {
     const ctx = getActiveContext();
-    if (ctx) {
-      const lockResult = await ensureAgentLock(
-        ctx.workspaceId,
-        ctx.dashboardId,
-      );
-      if (!lockResult.success) {
-        return { success: false, error: lockResult.error };
-      }
+    if (!ctx) {
+      return { success: false, error: "No active dashboard" };
+    }
+    const store = useDashboardStore.getState();
+    const dashboard = store.openDashboards[ctx.dashboardId];
+    if (!dashboard) {
+      return { success: false, error: "Dashboard not found" };
+    }
+    if (dashboard.readOnly === true) {
+      return {
+        success: false,
+        error: "This dashboard is read-only. You cannot enter edit mode.",
+      };
+    }
+    if (store.editingDashboards[ctx.dashboardId]) {
+      return { success: true, alreadyEditing: true };
+    }
+
+    const result = await store.enterEditMode(ctx.workspaceId, ctx.dashboardId);
+    if (result.ok) {
+      return { success: true };
+    }
+
+    const lockedBy = result.lockedBy ?? "Another user";
+    const userApproved = await new Promise<boolean>(resolve => {
+      useDashboardStore.getState().setLockConflictPrompt({
+        dashboardId: ctx.dashboardId,
+        lockedBy,
+        resolve,
+      });
+    });
+
+    if (!userApproved) {
+      return {
+        success: false,
+        error: "User declined to force-acquire the edit lock.",
+        lockedBy,
+      };
+    }
+
+    const forceResult = await useDashboardStore
+      .getState()
+      .enterEditMode(ctx.workspaceId, ctx.dashboardId, { force: true });
+    if (forceResult.ok) {
+      return { success: true, forcedFrom: lockedBy };
+    }
+    return {
+      success: false,
+      error: "Failed to force-acquire edit lock.",
+    };
+  }
+
+  if (!READ_ONLY_TOOLS.has(toolName) && !EDIT_MODE_EXEMPT_TOOLS.has(toolName)) {
+    const ctx = getActiveContext();
+    if (ctx && !useDashboardStore.getState().isEditMode(ctx.dashboardId)) {
+      return {
+        success: false,
+        error:
+          "Dashboard is in read mode. Use enter_edit_mode first to enable editing.",
+        errorKind: "not_in_edit_mode",
+      };
     }
   }
 
@@ -607,11 +603,15 @@ export async function executeDashboardAgentTool(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Widget query failed";
+      const isLoading = /still loading/i.test(message);
       return {
         success: true,
         widgetId: widget.id,
         queryError: message,
         errorKind: classifyDuckDBError(message),
+        ...(isLoading && {
+          hint: "The data source is still loading. The widget was added but could NOT be validated. Do not assume it is working.",
+        }),
       };
     }
   }
@@ -746,11 +746,15 @@ export async function executeDashboardAgentTool(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Widget query failed";
+      const isLoading = /still loading/i.test(message);
       return {
         success: true,
         widgetId: input.widgetId,
         queryError: message,
         errorKind: classifyDuckDBError(message),
+        ...(isLoading && {
+          hint: "The data source is still loading. The spec change was applied but could NOT be validated. Do not assume the fix is working.",
+        }),
       };
     }
   }
@@ -831,26 +835,6 @@ export async function executeDashboardAgentTool(
         timeDimension: input.column,
       });
     return { success: true };
-  }
-
-  if (toolName === "save_dashboard") {
-    const ctx = getActiveContext();
-    if (!ctx) {
-      return { success: false, error: "No active dashboard" };
-    }
-    const store = useDashboardStore.getState();
-    const saved = await store.saveDashboard(ctx.workspaceId, ctx.dashboardId);
-    if (!saved) {
-      return { success: false, error: "Failed to save dashboard" };
-    }
-    store.markDashboardSaved(ctx.dashboardId);
-    void store.materializeDashboard(ctx.workspaceId, ctx.dashboardId, {
-      force: true,
-    });
-    return {
-      success: true,
-      message: "Dashboard saved and materialization queued.",
-    };
   }
 
   return null;

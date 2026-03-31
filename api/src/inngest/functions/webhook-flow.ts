@@ -74,7 +74,27 @@ async function runWebhookEventProcess({
       try {
         const flowDoc = await Flow.findById(flowId);
         if (!flowDoc) {
-          throw new Error(`Flow not found: ${flowId}`);
+          logger.warn("Flow not found – marking webhook event as dropped", {
+            flowId,
+            eventId: webhookEvent.eventId,
+          });
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                applyStatus: "dropped",
+                processedAt: new Date(),
+                applyError: {
+                  code: "FLOW_NOT_FOUND",
+                  message: `Flow ${flowId} no longer exists`,
+                },
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+            },
+          );
+          return { processed: false, reason: `Flow ${flowId} not found` };
         }
         const flow: any = flowDoc.toObject();
 
@@ -84,7 +104,35 @@ async function runWebhookEventProcess({
         );
 
         if (!dataSource || !database) {
-          throw new Error("Invalid data source or database");
+          logger.warn(
+            "Data source or database not found – marking webhook event as dropped",
+            {
+              flowId,
+              eventId: webhookEvent.eventId,
+              dataSourceId: flow.dataSourceId,
+              databaseId: flow.destinationDatabaseId,
+            },
+          );
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                applyStatus: "dropped",
+                processedAt: new Date(),
+                applyError: {
+                  code: "MISSING_DEPENDENCY",
+                  message: `Data source or database for flow ${flowId} no longer exists`,
+                },
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+            },
+          );
+          return {
+            processed: false,
+            reason: "Data source or database not found",
+          };
         }
 
         // Get MongoDB connection through mongoose

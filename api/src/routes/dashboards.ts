@@ -684,19 +684,32 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       );
     }
 
+    // Normalize widget layouts and defaults before schema validation
+    if (Array.isArray(body.widgets)) {
+      body.widgets = body.widgets.map((w: Record<string, unknown>) => {
+        const normalized = normalizeWidgetLayouts(w);
+        if (!normalized.crossFilter) {
+          normalized.crossFilter = { enabled: true };
+        }
+        return normalized;
+      });
+    }
+
     const validation = DashboardDefinitionSchema.partial().safeParse(body);
     if (!validation.success) {
+      const issues = validation.error.issues.map(
+        (i: { path: PropertyKey[]; message: string }) => ({
+          path: i.path.join("."),
+          message: i.message,
+        }),
+      );
+      logger.warn("Dashboard PATCH validation failed", {
+        dashboardId: id,
+        workspaceId,
+        issues,
+      });
       return c.json(
-        {
-          success: false,
-          error: "Invalid dashboard definition",
-          issues: validation.error.issues.map(
-            (i: { path: PropertyKey[]; message: string }) => ({
-              path: i.path.join("."),
-              message: i.message,
-            }),
-          ),
-        },
+        { success: false, error: "Invalid dashboard definition", issues },
         400,
       );
     }
@@ -708,6 +721,11 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
         validatedBody.dataSources as any[],
       );
       if (!normalizedDataSources.success) {
+        logger.warn("Dashboard PATCH data source normalization failed", {
+          dashboardId: id,
+          workspaceId,
+          error: normalizedDataSources.error,
+        });
         return c.json(
           { success: false, error: normalizedDataSources.error },
           400,
@@ -722,16 +740,16 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
             validatedBody.materializationSchedule as Record<string, unknown>,
           );
       } catch (error) {
-        return c.json(
-          {
-            success: false,
-            error:
-              error instanceof Error
-                ? error.message
-                : "Invalid materialization schedule",
-          },
-          400,
-        );
+        const msg =
+          error instanceof Error
+            ? error.message
+            : "Invalid materialization schedule";
+        logger.warn("Dashboard PATCH materialization schedule invalid", {
+          dashboardId: id,
+          workspaceId,
+          error: msg,
+        });
+        return c.json({ success: false, error: msg }, 400);
       }
     }
 

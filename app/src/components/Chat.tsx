@@ -57,10 +57,7 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
-import {
-  executeDashboardAgentTool,
-  releaseAgentLocks,
-} from "../dashboard-runtime/agent-tools";
+import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -2088,10 +2085,8 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
-      releaseAgentLocks();
     },
     onFinish: () => {
-      releaseAgentLocks();
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }

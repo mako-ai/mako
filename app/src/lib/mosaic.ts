@@ -1,4 +1,5 @@
 import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import { normalizeDuckDBValue } from "./normalize-duckdb-value";
 
 type MosaicCoordinator = any;
 type MosaicSelection = any;
@@ -58,32 +59,6 @@ function applyFilterClause(sql: string, filter: unknown): string {
     return `${sql.slice(0, firstTrailing)} AND (${filterClause}) ${sql.slice(firstTrailing)}`;
   }
   return `${sql.slice(0, firstTrailing)} WHERE ${filterClause} ${sql.slice(firstTrailing)}`;
-}
-
-function normalizeDuckDBValue(value: unknown): unknown {
-  if (typeof value === "bigint") {
-    const max = BigInt(Number.MAX_SAFE_INTEGER);
-    const min = BigInt(Number.MIN_SAFE_INTEGER);
-    if (value <= max && value >= min) {
-      return Number(value);
-    }
-    return value.toString();
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(normalizeDuckDBValue);
-  }
-
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [
-        key,
-        normalizeDuckDBValue(nested),
-      ]),
-    );
-  }
-
-  return value;
 }
 
 export interface MosaicQueryResult {

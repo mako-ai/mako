@@ -47,7 +47,10 @@ import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
-import { computeConsoleStateHash } from "../utils/stateHash";
+import {
+  computeConsoleStateHash,
+  computeDashboardStateHash,
+} from "../utils/stateHash";
 
 interface QueryPageInfo {
   pageSize: number;
@@ -109,6 +112,49 @@ interface EditorProps {
     ((payload: ChartSpecChangePayload) => void) | undefined
   >;
   resultsContextRef?: React.MutableRefObject<ConsoleResultsContext | null>;
+}
+
+function LockConflictDialog() {
+  const prompt = useDashboardStore(state => state.lockConflictPrompt);
+  const setPrompt = useDashboardStore(state => state.setLockConflictPrompt);
+
+  useEffect(() => {
+    return () => {
+      const current = useDashboardStore.getState().lockConflictPrompt;
+      if (current) {
+        current.resolve(false);
+        useDashboardStore.getState().setLockConflictPrompt(null);
+      }
+    };
+  }, []);
+
+  const handleTakeOver = () => {
+    prompt?.resolve(true);
+    setPrompt(null);
+  };
+
+  const handleCancel = () => {
+    prompt?.resolve(false);
+    setPrompt(null);
+  };
+
+  return (
+    <Dialog open={prompt !== null} onClose={handleCancel}>
+      <DialogTitle>Dashboard Locked</DialogTitle>
+      <DialogContent>
+        <Typography>
+          {prompt?.lockedBy ?? "Another user"} is currently editing this
+          dashboard. Do you want to take over?
+        </Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={handleCancel}>Cancel</Button>
+        <Button onClick={handleTakeOver} variant="contained" color="warning">
+          Take over
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
 }
 
 function Editor({
@@ -183,6 +229,11 @@ function Editor({
   // Conflict resolution state
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
   const [conflictData, setConflictData] = useState<ConflictData | null>(null);
+
+  const [pendingDashboardCloseTabId, setPendingDashboardCloseTabId] = useState<
+    string | null
+  >(null);
+
   const [pendingSaveData, setPendingSaveData] = useState<{
     tabId: string;
     content: string;
@@ -517,26 +568,73 @@ function Editor({
     setActiveTab(newValue);
   };
 
+  const cleanupTab = (tabId: string) => {
+    closeTab(tabId);
+    delete consoleRefs.current[tabId];
+    setTabResults(prev => {
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabPagination(prev => {
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+  };
+
   const closeConsole = (id: string) => {
     const closingTab = tabs[id];
     if (closingTab?.kind === "dashboard") {
       const dbId = closingTab.metadata?.dashboardId as string | undefined;
       if (dbId) {
-        useDashboardStore.getState().closeDashboard(dbId);
+        const store = useDashboardStore.getState();
+        const dashboard = store.openDashboards[dbId];
+        if (dashboard) {
+          const savedHash = store.getDashboardSavedStateHash(dbId);
+          const currentHash = computeDashboardStateHash(dashboard);
+          if (savedHash !== undefined && currentHash !== savedHash) {
+            setPendingDashboardCloseTabId(id);
+            return;
+          }
+        }
+        store.closeDashboard(dbId);
       }
     }
-    closeTab(id);
-    delete consoleRefs.current[id];
-    setTabResults(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    setTabPagination(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    cleanupTab(id);
+  };
+
+  const finalizeDashboardClose = (tabId: string) => {
+    const closingTab = tabs[tabId];
+    const dbId = closingTab?.metadata?.dashboardId as string | undefined;
+    if (dbId) {
+      useDashboardStore.getState().closeDashboard(dbId);
+    }
+    cleanupTab(tabId);
+  };
+
+  const handleDashboardCloseSave = async () => {
+    if (!pendingDashboardCloseTabId || !currentWorkspace) return;
+    const tab = tabs[pendingDashboardCloseTabId];
+    const dbId = tab?.metadata?.dashboardId as string | undefined;
+    if (dbId) {
+      const saved = await useDashboardStore
+        .getState()
+        .saveDashboard(currentWorkspace.id, dbId);
+      if (!saved) return;
+    }
+    finalizeDashboardClose(pendingDashboardCloseTabId);
+    setPendingDashboardCloseTabId(null);
+  };
+
+  const handleDashboardCloseDiscard = () => {
+    if (!pendingDashboardCloseTabId) return;
+    finalizeDashboardClose(pendingDashboardCloseTabId);
+    setPendingDashboardCloseTabId(null);
+  };
+
+  const handleDashboardCloseCancel = () => {
+    setPendingDashboardCloseTabId(null);
   };
 
   const handleAddTab = () => {
@@ -1466,6 +1564,32 @@ function Editor({
           {snackbarMessage}
         </Alert>
       </Snackbar>
+
+      {/* Lock Conflict Dialog (human-in-the-loop for agent enter_edit_mode) */}
+      <LockConflictDialog />
+
+      {/* Unsaved Dashboard Changes Dialog */}
+      <Dialog
+        open={pendingDashboardCloseTabId !== null}
+        onClose={handleDashboardCloseCancel}
+      >
+        <DialogTitle>Unsaved Changes</DialogTitle>
+        <DialogContent>
+          <Typography>
+            This dashboard has unsaved changes. Do you want to save before
+            closing?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleDashboardCloseDiscard} color="error">
+            Discard
+          </Button>
+          <Button onClick={handleDashboardCloseCancel}>Cancel</Button>
+          <Button onClick={handleDashboardCloseSave} variant="contained">
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

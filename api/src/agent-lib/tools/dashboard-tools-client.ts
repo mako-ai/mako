@@ -214,6 +214,14 @@ const previewDataSourceSchema = z.object({
 });
 
 export const clientDashboardTools = {
+  enter_edit_mode: {
+    description:
+      "Switch the dashboard into edit mode by acquiring the edit lock. " +
+      "MUST be called before any write operations (add_widget, modify_widget, etc). " +
+      "If another user holds the lock, a confirmation dialog is shown to the user — " +
+      "the tool blocks until they approve or reject the force-acquire.",
+    inputSchema: z.object({}),
+  },
   create_dashboard: {
     description:
       "Create a new empty dashboard. After creation, use create_data_source to add data sources " +
@@ -303,15 +311,6 @@ export const clientDashboardTools = {
   set_time_dimension: {
     description: "Set the default time column for a data source.",
     inputSchema: setTimeDimensionSchema,
-  },
-  save_dashboard: {
-    description:
-      "Persist the current dashboard to the server and rebuild cached data (Parquet artifacts). " +
-      "Call after finishing a batch of changes. " +
-      "Unsaved changes are reflected live in the dashboard but not persisted until you call this.",
-    inputSchema: z.object({
-      dashboardId: z.string().describe("The dashboard ID to save"),
-    }),
   },
   get_chart_templates: {
     description:

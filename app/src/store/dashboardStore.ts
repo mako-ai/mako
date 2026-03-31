@@ -7,6 +7,7 @@ import {
   normalizeWidgetLayouts,
 } from "@mako/schemas";
 import { computeDashboardStateHash } from "../utils/stateHash";
+import { disposeDashboardRuntime } from "../dashboard-runtime/gateway";
 import type {
   Dashboard,
   DashboardDataSource,
@@ -121,17 +122,25 @@ function applyMaterializationStatusToDashboard(
   });
 }
 
+export interface LockConflictPrompt {
+  dashboardId: string;
+  lockedBy: string;
+  resolve: (force: boolean) => void;
+}
+
 interface DashboardStoreState {
   dashboards: Record<string, Dashboard[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
 
   openDashboards: Record<string, Dashboard>;
+  editingDashboards: Record<string, boolean>;
   activeDashboardId: string | null;
   historyMap: Record<string, HistoryEntry>;
   autoRefreshInterval: number | null;
 
   conflict: DashboardConflict | null;
+  lockConflictPrompt: LockConflictPrompt | null;
 
   fetchDashboards: (workspaceId: string) => Promise<Dashboard[]>;
   createDashboard: (
@@ -217,13 +226,19 @@ interface DashboardStoreState {
     dashboardId: string,
   ) => Promise<boolean>;
   releaseLock: (workspaceId: string, dashboardId: string) => Promise<void>;
-  autoSaveDashboard: (workspaceId: string, dashboardId: string) => void;
   heartbeatLock: (workspaceId: string, dashboardId: string) => Promise<void>;
+
+  enterEditMode: (
+    workspaceId: string,
+    dashboardId: string,
+    opts?: { force?: boolean },
+  ) => Promise<{ ok: boolean; lockedBy?: string }>;
+  exitEditMode: (workspaceId: string, dashboardId: string) => Promise<void>;
+  setLockConflictPrompt: (prompt: LockConflictPrompt | null) => void;
+  isEditMode: (dashboardId: string) => boolean;
 }
 
 const savedStateHashes: Record<string, string> = {};
-const draftSaveTimers: Record<string, ReturnType<typeof setTimeout>> = {};
-const DRAFT_SAVE_DEBOUNCE_MS = 2000;
 
 export const useDashboardStore = create<DashboardStoreState>()(
   persist(
@@ -232,10 +247,12 @@ export const useDashboardStore = create<DashboardStoreState>()(
       loading: {},
       error: {},
       openDashboards: {},
+      editingDashboards: {},
       activeDashboardId: null,
       historyMap: {},
       autoRefreshInterval: null,
       conflict: null,
+      lockConflictPrompt: null,
 
       fetchDashboards: async (workspaceId: string) => {
         set(state => {
@@ -349,6 +366,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             if (list) {
               state.dashboards[workspaceId] = list.filter(d => d._id !== id);
             }
+            delete state.editingDashboards[id];
             delete state.openDashboards[id];
             delete state.historyMap[id];
             if (state.activeDashboardId === id) {
@@ -426,7 +444,15 @@ export const useDashboardStore = create<DashboardStoreState>()(
       },
 
       closeDashboard: (dashboardId: string) => {
+        const wasEditing = get().editingDashboards[dashboardId];
+        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
+
+        if (wasEditing && workspaceId) {
+          void get().releaseLock(workspaceId, dashboardId);
+        }
+
         set(state => {
+          delete state.editingDashboards[dashboardId];
           delete state.openDashboards[dashboardId];
           delete state.historyMap[dashboardId];
           if (state.activeDashboardId === dashboardId) {
@@ -434,6 +460,8 @@ export const useDashboardStore = create<DashboardStoreState>()(
           }
         });
         delete savedStateHashes[dashboardId];
+
+        void disposeDashboardRuntime(dashboardId);
       },
 
       saveDashboard: async (workspaceId: string, dashboardId: string) => {
@@ -462,8 +490,14 @@ export const useDashboardStore = create<DashboardStoreState>()(
               const local = state.openDashboards[dashboardId];
               if (local) {
                 local.version = response.data.version;
+                local.isSaved = true;
               }
             });
+            const updated = get().openDashboards[dashboardId];
+            if (updated) {
+              savedStateHashes[dashboardId] =
+                computeDashboardStateHash(updated);
+            }
           }
           return true;
         } catch (err: any) {
@@ -530,13 +564,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        const workspaceId = dashboard.workspaceId;
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
         return null;
       },
 
       addDataSource: (dashboardId: string, dataSource: DashboardDataSource) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -545,7 +576,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       updateDataSource: (
@@ -553,7 +583,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
         dataSourceId: string,
         changes: Partial<DashboardDataSource>,
       ) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -578,11 +607,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeDataSource: (dashboardId: string, dataSourceId: string) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -600,11 +627,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       addWidget: (dashboardId: string, widget: DashboardWidget) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -613,7 +638,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       modifyWidget: (
@@ -621,7 +645,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
         widgetId: string,
         changes: Partial<DashboardWidget>,
       ) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -633,11 +656,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeWidget: (dashboardId: string, widgetId: string) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -646,11 +667,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       addRelationship: (dashboardId: string, rel: TableRelationship) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -659,11 +678,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeRelationship: (dashboardId: string, relId: string) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -672,11 +689,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       addGlobalFilter: (dashboardId: string, filter: GlobalFilter) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -685,11 +700,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       removeGlobalFilter: (dashboardId: string, filterId: string) => {
-        const workspaceId = get().openDashboards[dashboardId]?.workspaceId;
         get().pushHistory(dashboardId);
         set(state => {
           const d = state.openDashboards[dashboardId];
@@ -698,7 +711,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.isSaved = false;
           }
         });
-        if (workspaceId) get().autoSaveDashboard(workspaceId, dashboardId);
       },
 
       setAutoRefreshInterval: (interval: number | null) => {
@@ -842,22 +854,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
         }
       },
 
-      autoSaveDashboard: (workspaceId: string, dashboardId: string) => {
-        const dashboard = get().openDashboards[dashboardId];
-        if (!dashboard || dashboard.isSaved) return;
-
-        if (draftSaveTimers[dashboardId]) {
-          clearTimeout(draftSaveTimers[dashboardId]);
-        }
-        draftSaveTimers[dashboardId] = setTimeout(() => {
-          delete draftSaveTimers[dashboardId];
-          const current = get().openDashboards[dashboardId];
-          if (current && !current.isSaved) {
-            get().saveDashboard(workspaceId, dashboardId);
-          }
-        }, DRAFT_SAVE_DEBOUNCE_MS);
-      },
-
       markDashboardSaved: (dashboardId: string) => {
         const dashboard = get().openDashboards[dashboardId];
         if (dashboard) {
@@ -946,6 +942,45 @@ export const useDashboardStore = create<DashboardStoreState>()(
         } catch {
           // best-effort
         }
+      },
+
+      enterEditMode: async (
+        workspaceId: string,
+        dashboardId: string,
+        opts?: { force?: boolean },
+      ) => {
+        if (get().editingDashboards[dashboardId]) {
+          return { ok: true };
+        }
+        const lockFn = opts?.force ? get().forceAcquireLock : get().acquireLock;
+        const acquired = await lockFn(workspaceId, dashboardId);
+        if (acquired) {
+          set(state => {
+            state.editingDashboards[dashboardId] = true;
+          });
+          return { ok: true };
+        }
+        const d = get().openDashboards[dashboardId];
+        const lockedBy =
+          d?.editLock?.userName || d?.editLock?.userId || "Another user";
+        return { ok: false, lockedBy };
+      },
+
+      exitEditMode: async (workspaceId: string, dashboardId: string) => {
+        await get().releaseLock(workspaceId, dashboardId);
+        set(state => {
+          state.editingDashboards[dashboardId] = false;
+        });
+      },
+
+      setLockConflictPrompt: (prompt: LockConflictPrompt | null) => {
+        set(state => {
+          state.lockConflictPrompt = prompt;
+        });
+      },
+
+      isEditMode: (dashboardId: string) => {
+        return get().editingDashboards[dashboardId] ?? false;
       },
     })),
     {
