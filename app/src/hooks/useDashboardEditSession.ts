@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   useDashboardStore,
-  selectIsDirty,
+  selectDashboard,
+  selectSavedHash,
   type DashboardConflict,
 } from "../store/dashboardStore";
 import { computeDashboardStateHash } from "../utils/stateHash";
@@ -60,7 +61,13 @@ export function useDashboardEditSession({
       }),
     );
 
-  const hasUnsavedChanges = useDashboardStore(selectIsDirty(dashboardId));
+  const dashboard = useDashboardStore(selectDashboard(dashboardId));
+  const savedHash = useDashboardStore(selectSavedHash(dashboardId));
+  const hasUnsavedChanges = useMemo(() => {
+    if (!dashboard) return false;
+    if (!savedHash) return true;
+    return computeDashboardStateHash(dashboard) !== savedHash;
+  }, [dashboard, savedHash]);
 
   const [lockError, setLockError] = useState<string | null>(null);
   const [exitEditConfirmOpen, setExitEditConfirmOpen] = useState(false);

@@ -434,9 +434,12 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "get_dashboard_state") {
-    const snapshot = getDashboardStateSnapshot(
-      typeof input.dashboardId === "string" ? input.dashboardId : undefined,
-    );
+    const ctx = getActiveContext(pinnedContext);
+    const resolvedId =
+      typeof input.dashboardId === "string"
+        ? input.dashboardId
+        : ctx?.dashboardId;
+    const snapshot = getDashboardStateSnapshot(resolvedId);
 
     const SAMPLE_ROW_LIMIT = 5;
 
@@ -491,10 +494,12 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "dataSourceId is required" };
     }
 
+    const ctx = getActiveContext(pinnedContext);
     try {
       const result = await previewDashboardQuery({
         dataSourceId: input.dataSourceId,
         sql: typeof input.sql === "string" ? input.sql : undefined,
+        dashboardId: ctx?.dashboardId,
       });
 
       return {

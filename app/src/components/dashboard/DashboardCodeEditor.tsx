@@ -22,17 +22,23 @@ interface DashboardCodeEditorProps {
   dashboard: Dashboard;
   dashboardId?: string;
   effectiveMode: "light" | "dark";
+  onCodeError?: (hasError: boolean) => void;
 }
 
 const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
   dashboard,
   dashboardId,
   effectiveMode,
+  onCodeError,
 }) => {
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const [isEditorFocused, setIsEditorFocused] = useState(false);
   const pendingExternalUpdate = useRef<string | null>(null);
+
+  useEffect(() => {
+    onCodeError?.(codeError !== null);
+  }, [codeError, onCodeError]);
 
   useEffect(() => {
     if (!dashboard) return;

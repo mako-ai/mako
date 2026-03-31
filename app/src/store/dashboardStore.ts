@@ -982,13 +982,7 @@ export const selectDashboard =
   (state: DashboardStoreState): Dashboard | undefined =>
     id ? state.openDashboards[id] : undefined;
 
-export const selectIsDirty =
+export const selectSavedHash =
   (id: string | undefined) =>
-  (state: DashboardStoreState): boolean => {
-    if (!id) return false;
-    const dashboard = state.openDashboards[id];
-    if (!dashboard) return false;
-    const hash = state.savedStateHashes[id];
-    if (!hash) return true;
-    return computeDashboardStateHash(dashboard) !== hash;
-  };
+  (state: DashboardStoreState): string | undefined =>
+    id ? state.savedStateHashes[id] : undefined;

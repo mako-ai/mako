@@ -102,6 +102,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   } = useDashboardEditSession({ dashboardId, workspaceId });
 
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
+  const [hasCodeError, setHasCodeError] = useState(false);
   const [dataSourcePanelOpen, setDataSourcePanelOpen] = useState(false);
   const [addWidgetOpen, setAddWidgetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -346,12 +347,20 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         {isEditMode && (
           <>
             <Tooltip
-              title={hasUnsavedChanges ? "Save (Ctrl+S)" : "No changes to save"}
+              title={
+                viewMode === "code" && hasCodeError
+                  ? "Fix JSON errors before saving"
+                  : hasUnsavedChanges
+                    ? "Save (Ctrl+S)"
+                    : "No changes to save"
+              }
             >
               <span>
                 <IconButton
                   size="small"
-                  disabled={!hasUnsavedChanges}
+                  disabled={
+                    !hasUnsavedChanges || (viewMode === "code" && hasCodeError)
+                  }
                   onClick={async () => {
                     if (!workspaceId || !dashboardId) return;
                     const saved = await saveDashboardAction(
@@ -438,6 +447,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
               dashboard={dashboard}
               dashboardId={dashboardId}
               effectiveMode={effectiveMode}
+              onCodeError={setHasCodeError}
             />
           )}
         </Box>
