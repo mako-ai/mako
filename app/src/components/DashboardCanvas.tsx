@@ -52,7 +52,6 @@ type ViewMode = "canvas" | "code";
 
 const {
   saveDashboard: saveDashboardAction,
-  markDashboardSaved: markDashboardSavedAction,
   materializeDashboard: materializeDashboardAction,
   undo: undoAction,
   redo: redoAction,
@@ -368,7 +367,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                       dashboardId,
                     );
                     if (!saved) return;
-                    markDashboardSavedAction(dashboardId);
                     void materializeDashboardAction(workspaceId, dashboardId, {
                       force: true,
                     });
