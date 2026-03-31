@@ -138,6 +138,7 @@ interface DashboardStoreState {
   activeDashboardId: string | null;
   historyMap: Record<string, HistoryEntry>;
   autoRefreshInterval: number | null;
+  savedStateHashes: Record<string, string>;
 
   conflict: DashboardConflict | null;
   lockConflictPrompt: LockConflictPrompt | null;
@@ -238,8 +239,6 @@ interface DashboardStoreState {
   isEditMode: (dashboardId: string) => boolean;
 }
 
-const savedStateHashes: Record<string, string> = {};
-
 export const useDashboardStore = create<DashboardStoreState>()(
   persist(
     immer((set, get) => ({
@@ -251,6 +250,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
       activeDashboardId: null,
       historyMap: {},
       autoRefreshInterval: null,
+      savedStateHashes: {},
       conflict: null,
       lockConflictPrompt: null,
 
@@ -369,6 +369,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
             delete state.editingDashboards[id];
             delete state.openDashboards[id];
             delete state.historyMap[id];
+            delete state.savedStateHashes[id];
             if (state.activeDashboardId === id) {
               state.activeDashboardId = null;
             }
@@ -421,7 +422,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
           if (response.data) {
             const dashboard = response.data;
-            dashboard.isSaved = true;
             if (Array.isArray(dashboard.widgets)) {
               dashboard.widgets = dashboard.widgets.map(
                 w =>
@@ -434,9 +434,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
               state.openDashboards[dashboardId] = dashboard;
               state.activeDashboardId = dashboardId;
               state.historyMap[dashboardId] = { stack: [], index: -1 };
+              state.savedStateHashes[dashboardId] =
+                computeDashboardStateHash(dashboard);
             });
-            savedStateHashes[dashboardId] =
-              computeDashboardStateHash(dashboard);
           }
         } catch {
           // silent
@@ -455,11 +455,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
           delete state.editingDashboards[dashboardId];
           delete state.openDashboards[dashboardId];
           delete state.historyMap[dashboardId];
+          delete state.savedStateHashes[dashboardId];
           if (state.activeDashboardId === dashboardId) {
             state.activeDashboardId = null;
           }
         });
-        delete savedStateHashes[dashboardId];
 
         void disposeDashboardRuntime(dashboardId);
       },
@@ -490,14 +490,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
               const local = state.openDashboards[dashboardId];
               if (local) {
                 local.version = response.data.version;
-                local.isSaved = true;
+                state.savedStateHashes[dashboardId] =
+                  computeDashboardStateHash(local);
               }
             });
-            const updated = get().openDashboards[dashboardId];
-            if (updated) {
-              savedStateHashes[dashboardId] =
-                computeDashboardStateHash(updated);
-            }
           }
           return true;
         } catch (err: any) {
@@ -561,7 +557,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             Object.assign(d, result.data);
-            d.isSaved = false;
           }
         });
         return null;
@@ -573,7 +568,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.dataSources.push(dataSource);
-            d.isSaved = false;
           }
         });
       },
@@ -604,7 +598,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
                   : current.origin,
               };
             }
-            d.isSaved = false;
           }
         });
       },
@@ -624,7 +617,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
             d.globalFilters = d.globalFilters.filter(
               f => f.dataSourceId !== dataSourceId,
             );
-            d.isSaved = false;
           }
         });
       },
@@ -635,7 +627,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.widgets.push(widget);
-            d.isSaved = false;
           }
         });
       },
@@ -653,7 +644,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
             if (idx !== -1) {
               Object.assign(d.widgets[idx], changes);
             }
-            d.isSaved = false;
           }
         });
       },
@@ -664,7 +654,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.widgets = d.widgets.filter(w => w.id !== widgetId);
-            d.isSaved = false;
           }
         });
       },
@@ -675,7 +664,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.relationships.push(rel);
-            d.isSaved = false;
           }
         });
       },
@@ -686,7 +674,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.relationships = d.relationships.filter(r => r.id !== relId);
-            d.isSaved = false;
           }
         });
       },
@@ -697,7 +684,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.globalFilters.push(filter);
-            d.isSaved = false;
           }
         });
       },
@@ -708,7 +694,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.globalFilters = d.globalFilters.filter(f => f.id !== filterId);
-            d.isSaved = false;
           }
         });
       },
@@ -859,17 +844,16 @@ export const useDashboardStore = create<DashboardStoreState>()(
         if (dashboard) {
           set(state => {
             const d = state.openDashboards[dashboardId];
-            if (d) d.isSaved = true;
+            if (d) {
+              state.savedStateHashes[dashboardId] =
+                computeDashboardStateHash(d);
+            }
           });
-          const updated = get().openDashboards[dashboardId];
-          if (updated) {
-            savedStateHashes[dashboardId] = computeDashboardStateHash(updated);
-          }
         }
       },
 
       getDashboardSavedStateHash: (dashboardId: string) => {
-        return savedStateHashes[dashboardId];
+        return get().savedStateHashes[dashboardId];
       },
 
       acquireLock: async (workspaceId: string, dashboardId: string) => {
@@ -997,3 +981,14 @@ export const selectDashboard =
   (id: string | undefined) =>
   (state: DashboardStoreState): Dashboard | undefined =>
     id ? state.openDashboards[id] : undefined;
+
+export const selectIsDirty =
+  (id: string | undefined) =>
+  (state: DashboardStoreState): boolean => {
+    if (!id) return false;
+    const dashboard = state.openDashboards[id];
+    if (!dashboard) return false;
+    const hash = state.savedStateHashes[id];
+    if (!hash) return true;
+    return computeDashboardStateHash(dashboard) !== hash;
+  };
