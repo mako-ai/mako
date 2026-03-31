@@ -38,7 +38,7 @@ import { usageRoutes } from "./routes/usage";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { webhookRoutes } from "./routes/webhooks";
-import { functions, inngest, logInngestStatus } from "./inngest";
+import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import { cdcBackfillService } from "./sync-cdc/backfill";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
@@ -146,7 +146,7 @@ app.on(
   "/api/inngest",
   serveInngest({
     client: inngest,
-    functions,
+    functions: getFunctions(),
   }),
 );
 
