@@ -111,6 +111,11 @@ export async function executeDashboardAgentTool(
         state.historyMap[dashboard._id] = { stack: [], index: -1 };
       });
 
+      await useDashboardStore
+        .getState()
+        .enterEditMode(workspaceId, dashboard._id)
+        .catch(() => {});
+
       const consoleStore = useConsoleStore.getState();
       const tabId = consoleStore.openTab({
         title: dashboard.title,

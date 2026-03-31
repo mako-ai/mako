@@ -401,7 +401,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const handleExitEditDiscard = useCallback(async () => {
     if (!workspaceId || !dashboardId) return;
     setExitEditConfirmOpen(false);
-    void exitEditMode(workspaceId, dashboardId);
+    await exitEditMode(workspaceId, dashboardId);
     await useDashboardStore
       .getState()
       .reloadDashboard(workspaceId, dashboardId);
