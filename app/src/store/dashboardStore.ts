@@ -218,7 +218,6 @@ interface DashboardStoreState {
     runId: string,
   ) => Promise<MaterializationRunRecord | null>;
 
-  markDashboardSaved: (dashboardId: string) => void;
   getDashboardSavedStateHash: (dashboardId: string) => string | undefined;
 
   acquireLock: (workspaceId: string, dashboardId: string) => Promise<boolean>;
@@ -836,19 +835,6 @@ export const useDashboardStore = create<DashboardStoreState>()(
           return response.data || null;
         } catch {
           return null;
-        }
-      },
-
-      markDashboardSaved: (dashboardId: string) => {
-        const dashboard = get().openDashboards[dashboardId];
-        if (dashboard) {
-          set(state => {
-            const d = state.openDashboards[dashboardId];
-            if (d) {
-              state.savedStateHashes[dashboardId] =
-                computeDashboardStateHash(d);
-            }
-          });
         }
       },
 
