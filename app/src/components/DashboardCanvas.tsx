@@ -261,29 +261,18 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
   }, [isDashboardLoaded, measureWidth]);
 
-  useEffect(() => {
-    if (viewMode === "code" && dashboard && !isUserEditingCodeRef.current) {
-      setCodeValue(
-        JSON.stringify(serializeDashboardDefinition(dashboard), null, 2),
-      );
-      setCodeError(null);
-    }
-  }, [viewMode, dashboard]);
-
-  // When switching to code mode, always serialize fresh
   const prevViewModeRef = useRef(viewMode);
   useEffect(() => {
-    if (
-      viewMode === "code" &&
-      prevViewModeRef.current !== "code" &&
-      dashboard
-    ) {
+    const switchedToCode =
+      viewMode === "code" && prevViewModeRef.current !== "code";
+    prevViewModeRef.current = viewMode;
+    if (viewMode !== "code" || !dashboard) return;
+    if (switchedToCode || !isUserEditingCodeRef.current) {
       setCodeValue(
         JSON.stringify(serializeDashboardDefinition(dashboard), null, 2),
       );
       setCodeError(null);
     }
-    prevViewModeRef.current = viewMode;
   }, [viewMode, dashboard]);
 
   const handleCodeChange = useCallback(
