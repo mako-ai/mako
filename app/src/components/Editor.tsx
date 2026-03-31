@@ -558,6 +558,21 @@ function Editor({
     setActiveTab(newValue);
   };
 
+  const cleanupTab = (tabId: string) => {
+    closeTab(tabId);
+    delete consoleRefs.current[tabId];
+    setTabResults(prev => {
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabPagination(prev => {
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+  };
+
   const closeConsole = (id: string) => {
     const closingTab = tabs[id];
     if (closingTab?.kind === "dashboard") {
@@ -576,18 +591,7 @@ function Editor({
         store.closeDashboard(dbId);
       }
     }
-    closeTab(id);
-    delete consoleRefs.current[id];
-    setTabResults(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    setTabPagination(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    cleanupTab(id);
   };
 
   const finalizeDashboardClose = (tabId: string) => {
@@ -596,18 +600,7 @@ function Editor({
     if (dbId) {
       useDashboardStore.getState().closeDashboard(dbId);
     }
-    closeTab(tabId);
-    delete consoleRefs.current[tabId];
-    setTabResults(prev => {
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabPagination(prev => {
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
+    cleanupTab(tabId);
   };
 
   const handleDashboardCloseSave = async () => {

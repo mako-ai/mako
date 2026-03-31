@@ -141,6 +141,24 @@ function isHoverRuleLayer(layer: Spec): boolean {
 }
 
 /**
+ * Recursively walk an encoding object and rename any `condition.param`
+ * references from `oldName` to `newName`.
+ */
+function updateParamRefs(encoding: any, oldName: string, newName: string) {
+  if (!encoding || typeof encoding !== "object") return;
+  for (const channel of Object.values(encoding)) {
+    const cond = (channel as any)?.condition;
+    if (!cond) continue;
+    const conditions = Array.isArray(cond) ? cond : [cond];
+    for (const c of conditions) {
+      if (c && c.param === oldName) {
+        c.param = newName;
+      }
+    }
+  }
+}
+
+/**
  * For already-layered specs (e.g. built by the agent using the template),
  * detect the hover-rule layer and extract enough metadata for the custom
  * tooltip handler to render SVG dots + total.
@@ -165,9 +183,8 @@ function extractMetaFromLayeredSpec(spec: Spec): Spec {
   if (hoverParam && hoverParam.name !== "__mako_tooltip") {
     const oldName = hoverParam.name;
     hoverParam.name = "__mako_tooltip";
-    const cond = hoverLayer.encoding?.opacity?.condition;
-    if (cond && cond.param === oldName) {
-      cond.param = "__mako_tooltip";
+    for (const layer of spec.layer) {
+      updateParamRefs(layer.encoding, oldName, "__mako_tooltip");
     }
   }
 
