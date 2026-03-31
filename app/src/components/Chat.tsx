@@ -56,8 +56,12 @@ import {
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { useDashboardStore } from "../store/dashboardStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
-import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
+import {
+  executeDashboardAgentTool,
+  type DashboardAgentContext,
+} from "../dashboard-runtime/agent-tools";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -889,6 +893,12 @@ const Chat: React.FC<ChatProps> = ({
   // This prevents the race condition where user switches consoles while agent is thinking
   const capturedConsoleIdRef = useRef<string | null>(null);
 
+  // Same pattern for dashboards: pin the dashboard ID at submit time so agent
+  // tool calls target the correct dashboard even if the user switches tabs.
+  const capturedDashboardContextRef = useRef<DashboardAgentContext | undefined>(
+    undefined,
+  );
+
   // Function to fetch sessions - defined before useChat so it can be used in onFinish
   // Using a ref-based pattern to always access the current workspace
   const fetchSessionsRef = useRef<() => Promise<void>>();
@@ -1034,7 +1044,9 @@ const Chat: React.FC<ChatProps> = ({
             // truncate large arrays. Enriches data sources with connection info.
             ...(() => {
               try {
-                const snapshot = getDashboardStateSnapshot();
+                const snapshot = getDashboardStateSnapshot(
+                  capturedDashboardContextRef.current?.dashboardId,
+                );
                 if (!snapshot) return {};
                 const connectionById = new Map(
                   workspaceConnections.map(connection => [
@@ -1705,6 +1717,7 @@ const Chat: React.FC<ChatProps> = ({
           const dashboardToolOutput = await executeDashboardAgentTool(
             toolName,
             input,
+            capturedDashboardContextRef.current,
           );
 
           if (dashboardToolOutput !== null) {
@@ -2312,6 +2325,16 @@ const Chat: React.FC<ChatProps> = ({
   const handleChatSubmit = useCallback(
     (text: string) => {
       capturedConsoleIdRef.current = activeConsoleIdRef.current;
+
+      const dashState = useDashboardStore.getState();
+      const pinnedDashId = dashState.activeDashboardId;
+      capturedDashboardContextRef.current = pinnedDashId
+        ? {
+            dashboardId: pinnedDashId,
+            workspaceId: dashState.openDashboards[pinnedDashId]?.workspaceId,
+          }
+        : undefined;
+
       const store = useConsoleStore.getState();
       const currentTabs = Object.values(store.tabs);
       const activeConsole = currentTabs.find(t => t.id === store.activeTabId);
