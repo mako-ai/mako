@@ -6,7 +6,6 @@ import {
   type IDatabaseConnection,
 } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
-import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
 import { buildParquetFromBatches } from "../../utils/streaming-parquet-builder";
 import {
@@ -16,8 +15,88 @@ import {
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
+import type {
+  ConnectorEntitySchema,
+  ConnectorLogicalType,
+} from "../../connectors/base/BaseConnector";
+
+// ---------------------------------------------------------------------------
+// Schema contract: one source of truth for BigQuery column types.
+// Staging is always VARCHAR (from Parquet). Live table uses these types.
+// INSERT SELECT casts VARCHAR staging → typed live columns.
+// ---------------------------------------------------------------------------
+
+function mapLogicalTypeToBigQuery(logicalType: ConnectorLogicalType): string {
+  switch (logicalType) {
+    case "string":
+      return "STRING";
+    case "number":
+      return "FLOAT64";
+    case "integer":
+      return "INT64";
+    case "boolean":
+      return "BOOL";
+    case "timestamp":
+      return "TIMESTAMP";
+    case "json":
+      return "JSON";
+    default:
+      return "STRING";
+  }
+}
+
+const SYSTEM_COLUMN_TYPES: Record<string, string> = {
+  _mako_ingest_seq: "INT64",
+  _mako_source_ts: "TIMESTAMP",
+  _mako_deleted_at: "TIMESTAMP",
+  is_deleted: "BOOL",
+  deleted_at: "TIMESTAMP",
+};
+
+function resolveTargetBqType(
+  column: string,
+  entitySchema: ConnectorEntitySchema | undefined,
+  liveType: string | undefined,
+): string {
+  const schemaField = entitySchema?.fields[column];
+  if (schemaField) return mapLogicalTypeToBigQuery(schemaField.type);
+  if (SYSTEM_COLUMN_TYPES[column]) return SYSTEM_COLUMN_TYPES[column];
+  if (liveType) return liveType;
+  return "STRING";
+}
+
+function buildCastExpression(colRef: string, targetType: string): string {
+  switch (targetType.toUpperCase()) {
+    case "JSON":
+      return `SAFE.PARSE_JSON(${colRef})`;
+    case "TIMESTAMP":
+      return `SAFE_CAST(${colRef} AS TIMESTAMP)`;
+    case "BOOL":
+      return `SAFE_CAST(${colRef} AS BOOL)`;
+    case "INT64":
+      return `SAFE_CAST(${colRef} AS INT64)`;
+    case "FLOAT64":
+      return `SAFE_CAST(${colRef} AS FLOAT64)`;
+    case "STRING":
+    default:
+      return colRef;
+  }
+}
+
+function buildColumnSelectExpr(
+  column: string,
+  escId: (id: string) => string,
+  entitySchema: ConnectorEntitySchema | undefined,
+  liveType: string | undefined,
+): string {
+  const colRef = escId(column);
+  const targetType = resolveTargetBqType(column, entitySchema, liveType);
+  return `${buildCastExpression(colRef, targetType)} AS ${colRef}`;
+}
 
 const log = loggers.sync("cdc.adapter.bigquery");
+
+const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
 
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
@@ -52,51 +131,48 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     await this.ensureDataset();
   }
 
-  async ensureLiveTableFromSourceSchema(
+  private async ensureLiveTableFromSchema(
     layout: CdcEntityLayout,
-    sourceTable: string,
+    stagingColumnNames: string[],
+    entitySchema?: ConnectorEntitySchema,
   ): Promise<void> {
-    const destination = await this.resolveDestination();
-    const dataset = this.config.tableDestination.schema;
+    const { projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
 
-    const driver = databaseRegistry.getDriver(destination.type);
-    if (!driver?.createTableFromSource) {
-      throw new Error(
-        `Driver ${destination.type} does not support createTableFromSource`,
-      );
+    const colDefs = stagingColumnNames
+      .map(col => {
+        const bqType = resolveTargetBqType(col, entitySchema, undefined);
+        return `${escId(col)} ${bqType}`;
+      })
+      .join(", ");
+
+    let partitionClause = "";
+    if (layout.partitioning?.field) {
+      const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
+      partitionClause = `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
+    }
+    let clusterClause = "";
+    if (layout.clustering?.fields?.length) {
+      clusterClause = `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
     }
 
-    const result = await driver.createTableFromSource(
+    const ddl = `CREATE TABLE ${fullLive} (${colDefs}) ${partitionClause} ${clusterClause}`;
+    const createResult = await databaseConnectionService.executeQuery(
       destination,
-      sourceTable,
-      layout.tableName,
-      {
-        schema: dataset,
-        partitioning: layout.partitioning
-          ? {
-              type: layout.partitioning.type || "time",
-              field: layout.partitioning.field,
-              granularity: layout.partitioning.granularity,
-              requirePartitionFilter:
-                layout.partitioning.requirePartitionFilter,
-            }
-          : undefined,
-        clustering: layout.clustering?.fields?.length
-          ? { fields: layout.clustering.fields }
-          : undefined,
-      },
+      ddl,
+      { location: datasetLocation },
     );
-
-    if (!result.success) {
+    if (!createResult.success) {
       throw new Error(
-        result.error || "Failed to create live table from source schema",
+        createResult.error || "Failed to create live table with schema",
       );
     }
 
-    log.info("Created live table from source schema", {
+    log.info("Created live table from schema", {
       liveTable: layout.tableName,
-      sourceTable,
       dataset,
+      columnCount: stagingColumnNames.length,
     });
   }
 
@@ -104,6 +180,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ applied: number }> {
     if (params.events.length === 0) {
       return { applied: 0 };
@@ -164,6 +241,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         records: rows,
         layout: params.layout,
         flow: params.flow,
+        entitySchema: params.entitySchema,
       });
     }
 
@@ -178,6 +256,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     records: Array<Record<string, unknown>>;
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ written: number }> {
     if (params.records.length === 0) {
       return { written: 0 };
@@ -216,6 +295,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       records: rows,
       layout: params.layout,
       flow: params.flow,
+      entitySchema: params.entitySchema,
     });
   }
 
@@ -226,6 +306,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   ): Promise<{ loaded: number }> {
     await this.ensureDataset();
     const stagingTable = this.getStagingTableName(layout.tableName, flowId);
+    await this.dropStagingTable(stagingTable).catch(() => undefined);
     return this.loadParquetToStaging(parquetPath, stagingTable);
   }
 
@@ -233,20 +314,21 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout,
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
+    entitySchema?: ConnectorEntitySchema,
   ): Promise<{ written: number }> {
     const stagingTable = this.getStagingTableName(layout.tableName, flowId);
-    return this.mergeStagingToLive(layout, stagingTable);
+    return this.mergeStagingToLive(layout, stagingTable, entitySchema);
   }
 
   private async mergeStagingToLive(
     layout: CdcEntityLayout,
     stagingTable: string,
+    entitySchema?: ConnectorEntitySchema,
   ): Promise<{ written: number }> {
     const { projectId, dataset, destination, datasetLocation } =
       await this.resolveBqClient();
     const liveTable = layout.tableName;
 
-    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
     const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
 
@@ -276,7 +358,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const stagingCols = new Set<string>();
     const liveCols = new Set<string>();
-    const stagingTypes = new Map<string, string>();
     const liveTypes = new Map<string, string>();
     for (const r of (schemaResult.data as any[]) || []) {
       const tbl = r.table_name as string;
@@ -287,7 +368,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         liveTypes.set(col, dt);
       } else if (tbl === stagingTable) {
         stagingCols.add(col);
-        stagingTypes.set(col, dt);
       }
     }
 
@@ -301,9 +381,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (liveCols.size === 0) {
-      await this.ensureLiveTableFromSourceSchema(layout, stagingTable);
+      await this.ensureLiveTableFromSchema(
+        layout,
+        Array.from(stagingCols),
+        entitySchema,
+      );
       for (const col of stagingCols) {
         liveCols.add(col);
+        liveTypes.set(col, resolveTargetBqType(col, entitySchema, undefined));
       }
     }
 
@@ -311,7 +396,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const skippedLiveAdds: string[] = [];
     const addedToLive: string[] = [];
     for (const col of missingInLive) {
-      const colType = stagingTypes.get(col) || "STRING";
+      const colType = resolveTargetBqType(col, entitySchema, undefined);
       const addToLive = await databaseConnectionService.executeQuery(
         destination,
         `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
@@ -321,15 +406,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         skippedLiveAdds.push(col);
         log.warn(
           "Skipping live column add; column will be omitted from MERGE",
-          {
-            liveTable,
-            column: col,
-            error: addToLive.error,
-          },
+          { liveTable, column: col, error: addToLive.error },
         );
         continue;
       }
       liveCols.add(col);
+      liveTypes.set(col, colType);
       addedToLive.push(col);
     }
     if (addedToLive.length > 0) {
@@ -339,37 +421,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       });
     }
 
-    const missingInStaging = [...liveCols].filter(c => !stagingCols.has(c));
-    const skippedStagingAdds: string[] = [];
-    const addedToStaging: string[] = [];
-    for (const col of missingInStaging) {
-      const colType = liveTypes.get(col) || "STRING";
-      const addToStaging = await databaseConnectionService.executeQuery(
-        destination,
-        `ALTER TABLE ${fullStaging} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
-        { location: datasetLocation },
-      );
-      if (!addToStaging.success) {
-        skippedStagingAdds.push(col);
-        log.warn(
-          "Skipping staging column add; MERGE will project NULL for this column",
-          {
-            stagingTable,
-            column: col,
-            error: addToStaging.error,
-          },
-        );
-        continue;
-      }
-      stagingCols.add(col);
-      addedToStaging.push(col);
-    }
-    if (addedToStaging.length > 0) {
-      log.info("Added missing columns to staging table from live", {
-        stagingTable,
-        addedColumns: addedToStaging,
-      });
-    }
+    // Staging columns come from Parquet only — no ALTER TABLE needed.
+    // Missing columns in staging are projected as NULL in the INSERT SELECT.
 
     // Target columns must exist on live table.
     const allColumns = Array.from(liveCols);
@@ -383,49 +436,41 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       );
     }
 
-    const joinCondition = keyColumns
-      .map(k => `T.${escId(k)} = S.${escId(k)}`)
-      .join(" AND ");
     const dedupKey = keyColumns.map(escId).join(", ");
-    const buildMergeQuery = (columns: string[]): string => {
-      const nonKeyColumns = columns.filter(c => !keyColumns.includes(c));
+    const buildMergeStatements = (columns: string[]): string[] => {
       const hasSourceTs = columns.includes("_mako_source_ts");
-      const hasIngestSeq = columns.includes("_mako_ingest_seq");
-      const matchedGuard = hasSourceTs
-        ? ` AND COALESCE(S.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(T.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
-        : hasIngestSeq
-          ? ` AND COALESCE(S.\`_mako_ingest_seq\`, -1) >= COALESCE(T.\`_mako_ingest_seq\`, -1)`
-          : "";
-      const updateSet = nonKeyColumns
-        .map(c => `${escId(c)} = S.${escId(c)}`)
-        .join(", ");
-      const insertCols = columns.map(escId).join(", ");
-      const insertVals = columns.map(c => `S.${escId(c)}`).join(", ");
+      const orderExpr = hasSourceTs ? `\`_mako_source_ts\` DESC` : "1";
+
       const selectCols = columns
         .map(c => {
           if (!stagingCols.has(c)) {
-            return `NULL AS ${escId(c)}`;
+            const targetType = resolveTargetBqType(
+              c,
+              entitySchema,
+              liveTypes.get(c),
+            );
+            return `CAST(NULL AS ${targetType}) AS ${escId(c)}`;
           }
-          const liveType = liveTypes.get(c);
-          const stagingType = stagingTypes.get(c);
-          if (
-            liveType &&
-            stagingType &&
-            liveType.toUpperCase() !== stagingType.toUpperCase()
-          ) {
-            return `SAFE_CAST(${escId(c)} AS ${liveType}) AS ${escId(c)}`;
-          }
-          return escId(c);
+          return buildColumnSelectExpr(
+            c,
+            escId,
+            entitySchema,
+            liveTypes.get(c),
+          );
         })
         .join(", ");
-      const dedupSource = `(SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${hasSourceTs ? `\`_mako_source_ts\` DESC` : "1"}) = 1)`;
-      return `
-      MERGE INTO ${fullLive} T
-      USING ${dedupSource} S
-      ON ${joinCondition}
-      ${nonKeyColumns.length > 0 ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateSet}` : ""}
-      WHEN NOT MATCHED THEN INSERT (${insertCols}) VALUES (${insertVals})
-    `;
+
+      const colList = columns.map(escId).join(", ");
+
+      const keyJoin = keyColumns
+        .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
+        .join(" AND ");
+
+      const deleteStmt = `DELETE FROM ${fullLive} __live WHERE EXISTS (SELECT 1 FROM ${fullStaging} __stg WHERE ${keyJoin})`;
+
+      const insertStmt = `INSERT INTO ${fullLive} (${colList}) SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1`;
+
+      return [deleteStmt, insertStmt];
     };
 
     const mergeMaxWaitEnv = Number.parseInt(
@@ -437,174 +482,47 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
         : 50 * 60 * 1000;
 
-    const droppedMergeColumns: string[] = [];
-    const retryAddedColumns: string[] = [];
-    let mergeColumns = [...allColumns];
-    let result: { success: boolean; error?: string } | null = null;
-    let lastMergeQuery = "";
-    const fallbackTypeForColumn = (column: string): string => {
-      if (column === "_mako_ingest_seq") return "INT64";
-      if (column === "is_deleted") return "BOOL";
-      if (
-        column === "_mako_source_ts" ||
-        column === "_mako_deleted_at" ||
-        column === "deleted_at"
-      ) {
-        return "TIMESTAMP";
-      }
-      return "STRING";
-    };
-    const ensureColumnOnTable = async (
-      tableKind: "live" | "staging",
-      column: string,
-      dataType: string,
-    ): Promise<boolean> => {
-      const targetTable = tableKind === "live" ? fullLive : fullStaging;
-      const alter = await databaseConnectionService.executeQuery(
-        destination,
-        `ALTER TABLE ${targetTable} ADD COLUMN IF NOT EXISTS ${escId(column)} ${dataType}`,
-        { location: datasetLocation },
-      );
-      if (!alter.success) {
-        log.warn("Failed to add missing MERGE column on retry", {
-          tableKind,
+    const [deleteStmt, insertStmt] = buildMergeStatements(allColumns);
+
+    const deleteResult = await databaseConnectionService.executeQuery(
+      destination,
+      deleteStmt,
+      { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
+    );
+    if (!deleteResult.success) {
+      const notFound =
+        deleteResult.error &&
+        /not found|does not exist/i.test(deleteResult.error);
+      if (!notFound) {
+        log.error("BigQuery DELETE before INSERT failed", {
           liveTable,
           stagingTable,
-          column,
-          dataType,
-          error: alter.error,
+          error: deleteResult.error,
         });
-        return false;
+        throw new Error(deleteResult.error || "BigQuery DELETE failed");
       }
-      if (tableKind === "live") {
-        liveCols.add(column);
-        liveTypes.set(column, dataType);
-      } else {
-        stagingCols.add(column);
-        stagingTypes.set(column, dataType);
-      }
-      return true;
-    };
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const mergeQuery = buildMergeQuery(mergeColumns);
-      lastMergeQuery = mergeQuery;
-      result = await databaseConnectionService.executeQuery(
-        destination,
-        mergeQuery,
-        { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
-      );
-      if (result.success) {
-        break;
-      }
-
-      const errorText = result.error || "BigQuery staging MERGE failed";
-      const typeMismatch = errorText.match(
-        /Value of type\s+([A-Z0-9_]+)\s+cannot be assigned to\s+([A-Za-z0-9_]+),\s+which has type\s+([A-Z0-9_]+)/i,
-      );
-      const unrecognized = errorText.match(
-        /Unrecognized name:\s*([A-Za-z0-9_]+)/i,
-      );
-      const badColumn = unrecognized?.[1];
-      if (
-        !badColumn ||
-        keyColumns.includes(badColumn) ||
-        !mergeColumns.includes(badColumn)
-      ) {
-        const mismatchedColumns = mergeColumns
-          .map(column => {
-            const liveType = liveTypes.get(column);
-            const stagingType = stagingTypes.get(column);
-            if (
-              liveType &&
-              stagingType &&
-              liveType.toUpperCase() !== stagingType.toUpperCase()
-            ) {
-              return { column, stagingType, liveType };
-            }
-            return null;
-          })
-          .filter(
-            (
-              entry,
-            ): entry is {
-              column: string;
-              stagingType: string;
-              liveType: string;
-            } => entry !== null,
-          );
-        log.error("BigQuery MERGE failed with schema/type mismatch context", {
-          liveTable,
-          stagingTable,
-          attempt: attempt + 1,
-          error: errorText,
-          parsedMismatch: typeMismatch
-            ? {
-                sourceType: typeMismatch[1],
-                column: typeMismatch[2],
-                targetType: typeMismatch[3],
-              }
-            : null,
-          mismatchedColumns,
-          mergeColumnsCount: mergeColumns.length,
-          mergeQueryPreview: lastMergeQuery.slice(0, 900),
-        });
-        throw new Error(errorText);
-      }
-
-      const targetType =
-        liveTypes.get(badColumn) ||
-        stagingTypes.get(badColumn) ||
-        fallbackTypeForColumn(badColumn);
-      const ensuredLive = liveCols.has(badColumn)
-        ? true
-        : await ensureColumnOnTable("live", badColumn, targetType);
-      const ensuredStaging = stagingCols.has(badColumn)
-        ? true
-        : await ensureColumnOnTable("staging", badColumn, targetType);
-
-      if (ensuredLive && ensuredStaging) {
-        retryAddedColumns.push(badColumn);
-        log.info("Retrying MERGE after adding missing column", {
-          liveTable,
-          stagingTable,
-          column: badColumn,
-          dataType: targetType,
-          attempt: attempt + 1,
-        });
-        continue;
-      }
-
-      mergeColumns = mergeColumns.filter(col => col !== badColumn);
-      droppedMergeColumns.push(badColumn);
-      log.warn("Retrying MERGE without unrecognized column (auto-add failed)", {
-        liveTable,
-        stagingTable,
-        column: badColumn,
-        attempt: attempt + 1,
-        error: errorText,
-      });
-    }
-    if (!result?.success) {
-      log.error("BigQuery staging MERGE exhausted retries", {
-        liveTable,
-        stagingTable,
-        error: result?.error || "BigQuery staging MERGE failed",
-        retryAddedColumns,
-        droppedMergeColumns,
-        mergeColumnsCount: mergeColumns.length,
-        mergeQueryPreview: lastMergeQuery.slice(0, 900),
-      });
-      throw new Error(result?.error || "BigQuery staging MERGE failed");
     }
 
-    log.info("Merged staging to live table", {
+    const insertResult = await databaseConnectionService.executeQuery(
+      destination,
+      insertStmt,
+      { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
+    );
+    if (!insertResult.success) {
+      log.error("BigQuery INSERT from staging failed", {
+        liveTable,
+        stagingTable,
+        error: insertResult.error,
+        insertPreview: insertStmt.slice(0, 900),
+      });
+      throw new Error(insertResult.error || "BigQuery INSERT failed");
+    }
+
+    log.info("Merged staging to live table via DELETE+INSERT", {
       liveTable,
       stagingTable,
       dataset,
       skippedLiveAdds,
-      skippedStagingAdds,
-      retryAddedColumns,
-      droppedMergeColumns,
     });
 
     return { written: 0 };
@@ -619,14 +537,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  private getStagingTableName(
-    tableName: string,
-    flowId: string,
-    prefix?: string,
-  ): string {
+  private getStagingTableName(tableName: string, flowId: string): string {
     const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    const tag = prefix ? `${prefix}_${flowToken}` : flowToken;
-    return `${tableName}__${tag}__staging`;
+    return `${tableName}__${flowToken}__staging`;
   }
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
@@ -701,7 +614,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       .load(parquetPath, {
         sourceFormat: "PARQUET",
         writeDisposition: "WRITE_APPEND",
-        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
       });
 
     const jobMeta = metadata as Record<string, any>;
@@ -727,12 +639,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   private async dropStagingTable(stagingTable: string): Promise<void> {
     const { projectId, dataset, destination, datasetLocation } =
       await this.resolveBqClient();
-    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
-    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
+    const fqStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
 
     await databaseConnectionService.executeQuery(
       destination,
-      `DROP TABLE IF EXISTS ${fullStaging}`,
+      `DROP TABLE IF EXISTS ${fqStaging}`,
       { location: datasetLocation },
     );
 
@@ -743,15 +654,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     records: Record<string, unknown>[];
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ written: number }> {
     if (params.records.length === 0) return { written: 0 };
 
     const flowId = String(params.flow._id);
-    const stagingTable = this.getStagingTableName(
-      params.layout.tableName,
-      flowId,
-      `cdc_${Date.now().toString(36)}`,
-    );
 
     await this.ensureDataset();
 
@@ -766,16 +673,26 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       table: params.layout.tableName,
       rows: params.records.length,
       parquetBytes: parquet.byteSize,
-      stagingTable,
+      flowId,
     });
 
     try {
-      await this.loadParquetToStaging(parquet.filePath, stagingTable);
-      await this.mergeStagingToLive(params.layout, stagingTable);
+      await this.loadStagingFromParquet(
+        parquet.filePath,
+        params.layout,
+        flowId,
+      );
+      await this.mergeFromStaging(
+        params.layout,
+        params.flow,
+        flowId,
+        params.entitySchema,
+      );
     } finally {
-      await this.dropStagingTable(stagingTable).catch(err => {
+      await this.cleanupStaging(params.layout, flowId).catch(err => {
         log.warn("Failed to cleanup CDC staging table", {
-          stagingTable,
+          flowId,
+          table: params.layout.tableName,
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -791,7 +708,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   ): Promise<void> {
     const { projectId, dataset, destination, datasetLocation } =
       await this.resolveBqClient();
-    const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
 
     const ids = deletes.map(e => `'${String(e.recordId).replace(/'/g, "''")}'`);

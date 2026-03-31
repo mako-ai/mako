@@ -89,6 +89,43 @@ export interface ProvisionWebhookResult {
 
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
+export type ConnectorLogicalType =
+  | "string"
+  | "number"
+  | "integer"
+  | "boolean"
+  | "timestamp"
+  | "json";
+
+export interface ConnectorFieldSchema {
+  type: ConnectorLogicalType;
+  nullable?: boolean;
+  required?: boolean;
+  defaultValue?: unknown;
+  derivedFrom?: string;
+}
+
+export interface ConnectorEntitySchema {
+  entity: string;
+  fields: Record<string, ConnectorFieldSchema>;
+  unknownFieldPolicy: "string" | "drop";
+}
+
+export const MAKO_SYSTEM_FIELDS: Record<string, ConnectorFieldSchema> = {
+  _mako_deleted_at: { type: "timestamp", nullable: true },
+  deleted_at: {
+    type: "timestamp",
+    nullable: true,
+    derivedFrom: "_mako_deleted_at",
+  },
+  is_deleted: { type: "boolean", nullable: false, defaultValue: false },
+  _mako_source_ts: { type: "timestamp", nullable: true },
+  _mako_ingest_seq: { type: "integer", nullable: true },
+  _dataSourceId: { type: "string", nullable: true },
+  _dataSourceName: { type: "string", nullable: true },
+  _syncedAt: { type: "timestamp", nullable: true },
+};
+
 // Suggested table layout for BigQuery destinations
 export interface TableLayoutSuggestion {
   partitionField?: string;
@@ -111,6 +148,15 @@ export abstract class BaseConnector {
 
   constructor(dataSource: IConnector) {
     this.dataSource = dataSource;
+  }
+
+  /**
+   * Resolve the typed schema contract for an entity.
+   * Connectors override this to declare field types explicitly,
+   * including dynamically discovered custom fields.
+   */
+  async resolveSchema(_entity: string): Promise<ConnectorEntitySchema | null> {
+    return null;
   }
 
   /**
