@@ -7,7 +7,7 @@ import {
   normalizeWidgetLayouts,
 } from "@mako/schemas";
 import { computeDashboardStateHash } from "../utils/stateHash";
-import { closeDashboardSession } from "../dashboard-runtime/commands";
+import { disposeDashboardRuntime } from "../dashboard-runtime/gateway";
 import type {
   Dashboard,
   DashboardDataSource,
@@ -461,7 +461,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
         });
         delete savedStateHashes[dashboardId];
 
-        void closeDashboardSession(dashboardId);
+        void disposeDashboardRuntime(dashboardId);
       },
 
       saveDashboard: async (workspaceId: string, dashboardId: string) => {
