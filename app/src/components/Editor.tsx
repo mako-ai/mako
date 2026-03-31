@@ -583,7 +583,7 @@ function Editor({
         if (dashboard) {
           const savedHash = store.getDashboardSavedStateHash(dbId);
           const currentHash = computeDashboardStateHash(dashboard);
-          if (savedHash && currentHash !== savedHash) {
+          if (!savedHash || currentHash !== savedHash) {
             setPendingDashboardCloseTabId(id);
             return;
           }
