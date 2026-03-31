@@ -2312,8 +2312,15 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     const materializedDates = entities
       .map(e => e.lastMaterializedAt)
       .filter((d): d is Date => d instanceof Date);
+    const pendingMaterializedDates = entities
+      .filter(e => e.backlogCount > 0 || e.failedCount > 0)
+      .map(e => e.lastMaterializedAt)
+      .filter((d): d is Date => d instanceof Date);
     const oldestMaterialized =
-      materializedDates.sort((a, b) => a.getTime() - b.getTime())[0] || null;
+      (pendingMaterializedDates.length > 0
+        ? pendingMaterializedDates
+        : []
+      ).sort((a, b) => a.getTime() - b.getTime())[0] || null;
 
     let backfillStatus = flow.backfillState?.status || "idle";
     if (

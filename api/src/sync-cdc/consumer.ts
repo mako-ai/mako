@@ -172,37 +172,40 @@ export class CdcConsumerService {
 
       let entitySchema: ConnectorEntitySchema | null = null;
       if (flow.dataSourceId) {
-        const decrypted = await databaseDataSourceManager.getDataSource(
-          String(flow.dataSourceId),
-        );
-        const connector = decrypted
-          ? await syncConnectorRegistry.getConnector(decrypted)
-          : null;
-        if (connector) {
-          entitySchema = await connector.resolveSchema(params.entity);
-        }
-      }
-      if (!entitySchema) {
-        throw new Error(
-          `SCHEMA_UNAVAILABLE: Cannot resolve connector schema for entity '${params.entity}'. ` +
-            `CDC materialization requires a schema contract. Check that dataSourceId is set and connector implements resolveSchema.`,
-        );
-      }
-
-      const normalizedEvents = pending.map(event => {
-        if (!event.payload) return event;
-        const keysNormalized = normalizePayloadKeys(event.payload);
-        const { payload: normalizedPayload, warnings } =
-          normalizePayloadBySchema(keysNormalized, entitySchema);
-        if (warnings.length > 0) {
-          log.warn("Schema coercion warnings during materialization", {
+        try {
+          const decrypted = await databaseDataSourceManager.getDataSource(
+            String(flow.dataSourceId),
+          );
+          const connector = decrypted
+            ? await syncConnectorRegistry.getConnector(decrypted)
+            : null;
+          if (connector) {
+            entitySchema = await connector.resolveSchema(params.entity);
+          }
+        } catch {
+          log.warn("Schema resolution failed, proceeding without schema", {
             entity: params.entity,
-            recordId: event.recordId,
-            warnings,
+            flowId: params.flowId,
           });
         }
-        return { ...event, payload: normalizedPayload };
-      });
+      }
+
+      const normalizedEvents = entitySchema
+        ? pending.map(event => {
+            if (!event.payload) return event;
+            const keysNormalized = normalizePayloadKeys(event.payload);
+            const { payload: normalizedPayload, warnings } =
+              normalizePayloadBySchema(keysNormalized, entitySchema);
+            if (warnings.length > 0) {
+              log.warn("Schema coercion warnings during materialization", {
+                entity: params.entity,
+                recordId: event.recordId,
+                warnings,
+              });
+            }
+            return { ...event, payload: normalizedPayload };
+          })
+        : pending;
 
       const apply = await adapter.applyEvents({
         events: normalizedEvents,
@@ -212,7 +215,7 @@ export class CdcConsumerService {
           deleteMode: effectiveDeleteMode,
           dataSourceId: flow.dataSourceId,
         },
-        entitySchema,
+        entitySchema: entitySchema ?? undefined,
       });
 
       await eventStore.markEventsApplied(pending.map(event => event.id));

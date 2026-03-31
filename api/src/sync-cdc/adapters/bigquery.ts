@@ -157,7 +157,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       clusterClause = `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
     }
 
-    const ddl = `CREATE TABLE ${fullLive} (${colDefs}) ${partitionClause} ${clusterClause}`;
+    const ddl = `CREATE TABLE IF NOT EXISTS ${fullLive} (${colDefs}) ${partitionClause} ${clusterClause}`;
     const createResult = await databaseConnectionService.executeQuery(
       destination,
       ddl,

@@ -314,14 +314,14 @@ export class CdcBackfillService {
     }
 
     for (const entity of entities) {
-      const minPending = await CdcChangeEvent.findOne(
-        {
-          flowId: new Types.ObjectId(params.flowId),
-          entity,
-          materializationStatus: "pending",
-        },
-        { sort: { ingestSeq: 1 }, projection: { ingestSeq: 1 } },
-      );
+      const minPending = await CdcChangeEvent.findOne({
+        flowId: new Types.ObjectId(params.flowId),
+        entity,
+        materializationStatus: "pending",
+      })
+        .sort({ ingestSeq: 1 })
+        .select({ ingestSeq: 1 })
+        .lean();
       if (minPending) {
         await CdcEntityState.updateOne(
           {
@@ -755,17 +755,23 @@ export class CdcBackfillService {
 
       for (const entity of enabledEntities) {
         const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
-        const stagingTables = [
-          `${liveTable}__${flowToken}__staging`,
+        const bulkStaging = `${liveTable}__${flowToken}__staging`;
+        const legacyStagingTables = [
           cdcStageTableName(tablePrefix, entity, flowId),
           `${liveTable}__stage_changes`,
         ];
-        for (const table of stagingTables) {
+        try {
+          await driver.dropTable(destination, bulkStaging, { schema });
+          dropped++;
+        } catch {
+          /* may not exist */
+        }
+        for (const table of legacyStagingTables) {
           try {
             await driver.dropTable(destination, table, { schema: stageSchema });
             dropped++;
           } catch {
-            // table may not exist
+            /* may not exist */
           }
         }
       }

@@ -470,6 +470,17 @@ interface FlowStore extends FlowStoreState {
     workspaceId: string,
     flowId: string,
   ) => Promise<Record<string, number | null> | null>;
+  fetchEntitySchema: (
+    workspaceId: string,
+    flowId: string,
+    entity: string,
+  ) => Promise<{
+    entity: string;
+    fields: Record<
+      string,
+      { type: string; nullable?: boolean; required?: boolean }
+    >;
+  } | null>;
   fetchFlowHistory: (
     workspaceId: string,
     flowId: string,
@@ -1110,6 +1121,26 @@ export const useFlowStore = create<FlowStore>()(
             data: Record<string, number | null>;
           }>(
             `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/destination-counts`,
+          );
+          return response.success ? response.data : null;
+        } catch {
+          return null;
+        }
+      },
+
+      fetchEntitySchema: async (workspaceId, flowId, entity) => {
+        try {
+          const response = await apiClient.get<{
+            success: boolean;
+            data: {
+              entity: string;
+              fields: Record<
+                string,
+                { type: string; nullable?: boolean; required?: boolean }
+              >;
+            };
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/schema?entity=${encodeURIComponent(entity)}`,
           );
           return response.success ? response.data : null;
         } catch {
