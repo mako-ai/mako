@@ -1,5 +1,4 @@
 import { loggers } from "../logging";
-import { inngest } from "../inngest/client";
 import { normalizeCdcEvent, type NormalizedCdcEvent } from "./events";
 import { getCdcEventStore } from "./event-store";
 import { cdcSyncStateService } from "./sync-state";
@@ -7,6 +6,14 @@ import { cdcSyncStateService } from "./sync-state";
 const log = loggers.sync("cdc.ingest");
 
 class CdcIngestService {
+  /**
+   * Append normalized CDC events to the event store and update ingest state.
+   *
+   * Materialization is NOT triggered inline — the cdcMaterializeSchedulerFunction
+   * cron picks up stale entities every ~30 s by comparing lastIngestSeq vs
+   * lastMaterializedSeq in CdcEntityState. The `enqueue` parameter is retained
+   * for backward compatibility but is a no-op.
+   */
   async appendNormalizedEvents(params: {
     workspaceId: string;
     flowId: string;
@@ -46,20 +53,6 @@ class CdcIngestService {
         }),
       ),
     );
-
-    if (params.enqueue !== false && result.entities.length > 0) {
-      await inngest.send(
-        result.entities.map(entity => ({
-          name: "cdc/materialize" as const,
-          data: {
-            workspaceId: params.workspaceId,
-            flowId: params.flowId,
-            entity: entity.entity,
-            force: false,
-          },
-        })),
-      );
-    }
 
     log.info("CDC webhook events appended", {
       flowId: params.flowId,

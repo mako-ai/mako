@@ -36,6 +36,7 @@ import {
   ArrowBack as ArrowBackIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
+  Replay as RetryIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 
@@ -266,6 +267,7 @@ export function BackfillPanel({
     resetCdcEntityTable,
     resyncCdcFlow,
     recoverCdcFlow,
+    retryAllFailedWebhookEvents,
   } = useFlowStore();
 
   const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
@@ -332,6 +334,7 @@ export function BackfillPanel({
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
   const [webhookEventsTotalAll, setWebhookEventsTotalAll] = useState(0);
   const [eventsFilter, setEventsFilter] = useState<string>("all");
+  const [retryingFailed, setRetryingFailed] = useState(false);
   const [entityResetOpen, setEntityResetOpen] = useState(false);
   const [entityResetEntity, setEntityResetEntity] = useState("");
   const [runs, setRuns] = useState<
@@ -592,6 +595,16 @@ export function BackfillPanel({
       },
       { streamState: "active" },
     );
+
+  const handleRetryAllFailed = async () => {
+    setRetryingFailed(true);
+    try {
+      await retryAllFailedWebhookEvents(workspaceId, flowId);
+      await pollCdc();
+    } finally {
+      setRetryingFailed(false);
+    }
+  };
 
   const handlePauseBackfill = () =>
     withBusy(
@@ -883,6 +896,17 @@ export function BackfillPanel({
                   </Typography>
                 )}
               </Box>
+              {(cdc as any).failedWebhookCount > 0 && (
+                <Typography
+                  variant="caption"
+                  color="error.main"
+                  sx={{ fontSize: "0.72rem", fontWeight: 600, mb: 0.5 }}
+                >
+                  {(cdc as any).failedWebhookCount} webhook
+                  {(cdc as any).failedWebhookCount === 1 ? "" : "s"} failed to
+                  enqueue
+                </Typography>
+              )}
               <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
                 {streamState === "idle" && (
                   <Button
@@ -1910,6 +1934,25 @@ export function BackfillPanel({
                   }}
                 />
               ))}
+              {(cdc as any)?.failedWebhookCount > 0 && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="error"
+                  startIcon={<RetryIcon sx={{ fontSize: 14 }} />}
+                  onClick={handleRetryAllFailed}
+                  disabled={retryingFailed}
+                  sx={{
+                    textTransform: "none",
+                    fontSize: "0.72rem",
+                    ml: "auto",
+                  }}
+                >
+                  {retryingFailed
+                    ? "Retrying..."
+                    : `Retry ${(cdc as any).failedWebhookCount} failed`}
+                </Button>
+              )}
             </Box>
             {webhookEvents.length === 0 ? (
               <Typography

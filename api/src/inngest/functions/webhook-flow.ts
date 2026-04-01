@@ -4,6 +4,7 @@ import {
   Flow,
   Connector as DataSource,
   DatabaseConnection,
+  CdcEntityState,
 } from "../../database/workspace-schema";
 import { getSyncLogger } from "../logging";
 import { connectorRegistry } from "../../connectors/registry";
@@ -595,6 +596,11 @@ export const webhookEventProcessFunction = inngest.createFunction(
 /**
  * CDC ingest path: Mongo staging + cdc/materialize only (no warehouse DML here).
  * Higher per-flow concurrency is safe; materialization stays serialized per entity.
+ *
+ * Uses batchEvents to coalesce multiple webhook deliveries into a single
+ * function invocation (up to 25 events or 5 s window, whichever comes first).
+ * The key ensures all events in a batch belong to the same flow so lookups
+ * (Flow, DataSource, DatabaseConnection, Connector) happen exactly once.
  */
 export const webhookEventProcessCdcFunction = inngest.createFunction(
   {
@@ -604,9 +610,331 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
       limit: WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY,
       key: "event.data.flowId",
     },
+    batchEvents: {
+      maxSize: 25,
+      timeout: "5s",
+      key: "event.data.flowId",
+    },
   },
   { event: "webhook/event.process.cdc" },
-  runWebhookEventProcess,
+  async ({ events, step }) => {
+    const firstData = events[0].data as { flowId: string };
+    const flowId = firstData.flowId;
+    const eventIds = events.map(e => (e.data as { eventId: string }).eventId);
+    const logger = getSyncLogger(`webhook.${flowId}`);
+
+    logger.info("Processing CDC webhook event batch", {
+      flowId,
+      batchSize: eventIds.length,
+    });
+
+    const webhookEvents = (await step.run(
+      "prepare-webhook-events",
+      async () => {
+        const docs = await WebhookEvent.find({
+          flowId,
+          eventId: { $in: eventIds },
+        }).lean();
+        if (docs.length > 0) {
+          await WebhookEvent.updateMany(
+            { _id: { $in: docs.map(d => d._id) } },
+            { $set: { status: "processing" }, $inc: { attempts: 1 } },
+          );
+        }
+        return docs;
+      },
+    )) as any[];
+
+    if (!webhookEvents || webhookEvents.length === 0) {
+      logger.warn("No webhook events found for batch", { flowId, eventIds });
+      return { success: true, processed: 0 };
+    }
+
+    const result = await step.run("process-cdc-batch", async () => {
+      const stepStartedAt = Date.now();
+
+      const flowDoc = await Flow.findById(flowId);
+      if (!flowDoc) {
+        logger.warn("Flow not found – marking batch as dropped", { flowId });
+        await WebhookEvent.updateMany(
+          { _id: { $in: webhookEvents.map((e: any) => e._id) } },
+          {
+            $set: {
+              status: "completed",
+              applyStatus: "dropped",
+              processedAt: new Date(),
+              applyError: {
+                code: "FLOW_NOT_FOUND",
+                message: `Flow ${flowId} no longer exists`,
+              },
+            },
+          },
+        );
+        return { processed: false, reason: "Flow not found", count: 0 };
+      }
+      const flow: any = flowDoc.toObject();
+
+      const dataSource = await DataSource.findById(flow.dataSourceId);
+      const database = await DatabaseConnection.findById(
+        flow.destinationDatabaseId,
+      );
+
+      if (!dataSource || !database) {
+        logger.warn(
+          "Data source or database not found – marking batch as dropped",
+          { flowId },
+        );
+        await WebhookEvent.updateMany(
+          { _id: { $in: webhookEvents.map((e: any) => e._id) } },
+          {
+            $set: {
+              status: "completed",
+              applyStatus: "dropped",
+              processedAt: new Date(),
+              applyError: {
+                code: "MISSING_DEPENDENCY",
+                message: `Data source or database for flow ${flowId} no longer exists`,
+              },
+            },
+          },
+        );
+        return {
+          processed: false,
+          reason: "Data source or database not found",
+          count: 0,
+        };
+      }
+
+      const connector = connectorRegistry.getConnector(dataSource);
+      if (!connector) {
+        throw new Error(`Connector not found for type: ${dataSource.type}`);
+      }
+
+      const destinationType = database.type;
+      const isCdcEnabled =
+        flow.syncEngine === "cdc" &&
+        Boolean(flow.tableDestination?.connectionId) &&
+        hasCdcDestinationAdapter(destinationType);
+
+      if (!isCdcEnabled) {
+        logger.warn(
+          "CDC not enabled for flow — re-enqueuing as single events on non-CDC path",
+          { flowId },
+        );
+        await WebhookEvent.updateMany(
+          { _id: { $in: webhookEvents.map((e: any) => e._id) } },
+          {
+            $set: { status: "pending" },
+            $inc: { attempts: -1 },
+          },
+        );
+        for (const webhookEvent of webhookEvents) {
+          await enqueueWebhookProcess({
+            flowId,
+            eventId: webhookEvent.eventId,
+          });
+        }
+        return {
+          processed: false,
+          count: webhookEvents.length,
+          path: "re-enqueued-non-cdc",
+        };
+      }
+
+      const cdcEvents: Array<{
+        entity: string;
+        recordId: string;
+        operation: "upsert" | "delete";
+        payload: Record<string, unknown>;
+        sourceTs: Date;
+        source: "webhook";
+        changeId: string;
+        webhookEventId: string;
+      }> = [];
+      const droppedIds: any[] = [];
+      const processedIds: Array<{
+        _id: any;
+        entity: string;
+        operation: string;
+        recordId: string;
+        receivedAt: Date;
+      }> = [];
+
+      for (const webhookEvent of webhookEvents) {
+        const eventType = webhookEvent.eventType;
+        const mapping = connector.getWebhookEventMapping(eventType);
+
+        if (!mapping) {
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                applyStatus: "applied",
+                appliedAt: new Date(),
+                processedAt: new Date(),
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+              $unset: { applyError: "" },
+            },
+          );
+          continue;
+        }
+
+        const extractedData = connector.extractWebhookData(
+          webhookEvent.rawPayload,
+        );
+        if (!extractedData) {
+          logger.warn("Failed to extract data from webhook event", {
+            eventId: webhookEvent.eventId,
+          });
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "failed",
+                applyStatus: "failed",
+                processedAt: new Date(),
+                applyError: {
+                  code: "EXTRACT_FAILED",
+                  message: "Failed to extract data from webhook event",
+                },
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+            },
+          );
+          continue;
+        }
+
+        const { id, data } = extractedData;
+        const documentData = {
+          ...normalizePayloadKeys(data),
+          _dataSourceId: dataSource.id,
+          _dataSourceName: dataSource.name,
+          _syncedAt: new Date(),
+        };
+
+        let resolvedEntity = mapping.entity;
+        if (mapping.entity === "activities" && data._type) {
+          resolvedEntity = `activities:${data._type}`;
+        }
+
+        const isEntityEnabled = isEntityEnabledForFlow(
+          flow,
+          resolvedEntity,
+          mapping.entity,
+        );
+
+        if (!isEntityEnabled) {
+          droppedIds.push(webhookEvent._id);
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                applyStatus: "dropped",
+                applyError: {
+                  code: "ENTITY_DISABLED",
+                  message: `Entity ${resolvedEntity} is disabled or not selected in flow configuration`,
+                },
+                processedAt: new Date(),
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+              $unset: { appliedAt: "" },
+            },
+          );
+          continue;
+        }
+
+        const sourceTs = resolveSourceTimestamp(
+          documentData,
+          new Date(webhookEvent.receivedAt),
+        );
+
+        cdcEvents.push({
+          entity: resolvedEntity,
+          recordId: String(id),
+          operation: mapping.operation,
+          payload: documentData,
+          sourceTs,
+          source: "webhook",
+          changeId: `webhook:${webhookEvent.eventId}:${resolvedEntity}:${id}:${mapping.operation}`,
+          webhookEventId: String(webhookEvent._id),
+        });
+
+        processedIds.push({
+          _id: webhookEvent._id,
+          entity: resolvedEntity,
+          operation: mapping.operation,
+          recordId: String(id),
+          receivedAt: webhookEvent.receivedAt,
+        });
+      }
+
+      if (cdcEvents.length > 0) {
+        await cdcIngestService.appendNormalizedEvents({
+          workspaceId: String(flow.workspaceId),
+          flowId: String(flowId),
+          enqueue: true,
+          events: cdcEvents,
+        });
+      }
+
+      if (processedIds.length > 0) {
+        const bulkOps = processedIds.map(item => ({
+          updateOne: {
+            filter: { _id: item._id },
+            update: {
+              $set: {
+                status: "completed",
+                processedAt: new Date(),
+                entity: item.entity,
+                operation: item.operation,
+                recordId: item.recordId,
+                applyStatus: "pending",
+                processingDurationMs:
+                  Date.now() - new Date(item.receivedAt).getTime(),
+              },
+              $inc: { applyAttempts: 1 },
+              $unset: { applyError: "" },
+            },
+          },
+        }));
+        await WebhookEvent.bulkWrite(bulkOps);
+      }
+
+      await Flow.updateOne(
+        { _id: flowId },
+        {
+          $set: {
+            lastRunAt: new Date(),
+            lastSuccessAt: cdcEvents.length > 0 ? new Date() : undefined,
+          },
+          $inc: { runCount: 1 },
+        },
+      );
+
+      logger.info("CDC batch processing completed", {
+        flowId,
+        batchSize: webhookEvents.length,
+        cdcIngested: cdcEvents.length,
+        dropped: droppedIds.length,
+        stepDurationMs: Date.now() - stepStartedAt,
+      });
+
+      return {
+        processed: true,
+        count: cdcEvents.length,
+        dropped: droppedIds.length,
+        total: webhookEvents.length,
+      };
+    });
+
+    return { success: true, ...result };
+  },
 );
 
 /**
@@ -819,6 +1147,11 @@ export const cdcMaterializeFunction = inngest.createFunction(
       limit: 1,
       key: "event.data.flowId + ':' + event.data.entity",
     },
+    throttle: {
+      limit: 1,
+      period: "30s",
+      key: "event.data.flowId + ':' + event.data.entity",
+    },
   },
   { event: "cdc/materialize" },
   async ({ event, step, logger }) => {
@@ -828,5 +1161,75 @@ export const cdcMaterializeFunction = inngest.createFunction(
       logger,
       continuationEventName: "cdc/materialize",
     });
+  },
+);
+
+/**
+ * Periodic scheduler that finds entities with un-materialized CDC events
+ * and emits one cdc/materialize per stale (flowId, entity) pair.
+ *
+ * This decouples materialization timing from ingest volume: instead of
+ * N webhooks producing N materialize triggers (of which N-1 are redundant),
+ * the scheduler fires at most one per entity every 30 s.
+ */
+export const cdcMaterializeSchedulerFunction = inngest.createFunction(
+  {
+    id: "cdc-materialize-scheduler",
+    name: "CDC Materialize Scheduler",
+  },
+  { cron: "*/1 * * * *" },
+  async ({ step, logger }) => {
+    const staleEntities = await step.run("find-stale-entities", async () => {
+      const candidates = await CdcEntityState.find({
+        $expr: { $gt: ["$lastIngestSeq", "$lastMaterializedSeq"] },
+      })
+        .select("workspaceId flowId entity")
+        .lean();
+
+      if (candidates.length === 0) {
+        return [];
+      }
+
+      const flowIds = Array.from(
+        new Set(candidates.map(c => c.flowId.toString())),
+      );
+      const existingFlows = await Flow.find({ _id: { $in: flowIds } })
+        .select("_id")
+        .lean();
+      const existingFlowIdSet = new Set(
+        existingFlows.map(f => f._id.toString()),
+      );
+
+      return candidates.filter(c => existingFlowIdSet.has(c.flowId.toString()));
+    });
+
+    const entities = staleEntities as Array<{
+      workspaceId: { toString(): string };
+      flowId: { toString(): string };
+      entity: string;
+    }>;
+
+    if (!entities || entities.length === 0) {
+      return { triggered: 0 };
+    }
+
+    await step.sendEvent(
+      "trigger-stale-materializations",
+      entities.map(e => ({
+        name: "cdc/materialize" as const,
+        data: {
+          workspaceId: String(e.workspaceId),
+          flowId: String(e.flowId),
+          entity: e.entity,
+          force: false,
+        },
+      })),
+    );
+
+    logger.info("CDC materialize scheduler triggered", {
+      triggered: entities.length,
+    });
+
+    return { triggered: entities.length };
   },
 );

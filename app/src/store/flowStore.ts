@@ -509,6 +509,10 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     eventId: string,
   ) => Promise<unknown | null>;
+  retryAllFailedWebhookEvents: (
+    workspaceId: string,
+    flowId: string,
+  ) => Promise<{ retried: number; total: number } | null>;
   retryWebhookEvent: (
     workspaceId: string,
     flowId: string,
@@ -1270,6 +1274,21 @@ export const useFlowStore = create<FlowStore>()(
           return response.success ? response.data : null;
         } catch (error) {
           console.error("Failed to fetch event details:", error);
+          return null;
+        }
+      },
+
+      retryAllFailedWebhookEvents: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: { retried: number; total: number };
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/retry-all-failed`,
+          );
+          return response.success ? response.data : null;
+        } catch (error) {
+          console.error("Failed to retry all failed webhook events:", error);
           return null;
         }
       },

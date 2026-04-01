@@ -12,6 +12,7 @@ import {
   webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
+  cdcMaterializeSchedulerFunction,
 } from "./functions/webhook-flow";
 import {
   dashboardRefreshFunction,
@@ -35,6 +36,7 @@ const allWebhookFunctions = [
   webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
+  cdcMaterializeSchedulerFunction,
 ];
 
 /**
@@ -102,6 +104,7 @@ export {
   webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
+  cdcMaterializeSchedulerFunction,
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,

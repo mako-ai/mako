@@ -2235,6 +2235,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       failedRows,
       failedTotal,
       pendingByEntity,
+      failedWebhookCount,
     ] = await Promise.all([
       Flow.findOne({
         _id: flowObjectId,
@@ -2268,6 +2269,11 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         },
         { $group: { _id: "$entity", count: { $sum: 1 } } },
       ]),
+      WebhookEvent.countDocuments({
+        flowId: flowObjectId,
+        workspaceId: workspaceObjectId,
+        status: "failed",
+      }),
     ]);
 
     if (!flow) {
@@ -2429,6 +2435,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
                 }
               : null,
         },
+        failedWebhookCount,
         transitions: transitions.map(t => ({
           machine: t.machine,
           fromState: t.fromState,
@@ -3107,6 +3114,71 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
     });
   } catch (error) {
     logger.error("Error retrying webhook event", { error });
+    return c.json({ success: false, error: "Server error" }, 500);
+  }
+});
+
+// POST retry all failed webhook events for a flow
+flowRoutes.post("/:flowId/webhook/events/retry-all-failed", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const flowId = c.req.param("flowId");
+
+    const failedEvents = await WebhookEvent.find({
+      flowId: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      status: "failed",
+      attempts: { $lt: 10 },
+    })
+      .select("_id eventId flowId")
+      .limit(500)
+      .lean();
+
+    if (failedEvents.length === 0) {
+      return c.json({ success: true, data: { retried: 0 } });
+    }
+
+    await WebhookEvent.updateMany(
+      { _id: { $in: failedEvents.map(e => e._id) } },
+      {
+        $set: { status: "pending", applyStatus: "pending" },
+        $unset: { applyError: "", error: "", processedAt: "" },
+      },
+    );
+
+    const flowDoc = await Flow.findById(flowId)
+      .select("syncEngine destinationDatabaseId tableDestination")
+      .lean();
+    const destConn =
+      flowDoc?.destinationDatabaseId != null
+        ? await DatabaseConnection.findById(flowDoc.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
+    let enqueued = 0;
+    for (const evt of failedEvents) {
+      try {
+        await enqueueWebhookProcess({
+          flowId: evt.flowId.toString(),
+          eventId: evt.eventId,
+          flow: flowDoc as WebhookFlowRoutingHint,
+          destinationTypeHint: destConn?.type,
+        });
+        enqueued++;
+      } catch {
+        logger.warn("Failed to enqueue event during retry-all", {
+          eventId: evt.eventId,
+        });
+      }
+    }
+
+    return c.json({
+      success: true,
+      data: { retried: enqueued, total: failedEvents.length },
+    });
+  } catch (error) {
+    logger.error("Error retrying all failed webhook events", { error });
     return c.json({ success: false, error: "Server error" }, 500);
   }
 });
