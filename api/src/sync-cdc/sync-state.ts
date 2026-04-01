@@ -521,12 +521,22 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
   lagSeconds: number | null;
 }> {
   const flowObjectId = new Types.ObjectId(params.flowId);
-  const [states, pendingCount] = await Promise.all([
+  const [states, pendingByEntity] = await Promise.all([
     CdcEntityState.find({ flowId: flowObjectId }).lean(),
-    CdcChangeEvent.countDocuments({
-      flowId: flowObjectId,
-      materializationStatus: "pending",
-    }),
+    CdcChangeEvent.aggregate([
+      {
+        $match: {
+          flowId: flowObjectId,
+          materializationStatus: "pending",
+        },
+      },
+      {
+        $group: {
+          _id: "$entity",
+          count: { $sum: 1 },
+        },
+      },
+    ]),
   ]);
   if (states.length === 0) {
     return {
@@ -538,18 +548,21 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
     };
   }
 
-  const backlogCount = Math.max(
-    pendingCount,
-    states.reduce(
-      (sum, state) =>
-        sum +
-        Math.max(
-          (state.lastIngestSeq || 0) - (state.lastMaterializedSeq || 0),
-          state.backlogCount || 0,
-        ),
-      0,
-    ),
+  const pendingCountMap = new Map(
+    (pendingByEntity as Array<{ _id: string; count: number }>).map(r => [
+      r._id,
+      r.count,
+    ]),
   );
+
+  const backlogCount = states.reduce((sum, state) => {
+    const entity = state.entity;
+    const seqDiff =
+      (state.lastIngestSeq || 0) - (state.lastMaterializedSeq || 0);
+    const stored = state.backlogCount || 0;
+    const pendingForEntity = pendingCountMap.get(entity) || 0;
+    return sum + Math.max(pendingForEntity, seqDiff, stored);
+  }, 0);
   const mode = states.some(state => state.mode === "backfill")
     ? "backfill"
     : "steady";
