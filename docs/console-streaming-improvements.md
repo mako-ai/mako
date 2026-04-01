@@ -9,6 +9,7 @@ This document analyzes the current console modification flow and proposes soluti
 ### Problem 1: Modifications Appear All at Once
 
 **User Experience Issue**: When the agent uses `modify_console` or `create_console`, users see:
+
 1. A loading spinner on the tool call chip
 2. No indication of what's being written
 3. Suddenly, the full content appears in a diff view
@@ -16,7 +17,7 @@ This document analyzes the current console modification flow and proposes soluti
 **Root Cause Analysis**:
 
 ```
-[LLM generates full content] 
+[LLM generates full content]
     → [AI SDK receives complete tool input]
     → [onToolCall fires]
     → [Console updated all at once]
@@ -50,6 +51,7 @@ The `onToolCall` callback only fires when the tool input is **complete** (`input
 ### Problem 2: Agent Always Replaces Full Content
 
 **User Experience Issue**: Even for small edits (e.g., changing a WHERE clause), the agent:
+
 1. Sends the **entire** query content
 2. Replaces everything, even unchanged lines
 3. Creates large diffs that are hard to review
@@ -71,6 +73,7 @@ export const modifyConsoleSchema = z.object({
 ```
 
 Problems with current actions:
+
 - **replace**: Overwrites everything - no way to patch specific lines
 - **insert**: Adds new content at a position - doesn't modify existing lines
 - **append**: Adds to end - doesn't modify existing lines
@@ -93,17 +96,21 @@ There are **two approaches** to implement this:
 // In Chat.tsx, watch for tool parts with state "input-streaming"
 useEffect(() => {
   const lastMessage = messages[messages.length - 1];
-  if (!lastMessage || lastMessage.role !== 'assistant') return;
-  
+  if (!lastMessage || lastMessage.role !== "assistant") return;
+
   // Find streaming tool parts
   const streamingToolPart = lastMessage.parts?.find(p => {
     const type = p.type as string;
-    return (type?.startsWith('tool-') || type === 'dynamic-tool') 
-      && p.state === 'input-streaming';
+    return (
+      (type?.startsWith("tool-") || type === "dynamic-tool") &&
+      p.state === "input-streaming"
+    );
   });
-  
-  if (streamingToolPart?.toolName === 'modify_console' || 
-      streamingToolPart?.toolName === 'create_console') {
+
+  if (
+    streamingToolPart?.toolName === "modify_console" ||
+    streamingToolPart?.toolName === "create_console"
+  ) {
     // Stream partial content to console
     const partialContent = streamingToolPart.input?.content;
     if (partialContent) {
@@ -119,22 +126,22 @@ This is the **Vercel-recommended pattern** for sending custom data alongside tex
 
 ```typescript
 // Server-side: agent.routes.ts
-import { createDataStream, streamText } from 'ai';
+import { createDataStream, streamText } from "ai";
 
 const dataStream = createDataStream({
-  execute: async (dataStream) => {
+  execute: async dataStream => {
     const result = streamText({
       model,
       messages,
       tools,
       onChunk: ({ chunk }) => {
         // Forward tool input chunks as custom data events
-        if (chunk.type === 'tool-call-delta') {
+        if (chunk.type === "tool-call-delta") {
           // Parse partial JSON to extract content field
           const partialArgs = tryParsePartialJson(chunk.argsTextDelta);
           if (partialArgs?.content) {
             dataStream.writeData({
-              type: 'console-preview',
+              type: "console-preview",
               toolCallId: chunk.toolCallId,
               toolName: chunk.toolName,
               partialContent: partialArgs.content,
@@ -143,7 +150,7 @@ const dataStream = createDataStream({
         }
       },
     });
-    
+
     // Merge the text stream into the data stream
     result.mergeIntoDataStream(dataStream);
   },
@@ -153,30 +160,36 @@ return dataStream.toDataStreamResponse();
 ```
 
 ```typescript
-// Frontend: Chat.tsx  
+// Frontend: Chat.tsx
 const { data } = useChat({
   // ... existing config
-  onData: (streamedData) => {
+  onData: streamedData => {
     // Receive custom data events during streaming
-    if (streamedData.type === 'console-preview') {
-      showPreviewInConsole(streamedData.toolCallId, streamedData.partialContent);
+    if (streamedData.type === "console-preview") {
+      showPreviewInConsole(
+        streamedData.toolCallId,
+        streamedData.partialContent,
+      );
     }
   },
 });
 ```
 
 **Why `createDataStream()` is better**:
+
 - Server controls exactly what preview data to send
 - Can parse/transform partial content before sending
 - Cleaner separation between text stream and custom events
 - Better error handling for partial JSON parsing
 
 **Pros**:
+
 - Real-time feedback - users see content as it's generated
 - More engaging UX
 - No changes to tool schema needed
 
 **Cons**:
+
 - Requires careful handling of partial content
 - Console state management becomes complex
 - May need to handle "undo" for streamed content
@@ -216,11 +229,12 @@ export const modifyConsoleSchema = z.object({
 ```
 
 **Prompt Update**:
+
 ```markdown
 ### Console Modification Actions
 
 - **replace**: Replace the entire console content. Use for new queries or complete rewrites.
-- **patch**: Replace specific lines (startLine to endLine) with new content. 
+- **patch**: Replace specific lines (startLine to endLine) with new content.
   Prefer this for small edits like modifying a WHERE clause or adding a column.
 - **insert**: Insert content at a specific line without replacing existing content.
 - **append**: Add content to the end of the console.
@@ -229,30 +243,33 @@ export const modifyConsoleSchema = z.object({
 ```
 
 **Implementation**:
+
 ```typescript
 // In Chat.tsx onToolCall
 case "patch": {
   if (!input.startLine || !input.endLine) {
     return { success: false, error: "startLine and endLine required for patch" };
   }
-  
+
   const lines = currentContent.split("\n");
   const before = lines.slice(0, input.startLine - 1);
   const after = lines.slice(input.endLine);
   const newContent = [...before, input.content, ...after].join("\n");
-  
+
   // Apply with focused diff showing only changed lines
   applyPatchWithFocusedDiff(consoleId, newContent, input.startLine, input.endLine);
 }
 ```
 
 **Pros**:
+
 - Much smaller payloads for edits
 - Cleaner diffs
 - Faster LLM responses (less content to generate)
 - Easier to review changes
 
 **Cons**:
+
 - Requires prompt engineering to encourage `patch` usage
 - Agent needs to track line numbers accurately
 - May fail if console content changed since last read
@@ -270,14 +287,19 @@ case "patch": {
 ```typescript
 export const editConsoleSchema = z.object({
   consoleId: z.string(),
-  edits: z.array(z.object({
-    search: z.string().describe("Exact text to find (must match uniquely)"),
-    replace: z.string().describe("Text to replace it with"),
-  })).describe("Array of search/replace operations"),
+  edits: z
+    .array(
+      z.object({
+        search: z.string().describe("Exact text to find (must match uniquely)"),
+        replace: z.string().describe("Text to replace it with"),
+      }),
+    )
+    .describe("Array of search/replace operations"),
 });
 ```
 
 **Example Agent Usage**:
+
 ```json
 {
   "consoleId": "abc123",
@@ -291,12 +313,14 @@ export const editConsoleSchema = z.object({
 ```
 
 **Pros**:
+
 - Very token-efficient
 - No line number tracking needed
 - Robust to small formatting changes
 - Clear what's changing
 
 **Cons**:
+
 - Search text must be unique
 - Can fail if content was modified
 - Harder for large changes spanning multiple blocks
@@ -315,27 +339,27 @@ export const editConsoleSchema = z.object({
 
 ```typescript
 // Server-side: new endpoint for streaming modifications
-import { streamObject } from 'ai';
-import { z } from 'zod';
+import { streamObject } from "ai";
+import { z } from "zod";
 
 const ConsoleModificationSchema = z.object({
   consoleId: z.string(),
-  action: z.enum(['replace', 'patch', 'append']),
-  content: z.string().describe('The code to write'),
+  action: z.enum(["replace", "patch", "append"]),
+  content: z.string().describe("The code to write"),
   startLine: z.number().optional(),
   endLine: z.number().optional(),
-  explanation: z.string().describe('Brief explanation of the change'),
+  explanation: z.string().describe("Brief explanation of the change"),
 });
 
-app.post('/api/agent/modify-console', async (c) => {
+app.post("/api/agent/modify-console", async c => {
   const { prompt, consoleId, currentContent } = await c.req.json();
-  
+
   const result = streamObject({
-    model: openai('gpt-4o'),
+    model: openai("gpt-4o"),
     schema: ConsoleModificationSchema,
     prompt: `Given this console content:\n${currentContent}\n\nUser request: ${prompt}`,
   });
-  
+
   // Return streaming response
   return result.toTextStreamResponse();
 });
@@ -343,10 +367,10 @@ app.post('/api/agent/modify-console', async (c) => {
 
 ```typescript
 // Frontend: use useObject hook to receive streaming object
-import { useObject } from '@ai-sdk/react';
+import { useObject } from "@ai-sdk/react";
 
 const { object, isLoading } = useObject({
-  api: '/api/agent/modify-console',
+  api: "/api/agent/modify-console",
   schema: ConsoleModificationSchema,
 });
 
@@ -359,12 +383,14 @@ useEffect(() => {
 ```
 
 **Pros**:
+
 - Clean schema validation
 - `useObject` hook handles partial object state automatically
 - Fields like `content` stream as they're generated
 - Type-safe on both ends
 
 **Cons**:
+
 - Different pattern from current tool-based approach
 - Would need separate endpoint or hybrid architecture
 - Less flexible than multi-tool agent loop
@@ -386,44 +412,53 @@ useEffect(() => {
 const useStreamingApply = (consoleId: string) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamedContent, setStreamedContent] = useState("");
-  
-  const startStreamingApply = useCallback((targetContent: string) => {
-    setIsStreaming(true);
-    const currentContent = getConsoleContent(consoleId);
-    
-    // Calculate diff operations
-    const operations = computeStreamingOperations(currentContent, targetContent);
-    
-    // Stream operations with visual delay
-    let i = 0;
-    const interval = setInterval(() => {
-      if (i >= operations.length) {
-        clearInterval(interval);
-        setIsStreaming(false);
-        return;
-      }
-      
-      applyOperation(operations[i]);
-      i++;
-    }, 5); // 5ms per character for smooth animation
-  }, [consoleId]);
-  
+
+  const startStreamingApply = useCallback(
+    (targetContent: string) => {
+      setIsStreaming(true);
+      const currentContent = getConsoleContent(consoleId);
+
+      // Calculate diff operations
+      const operations = computeStreamingOperations(
+        currentContent,
+        targetContent,
+      );
+
+      // Stream operations with visual delay
+      let i = 0;
+      const interval = setInterval(() => {
+        if (i >= operations.length) {
+          clearInterval(interval);
+          setIsStreaming(false);
+          return;
+        }
+
+        applyOperation(operations[i]);
+        i++;
+      }, 5); // 5ms per character for smooth animation
+    },
+    [consoleId],
+  );
+
   return { isStreaming, startStreamingApply };
 };
 ```
 
 **Visual Effects**:
+
 - Cursor highlight showing insertion point
 - Characters appear with slight delay
 - Deleted text fades out
 - Changed regions highlighted temporarily
 
 **Pros**:
+
 - Best visual experience
 - Users see exactly what's changing
 - Feels responsive even with large changes
 
 **Cons**:
+
 - Most complex to implement
 - Requires significant UI work
 - May need Monaco editor customization
@@ -445,13 +480,13 @@ const useStreamingApply = (consoleId: string) => {
 ```typescript
 // Console.tsx - add streaming overlay
 {isAgentTyping && (
-  <Box sx={{ 
-    position: 'absolute', 
-    bottom: 8, 
+  <Box sx={{
+    position: 'absolute',
+    bottom: 8,
     right: 8,
     display: 'flex',
     alignItems: 'center',
-    gap: 1 
+    gap: 1
   }}>
     <CircularProgress size={16} />
     <Typography variant="caption">AI is writing...</Typography>
@@ -465,21 +500,21 @@ Use the AI SDK's `createDataStream()` pattern for real-time previews:
 
 ```typescript
 // agent.routes.ts - add createDataStream for console previews
-import { createDataStream, streamText } from 'ai';
+import { createDataStream, streamText } from "ai";
 
 const dataStream = createDataStream({
-  execute: async (dataStream) => {
+  execute: async dataStream => {
     const result = streamText({
       model,
       messages: modelMessages,
       tools,
       onChunk: ({ chunk }) => {
         // Stream console modification previews
-        if (chunk.type === 'tool-call-delta') {
+        if (chunk.type === "tool-call-delta") {
           const toolName = activeToolCalls.get(chunk.toolCallId);
-          if (toolName === 'modify_console' || toolName === 'create_console') {
+          if (toolName === "modify_console" || toolName === "create_console") {
             dataStream.writeData({
-              type: 'console-preview',
+              type: "console-preview",
               toolCallId: chunk.toolCallId,
               delta: chunk.argsTextDelta,
             });
@@ -487,7 +522,7 @@ const dataStream = createDataStream({
         }
       },
     });
-    
+
     result.mergeIntoDataStream(dataStream);
   },
 });
@@ -497,8 +532,8 @@ const dataStream = createDataStream({
 // Chat.tsx - receive preview events
 const { messages, data } = useChat({
   // existing config...
-  onData: (event) => {
-    if (event.type === 'console-preview') {
+  onData: event => {
+    if (event.type === "console-preview") {
       appendToConsolePreview(event.toolCallId, event.delta);
     }
   },
@@ -516,16 +551,16 @@ const { messages, data } = useChat({
 
 ## Implementation Priority
 
-| Solution | Impact | Effort | Priority | AI SDK Pattern |
-|----------|--------|--------|----------|----------------|
-| Add `patch` action | High | Low | 🔴 P0 | Tool schema |
-| Streaming indicator in console | Medium | Low | 🔴 P0 | - |
-| Update prompts for patch preference | High | Low | 🔴 P0 | - |
-| `createDataStream()` for previews | High | Medium | 🟡 P1 | `createDataStream`, `mergeIntoDataStream` |
-| Watch `input-streaming` state | Medium | Medium | 🟡 P1 | Message parts API |
-| Search/replace tool | Medium | Medium | 🟡 P1 | Tool schema |
-| `useObject` for edit mode | Medium | Medium | 🟢 P2 | `streamObject`, `useObject` |
-| Animated apply effect | Low | High | 🟢 P2 | - |
+| Solution                            | Impact | Effort | Priority | AI SDK Pattern                            |
+| ----------------------------------- | ------ | ------ | -------- | ----------------------------------------- |
+| Add `patch` action                  | High   | Low    | 🔴 P0    | Tool schema                               |
+| Streaming indicator in console      | Medium | Low    | 🔴 P0    | -                                         |
+| Update prompts for patch preference | High   | Low    | 🔴 P0    | -                                         |
+| `createDataStream()` for previews   | High   | Medium | 🟡 P1    | `createDataStream`, `mergeIntoDataStream` |
+| Watch `input-streaming` state       | Medium | Medium | 🟡 P1    | Message parts API                         |
+| Search/replace tool                 | Medium | Medium | 🟡 P1    | Tool schema                               |
+| `useObject` for edit mode           | Medium | Medium | 🟢 P2    | `streamObject`, `useObject`               |
+| Animated apply effect               | Low    | High   | 🟢 P2    | -                                         |
 
 ---
 
@@ -535,11 +570,11 @@ const { messages, data } = useChat({
 
 There are **three main approaches** in the AI SDK for streaming content to the UI:
 
-| Pattern | When to Use | Streaming Granularity |
-|---------|-------------|----------------------|
-| **Tool + `createDataStream()`** | Keep current tool architecture, add previews | Custom events during tool generation |
-| **Tool + message parts `input-streaming`** | Minimal changes, frontend-only | Watch tool input as it streams |
-| **`streamObject()` + `useObject`** | Dedicated edit interactions | Object fields stream as they complete |
+| Pattern                                    | When to Use                                  | Streaming Granularity                 |
+| ------------------------------------------ | -------------------------------------------- | ------------------------------------- |
+| **Tool + `createDataStream()`**            | Keep current tool architecture, add previews | Custom events during tool generation  |
+| **Tool + message parts `input-streaming`** | Minimal changes, frontend-only               | Watch tool input as it streams        |
+| **`streamObject()` + `useObject`**         | Dedicated edit interactions                  | Object fields stream as they complete |
 
 #### Pattern Comparison
 
@@ -610,27 +645,27 @@ The AI SDK v6 provides tool streaming through message parts:
 
 ```typescript
 // Message part types for tools:
-type: "tool-{toolName}"  // Static tools
-type: "dynamic-tool"     // Dynamic tools
+type: "tool-{toolName}"; // Static tools
+type: "dynamic-tool"; // Dynamic tools
 
 // States during streaming:
-state: "input-streaming"    // Input being generated
-state: "input-available"    // Input complete, waiting for execution
-state: "output-streaming"   // Output being generated  
-state: "output-available"   // Execution complete
+state: "input-streaming"; // Input being generated
+state: "input-available"; // Input complete, waiting for execution
+state: "output-streaming"; // Output being generated
+state: "output-available"; // Execution complete
 ```
 
 To access streaming input, watch the message parts array during streaming:
 
 ```typescript
 useEffect(() => {
-  if (status !== 'streaming') return;
-  
+  if (status !== "streaming") return;
+
   const lastMsg = messages[messages.length - 1];
-  const toolParts = lastMsg?.parts?.filter(p => 
-    p.type?.startsWith('tool-') && p.state === 'input-streaming'
+  const toolParts = lastMsg?.parts?.filter(
+    p => p.type?.startsWith("tool-") && p.state === "input-streaming",
   );
-  
+
   // toolParts[n].input contains partial input as it streams
 }, [messages, status]);
 ```
@@ -641,20 +676,27 @@ For streaming content updates:
 
 ```typescript
 // Efficient incremental updates
-editor.executeEdits('streaming', [{
-  range: new monaco.Range(lastLine, lastCol, lastLine, lastCol),
-  text: newCharacters,
-  forceMoveMarkers: true
-}]);
+editor.executeEdits("streaming", [
+  {
+    range: new monaco.Range(lastLine, lastCol, lastLine, lastCol),
+    text: newCharacters,
+    forceMoveMarkers: true,
+  },
+]);
 
 // For highlighting changed regions
-const decoration = editor.deltaDecorations([], [{
-  range: changedRange,
-  options: {
-    className: 'ai-change-highlight',
-    isWholeLine: true
-  }
-}]);
+const decoration = editor.deltaDecorations(
+  [],
+  [
+    {
+      range: changedRange,
+      options: {
+        className: "ai-change-highlight",
+        isWholeLine: true,
+      },
+    },
+  ],
+);
 ```
 
 ### State Management
@@ -678,17 +720,17 @@ setAgentEditing: (consoleId: string, editing: boolean) => void;
 
 ## Files to Modify
 
-| File | Changes | AI SDK Pattern Used |
-|------|---------|---------------------|
-| `api/src/routes/agent.routes.ts` | Add `createDataStream()` wrapper, `onChunk` handler | `createDataStream`, `mergeIntoDataStream` |
-| `api/src/agent-v2/tools/console-tools-client.ts` | Add `patch` action, startLine/endLine fields | Tool schema |
-| `api/src/agent-v2/prompts/universal.ts` | Document `patch` action, encourage its use | - |
-| `app/src/components/Chat.tsx` | Add `onData` callback, watch `input-streaming` parts | `useChat` onData, message parts |
-| `app/src/components/Console.tsx` | Add streaming indicator, preview overlay | - |
-| `app/src/components/Editor.tsx` | Handle streaming preview events | - |
-| `app/src/store/consoleStore.ts` | Add streaming state management | - |
-| `app/src/hooks/useMonacoConsole.ts` | Add streaming apply functionality | - |
-| `app/src/hooks/useConsoleEdit.ts` (new) | Optional: `useObject` hook for dedicated edit mode | `streamObject`, `useObject` |
+| File                                             | Changes                                              | AI SDK Pattern Used                       |
+| ------------------------------------------------ | ---------------------------------------------------- | ----------------------------------------- |
+| `api/src/routes/agent.routes.ts`                 | Add `createDataStream()` wrapper, `onChunk` handler  | `createDataStream`, `mergeIntoDataStream` |
+| `api/src/agent-v2/tools/console-tools-client.ts` | Add `patch` action, startLine/endLine fields         | Tool schema                               |
+| `api/src/agent-v2/prompts/universal.ts`          | Document `patch` action, encourage its use           | -                                         |
+| `app/src/components/Chat.tsx`                    | Add `onData` callback, watch `input-streaming` parts | `useChat` onData, message parts           |
+| `app/src/components/Console.tsx`                 | Add streaming indicator, preview overlay             | -                                         |
+| `app/src/components/Editor.tsx`                  | Handle streaming preview events                      | -                                         |
+| `app/src/store/consoleStore.ts`                  | Add streaming state management                       | -                                         |
+| `app/src/hooks/useMonacoConsole.ts`              | Add streaming apply functionality                    | -                                         |
+| `app/src/hooks/useConsoleEdit.ts` (new)          | Optional: `useObject` hook for dedicated edit mode   | `streamObject`, `useObject`               |
 
 ---
 
@@ -712,5 +754,5 @@ After implementation, we should see:
 
 ---
 
-*Created: January 2026*
-*Status: Analysis Complete - Ready for Implementation*
+_Created: January 2026_
+_Status: Analysis Complete - Ready for Implementation_

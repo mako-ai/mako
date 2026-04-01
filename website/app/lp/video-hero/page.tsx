@@ -17,10 +17,27 @@ export default function V7VideoHero() {
             <span className="font-bold text-xl">Mako</span>
           </Link>
           <div className="hidden md:flex items-center gap-6 text-sm text-zinc-400">
-            <Link href="#demo" className="hover:text-white transition-colors">Demo</Link>
-            <Link href="#features" className="hover:text-white transition-colors">Features</Link>
-            <Link href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</Link>
-            <Link href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</Link>
+            <Link href="#demo" className="hover:text-white transition-colors">
+              Demo
+            </Link>
+            <Link
+              href="#features"
+              className="hover:text-white transition-colors"
+            >
+              Features
+            </Link>
+            <Link
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </Link>
+            <Link
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </Link>
           </div>
           <a
             href="https://app.mako.ai"
@@ -40,7 +57,10 @@ export default function V7VideoHero() {
               <span className="text-zinc-400">Free &amp; Open Source</span>
             </span>
             <span className="text-zinc-600">|</span>
-            <a href="https://github.com/mako-ai/mono" className="text-sm text-zinc-400 hover:text-white transition-colors flex items-center gap-1">
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="text-sm text-zinc-400 hover:text-white transition-colors flex items-center gap-1"
+            >
               <GitHubIcon className="w-4 h-4" />
               Star on GitHub
             </a>
@@ -55,8 +75,9 @@ export default function V7VideoHero() {
           </h1>
 
           <p className="text-xl text-zinc-400 max-w-2xl mx-auto mb-10">
-            The AI-powered SQL client that understands your schema, writes optimized queries,
-            and helps your team collaborate—all from the browser.
+            The AI-powered SQL client that understands your schema, writes
+            optimized queries, and helps your team collaborate—all from the
+            browser.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
@@ -179,7 +200,9 @@ export default function V7VideoHero() {
       <section className="py-24 px-6">
         <div className="max-w-4xl mx-auto">
           <div className="p-12 rounded-3xl bg-gradient-to-r from-amber-500/20 via-orange-500/10 to-red-500/20 border border-amber-500/20 text-center">
-            <h2 className="text-4xl font-bold mb-4">Ready to try AI-powered queries?</h2>
+            <h2 className="text-4xl font-bold mb-4">
+              Ready to try AI-powered queries?
+            </h2>
             <p className="text-xl text-zinc-400 mb-8">
               Free forever. No credit card required.
             </p>
@@ -188,8 +211,18 @@ export default function V7VideoHero() {
               className="inline-flex items-center gap-2 px-10 py-4 bg-gradient-to-r from-amber-400 to-orange-500 text-black font-bold rounded-full hover:opacity-90 transition-opacity"
             >
               Get Started Free
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 8l4 4m0 0l-4 4m4-4H3"
+                />
               </svg>
             </a>
           </div>
@@ -201,12 +234,26 @@ export default function V7VideoHero() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <MakoIcon className="w-5 h-5" />
-            <span className="text-zinc-400 text-sm">© 2025 Mako. MIT License.</span>
+            <span className="text-zinc-400 text-sm">
+              © 2025 Mako. MIT License.
+            </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-400">
-            <a href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</a>
-            <a href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</a>
-            <a href="#" className="hover:text-white transition-colors">Discord</a>
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </a>
+            <a
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </a>
+            <a href="#" className="hover:text-white transition-colors">
+              Discord
+            </a>
           </div>
         </div>
       </footer>
@@ -216,7 +263,9 @@ export default function V7VideoHero() {
 
 function AnimatedDemo({ fullscreen = false }: { fullscreen?: boolean }) {
   return (
-    <div className={`${fullscreen ? 'p-8' : 'p-6'} font-mono text-sm h-full flex flex-col`}>
+    <div
+      className={`${fullscreen ? "p-8" : "p-6"} font-mono text-sm h-full flex flex-col`}
+    >
       {/* Header */}
       <div className="flex items-center gap-2 mb-4">
         <div className="flex gap-1.5">
@@ -232,7 +281,9 @@ function AnimatedDemo({ fullscreen = false }: { fullscreen?: boolean }) {
         {/* AI Input */}
         <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
           <span className="text-amber-400">✨</span>
-          <span className="text-zinc-300">Show me monthly revenue for 2024 grouped by product category</span>
+          <span className="text-zinc-300">
+            Show me monthly revenue for 2024 grouped by product category
+          </span>
           <span className="animate-pulse text-amber-400">|</span>
         </div>
 
@@ -243,7 +294,9 @@ function AnimatedDemo({ fullscreen = false }: { fullscreen?: boolean }) {
 
         {/* Generated SQL */}
         <div className="p-4 rounded-lg bg-zinc-800/50 space-y-1">
-          <div><span className="text-blue-400">SELECT</span></div>
+          <div>
+            <span className="text-blue-400">SELECT</span>
+          </div>
           <div className="pl-4">
             <span className="text-white">DATE_TRUNC</span>
             <span className="text-zinc-400">(</span>
@@ -265,16 +318,48 @@ function AnimatedDemo({ fullscreen = false }: { fullscreen?: boolean }) {
             <span className="text-blue-400">AS</span>
             <span className="text-white"> revenue</span>
           </div>
-          <div><span className="text-blue-400">FROM</span> <span className="text-emerald-400">orders</span> <span className="text-white">o</span></div>
-          <div><span className="text-blue-400">JOIN</span> <span className="text-emerald-400">products</span> <span className="text-white">p</span> <span className="text-blue-400">ON</span> <span className="text-white">o.product_id = p.id</span></div>
-          <div><span className="text-blue-400">WHERE</span> <span className="text-white">o.created_at</span> <span className="text-pink-400">&gt;=</span> <span className="text-amber-400">&apos;2024-01-01&apos;</span></div>
-          <div><span className="text-blue-400">GROUP BY</span> <span className="text-white">1, 2</span> <span className="text-blue-400">ORDER BY</span> <span className="text-white">1, 3</span> <span className="text-blue-400">DESC</span><span className="text-white">;</span></div>
+          <div>
+            <span className="text-blue-400">FROM</span>{" "}
+            <span className="text-emerald-400">orders</span>{" "}
+            <span className="text-white">o</span>
+          </div>
+          <div>
+            <span className="text-blue-400">JOIN</span>{" "}
+            <span className="text-emerald-400">products</span>{" "}
+            <span className="text-white">p</span>{" "}
+            <span className="text-blue-400">ON</span>{" "}
+            <span className="text-white">o.product_id = p.id</span>
+          </div>
+          <div>
+            <span className="text-blue-400">WHERE</span>{" "}
+            <span className="text-white">o.created_at</span>{" "}
+            <span className="text-pink-400">&gt;=</span>{" "}
+            <span className="text-amber-400">&apos;2024-01-01&apos;</span>
+          </div>
+          <div>
+            <span className="text-blue-400">GROUP BY</span>{" "}
+            <span className="text-white">1, 2</span>{" "}
+            <span className="text-blue-400">ORDER BY</span>{" "}
+            <span className="text-white">1, 3</span>{" "}
+            <span className="text-blue-400">DESC</span>
+            <span className="text-white">;</span>
+          </div>
         </div>
 
         {/* Success */}
         <div className="flex items-center gap-2 text-emerald-400 text-xs">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M5 13l4 4L19 7"
+            />
           </svg>
           Query executed in 34ms • 48 rows returned
         </div>
@@ -283,7 +368,11 @@ function AnimatedDemo({ fullscreen = false }: { fullscreen?: boolean }) {
   );
 }
 
-function FeatureCard({ icon, title, description }: {
+function FeatureCard({
+  icon,
+  title,
+  description,
+}: {
   icon: string;
   title: string;
   description: string;
@@ -297,7 +386,11 @@ function FeatureCard({ icon, title, description }: {
   );
 }
 
-function TestimonialCard({ quote, author, role }: {
+function TestimonialCard({
+  quote,
+  author,
+  role,
+}: {
   quote: string;
   author: string;
   role: string;
@@ -323,7 +416,12 @@ function PlayIcon({ className }: { className?: string }) {
 
 function MakoIcon({ className }: { className?: string }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 102 90" fill="currentColor" className={className}>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 102 90"
+      fill="currentColor"
+      className={className}
+    >
       <path d="m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z" />
     </svg>
   );

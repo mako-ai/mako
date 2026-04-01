@@ -28,13 +28,13 @@ If you're a developer querying MongoDB occasionally, Compass. If you're a MongoD
 
 ## Pricing
 
-| | MongoDB Compass | Studio 3T Free | Studio 3T Professional | Studio 3T Ultimate |
-|---|---|---|---|---|
-| Price | Free | Free (limited) | $499/user/year | $699/user/year |
-| License | SSPL (source available) | Freemium | Subscription | Subscription |
-| Aggregation editor | Basic | Limited | Full | Full |
-| SQL queries | No | No | Yes | Yes |
-| Data migration | No | No | No | Yes |
+|                    | MongoDB Compass         | Studio 3T Free | Studio 3T Professional | Studio 3T Ultimate |
+| ------------------ | ----------------------- | -------------- | ---------------------- | ------------------ |
+| Price              | Free                    | Free (limited) | $499/user/year         | $699/user/year     |
+| License            | SSPL (source available) | Freemium       | Subscription           | Subscription       |
+| Aggregation editor | Basic                   | Limited        | Full                   | Full               |
+| SQL queries        | No                      | No             | Yes                    | Yes                |
+| Data migration     | No                      | No             | No                     | Yes                |
 
 Compass is completely free with no feature gates on its core functionality. Studio 3T Free limits some features (e.g., aggregation editor caps at 5 stages). Studio 3T Professional unlocks the full editor and SQL query layer. Ultimate adds data migration and comparison.
 
@@ -45,6 +45,7 @@ This is where the tools diverge most.
 **MongoDB Compass** has an aggregation pipeline builder where you add stages ($match, $group, $lookup, etc.) and see results at each stage. It's visual and helpful for learning, but editing complex pipelines (10+ stages) becomes unwieldy. The UI doesn't support saving pipelines as reusable templates or easily rearranging stages.
 
 **Studio 3T** has a more mature aggregation editor. You can:
+
 - See intermediate results at every stage (like Compass)
 - Drag-and-drop to reorder stages
 - Save and load pipeline templates
@@ -92,6 +93,7 @@ Both tools support browsing collections in multiple views:
 ## Data Comparison and Migration
 
 **Studio 3T Ultimate** ($699/year) includes:
+
 - Collection comparison (diff two collections document by document)
 - Data migration between MongoDB instances
 - Migration from SQL databases to MongoDB
@@ -122,6 +124,7 @@ These are enterprise features that Compass doesn't offer. If you need to migrate
 ## Who Should Pick What
 
 **Choose MongoDB Compass if:**
+
 - You want free with no limitations
 - You use MongoDB Atlas (Compass integrates well)
 - You're a developer who queries MongoDB occasionally
@@ -129,6 +132,7 @@ These are enterprise features that Compass doesn't offer. If you need to migrate
 - You prefer the official tool with guaranteed MongoDB version support
 
 **Choose Studio 3T if:**
+
 - You build complex aggregation pipelines daily
 - You want to write SQL queries against MongoDB
 - You need to migrate data from SQL databases to MongoDB

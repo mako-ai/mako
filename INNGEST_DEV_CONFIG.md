@@ -93,9 +93,9 @@ GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/dev-service-account.json
 
 ## Environment summary
 
-| Environment | Artifact Store | Artifact Prefix | Inngest Routing | Schedulers |
-| --- | --- | --- | --- | --- |
-| Local default | filesystem | n/a | local dev server | disabled by `NODE_ENV` |
-| Local with GCS | gcs | `dashboard-artifacts/local-<your-name>` | local dev server | disabled by `NODE_ENV` |
-| PR preview | gcs | `dashboard-artifacts/pr-<number>` | `INNGEST_ENV=pr-<number>` | disabled |
-| Production | gcs | `dashboard-artifacts/prod` | default environment | enabled |
+| Environment    | Artifact Store | Artifact Prefix                         | Inngest Routing           | Schedulers             |
+| -------------- | -------------- | --------------------------------------- | ------------------------- | ---------------------- |
+| Local default  | filesystem     | n/a                                     | local dev server          | disabled by `NODE_ENV` |
+| Local with GCS | gcs            | `dashboard-artifacts/local-<your-name>` | local dev server          | disabled by `NODE_ENV` |
+| PR preview     | gcs            | `dashboard-artifacts/pr-<number>`       | `INNGEST_ENV=pr-<number>` | disabled               |
+| Production     | gcs            | `dashboard-artifacts/prod`              | default environment       | enabled                |

@@ -13,11 +13,13 @@ disable-model-invocation: true
 2. **Stage relevant files**: Add changed and new files. Skip files that shouldn't be committed (`.env`, `dist/`, `node_modules/`).
 
 3. **Write a commit message**: Based on the actual diff, write a clear commit message:
+
    - Use conventional commit format: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`
    - First line: concise summary (max 72 chars)
    - Body: explain the "why", not the "what"
 
 4. **Commit and push**:
+
    ```bash
    git add <files>
    git commit -m "feat: description of change"
@@ -25,6 +27,7 @@ disable-model-invocation: true
    ```
 
 5. **Create the PR**:
+
    ```bash
    gh pr create --title "feat: description" --body "$(cat <<'EOF'
    ## Summary

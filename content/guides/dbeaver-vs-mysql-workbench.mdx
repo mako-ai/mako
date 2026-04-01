@@ -32,15 +32,15 @@ MySQL Workbench had a commercial "Standard Edition" in the past, but Oracle has 
 
 ## Database Support
 
-| | DBeaver Community | MySQL Workbench |
-|---|---|---|
-| MySQL / MariaDB | Yes | Yes (primary and only) |
-| PostgreSQL | Yes | No |
-| SQL Server | Yes | No |
-| SQLite | Yes | No |
-| Oracle | Yes | No |
-| Cloud warehouses | BigQuery, Snowflake, Redshift | No |
-| Total databases | 80+ | 1 (MySQL/compatible) |
+|                  | DBeaver Community             | MySQL Workbench        |
+| ---------------- | ----------------------------- | ---------------------- |
+| MySQL / MariaDB  | Yes                           | Yes (primary and only) |
+| PostgreSQL       | Yes                           | No                     |
+| SQL Server       | Yes                           | No                     |
+| SQLite           | Yes                           | No                     |
+| Oracle           | Yes                           | No                     |
+| Cloud warehouses | BigQuery, Snowflake, Redshift | No                     |
+| Total databases  | 80+                           | 1 (MySQL/compatible)   |
 
 This is the core tradeoff. MySQL Workbench does one thing. DBeaver does everything. If MySQL is your only database, this category is irrelevant. If you also use PostgreSQL, SQL Server, or anything else, DBeaver eliminates the need for multiple tools.
 
@@ -49,6 +49,7 @@ This is the core tradeoff. MySQL Workbench does one thing. DBeaver does everythi
 ## Schema Design and Modeling
 
 **MySQL Workbench** has a visual EER (Enhanced Entity-Relationship) diagram tool that's genuinely excellent for MySQL schema design. You can:
+
 - Design schemas visually with drag-and-drop
 - Forward-engineer models to generate CREATE TABLE statements
 - Reverse-engineer existing databases into visual diagrams
@@ -64,6 +65,7 @@ This is MySQL Workbench's standout feature and where it clearly leads.
 ## Server Administration
 
 **MySQL Workbench** includes a full MySQL administration panel:
+
 - Server status dashboard (connections, traffic, key metrics)
 - User and privilege management
 - Server configuration (my.cnf editing through UI)
@@ -112,12 +114,14 @@ DBeaver's Java base means consistent behavior across platforms. Startup is slow,
 ## Who Should Pick What
 
 **Choose MySQL Workbench if:**
+
 - MySQL is your primary or only database
 - You need visual schema design and modeling
 - You want built-in server administration and performance dashboards
 - You're migrating to MySQL from another database
 
 **Choose DBeaver if:**
+
 - You work with multiple database types
 - You want a more capable SQL editor
 - You prefer more stable cross-platform behavior

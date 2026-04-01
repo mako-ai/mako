@@ -31,6 +31,7 @@ The biggest practical difference:
 **PostgreSQL:** Free. The PostgreSQL License is permissive (similar to MIT). No per-core licensing, no CALs, no edition tiers. Enterprise support is available from companies like EDB, Crunchy Data, and cloud providers, but the software itself costs nothing.
 
 **SQL Server** editions and approximate pricing (as of 2026):
+
 - **Express**: Free, limited to 1 GB RAM, 10 GB database size, 4 cores
 - **Standard**: ~$3,945 per 2-core pack (server + CAL licensing also available)
 - **Enterprise**: ~$15,123 per 2-core pack
@@ -46,16 +47,16 @@ PostgreSQL follows the SQL standard more closely. SQL Server uses T-SQL, Microso
 
 Key syntax differences:
 
-| Feature | PostgreSQL | SQL Server (T-SQL) |
-|---|---|---|
-| Auto-increment | `SERIAL` / `GENERATED ALWAYS AS IDENTITY` | `IDENTITY(1,1)` |
-| String concatenation | `\|\|` operator | `+` operator |
-| Limiting results | `LIMIT 10 OFFSET 20` | `OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY` or `TOP 10` |
-| Boolean type | Native `BOOLEAN` | `BIT` (0/1) |
-| Current timestamp | `NOW()` or `CURRENT_TIMESTAMP` | `GETDATE()` or `SYSDATETIME()` |
-| Upsert | `INSERT ... ON CONFLICT DO UPDATE` | `MERGE` statement |
-| String quoting | Single quotes for strings, double quotes for identifiers | Single quotes for strings, brackets `[]` for identifiers |
-| Conditional logic | `CASE WHEN` (standard) | `CASE WHEN` + `IIF()` shortcut |
+| Feature              | PostgreSQL                                               | SQL Server (T-SQL)                                       |
+| -------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
+| Auto-increment       | `SERIAL` / `GENERATED ALWAYS AS IDENTITY`                | `IDENTITY(1,1)`                                          |
+| String concatenation | `\|\|` operator                                          | `+` operator                                             |
+| Limiting results     | `LIMIT 10 OFFSET 20`                                     | `OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY` or `TOP 10`     |
+| Boolean type         | Native `BOOLEAN`                                         | `BIT` (0/1)                                              |
+| Current timestamp    | `NOW()` or `CURRENT_TIMESTAMP`                           | `GETDATE()` or `SYSDATETIME()`                           |
+| Upsert               | `INSERT ... ON CONFLICT DO UPDATE`                       | `MERGE` statement                                        |
+| String quoting       | Single quotes for strings, double quotes for identifiers | Single quotes for strings, brackets `[]` for identifiers |
+| Conditional logic    | `CASE WHEN` (standard)                                   | `CASE WHEN` + `IIF()` shortcut                           |
 
 T-SQL has some conveniences (like `IIF()`, `STRING_AGG()`, and robust error handling with `TRY...CATCH`), but these are proprietary. Code written in T-SQL doesn't port to other databases. PostgreSQL's closer adherence to standards makes migration easier.
 
@@ -63,17 +64,17 @@ T-SQL has some conveniences (like `IIF()`, `STRING_AGG()`, and robust error hand
 
 SQL Server's enterprise edition includes several features that PostgreSQL provides for free:
 
-| Feature | PostgreSQL | SQL Server |
-|---|---|---|
-| Partitioning | Built-in (free) | Enterprise edition only |
-| Column-store indexes | Not native (use extensions or ClickHouse) | Enterprise edition |
-| In-memory OLTP | Not native | Enterprise edition |
-| Row-level security | Built-in (free) | Built-in (all editions) |
-| Data masking | Extensions available | Dynamic data masking (Enterprise) |
-| Transparent encryption | `pgcrypto` extension (free) | TDE (Enterprise) |
-| Compression | TOAST compression, pg_lz4 | Page/row compression (Enterprise) |
-| Query store | `pg_stat_statements` (free) | Built-in Query Store |
-| Always On AG | Streaming replication + Patroni | Enterprise edition |
+| Feature                | PostgreSQL                                | SQL Server                        |
+| ---------------------- | ----------------------------------------- | --------------------------------- |
+| Partitioning           | Built-in (free)                           | Enterprise edition only           |
+| Column-store indexes   | Not native (use extensions or ClickHouse) | Enterprise edition                |
+| In-memory OLTP         | Not native                                | Enterprise edition                |
+| Row-level security     | Built-in (free)                           | Built-in (all editions)           |
+| Data masking           | Extensions available                      | Dynamic data masking (Enterprise) |
+| Transparent encryption | `pgcrypto` extension (free)               | TDE (Enterprise)                  |
+| Compression            | TOAST compression, pg_lz4                 | Page/row compression (Enterprise) |
+| Query store            | `pg_stat_statements` (free)               | Built-in Query Store              |
+| Always On AG           | Streaming replication + Patroni           | Enterprise edition                |
 
 PostgreSQL's extension ecosystem compensates for many gaps. PostGIS for geospatial, pgvector for vector search, pg_cron for scheduling. SQL Server includes SSRS (reporting), SSIS (ETL), and SSAS (analysis) as part of the platform -- PostgreSQL relies on third-party tools for these.
 
@@ -88,6 +89,7 @@ If your infrastructure is Linux-based, PostgreSQL is the more natural fit. If yo
 ## Tooling
 
 **SQL Server** has excellent first-party tools:
+
 - SQL Server Management Studio (SSMS) -- full-featured GUI, Windows-only
 - Azure Data Studio -- cross-platform, modern, extension-based
 - SQL Server Profiler for query tracing
@@ -95,6 +97,7 @@ If your infrastructure is Linux-based, PostgreSQL is the more natural fit. If yo
 - Tight Visual Studio and .NET integration
 
 **PostgreSQL** relies on a diverse ecosystem:
+
 - pgAdmin (free, web-based GUI)
 - DBeaver, DataGrip, TablePlus (third-party GUIs)
 - psql (command-line client)
@@ -108,12 +111,14 @@ SQL Server's integrated tooling is a genuine advantage for teams that use it. Ev
 Both databases perform well for typical OLTP workloads. Differences emerge in specific scenarios:
 
 **SQL Server advantages:**
+
 - Columnstore indexes for analytical queries on the same server
 - In-memory OLTP (Hekaton) for extreme transaction throughput
 - Query Store for automatic performance regression detection
 - SQL Server's query optimizer handles some complex join patterns better
 
 **PostgreSQL advantages:**
+
 - Parallel query execution (since version 9.6, improved in every release)
 - JIT compilation for complex queries (since version 11)
 - Better full-text search built-in
@@ -141,6 +146,7 @@ For most applications, the performance difference isn't large enough to drive th
 ## Migration Considerations
 
 Migrating between PostgreSQL and SQL Server is doable but not trivial:
+
 - T-SQL stored procedures need rewriting (no automated converter is reliable)
 - Data types differ (e.g., `NVARCHAR` vs `TEXT`, `DATETIME2` vs `TIMESTAMPTZ`, `BIT` vs `BOOLEAN`)
 - SQL Server's `IDENTITY` vs PostgreSQL's `SERIAL`/`GENERATED` columns

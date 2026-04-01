@@ -13,7 +13,10 @@ export default function V8TestimonialFocus() {
             <span className="font-bold text-xl">Mako</span>
           </Link>
           <div className="flex items-center gap-4">
-            <a href="https://github.com/mako-ai/mono" className="text-sm text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors hidden sm:block">
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="text-sm text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors hidden sm:block"
+            >
               GitHub
             </a>
             <a
@@ -37,7 +40,9 @@ export default function V8TestimonialFocus() {
 
           <h1 className="text-4xl md:text-6xl font-bold tracking-tight mb-6">
             Developers love
-            <span className="block text-indigo-600 dark:text-indigo-400">Mako</span>
+            <span className="block text-indigo-600 dark:text-indigo-400">
+              Mako
+            </span>
           </h1>
 
           <p className="text-xl text-slate-600 dark:text-slate-400 max-w-2xl mx-auto mb-10">
@@ -73,9 +78,10 @@ export default function V8TestimonialFocus() {
               ))}
             </div>
             <blockquote className="text-2xl md:text-3xl font-medium mb-8 leading-relaxed">
-              &quot;We migrated our entire engineering team from DataGrip to Mako in a single day.
-              The AI query generation alone saves us hours every week, and the collaboration
-              features have transformed how we work with data.&quot;
+              &quot;We migrated our entire engineering team from DataGrip to
+              Mako in a single day. The AI query generation alone saves us hours
+              every week, and the collaboration features have transformed how we
+              work with data.&quot;
             </blockquote>
             <div className="flex items-center gap-4">
               <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center text-xl font-bold">
@@ -83,7 +89,9 @@ export default function V8TestimonialFocus() {
               </div>
               <div>
                 <div className="font-semibold text-lg">James Davidson</div>
-                <div className="text-indigo-200">VP of Engineering at TechCorp</div>
+                <div className="text-indigo-200">
+                  VP of Engineering at TechCorp
+                </div>
               </div>
             </div>
           </div>
@@ -182,7 +190,9 @@ export default function V8TestimonialFocus() {
       {/* Databases */}
       <section className="py-16 px-6">
         <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-2xl font-bold mb-8">Works with your favorite databases</h2>
+          <h2 className="text-2xl font-bold mb-8">
+            Works with your favorite databases
+          </h2>
           <div className="flex flex-wrap items-center justify-center gap-8">
             <DatabaseLogo name="PostgreSQL" icon="/icons/postgresql.svg" />
             <DatabaseLogo name="MySQL" icon="/icons/mysql.svg" />
@@ -212,8 +222,18 @@ export default function V8TestimonialFocus() {
             className="inline-flex items-center gap-2 px-8 py-4 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-500 transition-colors"
           >
             Get Started Free
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M17 8l4 4m0 0l-4 4m4-4H3"
+              />
             </svg>
           </a>
         </div>
@@ -224,12 +244,29 @@ export default function V8TestimonialFocus() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <MakoIcon className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-            <span className="text-slate-500 text-sm">© 2025 Mako. MIT License.</span>
+            <span className="text-slate-500 text-sm">
+              © 2025 Mako. MIT License.
+            </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-slate-500">
-            <a href="https://github.com/mako-ai/mono" className="hover:text-slate-900 dark:hover:text-white transition-colors">GitHub</a>
-            <a href="https://docs.mako.ai" className="hover:text-slate-900 dark:hover:text-white transition-colors">Docs</a>
-            <a href="#" className="hover:text-slate-900 dark:hover:text-white transition-colors">Discord</a>
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
+              GitHub
+            </a>
+            <a
+              href="https://docs.mako.ai"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
+              Docs
+            </a>
+            <a
+              href="#"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
+              Discord
+            </a>
           </div>
         </div>
       </footer>
@@ -237,7 +274,13 @@ export default function V8TestimonialFocus() {
   );
 }
 
-function TestimonialCard({ quote, author, role, company, rating }: {
+function TestimonialCard({
+  quote,
+  author,
+  role,
+  company,
+  rating,
+}: {
   quote: string;
   author: string;
   role: string;
@@ -251,21 +294,32 @@ function TestimonialCard({ quote, author, role, company, rating }: {
           <StarIcon key={i} className="w-4 h-4 text-yellow-400" />
         ))}
       </div>
-      <p className="text-slate-700 dark:text-slate-300 mb-6">&quot;{quote}&quot;</p>
+      <p className="text-slate-700 dark:text-slate-300 mb-6">
+        &quot;{quote}&quot;
+      </p>
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-white text-sm font-bold">
-          {author.split(' ').map(n => n[0]).join('')}
+          {author
+            .split(" ")
+            .map(n => n[0])
+            .join("")}
         </div>
         <div>
           <div className="font-medium text-sm">{author}</div>
-          <div className="text-slate-500 text-xs">{role} at {company}</div>
+          <div className="text-slate-500 text-xs">
+            {role} at {company}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function FeatureCard({ icon, title, description }: {
+function FeatureCard({
+  icon,
+  title,
+  description,
+}: {
   icon: string;
   title: string;
   description: string;
@@ -274,7 +328,9 @@ function FeatureCard({ icon, title, description }: {
     <div className="p-6 rounded-xl border border-slate-200 dark:border-slate-800">
       <div className="text-3xl mb-4">{icon}</div>
       <h3 className="text-lg font-semibold mb-2">{title}</h3>
-      <p className="text-slate-600 dark:text-slate-400 text-sm">{description}</p>
+      <p className="text-slate-600 dark:text-slate-400 text-sm">
+        {description}
+      </p>
     </div>
   );
 }
@@ -283,7 +339,9 @@ function DatabaseLogo({ name, icon }: { name: string; icon: string }) {
   return (
     <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-800">
       <Image src={icon} alt={name} width={24} height={24} className="w-6 h-6" />
-      <span className="text-sm font-medium text-slate-600 dark:text-slate-400">{name}</span>
+      <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
+        {name}
+      </span>
     </div>
   );
 }
@@ -298,7 +356,12 @@ function StarIcon({ className }: { className?: string }) {
 
 function MakoIcon({ className }: { className?: string }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 102 90" fill="currentColor" className={className}>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 102 90"
+      fill="currentColor"
+      className={className}
+    >
       <path d="m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z" />
     </svg>
   );

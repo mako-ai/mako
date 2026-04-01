@@ -45,9 +45,19 @@ interface CdcDestinationAdapter {
   }): Promise<{ written: number }>;
 
   // Optional (bulk/Parquet backfill)
-  getLiveTableColumnTypes?(layout: CdcEntityLayout): Promise<Map<string, string> | undefined>;
-  loadStagingFromParquet?(parquetPath: string, layout: CdcEntityLayout, flowId: string): Promise<{ loaded: number }>;
-  mergeFromStaging?(layout: CdcEntityLayout, flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">, flowId: string): Promise<{ written: number }>;
+  getLiveTableColumnTypes?(
+    layout: CdcEntityLayout,
+  ): Promise<Map<string, string> | undefined>;
+  loadStagingFromParquet?(
+    parquetPath: string,
+    layout: CdcEntityLayout,
+    flowId: string,
+  ): Promise<{ loaded: number }>;
+  mergeFromStaging?(
+    layout: CdcEntityLayout,
+    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
+    flowId: string,
+  ): Promise<{ written: number }>;
   cleanupStaging?(layout: CdcEntityLayout, flowId: string): Promise<void>;
 }
 ```
@@ -60,10 +70,7 @@ Create `api/src/sync-cdc/adapters/<name>.ts`:
 
 ```typescript
 import { loggers } from "../../logging";
-import {
-  CdcDestinationAdapter,
-  CdcEntityLayout,
-} from "./registry";
+import { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 import { CdcStoredEvent } from "../events";
 import { IFlow } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
@@ -141,9 +148,11 @@ if (normalizedType === "mydb") {
 }
 
 // In hasCdcDestinationAdapter(), update the check:
-return normalizedType === "bigquery"
-    || normalizedType === "postgresql"
-    || normalizedType === "mydb";
+return (
+  normalizedType === "bigquery" ||
+  normalizedType === "postgresql" ||
+  normalizedType === "mydb"
+);
 ```
 
 ### 3. Enable in the frontend (optional)
@@ -160,15 +169,15 @@ The Flow form UI at `app/src/components/WebhookFlowForm.tsx` may restrict CDC en
 
 ## Method Implementation Guide
 
-| Method | What it does | Key considerations |
-|--------|-------------|-------------------|
-| `ensureLiveTable` | DDL — create table if missing | Include `_deleted_at` column for soft deletes. Respect `layout.partitioning` and `layout.clustering` if your DB supports them. Must be idempotent. |
-| `applyEvents` | Materialize CDC events (insert/update/delete) | Group operations for efficiency. Handle `deleteMode: "hard"` vs `"soft"`. Use `layout.keyColumns` for upsert/merge logic. |
-| `applyBatch` | Bulk backfill (non-CDC path) | Upsert by key columns. Used during initial sync and periodic backfills. |
-| `getLiveTableColumnTypes` | Return existing column types | Optional. Used by Parquet bulk-flush to match types. |
-| `loadStagingFromParquet` | Load Parquet file into a staging table | Optional. For high-volume backfills. |
-| `mergeFromStaging` | Merge staging → live table | Optional. Paired with `loadStagingFromParquet`. |
-| `cleanupStaging` | Drop staging table | Optional. Cleanup after merge. |
+| Method                    | What it does                                  | Key considerations                                                                                                                                 |
+| ------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ensureLiveTable`         | DDL — create table if missing                 | Include `_deleted_at` column for soft deletes. Respect `layout.partitioning` and `layout.clustering` if your DB supports them. Must be idempotent. |
+| `applyEvents`             | Materialize CDC events (insert/update/delete) | Group operations for efficiency. Handle `deleteMode: "hard"` vs `"soft"`. Use `layout.keyColumns` for upsert/merge logic.                          |
+| `applyBatch`              | Bulk backfill (non-CDC path)                  | Upsert by key columns. Used during initial sync and periodic backfills.                                                                            |
+| `getLiveTableColumnTypes` | Return existing column types                  | Optional. Used by Parquet bulk-flush to match types.                                                                                               |
+| `loadStagingFromParquet`  | Load Parquet file into a staging table        | Optional. For high-volume backfills.                                                                                                               |
+| `mergeFromStaging`        | Merge staging → live table                    | Optional. Paired with `loadStagingFromParquet`.                                                                                                    |
+| `cleanupStaging`          | Drop staging table                            | Optional. Cleanup after merge.                                                                                                                     |
 
 ## Key Rules
 

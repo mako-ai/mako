@@ -103,13 +103,13 @@ Mako connects to MariaDB and provides a visual interface for querying and managi
 
 This is the key difference to understand:
 
-| Feature | MariaDB | MySQL 8.0+ |
-|---------|---------|------------|
-| Storage | LONGTEXT (text) | Binary format |
-| Validation | CHECK constraint | Native validation |
-| Partial update | No (rewrites full text) | Yes (in-place) |
-| Indexing | Virtual columns + index | Virtual columns + index |
-| Functions | JSON_EXTRACT, etc. | JSON_EXTRACT, etc. |
+| Feature        | MariaDB                 | MySQL 8.0+              |
+| -------------- | ----------------------- | ----------------------- |
+| Storage        | LONGTEXT (text)         | Binary format           |
+| Validation     | CHECK constraint        | Native validation       |
+| Partial update | No (rewrites full text) | Yes (in-place)          |
+| Indexing       | Virtual columns + index | Virtual columns + index |
+| Functions      | JSON_EXTRACT, etc.      | JSON_EXTRACT, etc.      |
 
 MariaDB stores JSON as text, so it uses more space and is slower for partial updates. For read-heavy workloads where you query JSON fields, the performance difference is small because both databases use the same extraction functions.
 

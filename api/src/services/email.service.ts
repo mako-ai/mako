@@ -43,7 +43,9 @@ function getConfig(): EmailServiceConfig {
   const fromEmail = process.env.SENDGRID_FROM_EMAIL;
 
   if (!apiKey) {
-    logger.warn("SENDGRID_API_KEY not set - email sending will be disabled (logged only)");
+    logger.warn(
+      "SENDGRID_API_KEY not set - email sending will be disabled (logged only)",
+    );
   }
 
   return {
@@ -109,7 +111,10 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    logger.error("SendGrid error", { status: response.status, error: errorText });
+    logger.error("SendGrid error", {
+      status: response.status,
+      error: errorText,
+    });
     throw new Error(`Failed to send email: ${response.status}`);
   }
 
@@ -152,7 +157,9 @@ export class EmailService {
     }
 
     if (!config.invitationTemplateId) {
-      logger.error("SENDGRID_INVITATION_TEMPLATE_ID not configured - skipping invitation email");
+      logger.error(
+        "SENDGRID_INVITATION_TEMPLATE_ID not configured - skipping invitation email",
+      );
       return;
     }
 

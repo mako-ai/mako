@@ -379,7 +379,9 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
               }
             }
           } catch (e) {
-            logger.error("Failed to extract email from service account", { error: e });
+            logger.error("Failed to extract email from service account", {
+              error: e,
+            });
           }
         }
       }
@@ -485,18 +487,25 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
                 const projectId =
                   sa.project_id || email.split("@")[1].split(".")[0];
                 user = `${localPart}@${projectId}.iam`;
-                logger.info("Converted service account email to IAM format", { user });
+                logger.info("Converted service account email to IAM format", {
+                  user,
+                });
               } else {
                 user = email;
               }
             }
           } catch (e) {
-            logger.error("Failed to extract email from service account for pool", { error: e });
+            logger.error(
+              "Failed to extract email from service account for pool",
+              { error: e },
+            );
           }
         }
 
         if (!user) {
-          logger.warn("IAM auth selected but no username provided for pool. Please provide username in format: service-account@project.iam");
+          logger.warn(
+            "IAM auth selected but no username provided for pool. Please provide username in format: service-account@project.iam",
+          );
         }
       }
 
@@ -645,7 +654,9 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         logger.info("Connector created successfully");
         return connector;
       } catch (parseError) {
-        logger.error("Failed to parse service account JSON", { error: parseError });
+        logger.error("Failed to parse service account JSON", {
+          error: parseError,
+        });
         throw new Error(
           `Invalid service account JSON: ${
             parseError instanceof Error ? parseError.message : "Parse error"
@@ -654,7 +665,9 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       }
     } else {
       // Fall back to Application Default Credentials
-      logger.info("No service account JSON provided, using Application Default Credentials");
+      logger.info(
+        "No service account JSON provided, using Application Default Credentials",
+      );
       try {
         connectorAuth = new GoogleAuth({
           scopes: [...CLOUDSQL_SCOPES],

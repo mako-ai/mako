@@ -32,7 +32,7 @@ export async function up(db: Db): Promise<void> {
   // MUST be idempotent — safe to re-run
   const indexes = await db.collection("users").indexes();
   const hasIndex = indexes.some(
-    (idx) => JSON.stringify(idx.key) === JSON.stringify({ email: 1 })
+    idx => JSON.stringify(idx.key) === JSON.stringify({ email: 1 }),
   );
   if (!hasIndex) {
     await db.collection("users").createIndex({ email: 1 });
@@ -54,13 +54,17 @@ pnpm migrate status # Verify it was applied
 ```typescript
 const indexes = await db.collection("items").indexes();
 const hasIndex = indexes.some(
-  (idx) => JSON.stringify(idx.key) === JSON.stringify({ workspaceId: 1, createdAt: -1 })
+  idx =>
+    JSON.stringify(idx.key) ===
+    JSON.stringify({ workspaceId: 1, createdAt: -1 }),
 );
 if (!hasIndex) {
-  await db.collection("items").createIndex(
-    { workspaceId: 1, createdAt: -1 },
-    { name: "items_workspace_created" }
-  );
+  await db
+    .collection("items")
+    .createIndex(
+      { workspaceId: 1, createdAt: -1 },
+      { name: "items_workspace_created" },
+    );
 }
 ```
 
@@ -69,19 +73,23 @@ An index may already exist with an auto-generated name (from Mongoose or a parti
 ### Adding a field with default value
 
 ```typescript
-await db.collection("users").updateMany(
-  { newField: { $exists: false } },
-  { $set: { newField: "default_value" } }
-);
+await db
+  .collection("users")
+  .updateMany(
+    { newField: { $exists: false } },
+    { $set: { newField: "default_value" } },
+  );
 ```
 
 ### Renaming a field
 
 ```typescript
-await db.collection("items").updateMany(
-  { oldField: { $exists: true } },
-  { $rename: { oldField: "newField" } }
-);
+await db
+  .collection("items")
+  .updateMany(
+    { oldField: { $exists: true } },
+    { $rename: { oldField: "newField" } },
+  );
 ```
 
 ## Key Rules

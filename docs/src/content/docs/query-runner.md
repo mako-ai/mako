@@ -7,21 +7,22 @@ The Query Runner is Mako's database abstraction layer. It provides a single inte
 
 ## Supported Databases
 
-| Database | Driver | Connection Type |
-|---|---|---|
-| PostgreSQL | `postgresql` | Host/port or connection string |
-| Cloud SQL (Postgres) | `cloudsql-postgres` | Instance connection name |
-| BigQuery | `bigquery` | Project ID + service account |
-| MongoDB | `mongodb` | Connection string |
-| MySQL | `mysql` | Host/port |
-| ClickHouse | `clickhouse` | Host/port |
-| Redshift | `redshift` | Host/port (PostgreSQL wire protocol) |
-| SQLite | `sqlite` | File path |
-| Cloudflare D1 | `cloudflare-d1` | Account ID + database ID |
+| Database             | Driver              | Connection Type                      |
+| -------------------- | ------------------- | ------------------------------------ |
+| PostgreSQL           | `postgresql`        | Host/port or connection string       |
+| Cloud SQL (Postgres) | `cloudsql-postgres` | Instance connection name             |
+| BigQuery             | `bigquery`          | Project ID + service account         |
+| MongoDB              | `mongodb`           | Connection string                    |
+| MySQL                | `mysql`             | Host/port                            |
+| ClickHouse           | `clickhouse`        | Host/port                            |
+| Redshift             | `redshift`          | Host/port (PostgreSQL wire protocol) |
+| SQLite               | `sqlite`            | File path                            |
+| Cloudflare D1        | `cloudflare-d1`     | Account ID + database ID             |
 
 ## Adding a Database Connection
 
 In the Mako UI:
+
 1. Click **Databases** in the sidebar
 2. Click **Add Connection**
 3. Select the database type

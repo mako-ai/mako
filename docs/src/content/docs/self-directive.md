@@ -13,15 +13,15 @@ When the agent starts a conversation, it can read the self-directive to recall w
 
 ## Tools
 
-| Tool | Operation | Purpose |
-|---|---|---|
-| `read_self_directive` | — | Read the current self-directive |
-| `update_self_directive` | `set` | Overwrite the entire directive |
-| | `append` | Add content to the end |
-| | `prepend` | Add content to the beginning |
-| | `find_and_replace` | Replace a specific section |
-| | `insert_after` | Insert content after a marker |
-| | `delete_section` | Remove a section |
+| Tool                    | Operation          | Purpose                         |
+| ----------------------- | ------------------ | ------------------------------- |
+| `read_self_directive`   | —                  | Read the current self-directive |
+| `update_self_directive` | `set`              | Overwrite the entire directive  |
+|                         | `append`           | Add content to the end          |
+|                         | `prepend`          | Add content to the beginning    |
+|                         | `find_and_replace` | Replace a specific section      |
+|                         | `insert_after`     | Insert content after a marker   |
+|                         | `delete_section`   | Remove a section                |
 
 ## What Gets Stored
 

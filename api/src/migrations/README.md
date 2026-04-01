@@ -99,10 +99,12 @@ export async function up(db: Db): Promise<void> {
 
 ```typescript
 export async function up(db: Db): Promise<void> {
-  await db.collection("workspaces").updateMany(
-    { settings: { $exists: false } },
-    { $set: { settings: { theme: "light", notifications: true } } }
-  );
+  await db
+    .collection("workspaces")
+    .updateMany(
+      { settings: { $exists: false } },
+      { $set: { settings: { theme: "light", notifications: true } } },
+    );
 }
 ```
 
@@ -110,10 +112,9 @@ export async function up(db: Db): Promise<void> {
 
 ```typescript
 export async function up(db: Db): Promise<void> {
-  await db.collection("users").updateMany(
-    {},
-    { $rename: { "oldFieldName": "newFieldName" } }
-  );
+  await db
+    .collection("users")
+    .updateMany({}, { $rename: { oldFieldName: "newFieldName" } });
 }
 ```
 
@@ -134,7 +135,7 @@ export async function up(db: Db): Promise<void> {
       },
     },
   });
-  
+
   await db.collection("audit_logs").createIndex({ timestamp: -1 });
 }
 ```
@@ -144,10 +145,10 @@ export async function up(db: Db): Promise<void> {
 ```typescript
 export async function up(db: Db): Promise<void> {
   const cursor = db.collection("old_collection").find({});
-  
+
   const batch: any[] = [];
   const BATCH_SIZE = 1000;
-  
+
   for await (const doc of cursor) {
     batch.push({
       insertOne: {
@@ -158,13 +159,13 @@ export async function up(db: Db): Promise<void> {
         },
       },
     });
-    
+
     if (batch.length >= BATCH_SIZE) {
       await db.collection("new_collection").bulkWrite(batch);
       batch.length = 0;
     }
   }
-  
+
   if (batch.length > 0) {
     await db.collection("new_collection").bulkWrite(batch);
   }
@@ -193,11 +194,11 @@ The `migrations` collection stores:
 
 ## CLI Reference
 
-| Command | Description |
-|---------|-------------|
-| `pnpm run migrate` | Run all pending migrations |
-| `pnpm run migrate status` | Show status of all migrations |
-| `pnpm run migrate create "name"` | Create a new migration file |
+| Command                          | Description                   |
+| -------------------------------- | ----------------------------- |
+| `pnpm run migrate`               | Run all pending migrations    |
+| `pnpm run migrate status`        | Show status of all migrations |
+| `pnpm run migrate create "name"` | Create a new migration file   |
 
 ## Deployment
 
@@ -243,8 +244,8 @@ If you need to manually mark a migration as complete:
 ```javascript
 db.migrations.updateOne(
   { _id: "2024-12-03-143022_problematic_migration" },
-  { $set: { ran_at: new Date() }, $unset: { error: "" } }
-)
+  { $set: { ran_at: new Date() }, $unset: { error: "" } },
+);
 ```
 
 ### Skip a Migration
@@ -255,7 +256,6 @@ To permanently skip a migration, mark it as complete without running it:
 db.migrations.insertOne({
   _id: "2024-12-03-143022_skip_this",
   ran_at: new Date(),
-  duration_ms: 0
-})
+  duration_ms: 0,
+});
 ```
-

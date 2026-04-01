@@ -45,6 +45,7 @@ Mako includes a deploy script for Cloud Run:
 ```
 
 The script:
+
 1. Installs dependencies
 2. Runs ESLint
 3. Builds both app and API
@@ -56,19 +57,19 @@ The script:
 
 Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`):
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `DATABASE_URL` | Yes | MongoDB connection string |
-| `ENCRYPTION_KEY` | Yes | Credential encryption |
-| `SESSION_SECRET` | Yes | Session security |
-| `BASE_URL` | Yes | Public URL (e.g., `https://app.mako.ai`) |
-| `CLIENT_URL` | Yes | Same as BASE_URL for Cloud Run |
-| `OPENAI_API_KEY` | Recommended | AI features |
-| `ANTHROPIC_API_KEY` | Optional | Anthropic models |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | Optional | Google models |
-| `GOOGLE_CLIENT_ID` + `SECRET` | Optional | Google OAuth |
-| `GH_CLIENT_ID` + `SECRET` | Optional | GitHub OAuth |
-| `SENDGRID_API_KEY` | Optional | Email invitations |
+| Variable                       | Required    | Purpose                                  |
+| ------------------------------ | ----------- | ---------------------------------------- |
+| `DATABASE_URL`                 | Yes         | MongoDB connection string                |
+| `ENCRYPTION_KEY`               | Yes         | Credential encryption                    |
+| `SESSION_SECRET`               | Yes         | Session security                         |
+| `BASE_URL`                     | Yes         | Public URL (e.g., `https://app.mako.ai`) |
+| `CLIENT_URL`                   | Yes         | Same as BASE_URL for Cloud Run           |
+| `OPENAI_API_KEY`               | Recommended | AI features                              |
+| `ANTHROPIC_API_KEY`            | Optional    | Anthropic models                         |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Optional    | Google models                            |
+| `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |
+| `GH_CLIENT_ID` + `SECRET`      | Optional    | GitHub OAuth                             |
+| `SENDGRID_API_KEY`             | Optional    | Email invitations                        |
 
 ### Dashboard Artifact Storage
 

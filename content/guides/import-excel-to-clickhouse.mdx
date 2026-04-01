@@ -122,13 +122,13 @@ Mako handles the conversion internally. For one-off imports, this avoids the CSV
 
 ClickHouse has strict, performance-oriented types. Picking the right one matters for query speed and storage:
 
-| Excel Type | ClickHouse Type | Notes |
-|---|---|---|
-| Integer | `UInt32`, `Int32`, `UInt64`, `Int64` | Choose the smallest type that fits. ClickHouse benefits from narrow types. |
-| Decimal | `Decimal(p,s)` or `Float64` | Use `Decimal` for exact values, `Float64` for analytics |
-| Date | `Date` or `DateTime` | `Date` stores as days since 1970-01-01 (2 bytes). `DateTime` adds time. |
-| Text | `String` or `LowCardinality(String)` | Use `LowCardinality` for columns with few distinct values (country codes, statuses) |
-| Boolean | `Bool` (alias for `UInt8`) | TRUE=1, FALSE=0 |
+| Excel Type | ClickHouse Type                      | Notes                                                                               |
+| ---------- | ------------------------------------ | ----------------------------------------------------------------------------------- |
+| Integer    | `UInt32`, `Int32`, `UInt64`, `Int64` | Choose the smallest type that fits. ClickHouse benefits from narrow types.          |
+| Decimal    | `Decimal(p,s)` or `Float64`          | Use `Decimal` for exact values, `Float64` for analytics                             |
+| Date       | `Date` or `DateTime`                 | `Date` stores as days since 1970-01-01 (2 bytes). `DateTime` adds time.             |
+| Text       | `String` or `LowCardinality(String)` | Use `LowCardinality` for columns with few distinct values (country codes, statuses) |
+| Boolean    | `Bool` (alias for `UInt8`)           | TRUE=1, FALSE=0                                                                     |
 
 ## ClickHouse-Specific Considerations
 

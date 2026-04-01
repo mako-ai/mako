@@ -16,19 +16,24 @@ The Console is Mako's query editor. It connects to any database you've added and
 ## Working with Consoles
 
 ### Creating a Console
+
 Click the + button in the sidebar to create a new console. Select a database connection and start writing.
 
 ### Running Queries
+
 Hit `Cmd+Enter` (Mac) or `Ctrl+Enter` to execute. Results appear in a table below the editor.
 
 ### Using AI
+
 Open the chat panel and describe what you want. The agent will:
+
 1. Inspect your database schema
 2. Write the query
 3. Execute it to verify it works
 4. Place it in your console
 
 ### Organizing
+
 Consoles can be organized into folders. Use the sidebar tree to drag and arrange.
 
 ## Console API
@@ -45,11 +50,11 @@ Authorization: Bearer revops_YOUR_API_KEY
 
 ### Endpoints
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/workspaces/:wid/consoles/list` | List all consoles |
-| `GET` | `/api/workspaces/:wid/consoles/:id/details` | Get console details + code |
-| `POST` | `/api/workspaces/:wid/consoles/:id/execute` | Execute a console |
+| Method | Endpoint                                    | Description                |
+| ------ | ------------------------------------------- | -------------------------- |
+| `GET`  | `/api/workspaces/:wid/consoles/list`        | List all consoles          |
+| `GET`  | `/api/workspaces/:wid/consoles/:id/details` | Get console details + code |
+| `POST` | `/api/workspaces/:wid/consoles/:id/execute` | Execute a console          |
 
 ### Example
 
@@ -61,6 +66,7 @@ curl -X POST \
 ```
 
 Response:
+
 ```json
 {
   "success": true,

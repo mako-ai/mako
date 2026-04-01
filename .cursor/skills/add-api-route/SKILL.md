@@ -36,7 +36,10 @@ routes.use("/:workspaceId/*", async (c, next) => {
 
   if (workspace) {
     if (workspace._id.toString() !== workspaceId) {
-      return c.json({ error: "API key not authorized for this workspace" }, 403);
+      return c.json(
+        { error: "API key not authorized for this workspace" },
+        403,
+      );
     }
   } else if (user) {
     const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
@@ -53,7 +56,7 @@ routes.use("/:workspaceId/*", async (c, next) => {
 });
 
 // Route handlers
-routes.get("/:workspaceId/items", async (c) => {
+routes.get("/:workspaceId/items", async c => {
   const workspaceId = c.req.param("workspaceId");
   try {
     // Delegate to service layer

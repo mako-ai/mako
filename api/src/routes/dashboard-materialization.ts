@@ -37,7 +37,9 @@ function nodeStreamToWeb(
         if (!closed) {
           controller.enqueue(new Uint8Array(chunk));
           if (controller.desiredSize !== null && controller.desiredSize <= 0) {
-            (nodeStream as NodeJS.ReadableStream & { pause?: () => void }).pause?.();
+            (
+              nodeStream as NodeJS.ReadableStream & { pause?: () => void }
+            ).pause?.();
           }
         }
       });
@@ -55,7 +57,9 @@ function nodeStreamToWeb(
       });
     },
     pull() {
-      (nodeStream as NodeJS.ReadableStream & { resume?: () => void }).resume?.();
+      (
+        nodeStream as NodeJS.ReadableStream & { resume?: () => void }
+      ).resume?.();
     },
     cancel() {
       closed = true;

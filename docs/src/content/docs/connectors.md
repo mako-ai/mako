@@ -11,12 +11,12 @@ Connectors pull data from external services (Stripe, Close CRM, PostHog, REST AP
 
 ## Available Connectors
 
-| Connector | Source | Entities |
-|---|---|---|
-| **Stripe** | Stripe API | Customers, Subscriptions, Invoices, Charges, Products, Prices |
-| **PostHog** | PostHog API | Events, Persons, Groups |
-| **Close CRM** | Close API | Leads, Contacts, Activities, Opportunities |
-| **REST** | Any REST API | Configurable endpoints |
+| Connector     | Source       | Entities                                                      |
+| ------------- | ------------ | ------------------------------------------------------------- |
+| **Stripe**    | Stripe API   | Customers, Subscriptions, Invoices, Charges, Products, Prices |
+| **PostHog**   | PostHog API  | Events, Persons, Groups                                       |
+| **Close CRM** | Close API    | Leads, Contacts, Activities, Opportunities                    |
+| **REST**      | Any REST API | Configurable endpoints                                        |
 
 ## How It Works
 
@@ -33,7 +33,10 @@ Each connector implements:
 
 ```typescript
 interface Connector {
-  fetchEntityChunk(entity: string, cursor?: string): Promise<{
+  fetchEntityChunk(
+    entity: string,
+    cursor?: string,
+  ): Promise<{
     records: Record<string, any>[];
     nextCursor?: string;
     hasMore: boolean;

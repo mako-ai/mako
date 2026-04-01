@@ -13,14 +13,37 @@ export default function V1MinimalDark() {
               <span className="font-semibold text-lg">Mako</span>
             </Link>
             <div className="hidden md:flex items-center gap-6 text-sm text-zinc-400">
-              <Link href="#features" className="hover:text-white transition-colors">Features</Link>
-              <Link href="#pricing" className="hover:text-white transition-colors">Pricing</Link>
-              <Link href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</Link>
-              <Link href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</Link>
+              <Link
+                href="#features"
+                className="hover:text-white transition-colors"
+              >
+                Features
+              </Link>
+              <Link
+                href="#pricing"
+                className="hover:text-white transition-colors"
+              >
+                Pricing
+              </Link>
+              <Link
+                href="https://github.com/mako-ai/mono"
+                className="hover:text-white transition-colors"
+              >
+                GitHub
+              </Link>
+              <Link
+                href="https://docs.mako.ai"
+                className="hover:text-white transition-colors"
+              >
+                Docs
+              </Link>
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <a href="https://app.mako.ai" className="text-sm text-zinc-400 hover:text-white transition-colors">
+            <a
+              href="https://app.mako.ai"
+              className="text-sm text-zinc-400 hover:text-white transition-colors"
+            >
               Sign in
             </a>
             <a
@@ -50,8 +73,8 @@ export default function V1MinimalDark() {
           </h1>
 
           <p className="text-xl text-zinc-400 max-w-2xl mx-auto mb-10 leading-relaxed">
-            Stop wrestling with complex queries. Describe what you need in plain English
-            and let AI agents write, optimize, and execute your SQL.
+            Stop wrestling with complex queries. Describe what you need in plain
+            English and let AI agents write, optimize, and execute your SQL.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -84,7 +107,9 @@ export default function V1MinimalDark() {
                 <div className="w-3 h-3 rounded-full bg-zinc-700" />
               </div>
               <div className="flex-1 text-center">
-                <span className="text-xs text-zinc-500">mako — production-db</span>
+                <span className="text-xs text-zinc-500">
+                  mako — production-db
+                </span>
               </div>
             </div>
 
@@ -93,7 +118,8 @@ export default function V1MinimalDark() {
               <div className="flex gap-4 mb-4">
                 <span className="text-zinc-600">1</span>
                 <span className="text-zinc-400">
-                  <span className="text-purple-400">-- Ask:</span> Show me the top 10 customers by revenue this month
+                  <span className="text-purple-400">-- Ask:</span> Show me the
+                  top 10 customers by revenue this month
                 </span>
               </div>
               <div className="flex gap-4 mb-4">
@@ -215,8 +241,8 @@ export default function V1MinimalDark() {
             Everything you need. Nothing you don&apos;t.
           </h2>
           <p className="text-zinc-400 text-center mb-16 max-w-2xl mx-auto">
-            A modern database client built for the AI era. Connect to any database,
-            collaborate with your team, and ship faster.
+            A modern database client built for the AI era. Connect to any
+            database, collaborate with your team, and ship faster.
           </p>
 
           <div className="grid md:grid-cols-3 gap-6">
@@ -295,26 +321,108 @@ export default function V1MinimalDark() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-zinc-800">
-                  <th className="text-left py-4 px-4 font-medium text-zinc-400">Feature</th>
-                  <th className="text-center py-4 px-4 font-bold text-white">Mako</th>
-                  <th className="text-center py-4 px-4 font-medium text-zinc-400">DataGrip</th>
-                  <th className="text-center py-4 px-4 font-medium text-zinc-400">DBeaver</th>
-                  <th className="text-center py-4 px-4 font-medium text-zinc-400">Postico</th>
+                  <th className="text-left py-4 px-4 font-medium text-zinc-400">
+                    Feature
+                  </th>
+                  <th className="text-center py-4 px-4 font-bold text-white">
+                    Mako
+                  </th>
+                  <th className="text-center py-4 px-4 font-medium text-zinc-400">
+                    DataGrip
+                  </th>
+                  <th className="text-center py-4 px-4 font-medium text-zinc-400">
+                    DBeaver
+                  </th>
+                  <th className="text-center py-4 px-4 font-medium text-zinc-400">
+                    Postico
+                  </th>
                 </tr>
               </thead>
               <tbody className="text-zinc-300">
-                <ComparisonRow label="AI Query Generation" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="Web-Based" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="Team Collaboration" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="One-Click APIs" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="Free & Open Source" mako={true} datagrip={false} dbeaver="partial" postico={false} />
-                <ComparisonRow label="No Installation" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="Query History Sync" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="Instant Startup" mako={true} datagrip={false} dbeaver={false} postico={true} />
-                <ComparisonRow label="Visual EXPLAIN Plans" mako={true} datagrip={true} dbeaver="partial" postico={false} />
-                <ComparisonRow label="Query Scheduling" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="Data Masking (PII)" mako={true} datagrip={false} dbeaver={false} postico={false} />
-                <ComparisonRow label="Audit Logs" mako={true} datagrip={false} dbeaver={false} postico={false} />
+                <ComparisonRow
+                  label="AI Query Generation"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Web-Based"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Team Collaboration"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="One-Click APIs"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Free & Open Source"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver="partial"
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="No Installation"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Query History Sync"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Instant Startup"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={true}
+                />
+                <ComparisonRow
+                  label="Visual EXPLAIN Plans"
+                  mako={true}
+                  datagrip={true}
+                  dbeaver="partial"
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Query Scheduling"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Data Masking (PII)"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
+                <ComparisonRow
+                  label="Audit Logs"
+                  mako={true}
+                  datagrip={false}
+                  dbeaver={false}
+                  postico={false}
+                />
               </tbody>
             </table>
           </div>
@@ -324,11 +432,10 @@ export default function V1MinimalDark() {
       {/* CTA */}
       <section className="py-20 px-6 border-t border-zinc-800">
         <div className="max-w-2xl mx-auto text-center">
-          <h2 className="text-4xl font-bold mb-6">
-            Ready to query smarter?
-          </h2>
+          <h2 className="text-4xl font-bold mb-6">Ready to query smarter?</h2>
           <p className="text-xl text-zinc-400 mb-8">
-            Join thousands of developers who&apos;ve upgraded their database workflow.
+            Join thousands of developers who&apos;ve upgraded their database
+            workflow.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <a
@@ -352,12 +459,26 @@ export default function V1MinimalDark() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <MakoIcon className="w-5 h-5" />
-            <span className="text-zinc-400 text-sm">© 2025 Mako. Open source under MIT.</span>
+            <span className="text-zinc-400 text-sm">
+              © 2025 Mako. Open source under MIT.
+            </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-400">
-            <a href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</a>
-            <a href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</a>
-            <a href="#" className="hover:text-white transition-colors">Twitter</a>
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </a>
+            <a
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </a>
+            <a href="#" className="hover:text-white transition-colors">
+              Twitter
+            </a>
           </div>
         </div>
       </footer>
@@ -365,7 +486,15 @@ export default function V1MinimalDark() {
   );
 }
 
-function FeatureCard({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+function FeatureCard({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
   return (
     <div className="p-6 rounded-xl border border-zinc-800 bg-zinc-900/30 hover:bg-zinc-900/50 transition-colors">
       <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-400 mb-4">
@@ -377,7 +506,13 @@ function FeatureCard({ icon, title, description }: { icon: React.ReactNode; titl
   );
 }
 
-function ComparisonRow({ label, mako, datagrip, dbeaver, postico }: {
+function ComparisonRow({
+  label,
+  mako,
+  datagrip,
+  dbeaver,
+  postico,
+}: {
   label: string;
   mako: boolean;
   datagrip: boolean | "partial";
@@ -408,7 +543,12 @@ function ComparisonRow({ label, mako, datagrip, dbeaver, postico }: {
 // Icons
 function MakoIcon({ className }: { className?: string }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 102 90" fill="currentColor" className={className}>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 102 90"
+      fill="currentColor"
+      className={className}
+    >
       <path d="m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z" />
     </svg>
   );
@@ -424,7 +564,13 @@ function GitHubIcon({ className }: { className?: string }) {
 
 function BrainIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <path d="M12 4.5c-1.5-1.5-4-1.5-5.5 0s-1.5 4 0 5.5l5.5 5.5 5.5-5.5c1.5-1.5 1.5-4 0-5.5s-4-1.5-5.5 0" />
       <path d="M12 4.5v11" />
       <path d="M8.5 8h7" />
@@ -435,7 +581,13 @@ function BrainIcon() {
 
 function UsersIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
       <circle cx="9" cy="7" r="4" />
       <path d="M22 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
@@ -445,7 +597,13 @@ function UsersIcon() {
 
 function ApiIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" />
     </svg>
   );
@@ -453,7 +611,13 @@ function ApiIcon() {
 
 function CloudIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <path d="M17.5 19H9a7 7 0 116.71-9h.79a5 5 0 110 10z" />
     </svg>
   );
@@ -461,7 +625,13 @@ function CloudIcon() {
 
 function OpenSourceIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <circle cx="12" cy="12" r="10" />
       <path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
       <path d="M2 12h20" />
@@ -471,7 +641,13 @@ function OpenSourceIcon() {
 
 function DatabaseIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <ellipse cx="12" cy="5" rx="9" ry="3" />
       <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
@@ -481,7 +657,13 @@ function DatabaseIcon() {
 
 function KeyboardIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <rect x="2" y="4" width="20" height="16" rx="2" />
       <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M8 16h8" />
     </svg>
@@ -490,7 +672,13 @@ function KeyboardIcon() {
 
 function HistoryIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <circle cx="12" cy="12" r="10" />
       <polyline points="12 6 12 12 16 14" />
     </svg>
@@ -499,7 +687,13 @@ function HistoryIcon() {
 
 function LockIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
       <path d="M7 11V7a5 5 0 0110 0v4" />
     </svg>
@@ -508,7 +702,13 @@ function LockIcon() {
 
 function ChartIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <line x1="18" y1="20" x2="18" y2="10" />
       <line x1="12" y1="20" x2="12" y2="4" />
       <line x1="6" y1="20" x2="6" y2="14" />
@@ -518,7 +718,13 @@ function ChartIcon() {
 
 function TerminalIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <polyline points="4 17 10 11 4 5" />
       <line x1="12" y1="19" x2="20" y2="19" />
     </svg>
@@ -527,7 +733,13 @@ function TerminalIcon() {
 
 function ClockIcon() {
   return (
-    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-5 h-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <circle cx="12" cy="12" r="10" />
       <polyline points="12 6 12 12 16 14" />
     </svg>

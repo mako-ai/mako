@@ -33,16 +33,16 @@ The console is a full SQL editor — not a chat window with code blocks you copy
 
 Mako auto-detects the database type from your connection and adapts its SQL dialect:
 
-| Database | Dialect | Notes |
-|---|---|---|
-| PostgreSQL | `postgresql` | Full support — arrays, JSON operators, `ILIKE` |
-| Cloud SQL | `postgresql` | Same as PostgreSQL |
-| BigQuery | `bigquery` | Backtick identifiers, `CAST()`, `REGEXP_CONTAINS()` |
-| MongoDB | Aggregation | Pipelines, `find()`, collection inspection |
-| MySQL | `mysql` | Backtick identifiers, `CONVERT()` |
-| ClickHouse | `clickhouse` | Columnar-optimized queries |
-| Redshift | `postgresql` | PostgreSQL wire-compatible |
-| SQLite | `sqlite` | Including Cloudflare D1 |
+| Database   | Dialect      | Notes                                               |
+| ---------- | ------------ | --------------------------------------------------- |
+| PostgreSQL | `postgresql` | Full support — arrays, JSON operators, `ILIKE`      |
+| Cloud SQL  | `postgresql` | Same as PostgreSQL                                  |
+| BigQuery   | `bigquery`   | Backtick identifiers, `CAST()`, `REGEXP_CONTAINS()` |
+| MongoDB    | Aggregation  | Pipelines, `find()`, collection inspection          |
+| MySQL      | `mysql`      | Backtick identifiers, `CONVERT()`                   |
+| ClickHouse | `clickhouse` | Columnar-optimized queries                          |
+| Redshift   | `postgresql` | PostgreSQL wire-compatible                          |
+| SQLite     | `sqlite`     | Including Cloudflare D1                             |
 
 You don't configure dialects — Mako reads the connection metadata and does the right thing.
 
@@ -50,11 +50,11 @@ You don't configure dialects — Mako reads the connection metadata and does the
 
 Before writing any query, Mako inspects your actual schema. No guessing, no hallucinated column names:
 
-| Tool | What It Does |
-|---|---|
-| `list_connections` | Shows all database connections in the workspace |
-| `sql_list_databases` / `mongo_list_databases` | Lists databases on a connection |
-| `sql_list_tables` / `mongo_list_collections` | Lists tables/collections with row counts |
+| Tool                                             | What It Does                                    |
+| ------------------------------------------------ | ----------------------------------------------- |
+| `list_connections`                               | Shows all database connections in the workspace |
+| `sql_list_databases` / `mongo_list_databases`    | Lists databases on a connection                 |
+| `sql_list_tables` / `mongo_list_collections`     | Lists tables/collections with row counts        |
 | `sql_inspect_table` / `mongo_inspect_collection` | Gets column types, constraints, and sample data |
 
 The agent uses sample data to understand real values — not just types. If your `status` column contains `'active'`, `'churned'`, `'trial'`, it knows what to filter on.
@@ -63,9 +63,9 @@ The agent uses sample data to understand real values — not just types. If your
 
 Mako learns your database over time. When it discovers that your `created_at` column stores Unix timestamps instead of dates, or that your `users` table uses `uuid` instead of `id` as the primary key, it saves that knowledge:
 
-| Tool | What It Does |
-|---|---|
-| `read_self_directive` | Reads learned rules for this workspace |
+| Tool                    | What It Does                                  |
+| ----------------------- | --------------------------------------------- |
+| `read_self_directive`   | Reads learned rules for this workspace        |
 | `update_self_directive` | Saves schema quirks, preferences, conventions |
 
 This persists across all conversations. The more you use Mako, the less explaining you need to do.
@@ -75,9 +75,11 @@ This persists across all conversations. The more you use Mako, the less explaini
 Different contexts activate different specialized agents:
 
 ### Console Agent (default)
+
 Active when you're working in a console tab. This is the core SQL client experience — schema discovery, query writing, execution, and console delivery.
 
 ### Flow Agent
+
 Active in the flow editor. Helps configure database-to-database sync flows — inspects source and destination schemas, writes extraction queries with template placeholders, and validates before applying.
 
 ## AI Models

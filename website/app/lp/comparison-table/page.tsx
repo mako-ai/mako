@@ -13,9 +13,24 @@ export default function V6ComparisonTable() {
               <span className="font-bold text-xl">Mako</span>
             </Link>
             <div className="hidden md:flex items-center gap-6 text-sm text-zinc-500">
-              <Link href="#comparison" className="hover:text-zinc-900 dark:hover:text-white transition-colors">Compare</Link>
-              <Link href="#features" className="hover:text-zinc-900 dark:hover:text-white transition-colors">Features</Link>
-              <Link href="https://docs.mako.ai" className="hover:text-zinc-900 dark:hover:text-white transition-colors">Docs</Link>
+              <Link
+                href="#comparison"
+                className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+              >
+                Compare
+              </Link>
+              <Link
+                href="#features"
+                className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+              >
+                Features
+              </Link>
+              <Link
+                href="https://docs.mako.ai"
+                className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+              >
+                Docs
+              </Link>
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -45,12 +60,15 @@ export default function V6ComparisonTable() {
 
           <h1 className="text-4xl md:text-6xl font-bold tracking-tight mb-6">
             The SQL client you&apos;ve been
-            <span className="block text-emerald-600 dark:text-emerald-400">waiting for</span>
+            <span className="block text-emerald-600 dark:text-emerald-400">
+              waiting for
+            </span>
           </h1>
 
           <p className="text-xl text-zinc-600 dark:text-zinc-400 max-w-2xl mx-auto mb-10">
-            Finally, a database client that&apos;s free, AI-powered, web-based, and built for collaboration.
-            See how Mako compares to the alternatives.
+            Finally, a database client that&apos;s free, AI-powered, web-based,
+            and built for collaboration. See how Mako compares to the
+            alternatives.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -71,7 +89,10 @@ export default function V6ComparisonTable() {
       </section>
 
       {/* Comparison Table */}
-      <section id="comparison" className="py-20 px-6 bg-zinc-50 dark:bg-zinc-900">
+      <section
+        id="comparison"
+        className="py-20 px-6 bg-zinc-50 dark:bg-zinc-900"
+      >
         <div className="max-w-5xl mx-auto">
           <h2 className="text-3xl font-bold text-center mb-4">
             How Mako stacks up
@@ -91,10 +112,18 @@ export default function V6ComparisonTable() {
                       Mako
                     </div>
                   </th>
-                  <th className="text-center py-4 px-4 font-medium text-zinc-500">DataGrip</th>
-                  <th className="text-center py-4 px-4 font-medium text-zinc-500">DBeaver</th>
-                  <th className="text-center py-4 px-4 font-medium text-zinc-500">Postico</th>
-                  <th className="text-center py-4 px-4 font-medium text-zinc-500">TablePlus</th>
+                  <th className="text-center py-4 px-4 font-medium text-zinc-500">
+                    DataGrip
+                  </th>
+                  <th className="text-center py-4 px-4 font-medium text-zinc-500">
+                    DBeaver
+                  </th>
+                  <th className="text-center py-4 px-4 font-medium text-zinc-500">
+                    Postico
+                  </th>
+                  <th className="text-center py-4 px-4 font-medium text-zinc-500">
+                    TablePlus
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -287,7 +316,8 @@ export default function V6ComparisonTable() {
               <div>
                 <h3 className="font-bold text-lg mb-1">Ready to switch?</h3>
                 <p className="text-zinc-600 dark:text-zinc-400 text-sm">
-                  Mako is free, open source, and takes 30 seconds to get started.
+                  Mako is free, open source, and takes 30 seconds to get
+                  started.
                 </p>
               </div>
               <a
@@ -375,12 +405,29 @@ export default function V6ComparisonTable() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <MakoIcon className="w-5 h-5" />
-            <span className="text-zinc-500 text-sm">© 2025 Mako. MIT License.</span>
+            <span className="text-zinc-500 text-sm">
+              © 2025 Mako. MIT License.
+            </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-500">
-            <a href="https://github.com/mako-ai/mono" className="hover:text-zinc-900 dark:hover:text-white transition-colors">GitHub</a>
-            <a href="https://docs.mako.ai" className="hover:text-zinc-900 dark:hover:text-white transition-colors">Docs</a>
-            <a href="#" className="hover:text-zinc-900 dark:hover:text-white transition-colors">Discord</a>
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+            >
+              GitHub
+            </a>
+            <a
+              href="https://docs.mako.ai"
+              className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+            >
+              Docs
+            </a>
+            <a
+              href="#"
+              className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+            >
+              Discord
+            </a>
           </div>
         </div>
       </footer>
@@ -391,14 +438,21 @@ export default function V6ComparisonTable() {
 function ComparisonSection({ title }: { title: string }) {
   return (
     <tr>
-      <td colSpan={6} className="pt-6 pb-2 px-4 font-semibold text-xs uppercase tracking-wide text-zinc-400">
+      <td
+        colSpan={6}
+        className="pt-6 pb-2 px-4 font-semibold text-xs uppercase tracking-wide text-zinc-400"
+      >
         {title}
       </td>
     </tr>
   );
 }
 
-function ComparisonRow({ feature, mako, others }: {
+function ComparisonRow({
+  feature,
+  mako,
+  others,
+}: {
   feature: string;
   mako: boolean;
   others: (boolean | "partial")[];
@@ -408,7 +462,9 @@ function ComparisonRow({ feature, mako, others }: {
       ✓
     </span>
   );
-  const Cross = () => <span className="text-zinc-300 dark:text-zinc-600">—</span>;
+  const Cross = () => (
+    <span className="text-zinc-300 dark:text-zinc-600">—</span>
+  );
   const Partial = () => (
     <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-yellow-100 dark:bg-yellow-500/20 text-yellow-600 dark:text-yellow-400">
       ~
@@ -428,13 +484,19 @@ function ComparisonRow({ feature, mako, others }: {
         {getIcon(mako)}
       </td>
       {others.map((o, i) => (
-        <td key={i} className="text-center py-3 px-4">{getIcon(o)}</td>
+        <td key={i} className="text-center py-3 px-4">
+          {getIcon(o)}
+        </td>
       ))}
     </tr>
   );
 }
 
-function FeatureCard({ icon, title, description }: {
+function FeatureCard({
+  icon,
+  title,
+  description,
+}: {
   icon: string;
   title: string;
   description: string;
@@ -443,14 +505,21 @@ function FeatureCard({ icon, title, description }: {
     <div className="p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors">
       <div className="text-3xl mb-4">{icon}</div>
       <h3 className="text-lg font-bold mb-2">{title}</h3>
-      <p className="text-zinc-600 dark:text-zinc-400 text-sm leading-relaxed">{description}</p>
+      <p className="text-zinc-600 dark:text-zinc-400 text-sm leading-relaxed">
+        {description}
+      </p>
     </div>
   );
 }
 
 function MakoIcon({ className }: { className?: string }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 102 90" fill="currentColor" className={className}>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 102 90"
+      fill="currentColor"
+      className={className}
+    >
       <path d="m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z" />
     </svg>
   );

@@ -62,4 +62,3 @@ export interface MigrationFullStatus {
   error?: string;
   description?: string;
 }
-

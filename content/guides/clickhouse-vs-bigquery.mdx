@@ -31,6 +31,7 @@ ClickHouse is faster for real-time analytics with high query concurrency and giv
 **BigQuery** separates storage and compute completely. Data lives in Google's Capacitor columnar format on Colossus (Google's distributed filesystem). Compute is provisioned on-demand per query from a shared pool. You don't manage servers, replicas, or storage tiers.
 
 This means:
+
 - ClickHouse performance is bounded by your hardware (but predictable)
 - BigQuery performance depends on available capacity (but auto-scales)
 - ClickHouse has near-zero query startup overhead
@@ -52,12 +53,14 @@ For interactive dashboards where users expect instant results, ClickHouse's late
 ## Real-Time Ingestion
 
 **ClickHouse:**
+
 - Sub-second ingestion latency
 - Millions of rows per second on a single node
 - Kafka, HTTP, and native protocol ingestion
 - Data is queryable immediately after insert
 
 **BigQuery:**
+
 - Streaming inserts have ~1 second latency (with additional per-row costs)
 - Batch loads from Cloud Storage are free but have minutes of delay
 - BigQuery Storage Write API for high-throughput streaming
@@ -70,24 +73,27 @@ If you need data queryable within seconds of arrival, ClickHouse's ingestion pip
 This is where the decision often gets made.
 
 **ClickHouse (self-hosted):**
+
 - You pay for compute (VMs/servers) and storage
 - Costs are predictable -- fixed monthly infrastructure bill
 - Query volume doesn't affect cost (you've already paid for the hardware)
 - ClickHouse Cloud offers consumption-based pricing starting around $197/month
 
 **BigQuery:**
+
 - **On-demand**: $6.25 per TB scanned (first 1 TB/month free)
 - **Capacity pricing** (slots): starting around $0.04/slot-hour (100 slot minimum)
 - Storage: $0.02/GB/month (active), $0.01/GB/month (long-term)
 - Streaming inserts: $0.05 per GB
 
-BigQuery's on-demand pricing is attractive for light, sporadic usage. But it becomes expensive quickly at scale. A team running 100 queries/day scanning 500 GB each would pay $6.25 * 50 TB = ~$312/day = ~$9,375/month. ClickHouse on equivalent hardware might cost $500-2,000/month with unlimited queries.
+BigQuery's on-demand pricing is attractive for light, sporadic usage. But it becomes expensive quickly at scale. A team running 100 queries/day scanning 500 GB each would pay $6.25 \* 50 TB = ~$312/day = ~$9,375/month. ClickHouse on equivalent hardware might cost $500-2,000/month with unlimited queries.
 
 BigQuery's capacity pricing (flat-rate slots) makes costs more predictable but requires commitment. For high-volume analytical workloads, self-hosted ClickHouse typically costs 3-10x less than BigQuery on-demand.
 
 ## Operational Overhead
 
 **BigQuery: near zero.**
+
 - No servers to manage
 - No indexes to create or maintain (it auto-manages partitioning and clustering)
 - No vacuuming, no compaction tuning
@@ -95,6 +101,7 @@ BigQuery's capacity pricing (flat-rate slots) makes costs more predictable but r
 - Google handles everything
 
 **ClickHouse: significant.**
+
 - Server provisioning, monitoring, alerting
 - Replication configuration and management
 - MergeTree tuning (partition keys, order keys, TTL policies)
@@ -109,6 +116,7 @@ If your team has a dedicated data infrastructure person, ClickHouse's operationa
 Both use SQL, but with different dialects and limitations:
 
 **ClickHouse:**
+
 - SQL with ClickHouse-specific extensions
 - No native JOINs on distributed tables (requires careful data modeling)
 - No UPDATE/DELETE in the traditional sense (uses ALTER TABLE mutations)
@@ -116,6 +124,7 @@ Both use SQL, but with different dialects and limitations:
 - No transactions (append-only by design)
 
 **BigQuery:**
+
 - Standard SQL (GoogleSQL, formerly ZetaSQL)
 - Full JOIN support across tables and datasets
 - DML support (UPDATE, DELETE, MERGE) with some limitations
@@ -127,6 +136,7 @@ BigQuery's SQL is closer to standard SQL, which means less learning curve and ea
 ## Ecosystem Integration
 
 **BigQuery:**
+
 - Native integration with Google Cloud services (Dataflow, Pub/Sub, Looker, Vertex AI)
 - BigQuery ML for in-database machine learning
 - Data Transfer Service for automated imports
@@ -134,6 +144,7 @@ BigQuery's SQL is closer to standard SQL, which means less learning curve and ea
 - IAM for access control
 
 **ClickHouse:**
+
 - Kafka integration for streaming ingestion
 - S3/GCS for external data access
 - Grafana, Metabase, Superset for visualization

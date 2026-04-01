@@ -42,7 +42,9 @@ function parseMdxFile(filePath: string): BlogPost | null {
   return {
     slug,
     title: data.title || "Untitled",
-    date: data.date ? new Date(data.date).toISOString() : new Date().toISOString(),
+    date: data.date
+      ? new Date(data.date).toISOString()
+      : new Date().toISOString(),
     author: data.author || "Mako Team",
     tags: data.tags || [],
     excerpt: data.excerpt || "",
@@ -55,10 +57,10 @@ function parseMdxFile(filePath: string): BlogPost | null {
 export function getAllPosts(): BlogPostMeta[] {
   if (!fs.existsSync(CONTENT_DIR)) return [];
 
-  const files = fs.readdirSync(CONTENT_DIR).filter((f) => f.endsWith(".mdx"));
+  const files = fs.readdirSync(CONTENT_DIR).filter(f => f.endsWith(".mdx"));
 
   const posts = files
-    .map((file) => parseMdxFile(path.join(CONTENT_DIR, file)))
+    .map(file => parseMdxFile(path.join(CONTENT_DIR, file)))
     .filter((post): post is BlogPost => post !== null)
     .map(({ content: _, ...meta }) => meta)
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -69,7 +71,7 @@ export function getAllPosts(): BlogPostMeta[] {
 export function getPostBySlug(slug: string): BlogPost | null {
   if (!fs.existsSync(CONTENT_DIR)) return null;
 
-  const files = fs.readdirSync(CONTENT_DIR).filter((f) => f.endsWith(".mdx"));
+  const files = fs.readdirSync(CONTENT_DIR).filter(f => f.endsWith(".mdx"));
 
   for (const file of files) {
     const post = parseMdxFile(path.join(CONTENT_DIR, file));
@@ -82,7 +84,7 @@ export function getPostBySlug(slug: string): BlogPost | null {
 }
 
 export function getAllSlugs(): string[] {
-  return getAllPosts().map((post) => post.slug);
+  return getAllPosts().map(post => post.slug);
 }
 
 export function getAllTags(): string[] {
@@ -99,14 +101,14 @@ export function getRelatedPosts(slug: string, limit = 3): BlogPostMeta[] {
   const current = getPostBySlug(slug);
   if (!current) return [];
 
-  const all = getAllPosts().filter((p) => p.slug !== slug);
+  const all = getAllPosts().filter(p => p.slug !== slug);
 
-  const scored = all.map((post) => {
-    const sharedTags = post.tags.filter((t) => current.tags.includes(t)).length;
+  const scored = all.map(post => {
+    const sharedTags = post.tags.filter(t => current.tags.includes(t)).length;
     return { post, score: sharedTags };
   });
 
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, limit).map((s) => s.post);
+  return scored.slice(0, limit).map(s => s.post);
 }

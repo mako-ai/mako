@@ -34,6 +34,7 @@ This architectural difference is the deciding factor in most cases.
 ## Concurrency
 
 **SQLite:**
+
 - Database-level locking (one writer at a time)
 - WAL mode allows concurrent reads during a write
 - No connection pooling (no server to pool)
@@ -41,6 +42,7 @@ This architectural difference is the deciding factor in most cases.
 - Multiple readers work well; multiple writers queue up
 
 **MySQL (InnoDB):**
+
 - Row-level locking (multiple writers on different rows simultaneously)
 - MVCC for concurrent reads and writes
 - Connection pooling via ProxySQL or MySQL Router
@@ -54,6 +56,7 @@ A mobile app storing user preferences locally? SQLite is the standard choice -- 
 ## Deployment
 
 **SQLite:**
+
 - Zero installation. It's a library.
 - The database is portable -- one file, any platform
 - No user management or authentication
@@ -62,6 +65,7 @@ A mobile app storing user preferences locally? SQLite is the standard choice -- 
 - No network exposure (security by absence)
 
 **MySQL:**
+
 - Requires installation and configuration
 - Needs user/password management
 - Must configure bind addresses, character sets, connection limits
@@ -73,17 +77,17 @@ For production web applications, MySQL's operational overhead is justified by th
 
 ## Data Types and Features
 
-| Feature | SQLite | MySQL |
-|---|---|---|
-| Type system | Dynamic (flexible by default, `STRICT` tables available) | Static (enforced) |
-| JSON | Functions since 3.38, no dedicated type | Native `JSON` type with binary storage |
-| Full-text search | FTS5 extension (included) | `FULLTEXT` indexes |
-| Stored procedures | Not supported | Supported |
-| Triggers | Supported (limited) | Supported (comprehensive) |
-| Views | Supported (read-only) | Supported (some updatable) |
-| User management | None (filesystem permissions only) | Full RBAC with `GRANT`/`REVOKE` |
-| Replication | Litestream, LiteFS (third-party) | Built-in binary log replication |
-| Transactions | ACID (serialized writes) | ACID with InnoDB (concurrent) |
+| Feature           | SQLite                                                   | MySQL                                  |
+| ----------------- | -------------------------------------------------------- | -------------------------------------- |
+| Type system       | Dynamic (flexible by default, `STRICT` tables available) | Static (enforced)                      |
+| JSON              | Functions since 3.38, no dedicated type                  | Native `JSON` type with binary storage |
+| Full-text search  | FTS5 extension (included)                                | `FULLTEXT` indexes                     |
+| Stored procedures | Not supported                                            | Supported                              |
+| Triggers          | Supported (limited)                                      | Supported (comprehensive)              |
+| Views             | Supported (read-only)                                    | Supported (some updatable)             |
+| User management   | None (filesystem permissions only)                       | Full RBAC with `GRANT`/`REVOKE`        |
+| Replication       | Litestream, LiteFS (third-party)                         | Built-in binary log replication        |
+| Transactions      | ACID (serialized writes)                                 | ACID with InnoDB (concurrent)          |
 
 MySQL's type system catches errors at insert time. SQLite's dynamic typing means a TEXT value can end up in an INTEGER column unless you use STRICT tables (available since 3.37.0). For data integrity, MySQL's strict type enforcement is safer.
 
@@ -92,12 +96,14 @@ MySQL's stored procedures, events, and comprehensive trigger support make it sui
 ## Performance
 
 **SQLite is faster for:**
+
 - Single-threaded reads (no network roundtrip, no protocol overhead)
 - Small datasets that fit in the OS page cache
 - Applications where the database is accessed by one process
 - Read-heavy workloads with infrequent writes
 
 **MySQL is faster for:**
+
 - Concurrent read/write workloads
 - Large datasets with complex indexing requirements
 - Queries that benefit from MySQL's query optimizer and caching
@@ -110,12 +116,14 @@ Benchmarks that test single-threaded read performance often show SQLite outperfo
 Frameworks like Rails 8, Laravel, and Phoenix have improved SQLite support, and tools like Litestream (streaming backup to S3), LiteFS (distributed SQLite on Fly.io), and Turso (libSQL, distributed SQLite) have made SQLite viable for small production web applications.
 
 This works when:
+
 - Concurrency is low (single-digit simultaneous writers)
 - The application runs on one server
 - Simplicity matters more than horizontal scaling
 - Cost sensitivity is high (no managed database needed)
 
 It breaks when:
+
 - Multiple application instances need to share state
 - Write concurrency exceeds what WAL mode can handle
 - You need role-based access control
@@ -144,6 +152,7 @@ It breaks when:
 ## Starting with SQLite, Migrating Later
 
 This is a common and reasonable approach:
+
 1. Build with SQLite in development (fast, no setup)
 2. Deploy with SQLite if concurrency is low
 3. Migrate to MySQL when you outgrow it

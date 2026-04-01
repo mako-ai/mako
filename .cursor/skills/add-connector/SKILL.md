@@ -22,7 +22,11 @@ mkdir -p api/src/connectors/<name>
 Create `api/src/connectors/<name>/connector.ts` (the registry looks for `connector.ts` first, then `index.ts`):
 
 ```typescript
-import { BaseConnector, FetchOptions, ConnectionTestResult } from "../base/BaseConnector";
+import {
+  BaseConnector,
+  FetchOptions,
+  ConnectionTestResult,
+} from "../base/BaseConnector";
 import { IConnector } from "../../database/workspace-schema";
 
 export class MySourceConnector extends BaseConnector {
@@ -58,7 +62,12 @@ export class MySourceConnector extends BaseConnector {
     return {
       fields: [
         { name: "apiKey", label: "API Key", type: "password", required: true },
-        { name: "endpoint", label: "Endpoint URL", type: "string", required: true },
+        {
+          name: "endpoint",
+          label: "Endpoint URL",
+          type: "string",
+          required: true,
+        },
       ],
       // For query-based connectors, add transferQueries (configured at Flow level):
       // transferQueries: {

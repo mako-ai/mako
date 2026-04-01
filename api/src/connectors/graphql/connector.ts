@@ -414,7 +414,9 @@ export class GraphQLConnector extends BaseConnector {
         onProgress(currentCount, totalCount);
       }
       const progressDuration = Date.now() - progressStart;
-      logger.info("Progress update completed", { durationMs: progressDuration });
+      logger.info("Progress update completed", {
+        durationMs: progressDuration,
+      });
 
       // Check for more pages
       const paginationStart = Date.now();

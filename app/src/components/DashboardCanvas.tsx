@@ -169,7 +169,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     return { ageMs, label };
   }, [dashboard]);
 
-  const recentEventLogCount = Math.min(runtimeSession?.eventLog.length ?? 0, 10);
+  const recentEventLogCount = Math.min(
+    runtimeSession?.eventLog.length ?? 0,
+    10,
+  );
 
   if (!dashboard) {
     return (

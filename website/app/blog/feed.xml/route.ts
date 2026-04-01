@@ -7,7 +7,7 @@ export function GET() {
 
   const items = posts
     .map(
-      (post) => `
+      post => `
     <item>
       <title><![CDATA[${post.title}]]></title>
       <link>${SITE_URL}/blog/${post.slug}</link>
@@ -15,8 +15,8 @@ export function GET() {
       <description><![CDATA[${post.excerpt}]]></description>
       <pubDate>${new Date(post.date).toUTCString()}</pubDate>
       <author>${post.author}</author>
-      ${post.tags.map((tag) => `<category>${tag}</category>`).join("\n      ")}
-    </item>`
+      ${post.tags.map(tag => `<category>${tag}</category>`).join("\n      ")}
+    </item>`,
     )
     .join("");
 

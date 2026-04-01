@@ -39,7 +39,9 @@ export class MyDbDriver implements DatabaseDriver {
     };
   }
 
-  async getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]> {
+  async getTreeRoot(
+    database: IDatabaseConnection,
+  ): Promise<DatabaseTreeNode[]> {
     // Return top-level tree nodes (databases, schemas, etc.)
   }
 
@@ -54,11 +56,18 @@ export class MyDbDriver implements DatabaseDriver {
     database: IDatabaseConnection,
     query: string,
     options?: { signal?: AbortSignal },
-  ): Promise<{ success: boolean; data?: any; error?: string; rowCount?: number }> {
+  ): Promise<{
+    success: boolean;
+    data?: any;
+    error?: string;
+    rowCount?: number;
+  }> {
     // Execute the query, respect options.signal for cancellation
   }
 
-  async cancelQuery?(executionId: string): Promise<{ success: boolean; error?: string }> {
+  async cancelQuery?(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
     // Cancel a running query if supported
   }
 
@@ -87,16 +96,16 @@ databaseRegistry.register(new MyDbDriver());
 
 ## Required Methods
 
-| Method | Required | Purpose |
-|--------|----------|---------|
-| `getMetadata()` | Yes | Returns driver type, name, description |
-| `getTreeRoot()` | Yes | Top-level tree nodes for database explorer |
-| `getChildren()` | Yes | Child nodes for tree expansion |
-| `executeQuery()` | Yes | Query execution with AbortSignal support |
-| `cancelQuery()` | No | Cancel running queries |
-| `getAutocompleteData()` | No | Schema info for SQL autocomplete |
-| `supportsWrites()` | No | Enable write operations |
-| `insertBatch()` | No | Batch insert for sync targets |
+| Method                  | Required | Purpose                                    |
+| ----------------------- | -------- | ------------------------------------------ |
+| `getMetadata()`         | Yes      | Returns driver type, name, description     |
+| `getTreeRoot()`         | Yes      | Top-level tree nodes for database explorer |
+| `getChildren()`         | Yes      | Child nodes for tree expansion             |
+| `executeQuery()`        | Yes      | Query execution with AbortSignal support   |
+| `cancelQuery()`         | No       | Cancel running queries                     |
+| `getAutocompleteData()` | No       | Schema info for SQL autocomplete           |
+| `supportsWrites()`      | No       | Enable write operations                    |
+| `insertBatch()`         | No       | Batch insert for sync targets              |
 
 ## Key Rules
 
