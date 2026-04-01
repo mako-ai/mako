@@ -10,7 +10,10 @@ import { useTheme } from "../contexts/ThemeContext";
 import { MakoChartSpec } from "../lib/chart-spec";
 import { generateAutoSpec } from "../lib/chart-auto-spec";
 import { getVegaThemeConfig } from "../lib/chart-theme";
-import { enhanceMultiSeriesHover } from "../lib/chart-enhance";
+import {
+  buildChartRenderPlan,
+  type CrossFilterSelection,
+} from "../lib/chart-render-planner";
 import {
   createMakoTooltipFormatter,
   populateColorMap,
@@ -26,176 +29,6 @@ function loadVegaEmbed(): Promise<VegaEmbedModule> {
     vegaEmbedPromise = import("vega-embed");
   }
   return vegaEmbedPromise;
-}
-
-export interface CrossFilterSelection {
-  field: string;
-  values: unknown[];
-  type: "point" | "interval";
-  additive?: boolean;
-}
-
-function getMarkType(spec: Record<string, any>): string {
-  if (!spec?.mark) return "";
-  return typeof spec.mark === "string" ? spec.mark : spec.mark?.type || "";
-}
-
-/**
- * Ensure the color scale domain is sorted alphabetically so the same
- * category always maps to the same palette index across charts.
- * Without this, data-order differences (e.g. by volume vs alphabetical)
- * cause the same value to get different colors in different charts.
- */
-function stabilizeColorDomain(
-  spec: Record<string, any>,
-  data: any[],
-): Record<string, any> {
-  if (!spec || data.length === 0) return spec;
-
-  const patchEncoding = (
-    encoding: Record<string, any> | undefined,
-  ): Record<string, any> | undefined => {
-    if (!encoding?.color?.field) return encoding;
-    if (encoding.color.scale?.domain) return encoding;
-
-    const field = encoding.color.field;
-    const unique = Array.from(new Set(data.map(row => row[field])))
-      .filter(v => v != null)
-      .sort((a, b) => String(a).localeCompare(String(b)));
-
-    if (unique.length === 0) return encoding;
-
-    return {
-      ...encoding,
-      color: {
-        ...encoding.color,
-        scale: { ...encoding.color.scale, domain: unique },
-      },
-    };
-  };
-
-  if (spec.layer) {
-    const patchedLayers = spec.layer.map((layer: Record<string, any>) => {
-      const patched = patchEncoding(layer.encoding);
-      return patched !== layer.encoding
-        ? { ...layer, encoding: patched }
-        : layer;
-    });
-    const changed = patchedLayers.some(
-      (l: Record<string, any>, i: number) => l !== spec.layer[i],
-    );
-    return changed ? { ...spec, layer: patchedLayers } : spec;
-  }
-
-  const patched = patchEncoding(spec.encoding);
-  return patched !== spec.encoding ? { ...spec, encoding: patched } : spec;
-}
-
-/**
- * Inject a Vega-Lite selection param into the spec so that clicking
- * chart elements (pie slices, bars, etc.) produces a selection signal.
- */
-function injectSelectionParams(spec: Record<string, any>): Record<string, any> {
-  if (!spec) return spec;
-  if (spec.layer) return spec;
-  const existingParams = Array.isArray(spec.params) ? spec.params : [];
-  const hasCrossfilterParam = existingParams.some(
-    (param: any) => param?.name === "crossfilter",
-  );
-  if (hasCrossfilterParam) return spec;
-
-  const mark = getMarkType(spec);
-  const enc = spec.encoding || {};
-  let selectionConfig: Record<string, any> | null = null;
-
-  if (mark === "arc") {
-    if (enc.color?.field) {
-      selectionConfig = {
-        name: "crossfilter",
-        select: { type: "point", encodings: ["color"] },
-      };
-    }
-  } else if (mark === "bar") {
-    if (
-      enc.x?.field &&
-      (enc.x.type === "nominal" || enc.x.type === "ordinal")
-    ) {
-      selectionConfig = {
-        name: "crossfilter",
-        select: { type: "point", encodings: ["x"] },
-      };
-    } else if (enc.color?.field) {
-      selectionConfig = {
-        name: "crossfilter",
-        select: { type: "point", encodings: ["color"] },
-      };
-    }
-  } else if (mark === "line" || mark === "area") {
-    if (enc.x?.field) {
-      selectionConfig = {
-        name: "crossfilter",
-        select: { type: "interval", encodings: ["x"] },
-      };
-    }
-  } else if (mark === "point" || mark === "circle" || mark === "square") {
-    selectionConfig = {
-      name: "crossfilter",
-      select: { type: "interval" },
-    };
-  }
-
-  if (!selectionConfig) return spec;
-
-  const enhanced: Record<string, any> = { ...spec };
-  enhanced.params = [...existingParams, selectionConfig];
-
-  if (enhanced.encoding && !enhanced.encoding.opacity) {
-    enhanced.encoding = {
-      ...enhanced.encoding,
-      opacity: {
-        condition: { param: "crossfilter", value: 1 },
-        value: 0.3,
-      },
-    };
-  }
-
-  return enhanced;
-}
-
-/**
- * If we have an active cross-filter selection for this widget, inject it
- * as the initial `value` on the Vega-Lite selection param so the visual
- * highlight (opacity encoding) is restored when the chart re-embeds.
- */
-function injectActiveSelection(
-  spec: Record<string, any>,
-  activeSelection: CrossFilterSelection | null | undefined,
-): Record<string, any> {
-  if (!activeSelection || !Array.isArray(spec.params)) return spec;
-
-  const params = spec.params.map((param: any) => {
-    if (param?.name !== "crossfilter") return param;
-    if (activeSelection.type === "point") {
-      return {
-        ...param,
-        value: activeSelection.values.map(v => ({
-          [activeSelection.field]: v,
-        })),
-      };
-    }
-    if (
-      activeSelection.type === "interval" &&
-      activeSelection.values.length === 2
-    ) {
-      return {
-        ...param,
-        value: { [activeSelection.field]: activeSelection.values },
-      };
-    }
-    return param;
-  });
-
-  return { ...spec, params };
 }
 
 function parseSelectionSignal(value: any): CrossFilterSelection | null {
@@ -350,23 +183,14 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
 
         const themeConfig = getVegaThemeConfig(effectiveMode);
 
-        const withSelection = enableSelection
-          ? injectSelectionParams(activeSpec as Record<string, any>)
-          : (activeSpec as Record<string, any>);
-
-        const withActiveSel = enableSelection
-          ? injectActiveSelection(withSelection, activeSelection)
-          : withSelection;
-
-        const withHover = enhanceMultiSeriesHover(withActiveSel, data);
-
-        const withColors = stabilizeColorDomain(withHover, data);
-
-        // Extract tooltip metadata (injected by enhanceMultiSeriesHover)
-        // and strip it from the spec before passing to Vega-Lite.
-        const { __mako_tooltip_meta: tooltipMetaRaw, ...baseSpec } =
-          withColors as Record<string, any>;
-        const tooltipMeta = tooltipMetaRaw as TooltipMeta | undefined;
+        const renderPlan = buildChartRenderPlan({
+          spec: activeSpec as Record<string, any>,
+          data,
+          enableSelection: !!enableSelection,
+          activeSelection,
+        });
+        const baseSpec = renderPlan.spec;
+        const tooltipMeta = renderPlan.tooltipMeta as TooltipMeta | undefined;
 
         const colorMapRef: { current: Record<string, string> } = {
           current: {},
@@ -632,4 +456,5 @@ const ResultsChart: React.FC<ResultsChartProps> = ({
   );
 };
 
+export type { CrossFilterSelection };
 export default ResultsChart;

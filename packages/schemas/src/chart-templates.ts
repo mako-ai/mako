@@ -24,78 +24,37 @@ const templates: ChartTemplate[] = [
     id: "multi-series-line-hover",
     name: "Multi-Series Line with Hover Rule",
     description:
-      "Multi-series line chart with a vertical hover rule that snaps to the nearest x-date and shows all series values in one tooltip. Best for comparing trends across categories over time.",
+      "Multi-series line chart (simple spec). Rich all-series hover tooltip is added automatically by the app renderer.",
     sqlPattern: [
       "SELECT {{date_col}} AS day, {{category_col}} AS category, {{value_col}} AS value",
       "FROM {{table}}",
       "ORDER BY day, category",
     ].join("\n"),
     vegaLiteSpec: {
-      layer: [
-        {
-          mark: { type: "line", strokeWidth: 2 },
-          encoding: {
-            x: { field: "day", type: "temporal", title: "Date" },
-            y: {
-              field: "value",
-              type: "quantitative",
-              title: "Value",
-            },
-            color: {
-              field: "category",
-              type: "nominal",
-              title: "Category",
-            },
-          },
+      mark: { type: "line", strokeWidth: 2 },
+      encoding: {
+        x: { field: "day", type: "temporal", title: "Date" },
+        y: {
+          field: "value",
+          type: "quantitative",
+          title: "Value",
         },
-        {
-          params: [
-            {
-              name: "__mako_tooltip",
-              select: {
-                type: "point",
-                fields: ["day"],
-                nearest: true,
-                on: "pointerover",
-                clear: "pointerout",
-              },
-            },
-          ],
-          transform: [{ pivot: "category", value: "value", groupby: ["day"] }],
-          mark: { type: "rule", color: "#888", strokeWidth: 1 },
-          encoding: {
-            x: { field: "day", type: "temporal" },
-            opacity: {
-              value: 0,
-              condition: {
-                param: "__mako_tooltip",
-                empty: false,
-                value: 0.5,
-              },
-            },
-            tooltip: [
-              { field: "day", type: "temporal", title: "Date" },
-              {
-                field: "{{series_1}}",
-                type: "quantitative",
-              },
-              {
-                field: "{{series_2}}",
-                type: "quantitative",
-              },
-            ],
-          },
+        color: {
+          field: "category",
+          type: "nominal",
+          title: "Category",
         },
-      ],
+        tooltip: [
+          { field: "day", type: "temporal", title: "Date" },
+          { field: "category", type: "nominal", title: "Category" },
+          { field: "value", type: "quantitative", title: "Value" },
+        ],
+      },
     },
     notes: [
-      "Replace {{series_1}}, {{series_2}}, etc. in the tooltip with the actual unique values of the category column.",
-      "The pivot transform converts long-format data (one row per series per date) to wide-format (one row per date, one column per series) — needed so the tooltip can show all series at once.",
-      "ALWAYS use param name '__mako_tooltip' for the hover-rule selection. The custom tooltip renderer (colored SVG dots, Total row) detects layers by this prefix. Using a different name will fall back to Vega's plain-text tooltip.",
-      "Alternative to Vega pivot: pivot in SQL using MAX(value) FILTER (WHERE category = '...') OVER (PARTITION BY day) AS \"Series Name\", then reference the pivoted columns directly in tooltip.",
-      "For dashboard widgets, this layered spec disables the temporal brush cross-filter (because encoding.x is per-layer, not top-level). This is an acceptable trade-off.",
-      "Colored SVG dots and a Total row are auto-injected at render time by the custom tooltip handler. Do NOT add emoji circles or manual total fields — the renderer handles it.",
-      "Do NOT set format on series tooltip fields (e.g. '.2f'). The custom handler formats numbers with locale-aware separators and smart decimal places.",
+      "Prefer this simple long-format spec for line/area multi-series charts.",
+      "The app renderer auto-injects all-series hover behavior (colored dots + Total) for temporal multi-series line/area charts.",
+      "Use explicit layered specs only for uncommon custom interactions.",
     ],
   },
   {
@@ -172,14 +131,14 @@ const templates: ChartTemplate[] = [
     id: "stacked-bar",
     name: "Stacked Bar Chart",
     description:
-      "Stacked bars showing part-to-whole composition. Use 'normalize' stack for percentage view.",
+      "Stacked bars showing part-to-whole composition. Rich all-segment tooltip is added automatically by the app renderer.",
     sqlPattern: [
       "SELECT {{x_col}} AS x_val, {{category_col}} AS category, {{value_col}} AS value",
       "FROM {{table}}",
       "GROUP BY 1, 2 ORDER BY 1",
     ].join("\n"),
     vegaLiteSpec: {
-      mark: { type: "bar", tooltip: true },
+      mark: { type: "bar" },
       encoding: {
         x: { field: "x_val", type: "nominal", title: "Category" },
         y: {
@@ -190,9 +149,9 @@ const templates: ChartTemplate[] = [
         },
         color: { field: "category", type: "nominal", title: "Segment" },
         tooltip: [
-          { field: "x_val", type: "nominal" },
-          { field: "category", type: "nominal" },
-          { field: "value", type: "quantitative" },
+          { field: "x_val", type: "nominal", title: "Category" },
+          { field: "category", type: "nominal", title: "Segment" },
+          { field: "value", type: "quantitative", title: "Value" },
         ],
       },
     },
@@ -200,7 +159,9 @@ const templates: ChartTemplate[] = [
       "stack: 'zero' is the default stacking mode (absolute values).",
       "Use stack: 'normalize' for 100% stacked bars (percentage composition).",
       "For temporal x-axis, use type: 'temporal' with appropriate timeUnit.",
-      "Order matters — the SQL ORDER BY affects the stacking order.",
+      "Use this simple long-format stacked bar spec; avoid manual hover overlay layers.",
+      "The app renderer auto-adds rich all-segment hover tooltip (colored dots + Total) for stacked bars.",
+      "Order matters — SQL ORDER BY affects stacking order.",
     ],
   },
   {
