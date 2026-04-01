@@ -933,6 +933,15 @@ export function BackfillPanel({
                     Recover
                   </Button>
                 )}
+                {cdc.backlogCount > 0 && streamState !== "idle" && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ alignSelf: "center", fontSize: "0.72rem" }}
+                  >
+                    {cdc.backlogCount.toLocaleString()} pending
+                  </Typography>
+                )}
               </Box>
             </Box>
 
@@ -997,15 +1006,6 @@ export function BackfillPanel({
                   >
                     Recover
                   </Button>
-                )}
-                {cdc.backlogCount > 0 && bfStatus !== "running" && (
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ alignSelf: "center", fontSize: "0.72rem" }}
-                  >
-                    {cdc.backlogCount.toLocaleString()} pending
-                  </Typography>
                 )}
               </Box>
             </Box>
