@@ -14,6 +14,7 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useUIStore } from "../store/uiStore";
 import type { DashboardDataSource, DashboardWidget } from "./types";
 import { classifyDuckDBError, classifySourceError } from "./error-kinds";
+import { computeDashboardStateHash } from "../utils/stateHash";
 import {
   validateCrossFilterWidgetSql,
   validateDuckDBQuery,
@@ -115,6 +116,8 @@ export async function executeDashboardAgentTool(
         state.openDashboards[dashboard._id] = dashboard;
         state.activeDashboardId = dashboard._id;
         state.historyMap[dashboard._id] = { stack: [], index: -1 };
+        state.savedStateHashes[dashboard._id] =
+          computeDashboardStateHash(dashboard);
       });
 
       await useDashboardStore

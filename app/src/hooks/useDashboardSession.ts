@@ -8,6 +8,7 @@ import {
   getDashboardMosaicInstance,
 } from "../dashboard-runtime/commands";
 import { useWorkspace } from "../contexts/workspace-context";
+import { computeDashboardStateHash } from "../utils/stateHash";
 import type { MosaicInstance } from "../lib/mosaic";
 import type {
   Dashboard,
@@ -96,6 +97,8 @@ export function useDashboardSession({
             state.openDashboards[created._id] = created;
             state.activeDashboardId = created._id;
             state.historyMap[created._id] = { stack: [], index: -1 };
+            state.savedStateHashes[created._id] =
+              computeDashboardStateHash(created);
           });
           onCreated?.(created._id);
         }

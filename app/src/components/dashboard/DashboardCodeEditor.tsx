@@ -34,6 +34,8 @@ const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const isEditorFocusedRef = useRef(false);
+  const dashboardRef = useRef(dashboard);
+  dashboardRef.current = dashboard;
 
   useEffect(() => {
     onCodeError?.(codeError !== null);
@@ -52,16 +54,17 @@ const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
 
   const handleBlur = useCallback(() => {
     isEditorFocusedRef.current = false;
-    if (dashboard) {
+    const current = dashboardRef.current;
+    if (current) {
       const serialized = JSON.stringify(
-        serializeDashboardDefinition(dashboard),
+        serializeDashboardDefinition(current),
         null,
         2,
       );
       setCodeValue(serialized);
       setCodeError(null);
     }
-  }, [dashboard]);
+  }, []);
 
   const handleFocus = useCallback(() => {
     isEditorFocusedRef.current = true;
