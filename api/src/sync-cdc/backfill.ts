@@ -756,15 +756,18 @@ export class CdcBackfillService {
       for (const entity of enabledEntities) {
         const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
         const bulkStaging = `${liveTable}__${flowToken}__staging`;
+        const backfillBulkStaging = `${liveTable}__${flowToken}__backfill_staging`;
         const legacyStagingTables = [
           cdcStageTableName(tablePrefix, entity, flowId),
           `${liveTable}__stage_changes`,
         ];
-        try {
-          await driver.dropTable(destination, bulkStaging, { schema });
-          dropped++;
-        } catch {
-          /* may not exist */
+        for (const table of [bulkStaging, backfillBulkStaging]) {
+          try {
+            await driver.dropTable(destination, table, { schema });
+            dropped++;
+          } catch {
+            /* may not exist */
+          }
         }
         for (const table of legacyStagingTables) {
           try {
@@ -904,6 +907,7 @@ export class CdcBackfillService {
         `${liveTable}__stage_changes`,
       ];
       const bulkStagingTable = `${liveTable}__${flowToken}__staging`;
+      const backfillStagingTable = `${liveTable}__${flowToken}__backfill_staging`;
 
       await driver.dropTable(destination, liveTable, { schema });
       for (const stageTable of oldStageTables) {
@@ -912,6 +916,7 @@ export class CdcBackfillService {
         });
       }
       await driver.dropTable(destination, bulkStagingTable, { schema });
+      await driver.dropTable(destination, backfillStagingTable, { schema });
     }
 
     const db = Flow.db;

@@ -1000,7 +1000,13 @@ async function flushBulkBuffer(
     },
   });
 
-  await cdcAdapter.loadStagingFromParquet!(parquet.filePath, cdcLayout, flowId);
+  const backfillStagingOpts = { stagingSuffix: "backfill_staging" };
+  await cdcAdapter.loadStagingFromParquet!(
+    parquet.filePath,
+    cdcLayout,
+    flowId,
+    backfillStagingOpts,
+  );
   await tempCollection.deleteMany({});
 
   logger?.log("info", "Flushed bulk buffer to staging via Parquet", {
@@ -1126,6 +1132,7 @@ export async function performStagingMerge(
     } as any,
     options.flowId!,
     entitySchema ?? undefined,
+    { stagingSuffix: "backfill_staging" },
   );
 }
 
@@ -1170,7 +1177,9 @@ export async function performStagingCleanup(
       flowId: options.flowId,
     },
   );
-  await cdcAdapter.cleanupStaging(cdcLayout, options.flowId!);
+  await cdcAdapter.cleanupStaging(cdcLayout, options.flowId!, {
+    stagingSuffix: "backfill_staging",
+  });
 
   const db = Flow.db;
   const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
