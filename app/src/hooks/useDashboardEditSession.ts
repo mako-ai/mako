@@ -61,8 +61,16 @@ export function useDashboardEditSession({
       }),
     );
 
-  const dashboard = useDashboardStore(selectDashboard(dashboardId));
-  const savedHash = useDashboardStore(selectSavedHash(dashboardId));
+  const dashboardSelector = useMemo(
+    () => selectDashboard(dashboardId),
+    [dashboardId],
+  );
+  const savedHashSelector = useMemo(
+    () => selectSavedHash(dashboardId),
+    [dashboardId],
+  );
+  const dashboard = useDashboardStore(dashboardSelector);
+  const savedHash = useDashboardStore(savedHashSelector);
   const hasUnsavedChanges = useMemo(() => {
     if (!dashboard) return false;
     if (!savedHash) return true;

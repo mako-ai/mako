@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Typography } from "@mui/material";
 import Editor from "@monaco-editor/react";
 import { useDashboardStore } from "../../store/dashboardStore";
@@ -33,14 +33,14 @@ const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
 }) => {
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
-  const [isEditorFocused, setIsEditorFocused] = useState(false);
+  const isEditorFocusedRef = useRef(false);
 
   useEffect(() => {
     onCodeError?.(codeError !== null);
   }, [codeError, onCodeError]);
 
   useEffect(() => {
-    if (!dashboard || isEditorFocused) return;
+    if (!dashboard || isEditorFocusedRef.current) return;
     const serialized = JSON.stringify(
       serializeDashboardDefinition(dashboard),
       null,
@@ -48,14 +48,14 @@ const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
     );
     setCodeValue(serialized);
     setCodeError(null);
-  }, [dashboard, isEditorFocused]);
+  }, [dashboard]);
 
   const handleBlur = useCallback(() => {
-    setIsEditorFocused(false);
+    isEditorFocusedRef.current = false;
   }, []);
 
   const handleFocus = useCallback(() => {
-    setIsEditorFocused(true);
+    isEditorFocusedRef.current = true;
   }, []);
 
   const handleCodeChange = useCallback(
