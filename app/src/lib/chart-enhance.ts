@@ -297,6 +297,7 @@ function normalizeBarHoverLayer(spec: Spec): Spec {
   const barLayer = spec.layer[barLayerIndex];
   const hoverLayerIndex = spec.layer.findIndex(isHoverTooltipLayer);
   if (hoverLayerIndex === -1) return spec;
+  if (barLayerIndex === hoverLayerIndex) return spec;
   const hoverLayer = spec.layer[hoverLayerIndex];
 
   const barEnc = barLayer.encoding || {};
