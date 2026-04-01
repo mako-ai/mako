@@ -874,63 +874,92 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
         });
       }
 
-      if (cdcEvents.length > 0) {
-        await cdcIngestService.appendNormalizedEvents({
-          workspaceId: String(flow.workspaceId),
-          flowId: String(flowId),
-          enqueue: true,
-          events: cdcEvents,
-        });
-      }
+      try {
+        if (cdcEvents.length > 0) {
+          await cdcIngestService.appendNormalizedEvents({
+            workspaceId: String(flow.workspaceId),
+            flowId: String(flowId),
+            enqueue: true,
+            events: cdcEvents,
+          });
+        }
 
-      if (processedIds.length > 0) {
-        const bulkOps = processedIds.map(item => ({
-          updateOne: {
-            filter: { _id: item._id },
-            update: {
+        if (processedIds.length > 0) {
+          const bulkOps = processedIds.map(item => ({
+            updateOne: {
+              filter: { _id: item._id },
+              update: {
+                $set: {
+                  status: "completed",
+                  processedAt: new Date(),
+                  entity: item.entity,
+                  operation: item.operation,
+                  recordId: item.recordId,
+                  applyStatus: "pending",
+                  processingDurationMs:
+                    Date.now() - new Date(item.receivedAt).getTime(),
+                },
+                $inc: { applyAttempts: 1 },
+                $unset: { applyError: "" },
+              },
+            },
+          }));
+          await WebhookEvent.bulkWrite(bulkOps);
+        }
+
+        await Flow.updateOne(
+          { _id: flowId },
+          {
+            $set: {
+              lastRunAt: new Date(),
+              lastSuccessAt: cdcEvents.length > 0 ? new Date() : undefined,
+            },
+            $inc: { runCount: 1 },
+          },
+        );
+
+        logger.info("CDC batch processing completed", {
+          flowId,
+          batchSize: webhookEvents.length,
+          cdcIngested: cdcEvents.length,
+          dropped: droppedIds.length,
+          stepDurationMs: Date.now() - stepStartedAt,
+        });
+
+        return {
+          processed: true,
+          count: cdcEvents.length,
+          dropped: droppedIds.length,
+          total: webhookEvents.length,
+        };
+      } catch (error) {
+        if (processedIds.length > 0) {
+          await WebhookEvent.updateMany(
+            { _id: { $in: processedIds.map(p => p._id) } },
+            {
               $set: {
-                status: "completed",
-                processedAt: new Date(),
-                entity: item.entity,
-                operation: item.operation,
-                recordId: item.recordId,
-                applyStatus: "pending",
-                processingDurationMs:
-                  Date.now() - new Date(item.receivedAt).getTime(),
+                status: "failed",
+                applyStatus: "failed",
+                applyError: {
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                  code: "APPLY_FAILED",
+                },
               },
               $inc: { applyAttempts: 1 },
-              $unset: { applyError: "" },
             },
-          },
-        }));
-        await WebhookEvent.bulkWrite(bulkOps);
+          );
+        }
+
+        logger.error("Failed to process CDC batch", {
+          flowId,
+          batchSize: webhookEvents.length,
+          processedCount: processedIds.length,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
+        throw error;
       }
-
-      await Flow.updateOne(
-        { _id: flowId },
-        {
-          $set: {
-            lastRunAt: new Date(),
-            lastSuccessAt: cdcEvents.length > 0 ? new Date() : undefined,
-          },
-          $inc: { runCount: 1 },
-        },
-      );
-
-      logger.info("CDC batch processing completed", {
-        flowId,
-        batchSize: webhookEvents.length,
-        cdcIngested: cdcEvents.length,
-        dropped: droppedIds.length,
-        stepDurationMs: Date.now() - stepStartedAt,
-      });
-
-      return {
-        processed: true,
-        count: cdcEvents.length,
-        dropped: droppedIds.length,
-        total: webhookEvents.length,
-      };
     });
 
     return { success: true, ...result };
