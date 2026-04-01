@@ -1728,6 +1728,7 @@ export const flowFunction = inngest.createFunction(
               deleteMode: (flow as any).deleteMode,
               entityPartitioning: bulkPartitioning,
               entityClustering: bulkClustering,
+              logger: syncLogger,
             };
 
             logger.info(`Flushing ${entity} bulk buffer to BigQuery staging`, {
