@@ -282,8 +282,23 @@ export function WebhookStats({
                   <Typography color="text.secondary" gutterBottom>
                     CDC Lag
                   </Typography>
-                  <Typography variant="h4">
-                    {stats.cdc.lagSeconds ?? 0}s
+                  <Typography
+                    variant="h4"
+                    color={
+                      stats.cdc.lagSeconds !== null &&
+                      stats.cdc.lagSeconds >= 0 &&
+                      stats.cdc.lagSeconds <= 5
+                        ? "success.main"
+                        : undefined
+                    }
+                  >
+                    {stats.cdc.lagSeconds === null
+                      ? "—"
+                      : stats.cdc.lagSeconds < 0
+                        ? "Catching up"
+                        : stats.cdc.lagSeconds <= 5
+                          ? "Live"
+                          : `${stats.cdc.lagSeconds}s`}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     Entities: {stats.cdc.entities}

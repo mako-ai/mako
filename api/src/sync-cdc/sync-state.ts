@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
 import type { FetchState } from "../connectors/base/BaseConnector";
 import {
+  CdcChangeEvent,
   CdcEntityState,
   CdcStateTransition,
   Flow,
@@ -519,9 +520,14 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
   backlogCount: number;
   lagSeconds: number | null;
 }> {
-  const states = await CdcEntityState.find({
-    flowId: new Types.ObjectId(params.flowId),
-  }).lean();
+  const flowObjectId = new Types.ObjectId(params.flowId);
+  const [states, pendingCount] = await Promise.all([
+    CdcEntityState.find({ flowId: flowObjectId }).lean(),
+    CdcChangeEvent.countDocuments({
+      flowId: flowObjectId,
+      materializationStatus: "pending",
+    }),
+  ]);
   if (states.length === 0) {
     return {
       enabled: false,
@@ -532,21 +538,42 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
     };
   }
 
-  const backlogCount = states.reduce(
-    (sum, state) => sum + (state.backlogCount || 0),
-    0,
+  const backlogCount = Math.max(
+    pendingCount,
+    states.reduce(
+      (sum, state) =>
+        sum +
+        Math.max(
+          (state.lastIngestSeq || 0) - (state.lastMaterializedSeq || 0),
+          state.backlogCount || 0,
+        ),
+      0,
+    ),
   );
   const mode = states.some(state => state.mode === "backfill")
     ? "backfill"
     : "steady";
-  const latestMaterializedAt = states
-    .map(state => state.lastMaterializedAt)
-    .filter(Boolean)
-    .map(date => new Date(date as Date).getTime())
-    .sort((a, b) => b - a)[0];
-  const lagSeconds = latestMaterializedAt
-    ? Math.max(Math.floor((Date.now() - latestMaterializedAt) / 1000), 0)
-    : null;
+  let lagSeconds: number | null;
+  if (backlogCount > 0) {
+    const withBacklog = states.filter(
+      s =>
+        Math.max(
+          (s.lastIngestSeq || 0) - (s.lastMaterializedSeq || 0),
+          s.backlogCount || 0,
+        ) > 0,
+    );
+    const candidates = withBacklog.length > 0 ? withBacklog : states;
+    const oldest = candidates
+      .map(s => s.lastMaterializedAt)
+      .filter(Boolean)
+      .map(d => new Date(d as Date).getTime())
+      .sort((a, b) => a - b)[0];
+    lagSeconds = oldest
+      ? Math.max(Math.floor((Date.now() - oldest) / 1000), 0)
+      : -1;
+  } else {
+    lagSeconds = 0;
+  }
 
   return {
     enabled: true,

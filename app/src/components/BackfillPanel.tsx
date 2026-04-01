@@ -733,9 +733,7 @@ export function BackfillPanel({
   });
 
   const totalEventsProcessed = entities.reduce(
-    (sum, e) =>
-      sum +
-      Math.max(e.lifetimeEventsProcessed || 0, e.lastMaterializedSeq || 0),
+    (sum, e) => sum + (e.lifetimeEventsProcessed || 0),
     0,
   );
   const totalRowsApplied = entities.reduce(
@@ -863,13 +861,25 @@ export function BackfillPanel({
                   size="small"
                   sx={{ fontWeight: 600, fontSize: "0.75rem" }}
                 />
-                {cdc.lagSeconds !== null && cdc.lagSeconds > 0 && (
+                {cdc.lagSeconds !== null && (
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ fontSize: "0.72rem" }}
+                    color={
+                      cdc.lagSeconds >= 0 && cdc.lagSeconds <= 5
+                        ? "success.main"
+                        : "text.secondary"
+                    }
+                    sx={{
+                      fontSize: "0.72rem",
+                      fontWeight:
+                        cdc.lagSeconds >= 0 && cdc.lagSeconds <= 5 ? 600 : 400,
+                    }}
                   >
-                    {formatLag(cdc.lagSeconds)} lag
+                    {cdc.lagSeconds < 0
+                      ? "catching up"
+                      : cdc.lagSeconds <= 5
+                        ? "live"
+                        : `${formatLag(cdc.lagSeconds)} lag`}
                   </Typography>
                 )}
               </Box>
@@ -1145,10 +1155,7 @@ export function BackfillPanel({
                         0,
                       );
                       const syncingRowsWritten = Math.max(e.execRows || 0, 0);
-                      const eventCount = Math.max(
-                        e.lifetimeEventsProcessed || 0,
-                        e.lastMaterializedSeq || 0,
-                      );
+                      const eventCount = e.lifetimeEventsProcessed || 0;
                       const isExpanded = expandedEntity === e.entity;
                       const schemaData = entitySchemaCache[e.entity];
                       return (
