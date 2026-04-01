@@ -36,6 +36,7 @@ const allWebhookFunctions = [
   webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
+  cdcMaterializeSchedulerFunction,
 ];
 
 /**
@@ -62,7 +63,6 @@ export function getFunctions() {
         ...webhookFunctions,
         flowSchedulerFunction,
         dashboardSchedulerFunction,
-        cdcMaterializeSchedulerFunction,
       ];
 
   return _functions;
