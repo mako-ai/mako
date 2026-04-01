@@ -1715,6 +1715,29 @@ export const flowFunction = inngest.createFunction(
                 ? { fields: flowTableDest.clustering.fields }
                 : undefined;
 
+            const bulkLogger: SyncLogger = {
+              log: (level: string, message: string, metadata?: any) => {
+                const logData = { flowId, entity, executionId, ...metadata };
+                switch (level) {
+                  case "info":
+                    logger.info(message, logData);
+                    void appendExecutionLog("info", message, logData);
+                    break;
+                  case "warn":
+                    logger.warn(message, logData);
+                    void appendExecutionLog("warn", message, logData);
+                    break;
+                  case "error":
+                    logger.error(message, logData);
+                    void appendExecutionLog("error", message, logData);
+                    break;
+                  default:
+                    logger.debug(message, logData);
+                    break;
+                }
+              },
+            };
+
             const bulkSyncOptions = {
               dataSourceId: dataSourceId.toString(),
               destinationId: flow.destinationDatabaseId.toString(),
@@ -1728,7 +1751,7 @@ export const flowFunction = inngest.createFunction(
               deleteMode: (flow as any).deleteMode,
               entityPartitioning: bulkPartitioning,
               entityClustering: bulkClustering,
-              logger: syncLogger,
+              logger: bulkLogger,
             };
 
             logger.info(`Flushing ${entity} bulk buffer to BigQuery staging`, {

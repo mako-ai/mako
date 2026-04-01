@@ -968,31 +968,38 @@ async function flushBulkBuffer(
     { entity, totalCount, totalBatches, batchSize: FLUSH_BATCH_SIZE },
   );
 
-  let remaining = totalCount;
-  while (remaining > 0) {
-    const docs: Array<{ _id: any } & Record<string, unknown>> = [];
-    const cursor = tempCollection.find({}).limit(FLUSH_BATCH_SIZE);
+  // Process in batches using skip-based pagination.
+  // Temp collection is NOT modified until all batches are staged — this
+  // ensures retry-safety: on step retry we drop staging and re-load
+  // everything from the still-intact temp collection.
+  let offset = 0;
+  for (let i = 0; i < totalBatches; i++) {
+    const rawDocs: Array<Record<string, unknown>> = [];
+    const cursor = tempCollection
+      .find({}, { projection: { _bulkRunId: 0 } })
+      .sort({ _id: 1 })
+      .skip(offset)
+      .limit(FLUSH_BATCH_SIZE);
 
     for await (const doc of cursor) {
-      docs.push(doc as { _id: any } & Record<string, unknown>);
+      rawDocs.push(doc as Record<string, unknown>);
     }
 
-    if (docs.length === 0) break;
+    if (rawDocs.length === 0) break;
 
-    const docIds = docs.map(d => d._id);
-    const rows = docs.map(({ _id, _bulkRunId, ...rest }) => rest);
+    const docs = rawDocs.map(({ _id, ...rest }) => rest);
 
     const parquet = await buildParquetFromBatches({
       filenameBase: `backfill-${entity}`,
       streamBatches: async insertBatch => {
         const parquetBatchSize = 5000;
-        for (let i = 0; i < rows.length; i += parquetBatchSize) {
-          await insertBatch(rows.slice(i, i + parquetBatchSize));
+        for (let j = 0; j < docs.length; j += parquetBatchSize) {
+          await insertBatch(docs.slice(j, j + parquetBatchSize));
         }
       },
     });
 
-    const isFirstBatch = batchNum === 0;
+    const isFirstBatch = i === 0;
     await cdcAdapter.loadStagingFromParquet!(
       parquet.filePath,
       cdcLayout,
@@ -1000,26 +1007,27 @@ async function flushBulkBuffer(
       { stagingSuffix: "backfill_staging", skipDrop: !isFirstBatch },
     );
 
-    await tempCollection.deleteMany({ _id: { $in: docIds } });
-
-    totalFlushed += docs.length;
-    remaining -= docs.length;
+    offset += rawDocs.length;
+    totalFlushed += rawDocs.length;
     batchNum++;
 
     const pct = Math.round((totalFlushed / totalCount) * 100);
     logger?.log(
       "info",
-      `📦 ${entity} flush batch ${batchNum}/${totalBatches} — ${docs.length.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}, ${pct}%)`,
+      `📦 ${entity} flush batch ${batchNum}/${totalBatches} — ${rawDocs.length.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}, ${pct}%)`,
       {
         entity,
         batch: batchNum,
         totalBatches,
-        batchRows: docs.length,
+        batchRows: rawDocs.length,
         totalFlushed,
         totalCount,
       },
     );
   }
+
+  // All batches staged — now safe to clear temp collection
+  await tempCollection.deleteMany({});
 
   logger?.log(
     "info",
