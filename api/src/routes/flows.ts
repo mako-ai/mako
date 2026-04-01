@@ -1143,15 +1143,39 @@ flowRoutes.delete("/:flowId", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const flowId = c.req.param("flowId");
+    const flowOid = new Types.ObjectId(flowId);
+    const wsOid = new Types.ObjectId(workspaceId);
 
-    const result = await Flow.deleteOne({
-      _id: new Types.ObjectId(flowId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-
-    if (result.deletedCount === 0) {
+    const flow = await Flow.findOne({ _id: flowOid, workspaceId: wsOid });
+    if (!flow) {
       return c.json({ success: false, error: "Flow not found" }, 404);
     }
+
+    await inngest.send({ name: "flow.cancel", data: { flowId } });
+
+    const childFilter = { flowId: flowOid, workspaceId: wsOid };
+    const [webhooks, executions, cdcEvents, entityStates, transitions] =
+      await Promise.all([
+        WebhookEvent.deleteMany(childFilter),
+        FlowExecution.deleteMany(childFilter),
+        CdcChangeEvent.deleteMany(childFilter),
+        CdcEntityState.deleteMany(childFilter),
+        CdcStateTransition.deleteMany(childFilter),
+      ]);
+
+    await Flow.deleteOne({ _id: flowOid, workspaceId: wsOid });
+
+    logger.info("Flow deleted with cascade cleanup", {
+      flowId,
+      workspaceId,
+      deleted: {
+        webhookEvents: webhooks.deletedCount,
+        flowExecutions: executions.deletedCount,
+        cdcChangeEvents: cdcEvents.deletedCount,
+        cdcEntityStates: entityStates.deletedCount,
+        cdcStateTransitions: transitions.deletedCount,
+      },
+    });
 
     return c.json({
       success: true,
