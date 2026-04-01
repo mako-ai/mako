@@ -27,6 +27,7 @@ BigQuery is serverless -- you write SQL and Google handles everything else. Snow
 ## Architecture
 
 **Snowflake** separates architecture into three layers:
+
 1. **Storage**: Data stored in a proprietary columnar format (micro-partitions), managed by Snowflake
 2. **Compute**: Virtual warehouses -- independent compute clusters you create, size (XS to 6XL), and suspend
 3. **Services**: Query optimization, metadata, security, transaction management
@@ -34,6 +35,7 @@ BigQuery is serverless -- you write SQL and Google handles everything else. Snow
 You create virtual warehouses for different workloads. Your ETL pipeline gets one warehouse, your analysts get another, your dashboards get a third. They share the same data but don't compete for compute. You control exactly how much compute each workload gets.
 
 **BigQuery** has two layers:
+
 1. **Storage**: Capacitor columnar format on Colossus (Google's distributed filesystem)
 2. **Compute**: Either on-demand (automatic, per-query) or reserved slots (pre-purchased capacity)
 
@@ -46,11 +48,13 @@ The key difference: Snowflake makes compute an explicit resource you configure. 
 Both have complex pricing. Here's the practical comparison:
 
 **Snowflake:**
+
 - Compute: Credits per virtual warehouse per second (minimum 60 seconds). An XS warehouse costs ~$2/credit-hour (on-demand, standard edition). Larger warehouses cost linearly more.
 - Storage: ~$23/TB/month (on-demand) or ~$40/TB/month (capacity pricing, depending on region)
 - You pay for compute only when warehouses are running. Auto-suspend after inactivity (configurable: 1-3600 minutes).
 
 **BigQuery:**
+
 - On-demand compute: $6.25 per TB scanned (first 1 TB/month free)
 - Capacity (editions): starting ~$0.04/slot-hour (Enterprise edition, 100-slot minimum)
 - Storage: $0.02/GB/month active, $0.01/GB/month for data untouched for 90+ days
@@ -77,12 +81,14 @@ This is a hard constraint. For multi-cloud organizations or those that might cha
 Both perform well at scale, but with different characteristics:
 
 **Snowflake:**
+
 - Performance is determined by warehouse size. Need faster queries? Scale up.
 - Predictable performance because your warehouse isn't shared with other customers (dedicated compute)
 - Multi-cluster warehouses auto-scale during traffic spikes
 - Query caching at the result and warehouse levels
 
 **BigQuery:**
+
 - On-demand queries share a compute pool. Performance can vary based on available capacity.
 - Slots-based pricing gives dedicated resources (more predictable)
 - Automatic optimization -- no index management, no clustering tuning needed (though manual clustering and partitioning help)
@@ -95,12 +101,14 @@ Snowflake gives you more levers to pull. If a query is slow, you can scale the w
 Both support data sharing, but Snowflake pioneered it:
 
 **Snowflake:**
+
 - Snowflake Marketplace for third-party datasets
 - Secure data sharing without copying data
 - Cross-account and cross-cloud sharing
 - Data Clean Rooms for privacy-preserving analytics
 
 **BigQuery:**
+
 - Analytics Hub for data sharing
 - BigQuery public datasets
 - Authorized views for controlled access
@@ -112,21 +120,22 @@ Snowflake's data sharing is more mature and works across cloud providers. BigQue
 
 Both are enterprise-grade:
 
-| Feature | Snowflake | BigQuery |
-|---|---|---|
-| Column-level security | Yes (masking policies) | Yes (column-level access control) |
-| Row-level security | Yes (row access policies) | Yes (row-level security) |
-| Data masking | Dynamic masking | Data masking rules |
-| Encryption | End-to-end, customer-managed keys | At-rest and in-transit, CMEK |
-| Audit logging | Access History, Query History | Cloud Audit Logs |
-| Governance tags | Object tagging + classification | Data Catalog + Policy Tags |
-| Time travel | Up to 90 days (Enterprise) | Up to 7 days |
+| Feature               | Snowflake                         | BigQuery                          |
+| --------------------- | --------------------------------- | --------------------------------- |
+| Column-level security | Yes (masking policies)            | Yes (column-level access control) |
+| Row-level security    | Yes (row access policies)         | Yes (row-level security)          |
+| Data masking          | Dynamic masking                   | Data masking rules                |
+| Encryption            | End-to-end, customer-managed keys | At-rest and in-transit, CMEK      |
+| Audit logging         | Access History, Query History     | Cloud Audit Logs                  |
+| Governance tags       | Object tagging + classification   | Data Catalog + Policy Tags        |
+| Time travel           | Up to 90 days (Enterprise)        | Up to 7 days                      |
 
 Snowflake's 90-day time travel (Enterprise edition) is notably longer than BigQuery's 7-day window. This matters for compliance and debugging.
 
 ## SQL and Features
 
 **Snowflake:**
+
 - ANSI SQL with Snowflake extensions
 - Snowpark for Python, Java, Scala (run code on Snowflake's compute)
 - Cortex AI for LLM-powered analytics
@@ -134,6 +143,7 @@ Snowflake's 90-day time travel (Enterprise edition) is notably longer than BigQu
 - Streams and tasks for change data capture and scheduling
 
 **BigQuery:**
+
 - GoogleSQL (formerly ZetaSQL)
 - BigQuery ML for in-database machine learning
 - Nested and repeated fields (STRUCT and ARRAY)

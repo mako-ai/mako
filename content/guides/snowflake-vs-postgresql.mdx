@@ -36,13 +36,13 @@ The separation matters: Snowflake can run a heavy analytical query on a 4XL ware
 
 For analytical workloads, Snowflake wins decisively at scale:
 
-| Scenario | PostgreSQL | Snowflake |
-|---|---|---|
-| Aggregate over 10M rows | Seconds | Sub-second |
-| Aggregate over 1B rows | Minutes to impractical | Seconds |
-| Join 3 tables, 100M+ rows each | Very slow | Seconds to minutes |
-| Full-text scan across 50 columns | Slow (row-based reads all columns) | Fast (columnar reads only needed columns) |
-| Concurrent analytical queries (10+) | Degrades application performance | Independent warehouse, no impact |
+| Scenario                            | PostgreSQL                         | Snowflake                                 |
+| ----------------------------------- | ---------------------------------- | ----------------------------------------- |
+| Aggregate over 10M rows             | Seconds                            | Sub-second                                |
+| Aggregate over 1B rows              | Minutes to impractical             | Seconds                                   |
+| Join 3 tables, 100M+ rows each      | Very slow                          | Seconds to minutes                        |
+| Full-text scan across 50 columns    | Slow (row-based reads all columns) | Fast (columnar reads only needed columns) |
+| Concurrent analytical queries (10+) | Degrades application performance   | Independent warehouse, no impact          |
 
 Snowflake's columnar storage means a query touching 5 of 100 columns reads 5% of the data. PostgreSQL reads entire rows. For wide tables with many columns, this difference is 10-20x in I/O alone.
 
@@ -52,26 +52,28 @@ Snowflake's automatic clustering, pruning, and parallel execution across nodes m
 
 Here, PostgreSQL wins just as decisively:
 
-| Scenario | PostgreSQL | Snowflake |
-|---|---|---|
-| Insert single row | Sub-millisecond | Not designed for this |
-| Update one field on one row | Sub-millisecond | Expensive (micro-partition rewrite) |
-| Point lookup by primary key | Sub-millisecond | Seconds (designed for scans, not lookups) |
-| High-frequency small transactions | Excellent | Poor |
-| Foreign key enforcement | Built-in | Not supported |
-| Triggers and stored procedures | Comprehensive | Limited (Snowpark for complex logic) |
+| Scenario                          | PostgreSQL      | Snowflake                                 |
+| --------------------------------- | --------------- | ----------------------------------------- |
+| Insert single row                 | Sub-millisecond | Not designed for this                     |
+| Update one field on one row       | Sub-millisecond | Expensive (micro-partition rewrite)       |
+| Point lookup by primary key       | Sub-millisecond | Seconds (designed for scans, not lookups) |
+| High-frequency small transactions | Excellent       | Poor                                      |
+| Foreign key enforcement           | Built-in        | Not supported                             |
+| Triggers and stored procedures    | Comprehensive   | Limited (Snowpark for complex logic)      |
 
 Snowflake is not a transactional database. It doesn't support row-level updates efficiently, doesn't enforce foreign keys, and has query latency in the seconds range even for simple lookups. Using Snowflake as an application database would be like using a forklift to commute -- technically possible, practically absurd.
 
 ## Data Types
 
 **PostgreSQL** has the richer type system for application data:
+
 - Arrays, JSONB, custom types, UUID, network types, range types
 - PostGIS for geospatial
 - pgvector for vector embeddings
 - Strict type enforcement with constraints
 
 **Snowflake** has strong analytical types:
+
 - VARIANT for semi-structured data (JSON, Avro, Parquet) -- query without schema definition
 - GEOGRAPHY and GEOMETRY for geospatial
 - ARRAY and OBJECT types
@@ -82,11 +84,13 @@ Snowflake's VARIANT type is notably elegant. Load a JSON file, and you can immed
 ## Cost
 
 **PostgreSQL:**
+
 - Software: Free (open source)
 - Infrastructure: You pay for servers/VMs (self-hosted) or managed service (RDS: ~$50-500/month for typical setups)
 - Predictable monthly cost
 
 **Snowflake:**
+
 - Compute: ~$2-4/credit-hour depending on edition, warehouse size determines credits consumed
 - Storage: ~$23-40/TB/month
 - Minimum practical cost: ~$50-100/month for light usage with auto-suspend
@@ -97,6 +101,7 @@ For small datasets and light analytics, PostgreSQL is dramatically cheaper. For 
 ## When PostgreSQL's Analytics Are Enough
 
 You probably don't need Snowflake if:
+
 - Your dataset is under 50-100 million rows
 - Analytical queries take seconds, not minutes
 - You have fewer than 5 concurrent analysts
@@ -108,6 +113,7 @@ PostgreSQL with proper indexing, partitioning (since version 10), and parallel q
 ## When You Need Snowflake
 
 You likely need Snowflake (or a similar warehouse) when:
+
 - Analytical queries on PostgreSQL take minutes and can't be optimized further
 - You need to combine data from multiple sources (PostgreSQL, Stripe, Salesforce, Google Analytics, etc.)
 - Analytical workloads are affecting application performance

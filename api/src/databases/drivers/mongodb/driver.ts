@@ -199,7 +199,11 @@ export class MongoDatabaseDriver implements DatabaseDriver {
             }
           } catch (err) {
             // Ignore error for single collection
-            logger.warn("Failed to sample collection", { dbName, colName, error: err });
+            logger.warn("Failed to sample collection", {
+              dbName,
+              colName,
+              error: err,
+            });
           }
         }
       } catch (err) {

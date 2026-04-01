@@ -143,11 +143,13 @@ Headers:
 ```
 
 **Why Arrow IPC, not Parquet:**
+
 - Arrow IPC loads directly into DuckDB-WASM with zero deserialization — the bytes are the in-memory format
 - Parquet requires a decode step (DuckDB can do it, but Arrow is faster for this use case)
 - Arrow IPC streams naturally over HTTP (no need to buffer the entire file before sending)
 
 **Server-side implementation:**
+
 1. Load the SavedConsole and its DatabaseConnection
 2. Execute the query via `databaseConnectionService.executeQuery()`
 3. Convert the result rows + field metadata to Apache Arrow RecordBatch
@@ -167,6 +169,7 @@ When a dashboard opens:
 5. Once all data sources are loaded, initialize the Mosaic Coordinator and render charts
 
 **Cache strategy (Phase 1):**
+
 - OPFS-backed via DuckDB-WASM's persistent storage
 - Cache key: `{consoleId}:{sha256(queryContent)}:{connectionId}`
 - TTL: 1 hour default, configurable per data source
@@ -175,12 +178,12 @@ When a dashboard opens:
 
 ### Data Freshness
 
-| Mode | Trigger | Phase |
-|------|---------|-------|
-| **On open** | Dashboard load fetches fresh data if cache is stale | Phase 1 |
-| **Manual refresh** | User clicks refresh button | Phase 1 |
-| **Auto-refresh** | Configurable interval (5m, 15m, 1h) while dashboard is open | Phase 2 |
-| **Scheduled** | Inngest job pre-caches data server-side on a cron | Phase 3 |
+| Mode               | Trigger                                                     | Phase   |
+| ------------------ | ----------------------------------------------------------- | ------- |
+| **On open**        | Dashboard load fetches fresh data if cache is stale         | Phase 1 |
+| **Manual refresh** | User clicks refresh button                                  | Phase 1 |
+| **Auto-refresh**   | Configurable interval (5m, 15m, 1h) while dashboard is open | Phase 2 |
+| **Scheduled**      | Inngest job pre-caches data server-side on a cron           | Phase 3 |
 
 ---
 
@@ -208,17 +211,17 @@ interface IDashboard {
   };
 
   layout: {
-    columns: number;           // grid columns (default: 12)
-    rowHeight: number;         // pixels per grid row (default: 80)
+    columns: number; // grid columns (default: 12)
+    rowHeight: number; // pixels per grid row (default: 80)
   };
 
   cache: {
-    ttlSeconds: number;        // default: 3600
+    ttlSeconds: number; // default: 3600
     lastRefreshedAt?: Date;
   };
 
   access: "private" | "workspace";
-  createdBy: string;           // User ID
+  createdBy: string; // User ID
   createdAt: Date;
   updatedAt: Date;
 }
@@ -230,16 +233,16 @@ A reference to a SavedConsole, aliased as a table name in DuckDB-WASM.
 
 ```typescript
 interface DashboardDataSource {
-  id: string;                  // nanoid, stable within the dashboard
-  name: string;                // table alias in DuckDB (e.g. "orders", "customers")
-  consoleId: Types.ObjectId;   // → SavedConsole
+  id: string; // nanoid, stable within the dashboard
+  name: string; // table alias in DuckDB (e.g. "orders", "customers")
+  consoleId: Types.ObjectId; // → SavedConsole
   connectionId: Types.ObjectId; // denormalized from console for quick access
 
-  timeDimension?: string;      // default time column (e.g. "order_date")
-  rowLimit?: number;           // override default limit for this source
+  timeDimension?: string; // default time column (e.g. "order_date")
+  rowLimit?: number; // override default limit for this source
 
   cache?: {
-    ttlSeconds?: number;       // override dashboard-level TTL
+    ttlSeconds?: number; // override dashboard-level TTL
     lastRefreshedAt?: Date;
     rowCount?: number;
     byteSize?: number;
@@ -255,7 +258,7 @@ Defines a foreign key link between two data sources for cross-filtering. Optiona
 interface TableRelationship {
   id: string;
   from: {
-    dataSourceId: string;      // → DashboardDataSource.id
+    dataSourceId: string; // → DashboardDataSource.id
     column: string;
   };
   to: {
@@ -272,12 +275,12 @@ A chart, KPI card, or data table on the dashboard canvas.
 
 ```typescript
 interface DashboardWidget {
-  id: string;                  // nanoid
+  id: string; // nanoid
   title?: string;
 
   type: "chart" | "kpi" | "table";
 
-  dataSourceId: string;        // → DashboardDataSource.id
+  dataSourceId: string; // → DashboardDataSource.id
 
   // The SQL query run against the local DuckDB table
   // Simple aggregations, GROUP BYs — the heavy work already happened server-side
@@ -291,29 +294,29 @@ interface DashboardWidget {
   // KPI config (for type: "kpi")
   kpiConfig?: {
     valueField: string;
-    format?: string;           // e.g. "$,.0f", ".1%"
-    comparisonField?: string;  // for delta/sparkline
+    format?: string; // e.g. "$,.0f", ".1%"
+    comparisonField?: string; // for delta/sparkline
     comparisonLabel?: string;
   };
 
   // Table config (for type: "table")
   tableConfig?: {
-    columns?: string[];        // subset of columns to show
+    columns?: string[]; // subset of columns to show
     pageSize?: number;
   };
 
   // Cross-filter participation
   crossFilter: {
-    enabled: boolean;          // default: true
-    fields?: string[];         // which fields participate in cross-filter selection
+    enabled: boolean; // default: true
+    fields?: string[]; // which fields participate in cross-filter selection
   };
 
   // Layout position (react-grid-layout)
   layout: {
     x: number;
     y: number;
-    w: number;                 // grid units (out of layout.columns)
-    h: number;                 // grid units
+    w: number; // grid units (out of layout.columns)
+    h: number; // grid units
     minW?: number;
     minH?: number;
   };
@@ -337,13 +340,13 @@ interface GlobalFilter {
     // date-range
     defaultRange?: { start: string; end: string };
     // select / multi-select
-    options?: string[];        // static options, or omit to auto-populate from data
+    options?: string[]; // static options, or omit to auto-populate from data
     defaultValue?: string | string[];
   };
 
   layout: {
-    order: number;             // position in the filter bar
-    width?: number;            // grid units
+    order: number; // position in the filter bar
+    width?: number; // grid units
   };
 }
 ```
@@ -351,6 +354,7 @@ interface GlobalFilter {
 ### Why a Single Document
 
 A dashboard with 8 charts, 3 data sources, and 2 filters is ~5-15KB of JSON. Storing it as a single MongoDB document means:
+
 - Atomic reads and writes (no joins, no consistency issues)
 - The agent can read the full spec in one tool call to understand context
 - Easy to duplicate, export, import, version
@@ -380,33 +384,53 @@ import { z } from "zod";
 
 // --- Primitives ---
 
-const FieldType = z.enum([
-  "quantitative",
-  "temporal",
-  "nominal",
-  "ordinal",
-]);
+const FieldType = z.enum(["quantitative", "temporal", "nominal", "ordinal"]);
 
-const AggregateOp = z.enum([
-  "count", "sum", "mean", "average", "median",
-  "min", "max", "distinct", "variance", "stdev",
-  "q1", "q3",
-]).optional();
+const AggregateOp = z
+  .enum([
+    "count",
+    "sum",
+    "mean",
+    "average",
+    "median",
+    "min",
+    "max",
+    "distinct",
+    "variance",
+    "stdev",
+    "q1",
+    "q3",
+  ])
+  .optional();
 
-const TimeUnit = z.enum([
-  "year", "quarter", "month", "week", "day",
-  "yearmonth", "yearmonthdate", "yearquarter",
-  "monthdate", "hours", "minutes", "seconds",
-  "hoursminutes", "hoursminutesseconds",
-]).optional();
+const TimeUnit = z
+  .enum([
+    "year",
+    "quarter",
+    "month",
+    "week",
+    "day",
+    "yearmonth",
+    "yearmonthdate",
+    "yearquarter",
+    "monthdate",
+    "hours",
+    "minutes",
+    "seconds",
+    "hoursminutes",
+    "hoursminutesseconds",
+  ])
+  .optional();
 
 const SortOrder = z.enum(["ascending", "descending"]).optional();
 
-const StackOption = z.union([
-  z.enum(["zero", "normalize", "center"]),
-  z.literal(false),
-  z.literal(null),
-]).optional();
+const StackOption = z
+  .union([
+    z.enum(["zero", "normalize", "center"]),
+    z.literal(false),
+    z.literal(null),
+  ])
+  .optional();
 
 // --- Encoding channel ---
 
@@ -415,37 +439,59 @@ const FieldDef = z.object({
   type: FieldType.describe("Vega-Lite data type"),
   aggregate: AggregateOp.describe("Aggregation function"),
   timeUnit: TimeUnit.describe("Time unit for temporal fields"),
-  bin: z.union([z.boolean(), z.object({ maxbins: z.number().optional() })])
-    .optional().describe("Bin quantitative values"),
-  sort: z.union([SortOrder, z.object({
-    field: z.string().optional(),
-    op: AggregateOp,
-    order: SortOrder,
-  })]).optional().describe("Sort order"),
+  bin: z
+    .union([z.boolean(), z.object({ maxbins: z.number().optional() })])
+    .optional()
+    .describe("Bin quantitative values"),
+  sort: z
+    .union([
+      SortOrder,
+      z.object({
+        field: z.string().optional(),
+        op: AggregateOp,
+        order: SortOrder,
+      }),
+    ])
+    .optional()
+    .describe("Sort order"),
   title: z.string().optional().describe("Axis / legend title override"),
-  format: z.string().optional().describe("D3 format string (e.g. '$,.0f', '.1%')"),
-  axis: z.object({
-    title: z.string().optional(),
-    format: z.string().optional(),
-    labelAngle: z.number().optional(),
-    grid: z.boolean().optional(),
-    tickCount: z.number().optional(),
-  }).optional().describe("Axis configuration"),
-  scale: z.object({
-    type: z.enum(["linear", "log", "sqrt", "symlog", "pow", "time", "utc"]).optional(),
-    domain: z.array(z.any()).optional(),
-    range: z.array(z.any()).optional(),
-    zero: z.boolean().optional(),
-    nice: z.boolean().optional(),
-  }).optional().describe("Scale configuration"),
-  stack: StackOption.describe("Stack mode for bar/area charts"),
-  legend: z.union([
-    z.object({
+  format: z
+    .string()
+    .optional()
+    .describe("D3 format string (e.g. '$,.0f', '.1%')"),
+  axis: z
+    .object({
       title: z.string().optional(),
-      orient: z.enum(["left", "right", "top", "bottom", "none"]).optional(),
-    }),
-    z.literal(null),
-  ]).optional().describe("Legend configuration, null to hide"),
+      format: z.string().optional(),
+      labelAngle: z.number().optional(),
+      grid: z.boolean().optional(),
+      tickCount: z.number().optional(),
+    })
+    .optional()
+    .describe("Axis configuration"),
+  scale: z
+    .object({
+      type: z
+        .enum(["linear", "log", "sqrt", "symlog", "pow", "time", "utc"])
+        .optional(),
+      domain: z.array(z.any()).optional(),
+      range: z.array(z.any()).optional(),
+      zero: z.boolean().optional(),
+      nice: z.boolean().optional(),
+    })
+    .optional()
+    .describe("Scale configuration"),
+  stack: StackOption.describe("Stack mode for bar/area charts"),
+  legend: z
+    .union([
+      z.object({
+        title: z.string().optional(),
+        orient: z.enum(["left", "right", "top", "bottom", "none"]).optional(),
+      }),
+      z.literal(null),
+    ])
+    .optional()
+    .describe("Legend configuration, null to hide"),
 });
 
 const ValueDef = z.object({
@@ -456,56 +502,82 @@ const EncodingChannel = z.union([FieldDef, ValueDef]);
 
 // --- Encoding object ---
 
-const Encoding = z.object({
-  x: EncodingChannel.optional(),
-  y: EncodingChannel.optional(),
-  x2: EncodingChannel.optional(),
-  y2: EncodingChannel.optional(),
-  color: EncodingChannel.optional(),
-  size: EncodingChannel.optional(),
-  opacity: EncodingChannel.optional(),
-  shape: EncodingChannel.optional(),
-  detail: EncodingChannel.optional(),
-  text: EncodingChannel.optional(),
-  tooltip: z.union([
-    EncodingChannel,
-    z.array(FieldDef),
-  ]).optional(),
-  order: EncodingChannel.optional(),
-  theta: EncodingChannel.optional(),
-  radius: EncodingChannel.optional(),
-}).describe("Vega-Lite encoding channels");
+const Encoding = z
+  .object({
+    x: EncodingChannel.optional(),
+    y: EncodingChannel.optional(),
+    x2: EncodingChannel.optional(),
+    y2: EncodingChannel.optional(),
+    color: EncodingChannel.optional(),
+    size: EncodingChannel.optional(),
+    opacity: EncodingChannel.optional(),
+    shape: EncodingChannel.optional(),
+    detail: EncodingChannel.optional(),
+    text: EncodingChannel.optional(),
+    tooltip: z.union([EncodingChannel, z.array(FieldDef)]).optional(),
+    order: EncodingChannel.optional(),
+    theta: EncodingChannel.optional(),
+    radius: EncodingChannel.optional(),
+  })
+  .describe("Vega-Lite encoding channels");
 
 // --- Mark ---
 
 const MarkType = z.enum([
-  "bar", "line", "area", "point", "circle", "square",
-  "tick", "rect", "rule", "text", "arc",
-  "trail", "boxplot",
+  "bar",
+  "line",
+  "area",
+  "point",
+  "circle",
+  "square",
+  "tick",
+  "rect",
+  "rule",
+  "text",
+  "arc",
+  "trail",
+  "boxplot",
 ]);
 
 const MarkDef = z.union([
   MarkType,
   z.object({
     type: MarkType,
-    tooltip: z.union([z.boolean(), z.object({ content: z.enum(["data", "encoding"]) })])
+    tooltip: z
+      .union([z.boolean(), z.object({ content: z.enum(["data", "encoding"]) })])
       .optional(),
-    point: z.union([z.boolean(), z.object({
-      filled: z.boolean().optional(),
-      size: z.number().optional(),
-    })]).optional().describe("Show points on line/area marks"),
+    point: z
+      .union([
+        z.boolean(),
+        z.object({
+          filled: z.boolean().optional(),
+          size: z.number().optional(),
+        }),
+      ])
+      .optional()
+      .describe("Show points on line/area marks"),
     opacity: z.number().min(0).max(1).optional(),
     color: z.string().optional(),
     filled: z.boolean().optional(),
     strokeWidth: z.number().optional(),
     cornerRadiusEnd: z.number().optional(),
-    interpolate: z.enum([
-      "linear", "step", "step-before", "step-after",
-      "basis", "cardinal", "monotone",
-    ]).optional(),
+    interpolate: z
+      .enum([
+        "linear",
+        "step",
+        "step-before",
+        "step-after",
+        "basis",
+        "cardinal",
+        "monotone",
+      ])
+      .optional(),
     line: z.boolean().optional().describe("Show line on area marks"),
     size: z.number().optional(),
-    innerRadius: z.number().optional().describe("Inner radius for arc/donut charts"),
+    innerRadius: z
+      .number()
+      .optional()
+      .describe("Inner radius for arc/donut charts"),
   }),
 ]);
 
@@ -513,53 +585,68 @@ const MarkDef = z.union([
 
 const Transform = z.union([
   z.object({
-    filter: z.union([z.string(), z.object({
-      field: z.string(),
-      oneOf: z.array(z.any()).optional(),
-      range: z.array(z.any()).optional(),
-      equal: z.any().optional(),
-      gt: z.any().optional(),
-      gte: z.any().optional(),
-      lt: z.any().optional(),
-      lte: z.any().optional(),
-    })]),
+    filter: z.union([
+      z.string(),
+      z.object({
+        field: z.string(),
+        oneOf: z.array(z.any()).optional(),
+        range: z.array(z.any()).optional(),
+        equal: z.any().optional(),
+        gt: z.any().optional(),
+        gte: z.any().optional(),
+        lt: z.any().optional(),
+        lte: z.any().optional(),
+      }),
+    ]),
   }),
   z.object({
     calculate: z.string().describe("Vega expression"),
     as: z.string().describe("New field name"),
   }),
   z.object({
-    aggregate: z.array(z.object({
-      op: z.string(),
-      field: z.string().optional(),
-      as: z.string(),
-    })),
+    aggregate: z.array(
+      z.object({
+        op: z.string(),
+        field: z.string().optional(),
+        as: z.string(),
+      }),
+    ),
     groupby: z.array(z.string()),
   }),
   z.object({
     fold: z.array(z.string()).describe("Columns to unpivot"),
-    as: z.tuple([z.string(), z.string()]).optional()
+    as: z
+      .tuple([z.string(), z.string()])
+      .optional()
       .describe("Output field names [key, value]"),
   }),
   z.object({
-    window: z.array(z.object({
-      op: z.string(),
-      field: z.string().optional(),
-      as: z.string(),
-    })),
+    window: z.array(
+      z.object({
+        op: z.string(),
+        field: z.string().optional(),
+        as: z.string(),
+      }),
+    ),
     frame: z.tuple([z.number().nullable(), z.number().nullable()]).optional(),
     groupby: z.array(z.string()).optional(),
-    sort: z.array(z.object({
-      field: z.string(),
-      order: SortOrder,
-    })).optional(),
+    sort: z
+      .array(
+        z.object({
+          field: z.string(),
+          order: SortOrder,
+        }),
+      )
+      .optional(),
   }),
   z.object({
-    joinaggregate: z.array(z.object({
-      op: z.string(),
-      field: z.string().optional(),
-      as: z.string(),
-    })),
+    joinaggregate: z.array(
+      z.object({
+        op: z.string(),
+        field: z.string().optional(),
+        as: z.string(),
+      }),
+    ),
     groupby: z.array(z.string()).optional(),
   }),
 ]);
@@ -573,67 +660,79 @@ const LayerSpec = z.object({
 
 // --- Top-level chart spec ---
 
-export const MakoChartSpec = z.object({
-  $schema: z.string().optional()
-    .describe("Vega-Lite schema URL. Omit — injected at render time."),
-  description: z.string().optional(),
-  title: z.union([
-    z.string(),
-    z.object({
-      text: z.string(),
-      subtitle: z.string().optional(),
-      anchor: z.enum(["start", "middle", "end"]).optional(),
-    }),
-  ]).optional(),
-  width: z.union([z.number(), z.literal("container")]).optional(),
-  height: z.union([z.number(), z.literal("container")]).optional(),
-  autosize: z.union([
-    z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
-    z.object({
-      type: z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
-      contains: z.enum(["padding", "content"]).optional(),
-      resize: z.boolean().optional(),
-    }),
-  ]).optional(),
-  transform: z.array(Transform).optional(),
+export const MakoChartSpec = z
+  .object({
+    $schema: z
+      .string()
+      .optional()
+      .describe("Vega-Lite schema URL. Omit — injected at render time."),
+    description: z.string().optional(),
+    title: z
+      .union([
+        z.string(),
+        z.object({
+          text: z.string(),
+          subtitle: z.string().optional(),
+          anchor: z.enum(["start", "middle", "end"]).optional(),
+        }),
+      ])
+      .optional(),
+    width: z.union([z.number(), z.literal("container")]).optional(),
+    height: z.union([z.number(), z.literal("container")]).optional(),
+    autosize: z
+      .union([
+        z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
+        z.object({
+          type: z.enum(["fit", "fit-x", "fit-y", "pad", "none"]),
+          contains: z.enum(["padding", "content"]).optional(),
+          resize: z.boolean().optional(),
+        }),
+      ])
+      .optional(),
+    transform: z.array(Transform).optional(),
 
-  // Single-mark chart
-  mark: MarkDef.optional(),
-  encoding: Encoding.optional(),
+    // Single-mark chart
+    mark: MarkDef.optional(),
+    encoding: Encoding.optional(),
 
-  // Multi-mark chart (layers)
-  layer: z.array(LayerSpec).optional(),
-
-}).refine(
-  (spec) => spec.mark !== undefined || (spec.layer !== undefined && spec.layer.length > 0),
-  { message: "Spec must have either 'mark' (single chart) or 'layer' (multi-mark chart)" },
-);
+    // Multi-mark chart (layers)
+    layer: z.array(LayerSpec).optional(),
+  })
+  .refine(
+    spec =>
+      spec.mark !== undefined ||
+      (spec.layer !== undefined && spec.layer.length > 0),
+    {
+      message:
+        "Spec must have either 'mark' (single chart) or 'layer' (multi-mark chart)",
+    },
+  );
 
 export type MakoChartSpec = z.infer<typeof MakoChartSpec>;
 ```
 
 ### What the Schema Covers
 
-| Vega-Lite Feature | Supported | Notes |
-|---|---|---|
-| Bar, line, area, point, arc charts | Yes | All common analytical mark types |
-| Stacked / grouped bars | Yes | Via `stack` on encoding |
-| Multi-line (fold transform) | Yes | `fold` unpivots columns into key/value |
-| Donut / pie charts | Yes | `arc` mark with `theta` encoding, `innerRadius` |
-| Scatter plots | Yes | `point` mark with x/y quantitative |
-| Box plots | Yes | `boxplot` composite mark |
-| Time series with aggregation | Yes | `timeUnit` on temporal fields |
-| Calculated fields | Yes | `calculate` transform |
-| Window functions | Yes | `window` transform for running totals, ranks |
-| Tooltips | Yes | Per-channel or array of fields |
-| Axis formatting | Yes | D3 format strings, label angles, grid |
-| Color scales | Yes | Via `scale` on color channel |
-| Layered charts (dual axis, etc.) | Yes | `layer` array of mark + encoding |
-| Facets / small multiples | No | Phase 2 — adds `row`/`column` encoding |
-| Concatenation (hconcat/vconcat) | No | Phase 2 — dashboard layout handles this |
-| Interactive selections / params | No | Mosaic handles selections externally |
-| Custom data source | No | Data is always injected at render time |
-| Repeat | No | Rarely needed for agent-generated charts |
+| Vega-Lite Feature                  | Supported | Notes                                           |
+| ---------------------------------- | --------- | ----------------------------------------------- |
+| Bar, line, area, point, arc charts | Yes       | All common analytical mark types                |
+| Stacked / grouped bars             | Yes       | Via `stack` on encoding                         |
+| Multi-line (fold transform)        | Yes       | `fold` unpivots columns into key/value          |
+| Donut / pie charts                 | Yes       | `arc` mark with `theta` encoding, `innerRadius` |
+| Scatter plots                      | Yes       | `point` mark with x/y quantitative              |
+| Box plots                          | Yes       | `boxplot` composite mark                        |
+| Time series with aggregation       | Yes       | `timeUnit` on temporal fields                   |
+| Calculated fields                  | Yes       | `calculate` transform                           |
+| Window functions                   | Yes       | `window` transform for running totals, ranks    |
+| Tooltips                           | Yes       | Per-channel or array of fields                  |
+| Axis formatting                    | Yes       | D3 format strings, label angles, grid           |
+| Color scales                       | Yes       | Via `scale` on color channel                    |
+| Layered charts (dual axis, etc.)   | Yes       | `layer` array of mark + encoding                |
+| Facets / small multiples           | No        | Phase 2 — adds `row`/`column` encoding          |
+| Concatenation (hconcat/vconcat)    | No        | Phase 2 — dashboard layout handles this         |
+| Interactive selections / params    | No        | Mosaic handles selections externally            |
+| Custom data source                 | No        | Data is always injected at render time          |
+| Repeat                             | No        | Rarely needed for agent-generated charts        |
 
 ### Schema Reuse
 
@@ -657,7 +756,9 @@ const AddWidgetParameters = z.object({
   title: z.string().optional(),
   dataSourceId: z.string(),
   localSql: z.string(),
-  vegaLiteSpec: MakoChartSpec.optional().describe("Chart spec (for chart type)"),
+  vegaLiteSpec: MakoChartSpec.optional().describe(
+    "Chart spec (for chart type)",
+  ),
   // ...
 });
 ```
@@ -766,11 +867,25 @@ Creates a new empty dashboard with initial data sources.
 const CreateDashboardParameters = z.object({
   title: z.string().describe("Dashboard title"),
   description: z.string().optional().describe("Brief description"),
-  dataSources: z.array(z.object({
-    consoleId: z.string().describe("ID of the saved console to use as data source"),
-    name: z.string().describe("Table alias in the dashboard (e.g. 'orders', 'customers')"),
-    timeDimension: z.string().optional().describe("Default time column for this data source"),
-  })).min(1).describe("Data sources from saved consoles"),
+  dataSources: z
+    .array(
+      z.object({
+        consoleId: z
+          .string()
+          .describe("ID of the saved console to use as data source"),
+        name: z
+          .string()
+          .describe(
+            "Table alias in the dashboard (e.g. 'orders', 'customers')",
+          ),
+        timeDimension: z
+          .string()
+          .optional()
+          .describe("Default time column for this data source"),
+      }),
+    )
+    .min(1)
+    .describe("Data sources from saved consoles"),
 });
 
 // Returns: { dashboardId, dataSources: [{ id, name, consoleId, columns }] }
@@ -785,22 +900,37 @@ const AddWidgetParameters = z.object({
   dashboardId: z.string(),
   type: z.enum(["chart", "kpi", "table"]),
   title: z.string().optional(),
-  dataSourceId: z.string().describe("ID of the data source within the dashboard"),
+  dataSourceId: z
+    .string()
+    .describe("ID of the data source within the dashboard"),
   localSql: z.string().describe("SQL query against the local DuckDB table"),
-  vegaLiteSpec: MakoChartSpec.optional().describe("Chart spec (for chart type). Uses the shared MakoChartSpec Zod schema."),
-  kpiConfig: z.object({
-    valueField: z.string(),
-    format: z.string().optional(),
-    comparisonField: z.string().optional(),
-    comparisonLabel: z.string().optional(),
-  }).optional().describe("KPI configuration (for kpi type)"),
-  tableConfig: z.object({
-    columns: z.array(z.string()).optional(),
-    pageSize: z.number().optional(),
-  }).optional().describe("Table configuration (for table type)"),
-  layout: z.object({
-    x: z.number(), y: z.number(), w: z.number(), h: z.number(),
-  }).describe("Grid position and size"),
+  vegaLiteSpec: MakoChartSpec.optional().describe(
+    "Chart spec (for chart type). Uses the shared MakoChartSpec Zod schema.",
+  ),
+  kpiConfig: z
+    .object({
+      valueField: z.string(),
+      format: z.string().optional(),
+      comparisonField: z.string().optional(),
+      comparisonLabel: z.string().optional(),
+    })
+    .optional()
+    .describe("KPI configuration (for kpi type)"),
+  tableConfig: z
+    .object({
+      columns: z.array(z.string()).optional(),
+      pageSize: z.number().optional(),
+    })
+    .optional()
+    .describe("Table configuration (for table type)"),
+  layout: z
+    .object({
+      x: z.number(),
+      y: z.number(),
+      w: z.number(),
+      h: z.number(),
+    })
+    .describe("Grid position and size"),
 });
 
 // Returns: { widgetId, rendered: true }
@@ -817,11 +947,24 @@ const ModifyWidgetParameters = z.object({
   title: z.string().optional(),
   localSql: z.string().optional(),
   vegaLiteSpec: MakoChartSpec.optional(),
-  kpiConfig: z.object({ /* same as above */ }).optional(),
-  tableConfig: z.object({ /* same as above */ }).optional(),
-  layout: z.object({
-    x: z.number(), y: z.number(), w: z.number(), h: z.number(),
-  }).optional(),
+  kpiConfig: z
+    .object({
+      /* same as above */
+    })
+    .optional(),
+  tableConfig: z
+    .object({
+      /* same as above */
+    })
+    .optional(),
+  layout: z
+    .object({
+      x: z.number(),
+      y: z.number(),
+      w: z.number(),
+      h: z.number(),
+    })
+    .optional(),
 });
 
 // Returns: { widgetId, modified: true }
@@ -863,7 +1006,9 @@ Sets or changes the default time column for a data source.
 const SetTimeDimensionParameters = z.object({
   dashboardId: z.string(),
   dataSourceId: z.string(),
-  column: z.string().describe("The datetime column to use as default time dimension"),
+  column: z
+    .string()
+    .describe("The datetime column to use as default time dimension"),
 });
 ```
 
@@ -902,7 +1047,10 @@ Runs a SQL query against a dashboard's local DuckDB data and returns a preview. 
 const GetDataPreviewParameters = z.object({
   dashboardId: z.string(),
   dataSourceId: z.string(),
-  sql: z.string().optional().describe("SQL to run. Defaults to SELECT * LIMIT 10"),
+  sql: z
+    .string()
+    .optional()
+    .describe("SQL to run. Defaults to SELECT * LIMIT 10"),
 });
 
 // Returns: { columns: [...], rows: [...], rowCount }
@@ -910,17 +1058,17 @@ const GetDataPreviewParameters = z.object({
 
 ### Client-Side vs Server-Side Tools
 
-| Tool | Execution | Why |
-|------|-----------|-----|
-| `create_dashboard` | Server | Creates MongoDB document |
-| `add_widget` | Client | Modifies local dashboard state, re-renders immediately |
-| `modify_widget` | Client | Same — instant visual feedback |
-| `remove_widget` | Client | Same |
-| `link_tables` | Client | Modifies local state + reconfigures Mosaic |
-| `set_time_dimension` | Client | Modifies local state |
-| `add_global_filter` | Client | Modifies local state + adds filter UI |
-| `get_dashboard_state` | Client | Reads from local Zustand store |
-| `get_data_preview` | Client | Queries local DuckDB-WASM |
+| Tool                  | Execution | Why                                                    |
+| --------------------- | --------- | ------------------------------------------------------ |
+| `create_dashboard`    | Server    | Creates MongoDB document                               |
+| `add_widget`          | Client    | Modifies local dashboard state, re-renders immediately |
+| `modify_widget`       | Client    | Same — instant visual feedback                         |
+| `remove_widget`       | Client    | Same                                                   |
+| `link_tables`         | Client    | Modifies local state + reconfigures Mosaic             |
+| `set_time_dimension`  | Client    | Modifies local state                                   |
+| `add_global_filter`   | Client    | Modifies local state + adds filter UI                  |
+| `get_dashboard_state` | Client    | Reads from local Zustand store                         |
+| `get_data_preview`    | Client    | Queries local DuckDB-WASM                              |
 
 Client-side tools follow the existing pattern in `Chat.tsx` — handled in `onToolCall`, results returned via `addToolOutput`. The dashboard is auto-saved to the server after each modification (debounced).
 
@@ -989,8 +1137,12 @@ const dashboardRoutes = new Hono();
 dashboardRoutes.use("*", unifiedAuthMiddleware);
 dashboardRoutes.use("*", requireWorkspace);
 
-dashboardRoutes.get("/", async (c) => { /* list dashboards */ });
-dashboardRoutes.post("/", async (c) => { /* create dashboard */ });
+dashboardRoutes.get("/", async c => {
+  /* list dashboards */
+});
+dashboardRoutes.post("/", async c => {
+  /* create dashboard */
+});
 // ...
 ```
 
@@ -1047,7 +1199,10 @@ interface DashboardStoreState {
 
   // Actions
   fetchDashboards: (workspaceId: string) => Promise<void>;
-  createDashboard: (workspaceId: string, dashboard: Partial<IDashboard>) => Promise<IDashboard>;
+  createDashboard: (
+    workspaceId: string,
+    dashboard: Partial<IDashboard>,
+  ) => Promise<IDashboard>;
   openDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
   saveDashboard: () => Promise<void>;
 
@@ -1094,7 +1249,12 @@ Dashboards are a new left-pane mode alongside databases, consoles, connectors, a
 
 ```typescript
 // uiStore.ts — extend LeftPane type
-type LeftPane = "databases" | "consoles" | "connectors" | "flows" | "dashboards";
+type LeftPane =
+  | "databases"
+  | "consoles"
+  | "connectors"
+  | "flows"
+  | "dashboards";
 ```
 
 URL structure: `/workspaces/:workspaceId/dashboards/:dashboardId`
@@ -1107,25 +1267,25 @@ When a dashboard is active, the center pane shows `<DashboardCanvas>` instead of
 
 ### Patterns Adopted
 
-| Project | What we took |
-|---------|-------------|
-| **[Mosaic](https://idl.uw.edu/mosaic/)** | Coordinator + Selection cross-filtering architecture, DuckDB-WASM integration via Arrow |
-| **[SQLRooms](https://sqlrooms.org/)** | Agent tool pattern for chart generation (Vega-Lite spec + SQL as tool output), Zustand store composability |
-| **[Observable Framework](https://observablehq.com/framework/)** | Data loaders → DuckDB-WASM pipeline, Parquet/Arrow as transfer format |
-| **[Vega-Lite](https://vega.github.io/vega-lite/)** | Declarative chart grammar as the agent's output format — well-defined JSON spec with massive LLM training data |
-| **[Rill](https://www.rilldata.com/)** | Metrics-first dashboard with default time dimension, opinionated layout |
-| **[Static BI](https://github.com/unytics/static_bi)** | DuckDB-WASM + ECharts + cross-filtering as proof of concept for the architecture |
-| **[Retool](https://retool.com/)** | JSON spec → renderer pattern (Toolscript), with code escape hatch for power users |
+| Project                                                         | What we took                                                                                                   |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **[Mosaic](https://idl.uw.edu/mosaic/)**                        | Coordinator + Selection cross-filtering architecture, DuckDB-WASM integration via Arrow                        |
+| **[SQLRooms](https://sqlrooms.org/)**                           | Agent tool pattern for chart generation (Vega-Lite spec + SQL as tool output), Zustand store composability     |
+| **[Observable Framework](https://observablehq.com/framework/)** | Data loaders → DuckDB-WASM pipeline, Parquet/Arrow as transfer format                                          |
+| **[Vega-Lite](https://vega.github.io/vega-lite/)**              | Declarative chart grammar as the agent's output format — well-defined JSON spec with massive LLM training data |
+| **[Rill](https://www.rilldata.com/)**                           | Metrics-first dashboard with default time dimension, opinionated layout                                        |
+| **[Static BI](https://github.com/unytics/static_bi)**           | DuckDB-WASM + ECharts + cross-filtering as proof of concept for the architecture                               |
+| **[Retool](https://retool.com/)**                               | JSON spec → renderer pattern (Toolscript), with code escape hatch for power users                              |
 
 ### Evaluated and Rejected
 
-| Project | Why not wholesale |
-|---------|------------------|
-| **SQLRooms** | UI library mismatch (Tailwind/shadcn vs MUI). AI runs client-side (API keys in browser) vs our server-side agent. No cross-filtering. No multi-tenant auth. No server-side data sources. Useful as design reference, not as dependency. |
-| **Observable Framework** | Static site generator, not embeddable. Code-based (Markdown), not agent-driven. No drag-and-drop or interactive builder. |
-| **Apache Superset / Metabase** | Server-side rendering, no DuckDB-WASM. Heavy infrastructure (Redis, Celery, Postgres). Not embeddable as a feature in an existing app. |
-| **Perspective (FINOS)** | All-in-one widget — hard to decompose. Own query engine (not DuckDB). Opinionated UI that can't be customized to match Mako's design. |
-| **Recharts** | SVG-based, no brushing primitives, re-renders entire DOM on state change. Wrong for cross-filtering dashboards. |
+| Project                        | Why not wholesale                                                                                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **SQLRooms**                   | UI library mismatch (Tailwind/shadcn vs MUI). AI runs client-side (API keys in browser) vs our server-side agent. No cross-filtering. No multi-tenant auth. No server-side data sources. Useful as design reference, not as dependency. |
+| **Observable Framework**       | Static site generator, not embeddable. Code-based (Markdown), not agent-driven. No drag-and-drop or interactive builder.                                                                                                                |
+| **Apache Superset / Metabase** | Server-side rendering, no DuckDB-WASM. Heavy infrastructure (Redis, Celery, Postgres). Not embeddable as a feature in an existing app.                                                                                                  |
+| **Perspective (FINOS)**        | All-in-one widget — hard to decompose. Own query engine (not DuckDB). Opinionated UI that can't be customized to match Mako's design.                                                                                                   |
+| **Recharts**                   | SVG-based, no brushing primitives, re-renders entire DOM on state change. Wrong for cross-filtering dashboards.                                                                                                                         |
 
 ### Key Lessons
 
@@ -1175,15 +1335,15 @@ Agent:
 
 ### Dashboard Interactions
 
-| Interaction | Mechanism |
-|-------------|-----------|
-| Cross-filter (click bar/slice) | Mosaic Selection → all charts re-query DuckDB |
-| Global date range filter | GlobalFilter component → Mosaic Param → all charts |
-| Drag to reposition widget | react-grid-layout → updates widget.layout → auto-save |
-| Resize widget | react-grid-layout → updates widget.layout → auto-save |
-| Hover tooltip | Vega-Lite native tooltip |
-| Brush time range | Vega-Lite interval selection → Mosaic Selection clause |
-| Click to drill down | Phase 2 — navigate to filtered detail view |
+| Interaction                    | Mechanism                                              |
+| ------------------------------ | ------------------------------------------------------ |
+| Cross-filter (click bar/slice) | Mosaic Selection → all charts re-query DuckDB          |
+| Global date range filter       | GlobalFilter component → Mosaic Param → all charts     |
+| Drag to reposition widget      | react-grid-layout → updates widget.layout → auto-save  |
+| Resize widget                  | react-grid-layout → updates widget.layout → auto-save  |
+| Hover tooltip                  | Vega-Lite native tooltip                               |
+| Brush time range               | Vega-Lite interval selection → Mosaic Selection clause |
+| Click to drill down            | Phase 2 — navigate to filtered detail view             |
 
 ---
 
@@ -1196,21 +1356,22 @@ A lightweight precursor that adds chart visualization to the existing console re
 **What it is:** A third view mode in `ResultsTable.tsx` alongside Table and JSON. The user runs a query, sees results in the grid, clicks the Chart toggle, and gets an auto-generated visualization. The agent can then modify the chart spec via a new tool.
 
 **Scope:**
+
 - [ ] Add `vega`, `vega-lite`, `vega-embed` dependencies (code-split, lazy-loaded)
 - [ ] Define the `MakoChartSpec` Zod schema (see [Chart Spec Schema](#chart-spec-schema) below)
 - [ ] Add `"chart"` to the `viewMode` toggle in `ResultsTable.tsx` (new icon: `BarChart3` from lucide)
 - [ ] `<ResultsChart>` component: takes `results.results` (array of objects) + `results.fields`, renders a validated `MakoChartSpec` via `vega-embed`
 - [ ] Auto-spec generation: deterministic heuristics to produce a sensible default chart from column types:
 
-| Column Pattern | Default Chart |
-|---|---|
-| 1 temporal + 1 numeric | Line chart (x: time, y: numeric) |
-| 1 temporal + N numeric | Multi-line chart (x: time, y: each numeric as a layer) |
-| 1 categorical + 1 numeric | Bar chart (x: category, y: numeric) |
-| 1 categorical + 1 numeric + 1 categorical | Grouped/stacked bar (x: cat1, y: numeric, color: cat2) |
-| 2 numeric | Scatter plot (x: first, y: second) |
-| 1 temporal + 1 numeric + 1 categorical | Line chart with color (x: time, y: numeric, color: category) |
-| Fallback | Bar chart of first categorical × first numeric, or table if no viable pairing |
+| Column Pattern                            | Default Chart                                                                 |
+| ----------------------------------------- | ----------------------------------------------------------------------------- |
+| 1 temporal + 1 numeric                    | Line chart (x: time, y: numeric)                                              |
+| 1 temporal + N numeric                    | Multi-line chart (x: time, y: each numeric as a layer)                        |
+| 1 categorical + 1 numeric                 | Bar chart (x: category, y: numeric)                                           |
+| 1 categorical + 1 numeric + 1 categorical | Grouped/stacked bar (x: cat1, y: numeric, color: cat2)                        |
+| 2 numeric                                 | Scatter plot (x: first, y: second)                                            |
+| 1 temporal + 1 numeric + 1 categorical    | Line chart with color (x: time, y: numeric, color: category)                  |
+| Fallback                                  | Bar chart of first categorical × first numeric, or table if no viable pairing |
 
 Column type detection uses the existing `fields` metadata (when available from the driver) plus sampling the first 100 rows for type inference (already done in `ResultsTable` for numeric alignment).
 
@@ -1221,6 +1382,7 @@ Column type detection uses the existing `fields` metadata (when available from t
 - [ ] Chart toolbar: download as PNG/SVG, reset to auto-generated spec
 
 **What it is NOT:**
+
 - No DuckDB-WASM (data stays as JSON in memory)
 - No cross-filtering (single chart, single query result)
 - No dashboard canvas or layout grid
@@ -1228,6 +1390,7 @@ Column type detection uses the existing `fields` metadata (when available from t
 - No data re-querying (the chart renders whatever the last query returned)
 
 **Why this first:**
+
 1. Ships Vega-Lite to production — validates the rendering library, theme integration, and bundle size impact before the full dashboard engine
 2. Ships the Zod-typed chart spec — validates that the schema is expressive enough for real charts and constraining enough for reliable agent output
 3. Ships the agent → chart spec tool pattern — validates that LLMs produce good Vega-Lite from natural language
@@ -1292,36 +1455,36 @@ Column type detection uses the existing `fields` metadata (when available from t
 
 ### New npm Packages (Frontend)
 
-| Package | Version | Size (gzip) | Purpose |
-|---------|---------|-------------|---------|
-| `@duckdb/duckdb-wasm` | ^1.32.0 | ~10MB | In-browser OLAP engine |
-| `@uwdata/mosaic-core` | ^0.21.1 | ~50KB | Cross-filter coordinator |
-| `vega` | ^5.30.0 | ~300KB | Vega runtime |
-| `vega-lite` | ^5.21.0 | ~400KB | Declarative chart grammar |
-| `vega-embed` | ^6.26.0 | ~20KB | Vega-Lite → DOM renderer |
-| `react-grid-layout` | ^1.5.0 | ~50KB | Dashboard grid layout |
-| `apache-arrow` | ^18.0.0 | ~150KB | Arrow IPC deserialization |
+| Package               | Version | Size (gzip) | Purpose                   |
+| --------------------- | ------- | ----------- | ------------------------- |
+| `@duckdb/duckdb-wasm` | ^1.32.0 | ~10MB       | In-browser OLAP engine    |
+| `@uwdata/mosaic-core` | ^0.21.1 | ~50KB       | Cross-filter coordinator  |
+| `vega`                | ^5.30.0 | ~300KB      | Vega runtime              |
+| `vega-lite`           | ^5.21.0 | ~400KB      | Declarative chart grammar |
+| `vega-embed`          | ^6.26.0 | ~20KB       | Vega-Lite → DOM renderer  |
+| `react-grid-layout`   | ^1.5.0  | ~50KB       | Dashboard grid layout     |
+| `apache-arrow`        | ^18.0.0 | ~150KB      | Arrow IPC deserialization |
 
 Total additional bundle: ~11MB (mostly DuckDB-WASM). Code-split so it only loads when entering the dashboard module.
 
 ### New npm Packages (API)
 
-| Package | Version | Purpose |
-|---------|---------|---------|
+| Package        | Version | Purpose                                         |
+| -------------- | ------- | ----------------------------------------------- |
 | `apache-arrow` | ^18.0.0 | Arrow IPC serialization for the export endpoint |
 
 ### Existing Packages Reused
 
-| Package | Already in app | Used for |
-|---------|---------------|----------|
-| `zustand` | ^5.0.5 | dashboardStore |
-| `immer` | ^10.1.1 | Immutable state updates |
-| `@monaco-editor/react` | ^4.6.0 | SQL/spec editing in inspector |
-| `@mui/material` | ^7.1.0 | Widget chrome, filters, toolbar |
-| `@ai-sdk/react` | 3.0.0-beta | Chat with dashboard tools |
-| `zod` | ^3.25.76 | Tool parameter validation |
-| `axios` | ^1.6.2 | API calls |
-| `lucide-react` | ^0.511.0 | Icons |
+| Package                | Already in app | Used for                        |
+| ---------------------- | -------------- | ------------------------------- |
+| `zustand`              | ^5.0.5         | dashboardStore                  |
+| `immer`                | ^10.1.1        | Immutable state updates         |
+| `@monaco-editor/react` | ^4.6.0         | SQL/spec editing in inspector   |
+| `@mui/material`        | ^7.1.0         | Widget chrome, filters, toolbar |
+| `@ai-sdk/react`        | 3.0.0-beta     | Chat with dashboard tools       |
+| `zod`                  | ^3.25.76       | Tool parameter validation       |
+| `axios`                | ^1.6.2         | API calls                       |
+| `lucide-react`         | ^0.511.0       | Icons                           |
 
 ---
 

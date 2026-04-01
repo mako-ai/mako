@@ -15,7 +15,6 @@ DASHBOARD_ARTIFACT_STORE: "filesystem"
 # - dashboards
 # - dashboard-artifacts/prod
 DASHBOARD_ARTIFACT_PREFIX: "dashboards"
-
 # GCS backend only:
 # GCS_DASHBOARD_BUCKET: "your-gcs-bucket"
 

@@ -39,19 +39,17 @@ By default, `mongoimport` infers types: numbers become doubles, everything else 
 - All numbers become BSON `double`, even integers. If you need `int32` or `int64`, post-process with an `updateMany`:
 
 ```javascript
-db.customers.updateMany(
-  {},
-  [{ $set: { age: { $toInt: "$age" } } }]
-);
+db.customers.updateMany({}, [{ $set: { age: { $toInt: "$age" } } }]);
 ```
 
 - Dates import as strings. Convert them:
 
 ```javascript
-db.customers.updateMany(
-  {},
-  [{ $set: { signup_date: { $dateFromString: { dateString: "$signup_date" } } } }]
-);
+db.customers.updateMany({}, [
+  {
+    $set: { signup_date: { $dateFromString: { dateString: "$signup_date" } } },
+  },
+]);
 ```
 
 - Nested documents aren't possible from flat CSV. If you need nested structure, use the Python approach and construct documents manually.
@@ -151,7 +149,7 @@ MongoDB's flexible schema means you have choices that don't exist with relationa
 
 **Arrays from multiple sheets.** If your workbook has a "customers" sheet and an "orders" sheet, you can import them as separate collections (relational style) or embed orders as arrays within customer documents (document style). The right choice depends on your query patterns.
 
-**_id field.** If your Excel data has a natural unique key, use it as `_id` to avoid duplicates on re-import:
+**\_id field.** If your Excel data has a natural unique key, use it as `_id` to avoid duplicates on re-import:
 
 ```python
 doc = {"_id": raw["customer_id"], "name": raw["name"], ...}

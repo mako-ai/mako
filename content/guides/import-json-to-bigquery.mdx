@@ -32,6 +32,7 @@ bq load \
 ```
 
 Key flags:
+
 - `--source_format=NEWLINE_DELIMITED_JSON` -- required for JSON files
 - `--autodetect` -- lets BigQuery infer the schema from the data
 - `--replace` -- overwrites the table (default is append)
@@ -104,8 +105,8 @@ BigQuery only accepts newline-delimited JSON (one JSON object per line), not sta
 
 ```json
 [
-  {"name": "Alice", "score": 95},
-  {"name": "Bob", "score": 87}
+  { "name": "Alice", "score": 95 },
+  { "name": "Bob", "score": 87 }
 ]
 ```
 
@@ -127,10 +128,15 @@ Result:
 BigQuery maps nested JSON objects to STRUCT types and JSON arrays to REPEATED fields:
 
 ```json
-{"name": "Alice", "address": {"city": "Zurich", "zip": "8001"}, "tags": ["admin", "beta"]}
+{
+  "name": "Alice",
+  "address": { "city": "Zurich", "zip": "8001" },
+  "tags": ["admin", "beta"]
+}
 ```
 
 With auto-detect, BigQuery creates:
+
 - `name` STRING
 - `address` STRUCT<city STRING, zip STRING>
 - `tags` REPEATED STRING (ARRAY)

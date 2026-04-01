@@ -27,6 +27,7 @@ Microsoft announced the retirement of Azure Data Studio in early 2025, with the 
 Azure Data Studio was a cross-platform (Windows, macOS, Linux) tool built on Electron that provided SQL query editing, notebooks, and basic database management. It never replaced SSMS for DBA work -- it was positioned as a lighter, cross-platform alternative for developers.
 
 With ADS retired, the SQL Server tool landscape simplifies to:
+
 - **SSMS** -- the full-featured Windows-only management tool
 - **VS Code + MSSQL extension** -- the cross-platform query tool
 - **Third-party tools** -- DBeaver, DataGrip, Mako, and others
@@ -36,6 +37,7 @@ With ADS retired, the SQL Server tool landscape simplifies to:
 SQL Server Management Studio remains Microsoft's primary tool for SQL Server administration. Current version is SSMS 22.x (as of early 2026). It's free and Windows-only.
 
 ### SSMS Strengths
+
 - **Full DBA tooling**: Agent job management, maintenance plans, replication configuration, Always On dashboard, security management. No other tool matches SSMS's depth for SQL Server administration.
 - **Execution plan analysis**: Visual and detailed execution plan viewer with cost estimates, missing index suggestions, and live query stats.
 - **Activity monitor**: Real-time view of server processes, resource usage, and blocking queries.
@@ -43,6 +45,7 @@ SQL Server Management Studio remains Microsoft's primary tool for SQL Server adm
 - **Free**: No licensing cost.
 
 ### SSMS Weaknesses
+
 - **Windows only**: No macOS, no Linux. Full stop.
 - **Heavyweight**: Slow to start, high memory usage. It's a large application that installs with the Visual Studio Shell.
 - **No modern UI**: The interface hasn't changed fundamentally in years. Tabbed query windows work fine, but the overall experience feels dated compared to modern editors.
@@ -59,6 +62,7 @@ Microsoft's official recommendation for cross-platform SQL Server development is
 - **Lightweight**: VS Code starts fast and uses less memory than SSMS
 
 What it lacks compared to SSMS:
+
 - No visual execution plan viewer (text-based only)
 - No Agent job management
 - No maintenance plan designer
@@ -72,15 +76,15 @@ For writing and running SQL queries, VS Code + MSSQL is a solid choice. For DBA 
 
 Since ADS is retired, here's the practical comparison:
 
-| | SSMS | VS Code + MSSQL | Third-Party (DBeaver, DataGrip, etc.) |
-|---|---|---|---|
-| Platform | Windows only | Windows, macOS, Linux | Varies (most are cross-platform) |
-| Price | Free | Free | Free to $229/year |
-| DBA features | Complete | Minimal | Varies |
-| SQL editing | Good | Good (with extensions) | Good to excellent |
-| Multi-database | No (SQL Server only) | No (SQL Server only) | Yes |
-| Visual execution plans | Yes | No | Some (DataGrip, DBeaver) |
-| Startup speed | Slow | Fast | Varies |
+|                        | SSMS                 | VS Code + MSSQL        | Third-Party (DBeaver, DataGrip, etc.) |
+| ---------------------- | -------------------- | ---------------------- | ------------------------------------- |
+| Platform               | Windows only         | Windows, macOS, Linux  | Varies (most are cross-platform)      |
+| Price                  | Free                 | Free                   | Free to $229/year                     |
+| DBA features           | Complete             | Minimal                | Varies                                |
+| SQL editing            | Good                 | Good (with extensions) | Good to excellent                     |
+| Multi-database         | No (SQL Server only) | No (SQL Server only)   | Yes                                   |
+| Visual execution plans | Yes                  | No                     | Some (DataGrip, DBeaver)              |
+| Startup speed          | Slow                 | Fast                   | Varies                                |
 
 ## If You Were an ADS User
 

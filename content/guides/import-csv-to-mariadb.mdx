@@ -46,6 +46,7 @@ IGNORE 1 ROWS
 ```
 
 Key points:
+
 - `IGNORE 1 ROWS` skips the header
 - The column list at the end maps CSV columns to table columns, excluding `id` so it auto-increments
 - `FIELDS TERMINATED BY ','` and `ENCLOSED BY '"'` handle standard CSV formatting
@@ -143,6 +144,7 @@ SET signup_date = STR_TO_DATE(@date_str, '%m/%d/%Y');
 ```
 
 **Duplicate keys.** Add `REPLACE` or `IGNORE` after the filename:
+
 - `LOAD DATA INFILE ... REPLACE` -- overwrites rows with matching keys
 - `LOAD DATA INFILE ... IGNORE` -- skips rows with duplicate keys
 

@@ -14,14 +14,37 @@ export default function V4SplitScreen() {
               <span className="font-bold text-xl">Mako</span>
             </Link>
             <div className="hidden md:flex items-center gap-6 text-sm text-slate-400">
-              <Link href="#features" className="hover:text-white transition-colors">Features</Link>
-              <Link href="#databases" className="hover:text-white transition-colors">Databases</Link>
-              <Link href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</Link>
-              <Link href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</Link>
+              <Link
+                href="#features"
+                className="hover:text-white transition-colors"
+              >
+                Features
+              </Link>
+              <Link
+                href="#databases"
+                className="hover:text-white transition-colors"
+              >
+                Databases
+              </Link>
+              <Link
+                href="https://docs.mako.ai"
+                className="hover:text-white transition-colors"
+              >
+                Docs
+              </Link>
+              <Link
+                href="https://github.com/mako-ai/mono"
+                className="hover:text-white transition-colors"
+              >
+                GitHub
+              </Link>
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <a href="https://app.mako.ai" className="text-sm text-slate-400 hover:text-white transition-colors">
+            <a
+              href="https://app.mako.ai"
+              className="text-sm text-slate-400 hover:text-white transition-colors"
+            >
               Sign in
             </a>
             <a
@@ -51,8 +74,8 @@ export default function V4SplitScreen() {
               </h1>
 
               <p className="text-xl text-slate-400 mb-8 leading-relaxed max-w-lg">
-                Write queries in plain English, collaborate with your team,
-                and turn results into APIs—all from your browser.
+                Write queries in plain English, collaborate with your team, and
+                turn results into APIs—all from your browser.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-4 mb-12">
@@ -95,7 +118,9 @@ export default function V4SplitScreen() {
         <div className="max-w-6xl mx-auto">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold mb-4">Built for modern teams</h2>
-            <p className="text-xl text-slate-400">Everything you need to work with databases, reimagined.</p>
+            <p className="text-xl text-slate-400">
+              Everything you need to work with databases, reimagined.
+            </p>
           </div>
 
           <div className="grid md:grid-cols-2 gap-12">
@@ -106,7 +131,7 @@ export default function V4SplitScreen() {
                 "Schema-aware query generation",
                 "Automatic query optimization",
                 "Natural language to SQL",
-                "Error correction suggestions"
+                "Error correction suggestions",
               ]}
             />
             <FeatureSection
@@ -116,7 +141,7 @@ export default function V4SplitScreen() {
                 "Shared database connections",
                 "Query version control",
                 "Team workspaces",
-                "Role-based access control"
+                "Role-based access control",
               ]}
             />
             <FeatureSection
@@ -126,7 +151,7 @@ export default function V4SplitScreen() {
                 "Instant REST endpoints",
                 "Automatic documentation",
                 "Rate limiting built-in",
-                "API key management"
+                "API key management",
               ]}
             />
             <FeatureSection
@@ -136,7 +161,7 @@ export default function V4SplitScreen() {
                 "100% browser-based",
                 "PostgreSQL, MySQL, MongoDB",
                 "BigQuery, SQLite, and more",
-                "Self-host option available"
+                "Self-host option available",
               ]}
             />
           </div>
@@ -147,7 +172,9 @@ export default function V4SplitScreen() {
       <section id="databases" className="py-24 px-6 border-t border-slate-800">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-3xl font-bold mb-4">Connect to any database</h2>
-          <p className="text-slate-400 mb-12">Works with your existing infrastructure. No migrations required.</p>
+          <p className="text-slate-400 mb-12">
+            Works with your existing infrastructure. No migrations required.
+          </p>
 
           <div className="grid grid-cols-3 md:grid-cols-6 gap-8">
             <DatabaseIcon name="PostgreSQL" icon="/icons/postgresql.svg" />
@@ -165,14 +192,26 @@ export default function V4SplitScreen() {
         <div className="max-w-4xl mx-auto">
           <div className="p-12 rounded-2xl bg-gradient-to-r from-cyan-500/20 to-blue-500/20 border border-cyan-500/20 text-center">
             <h2 className="text-4xl font-bold mb-4">Ready to try it?</h2>
-            <p className="text-xl text-slate-400 mb-8">Free forever. No credit card required.</p>
+            <p className="text-xl text-slate-400 mb-8">
+              Free forever. No credit card required.
+            </p>
             <a
               href="https://app.mako.ai"
               className="inline-flex items-center gap-2 px-8 py-4 bg-cyan-500 text-slate-950 font-bold rounded-lg hover:bg-cyan-400 transition-colors"
             >
               Launch Mako
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 8l4 4m0 0l-4 4m4-4H3"
+                />
               </svg>
             </a>
           </div>
@@ -184,12 +223,26 @@ export default function V4SplitScreen() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <MakoIcon className="w-5 h-5 text-cyan-400" />
-            <span className="text-slate-400 text-sm">© 2025 Mako. MIT License.</span>
+            <span className="text-slate-400 text-sm">
+              © 2025 Mako. MIT License.
+            </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-slate-400">
-            <a href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</a>
-            <a href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</a>
-            <a href="#" className="hover:text-white transition-colors">Discord</a>
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </a>
+            <a
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </a>
+            <a href="#" className="hover:text-white transition-colors">
+              Discord
+            </a>
           </div>
         </div>
       </footer>
@@ -208,7 +261,9 @@ function AppPreview() {
           <div className="w-3 h-3 rounded-full bg-green-500/60" />
         </div>
         <div className="flex-1 flex items-center justify-center gap-4">
-          <div className="px-3 py-1 text-xs bg-slate-700 rounded text-slate-300">Query Editor</div>
+          <div className="px-3 py-1 text-xs bg-slate-700 rounded text-slate-300">
+            Query Editor
+          </div>
           <div className="px-3 py-1 text-xs text-slate-500">Results</div>
           <div className="px-3 py-1 text-xs text-slate-500">API</div>
         </div>
@@ -227,18 +282,41 @@ function AppPreview() {
             </div>
           </div>
           <div className="font-mono text-xs space-y-1">
-            <div><span className="text-blue-400">SELECT</span> c.name, <span className="text-yellow-400">SUM</span>(o.total) <span className="text-blue-400">AS</span> revenue</div>
-            <div><span className="text-blue-400">FROM</span> <span className="text-cyan-400">customers</span> c</div>
-            <div><span className="text-blue-400">JOIN</span> <span className="text-cyan-400">orders</span> o <span className="text-blue-400">ON</span> c.id = o.customer_id</div>
-            <div><span className="text-blue-400">WHERE</span> o.created_at &gt;= <span className="text-orange-400">&apos;2024-10-01&apos;</span></div>
-            <div><span className="text-blue-400">GROUP BY</span> c.id <span className="text-blue-400">ORDER BY</span> revenue <span className="text-blue-400">DESC</span></div>
-            <div><span className="text-blue-400">LIMIT</span> <span className="text-orange-400">10</span>;</div>
+            <div>
+              <span className="text-blue-400">SELECT</span> c.name,{" "}
+              <span className="text-yellow-400">SUM</span>(o.total){" "}
+              <span className="text-blue-400">AS</span> revenue
+            </div>
+            <div>
+              <span className="text-blue-400">FROM</span>{" "}
+              <span className="text-cyan-400">customers</span> c
+            </div>
+            <div>
+              <span className="text-blue-400">JOIN</span>{" "}
+              <span className="text-cyan-400">orders</span> o{" "}
+              <span className="text-blue-400">ON</span> c.id = o.customer_id
+            </div>
+            <div>
+              <span className="text-blue-400">WHERE</span> o.created_at &gt;={" "}
+              <span className="text-orange-400">&apos;2024-10-01&apos;</span>
+            </div>
+            <div>
+              <span className="text-blue-400">GROUP BY</span> c.id{" "}
+              <span className="text-blue-400">ORDER BY</span> revenue{" "}
+              <span className="text-blue-400">DESC</span>
+            </div>
+            <div>
+              <span className="text-blue-400">LIMIT</span>{" "}
+              <span className="text-orange-400">10</span>;
+            </div>
           </div>
         </div>
 
         {/* Results */}
         <div className="p-4 bg-slate-800/50">
-          <div className="text-xs text-slate-500 mb-2">Results (10 rows • 23ms)</div>
+          <div className="text-xs text-slate-500 mb-2">
+            Results (10 rows • 23ms)
+          </div>
           <div className="space-y-1 text-xs font-mono">
             <div className="grid grid-cols-2 gap-4 text-slate-500 border-b border-slate-700 pb-1">
               <span>name</span>
@@ -266,7 +344,9 @@ function AppPreview() {
         <span>PostgreSQL • production-db</span>
         <div className="flex items-center gap-4">
           <span className="text-cyan-400">● Connected</span>
-          <button className="px-2 py-1 bg-cyan-500/20 text-cyan-400 rounded">Run Query</button>
+          <button className="px-2 py-1 bg-cyan-500/20 text-cyan-400 rounded">
+            Run Query
+          </button>
         </div>
       </div>
     </div>
@@ -282,7 +362,11 @@ function FeaturePill({ icon, text }: { icon: string; text: string }) {
   );
 }
 
-function FeatureSection({ title, description, features }: {
+function FeatureSection({
+  title,
+  description,
+  features,
+}: {
   title: string;
   description: string;
   features: string[];
@@ -293,9 +377,22 @@ function FeatureSection({ title, description, features }: {
       <p className="text-slate-400 mb-6">{description}</p>
       <ul className="space-y-2">
         {features.map((f, i) => (
-          <li key={i} className="flex items-center gap-2 text-sm text-slate-300">
-            <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          <li
+            key={i}
+            className="flex items-center gap-2 text-sm text-slate-300"
+          >
+            <svg
+              className="w-4 h-4 text-cyan-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M5 13l4 4L19 7"
+              />
             </svg>
             {f}
           </li>
@@ -309,7 +406,13 @@ function DatabaseIcon({ name, icon }: { name: string; icon: string }) {
   return (
     <div className="flex flex-col items-center gap-2">
       <div className="w-12 h-12 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center">
-        <Image src={icon} alt={name} width={24} height={24} className="w-6 h-6" />
+        <Image
+          src={icon}
+          alt={name}
+          width={24}
+          height={24}
+          className="w-6 h-6"
+        />
       </div>
       <span className="text-xs text-slate-500">{name}</span>
     </div>
@@ -318,7 +421,12 @@ function DatabaseIcon({ name, icon }: { name: string; icon: string }) {
 
 function MakoIcon({ className }: { className?: string }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 102 90" fill="currentColor" className={className}>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 102 90"
+      fill="currentColor"
+      className={className}
+    >
       <path d="m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z" />
     </svg>
   );

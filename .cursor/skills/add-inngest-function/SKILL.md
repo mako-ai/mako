@@ -95,13 +95,17 @@ await inngest.send({
 ### Event-driven
 
 ```typescript
-{ event: "flow.execute" }
+{
+  event: "flow.execute";
+}
 ```
 
 ### Cron (scheduled)
 
 ```typescript
-{ cron: "0 */6 * * *" }  // Every 6 hours
+{
+  cron: "0 */6 * * *";
+} // Every 6 hours
 ```
 
 ### Cancellable (long-running)

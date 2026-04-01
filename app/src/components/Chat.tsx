@@ -57,7 +57,11 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
-import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
+import {
+  executeDashboardAgentTool,
+  type DashboardAgentContext,
+} from "../dashboard-runtime/agent-tools";
+import { useDashboardStore } from "../store/dashboardStore";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -889,6 +893,9 @@ const Chat: React.FC<ChatProps> = ({
   // This prevents the race condition where user switches consoles while agent is thinking
   const capturedConsoleIdRef = useRef<string | null>(null);
 
+  // Pin dashboard ID at submit time to prevent drift if user switches dashboards mid-turn
+  const capturedDashboardIdRef = useRef<string | null>(null);
+
   // Function to fetch sessions - defined before useChat so it can be used in onFinish
   // Using a ref-based pattern to always access the current workspace
   const fetchSessionsRef = useRef<() => Promise<void>>();
@@ -1030,11 +1037,13 @@ const Chat: React.FC<ChatProps> = ({
             tabKind: activeTab?.kind,
             flowType: activeTab?.metadata?.flowType,
             flowFormState,
-            // Dashboard context — pass full snapshot, only strip DB metadata and
-            // truncate large arrays. Enriches data sources with connection info.
+            // Dashboard context — pass full snapshot using the pinned ID from
+            // submit time to avoid drift if the user switches dashboards mid-turn.
             ...(() => {
               try {
-                const snapshot = getDashboardStateSnapshot();
+                const snapshot = getDashboardStateSnapshot(
+                  capturedDashboardIdRef.current ?? undefined,
+                );
                 if (!snapshot) return {};
                 const connectionById = new Map(
                   workspaceConnections.map(connection => [
@@ -1702,9 +1711,14 @@ const Chat: React.FC<ChatProps> = ({
 
         // --- Dashboard tools (client-side) ---
         try {
+          const pinnedDashboard: DashboardAgentContext | undefined =
+            capturedDashboardIdRef.current
+              ? { dashboardId: capturedDashboardIdRef.current }
+              : undefined;
           const dashboardToolOutput = await executeDashboardAgentTool(
             toolName,
             input,
+            pinnedDashboard,
           );
 
           if (dashboardToolOutput !== null) {
@@ -2312,6 +2326,8 @@ const Chat: React.FC<ChatProps> = ({
   const handleChatSubmit = useCallback(
     (text: string) => {
       capturedConsoleIdRef.current = activeConsoleIdRef.current;
+      capturedDashboardIdRef.current =
+        useDashboardStore.getState().activeDashboardId;
       const store = useConsoleStore.getState();
       const currentTabs = Object.values(store.tabs);
       const activeConsole = currentTabs.find(t => t.id === store.activeTabId);

@@ -16,9 +16,24 @@ export default function V10AnimatedFeatures() {
             <span className="font-bold text-xl tracking-tight">mako</span>
           </Link>
           <div className="hidden md:flex items-center gap-8 text-sm text-zinc-400">
-            <Link href="#features" className="hover:text-white transition-colors">Features</Link>
-            <Link href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</Link>
-            <Link href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</Link>
+            <Link
+              href="#features"
+              className="hover:text-white transition-colors"
+            >
+              Features
+            </Link>
+            <Link
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </Link>
+            <Link
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </Link>
           </div>
           <a
             href="https://app.mako.ai"
@@ -48,8 +63,8 @@ export default function V10AnimatedFeatures() {
           </h1>
 
           <p className="text-xl md:text-2xl text-zinc-400 max-w-2xl mx-auto mb-12 animate-fade-in-up delay-500">
-            The AI-powered database client that&apos;s free, open source,
-            and runs entirely in your browser.
+            The AI-powered database client that&apos;s free, open source, and
+            runs entirely in your browser.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-up delay-700">
@@ -58,8 +73,18 @@ export default function V10AnimatedFeatures() {
               className="group w-full sm:w-auto px-8 py-4 bg-white text-black font-semibold rounded-full hover:scale-105 transition-transform flex items-center justify-center gap-2"
             >
               Get Started Free
-              <svg className="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+              <svg
+                className="w-4 h-4 group-hover:translate-x-1 transition-transform"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 8l4 4m0 0l-4 4m4-4H3"
+                />
               </svg>
             </a>
             <a
@@ -74,8 +99,18 @@ export default function V10AnimatedFeatures() {
 
         {/* Scroll indicator */}
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 animate-bounce">
-          <svg className="w-6 h-6 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+          <svg
+            className="w-6 h-6 text-zinc-500"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M19 14l-7 7m0 0l-7-7m7 7V3"
+            />
           </svg>
         </div>
       </section>
@@ -124,17 +159,24 @@ export default function V10AnimatedFeatures() {
       {/* Databases */}
       <section className="py-24 px-6 border-t border-white/5">
         <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-3xl font-bold mb-12">Works with your favorite databases</h2>
+          <h2 className="text-3xl font-bold mb-12">
+            Works with your favorite databases
+          </h2>
           <div className="flex flex-wrap items-center justify-center gap-6">
             {[
-              { name: 'PostgreSQL', icon: '/icons/postgresql.svg' },
-              { name: 'MySQL', icon: '/icons/mysql.svg' },
-              { name: 'MongoDB', icon: '/icons/mongodb.svg' },
-              { name: 'BigQuery', icon: '/icons/bigquery.svg' },
-              { name: 'Snowflake', icon: '/icons/snowflake.svg' },
-              { name: 'ClickHouse', icon: '/icons/clickhouse.svg' },
+              { name: "PostgreSQL", icon: "/icons/postgresql.svg" },
+              { name: "MySQL", icon: "/icons/mysql.svg" },
+              { name: "MongoDB", icon: "/icons/mongodb.svg" },
+              { name: "BigQuery", icon: "/icons/bigquery.svg" },
+              { name: "Snowflake", icon: "/icons/snowflake.svg" },
+              { name: "ClickHouse", icon: "/icons/clickhouse.svg" },
             ].map((db, i) => (
-              <DatabaseCard key={db.name} name={db.name} icon={db.icon} delay={i * 100} />
+              <DatabaseCard
+                key={db.name}
+                name={db.name}
+                icon={db.icon}
+                delay={i * 100}
+              />
             ))}
           </div>
         </div>
@@ -163,12 +205,26 @@ export default function V10AnimatedFeatures() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <MakoIcon className="w-5 h-5" />
-            <span className="text-zinc-400 text-sm">© 2025 Mako. MIT License.</span>
+            <span className="text-zinc-400 text-sm">
+              © 2025 Mako. MIT License.
+            </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-400">
-            <a href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</a>
-            <a href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</a>
-            <a href="#" className="hover:text-white transition-colors">Discord</a>
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </a>
+            <a
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </a>
+            <a href="#" className="hover:text-white transition-colors">
+              Discord
+            </a>
           </div>
         </div>
       </footer>
@@ -212,9 +268,7 @@ function AnimatedBadge() {
 }
 
 function AnimatedText({ text }: { text: string }) {
-  return (
-    <span className="inline-block animate-fade-in-up">{text}</span>
-  );
+  return <span className="inline-block animate-fade-in-up">{text}</span>;
 }
 
 function AnimatedGradientText({ text }: { text: string }) {
@@ -225,8 +279,14 @@ function AnimatedGradientText({ text }: { text: string }) {
   );
 }
 
-function AnimatedFeature({ align, badge, title, description, visual }: {
-  align: 'left' | 'right';
+function AnimatedFeature({
+  align,
+  badge,
+  title,
+  description,
+  visual,
+}: {
+  align: "left" | "right";
   badge: string;
   title: string;
   description: string;
@@ -242,7 +302,7 @@ function AnimatedFeature({ align, badge, title, description, visual }: {
           setIsVisible(true);
         }
       },
-      { threshold: 0.2 }
+      { threshold: 0.2 },
     );
 
     if (ref.current) {
@@ -255,7 +315,7 @@ function AnimatedFeature({ align, badge, title, description, visual }: {
   return (
     <div
       ref={ref}
-      className={`flex flex-col ${align === 'right' ? 'lg:flex-row-reverse' : 'lg:flex-row'} items-center gap-12 lg:gap-20 py-20 transition-all duration-1000 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
+      className={`flex flex-col ${align === "right" ? "lg:flex-row-reverse" : "lg:flex-row"} items-center gap-12 lg:gap-20 py-20 transition-all duration-1000 ${isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"}`}
     >
       <div className="flex-1 text-center lg:text-left">
         <div className="inline-flex items-center px-3 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 text-sm mb-4">
@@ -264,9 +324,7 @@ function AnimatedFeature({ align, badge, title, description, visual }: {
         <h3 className="text-3xl md:text-4xl font-bold mb-4">{title}</h3>
         <p className="text-xl text-zinc-400 leading-relaxed">{description}</p>
       </div>
-      <div className="flex-1 w-full max-w-lg">
-        {visual}
-      </div>
+      <div className="flex-1 w-full max-w-lg">{visual}</div>
     </div>
   );
 }
@@ -327,7 +385,9 @@ function APIVisual() {
   return (
     <div className="p-6 rounded-2xl border border-white/10 bg-zinc-900/50 font-mono text-sm">
       <div className="flex items-center gap-2 mb-4">
-        <span className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 text-xs">GET</span>
+        <span className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 text-xs">
+          GET
+        </span>
         <span className="text-zinc-400">/api/v1/revenue</span>
       </div>
       <div className="p-4 rounded-xl bg-black/50">
@@ -369,14 +429,28 @@ function OpenSourceVisual() {
   );
 }
 
-function DatabaseCard({ name, icon, delay }: { name: string; icon: string; delay: number }) {
+function DatabaseCard({
+  name,
+  icon,
+  delay,
+}: {
+  name: string;
+  icon: string;
+  delay: number;
+}) {
   return (
     <div
       className="p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all hover:scale-105"
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className="flex items-center gap-3">
-        <Image src={icon} alt={name} width={32} height={32} className="w-8 h-8" />
+        <Image
+          src={icon}
+          alt={name}
+          width={32}
+          height={32}
+          className="w-8 h-8"
+        />
         <span className="font-medium">{name}</span>
       </div>
     </div>
@@ -385,7 +459,12 @@ function DatabaseCard({ name, icon, delay }: { name: string; icon: string; delay
 
 function MakoIcon({ className }: { className?: string }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 102 90" fill="currentColor" className={className}>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 102 90"
+      fill="currentColor"
+      className={className}
+    >
       <path d="m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z" />
     </svg>
   );

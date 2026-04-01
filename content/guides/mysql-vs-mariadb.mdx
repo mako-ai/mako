@@ -28,12 +28,14 @@ MySQL and MariaDB have diverged significantly. MariaDB adds more storage engines
 MariaDB maintains wire-protocol compatibility with MySQL -- most MySQL client libraries, drivers, and tools work with MariaDB. But at the SQL level, they've diverged:
 
 **Where MariaDB is compatible:**
+
 - Core SQL syntax for DML (SELECT, INSERT, UPDATE, DELETE)
 - InnoDB storage engine
 - Most MySQL configuration variables
 - Authentication protocols
 
 **Where they've diverged:**
+
 - MariaDB doesn't support MySQL's `JSON_TABLE` function
 - MySQL's `->` and `->>` JSON operators work differently in MariaDB
 - MariaDB doesn't support MySQL's Window Functions `GROUPS` frame type
@@ -48,16 +50,16 @@ If you're migrating from MySQL to MariaDB (or vice versa), test thoroughly. Drop
 
 MariaDB offers more storage engine choices:
 
-| Engine | MySQL | MariaDB | Purpose |
-|---|---|---|---|
-| InnoDB | Yes (default) | Yes (default) | General-purpose OLTP |
-| MyISAM | Yes (legacy) | Yes (legacy) | Read-heavy, no transactions |
-| Aria | No | Yes | MyISAM replacement, crash-safe |
-| ColumnStore | No | Yes | Columnar analytics (OLAP) |
-| CONNECT | No | Yes | Access external data sources |
-| Spider | No | Yes | Sharding engine |
-| Mroonga | No | Yes | Full-text search (CJK) |
-| RocksDB (MyRocks) | No | Yes | Write-optimized, compressed |
+| Engine            | MySQL         | MariaDB       | Purpose                        |
+| ----------------- | ------------- | ------------- | ------------------------------ |
+| InnoDB            | Yes (default) | Yes (default) | General-purpose OLTP           |
+| MyISAM            | Yes (legacy)  | Yes (legacy)  | Read-heavy, no transactions    |
+| Aria              | No            | Yes           | MyISAM replacement, crash-safe |
+| ColumnStore       | No            | Yes           | Columnar analytics (OLAP)      |
+| CONNECT           | No            | Yes           | Access external data sources   |
+| Spider            | No            | Yes           | Sharding engine                |
+| Mroonga           | No            | Yes           | Full-text search (CJK)         |
+| RocksDB (MyRocks) | No            | Yes           | Write-optimized, compressed    |
 
 MariaDB's ColumnStore is notable -- it brings columnar analytics into the same server as your OLTP data. MySQL would require a separate system (like ClickHouse or BigQuery) for analytical workloads.
 
@@ -68,6 +70,7 @@ In practice, the vast majority of production workloads use InnoDB on both databa
 MySQL has a meaningful lead here:
 
 **MySQL:**
+
 - Native `JSON` data type with binary storage
 - `JSON_TABLE` for converting JSON to relational rows
 - `->` and `->>` operators for path access
@@ -75,6 +78,7 @@ MySQL has a meaningful lead here:
 - `JSON_SCHEMA_VALID` for schema validation
 
 **MariaDB:**
+
 - JSON is an alias for `LONGTEXT` (stored as text, not binary)
 - JSON functions available but parsed on each query
 - No `JSON_TABLE`
@@ -88,6 +92,7 @@ For applications that heavily use JSON data, MySQL's native JSON type with binar
 Both support traditional binary log replication, but their high-availability approaches differ:
 
 **MySQL:**
+
 - Binary log replication (async, semi-sync)
 - Group Replication (Paxos-based, multi-primary capable)
 - InnoDB Cluster (integrated HA solution)
@@ -95,6 +100,7 @@ Both support traditional binary log replication, but their high-availability app
 - Clone plugin for fast provisioning
 
 **MariaDB:**
+
 - Binary log replication (async, semi-sync)
 - Galera Cluster (synchronous multi-primary, wsrep-based)
 - MaxScale (proxy for routing, filtering, failover)
@@ -107,6 +113,7 @@ MySQL's Group Replication and MariaDB's Galera Cluster solve similar problems bu
 For typical web workloads, performance is comparable. Both use InnoDB as the default engine with similar optimizations.
 
 Where they differ:
+
 - MariaDB's thread pool is included in the community edition. MySQL's thread pool is enterprise-only.
 - MariaDB claims faster complex query optimization in some benchmarks.
 - MySQL's JSON operations are faster due to binary storage.
@@ -119,12 +126,14 @@ The thread pool difference is practically significant. Under high connection cou
 This is a philosophical rather than technical difference, but it drives adoption decisions:
 
 **MySQL:**
+
 - Dual-licensed: GPL community edition + commercial enterprise edition
 - Controlled by Oracle
 - Enterprise features (Thread Pool, Audit, Encryption) require paid license
 - Roadmap decisions are Oracle's to make
 
 **MariaDB:**
+
 - GPL (community) + Business Source License (enterprise server)
 - Governed by MariaDB Foundation (community) + MariaDB Corporation (commercial)
 - More features in the community edition
@@ -137,6 +146,7 @@ MariaDB Corporation's BSL licensing for enterprise features has drawn some criti
 ## Ecosystem
 
 **MySQL** has the larger ecosystem:
+
 - More hosting providers, managed services, and cloud offerings
 - Broader tooling support (every database tool supports MySQL)
 - PlanetScale, Vitess for horizontal scaling
@@ -144,6 +154,7 @@ MariaDB Corporation's BSL licensing for enterprise features has drawn some criti
 - WordPress, Drupal, and most PHP frameworks default to MySQL
 
 **MariaDB:**
+
 - Drop-in for most MySQL tools (drivers, GUIs, ORMs usually work)
 - SkySQL (MariaDB's managed cloud service)
 - Default in many Linux distributions

@@ -29,16 +29,16 @@ If you need advanced SQL features, JSONB, or extensibility, PostgreSQL. If you n
 
 This is where the two databases differ most.
 
-| Feature | PostgreSQL | MySQL |
-|---|---|---|
-| Arrays | Native `ARRAY` type with indexing | No native arrays (use JSON) |
-| JSON | `JSONB` with GIN indexes, operators | `JSON` type, limited indexing |
-| Custom types | `CREATE TYPE` for enums, composites | `ENUM` only |
-| UUID | Native `uuid` type | `CHAR(36)` or `BINARY(16)` |
-| Network types | `inet`, `cidr`, `macaddr` | No native support |
-| Range types | `int4range`, `tsrange`, etc. | No native support |
-| Full-text search | Built-in `tsvector`/`tsquery` | Built-in `FULLTEXT` indexes |
-| Geospatial | PostGIS extension | Spatial extension |
+| Feature          | PostgreSQL                          | MySQL                         |
+| ---------------- | ----------------------------------- | ----------------------------- |
+| Arrays           | Native `ARRAY` type with indexing   | No native arrays (use JSON)   |
+| JSON             | `JSONB` with GIN indexes, operators | `JSON` type, limited indexing |
+| Custom types     | `CREATE TYPE` for enums, composites | `ENUM` only                   |
+| UUID             | Native `uuid` type                  | `CHAR(36)` or `BINARY(16)`    |
+| Network types    | `inet`, `cidr`, `macaddr`           | No native support             |
+| Range types      | `int4range`, `tsrange`, etc.        | No native support             |
+| Full-text search | Built-in `tsvector`/`tsquery`       | Built-in `FULLTEXT` indexes   |
+| Geospatial       | PostGIS extension                   | Spatial extension             |
 
 PostgreSQL's type system is significantly more expressive. If your application uses arrays, JSON documents, network addresses, or range queries, PostgreSQL handles them natively where MySQL requires workarounds.
 
@@ -49,11 +49,13 @@ MySQL's JSON support has improved, but it lacks the indexing depth of PostgreSQL
 For most typical web workloads, performance is comparable -- within 30% either direction depending on the query pattern.
 
 **Where MySQL tends to win:**
+
 - Simple primary key lookups and single-table reads
 - Connection handling under high concurrency (MySQL's thread-per-connection model is lighter than PostgreSQL's process-per-connection)
 - Replication lag on read replicas (MySQL's binary log replication is mature and fast)
 
 **Where PostgreSQL tends to win:**
+
 - Complex joins across multiple tables
 - Queries using CTEs, window functions, and subqueries
 - JSONB queries and indexing
@@ -81,6 +83,7 @@ If you write standard SQL, it's more likely to work unmodified on PostgreSQL. My
 Both databases have mature replication, but the approaches differ.
 
 **MySQL:**
+
 - Binary log (binlog) replication is battle-tested and widely used
 - Group Replication provides multi-primary clustering
 - InnoDB Cluster / InnoDB ClusterSet for managed HA
@@ -88,6 +91,7 @@ Both databases have mature replication, but the approaches differ.
 - Replication is generally simpler to set up
 
 **PostgreSQL:**
+
 - Streaming replication (physical) with synchronous or asynchronous modes
 - Logical replication (table-level, selective) since PostgreSQL 10
 - Patroni, Stolon, or pg_auto_failover for HA orchestration

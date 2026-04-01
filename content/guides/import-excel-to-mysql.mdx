@@ -114,13 +114,13 @@ For quick, one-off imports without writing SQL or converting files, this is the 
 
 ## Type Mapping: Excel to MySQL
 
-| Excel Type | MySQL Type | Notes |
-|---|---|---|
-| Number (integer) | `INT` or `BIGINT` | Excel stores all numbers as doubles internally |
-| Number (decimal) | `DECIMAL(p,s)` or `DOUBLE` | Use `DECIMAL` for currency |
-| Date | `DATE` or `DATETIME` | Handle locale-specific formats with `STR_TO_DATE` |
-| Text | `VARCHAR(n)` or `TEXT` | Set `charset=utf8mb4` for emoji and special characters |
-| Boolean | `TINYINT(1)` | TRUE=1, FALSE=0 |
+| Excel Type       | MySQL Type                 | Notes                                                  |
+| ---------------- | -------------------------- | ------------------------------------------------------ |
+| Number (integer) | `INT` or `BIGINT`          | Excel stores all numbers as doubles internally         |
+| Number (decimal) | `DECIMAL(p,s)` or `DOUBLE` | Use `DECIMAL` for currency                             |
+| Date             | `DATE` or `DATETIME`       | Handle locale-specific formats with `STR_TO_DATE`      |
+| Text             | `VARCHAR(n)` or `TEXT`     | Set `charset=utf8mb4` for emoji and special characters |
+| Boolean          | `TINYINT(1)`               | TRUE=1, FALSE=0                                        |
 
 ## Common Gotchas
 

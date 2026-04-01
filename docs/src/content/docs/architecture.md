@@ -22,27 +22,28 @@ mono/
 
 ### Web Application (`app/`)
 
-| Aspect | Technology |
-|---|---|
-| Framework | React + Vite |
-| Styling | Tailwind CSS |
-| State | React Context + Hooks |
-| Routing | React Router |
-| Editor | Monaco / CodeMirror |
+| Aspect    | Technology            |
+| --------- | --------------------- |
+| Framework | React + Vite          |
+| Styling   | Tailwind CSS          |
+| State     | React Context + Hooks |
+| Routing   | React Router          |
+| Editor    | Monaco / CodeMirror   |
 
 Key UI: Console editor, Database explorer, Chat interface, Collection/View editors, Onboarding flow.
 
 ### API Server (`api/`)
 
-| Aspect | Technology |
-|---|---|
-| Framework | Hono (on Node.js adapter) |
-| Database | MongoDB (Mongoose ODM) |
-| Auth | Lucia Auth + Arctic (Google, GitHub OAuth) |
-| Job Queue | Inngest |
-| AI | Vercel AI SDK |
+| Aspect    | Technology                                 |
+| --------- | ------------------------------------------ |
+| Framework | Hono (on Node.js adapter)                  |
+| Database  | MongoDB (Mongoose ODM)                     |
+| Auth      | Lucia Auth + Arctic (Google, GitHub OAuth) |
+| Job Queue | Inngest                                    |
+| AI        | Vercel AI SDK                              |
 
 The API handles:
+
 - Authentication and session management
 - Database connection management (encrypted credentials)
 - Query execution via the [Query Runner](/query-runner/)
@@ -52,11 +53,11 @@ The API handles:
 
 The agent system uses a multi-agent architecture:
 
-| Agent | Purpose |
-|---|---|
-| **Console Agent** | SQL generation, schema inspection, query execution. The primary agent. |
-| **Flow Agent** | Experimental. Orchestrates data sync pipelines. |
-| **Universal Tools** | Shared tooling: schema inspection, query execution, self-directive |
+| Agent               | Purpose                                                                |
+| ------------------- | ---------------------------------------------------------------------- |
+| **Console Agent**   | SQL generation, schema inspection, query execution. The primary agent. |
+| **Flow Agent**      | Experimental. Orchestrates data sync pipelines.                        |
+| **Universal Tools** | Shared tooling: schema inspection, query execution, self-directive     |
 
 The console agent has access to real database schemas via `inspect_schema` and can execute queries via `sql_execute_query` / `mongodb_execute_query`. Results flow back to the chat and — critically — get placed directly in the console editor via `write_to_interface`.
 

@@ -25,12 +25,12 @@ cp .env.example .env
 
 Edit `.env` with your configuration. Required:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `DATABASE_URL` | `mongodb://localhost:27017/mako` | Application database |
-| `ENCRYPTION_KEY` | — | Encryption for stored credentials (`openssl rand -hex 32`) |
-| `SESSION_SECRET` | — | Session security |
-| `OPENAI_API_KEY` | — | AI features (at least one AI provider required) |
+| Variable         | Default                          | Purpose                                                    |
+| ---------------- | -------------------------------- | ---------------------------------------------------------- |
+| `DATABASE_URL`   | `mongodb://localhost:27017/mako` | Application database                                       |
+| `ENCRYPTION_KEY` | —                                | Encryption for stored credentials (`openssl rand -hex 32`) |
+| `SESSION_SECRET` | —                                | Session security                                           |
+| `OPENAI_API_KEY` | —                                | AI features (at least one AI provider required)            |
 
 Optional AI providers: `ANTHROPIC_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`.
 
@@ -46,10 +46,10 @@ pnpm run docker:up
 pnpm run dev
 ```
 
-| Service | URL |
-|---|---|
-| Web App | http://localhost:5173 |
-| API | http://localhost:8080 |
+| Service           | URL                   |
+| ----------------- | --------------------- |
+| Web App           | http://localhost:5173 |
+| API               | http://localhost:8080 |
 | Inngest Dashboard | http://localhost:8288 |
 
 ## Project Structure

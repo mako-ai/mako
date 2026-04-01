@@ -111,14 +111,14 @@ Mako handles the `.xlsx` parsing internally and maps Excel types to PostgreSQL t
 
 Excel stores data differently than you might expect. Numbers are all IEEE 754 doubles internally (even integers). Dates are serial numbers (days since January 1, 1900). Here's how they typically map:
 
-| Excel Type | PostgreSQL Type | Notes |
-|---|---|---|
-| Number (integer) | `INTEGER` or `BIGINT` | Excel stores as float; conversion may lose precision above 2^53 |
-| Number (decimal) | `NUMERIC` or `DOUBLE PRECISION` | Use `NUMERIC` for money to avoid floating-point rounding |
-| Date | `DATE` or `TIMESTAMP` | Excel serial number needs conversion; pandas handles this automatically |
-| Text | `TEXT` or `VARCHAR` | Check encoding on export |
-| Boolean | `BOOLEAN` | TRUE/FALSE map cleanly |
-| Formula | (result type) | Only the computed value exports, not the formula |
+| Excel Type       | PostgreSQL Type                 | Notes                                                                   |
+| ---------------- | ------------------------------- | ----------------------------------------------------------------------- |
+| Number (integer) | `INTEGER` or `BIGINT`           | Excel stores as float; conversion may lose precision above 2^53         |
+| Number (decimal) | `NUMERIC` or `DOUBLE PRECISION` | Use `NUMERIC` for money to avoid floating-point rounding                |
+| Date             | `DATE` or `TIMESTAMP`           | Excel serial number needs conversion; pandas handles this automatically |
+| Text             | `TEXT` or `VARCHAR`             | Check encoding on export                                                |
+| Boolean          | `BOOLEAN`                       | TRUE/FALSE map cleanly                                                  |
+| Formula          | (result type)                   | Only the computed value exports, not the formula                        |
 
 ## Common Gotchas
 

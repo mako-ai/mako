@@ -36,6 +36,7 @@ sqlite-utils insert mydb.db events events.ndjson --nl
 That's it. The tool creates the table, infers column types, and inserts the data. For a file with 100,000 records, this typically takes a few seconds.
 
 Options:
+
 - `--pk=id` -- set a primary key
 - `--alter` -- add columns if the JSON has keys not yet in the table
 - `--batch-size=1000` -- commit in batches for large files

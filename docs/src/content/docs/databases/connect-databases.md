@@ -7,17 +7,17 @@ Mako connects to your databases directly — no data leaves your infrastructure.
 
 ## Supported Databases
 
-| Database | Protocol | Query Language |
-|---|---|---|
-| **PostgreSQL** | TCP (port 5432) | SQL |
-| **MySQL** | TCP (port 3306) | SQL |
-| **MongoDB** | MongoDB protocol | MongoDB queries |
-| **BigQuery** | Google Cloud API | SQL |
-| **ClickHouse** | HTTP / native | SQL |
-| **Amazon Redshift** | TCP (port 5439) | SQL |
-| **Cloud SQL (Postgres)** | Cloud SQL Auth Proxy | SQL |
-| **Cloudflare D1** | Cloudflare API | SQL |
-| **Cloudflare KV** | Cloudflare API | JavaScript |
+| Database                 | Protocol             | Query Language  |
+| ------------------------ | -------------------- | --------------- |
+| **PostgreSQL**           | TCP (port 5432)      | SQL             |
+| **MySQL**                | TCP (port 3306)      | SQL             |
+| **MongoDB**              | MongoDB protocol     | MongoDB queries |
+| **BigQuery**             | Google Cloud API     | SQL             |
+| **ClickHouse**           | HTTP / native        | SQL             |
+| **Amazon Redshift**      | TCP (port 5439)      | SQL             |
+| **Cloud SQL (Postgres)** | Cloud SQL Auth Proxy | SQL             |
+| **Cloudflare D1**        | Cloudflare API       | SQL             |
+| **Cloudflare KV**        | Cloudflare API       | JavaScript      |
 
 ## Adding a Database
 
@@ -62,11 +62,13 @@ mysql://user:password@host:3306/database
 When connecting via MongoDB Atlas, the connection string format differs from what Atlas shows:
 
 **Atlas gives you:**
+
 ```
 mongodb+srv://user:password@cluster.server.mongodb.net/?appName=MyCluster
 ```
 
 **Mako needs:**
+
 ```
 mongodb+srv://user:password@cluster.server.mongodb.net/MyCluster
 ```

@@ -55,6 +55,7 @@ When invoked, review the recent changes and check against these project-specific
 ## Review Output Format
 
 Organize findings by severity:
+
 - **Critical** — Must fix before merge (security, data leaks, broken auth)
 - **Warning** — Should fix soon (missing error handling, type safety issues)
 - **Suggestion** — Nice to have (style, naming, optimization)

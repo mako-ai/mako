@@ -16,6 +16,7 @@ Connector → Fetch chunk → Upsert to destination → Save cursor → Next chu
 ```
 
 Each flow run:
+
 1. Reads the last saved cursor for the entity
 2. Fetches the next chunk of records from the connector
 3. Upserts records into the destination database
@@ -25,6 +26,7 @@ Each flow run:
 ## Job Queue
 
 Flows run on [Inngest](https://www.inngest.com/), a job queue that handles:
+
 - Scheduled execution (cron-based)
 - Automatic retries on failure
 - Concurrency limits per workspace

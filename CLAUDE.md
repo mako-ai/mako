@@ -118,26 +118,26 @@ INNGEST_SIGNING_KEY=your_inngest_signing_key
 
 ### Backend
 
-| Technology | Version | Purpose |
-|------------|---------|---------|
-| Node.js | 20+ | Runtime |
-| TypeScript | 5.8.3 | Type safety |
-| Hono | 4.7.11 | Web framework |
-| Mongoose | 8.15.1 | MongoDB ODM |
-| Arctic | 3.7.0 | OAuth |
-| Inngest | 3.39.2 | Event-driven workflows |
-| Vercel AI SDK | 6.0.0-beta | LLM abstraction |
+| Technology    | Version    | Purpose                |
+| ------------- | ---------- | ---------------------- |
+| Node.js       | 20+        | Runtime                |
+| TypeScript    | 5.8.3      | Type safety            |
+| Hono          | 4.7.11     | Web framework          |
+| Mongoose      | 8.15.1     | MongoDB ODM            |
+| Arctic        | 3.7.0      | OAuth                  |
+| Inngest       | 3.39.2     | Event-driven workflows |
+| Vercel AI SDK | 6.0.0-beta | LLM abstraction        |
 
 ### Frontend
 
-| Technology | Version | Purpose |
-|------------|---------|---------|
-| React | 18.2.0 | UI framework |
-| Vite | 5.0.8 | Build tool |
-| MUI | 7.1.0 | Component library |
-| Zustand | 5.0.5 | State management |
-| Monaco Editor | 4.6.0 | Code editor |
-| React Hook Form | 7.57.0 | Form handling |
+| Technology      | Version | Purpose           |
+| --------------- | ------- | ----------------- |
+| React           | 18.2.0  | UI framework      |
+| Vite            | 5.0.8   | Build tool        |
+| MUI             | 7.1.0   | Component library |
+| Zustand         | 5.0.5   | State management  |
+| Monaco Editor   | 4.6.0   | Code editor       |
+| React Hook Form | 7.57.0  | Form handling     |
 
 ### Supported Databases
 

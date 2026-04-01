@@ -193,22 +193,30 @@ interface ConnectorInput {
 interface ConnectorOutput {
   data: FlushBatch[];
   state: {
-    hasMore: boolean;               // REQUIRED — loop termination signal
-    [key: string]: unknown;         // Opaque — cursor, offset, page, etc.
+    hasMore: boolean; // REQUIRED — loop termination signal
+    [key: string]: unknown; // Opaque — cursor, offset, page, etc.
   };
 }
 
 interface FlushBatch {
   entity: string;
   records: Record<string, unknown>[];
-  idField?: string;                 // Default: "id"
-  schema?: EntitySchema;            // Optional type hints
+  idField?: string; // Default: "id"
+  schema?: EntitySchema; // Optional type hints
 }
 
 interface EntitySchema {
   columns: {
     name: string;
-    type: "string" | "number" | "boolean" | "date" | "datetime" | "json" | "integer" | "float";
+    type:
+      | "string"
+      | "number"
+      | "boolean"
+      | "date"
+      | "datetime"
+      | "json"
+      | "integer"
+      | "float";
     nullable?: boolean;
   }[];
 }
@@ -222,13 +230,13 @@ Injected as `ctx.paginate()`, handles cursor, offset, and link-based pagination:
 
 ```typescript
 for await (const page of ctx.paginate({
-  url: 'https://api.stripe.com/v1/customers',
-  type: 'cursor',
+  url: "https://api.stripe.com/v1/customers",
+  type: "cursor",
   limit: 100,
-  cursorParam: 'starting_after',
-  cursorPath: 'data[-1].id',
-  hasMorePath: 'has_more',
-  dataPath: 'data',
+  cursorParam: "starting_after",
+  cursorPath: "data[-1].id",
+  hasMorePath: "has_more",
+  dataPath: "data",
   headers: { Authorization: `Bearer ${ctx.secrets.STRIPE_KEY}` },
 })) {
   // page is the extracted data array
@@ -243,14 +251,14 @@ Optional — power users can write manual pagination. Covers ~80% of cases.
 
 ### Why E2B
 
-| Factor | `isolated-vm` | E2B | Docker |
-|--------|---------------|-----|--------|
-| npm packages | No | **Yes** | Yes |
-| Network access | Proxy only | **Native** | Yes |
-| Startup | ~5ms | ~300ms-2s | 5-30s |
-| Isolation | V8 heap | **Full microVM** | Full VM |
-| Ops burden | Medium | **Low** | High |
-| Cost | Free | ~$0.05/hr | Self-managed |
+| Factor         | `isolated-vm` | E2B              | Docker       |
+| -------------- | ------------- | ---------------- | ------------ |
+| npm packages   | No            | **Yes**          | Yes          |
+| Network access | Proxy only    | **Native**       | Yes          |
+| Startup        | ~5ms          | ~300ms-2s        | 5-30s        |
+| Isolation      | V8 heap       | **Full microVM** | Full VM      |
+| Ops burden     | Medium        | **Low**          | High         |
+| Cost           | Free          | ~$0.05/hr        | Self-managed |
 
 Connectors need to call external APIs and use SDKs. `isolated-vm` can't do that without proxying everything. E2B gives users a real environment.
 
@@ -299,11 +307,18 @@ The sandbox executes one chunk and returns. Mako calls it repeatedly until `hasM
 
 ```typescript
 const userConnectorFlowFunction = inngest.createFunction(
-  { id: "user-connector-flow", concurrency: [{ limit: 1, key: "event.data.instanceId" }] },
+  {
+    id: "user-connector-flow",
+    concurrency: [{ limit: 1, key: "event.data.instanceId" }],
+  },
   { event: "user-connector.execute" },
   async ({ event, step }) => {
-    const instance = await step.run("load", () => loadInstance(event.data.instanceId));
-    const connector = await step.run("load-connector", () => loadConnector(instance.connectorId));
+    const instance = await step.run("load", () =>
+      loadInstance(event.data.instanceId),
+    );
+    const connector = await step.run("load-connector", () =>
+      loadConnector(instance.connectorId),
+    );
     let state = instance.state[event.data.entity] || {};
     let chunk = 0;
 
@@ -315,20 +330,24 @@ const userConnectorFlowFunction = inngest.createFunction(
           secrets: decrypt(instance.secrets),
           state,
           config: instance.config,
-        })
+        }),
       );
 
       if (result.data.length > 0) {
-        await step.run(`write-${chunk}`, () => writeToDestination(instance, result.data));
+        await step.run(`write-${chunk}`, () =>
+          writeToDestination(instance, result.data),
+        );
       }
 
-      await step.run(`checkpoint-${chunk}`, () => saveState(instance._id, result.state));
+      await step.run(`checkpoint-${chunk}`, () =>
+        saveState(instance._id, result.state),
+      );
 
       if (!result.state.hasMore) break;
       state = result.state;
       chunk++;
     }
-  }
+  },
 );
 ```
 
@@ -336,16 +355,16 @@ const userConnectorFlowFunction = inngest.createFunction(
 
 The sandbox knows nothing about Inngest. Clean separation:
 
-| Concern | Owner | Sandbox knows? |
-|---------|-------|----------------|
-| Scheduling | Inngest | No |
-| Retries | Inngest | No |
-| Chunking | Inngest + Mako | No |
-| Webhook reception | Mako routes | No |
-| Writing to DB | Mako | No |
-| State persistence | Mako | No |
-| Secret decryption | Mako | No |
-| Timeout enforcement | Inngest + E2B | No |
+| Concern             | Owner          | Sandbox knows? |
+| ------------------- | -------------- | -------------- |
+| Scheduling          | Inngest        | No             |
+| Retries             | Inngest        | No             |
+| Chunking            | Inngest + Mako | No             |
+| Webhook reception   | Mako routes    | No             |
+| Writing to DB       | Mako           | No             |
+| State persistence   | Mako           | No             |
+| Secret decryption   | Mako           | No             |
+| Timeout enforcement | Inngest + E2B  | No             |
 
 ---
 
@@ -376,26 +395,26 @@ POST /api/webhooks/:workspaceId/:instanceId
 
 Connectors return abstract types. Mako translates per database:
 
-| Connector | Postgres | BigQuery | ClickHouse | MySQL |
-|-----------|----------|----------|------------|-------|
-| `string` | `TEXT` | `STRING` | `String` | `TEXT` |
-| `integer` | `BIGINT` | `INT64` | `Int64` | `BIGINT` |
-| `float` | `DOUBLE PRECISION` | `FLOAT64` | `Float64` | `DOUBLE` |
-| `boolean` | `BOOLEAN` | `BOOL` | `Bool` | `TINYINT(1)` |
-| `date` | `DATE` | `DATE` | `Date` | `DATE` |
-| `datetime` | `TIMESTAMPTZ` | `TIMESTAMP` | `DateTime` | `DATETIME` |
-| `json` | `JSONB` | `JSON` | `String` | `JSON` |
+| Connector  | Postgres           | BigQuery    | ClickHouse | MySQL        |
+| ---------- | ------------------ | ----------- | ---------- | ------------ |
+| `string`   | `TEXT`             | `STRING`    | `String`   | `TEXT`       |
+| `integer`  | `BIGINT`           | `INT64`     | `Int64`    | `BIGINT`     |
+| `float`    | `DOUBLE PRECISION` | `FLOAT64`   | `Float64`  | `DOUBLE`     |
+| `boolean`  | `BOOLEAN`          | `BOOL`      | `Bool`     | `TINYINT(1)` |
+| `date`     | `DATE`             | `DATE`      | `Date`     | `DATE`       |
+| `datetime` | `TIMESTAMPTZ`      | `TIMESTAMP` | `DateTime` | `DATETIME`   |
+| `json`     | `JSONB`            | `JSON`      | `String`   | `JSON`       |
 
 ### Schema Evolution (inspired by dlt)
 
 Four configurable modes per ConnectorInstance:
 
-| Mode | New columns | Type changes | Missing columns |
-|------|------------|-------------|----------------|
-| `evolve` (default) | `ALTER TABLE ADD COLUMN` | Variant column (`balance__v_text`) | Ignore (NULLs) |
-| `freeze` | Reject batch | Reject batch | Reject batch |
-| `discard_row` | Skip rows | Skip rows | Allow (NULLs) |
-| `discard_value` | NULL unknown fields | NULL mismatched | Allow (NULLs) |
+| Mode               | New columns              | Type changes                       | Missing columns |
+| ------------------ | ------------------------ | ---------------------------------- | --------------- |
+| `evolve` (default) | `ALTER TABLE ADD COLUMN` | Variant column (`balance__v_text`) | Ignore (NULLs)  |
+| `freeze`           | Reject batch             | Reject batch                       | Reject batch    |
+| `discard_row`      | Skip rows                | Skip rows                          | Allow (NULLs)   |
+| `discard_value`    | NULL unknown fields      | NULL mismatched                    | Allow (NULLs)   |
 
 **Variant columns:** When a column's type changes (e.g., `balance` was `integer`, now `string`), create `balance__v_text TEXT` instead of altering the original. Both columns receive data by actual type.
 
@@ -473,14 +492,14 @@ Output from sandbox → Zod validation → Schema reconciliation (CREATE/ALTER T
 
 ### Iteration Controls
 
-| Control | Action | Use case |
-|---------|--------|----------|
-| **Run** | Build + execute one chunk | Normal iteration |
-| **Dry run** | Execute with `ctx.dryRun = true`, no writes | Preview output |
-| **Reset state** | Clear `state` to `{}` | Changed pagination logic |
-| **Truncate & re-sync** | Clear state + `TRUNCATE TABLE` + clear metadata | Start fresh |
-| **Replay webhook** | Re-process stored `WebhookEvent` payloads | Debug webhook handler |
-| **Paste payload** | Test with arbitrary JSON | Test with sample from docs |
+| Control                | Action                                          | Use case                   |
+| ---------------------- | ----------------------------------------------- | -------------------------- |
+| **Run**                | Build + execute one chunk                       | Normal iteration           |
+| **Dry run**            | Execute with `ctx.dryRun = true`, no writes     | Preview output             |
+| **Reset state**        | Clear `state` to `{}`                           | Changed pagination logic   |
+| **Truncate & re-sync** | Clear state + `TRUNCATE TABLE` + clear metadata | Start fresh                |
+| **Replay webhook**     | Re-process stored `WebhookEvent` payloads       | Debug webhook handler      |
+| **Paste payload**      | Test with arbitrary JSON                        | Test with sample from docs |
 
 ### Error Feedback
 
@@ -495,6 +514,7 @@ Output from sandbox → Zod validation → Schema reconciliation (CREATE/ALTER T
 ### Flows Stay Untouched
 
 The existing Flow system (`IFlow` + `IConnector`) continues to handle:
+
 - Database-to-database syncs (`sourceType: "database"`)
 - Built-in connectors (Stripe, PostHog, Close via `sourceType: "connector"`)
 
@@ -502,14 +522,14 @@ The new system (UserConnector + ConnectorInstance) is additive. No existing code
 
 ### Shared Infrastructure
 
-| Component | Shared? |
-|-----------|---------|
-| Inngest | New functions alongside existing ones |
-| Database drivers | Reused for write pipeline |
-| Encryption | Reused for secrets |
-| Workspace auth/middleware | Same patterns |
-| Monaco editor | Already in the app |
-| MUI Data Grid | Already in the app |
+| Component                 | Shared?                               |
+| ------------------------- | ------------------------------------- |
+| Inngest                   | New functions alongside existing ones |
+| Database drivers          | Reused for write pipeline             |
+| Encryption                | Reused for secrets                    |
+| Workspace auth/middleware | Same patterns                         |
+| Monaco editor             | Already in the app                    |
+| MUI Data Grid             | Already in the app                    |
 
 ---
 
@@ -517,23 +537,23 @@ The new system (UserConnector + ConnectorInstance) is additive. No existing code
 
 ### Patterns Adopted
 
-| Project | What we took |
-|---------|-------------|
-| **[dlt](https://dlthub.com/docs/general-usage/schema-evolution)** | Schema evolution modes (`evolve`/`freeze`/`discard_row`/`discard_value`), variant columns, schema contracts |
-| **[Windmill](https://windmill.dev/docs/core_concepts/codebases_and_bundles)** | esbuild-at-deploy bundling, content-hash caching, auto-resolve imports, `//nobundling` escape hatch |
-| **[Nango](https://docs.nango.dev/reference/scripts)** | `ctx.paginate()` helper (cursor/offset/link), checkpoint/state pattern, webhook script type |
-| **[Val.town](https://blog.val.town/blog/first-four-val-town-runtimes)** | Auto-resolve imports, version history, execution logs as first-class UX, fork/remix for templates |
-| **[Fivetran SDK](https://github.com/fivetran/fivetran_connector_sdk)** | Simple connector contract, auto-schema at destination |
-| **[Singer](http://www.singer.io/)** | Opaque STATE between invocations, SCHEMA as type hints |
+| Project                                                                       | What we took                                                                                                |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **[dlt](https://dlthub.com/docs/general-usage/schema-evolution)**             | Schema evolution modes (`evolve`/`freeze`/`discard_row`/`discard_value`), variant columns, schema contracts |
+| **[Windmill](https://windmill.dev/docs/core_concepts/codebases_and_bundles)** | esbuild-at-deploy bundling, content-hash caching, auto-resolve imports, `//nobundling` escape hatch         |
+| **[Nango](https://docs.nango.dev/reference/scripts)**                         | `ctx.paginate()` helper (cursor/offset/link), checkpoint/state pattern, webhook script type                 |
+| **[Val.town](https://blog.val.town/blog/first-four-val-town-runtimes)**       | Auto-resolve imports, version history, execution logs as first-class UX, fork/remix for templates           |
+| **[Fivetran SDK](https://github.com/fivetran/fivetran_connector_sdk)**        | Simple connector contract, auto-schema at destination                                                       |
+| **[Singer](http://www.singer.io/)**                                           | Opaque STATE between invocations, SCHEMA as type hints                                                      |
 
 ### Evaluated and Rejected
 
-| Project | Why not wholesale |
-|---------|------------------|
-| **Nango** | Elastic License 2.0 prohibits hosted service use. Free self-hosted is auth-only (no syncs/scripts/webhooks). Doesn't write to arbitrary SQL destinations. Requires 5 Node services + Temporal + Redis + ElasticSearch + S3. No in-browser editor. |
-| **Airbyte** | Connector Builder is declarative YAML, not real code. Connectors are Docker containers — slow iteration. |
-| **Val.town** | General-purpose, not ETL. No schema management, no destination writers. Not embeddable. Deno-based. |
-| **Windmill** | AGPLv3. General-purpose, not ETL. No schema reconciliation or destination writers. |
+| Project      | Why not wholesale                                                                                                                                                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Nango**    | Elastic License 2.0 prohibits hosted service use. Free self-hosted is auth-only (no syncs/scripts/webhooks). Doesn't write to arbitrary SQL destinations. Requires 5 Node services + Temporal + Redis + ElasticSearch + S3. No in-browser editor. |
+| **Airbyte**  | Connector Builder is declarative YAML, not real code. Connectors are Docker containers — slow iteration.                                                                                                                                          |
+| **Val.town** | General-purpose, not ETL. No schema management, no destination writers. Not embeddable. Deno-based.                                                                                                                                               |
+| **Windmill** | AGPLv3. General-purpose, not ETL. No schema reconciliation or destination writers.                                                                                                                                                                |
 
 ### Key Lessons
 
@@ -551,7 +571,7 @@ The new system (UserConnector + ConnectorInstance) is additive. No existing code
 ### Stripe (cursor-based, multi-entity)
 
 ```typescript
-import Stripe from 'stripe';
+import Stripe from "stripe";
 
 export const metadata = {
   name: "Stripe",
@@ -575,8 +595,8 @@ export async function pull(ctx) {
 
 export function onWebhook(event) {
   return {
-    entity: event.type.split('.')[0],
-    operation: event.type.includes('deleted') ? 'delete' : 'upsert',
+    entity: event.type.split(".")[0],
+    operation: event.type.includes("deleted") ? "delete" : "upsert",
     data: event.data.object,
     id: event.data.object.id,
   };
@@ -588,9 +608,12 @@ export function onWebhook(event) {
 ```typescript
 export async function pull(ctx) {
   const page = ctx.state?.page ?? 0;
-  const res = await fetch(`${ctx.config.apiUrl}/users?offset=${page * 50}&limit=50`, {
-    headers: { Authorization: `Bearer ${ctx.secrets.API_TOKEN}` },
-  });
+  const res = await fetch(
+    `${ctx.config.apiUrl}/users?offset=${page * 50}&limit=50`,
+    {
+      headers: { Authorization: `Bearer ${ctx.secrets.API_TOKEN}` },
+    },
+  );
   const data = await res.json();
   return {
     data: [{ entity: "users", records: data.results, idField: "user_id" }],
@@ -605,13 +628,13 @@ export async function pull(ctx) {
 export async function pull(ctx) {
   const allCustomers = [];
   for await (const page of ctx.paginate({
-    url: 'https://api.stripe.com/v1/customers',
-    type: 'cursor',
+    url: "https://api.stripe.com/v1/customers",
+    type: "cursor",
     limit: 100,
-    cursorParam: 'starting_after',
-    cursorPath: 'data[-1].id',
-    hasMorePath: 'has_more',
-    dataPath: 'data',
+    cursorParam: "starting_after",
+    cursorPath: "data[-1].id",
+    hasMorePath: "has_more",
+    dataPath: "data",
     headers: { Authorization: `Bearer ${ctx.secrets.STRIPE_KEY}` },
   })) {
     allCustomers.push(...page);

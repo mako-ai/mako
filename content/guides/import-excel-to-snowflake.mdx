@@ -154,13 +154,13 @@ Mako handles the conversion and staging internally. For one-off imports, this av
 
 ## Type Mapping: Excel to Snowflake
 
-| Excel Type | Snowflake Type | Notes |
-|---|---|---|
-| Integer | `INTEGER` (alias for `NUMBER(38,0)`) | Snowflake uses NUMBER with precision/scale internally |
-| Decimal | `DECIMAL(p,s)` or `FLOAT` | `DECIMAL` for exact arithmetic |
-| Date | `DATE` or `TIMESTAMP_NTZ` | NTZ = no timezone; use `TIMESTAMP_TZ` if timezone matters |
-| Text | `VARCHAR` | Default max is 16 MB per value |
-| Boolean | `BOOLEAN` | TRUE/FALSE |
+| Excel Type | Snowflake Type                       | Notes                                                     |
+| ---------- | ------------------------------------ | --------------------------------------------------------- |
+| Integer    | `INTEGER` (alias for `NUMBER(38,0)`) | Snowflake uses NUMBER with precision/scale internally     |
+| Decimal    | `DECIMAL(p,s)` or `FLOAT`            | `DECIMAL` for exact arithmetic                            |
+| Date       | `DATE` or `TIMESTAMP_NTZ`            | NTZ = no timezone; use `TIMESTAMP_TZ` if timezone matters |
+| Text       | `VARCHAR`                            | Default max is 16 MB per value                            |
+| Boolean    | `BOOLEAN`                            | TRUE/FALSE                                                |
 
 Snowflake column names are case-insensitive by default (stored as uppercase). If your Excel headers are lowercase, they'll be uppercased in the table. Use quoted identifiers if you need case preservation.
 

@@ -53,9 +53,9 @@ jobs:
         run: |
           IMAGE_NAME="mako-pr-${PR_NUMBER}"
           IMAGE_PATH="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ vars.GCP_ARTIFACT_REPOSITORY }}/${IMAGE_NAME}"
-          
+
           echo "Deleting Docker images: ${IMAGE_PATH}"
-          
+
           # List and delete all tags for this image
           gcloud artifacts docker images list ${IMAGE_PATH} --format='get(DIGEST)' 2>/dev/null | while read digest; do
             if [ -n "$digest" ]; then
@@ -63,7 +63,7 @@ jobs:
               gcloud artifacts docker images delete "${IMAGE_PATH}@${digest}" --quiet --delete-tags || true
             fi
           done
-          
+
           echo "Image cleanup complete"
 
       - name: Remove from Cloudflare KV
@@ -107,7 +107,7 @@ jobs:
           # Extract the connection string base and target the PR-specific database
           # Format the database name
           DB_NAME="staging_pr_${PR_NUMBER}"
-          
+
           # Drop the database
           mongosh "$STAGING_DATABASE_URL" --eval "db.getSiblingDB('${DB_NAME}').dropDatabase()" || echo "Database not found or already deleted"
 
@@ -118,9 +118,9 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const wasMerged = context.payload.pull_request.merged;
             const hadEphemeralDb = '${{ steps.check-migrations.outputs.has_ephemeral_db }}' === 'true';
-            
+
             const status = wasMerged ? '✅ Merged' : '❌ Closed';
-            
+
             const body = `## 🧹 Preview Cleanup Complete
 
             | Resource | Status |
@@ -139,4 +139,3 @@ jobs:
               issue_number: prNumber,
               body: body,
             });
-

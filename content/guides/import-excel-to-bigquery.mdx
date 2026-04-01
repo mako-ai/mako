@@ -153,13 +153,13 @@ For one-off imports where you don't want to deal with CSV conversion, GCS bucket
 
 ## Type Mapping: Excel to BigQuery
 
-| Excel Type | BigQuery Type | Notes |
-|---|---|---|
-| Integer | `INT64` | BigQuery has only one integer type |
-| Decimal | `NUMERIC` or `FLOAT64` | `NUMERIC` for exact decimal arithmetic (financial data) |
-| Date | `DATE` or `TIMESTAMP` | Ensure consistent formatting before import |
-| Text | `STRING` | No length limits in BigQuery |
-| Boolean | `BOOL` | TRUE/FALSE |
+| Excel Type | BigQuery Type          | Notes                                                   |
+| ---------- | ---------------------- | ------------------------------------------------------- |
+| Integer    | `INT64`                | BigQuery has only one integer type                      |
+| Decimal    | `NUMERIC` or `FLOAT64` | `NUMERIC` for exact decimal arithmetic (financial data) |
+| Date       | `DATE` or `TIMESTAMP`  | Ensure consistent formatting before import              |
+| Text       | `STRING`               | No length limits in BigQuery                            |
+| Boolean    | `BOOL`                 | TRUE/FALSE                                              |
 
 ## Common Gotchas
 

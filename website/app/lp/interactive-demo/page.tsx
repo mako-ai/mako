@@ -15,9 +15,24 @@ export default function V9InteractiveDemo() {
             <span className="font-bold text-xl">Mako</span>
           </Link>
           <div className="hidden md:flex items-center gap-6 text-sm text-slate-400">
-            <Link href="#features" className="hover:text-white transition-colors">Features</Link>
-            <Link href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</Link>
-            <Link href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</Link>
+            <Link
+              href="#features"
+              className="hover:text-white transition-colors"
+            >
+              Features
+            </Link>
+            <Link
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </Link>
+            <Link
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </Link>
           </div>
           <a
             href="https://app.mako.ai"
@@ -89,11 +104,23 @@ export default function V9InteractiveDemo() {
       <section className="py-24 px-6 border-t border-white/5">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-3xl font-bold mb-4">Connect to any database</h2>
-          <p className="text-slate-400 mb-12">PostgreSQL, MySQL, MongoDB, BigQuery, and more.</p>
+          <p className="text-slate-400 mb-12">
+            PostgreSQL, MySQL, MongoDB, BigQuery, and more.
+          </p>
 
           <div className="grid grid-cols-3 md:grid-cols-6 gap-4">
-            {['postgresql', 'mysql', 'mongodb', 'bigquery', 'snowflake', 'clickhouse'].map(db => (
-              <div key={db} className="p-4 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center">
+            {[
+              "postgresql",
+              "mysql",
+              "mongodb",
+              "bigquery",
+              "snowflake",
+              "clickhouse",
+            ].map(db => (
+              <div
+                key={db}
+                className="p-4 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center"
+              >
                 <span className="text-sm text-slate-400 capitalize">{db}</span>
               </div>
             ))}
@@ -105,7 +132,9 @@ export default function V9InteractiveDemo() {
       <section className="py-24 px-6">
         <div className="max-w-4xl mx-auto">
           <div className="p-12 rounded-3xl bg-gradient-to-r from-rose-500/20 to-orange-500/20 border border-rose-500/20 text-center">
-            <h2 className="text-4xl font-bold mb-4">Ready for the full experience?</h2>
+            <h2 className="text-4xl font-bold mb-4">
+              Ready for the full experience?
+            </h2>
             <p className="text-xl text-slate-400 mb-8">
               Connect your database and start querying with AI. Free forever.
             </p>
@@ -133,12 +162,26 @@ export default function V9InteractiveDemo() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <MakoIcon className="w-5 h-5" />
-            <span className="text-slate-400 text-sm">© 2025 Mako. MIT License.</span>
+            <span className="text-slate-400 text-sm">
+              © 2025 Mako. MIT License.
+            </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-slate-400">
-            <a href="https://github.com/mako-ai/mono" className="hover:text-white transition-colors">GitHub</a>
-            <a href="https://docs.mako.ai" className="hover:text-white transition-colors">Docs</a>
-            <a href="#" className="hover:text-white transition-colors">Discord</a>
+            <a
+              href="https://github.com/mako-ai/mono"
+              className="hover:text-white transition-colors"
+            >
+              GitHub
+            </a>
+            <a
+              href="https://docs.mako.ai"
+              className="hover:text-white transition-colors"
+            >
+              Docs
+            </a>
+            <a href="#" className="hover:text-white transition-colors">
+              Discord
+            </a>
           </div>
         </div>
       </footer>
@@ -190,9 +233,12 @@ JOIN users u ON o.user_id = u.id
 WHERE o.status = 'pending_shipment'
 ORDER BY o.created_at ASC;`,
       };
-      setGeneratedSQL(sqlExamples[input] || `SELECT *
+      setGeneratedSQL(
+        sqlExamples[input] ||
+          `SELECT *
 FROM your_table
-WHERE condition = 'value';`);
+WHERE condition = 'value';`,
+      );
       setIsGenerating(false);
     }, 1500);
   };
@@ -207,20 +253,26 @@ WHERE condition = 'value';`);
             <div className="w-3 h-3 rounded-full bg-yellow-500" />
             <div className="w-3 h-3 rounded-full bg-green-500" />
           </div>
-          <span className="text-xs text-slate-500 ml-2">mako — interactive demo</span>
+          <span className="text-xs text-slate-500 ml-2">
+            mako — interactive demo
+          </span>
         </div>
 
         {/* Content */}
         <div className="p-6">
           {/* Input */}
           <div className="mb-6">
-            <label className="text-sm text-slate-400 mb-2 block">Ask anything about your data</label>
+            <label className="text-sm text-slate-400 mb-2 block">
+              Ask anything about your data
+            </label>
             <div className="relative">
               <input
                 type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && query && handleGenerate(query)}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e =>
+                  e.key === "Enter" && query && handleGenerate(query)
+                }
                 placeholder="e.g., Show me all users who signed up last week"
                 className="w-full px-4 py-3 pr-24 rounded-xl bg-slate-900 border border-white/10 text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500/50 focus:ring-2 focus:ring-rose-500/20"
               />
@@ -255,7 +307,9 @@ WHERE condition = 'value';`);
             {isGenerating ? (
               <div className="flex items-center gap-3 p-4 rounded-xl bg-slate-900/50">
                 <div className="w-5 h-5 border-2 border-rose-500 border-t-transparent rounded-full animate-spin" />
-                <span className="text-slate-400">Analyzing schema and generating query...</span>
+                <span className="text-slate-400">
+                  Analyzing schema and generating query...
+                </span>
               </div>
             ) : generatedSQL ? (
               <div>
@@ -269,11 +323,23 @@ WHERE condition = 'value';`);
                   </button>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900 font-mono text-sm overflow-x-auto">
-                  <pre className="text-emerald-400 whitespace-pre-wrap">{generatedSQL}</pre>
+                  <pre className="text-emerald-400 whitespace-pre-wrap">
+                    {generatedSQL}
+                  </pre>
                 </div>
                 <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">
-                  <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  <svg
+                    className="w-4 h-4 text-emerald-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 13l4 4L19 7"
+                    />
                   </svg>
                   Ready to execute • Optimized for PostgreSQL
                 </div>
@@ -288,7 +354,9 @@ WHERE condition = 'value';`);
 
         {/* Footer */}
         <div className="px-6 py-4 bg-slate-800/50 border-t border-white/5 flex items-center justify-between">
-          <span className="text-xs text-slate-500">This is a demo. Connect your database in the full app.</span>
+          <span className="text-xs text-slate-500">
+            This is a demo. Connect your database in the full app.
+          </span>
           <a
             href="https://app.mako.ai"
             className="text-xs text-rose-400 hover:text-rose-300 transition-colors"
@@ -301,7 +369,11 @@ WHERE condition = 'value';`);
   );
 }
 
-function FeatureCard({ icon, title, description }: {
+function FeatureCard({
+  icon,
+  title,
+  description,
+}: {
   icon: string;
   title: string;
   description: string;
@@ -317,7 +389,12 @@ function FeatureCard({ icon, title, description }: {
 
 function MakoIcon({ className }: { className?: string }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 102 90" fill="currentColor" className={className}>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 102 90"
+      fill="currentColor"
+      className={className}
+    >
       <path d="m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z" />
     </svg>
   );

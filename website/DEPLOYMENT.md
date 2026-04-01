@@ -85,8 +85,7 @@ Update the app links in `app/page.tsx` to point to your production app:
 
 ```typescript
 // Replace localhost URLs with your production app URL
-const APP_URL =
-  process.env.NEXT_PUBLIC_APP_URL || "https://app.mako.ai";
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://app.mako.ai";
 ```
 
 Then set in Vercel:

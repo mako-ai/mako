@@ -38,15 +38,15 @@ The result: on identical hardware with identical data, ClickHouse is typically 1
 
 Real-world differences:
 
-| Query Type | PostgreSQL | ClickHouse |
-|---|---|---|
-| Point lookup by primary key | Sub-millisecond | Not optimized (no B-tree PK) |
-| Aggregate over 1M rows | Seconds | Milliseconds |
-| Aggregate over 100M rows | Minutes (with parallel query) | Seconds |
-| Aggregate over 1B rows | Impractical without partitioning | Seconds to low minutes |
-| Complex JOIN between 2 large tables | Seconds to minutes | Seconds (with proper data modeling) |
-| INSERT single row | Sub-millisecond | Not recommended (batch inserts) |
-| UPDATE single row | Sub-millisecond | Expensive (mutation, not in-place) |
+| Query Type                          | PostgreSQL                       | ClickHouse                          |
+| ----------------------------------- | -------------------------------- | ----------------------------------- |
+| Point lookup by primary key         | Sub-millisecond                  | Not optimized (no B-tree PK)        |
+| Aggregate over 1M rows              | Seconds                          | Milliseconds                        |
+| Aggregate over 100M rows            | Minutes (with parallel query)    | Seconds                             |
+| Aggregate over 1B rows              | Impractical without partitioning | Seconds to low minutes              |
+| Complex JOIN between 2 large tables | Seconds to minutes               | Seconds (with proper data modeling) |
+| INSERT single row                   | Sub-millisecond                  | Not recommended (batch inserts)     |
+| UPDATE single row                   | Sub-millisecond                  | Expensive (mutation, not in-place)  |
 
 ClickHouse's parallel execution, vectorized query engine, and columnar compression combine to make it extraordinarily fast for scan-heavy queries. PostgreSQL's row-oriented storage, while improved with parallel query (available since 9.6), can't match this for pure analytical throughput.
 
@@ -55,6 +55,7 @@ But PostgreSQL handles mixed workloads -- a user signs up (INSERT), updates thei
 ## Data Modeling
 
 **PostgreSQL:**
+
 - Traditional relational modeling with normalized tables
 - Foreign keys, constraints, triggers
 - Joins are first-class operations
@@ -62,6 +63,7 @@ But PostgreSQL handles mixed workloads -- a user signs up (INSERT), updates thei
 - Schemas evolve with ALTER TABLE
 
 **ClickHouse:**
+
 - Denormalized, wide tables are the norm
 - No foreign keys, no constraints (data integrity is the application's job)
 - JOINs work but are less efficient than in PostgreSQL (especially distributed JOINs)
@@ -75,12 +77,14 @@ PostgreSQL's B-tree indexes handle any access pattern. You can add and drop inde
 ## Ingestion
 
 **PostgreSQL:**
+
 - Single-row inserts are fast and efficient
 - Bulk loading with COPY command (hundreds of thousands of rows/second)
 - Full ACID transactions for every insert
 - Row-level locking -- inserts don't block reads
 
 **ClickHouse:**
+
 - Optimized for batch inserts (thousands to millions of rows per batch)
 - Single-row inserts are possible but create many small parts that need merging
 - Millions of rows per second ingestion on a single node
@@ -92,6 +96,7 @@ ClickHouse's ingestion throughput is higher, but it expects batched data. An app
 ## Extensions and Ecosystem
 
 **PostgreSQL:**
+
 - PostGIS for geospatial
 - pgvector for vector similarity search
 - TimescaleDB for time-series (builds on PostgreSQL's engine)
@@ -99,6 +104,7 @@ ClickHouse's ingestion throughput is higher, but it expects batched data. An app
 - Every BI tool, ETL platform, and ORM supports PostgreSQL
 
 **ClickHouse:**
+
 - Specialized functions for time-series, arrays, and JSON
 - MaterializedViews for real-time aggregation pipelines
 - Dictionaries for enrichment joins

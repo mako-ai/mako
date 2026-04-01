@@ -44,6 +44,7 @@ WITH (
 ```
 
 Key options:
+
 - `FORMAT = 'CSV'` -- available in SQL Server 2017+, handles quoted fields correctly
 - `FIRSTROW = 2` -- skips the header row
 - `TABLOCK` -- acquires a table-level lock for faster inserts
@@ -66,6 +67,7 @@ bcp mydb.dbo.orders in orders.csv \
 ```
 
 Flags:
+
 - `in` -- direction (import)
 - `-c` -- character data mode
 - `-t ","` -- field terminator

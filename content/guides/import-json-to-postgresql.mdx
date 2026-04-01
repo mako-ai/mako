@@ -109,7 +109,7 @@ For large files, use `execute_batch` or `copy_expert` from psycopg2 for much bet
 ```python
 from psycopg2.extras import execute_batch
 
-execute_batch(cur, 
+execute_batch(cur,
     "INSERT INTO users (name, email) VALUES (%s, %s)",
     [(r['name'], r['email']) for r in records],
     page_size=1000

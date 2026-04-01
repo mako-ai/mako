@@ -8,15 +8,13 @@ export const metadata: Metadata = {
     "News, tutorials, and updates from the Mako team. Learn about AI-powered SQL, database best practices, and product announcements.",
   openGraph: {
     title: "Blog — Mako",
-    description:
-      "News, tutorials, and updates from the Mako team.",
+    description: "News, tutorials, and updates from the Mako team.",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "Blog — Mako",
-    description:
-      "News, tutorials, and updates from the Mako team.",
+    description: "News, tutorials, and updates from the Mako team.",
   },
 };
 
@@ -56,7 +54,7 @@ export default function BlogIndex() {
             </p>
           ) : (
             <div className="space-y-8">
-              {posts.map((post) => (
+              {posts.map(post => (
                 <Link
                   key={post.slug}
                   href={`/blog/${post.slug}`}
@@ -91,7 +89,7 @@ export default function BlogIndex() {
                     </p>
 
                     <div className="flex flex-wrap gap-2">
-                      {post.tags.map((tag) => (
+                      {post.tags.map(tag => (
                         <span
                           key={tag}
                           className="px-2.5 py-1 text-xs rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400"

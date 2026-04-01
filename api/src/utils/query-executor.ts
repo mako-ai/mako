@@ -164,7 +164,9 @@ export class QueryExecutor {
       logger.debug("Final result", {
         type: typeof finalResult,
         isArray: Array.isArray(finalResult),
-        lengthOrValue: Array.isArray(finalResult) ? finalResult.length : finalResult,
+        lengthOrValue: Array.isArray(finalResult)
+          ? finalResult.length
+          : finalResult,
       });
 
       // Ensure any index operations settle; surface the first error
@@ -217,7 +219,9 @@ export class QueryExecutor {
           JSON.stringify(finalResult, getCircularReplacer()),
         );
       } catch {
-        logger.warn("Failed to fully serialise result, falling back to string representation");
+        logger.warn(
+          "Failed to fully serialise result, falling back to string representation",
+        );
         serialisableResult = String(finalResult);
       }
 

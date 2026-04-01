@@ -52,10 +52,10 @@ db.orders.insertOne({
   total: 149.99,
   items: [
     { product: "Widget", qty: 3, price: 29.99 },
-    { product: "Gadget", qty: 1, price: 60.02 }
+    { product: "Gadget", qty: 1, price: 60.02 },
   ],
-  metadata: { source: "web", campaign: "spring-sale" }
-})
+  metadata: { source: "web", campaign: "spring-sale" },
+});
 ```
 
 MongoDB's model maps naturally to application objects. No ORM needed to translate between rows and objects. This is a genuine productivity advantage for applications with complex, nested data structures.
@@ -82,10 +82,17 @@ HAVING COUNT(*) > 5;
 db.orders.aggregate([
   { $group: { _id: "$user_id", count: { $sum: 1 } } },
   { $match: { count: { $gt: 5 } } },
-  { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "user" } },
+  {
+    $lookup: {
+      from: "users",
+      localField: "_id",
+      foreignField: "_id",
+      as: "user",
+    },
+  },
   { $unwind: "$user" },
-  { $project: { name: "$user.name", order_count: "$count" } }
-])
+  { $project: { name: "$user.name", order_count: "$count" } },
+]);
 ```
 
 For analytics and reporting, SQL is more concise and widely understood. For document manipulation and nested array operations, MQL can be more natural. But the SQL ecosystem -- BI tools, data platforms, analyst knowledge -- is a significant practical advantage.
@@ -114,6 +121,7 @@ If 80% of your data is relational and 20% is flexible JSON, PostgreSQL's JSONB c
 **PostgreSQL** has full ACID transactions across any number of tables and operations. This has always been PostgreSQL's strength.
 
 **MongoDB** added multi-document transactions in version 4.0 (2018) and has improved them since. They work, but with caveats:
+
 - Transaction size limits (16MB by default)
 - Performance overhead compared to single-document operations
 - MongoDB's documentation still recommends designing schemas to minimize the need for multi-document transactions
@@ -125,12 +133,14 @@ For applications that need strong transactional guarantees across multiple entit
 This is where MongoDB has a historical advantage:
 
 **MongoDB:**
+
 - Built-in horizontal sharding (shard key-based distribution)
 - Auto-balancing across shards
 - Atlas (managed service) handles sharding configuration
 - Designed from the ground up for distributed operation
 
 **PostgreSQL:**
+
 - Primarily vertical scaling (bigger server)
 - Read replicas for read scaling
 - Citus extension for horizontal sharding
@@ -144,12 +154,14 @@ That said, most applications never reach the scale where PostgreSQL can't handle
 ## Ecosystem and Tooling
 
 **PostgreSQL:**
+
 - Universal SQL tooling (every BI tool, ETL platform, and data tool speaks SQL)
 - Extensions ecosystem (PostGIS, pgvector, TimescaleDB)
 - Managed services: RDS, Cloud SQL, AlloyDB, Supabase, Neon, Crunchy Bridge
 - 30+ years of community knowledge
 
 **MongoDB:**
+
 - MongoDB Atlas (managed cloud, very polished)
 - Compass (official GUI)
 - MongoDB Charts for visualization

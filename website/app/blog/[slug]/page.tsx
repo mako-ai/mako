@@ -9,7 +9,7 @@ interface PageProps {
 }
 
 export function generateStaticParams() {
-  return getAllSlugs().map((slug) => ({ slug }));
+  return getAllSlugs().map(slug => ({ slug }));
 }
 
 export function generateMetadata({ params }: PageProps): Metadata {
@@ -89,15 +89,11 @@ export default function BlogPost({ params }: PageProps) {
                   day: "numeric",
                 })}
               </time>
-              <span className="text-zinc-300 dark:text-zinc-700">
-                &middot;
-              </span>
+              <span className="text-zinc-300 dark:text-zinc-700">&middot;</span>
               <span className="text-zinc-400 dark:text-zinc-500">
                 {post.readingTime}
               </span>
-              <span className="text-zinc-300 dark:text-zinc-700">
-                &middot;
-              </span>
+              <span className="text-zinc-300 dark:text-zinc-700">&middot;</span>
               <span className="text-zinc-400 dark:text-zinc-500">
                 {post.author}
               </span>
@@ -108,7 +104,7 @@ export default function BlogPost({ params }: PageProps) {
             </h1>
 
             <div className="flex flex-wrap gap-2">
-              {post.tags.map((tag) => (
+              {post.tags.map(tag => (
                 <span
                   key={tag}
                   className="px-2.5 py-1 text-xs rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400"
@@ -132,7 +128,7 @@ export default function BlogPost({ params }: PageProps) {
           <div className="max-w-4xl mx-auto pt-16">
             <h2 className="text-2xl font-bold mb-8">Related posts</h2>
             <div className="grid md:grid-cols-3 gap-6">
-              {related.map((relPost) => (
+              {related.map(relPost => (
                 <Link
                   key={relPost.slug}
                   href={`/blog/${relPost.slug}`}

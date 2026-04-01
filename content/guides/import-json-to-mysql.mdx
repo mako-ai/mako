@@ -30,7 +30,7 @@ mysqlsh --uri root@localhost/mydb --js
 util.importJSON("users.json", {
   schema: "mydb",
   table: "users",
-  tableColumn: "doc"
+  tableColumn: "doc",
 });
 ```
 
@@ -100,7 +100,7 @@ conn.close()
 For better performance with large datasets, use `executemany`:
 
 ```python
-data = [(r['name'], r['email'], json.dumps(r.get('metadata', {}))) 
+data = [(r['name'], r['email'], json.dumps(r.get('metadata', {})))
         for r in records]
 cursor.executemany(sql, data)
 ```
@@ -120,7 +120,7 @@ MySQL 8.0's JSON type stores documents in an optimized binary format (not as tex
 ```sql
 -- Add a generated column for indexing
 ALTER TABLE events
-ADD COLUMN event_type VARCHAR(50) 
+ADD COLUMN event_type VARCHAR(50)
   GENERATED ALWAYS AS (data->>"$.type") STORED;
 
 CREATE INDEX idx_event_type ON events (event_type);

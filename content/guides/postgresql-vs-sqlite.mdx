@@ -37,12 +37,14 @@ This architectural difference determines almost everything else.
 This is where the practical divide is clearest.
 
 **SQLite:**
+
 - One writer at a time (database-level lock)
 - WAL mode allows concurrent readers while one writer operates
 - No connection pooling (there's no server to pool connections to)
 - Fine for single-user apps, mobile apps, and read-heavy workloads with infrequent writes
 
 **PostgreSQL:**
+
 - Full MVCC -- readers never block writers, writers never block readers
 - Row-level locking for concurrent writes
 - Connection pooling via PgBouncer or built-in (PostgreSQL 17+)
@@ -54,17 +56,17 @@ If your web app has 50 users writing data simultaneously, SQLite will bottleneck
 
 PostgreSQL's type system is dramatically richer:
 
-| Feature | PostgreSQL | SQLite |
-|---|---|---|
-| Integer types | `smallint`, `integer`, `bigint` | `INTEGER` (flexible) |
-| Floating point | `real`, `double precision`, `numeric` | `REAL` |
-| Strings | `varchar(n)`, `text`, `char(n)` | `TEXT` |
-| Boolean | Native `boolean` | Stored as 0/1 integers |
-| Date/time | `date`, `time`, `timestamp`, `interval`, `timestamptz` | Stored as TEXT, REAL, or INTEGER |
-| JSON | `json`, `jsonb` with indexing | JSON functions since 3.38, no indexing |
-| Arrays | Native `ARRAY` type | Not supported |
-| UUID | Native `uuid` type | Stored as TEXT or BLOB |
-| Custom types | `CREATE TYPE` | Not supported |
+| Feature        | PostgreSQL                                             | SQLite                                 |
+| -------------- | ------------------------------------------------------ | -------------------------------------- |
+| Integer types  | `smallint`, `integer`, `bigint`                        | `INTEGER` (flexible)                   |
+| Floating point | `real`, `double precision`, `numeric`                  | `REAL`                                 |
+| Strings        | `varchar(n)`, `text`, `char(n)`                        | `TEXT`                                 |
+| Boolean        | Native `boolean`                                       | Stored as 0/1 integers                 |
+| Date/time      | `date`, `time`, `timestamp`, `interval`, `timestamptz` | Stored as TEXT, REAL, or INTEGER       |
+| JSON           | `json`, `jsonb` with indexing                          | JSON functions since 3.38, no indexing |
+| Arrays         | Native `ARRAY` type                                    | Not supported                          |
+| UUID           | Native `uuid` type                                     | Stored as TEXT or BLOB                 |
+| Custom types   | `CREATE TYPE`                                          | Not supported                          |
 
 SQLite uses dynamic typing -- any column can store any type regardless of the declared type (unless you use `STRICT` tables, available since 3.37). This flexibility can be an advantage in prototyping but becomes a liability in production where data integrity matters.
 
@@ -75,12 +77,14 @@ PostgreSQL enforces types strictly, catches errors at insert time, and provides 
 They're fast in different ways:
 
 **SQLite is faster for:**
+
 - Single-connection reads with no network overhead
 - Embedded use cases where eliminating the client-server roundtrip matters
 - Small to medium datasets that fit in the OS page cache
 - Simple queries against well-indexed tables
 
 **PostgreSQL is faster for:**
+
 - Concurrent read/write workloads
 - Complex analytical queries (parallel query execution)
 - Large datasets with sophisticated indexing (partial indexes, expression indexes, GIN, GiST)
@@ -93,6 +97,7 @@ SQLite's performance advantage in embedded scenarios is real -- eliminating the 
 This is SQLite's strongest advantage:
 
 **SQLite:**
+
 - Zero configuration. No server to install, configure, or maintain
 - The database is one file. Copy it, back it up, email it
 - No user management, no authentication (security comes from filesystem permissions)
@@ -100,6 +105,7 @@ This is SQLite's strongest advantage:
 - Database file is cross-platform (same file works on Linux, macOS, Windows)
 
 **PostgreSQL:**
+
 - Requires server installation and configuration
 - Needs user management, authentication, connection limits
 - Backups require `pg_dump`, `pg_basebackup`, or WAL archiving
@@ -111,6 +117,7 @@ For a developer building a CLI tool, a mobile app, or an Electron desktop applic
 ## Replication and Scaling
 
 **PostgreSQL:**
+
 - Streaming replication (synchronous or asynchronous)
 - Logical replication for selective table-level sync
 - Read replicas for scaling read traffic
@@ -118,6 +125,7 @@ For a developer building a CLI tool, a mobile app, or an Electron desktop applic
 - Mature HA solutions (Patroni, pg_auto_failover)
 
 **SQLite:**
+
 - No built-in replication
 - Litestream and LiteFS provide streaming replication to object storage or distributed filesystems
 - No read replicas (though you can open read-only connections to a copy)
@@ -130,11 +138,13 @@ The Litestream/LiteFS ecosystem has made SQLite viable for small production web 
 A notable 2025-2026 trend: frameworks like Rails, Laravel, and Phoenix have improved SQLite support, and platforms like Fly.io, Turso (libSQL), and Litestream make it practical to run SQLite in production for small to medium web applications.
 
 This is legitimate for:
+
 - Side projects and small SaaS apps with limited concurrency
 - Applications where simplicity and low cost outweigh scaling needs
 - Edge computing where each node has its own data
 
 It's not a substitute for PostgreSQL when you need:
+
 - Multi-user concurrent writes
 - Complex authorization (row-level security)
 - Connection from multiple application instances

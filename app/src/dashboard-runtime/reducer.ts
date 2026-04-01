@@ -411,5 +411,10 @@ export function reduceDashboardRuntimeEvent(
       delete session.widgets[event.widgetId];
       return;
     }
+
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
   }
 }

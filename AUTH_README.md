@@ -248,18 +248,18 @@ app.get("/api/user/profile", authMiddleware, async c => {
 
 ### Authentication Endpoints
 
-| Method | Endpoint                    | Description               | Auth Required |
-| ------ | --------------------------- | ------------------------- | ------------- |
-| POST   | `/api/auth/register`        | Register new user         | No            |
-| POST   | `/api/auth/login`           | Login with email/password | No            |
-| POST   | `/api/auth/logout`          | Logout user               | Yes           |
-| GET    | `/api/auth/me`              | Get current user          | Yes           |
-| POST   | `/api/auth/refresh`         | Refresh session           | No            |
-| GET    | `/api/auth/google`          | Initiate Google OAuth     | No            |
-| GET    | `/api/auth/google/callback` | Google OAuth callback     | No            |
-| GET    | `/api/auth/github`          | Initiate GitHub OAuth     | No            |
-| GET    | `/api/auth/github/callback` | GitHub OAuth callback     | No            |
-| GET    | `/api/auth/oauth-receive`   | Receive session from production OAuth proxy | No |
+| Method | Endpoint                    | Description                                 | Auth Required |
+| ------ | --------------------------- | ------------------------------------------- | ------------- |
+| POST   | `/api/auth/register`        | Register new user                           | No            |
+| POST   | `/api/auth/login`           | Login with email/password                   | No            |
+| POST   | `/api/auth/logout`          | Logout user                                 | Yes           |
+| GET    | `/api/auth/me`              | Get current user                            | Yes           |
+| POST   | `/api/auth/refresh`         | Refresh session                             | No            |
+| GET    | `/api/auth/google`          | Initiate Google OAuth                       | No            |
+| GET    | `/api/auth/google/callback` | Google OAuth callback                       | No            |
+| GET    | `/api/auth/github`          | Initiate GitHub OAuth                       | No            |
+| GET    | `/api/auth/github/callback` | GitHub OAuth callback                       | No            |
+| GET    | `/api/auth/oauth-receive`   | Receive session from production OAuth proxy | No            |
 
 ### Request/Response Examples
 
@@ -344,11 +344,11 @@ registered with the OAuth providers.
 
 ### Environment Variables
 
-| Variable | Where | Description |
-|---|---|---|
-| `PRODUCTION_URL` | Non-production only | Production API origin (e.g. `https://app.mako.co`). Unset in production. |
-| `TRUSTED_ORIGINS` | Production only | Comma-separated list of additional trusted origins for redirect validation. |
-| `DISABLE_OAUTH` | Any | Hard kill switch. Set `true` to completely disable OAuth. |
+| Variable          | Where               | Description                                                                 |
+| ----------------- | ------------------- | --------------------------------------------------------------------------- |
+| `PRODUCTION_URL`  | Non-production only | Production API origin (e.g. `https://app.mako.co`). Unset in production.    |
+| `TRUSTED_ORIGINS` | Production only     | Comma-separated list of additional trusted origins for redirect validation. |
+| `DISABLE_OAUTH`   | Any                 | Hard kill switch. Set `true` to completely disable OAuth.                   |
 
 ### Flow: Production (unchanged)
 
@@ -398,11 +398,11 @@ Browser → GET /api/auth/oauth-receive (on preview)
 
 ### Key Files
 
-| File | Purpose |
-|---|---|
-| `api/src/auth/oauth-proxy.ts` | Proxy helpers: origin detection, state encoding/decoding, transfer tokens, origin validation |
-| `api/src/auth/arctic.ts` | OAuth provider setup (callback URLs always point to production) |
-| `api/src/auth/auth.controller.ts` | OAuth routes with proxy-aware initiation, callback, and `/oauth-receive` endpoint |
+| File                              | Purpose                                                                                      |
+| --------------------------------- | -------------------------------------------------------------------------------------------- |
+| `api/src/auth/oauth-proxy.ts`     | Proxy helpers: origin detection, state encoding/decoding, transfer tokens, origin validation |
+| `api/src/auth/arctic.ts`          | OAuth provider setup (callback URLs always point to production)                              |
+| `api/src/auth/auth.controller.ts` | OAuth routes with proxy-aware initiation, callback, and `/oauth-receive` endpoint            |
 
 ## Customization
 

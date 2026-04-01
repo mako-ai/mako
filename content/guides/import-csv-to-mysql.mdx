@@ -46,6 +46,7 @@ IGNORE 1 ROWS
 ```
 
 Key options:
+
 - `FIELDS TERMINATED BY ','` -- the column delimiter
 - `ENCLOSED BY '"'` -- handles quoted fields
 - `LINES TERMINATED BY '\n'` -- use `'\r\n'` for Windows-generated files
@@ -148,6 +149,7 @@ SET created_at = STR_TO_DATE(@date_str, '%m/%d/%Y');
 ```
 
 **Duplicate keys.** Add `REPLACE` or `IGNORE` after the filename to handle duplicates:
+
 - `LOAD DATA INFILE ... REPLACE` -- overwrites existing rows with matching keys
 - `LOAD DATA INFILE ... IGNORE` -- skips rows with duplicate keys
 

@@ -60,6 +60,7 @@ mongoimport --uri="mongodb+srv://user:pass@cluster.mongodb.net/mydb" \
 ```
 
 Useful options:
+
 - `--drop` -- drop the collection before importing
 - `--upsertFields=email` -- update existing documents matching on the `email` field
 - `--mode=upsert` -- insert new documents, update existing ones
@@ -89,18 +90,18 @@ db.users.insertMany(data);
 Or with Node.js:
 
 ```javascript
-const { MongoClient } = require('mongodb');
-const fs = require('fs');
+const { MongoClient } = require("mongodb");
+const fs = require("fs");
 
 async function importJSON() {
-  const client = new MongoClient('mongodb://localhost:27017');
+  const client = new MongoClient("mongodb://localhost:27017");
   await client.connect();
 
-  const db = client.db('mydb');
-  const records = JSON.parse(fs.readFileSync('users.json', 'utf8'));
+  const db = client.db("mydb");
+  const records = JSON.parse(fs.readFileSync("users.json", "utf8"));
 
-  const result = await db.collection('users').insertMany(records, {
-    ordered: false  // continue on duplicate key errors
+  const result = await db.collection("users").insertMany(records, {
+    ordered: false, // continue on duplicate key errors
   });
 
   console.log(`Inserted ${result.insertedCount} documents`);
@@ -122,9 +123,9 @@ MongoDB uses Extended JSON to represent BSON types that don't exist in standard 
 
 ```json
 {
-  "_id": {"$oid": "507f1f77bcf86cd799439011"},
-  "created": {"$date": "2026-01-15T10:30:00Z"},
-  "count": {"$numberLong": "9999999999"}
+  "_id": { "$oid": "507f1f77bcf86cd799439011" },
+  "created": { "$date": "2026-01-15T10:30:00Z" },
+  "count": { "$numberLong": "9999999999" }
 }
 ```
 
@@ -132,19 +133,19 @@ MongoDB uses Extended JSON to represent BSON types that don't exist in standard 
 
 ## Common Gotchas
 
-**_id field.** If your JSON documents don't have an `_id` field, MongoDB auto-generates an ObjectId for each document. If they do have `_id`, duplicates will fail unless you use `--mode=upsert`.
+**\_id field.** If your JSON documents don't have an `_id` field, MongoDB auto-generates an ObjectId for each document. If they do have `_id`, duplicates will fail unless you use `--mode=upsert`.
 
 **Date handling.** Standard JSON has no date type. Strings like `"2026-01-15"` are stored as strings, not BSON dates. To import as dates, use Extended JSON format:
 
 ```json
-{"created": {"$date": "2026-01-15T00:00:00Z"}}
+{ "created": { "$date": "2026-01-15T00:00:00Z" } }
 ```
 
 Or transform after import:
 
 ```javascript
 db.users.updateMany({}, [
-  {$set: {created: {$dateFromString: {dateString: "$created"}}}}
+  { $set: { created: { $dateFromString: { dateString: "$created" } } } },
 ]);
 ```
 
@@ -155,7 +156,7 @@ db.users.updateMany({}, [
 **Number types.** JSON numbers are imported as either doubles or 32-bit integers. For 64-bit integers, use Extended JSON:
 
 ```json
-{"amount": {"$numberLong": "9007199254740993"}}
+{ "amount": { "$numberLong": "9007199254740993" } }
 ```
 
 Without this, large integers lose precision when stored as doubles.

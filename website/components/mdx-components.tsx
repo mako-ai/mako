@@ -118,9 +118,7 @@ export const mdxComponents = {
       {children}
     </pre>
   ),
-  hr: () => (
-    <hr className="border-zinc-200 dark:border-zinc-800 my-10" />
-  ),
+  hr: () => <hr className="border-zinc-200 dark:border-zinc-800 my-10" />,
   strong: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
     <strong className="font-semibold text-zinc-900 dark:text-white" {...props}>
       {children}

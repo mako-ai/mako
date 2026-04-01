@@ -31,16 +31,16 @@ DBeaver also offers Pro ($199/year) and Enterprise ($300/year) editions with add
 
 ## Database Support
 
-| | DBeaver Community | HeidiSQL |
-|---|---|---|
-| MySQL / MariaDB | Yes | Yes (primary focus) |
-| PostgreSQL | Yes | Yes (solid support) |
-| SQL Server | Yes | Yes |
-| SQLite | Yes | Yes |
-| Oracle | Yes | No |
-| MongoDB | No (Pro only) | No |
-| Other databases | 80+ via JDBC | Interbase, Firebird |
-| Cloud warehouses | BigQuery, Snowflake, Redshift | No |
+|                  | DBeaver Community             | HeidiSQL            |
+| ---------------- | ----------------------------- | ------------------- |
+| MySQL / MariaDB  | Yes                           | Yes (primary focus) |
+| PostgreSQL       | Yes                           | Yes (solid support) |
+| SQL Server       | Yes                           | Yes                 |
+| SQLite           | Yes                           | Yes                 |
+| Oracle           | Yes                           | No                  |
+| MongoDB          | No (Pro only)                 | No                  |
+| Other databases  | 80+ via JDBC                  | Interbase, Firebird |
+| Cloud warehouses | BigQuery, Snowflake, Redshift | No                  |
 
 HeidiSQL covers the most popular open-source databases well but stops there. DBeaver connects to essentially anything with a JDBC driver. If you need Oracle, cloud warehouses, or niche databases, DBeaver is the only option.
 
@@ -56,11 +56,11 @@ HeidiSQL covers the most popular open-source databases well but stops there. DBe
 
 ## Platform Support
 
-| | DBeaver | HeidiSQL |
-|---|---|---|
-| Windows | Yes | Yes (primary) |
-| macOS | Yes | Experimental (Lazarus build) |
-| Linux | Yes | Experimental (Lazarus build) |
+|         | DBeaver | HeidiSQL                     |
+| ------- | ------- | ---------------------------- |
+| Windows | Yes     | Yes (primary)                |
+| macOS   | Yes     | Experimental (Lazarus build) |
+| Linux   | Yes     | Experimental (Lazarus build) |
 
 DBeaver runs natively on all three platforms. HeidiSQL is a Windows application first -- the Linux and macOS builds exist as of HeidiSQL 12.x but are still marked experimental. If you're on macOS or Linux, DBeaver is the practical choice.
 
@@ -87,6 +87,7 @@ Neither tool approaches DataGrip-level SQL intelligence, but DBeaver has more ed
 ## Unique HeidiSQL Features
 
 HeidiSQL has a few features that are surprisingly good:
+
 - **Session manager**: Organize connections with color-coded server groups. Quick and efficient.
 - **Server status monitoring**: Real-time view of server variables, processes, and status. Useful for MySQL administration.
 - **Table maintenance**: Optimize, repair, check, and analyze tables directly from the UI.
@@ -105,12 +106,14 @@ These MySQL-administration features make HeidiSQL a solid choice for MySQL DBAs 
 ## Who Should Pick What
 
 **Choose HeidiSQL if:**
+
 - You're on Windows
 - You primarily work with MySQL, MariaDB, PostgreSQL, or SQL Server
 - You value speed and simplicity
 - You want a zero-config, zero-cost tool that just works
 
 **Choose DBeaver if:**
+
 - You need macOS or Linux support
 - You connect to many database types
 - You want ER diagrams, data modeling, or visual query building

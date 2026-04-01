@@ -41,9 +41,7 @@ export default defineConfig({
         },
         {
           label: "Guides",
-          items: [
-            { label: "Authentication", slug: "guides/authentication" },
-          ],
+          items: [{ label: "Authentication", slug: "guides/authentication" }],
         },
         {
           label: "Operations",
@@ -54,15 +52,11 @@ export default defineConfig({
         },
         {
           label: "Reference",
-          items: [
-            { label: "API Reference", slug: "api-reference" },
-          ],
+          items: [{ label: "API Reference", slug: "api-reference" }],
         },
         {
           label: "Roadmap",
-          items: [
-            { label: "Roadmap", slug: "roadmap" },
-          ],
+          items: [{ label: "Roadmap", slug: "roadmap" }],
         },
         {
           label: "Experimental",
