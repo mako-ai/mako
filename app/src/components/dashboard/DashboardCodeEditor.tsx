@@ -52,7 +52,16 @@ const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
 
   const handleBlur = useCallback(() => {
     isEditorFocusedRef.current = false;
-  }, []);
+    if (dashboard) {
+      const serialized = JSON.stringify(
+        serializeDashboardDefinition(dashboard),
+        null,
+        2,
+      );
+      setCodeValue(serialized);
+      setCodeError(null);
+    }
+  }, [dashboard]);
 
   const handleFocus = useCallback(() => {
     isEditorFocusedRef.current = true;
