@@ -112,11 +112,13 @@ function injectSelectionParams(spec: Spec): Spec {
 
     const targetLayer = spec.layer[layerIndex];
     const enc = targetLayer.encoding || {};
-    const selectionField =
+    const selectionEncoding =
       enc.x?.field && (enc.x.type === "nominal" || enc.x.type === "ordinal")
-        ? enc.x.field
-        : enc.color?.field;
-    if (!selectionField) return spec;
+        ? "x"
+        : enc.color?.field
+          ? "color"
+          : null;
+    if (!selectionEncoding) return spec;
 
     const layerParams = Array.isArray(targetLayer.params)
       ? targetLayer.params
@@ -138,7 +140,7 @@ function injectSelectionParams(spec: Spec): Spec {
         ...layerParams,
         {
           name: "crossfilter",
-          select: { type: "point", fields: [selectionField] },
+          select: { type: "point", encodings: [selectionEncoding] },
         },
       ],
     };
@@ -250,8 +252,11 @@ function injectActiveSelection(
       });
     }
     if (Array.isArray(node.layer)) {
-      next.layer = node.layer.map((child: Spec) => rewrite(child));
-      changed = true;
+      const newLayers = node.layer.map((child: Spec) => rewrite(child));
+      if (newLayers.some((l: Spec, i: number) => l !== node.layer[i])) {
+        next.layer = newLayers;
+        changed = true;
+      }
     }
     return changed ? next : node;
   };
@@ -288,13 +293,18 @@ function sanitizeSelectionNames(spec: Spec): Spec {
     };
 
     if (Array.isArray(nextNode.params)) {
-      nextNode.params = dedupeParams(nextNode.params);
-      changed = true;
+      const deduped = dedupeParams(nextNode.params);
+      if (changed) nextNode.params = deduped;
     }
 
     if (Array.isArray(nextNode.layer)) {
-      nextNode.layer = nextNode.layer.map((child: Spec) => sanitizeNode(child));
-      changed = true;
+      const newLayers = nextNode.layer.map((child: Spec) =>
+        sanitizeNode(child),
+      );
+      if (newLayers.some((l: Spec, i: number) => l !== nextNode.layer[i])) {
+        nextNode.layer = newLayers;
+        changed = true;
+      }
     }
 
     return changed ? nextNode : node;
