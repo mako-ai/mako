@@ -718,28 +718,26 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
 
       if (!isCdcEnabled) {
         logger.warn(
-          "CDC not enabled for flow — falling back to single-event processing",
+          "CDC not enabled for flow — re-enqueuing as single events on non-CDC path",
+          { flowId },
+        );
+        await WebhookEvent.updateMany(
+          { _id: { $in: webhookEvents.map((e: any) => e._id) } },
           {
-            flowId,
+            $set: { status: "pending" },
+            $inc: { attempts: -1 },
           },
         );
         for (const webhookEvent of webhookEvents) {
-          await runWebhookEventProcess({
-            event: {
-              data: {
-                flowId,
-                eventId: webhookEvent.eventId,
-              },
-            },
-            step: {
-              run: async (_name: string, fn: () => Promise<unknown>) => fn(),
-            },
+          await enqueueWebhookProcess({
+            flowId,
+            eventId: webhookEvent.eventId,
           });
         }
         return {
-          processed: true,
+          processed: false,
           count: webhookEvents.length,
-          path: "fallback",
+          path: "re-enqueued-non-cdc",
         };
       }
 
@@ -791,6 +789,22 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
           logger.warn("Failed to extract data from webhook event", {
             eventId: webhookEvent.eventId,
           });
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "failed",
+                applyStatus: "failed",
+                processedAt: new Date(),
+                applyError: {
+                  code: "EXTRACT_FAILED",
+                  message: "Failed to extract data from webhook event",
+                },
+                processingDurationMs:
+                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+              },
+            },
+          );
           continue;
         }
 
