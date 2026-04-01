@@ -219,8 +219,16 @@ export const clientDashboardTools = {
       "Switch the dashboard into edit mode by acquiring the edit lock. " +
       "MUST be called before any write operations (add_widget, modify_widget, etc). " +
       "If another user holds the lock, a confirmation dialog is shown to the user — " +
-      "the tool blocks until they approve or reject the force-acquire.",
-    inputSchema: z.object({}),
+      "the tool blocks until they approve or reject the force-acquire. " +
+      "Optionally pass dashboardId to target a specific open dashboard instead of the current active tab.",
+    inputSchema: z.object({
+      dashboardId: z
+        .string()
+        .optional()
+        .describe(
+          "Optional dashboard ID to enter edit mode for (must be currently open in the client)",
+        ),
+    }),
   },
   create_dashboard: {
     description:
@@ -315,14 +323,14 @@ export const clientDashboardTools = {
   get_chart_templates: {
     description:
       "List available best-practice chart templates with IDs and descriptions. " +
-      "Call before creating complex or layered charts to discover proven patterns " +
+      "Call before creating charts to discover proven simple patterns " +
       "(e.g. multi-series line with hover rule, donut, stacked bar).",
     inputSchema: z.object({}),
   },
   get_chart_template: {
     description:
       "Get a specific chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
-      "Use for complex layered charts instead of inventing specs from scratch.",
+      "Prefer template-driven simple specs over hand-written complex layering.",
     inputSchema: z.object({
       templateId: z.string().describe("Template ID from get_chart_templates"),
     }),

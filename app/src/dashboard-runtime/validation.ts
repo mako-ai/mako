@@ -1,4 +1,5 @@
 import { MakoChartSpec } from "../lib/chart-spec";
+import { buildChartRenderPlan } from "../lib/chart-render-planner";
 import { executeDashboardSql } from "./commands";
 import { classifyDuckDBError, type DashboardErrorKind } from "./error-kinds";
 
@@ -77,8 +78,14 @@ export async function validateVegaSpec(spec: unknown): Promise<
 
   try {
     const compile = await getCompileVegaLite();
+    const renderPlan = buildChartRenderPlan({
+      spec: parsed.data as Record<string, unknown>,
+      data: [],
+      enableSelection: false,
+      activeSelection: null,
+    });
     const fullSpec = {
-      ...parsed.data,
+      ...renderPlan.spec,
       $schema: "https://vega.github.io/schema/vega-lite/v6.json",
       data: { values: [] },
     };

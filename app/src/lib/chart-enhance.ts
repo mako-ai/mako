@@ -13,6 +13,15 @@ function getMarkType(spec: Spec): string {
   return typeof spec.mark === "string" ? spec.mark : spec.mark?.type || "";
 }
 
+function isPointHoverParam(param: any): boolean {
+  return (
+    param?.select?.type === "point" &&
+    Array.isArray(param.select.fields) &&
+    param.select.fields.length === 1 &&
+    param?.name !== "crossfilter"
+  );
+}
+
 /**
  * Detect a multi-series temporal chart and upgrade it to a layered spec with:
  * - The original line/area layer
@@ -25,7 +34,15 @@ export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
   if (!spec || data.length === 0) return spec;
   if (spec.__mako_tooltip_meta) return spec;
 
-  if (spec.layer) return extractMetaFromLayeredSpec(spec);
+  if (spec.layer) {
+    const normalized = normalizeBarHoverLayer(spec);
+    return extractMetaFromLayeredSpec(normalized);
+  }
+
+  const stackedBarEnhanced = enhanceSimpleStackedBarHover(spec, data);
+  if (stackedBarEnhanced !== spec) {
+    return stackedBarEnhanced;
+  }
 
   const mark = getMarkType(spec);
   if (mark !== "line" && mark !== "area") return spec;
@@ -125,19 +142,239 @@ export function enhanceMultiSeriesHover(spec: Spec, data: any[]): Spec {
   };
 }
 
-/**
- * Detect whether a layer is a hover-rule layer by structure:
- * rule mark + at least one param with point selection on a single field.
- */
-function isHoverRuleLayer(layer: Spec): boolean {
-  if (getMarkType(layer) !== "rule") return false;
-  if (!Array.isArray(layer.params) || layer.params.length === 0) return false;
-  return layer.params.some(
-    (p: any) =>
-      p?.select?.type === "point" &&
-      Array.isArray(p.select.fields) &&
-      p.select.fields.length === 1,
+function enhanceSimpleStackedBarHover(spec: Spec, data: any[]): Spec {
+  const mark = getMarkType(spec);
+  if (mark !== "bar") return spec;
+
+  const enc = spec.encoding || {};
+  const xEnc = enc.x;
+  const yEnc = enc.y;
+  const colorEnc = enc.color;
+  if (!xEnc?.field || !yEnc?.field || !colorEnc?.field) return spec;
+  if (xEnc.type !== "nominal" && xEnc.type !== "ordinal") return spec;
+
+  const colorField = colorEnc.field;
+  const xField = xEnc.field;
+  const yField = yEnc.field;
+
+  const seriesValues = resolveStackedBarSeriesValues(
+    spec,
+    data,
+    colorField,
+    xField,
+    yField,
   );
+  if (seriesValues.length <= 1 || seriesValues.length > 50) return spec;
+
+  const { transform, title, description, width, height, autosize, ...rest } =
+    spec;
+  const outer: Spec = {};
+  if (title !== undefined) outer.title = title;
+  if (description !== undefined) outer.description = description;
+  if (width !== undefined) outer.width = width;
+  if (height !== undefined) outer.height = height;
+  if (autosize !== undefined) outer.autosize = autosize;
+  if (transform !== undefined) outer.transform = transform;
+
+  const barLayer: Spec = { ...rest };
+  const tooltipEntries: Spec[] = [
+    {
+      field: xField,
+      type: xEnc.type || "nominal",
+      ...(xEnc.title ? { title: xEnc.title } : {}),
+    },
+    ...seriesValues.map(v => ({
+      field: v,
+      type: "quantitative" as const,
+    })),
+  ];
+
+  const hoverLayer: Spec = {
+    params: [
+      {
+        name: "__mako_tooltip",
+        select: {
+          type: "point",
+          fields: [xField],
+          on: "pointerover",
+          clear: "pointerout",
+        },
+      },
+    ],
+    transform: [
+      {
+        joinaggregate: [{ op: "sum", field: yField, as: "__mako_total" }],
+        groupby: [xField],
+      },
+      {
+        pivot: colorField,
+        value: yField,
+        groupby: [xField, "__mako_total"],
+      },
+    ],
+    mark: { type: "bar", fillOpacity: 0, strokeOpacity: 0 },
+    encoding: {
+      x: { ...xEnc, field: xField },
+      y: { field: "__mako_total", type: "quantitative" },
+      tooltip: tooltipEntries,
+    },
+  };
+
+  return {
+    ...outer,
+    layer: [barLayer, hoverLayer],
+    __mako_tooltip_meta: {
+      xField,
+      xTitle: xEnc.title || undefined,
+      seriesFields: seriesValues,
+    },
+  };
+}
+
+function resolveStackedBarSeriesValues(
+  spec: Spec,
+  data: any[],
+  colorField: string,
+  xField: string,
+  yField: string,
+): string[] {
+  const fromData = Array.from(
+    new Set(data.map(row => row[colorField]).filter(v => v != null)),
+  )
+    .map(String)
+    .sort((a, b) => a.localeCompare(b));
+  if (fromData.length > 0) return fromData;
+
+  // If the color field is created via fold/as transform, infer categories
+  // from the fold source columns.
+  const transforms = Array.isArray(spec.transform) ? spec.transform : [];
+  for (const transform of transforms) {
+    const foldCols = Array.isArray(transform?.fold) ? transform.fold : null;
+    const asFields = Array.isArray(transform?.as) ? transform.as : null;
+    const foldedField = asFields?.[0];
+    if (
+      foldCols &&
+      foldedField &&
+      String(foldedField) === colorField &&
+      foldCols.length > 0
+    ) {
+      return foldCols.map((v: unknown) => String(v));
+    }
+  }
+
+  // Fallback: infer from quantitative tooltip fields (excluding x/meta fields).
+  const tooltip = Array.isArray(spec.encoding?.tooltip)
+    ? spec.encoding.tooltip
+    : [];
+  const inferred = tooltip
+    .filter((entry: any) => {
+      const field = String(entry?.field ?? "");
+      return (
+        entry?.type === "quantitative" &&
+        field &&
+        field !== yField &&
+        field !== xField &&
+        !/^(__mako_|—\s*total$|total$)/i.test(field.trim())
+      );
+    })
+    .map((entry: any) => String(entry.field));
+  return Array.from(new Set(inferred));
+}
+
+/**
+ * For layered stacked-bar hover patterns, replace the visible hover rule with
+ * an invisible bar overlay so tooltips appear only while hovering bars.
+ * This keeps the rich multi-series tooltip but removes the black vertical line
+ * and nearest-point snapping behavior.
+ */
+function normalizeBarHoverLayer(spec: Spec): Spec {
+  if (!Array.isArray(spec.layer)) return spec;
+
+  const barLayerIndex = spec.layer.findIndex(
+    (layer: Spec) => getMarkType(layer) === "bar",
+  );
+  if (barLayerIndex === -1) return spec;
+  const barLayer = spec.layer[barLayerIndex];
+  const hoverLayerIndex = spec.layer.findIndex(isHoverTooltipLayer);
+  if (hoverLayerIndex === -1) return spec;
+  if (barLayerIndex === hoverLayerIndex) return spec;
+  const hoverLayer = spec.layer[hoverLayerIndex];
+
+  const barEnc = barLayer.encoding || {};
+  const hoverEnc = hoverLayer.encoding || {};
+  const xField =
+    barEnc.x?.field ??
+    hoverEnc.x?.field ??
+    hoverLayer.params?.[0]?.select?.fields?.[0];
+  const xType = barEnc.x?.type ?? hoverEnc.x?.type ?? "nominal";
+  const yField = barEnc.y?.field;
+  const colorField = barEnc.color?.field;
+  const tooltip = hoverEnc.tooltip;
+
+  if (
+    !xField ||
+    !yField ||
+    !colorField ||
+    !Array.isArray(tooltip) ||
+    tooltip.length === 0
+  ) {
+    return spec;
+  }
+
+  const hoverParam = Array.isArray(hoverLayer.params)
+    ? hoverLayer.params.find(isPointHoverParam)
+    : null;
+
+  const nextHoverLayer: Spec = {
+    ...hoverLayer,
+    params: [
+      {
+        ...(hoverParam || {}),
+        name: "__mako_tooltip",
+        select: {
+          type: "point",
+          fields: [xField],
+          on: "pointerover",
+          clear: "pointerout",
+        },
+      },
+    ],
+    transform: [
+      {
+        joinaggregate: [{ op: "sum", field: yField, as: "__mako_total" }],
+        groupby: [xField],
+      },
+      {
+        pivot: colorField,
+        value: yField,
+        groupby: [xField, "__mako_total"],
+      },
+    ],
+    mark: { type: "bar", fillOpacity: 0, strokeOpacity: 0 },
+    encoding: {
+      x: { ...(barEnc.x || {}), field: xField, type: xType },
+      y: {
+        field: "__mako_total",
+        type: "quantitative",
+      },
+      tooltip,
+    },
+  };
+
+  const nextLayers = [...spec.layer];
+  nextLayers[hoverLayerIndex] = nextHoverLayer;
+  return { ...spec, layer: nextLayers };
+}
+
+/**
+ * Detect whether a layer is a hover-tooltip layer by structure while
+ * explicitly ignoring crossfilter selections.
+ */
+function isHoverTooltipLayer(layer: Spec): boolean {
+  const mark = getMarkType(layer);
+  if (mark !== "rule" && mark !== "bar") return false;
+  if (!Array.isArray(layer.params) || layer.params.length === 0) return false;
+  return layer.params.some(isPointHoverParam);
 }
 
 /**
@@ -171,15 +408,10 @@ function updateParamRefs(encoding: any, oldName: string, newName: string) {
 function extractMetaFromLayeredSpec(spec: Spec): Spec {
   if (!Array.isArray(spec.layer)) return spec;
 
-  const hoverLayer = spec.layer.find(isHoverRuleLayer);
+  const hoverLayer = spec.layer.find(isHoverTooltipLayer);
   if (!hoverLayer) return spec;
 
-  const hoverParam = hoverLayer.params.find(
-    (p: any) =>
-      p?.select?.type === "point" &&
-      Array.isArray(p.select.fields) &&
-      p.select.fields.length === 1,
-  );
+  const hoverParam = hoverLayer.params.find(isPointHoverParam);
   if (hoverParam && hoverParam.name !== "__mako_tooltip") {
     const oldName = hoverParam.name;
     hoverParam.name = "__mako_tooltip";
@@ -193,15 +425,27 @@ function extractMetaFromLayeredSpec(spec: Spec): Spec {
     return spec;
   }
 
-  const temporalEntry = tooltipEntries.find((e: any) => e.type === "temporal");
-  if (!temporalEntry) return spec;
+  const selectedXField = hoverParam?.select?.fields?.[0];
+  const xEntry =
+    tooltipEntries.find((e: any) => e?.field === selectedXField) ||
+    tooltipEntries.find(
+      (e: any) =>
+        e?.type === "temporal" ||
+        e?.type === "ordinal" ||
+        e?.type === "nominal",
+    );
+  const xField = String(xEntry?.field ?? selectedXField ?? "");
+  if (!xField) return spec;
 
   const isMetaField = (f: string) =>
     /^(__mako_|—\s*total$|total$)/i.test(f.trim());
 
   const seriesFields = tooltipEntries
     .filter(
-      (e: any) => e.type === "quantitative" && !isMetaField(String(e.field)),
+      (e: any) =>
+        e.type === "quantitative" &&
+        String(e.field) !== xField &&
+        !isMetaField(String(e.field)),
     )
     .map((e: any) => String(e.field));
 
@@ -211,8 +455,8 @@ function extractMetaFromLayeredSpec(spec: Spec): Spec {
   return {
     ...spec,
     __mako_tooltip_meta: {
-      xField: temporalEntry.field,
-      xTitle: temporalEntry.title || undefined,
+      xField,
+      xTitle: xEntry?.title || undefined,
       seriesFields,
     },
   };

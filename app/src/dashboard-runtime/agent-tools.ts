@@ -150,13 +150,21 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "enter_edit_mode") {
     const ctx = getActiveContext(pinnedContext);
-    if (!ctx) {
+    const targetDashboardId =
+      typeof input.dashboardId === "string"
+        ? input.dashboardId
+        : ctx?.dashboardId;
+    if (!targetDashboardId) {
       return { success: false, error: "No active dashboard" };
     }
     const store = useDashboardStore.getState();
-    const dashboard = store.openDashboards[ctx.dashboardId];
+    const dashboard = store.openDashboards[targetDashboardId];
     if (!dashboard) {
       return { success: false, error: "Dashboard not found" };
+    }
+    const targetWorkspaceId = dashboard.workspaceId || ctx?.workspaceId;
+    if (!targetWorkspaceId) {
+      return { success: false, error: "No workspace found for dashboard" };
     }
     if (dashboard.readOnly === true) {
       return {
@@ -164,11 +172,14 @@ export async function executeDashboardAgentTool(
         error: "This dashboard is read-only. You cannot enter edit mode.",
       };
     }
-    if (store.editingDashboards[ctx.dashboardId]) {
+    if (store.editingDashboards[targetDashboardId]) {
       return { success: true, alreadyEditing: true };
     }
 
-    const result = await store.enterEditMode(ctx.workspaceId, ctx.dashboardId);
+    const result = await store.enterEditMode(
+      targetWorkspaceId,
+      targetDashboardId,
+    );
     if (result.ok) {
       return { success: true };
     }
@@ -176,7 +187,7 @@ export async function executeDashboardAgentTool(
     const lockedBy = result.lockedBy ?? "Another user";
     const userApproved = await new Promise<boolean>(resolve => {
       useDashboardStore.getState().setLockConflictPrompt({
-        dashboardId: ctx.dashboardId,
+        dashboardId: targetDashboardId,
         lockedBy,
         resolve,
       });
@@ -192,7 +203,7 @@ export async function executeDashboardAgentTool(
 
     const forceResult = await useDashboardStore
       .getState()
-      .enterEditMode(ctx.workspaceId, ctx.dashboardId, { force: true });
+      .enterEditMode(targetWorkspaceId, targetDashboardId, { force: true });
     if (forceResult.ok) {
       return { success: true, forcedFrom: lockedBy };
     }
@@ -204,7 +215,14 @@ export async function executeDashboardAgentTool(
 
   if (!READ_ONLY_TOOLS.has(toolName) && !EDIT_MODE_EXEMPT_TOOLS.has(toolName)) {
     const ctx = getActiveContext(pinnedContext);
-    if (ctx && !useDashboardStore.getState().isEditMode(ctx.dashboardId)) {
+    const targetDashboardId =
+      typeof input.dashboardId === "string"
+        ? input.dashboardId
+        : ctx?.dashboardId;
+    if (
+      targetDashboardId &&
+      !useDashboardStore.getState().isEditMode(targetDashboardId)
+    ) {
       return {
         success: false,
         error:
@@ -634,6 +652,26 @@ export async function executeDashboardAgentTool(
     if (typeof input.widgetId !== "string") {
       return { success: false, error: "widgetId is required" };
     }
+    const ctx = getActiveContext(pinnedContext);
+    const targetDashboardId =
+      typeof input.dashboardId === "string"
+        ? input.dashboardId
+        : ctx?.dashboardId;
+    if (!targetDashboardId) {
+      return { success: false, error: "No target dashboard" };
+    }
+    const targetDashboard =
+      useDashboardStore.getState().openDashboards[targetDashboardId];
+    if (!targetDashboard) {
+      return { success: false, error: "Dashboard not found" };
+    }
+    const targetWidget = targetDashboard.widgets.find(
+      w => w.id === input.widgetId,
+    );
+    if (!targetWidget) {
+      return { success: false, error: "Widget not found in target dashboard" };
+    }
+
     const changes: Record<string, unknown> = {};
     if (input.title !== undefined) changes.title = input.title;
     if (input.localSql !== undefined) changes.localSql = input.localSql;
@@ -645,14 +683,7 @@ export async function executeDashboardAgentTool(
       changes.tableConfig = input.tableConfig;
     }
     if (input.layouts !== undefined) {
-      const ctx = getActiveContext(pinnedContext);
-      const existingDashboard = ctx
-        ? useDashboardStore.getState().openDashboards[ctx.dashboardId]
-        : null;
-      const existingWidget = existingDashboard?.widgets.find(
-        w => w.id === input.widgetId,
-      );
-      const existingLayouts = existingWidget?.layouts;
+      const existingLayouts = targetWidget.layouts;
       changes.layouts = existingLayouts
         ? { ...existingLayouts, ...input.layouts }
         : input.layouts;
@@ -668,16 +699,9 @@ export async function executeDashboardAgentTool(
       }
     }
     if (changes.localSql !== undefined) {
-      const ctx = getActiveContext(pinnedContext);
-      if (!ctx) {
-        return { success: false, error: "No active dashboard" };
-      }
-      const dashboard =
-        useDashboardStore.getState().openDashboards[ctx.dashboardId];
-      const widget = dashboard?.widgets.find(w => w.id === input.widgetId);
       const queryValidation = await validateDuckDBQuery({
-        dashboardId: ctx.dashboardId,
-        dataSourceId: widget?.dataSourceId,
+        dashboardId: targetDashboardId,
+        dataSourceId: targetWidget.dataSourceId,
         sql: String(changes.localSql),
       });
       if (!queryValidation.valid) {
@@ -689,16 +713,9 @@ export async function executeDashboardAgentTool(
       }
     }
     {
-      const ctx2 = getActiveContext(pinnedContext);
-      const dashboard2 = ctx2
-        ? useDashboardStore.getState().openDashboards[ctx2.dashboardId]
-        : null;
-      const widgetForValidation = dashboard2?.widgets.find(
-        w => w.id === input.widgetId,
-      );
       const crossFilterValidation = validateCrossFilterWidgetSql({
-        sql: String(changes.localSql ?? widgetForValidation?.localSql ?? ""),
-        crossFilterEnabled: widgetForValidation?.crossFilter?.enabled ?? true,
+        sql: String(changes.localSql ?? targetWidget.localSql ?? ""),
+        crossFilterEnabled: targetWidget.crossFilter?.enabled ?? true,
       });
       if (!crossFilterValidation.valid) {
         return {
@@ -709,19 +726,25 @@ export async function executeDashboardAgentTool(
       }
     }
 
-    updateDashboardWidget(input.widgetId, changes as Partial<DashboardWidget>);
+    updateDashboardWidget(
+      input.widgetId,
+      changes as Partial<DashboardWidget>,
+      targetDashboardId,
+    );
 
     try {
-      const ctx = getActiveContext(pinnedContext);
-      const dashboard = ctx
-        ? useDashboardStore.getState().openDashboards[ctx.dashboardId]
-        : null;
+      const dashboard =
+        useDashboardStore.getState().openDashboards[targetDashboardId];
       const widget = dashboard?.widgets.find(w => w.id === input.widgetId);
-      if (!ctx || !widget) {
-        return { success: true, widgetId: input.widgetId };
+      if (!widget) {
+        return {
+          success: false,
+          widgetId: input.widgetId,
+          error: "Widget update did not persist to target dashboard",
+        };
       }
       const result = await previewDashboardQuery({
-        dashboardId: ctx.dashboardId,
+        dashboardId: targetDashboardId,
         dataSourceId: widget.dataSourceId,
         sql: widget.localSql,
       });
@@ -730,7 +753,7 @@ export async function executeDashboardAgentTool(
         widget.type === "chart" &&
         (changes.vegaLiteSpec || widget.vegaLiteSpec);
       const renderResult = isChartWithSpec
-        ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id)
+        ? await waitForWidgetRenderResult(targetDashboardId, widget.id)
         : null;
 
       if (renderResult?.renderError) {
@@ -777,7 +800,15 @@ export async function executeDashboardAgentTool(
     if (typeof input.widgetId !== "string") {
       return { success: false, error: "widgetId is required" };
     }
-    removeDashboardWidget(input.widgetId);
+    const ctx = getActiveContext(pinnedContext);
+    const targetDashboardId =
+      typeof input.dashboardId === "string"
+        ? input.dashboardId
+        : ctx?.dashboardId;
+    if (!targetDashboardId) {
+      return { success: false, error: "No target dashboard" };
+    }
+    removeDashboardWidget(input.widgetId, targetDashboardId);
     return { success: true };
   }
 

@@ -21,6 +21,7 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 ### Editing Lifecycle
 
 Before making any changes to a dashboard, you MUST call \`enter_edit_mode\`. This acquires the edit lock and puts the dashboard into edit mode.
+- When you know the target dashboard ID (for example from context or a prior tool result), pass \`dashboardId\` to \`enter_edit_mode\` so you lock the intended dashboard explicitly.
 - If another user holds the lock, a confirmation dialog is shown to the user automatically — you do not need to handle this yourself.
 - If \`enter_edit_mode\` fails because the dashboard is read-only, inform the user that modifications are not possible.
 - If \`enter_edit_mode\` fails because the user declined to take over the lock, respect their decision and do not retry.
@@ -29,7 +30,7 @@ Before making any changes to a dashboard, you MUST call \`enter_edit_mode\`. Thi
 ### Available Tools
 
 **Edit Mode:**
-* \`enter_edit_mode\` — Switch the dashboard into edit mode. MUST be called before any write operations.
+* \`enter_edit_mode\` — Switch the dashboard into edit mode. MUST be called before any write operations. Optionally pass \`dashboardId\` to target a specific open dashboard.
 
 **Dashboard Management:**
 * \`create_dashboard\` — Create a brand new empty dashboard. After creation, use \`create_data_source\` to add data. Use when the user explicitly asks to create a NEW dashboard, or when the current dashboard is unrelated to the request.
@@ -49,8 +50,8 @@ Before making any changes to a dashboard, you MUST call \`enter_edit_mode\`. Thi
 * \`remove_widget\` — Remove a widget from the dashboard
 
 **Chart Templates:**
-* \`get_chart_templates\` — List best-practice chart patterns (hover rule, stacked bar, donut, etc.)
-* \`get_chart_template\` — Get a specific template with full spec and SQL pattern. Use for complex layered charts instead of inventing from scratch.
+* \`get_chart_templates\` — List best-practice chart patterns (line, stacked bar, donut, etc.)
+* \`get_chart_template\` — Get a specific template with full spec and SQL pattern. Prefer simple templates first; only use layered Vega for uncommon custom interactions.
 
 **Filters & Relationships:**
 * \`add_global_filter\` — Add a dashboard-level filter (date range, select, multi-select, search)
@@ -98,8 +99,8 @@ When creating chart widgets:
 - For time series, use \`temporal\` type on the x-axis with appropriate \`timeUnit\`
 - For donut/pie charts, use \`arc\` mark with \`theta\` encoding and \`innerRadius\`
 - Always include tooltips for interactivity
-- For multi-series or layered charts, call \`get_chart_template\` to get a proven spec pattern rather than building from scratch
-- **Hover-rule tooltip convention:** When a layered chart has a \`rule\` layer with a \`point\` selection param for nearest-point hover tooltips, the param name MUST be \`__mako_tooltip\`. The custom tooltip renderer (colored SVG dots, Total row) detects layers by this exact name. Using any other name (e.g. \`__mako_tt_conv\`, \`hover\`) will break the custom tooltip and fall back to Vega's plain-text tooltip. The \`condition.param\` reference in the opacity encoding must also be \`__mako_tooltip\`.
+- For multi-series and stacked bar charts, prefer simple long-format specs (single mark + standard encodings). The app renderer auto-enhances rich tooltip behavior for common cases.
+- **Layered hover compatibility:** If you must author custom layered hover behavior manually, use \`__mako_tooltip\` as the hover selection param name for compatibility with the app tooltip renderer.
 
 ### Layout Guidelines
 
