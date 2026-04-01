@@ -20,42 +20,14 @@ export interface StreamingParquetOptions {
 
 function escapeDuckDBValue(value: unknown): string {
   if (value === null || value === undefined) return "NULL";
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) return "NULL";
-    return String(value);
-  }
   if (value instanceof Date) {
     const ts = value.getTime();
-    if (isNaN(ts)) return "NULL";
-    return `'${value.toISOString()}'::TIMESTAMP`;
+    return isNaN(ts) ? "NULL" : `'${value.toISOString()}'`;
   }
   if (typeof value === "object") {
     return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
   }
-  const str = String(value);
-  if (/^\d{4}-\d{2}-\d{2}/.test(str) && !isNaN(Date.parse(str))) {
-    return `'${str.replace(/'/g, "''")}'::TIMESTAMP`;
-  }
-  return `'${str.replace(/'/g, "''")}'`;
-}
-
-function inferDuckDBType(values: unknown[]): string {
-  for (const val of values) {
-    if (val == null) continue;
-    if (typeof val === "boolean") return "BOOLEAN";
-    if (typeof val === "number") {
-      if (Number.isInteger(val) && Math.abs(val) < 2147483647) return "INTEGER";
-      return "DOUBLE";
-    }
-    if (val instanceof Date) return "TIMESTAMP";
-    if (typeof val === "string") {
-      if (/^\d{4}-\d{2}-\d{2}/.test(val) && !isNaN(Date.parse(val))) {
-        return "TIMESTAMP";
-      }
-    }
-  }
-  return "VARCHAR";
+  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function escapeIdentifier(name: string): string {
@@ -103,14 +75,7 @@ export async function buildParquetFromBatches(
           for (const key of Object.keys(row)) colSet.add(key);
         }
         columns = Array.from(colSet);
-        const sampleSize = Math.min(100, batch.length);
-        const colDefs = columns.map(col => {
-          const samples = [];
-          for (let i = 0; i < sampleSize; i++) {
-            samples.push(batch[i]?.[col]);
-          }
-          return `${escapeIdentifier(col)} ${inferDuckDBType(samples)}`;
-        });
+        const colDefs = columns.map(col => `${escapeIdentifier(col)} VARCHAR`);
         await connection.run(`CREATE TABLE _data (${colDefs.join(", ")})`);
         tableCreated = true;
       } else {
@@ -125,14 +90,9 @@ export async function buildParquetFromBatches(
           }
         }
         if (newCols.length > 0) {
-          const sampleSize = Math.min(100, batch.length);
           for (const col of newCols) {
-            const samples = [];
-            for (let i = 0; i < sampleSize; i++) {
-              samples.push(batch[i]?.[col]);
-            }
             await connection.run(
-              `ALTER TABLE _data ADD COLUMN ${escapeIdentifier(col)} ${inferDuckDBType(samples)}`,
+              `ALTER TABLE _data ADD COLUMN ${escapeIdentifier(col)} VARCHAR`,
             );
           }
           columns.push(...newCols);

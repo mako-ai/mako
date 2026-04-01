@@ -28,10 +28,11 @@ import {
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { getCdcFlowStats, syncMachineService } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
-import { cdcLiveTableName } from "../sync-cdc/normalization";
+import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/normalization";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 
 const logger = loggers.inngest("flow");
 
@@ -1490,12 +1491,29 @@ flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
         const driver = databaseRegistry.getDriver(destination.type);
         if (driver?.dropTable) {
           const schema = flow.tableDestination.schema;
+          const stageSchema =
+            destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
           const liveTable = cdcLiveTableName(
             flow.tableDestination.tableName,
             entity,
             flowId,
           );
+          const oldStageTable = cdcStageTableName(
+            flow.tableDestination.tableName,
+            entity,
+            flowId,
+          );
+          const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
+          const bulkStagingTable = `${liveTable}__${flowToken}__staging`;
+
           await driver.dropTable(destination, liveTable, { schema });
+          await driver.dropTable(destination, oldStageTable, {
+            schema: stageSchema,
+          });
+          await driver.dropTable(destination, `${liveTable}__stage_changes`, {
+            schema: stageSchema,
+          });
+          await driver.dropTable(destination, bulkStagingTable, { schema });
         }
       }
     }
@@ -1511,6 +1529,12 @@ flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
       flowId: new Types.ObjectId(flowId),
       entity,
     });
+
+    const tempCollectionName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+    await Flow.db
+      .collection(tempCollectionName)
+      .drop()
+      .catch(() => undefined);
 
     for (const key of destinationCountCache.keys()) {
       if (key.startsWith(`${workspaceId}:${flowId}:${entity}:`)) {
@@ -1797,14 +1821,12 @@ flowRoutes.post("/:flowId/sync-cdc/recover", async c => {
 
     const body = (await c.req.json().catch(() => ({}))) as {
       retryFailedMaterialization?: boolean;
-      resumeBackfill?: boolean;
       entity?: string;
     };
     const result = await cdcBackfillService.recoverFlow({
       workspaceId,
       flowId,
       retryFailedMaterialization: body.retryFailedMaterialization !== false,
-      resumeBackfill: body.resumeBackfill !== false,
       entity: typeof body.entity === "string" ? body.entity : undefined,
     });
     return c.json({
@@ -2177,25 +2199,37 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     const workspaceObjectId = new Types.ObjectId(workspaceId);
     const flowObjectId = new Types.ObjectId(flowId);
 
-    const [flow, states, transitions] = await Promise.all([
-      Flow.findOne({
-        _id: flowObjectId,
-        workspaceId: workspaceObjectId,
-      }).lean(),
-      CdcEntityState.find({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
-      })
-        .sort({ entity: 1 })
-        .lean(),
-      CdcStateTransition.find({
-        workspaceId: workspaceObjectId,
-        flowId: flowObjectId,
-      })
-        .sort({ at: -1 })
-        .limit(20)
-        .lean(),
-    ]);
+    const failedQuery = {
+      workspaceId: workspaceObjectId,
+      flowId: flowObjectId,
+      materializationStatus: "failed" as const,
+    };
+    const [flow, states, transitions, failedRows, failedTotal] =
+      await Promise.all([
+        Flow.findOne({
+          _id: flowObjectId,
+          workspaceId: workspaceObjectId,
+        }).lean(),
+        CdcEntityState.find({
+          workspaceId: workspaceObjectId,
+          flowId: flowObjectId,
+        })
+          .sort({ entity: 1 })
+          .lean(),
+        CdcStateTransition.find({
+          workspaceId: workspaceObjectId,
+          flowId: flowObjectId,
+        })
+          .sort({ at: -1 })
+          .limit(20)
+          .lean(),
+        CdcChangeEvent.find(failedQuery)
+          .sort({ ingestTs: -1 })
+          .select({ entity: 1, materializationError: 1, ingestTs: 1 })
+          .limit(200)
+          .lean(),
+        CdcChangeEvent.countDocuments(failedQuery),
+      ]);
 
     if (!flow) {
       throw new Error("Flow not found");
@@ -2218,6 +2252,28 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
           .filter(Boolean),
       ]),
     );
+    const failedByEntity = new Map<
+      string,
+      { count: number; latestAt: Date | null; latestError: any | null }
+    >();
+    for (const row of failedRows) {
+      const entity =
+        typeof (row as any).entity === "string" ? (row as any).entity : "";
+      if (!entity) continue;
+      const existing = failedByEntity.get(entity) || {
+        count: 0,
+        latestAt: null,
+        latestError: null,
+      };
+      existing.count += 1;
+      if (!existing.latestAt) {
+        existing.latestAt = (row as any).ingestTs
+          ? new Date((row as any).ingestTs)
+          : null;
+        existing.latestError = (row as any).materializationError || null;
+      }
+      failedByEntity.set(entity, existing);
+    }
 
     const entities = uniqueEntities.map(entity => {
       const state = stateByEntity.get(entity);
@@ -2246,6 +2302,9 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         lifetimeEventsProcessed,
         lifetimeRowsApplied,
         backfillDone,
+        failedCount: failedByEntity.get(entity)?.count || 0,
+        lastFailedAt: failedByEntity.get(entity)?.latestAt || null,
+        lastFailedError: failedByEntity.get(entity)?.latestError || null,
       };
     });
 
@@ -2253,8 +2312,15 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     const materializedDates = entities
       .map(e => e.lastMaterializedAt)
       .filter((d): d is Date => d instanceof Date);
+    const pendingMaterializedDates = entities
+      .filter(e => e.backlogCount > 0 || e.failedCount > 0)
+      .map(e => e.lastMaterializedAt)
+      .filter((d): d is Date => d instanceof Date);
     const oldestMaterialized =
-      materializedDates.sort((a, b) => a.getTime() - b.getTime())[0] || null;
+      (pendingMaterializedDates.length > 0
+        ? pendingMaterializedDates
+        : []
+      ).sort((a, b) => a.getTime() - b.getTime())[0] || null;
 
     let backfillStatus = flow.backfillState?.status || "idle";
     if (
@@ -2302,6 +2368,17 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
           materializedDates.sort((a, b) => b.getTime() - a.getTime())[0] ||
           null,
         entities,
+        failedMaterialization: {
+          total: failedTotal,
+          latest:
+            failedRows.length > 0
+              ? {
+                  entity: (failedRows[0] as any).entity || null,
+                  at: (failedRows[0] as any).ingestTs || null,
+                  error: (failedRows[0] as any).materializationError || null,
+                }
+              : null,
+        },
         transitions: transitions.map(t => ({
           machine: t.machine,
           fromState: t.fromState,
@@ -2416,6 +2493,78 @@ flowRoutes.get("/:flowId/sync-cdc/diagnostics", async c => {
   const url = new URL(c.req.url);
   url.pathname = url.pathname.replace("/diagnostics", "/status");
   return c.redirect(url.toString(), 307);
+});
+
+// GET /api/workspaces/:workspaceId/flows/:flowId/schema?entity=activities:LeadStatusChange
+flowRoutes.get("/:flowId/schema", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const entity = c.req.query("entity");
+
+    if (!entity) {
+      return c.json(
+        { success: false, error: "entity query parameter is required" },
+        400,
+      );
+    }
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).lean();
+
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+
+    if (!flow.dataSourceId) {
+      return c.json(
+        { success: false, error: "Flow has no connector data source" },
+        400,
+      );
+    }
+
+    const dataSource = await DataSource.findById(flow.dataSourceId).lean();
+    if (!dataSource) {
+      return c.json({ success: false, error: "Data source not found" }, 404);
+    }
+
+    const decrypted = await databaseDataSourceManager.getDataSource(
+      String(dataSource._id),
+    );
+    if (!decrypted) {
+      return c.json(
+        { success: false, error: "Could not resolve data source" },
+        404,
+      );
+    }
+    const connector = await syncConnectorRegistry.getConnector(decrypted);
+    if (!connector) {
+      return c.json(
+        { success: false, error: "Connector not found for data source type" },
+        404,
+      );
+    }
+
+    const schema = await connector.resolveSchema(entity);
+    if (!schema) {
+      return c.json(
+        { success: false, error: `No schema available for entity: ${entity}` },
+        404,
+      );
+    }
+
+    return c.json({ success: true, data: schema });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
 });
 
 // GET /api/workspaces/:workspaceId/flows/:flowId/status - Check if flow is running

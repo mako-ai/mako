@@ -1,5 +1,6 @@
 import type { IFlow } from "../../database/workspace-schema";
 import type { CdcStoredEvent } from "../events";
+import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
 import { BigQueryDestinationAdapter } from "./bigquery";
 import { PostgreSqlDestinationAdapter } from "./postgresql";
 
@@ -26,11 +27,13 @@ export interface CdcDestinationAdapter {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ applied: number }>;
   applyBatch(params: {
     records: Array<Record<string, unknown>>;
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ written: number }>;
 
   loadStagingFromParquet?(
@@ -42,6 +45,7 @@ export interface CdcDestinationAdapter {
     layout: CdcEntityLayout,
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
+    entitySchema?: ConnectorEntitySchema,
   ): Promise<{ written: number }>;
   cleanupStaging?(layout: CdcEntityLayout, flowId: string): Promise<void>;
 }

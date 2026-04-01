@@ -11,7 +11,9 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  type ConnectorEntitySchema,
 } from "../base/BaseConnector";
+import { resolveCloseEntitySchema, type CloseCustomField } from "./schema";
 import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
 import { loggers } from "../../logging";
@@ -134,6 +136,90 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
 );
 
 export class CloseConnector extends BaseConnector {
+  private customFieldSchemaCache = new Map<string, CloseCustomField[]>();
+
+  private static readonly ENTITY_TO_CUSTOM_FIELD_OBJECT_TYPE: Record<
+    string,
+    string
+  > = {
+    leads: "lead",
+    contacts: "contact",
+    opportunities: "opportunity",
+  };
+
+  private async fetchCustomFieldsForEntity(
+    entity: string,
+  ): Promise<CloseCustomField[]> {
+    if (entity === "activities:CustomActivity") {
+      return this.fetchCustomFieldsViaList(
+        "activity",
+        "/custom_field/activity/",
+      );
+    }
+
+    const objectType =
+      CloseConnector.ENTITY_TO_CUSTOM_FIELD_OBJECT_TYPE[entity];
+    if (!objectType) return [];
+
+    return this.fetchCustomFieldsViaSchema(objectType);
+  }
+
+  private async fetchCustomFieldsViaSchema(
+    objectType: string,
+  ): Promise<CloseCustomField[]> {
+    const cached = this.customFieldSchemaCache.get(objectType);
+    if (cached) return cached;
+
+    const api = this.getCloseClient();
+    try {
+      const response = await api.get(`/custom_field_schema/${objectType}/`);
+      const fields: CloseCustomField[] = (response.data?.fields || []).map(
+        (f: any) => ({
+          id: String(f.id || ""),
+          name: String(f.name || ""),
+          type: String(f.type || "text"),
+          appliesTo: objectType,
+          acceptsMultipleValues: Boolean(f.accepts_multiple_values),
+        }),
+      );
+      this.customFieldSchemaCache.set(objectType, fields);
+      return fields;
+    } catch {
+      return [];
+    }
+  }
+
+  private async fetchCustomFieldsViaList(
+    cacheKey: string,
+    endpoint: string,
+  ): Promise<CloseCustomField[]> {
+    const cached = this.customFieldSchemaCache.get(cacheKey);
+    if (cached) return cached;
+
+    const api = this.getCloseClient();
+    try {
+      const response = await api.get(endpoint);
+      const fields: CloseCustomField[] = (response.data?.data || []).map(
+        (f: any) => ({
+          id: String(f.id || ""),
+          name: String(f.name || ""),
+          type: String(f.type || "text"),
+          appliesTo: cacheKey,
+          acceptsMultipleValues: Boolean(f.accepts_multiple_values),
+        }),
+      );
+      this.customFieldSchemaCache.set(cacheKey, fields);
+      return fields;
+    } catch {
+      return [];
+    }
+  }
+
+  async resolveSchema(entity: string): Promise<ConnectorEntitySchema | null> {
+    const customFields = await this.fetchCustomFieldsForEntity(entity);
+    return resolveCloseEntitySchema(entity, customFields);
+  }
+
   private static readonly LEAD_FIELDS = [
     "id",
     "name",

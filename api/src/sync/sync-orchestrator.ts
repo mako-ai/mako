@@ -5,7 +5,11 @@ import {
   databaseConnectionService,
   ConnectionConfig,
 } from "../services/database-connection.service";
-import { SyncLogger, FetchState } from "../connectors/base/BaseConnector";
+import {
+  SyncLogger,
+  FetchState,
+  type ConnectorEntitySchema,
+} from "../connectors/base/BaseConnector";
 import {
   DatabaseConnection,
   Flow,
@@ -20,6 +24,7 @@ import axios from "axios";
 import { loggers } from "../logging";
 import {
   normalizePayloadKeys,
+  normalizePayloadBySchema,
   resolveSourceTimestamp,
 } from "../sync-cdc/normalization";
 import {
@@ -30,6 +35,40 @@ import {
 } from "../sync-cdc/adapters/registry";
 
 const orchestratorLogger = loggers.sync("orchestrator");
+
+async function resolveEntitySchemaSafe(params: {
+  entity: string;
+  dataSourceId?: string;
+  dataSource?: { id?: string } | null;
+  connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
+  context: string;
+}): Promise<ConnectorEntitySchema | null> {
+  try {
+    let connector = params.connector;
+    if (!connector) {
+      const ds =
+        params.dataSource ||
+        (params.dataSourceId
+          ? await databaseDataSourceManager.getDataSource(params.dataSourceId)
+          : null);
+      if (!ds) return null;
+      connector = await syncConnectorRegistry.getConnector(ds as any);
+    }
+    const schema = connector?.resolveSchema
+      ? ((await connector.resolveSchema(
+          params.entity,
+        )) as ConnectorEntitySchema)
+      : null;
+    return schema || null;
+  } catch (err) {
+    orchestratorLogger.warn("Schema resolution failed", {
+      entity: params.entity,
+      context: params.context,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
 
 function camelToSnake(str: string): string {
   return str.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
@@ -648,6 +687,17 @@ async function performSyncChunkSql(
   const fullSyncWriteBatchSize = 1000;
   let pendingFullSyncRows: Record<string, unknown>[] = [];
 
+  const entitySchema = await resolveEntitySchemaSafe({
+    entity,
+    connector: connector as any,
+    context: "syncChunk",
+  });
+  orchestratorLogger.info("Schema resolution result", {
+    entity,
+    hasSchema: !!entitySchema,
+    fieldCount: entitySchema ? Object.keys(entitySchema.fields).length : 0,
+  });
+
   const BULK_FLUSH_THRESHOLD = 50_000;
   const useBulkPath =
     isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
@@ -763,12 +813,18 @@ async function performSyncChunkSql(
           });
 
           const processedRecords = batch.map((record: any) => {
-            return {
+            const normalized = {
               ...normalizePayloadKeys(record),
               _dataSourceId: dataSource.id,
               _dataSourceName: dataSource.name,
               _syncedAt: new Date(),
             };
+            if (!entitySchema) return normalized;
+            const { payload: typed } = normalizePayloadBySchema(
+              normalized,
+              entitySchema,
+            );
+            return typed;
           });
 
           if (isCdcEnabled) {
@@ -816,6 +872,7 @@ async function performSyncChunkSql(
                     ? new Types.ObjectId(dataSource.id)
                     : undefined,
               } as any,
+              entitySchema: entitySchema ?? undefined,
             });
             runningRowsWritten += applyResult.written;
             logger?.log("info", "SQL batch write succeeded", {
@@ -1045,6 +1102,11 @@ export async function performStagingMerge(
   const dataSource = await databaseDataSourceManager.getDataSource(
     options.dataSourceId,
   );
+  const entitySchema = await resolveEntitySchemaSafe({
+    entity: options.entity,
+    dataSource,
+    context: "performStagingMerge",
+  });
 
   orchestratorLogger.info("performStagingMerge: merging staging to live", {
     entity: options.entity,
@@ -1063,6 +1125,7 @@ export async function performStagingMerge(
           : undefined,
     } as any,
     options.flowId!,
+    entitySchema ?? undefined,
   );
 }
 

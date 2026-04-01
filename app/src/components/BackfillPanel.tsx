@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import {
   Box,
   Button,
@@ -34,6 +34,8 @@ import {
   Edit as EditIcon,
   DeleteSweep as ResetTableIcon,
   ArrowBack as ArrowBackIcon,
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 
@@ -256,6 +258,7 @@ export function BackfillPanel({
     fetchExecutionDetails,
     fetchFlowHistory,
     fetchWebhookEvents,
+    fetchEntitySchema,
     startCdcStream,
     pauseCdcStream,
     pauseCdcFlow,
@@ -264,6 +267,52 @@ export function BackfillPanel({
     resyncCdcFlow,
     recoverCdcFlow,
   } = useFlowStore();
+
+  const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
+  const [entitySchemaCache, setEntitySchemaCache] = useState<
+    Record<
+      string,
+      {
+        fields: Record<
+          string,
+          { type: string; nullable?: boolean; required?: boolean }
+        >;
+        loading: boolean;
+      }
+    >
+  >({});
+
+  const toggleEntitySchema = useCallback(
+    async (entity: string) => {
+      if (expandedEntity === entity) {
+        setExpandedEntity(null);
+        return;
+      }
+      setExpandedEntity(entity);
+      const cached = entitySchemaCache[entity];
+      if (cached && (cached.loading || Object.keys(cached.fields).length > 0)) {
+        return;
+      }
+      setEntitySchemaCache(prev => ({
+        ...prev,
+        [entity]: { fields: {}, loading: true },
+      }));
+      const schema = await fetchEntitySchema(workspaceId, flowId, entity);
+      if (schema?.fields && Object.keys(schema.fields).length > 0) {
+        setEntitySchemaCache(prev => ({
+          ...prev,
+          [entity]: { fields: schema.fields, loading: false },
+        }));
+      } else {
+        setEntitySchemaCache(prev => {
+          const next = { ...prev };
+          delete next[entity];
+          return next;
+        });
+      }
+    },
+    [expandedEntity, entitySchemaCache, fetchEntitySchema, workspaceId, flowId],
+  );
 
   const [cdc, setCdc] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1100,44 +1149,54 @@ export function BackfillPanel({
                         e.lifetimeEventsProcessed || 0,
                         e.lastMaterializedSeq || 0,
                       );
+                      const isExpanded = expandedEntity === e.entity;
+                      const schemaData = entitySchemaCache[e.entity];
                       return (
-                        <TableRow
-                          key={e.entity}
-                          sx={{ "&:last-child td": { borderBottom: 0 } }}
-                        >
-                          <TableCell
+                        <React.Fragment key={e.entity}>
+                          <TableRow
                             sx={{
-                              fontFamily: "monospace",
-                              fontSize: "0.78rem",
-                              fontWeight: 500,
+                              "&:last-child td": { borderBottom: 0 },
+                              cursor: "pointer",
+                              "&:hover": { bgcolor: "action.hover" },
                             }}
+                            onClick={() => toggleEntitySchema(e.entity)}
                           >
-                            {entityLabel(e.entity)}
-                          </TableCell>
-                          <TableCell>
-                            <Chip
-                              label={sc.label}
-                              color={sc.color}
-                              size="small"
-                              variant="outlined"
+                            <TableCell
                               sx={{
-                                height: 22,
-                                fontSize: "0.68rem",
+                                fontFamily: "monospace",
+                                fontSize: "0.78rem",
                                 fontWeight: 500,
                               }}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Box
-                              sx={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 0.75,
-                              }}
                             >
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 0.5,
+                                }}
+                              >
+                                {isExpanded ? (
+                                  <ExpandLessIcon
+                                    sx={{
+                                      fontSize: 16,
+                                      color: "text.secondary",
+                                    }}
+                                  />
+                                ) : (
+                                  <ExpandMoreIcon
+                                    sx={{
+                                      fontSize: 16,
+                                      color: "text.secondary",
+                                    }}
+                                  />
+                                )}
+                                {entityLabel(e.entity)}
+                              </Box>
+                            </TableCell>
+                            <TableCell>
                               <Chip
-                                label={backfillChip.label}
-                                color={backfillChip.color}
+                                label={sc.label}
+                                color={sc.color}
                                 size="small"
                                 variant="outlined"
                                 sx={{
@@ -1146,80 +1205,245 @@ export function BackfillPanel({
                                   fontWeight: 500,
                                 }}
                               />
-                              {e.execStatus === "syncing" && (
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
+                            </TableCell>
+                            <TableCell>
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 0.75,
+                                }}
+                              >
+                                <Chip
+                                  label={backfillChip.label}
+                                  color={backfillChip.color}
+                                  size="small"
+                                  variant="outlined"
                                   sx={{
+                                    height: 22,
                                     fontSize: "0.68rem",
-                                    whiteSpace: "nowrap",
+                                    fontWeight: 500,
                                   }}
-                                >
-                                  {syncingRowsWritten.toLocaleString()} written
-                                </Typography>
-                              )}
-                            </Box>
-                          </TableCell>
-                          <TableCell align="right">
-                            <Typography
-                              fontSize="0.8rem"
-                              fontWeight={destinationRows > 0 ? 600 : 400}
-                            >
-                              {destinationRows.toLocaleString()}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">
-                            <Typography
-                              fontSize="0.8rem"
-                              fontWeight={eventCount > 0 ? 600 : 400}
-                            >
-                              {eventCount.toLocaleString()}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">
-                            <Box
-                              sx={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                justifyContent: "flex-end",
-                                gap: 0.25,
-                              }}
-                            >
-                              {bfStatus !== "running" && (
-                                <>
-                                  <Tooltip
-                                    title={`Reset table and rebackfill ${entityLabel(e.entity)}`}
+                                />
+                                {e.execStatus === "syncing" && (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{
+                                      fontSize: "0.68rem",
+                                      whiteSpace: "nowrap",
+                                    }}
                                   >
-                                    <IconButton
-                                      size="small"
-                                      onClick={() =>
-                                        openEntityResetDialog(e.entity)
-                                      }
-                                      disabled={busy}
-                                      sx={{ p: 0.25 }}
+                                    {syncingRowsWritten.toLocaleString()}{" "}
+                                    written
+                                  </Typography>
+                                )}
+                              </Box>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Typography
+                                fontSize="0.8rem"
+                                fontWeight={destinationRows > 0 ? 600 : 400}
+                              >
+                                {destinationRows.toLocaleString()}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Typography
+                                fontSize="0.8rem"
+                                fontWeight={eventCount > 0 ? 600 : 400}
+                              >
+                                {eventCount.toLocaleString()}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Box
+                                sx={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "flex-end",
+                                  gap: 0.25,
+                                }}
+                              >
+                                {bfStatus !== "running" && (
+                                  <>
+                                    <Tooltip
+                                      title={`Reset table and rebackfill ${entityLabel(e.entity)}`}
                                     >
-                                      <ResetTableIcon sx={{ fontSize: 16 }} />
-                                    </IconButton>
-                                  </Tooltip>
-                                  <Tooltip
-                                    title={`Sync ${entityLabel(e.entity)}`}
+                                      <IconButton
+                                        size="small"
+                                        onClick={ev => {
+                                          ev.stopPropagation();
+                                          openEntityResetDialog(e.entity);
+                                        }}
+                                        disabled={busy}
+                                        sx={{ p: 0.25 }}
+                                      >
+                                        <ResetTableIcon sx={{ fontSize: 16 }} />
+                                      </IconButton>
+                                    </Tooltip>
+                                    <Tooltip
+                                      title={`Sync ${entityLabel(e.entity)}`}
+                                    >
+                                      <IconButton
+                                        size="small"
+                                        onClick={ev => {
+                                          ev.stopPropagation();
+                                          handleStartBackfill([e.entity]);
+                                        }}
+                                        disabled={busy}
+                                        sx={{ p: 0.25 }}
+                                      >
+                                        <BackfillIcon sx={{ fontSize: 16 }} />
+                                      </IconButton>
+                                    </Tooltip>
+                                  </>
+                                )}
+                              </Box>
+                            </TableCell>
+                          </TableRow>
+                          {isExpanded && (
+                            <TableRow key={`${e.entity}-schema`}>
+                              <TableCell
+                                colSpan={6}
+                                sx={{
+                                  py: 0,
+                                  px: 0,
+                                  borderBottom: "none",
+                                }}
+                              >
+                                {schemaData?.loading ? (
+                                  <Box sx={{ py: 1.5, px: 2 }}>
+                                    <LinearProgress
+                                      sx={{ height: 2, borderRadius: 1 }}
+                                    />
+                                  </Box>
+                                ) : schemaData?.fields &&
+                                  Object.keys(schemaData.fields).length > 0 ? (
+                                  <Box
+                                    sx={{
+                                      mx: 2,
+                                      my: 1.5,
+                                      border: 1,
+                                      borderColor: "divider",
+                                      borderRadius: 1,
+                                      overflow: "hidden",
+                                    }}
                                   >
-                                    <IconButton
-                                      size="small"
-                                      onClick={() =>
-                                        handleStartBackfill([e.entity])
-                                      }
-                                      disabled={busy}
-                                      sx={{ p: 0.25 }}
+                                    <Box
+                                      sx={{
+                                        px: 1.5,
+                                        py: 0.75,
+                                        bgcolor: "action.hover",
+                                        borderBottom: 1,
+                                        borderColor: "divider",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                      }}
                                     >
-                                      <BackfillIcon sx={{ fontSize: 16 }} />
-                                    </IconButton>
-                                  </Tooltip>
-                                </>
-                              )}
-                            </Box>
-                          </TableCell>
-                        </TableRow>
+                                      <Typography
+                                        sx={{
+                                          fontSize: "0.7rem",
+                                          fontWeight: 600,
+                                          color: "text.secondary",
+                                          textTransform: "uppercase",
+                                          letterSpacing: 0.5,
+                                        }}
+                                      >
+                                        Schema
+                                      </Typography>
+                                      <Chip
+                                        label={`${Object.keys(schemaData.fields).length} columns`}
+                                        size="small"
+                                        sx={{
+                                          height: 18,
+                                          fontSize: "0.62rem",
+                                          fontWeight: 600,
+                                        }}
+                                      />
+                                    </Box>
+                                    <Box>
+                                      {Object.entries(schemaData.fields).map(
+                                        ([fieldName, fieldDef]) => (
+                                          <Box
+                                            key={fieldName}
+                                            sx={{
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: "space-between",
+                                              gap: 1,
+                                              px: 1.5,
+                                              py: 0.5,
+                                              borderBottom: 1,
+                                              borderColor: "divider",
+                                              "&:hover": {
+                                                bgcolor: "action.hover",
+                                              },
+                                            }}
+                                          >
+                                            <Typography
+                                              sx={{
+                                                fontFamily: "monospace",
+                                                fontSize: "0.72rem",
+                                                fontWeight: fieldDef.required
+                                                  ? 600
+                                                  : 400,
+                                                color: fieldName.startsWith(
+                                                  "_mako_",
+                                                )
+                                                  ? "text.disabled"
+                                                  : "text.primary",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                whiteSpace: "nowrap",
+                                              }}
+                                            >
+                                              {fieldName}
+                                            </Typography>
+                                            <Chip
+                                              label={fieldDef.type}
+                                              size="small"
+                                              variant="outlined"
+                                              color={
+                                                fieldDef.type === "timestamp"
+                                                  ? "info"
+                                                  : fieldDef.type === "number"
+                                                    ? "warning"
+                                                    : fieldDef.type ===
+                                                        "boolean"
+                                                      ? "success"
+                                                      : fieldDef.type === "json"
+                                                        ? "secondary"
+                                                        : "default"
+                                              }
+                                              sx={{
+                                                height: 18,
+                                                fontSize: "0.6rem",
+                                                fontWeight: 600,
+                                                flexShrink: 0,
+                                                minWidth: 52,
+                                                justifyContent: "center",
+                                              }}
+                                            />
+                                          </Box>
+                                        ),
+                                      )}
+                                    </Box>
+                                  </Box>
+                                ) : (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{ py: 1.5, px: 2, display: "block" }}
+                                  >
+                                    No schema available for this entity
+                                  </Typography>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </TableBody>

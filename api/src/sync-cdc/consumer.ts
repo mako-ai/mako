@@ -12,9 +12,16 @@ import {
   buildCdcEntityLayout,
   resolveCdcDestinationAdapter,
 } from "./adapters/registry";
-import { cdcLiveTableName } from "./normalization";
+import {
+  cdcLiveTableName,
+  normalizePayloadBySchema,
+  normalizePayloadKeys,
+} from "./normalization";
 import { isEntityEnabledForFlow } from "./entity-selection";
 import { cdcSyncStateService } from "./sync-state";
+import { syncConnectorRegistry } from "../sync/connector-registry";
+import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
 
 const log = loggers.sync("cdc.consumer");
 
@@ -163,14 +170,52 @@ export class CdcConsumerService {
       const effectiveDeleteMode =
         flow.deleteMode === "hard" && isBackfilling ? "soft" : flow.deleteMode;
 
+      let entitySchema: ConnectorEntitySchema | null = null;
+      if (flow.dataSourceId) {
+        try {
+          const decrypted = await databaseDataSourceManager.getDataSource(
+            String(flow.dataSourceId),
+          );
+          const connector = decrypted
+            ? await syncConnectorRegistry.getConnector(decrypted)
+            : null;
+          if (connector) {
+            entitySchema = await connector.resolveSchema(params.entity);
+          }
+        } catch {
+          log.warn("Schema resolution failed, proceeding without schema", {
+            entity: params.entity,
+            flowId: params.flowId,
+          });
+        }
+      }
+
+      const normalizedEvents = entitySchema
+        ? pending.map(event => {
+            if (!event.payload) return event;
+            const keysNormalized = normalizePayloadKeys(event.payload);
+            const { payload: normalizedPayload, warnings } =
+              normalizePayloadBySchema(keysNormalized, entitySchema);
+            if (warnings.length > 0) {
+              log.warn("Schema coercion warnings during materialization", {
+                entity: params.entity,
+                recordId: event.recordId,
+                warnings,
+              });
+            }
+            return { ...event, payload: normalizedPayload };
+          })
+        : pending;
+
       const apply = await adapter.applyEvents({
-        events: pending,
+        events: normalizedEvents,
         layout,
         flow: {
           _id: flow._id,
           deleteMode: effectiveDeleteMode,
           dataSourceId: flow.dataSourceId,
         },
+        entitySchema: entitySchema ?? undefined,
       });
 
       await eventStore.markEventsApplied(pending.map(event => event.id));
@@ -201,6 +246,13 @@ export class CdcConsumerService {
         errorCode: "MATERIALIZATION_FAILED",
         errorMessage,
       });
+      await this.syncWebhookApplyFailedStatus(
+        pending.map(event => event.webhookEventId),
+        {
+          code: "MATERIALIZATION_FAILED",
+          message: errorMessage,
+        },
+      );
       await cdcSyncStateService.applyStreamTransition({
         workspaceId: params.workspaceId,
         flowId: params.flowId,
@@ -268,6 +320,36 @@ export class CdcConsumerService {
         $set: {
           applyStatus: "dropped",
           applyError: failure,
+        },
+        $unset: { appliedAt: "" },
+      },
+    );
+  }
+
+  private async syncWebhookApplyFailedStatus(
+    webhookEventIds: Array<string | undefined>,
+    failure: { code: string; message: string },
+  ): Promise<void> {
+    const ids = Array.from(
+      new Set(
+        webhookEventIds.filter(
+          (eventId): eventId is string =>
+            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
+        ),
+      ),
+    );
+    if (ids.length === 0) {
+      return;
+    }
+
+    await WebhookEvent.updateMany(
+      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
+      {
+        $set: {
+          applyStatus: "failed",
+          applyError: failure,
+          status: "failed",
+          error: failure,
         },
         $unset: { appliedAt: "" },
       },
