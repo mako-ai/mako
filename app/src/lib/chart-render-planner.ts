@@ -309,13 +309,11 @@ export function buildChartRenderPlan({
   enableSelection,
   activeSelection,
 }: BuildRenderPlanInput): BuildRenderPlanOutput {
-  const withHoverEnhancement = enhanceMultiSeriesHover(spec, data);
-  const withSelection = enableSelection
-    ? injectSelectionParams(withHoverEnhancement)
-    : withHoverEnhancement;
+  const withSelection = enableSelection ? injectSelectionParams(spec) : spec;
+  const withHoverEnhancement = enhanceMultiSeriesHover(withSelection, data);
   const withActiveSelection = enableSelection
-    ? injectActiveSelection(withSelection, activeSelection)
-    : withSelection;
+    ? injectActiveSelection(withHoverEnhancement, activeSelection)
+    : withHoverEnhancement;
   const withStabilizedColors = stabilizeColorDomain(withActiveSelection, data);
   const withSanitizedSelections = sanitizeSelectionNames(withStabilizedColors);
 
