@@ -303,7 +303,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string },
+    options?: { stagingSuffix?: string; skipDrop?: boolean },
   ): Promise<{ loaded: number }> {
     await this.ensureDataset();
     const stagingTable = this.getStagingTableName(
@@ -311,7 +311,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       flowId,
       options?.stagingSuffix,
     );
-    await this.dropStagingTable(stagingTable).catch(() => undefined);
+    if (!options?.skipDrop) {
+      await this.dropStagingTable(stagingTable).catch(() => undefined);
+    }
     return this.loadParquetToStaging(parquetPath, stagingTable);
   }
 
@@ -636,6 +638,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       .load(parquetPath, {
         sourceFormat: "PARQUET",
         writeDisposition: "WRITE_APPEND",
+        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
       });
 
     const jobMeta = metadata as Record<string, any>;
