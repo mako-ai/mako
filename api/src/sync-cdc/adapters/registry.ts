@@ -40,14 +40,20 @@ export interface CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
+    options?: { stagingSuffix?: string },
   ): Promise<{ loaded: number }>;
   mergeFromStaging?(
     layout: CdcEntityLayout,
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
+    options?: { stagingSuffix?: string },
   ): Promise<{ written: number }>;
-  cleanupStaging?(layout: CdcEntityLayout, flowId: string): Promise<void>;
+  cleanupStaging?(
+    layout: CdcEntityLayout,
+    flowId: string,
+    options?: { stagingSuffix?: string },
+  ): Promise<void>;
 }
 
 export function resolveCdcDestinationAdapter(params: {

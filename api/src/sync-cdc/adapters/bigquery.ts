@@ -303,9 +303,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
+    options?: { stagingSuffix?: string },
   ): Promise<{ loaded: number }> {
     await this.ensureDataset();
-    const stagingTable = this.getStagingTableName(layout.tableName, flowId);
+    const stagingTable = this.getStagingTableName(
+      layout.tableName,
+      flowId,
+      options?.stagingSuffix,
+    );
     await this.dropStagingTable(stagingTable).catch(() => undefined);
     return this.loadParquetToStaging(parquetPath, stagingTable);
   }
@@ -315,8 +320,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
+    options?: { stagingSuffix?: string },
   ): Promise<{ written: number }> {
-    const stagingTable = this.getStagingTableName(layout.tableName, flowId);
+    const stagingTable = this.getStagingTableName(
+      layout.tableName,
+      flowId,
+      options?.stagingSuffix,
+    );
     return this.mergeStagingToLive(layout, stagingTable, entitySchema);
   }
 
@@ -528,8 +538,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return { written: 0 };
   }
 
-  async cleanupStaging(layout: CdcEntityLayout, flowId: string): Promise<void> {
-    const stagingTable = this.getStagingTableName(layout.tableName, flowId);
+  async cleanupStaging(
+    layout: CdcEntityLayout,
+    flowId: string,
+    options?: { stagingSuffix?: string },
+  ): Promise<void> {
+    const stagingTable = this.getStagingTableName(
+      layout.tableName,
+      flowId,
+      options?.stagingSuffix,
+    );
     await this.dropStagingTable(stagingTable);
   }
 
@@ -537,9 +555,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  private getStagingTableName(tableName: string, flowId: string): string {
+  private getStagingTableName(
+    tableName: string,
+    flowId: string,
+    suffix?: string,
+  ): string {
     const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    return `${tableName}__${flowToken}__staging`;
+    return `${tableName}__${flowToken}__${suffix || "staging"}`;
   }
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
