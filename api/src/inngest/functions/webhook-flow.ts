@@ -1180,11 +1180,27 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
   { cron: "*/1 * * * *" },
   async ({ step, logger }) => {
     const staleEntities = await step.run("find-stale-entities", async () => {
-      return CdcEntityState.find({
+      const candidates = await CdcEntityState.find({
         $expr: { $gt: ["$lastIngestSeq", "$lastMaterializedSeq"] },
       })
         .select("workspaceId flowId entity")
         .lean();
+
+      if (candidates.length === 0) {
+        return [];
+      }
+
+      const flowIds = Array.from(
+        new Set(candidates.map(c => c.flowId.toString())),
+      );
+      const existingFlows = await Flow.find({ _id: { $in: flowIds } })
+        .select("_id")
+        .lean();
+      const existingFlowIdSet = new Set(
+        existingFlows.map(f => f._id.toString()),
+      );
+
+      return candidates.filter(c => existingFlowIdSet.has(c.flowId.toString()));
     });
 
     const entities = staleEntities as Array<{
