@@ -1089,8 +1089,11 @@ export class CloseConnector extends BaseConnector {
     // limit and produce deterministic, gap-free results.
     const WINDOW_DAYS = 7;
 
-    let windowStart: string | null =
-      state?.metadata?.windowStart ?? dateWindowCursor ?? null;
+    // dateWindowCursor was used in old DESC pagination as a "before" upper-bound.
+    // It cannot be safely reused as windowStart (ASC "on_or_after" lower-bound)
+    // because the semantic meaning is inverted, causing silent data loss.
+    // Ignore legacy dateWindowCursor and always start from the oldest record.
+    let windowStart: string | null = state?.metadata?.windowStart ?? null;
     let windowEnd: string | null = state?.metadata?.windowEnd ?? null;
     let pageCursor: string | null = state?.metadata?.pageCursor ?? null;
 
@@ -1229,6 +1232,8 @@ export class CloseConnector extends BaseConnector {
 
           if (data.length === 0) {
             // Empty window — skip ahead without counting as an iteration
+            // But still respect rate limiting to avoid rapid-fire API calls
+            await this.sleep(rateLimitDelay);
             continue;
           }
         }
@@ -1271,6 +1276,8 @@ export class CloseConnector extends BaseConnector {
             new Date(windowStart).getTime() + halfSpan,
           ).toISOString();
           pageCursor = null;
+          // Increment iterations to prevent infinite loop when window is already at minimum
+          iterations++;
         } else {
           throw error;
         }
