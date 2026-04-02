@@ -947,6 +947,11 @@ async function performSyncChunkSql(
 
 const FLUSH_BATCH_SIZE = 25_000;
 
+/**
+ * Flush up to FLUSH_BATCH_SIZE rows from the temp collection to BQ staging.
+ * Always uses skipDrop: true — the caller (prepare-staging step) drops the
+ * staging table once before the chunk loop starts.
+ */
 async function flushBulkBuffer(
   tempCollection: Collection,
   cdcAdapter: CdcDestinationAdapter,
@@ -958,81 +963,52 @@ async function flushBulkBuffer(
   const totalCount = await tempCollection.countDocuments();
   if (totalCount === 0) return;
 
-  const totalBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
-  let totalFlushed = 0;
-  let batchNum = 0;
+  const batchSize = Math.min(totalCount, FLUSH_BATCH_SIZE);
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
-    { entity, totalCount, totalBatches, batchSize: FLUSH_BATCH_SIZE },
+    `Flushing ${entity} buffer to staging (${batchSize.toLocaleString()} of ${totalCount.toLocaleString()} rows)`,
+    { entity, totalCount, batchSize },
   );
 
-  // Process in batches using skip-based pagination.
-  // Temp collection is NOT modified until all batches are staged — this
-  // ensures retry-safety: on step retry we drop staging and re-load
-  // everything from the still-intact temp collection.
-  let offset = 0;
-  for (let i = 0; i < totalBatches; i++) {
-    const rawDocs: Array<Record<string, unknown>> = [];
-    const cursor = tempCollection
-      .find({}, { projection: { _bulkRunId: 0 } })
-      .sort({ _id: 1 })
-      .skip(offset)
-      .limit(FLUSH_BATCH_SIZE);
+  const rawDocs: Array<Record<string, unknown>> = [];
+  const cursor = tempCollection
+    .find({}, { projection: { _bulkRunId: 0 } })
+    .sort({ _id: 1 })
+    .limit(batchSize);
 
-    for await (const doc of cursor) {
-      rawDocs.push(doc as Record<string, unknown>);
-    }
-
-    if (rawDocs.length === 0) break;
-
-    const docs = rawDocs.map(({ _id, ...rest }) => rest);
-
-    const parquet = await buildParquetFromBatches({
-      filenameBase: `backfill-${entity}`,
-      streamBatches: async insertBatch => {
-        const parquetBatchSize = 5000;
-        for (let j = 0; j < docs.length; j += parquetBatchSize) {
-          await insertBatch(docs.slice(j, j + parquetBatchSize));
-        }
-      },
-    });
-
-    const isFirstBatch = i === 0;
-    await cdcAdapter.loadStagingFromParquet!(
-      parquet.filePath,
-      cdcLayout,
-      flowId,
-      { stagingSuffix: "backfill_staging", skipDrop: !isFirstBatch },
-    );
-
-    offset += rawDocs.length;
-    totalFlushed += rawDocs.length;
-    batchNum++;
-
-    const pct = Math.round((totalFlushed / totalCount) * 100);
-    logger?.log(
-      "info",
-      `📦 ${entity} flush batch ${batchNum}/${totalBatches} — ${rawDocs.length.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}, ${pct}%)`,
-      {
-        entity,
-        batch: batchNum,
-        totalBatches,
-        batchRows: rawDocs.length,
-        totalFlushed,
-        totalCount,
-      },
-    );
+  for await (const doc of cursor) {
+    rawDocs.push(doc as Record<string, unknown>);
   }
 
-  // All batches staged — now safe to clear temp collection
-  await tempCollection.deleteMany({});
+  if (rawDocs.length === 0) return;
+
+  const docIds = rawDocs.map(d => d._id as any);
+  const docs = rawDocs.map(({ _id, ...rest }) => rest);
+
+  const parquet = await buildParquetFromBatches({
+    filenameBase: `backfill-${entity}`,
+    streamBatches: async insertBatch => {
+      const parquetBatchSize = 5000;
+      for (let j = 0; j < docs.length; j += parquetBatchSize) {
+        await insertBatch(docs.slice(j, j + parquetBatchSize));
+      }
+    },
+  });
+
+  await cdcAdapter.loadStagingFromParquet!(
+    parquet.filePath,
+    cdcLayout,
+    flowId,
+    { stagingSuffix: "backfill_staging", skipDrop: true },
+  );
+
+  await tempCollection.deleteMany({ _id: { $in: docIds } });
 
   logger?.log(
     "info",
-    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows, ${batchNum} batch${batchNum > 1 ? "es" : ""})`,
-    { entity, totalFlushed, batches: batchNum },
+    `✅ ${entity} flushed ${rawDocs.length.toLocaleString()} rows to staging`,
+    { entity, flushed: rawDocs.length },
   );
 }
 
@@ -1086,6 +1062,59 @@ export async function performBulkFlush(
     options.flowId!,
     options.logger,
   );
+}
+
+export async function performPrepareStaging(
+  options: SyncChunkOptions,
+): Promise<void> {
+  if (!options.tableDestination?.connectionId || !options.flowId) return;
+
+  const entity = options.entity;
+  const entityTableName = getEntityTableName(
+    options.tableDestination.tableName,
+    entity,
+  );
+
+  const destinationConn = await DatabaseConnection.findById(
+    options.tableDestination.connectionId,
+  )
+    .select({ type: 1 })
+    .lean();
+
+  const cdcAdapter = resolveCdcDestinationAdapter({
+    destinationType: destinationConn?.type || "",
+    destinationDatabaseId: options.destinationId,
+    destinationDatabaseName: options.destinationDatabaseName,
+    tableDestination: {
+      connectionId: String(options.tableDestination.connectionId),
+      schema: options.tableDestination.schema || "public",
+      tableName: entityTableName,
+    },
+  });
+
+  if (!cdcAdapter.prepareStaging) return;
+
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+  });
+
+  orchestratorLogger.info(
+    "performPrepareStaging: dropping staging table for fresh load",
+    { entity, flowId: options.flowId },
+  );
+  await cdcAdapter.prepareStaging(cdcLayout, options.flowId!, {
+    stagingSuffix: "backfill_staging",
+  });
+}
+
+export function getTempCollectionCount(
+  flowId: string,
+  entity: string,
+): Promise<number> {
+  const db = Flow.db;
+  const collName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+  return db.collection(collName).countDocuments();
 }
 
 export async function performStagingMerge(

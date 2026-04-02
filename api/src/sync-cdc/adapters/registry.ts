@@ -54,6 +54,11 @@ export interface CdcDestinationAdapter {
     flowId: string,
     options?: { stagingSuffix?: string },
   ): Promise<void>;
+  prepareStaging?(
+    layout: CdcEntityLayout,
+    flowId: string,
+    options?: { stagingSuffix?: string },
+  ): Promise<void>;
 }
 
 export function resolveCdcDestinationAdapter(params: {

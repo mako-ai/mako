@@ -2,6 +2,8 @@ import {
   performSync as performSyncOrchestrated,
   performSyncChunk as performSyncChunkOrchestrated,
   performBulkFlush as performBulkFlushOrchestrated,
+  performPrepareStaging as performPrepareStagingOrchestrated,
+  getTempCollectionCount as getTempCollectionCountOrchestrated,
   performStagingMerge as performStagingMergeOrchestrated,
   performStagingCleanup as performStagingCleanupOrchestrated,
   SyncChunkOptions,
@@ -33,6 +35,19 @@ export async function performBulkFlush(
   options: SyncChunkOptions,
 ): Promise<void> {
   return performBulkFlushOrchestrated(options);
+}
+
+export async function performPrepareStaging(
+  options: SyncChunkOptions,
+): Promise<void> {
+  return performPrepareStagingOrchestrated(options);
+}
+
+export function getTempCollectionCount(
+  flowId: string,
+  entity: string,
+): Promise<number> {
+  return getTempCollectionCountOrchestrated(flowId, entity);
 }
 
 export async function performStagingMerge(
