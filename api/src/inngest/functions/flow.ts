@@ -1761,7 +1761,7 @@ export const flowFunction = inngest.createFunction(
                 flowId.toString(),
                 entity,
               );
-              if (tempCount >= 25_000) {
+              if (tempCount >= 10_000) {
                 logger.info(
                   `Temp buffer reached ${tempCount} rows, flushing batch ${flushIndex}`,
                   { flowId, entity, tempCount, flushIndex },

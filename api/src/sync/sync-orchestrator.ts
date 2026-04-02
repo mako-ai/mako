@@ -945,12 +945,13 @@ async function performSyncChunkSql(
   };
 }
 
-const FLUSH_BATCH_SIZE = 25_000;
+const FLUSH_BATCH_SIZE = 5_000;
 
 /**
- * Flush up to FLUSH_BATCH_SIZE rows from the temp collection to BQ staging.
- * Always uses skipDrop: true — the caller (prepare-staging step) drops the
- * staging table once before the chunk loop starts.
+ * Flush ALL rows from the temp collection to BQ staging in batches of
+ * FLUSH_BATCH_SIZE.  Each batch builds its own parquet file and loads it
+ * independently so peak memory stays bounded (Close leads with nested
+ * contacts/opportunities/custom fields are large — 25k rows OOMs at 1 GB).
  */
 async function flushBulkBuffer(
   tempCollection: Collection,
@@ -963,52 +964,69 @@ async function flushBulkBuffer(
   const totalCount = await tempCollection.countDocuments();
   if (totalCount === 0) return;
 
-  const batchSize = Math.min(totalCount, FLUSH_BATCH_SIZE);
+  const totalBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
+  let totalFlushed = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${batchSize.toLocaleString()} of ${totalCount.toLocaleString()} rows)`,
-    { entity, totalCount, batchSize },
+    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
+    { entity, totalCount, totalBatches, batchSize: FLUSH_BATCH_SIZE },
   );
 
-  const rawDocs: Array<Record<string, unknown>> = [];
-  const cursor = tempCollection
-    .find({}, { projection: { _bulkRunId: 0 } })
-    .sort({ _id: 1 })
-    .limit(batchSize);
+  for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+    const rawDocs: Array<Record<string, unknown>> = [];
+    const cursor = tempCollection
+      .find({}, { projection: { _bulkRunId: 0 } })
+      .sort({ _id: 1 })
+      .limit(FLUSH_BATCH_SIZE);
 
-  for await (const doc of cursor) {
-    rawDocs.push(doc as Record<string, unknown>);
+    for await (const doc of cursor) {
+      rawDocs.push(doc as Record<string, unknown>);
+    }
+
+    if (rawDocs.length === 0) break;
+
+    const docIds = rawDocs.map(d => d._id as any);
+    const docs = rawDocs.map(({ _id, ...rest }) => rest);
+
+    const parquet = await buildParquetFromBatches({
+      filenameBase: `backfill-${entity}`,
+      streamBatches: async insertBatch => {
+        const parquetBatchSize = 2500;
+        for (let j = 0; j < docs.length; j += parquetBatchSize) {
+          await insertBatch(docs.slice(j, j + parquetBatchSize));
+        }
+      },
+    });
+
+    await cdcAdapter.loadStagingFromParquet!(
+      parquet.filePath,
+      cdcLayout,
+      flowId,
+      { stagingSuffix: "backfill_staging", skipDrop: true },
+    );
+
+    await tempCollection.deleteMany({ _id: { $in: docIds } });
+    totalFlushed += rawDocs.length;
+
+    logger?.log(
+      "info",
+      `📦 ${entity} flush batch ${batchNum + 1}/${totalBatches} — ${rawDocs.length.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()})`,
+      {
+        entity,
+        batch: batchNum + 1,
+        totalBatches,
+        batchRows: rawDocs.length,
+        totalFlushed,
+        totalCount,
+      },
+    );
   }
 
-  if (rawDocs.length === 0) return;
-
-  const docIds = rawDocs.map(d => d._id as any);
-  const docs = rawDocs.map(({ _id, ...rest }) => rest);
-
-  const parquet = await buildParquetFromBatches({
-    filenameBase: `backfill-${entity}`,
-    streamBatches: async insertBatch => {
-      const parquetBatchSize = 5000;
-      for (let j = 0; j < docs.length; j += parquetBatchSize) {
-        await insertBatch(docs.slice(j, j + parquetBatchSize));
-      }
-    },
-  });
-
-  await cdcAdapter.loadStagingFromParquet!(
-    parquet.filePath,
-    cdcLayout,
-    flowId,
-    { stagingSuffix: "backfill_staging", skipDrop: true },
-  );
-
-  await tempCollection.deleteMany({ _id: { $in: docIds } });
-
   logger?.log(
     "info",
-    `✅ ${entity} flushed ${rawDocs.length.toLocaleString()} rows to staging`,
-    { entity, flushed: rawDocs.length },
+    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
+    { entity, totalFlushed, batches: totalBatches },
   );
 }
 
