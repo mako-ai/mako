@@ -698,11 +698,9 @@ async function performSyncChunkSql(
     fieldCount: entitySchema ? Object.keys(entitySchema.fields).length : 0,
   });
 
-  const BULK_FLUSH_THRESHOLD = 50_000;
   const useBulkPath =
     isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
   let bulkTempCollection: Collection | null = null;
-  let bulkAccumulatedRows = 0;
   const bulkRunId = options.backfillRunId || options.flowId || "";
   if (useBulkPath && options.flowId) {
     const db = Flow.db;
@@ -848,12 +846,10 @@ async function performSyncChunkSql(
               await bulkTempCollection.insertMany(enrichedRecords, {
                 ordered: false,
               });
-              bulkAccumulatedRows += processedRecords.length;
               runningRowsWritten += processedRecords.length;
               logger?.log("info", "Buffered batch to MongoDB temp collection", {
                 entity,
                 fetchedCount: batch.length,
-                bufferedTotal: bulkAccumulatedRows,
                 totalProcessed: runningRowsWritten,
                 writeMode: "bulk-buffer",
               });
@@ -912,24 +908,6 @@ async function performSyncChunkSql(
     await flushFullSyncRows("chunk-end");
   }
 
-  if (
-    useBulkPath &&
-    bulkTempCollection &&
-    cdcAdapter?.loadStagingFromParquet &&
-    cdcLayout &&
-    bulkAccumulatedRows >= BULK_FLUSH_THRESHOLD
-  ) {
-    await flushBulkBuffer(
-      bulkTempCollection,
-      cdcAdapter,
-      cdcLayout,
-      entity,
-      options.flowId!,
-      logger,
-    );
-    bulkAccumulatedRows = 0;
-  }
-
   const nextMetadata =
     fetchState.metadata && typeof fetchState.metadata === "object"
       ? { ...(fetchState.metadata as Record<string, unknown>) }
@@ -967,6 +945,8 @@ async function performSyncChunkSql(
   };
 }
 
+const FLUSH_BATCH_SIZE = 25_000;
+
 async function flushBulkBuffer(
   tempCollection: Collection,
   cdcAdapter: CdcDestinationAdapter,
@@ -975,44 +955,85 @@ async function flushBulkBuffer(
   flowId: string,
   logger?: SyncLogger,
 ): Promise<void> {
-  const count = await tempCollection.countDocuments();
-  if (count === 0) return;
+  const totalCount = await tempCollection.countDocuments();
+  if (totalCount === 0) return;
 
-  const parquet = await buildParquetFromBatches({
-    filenameBase: `backfill-${entity}`,
-    streamBatches: async insertBatch => {
-      const cursor = tempCollection.find(
-        {},
-        { projection: { _id: 0, _bulkRunId: 0 } },
-      );
-      const batchSize = 5000;
-      let batch: Record<string, unknown>[] = [];
-      for await (const doc of cursor) {
-        batch.push(doc as Record<string, unknown>);
-        if (batch.length >= batchSize) {
-          await insertBatch(batch);
-          batch = [];
-        }
-      }
-      if (batch.length > 0) {
-        await insertBatch(batch);
-      }
-    },
-  });
+  const totalBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
+  let totalFlushed = 0;
+  let batchNum = 0;
 
-  const backfillStagingOpts = { stagingSuffix: "backfill_staging" };
-  await cdcAdapter.loadStagingFromParquet!(
-    parquet.filePath,
-    cdcLayout,
-    flowId,
-    backfillStagingOpts,
+  logger?.log(
+    "info",
+    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
+    { entity, totalCount, totalBatches, batchSize: FLUSH_BATCH_SIZE },
   );
+
+  // Process in batches using skip-based pagination.
+  // Temp collection is NOT modified until all batches are staged — this
+  // ensures retry-safety: on step retry we drop staging and re-load
+  // everything from the still-intact temp collection.
+  let offset = 0;
+  for (let i = 0; i < totalBatches; i++) {
+    const rawDocs: Array<Record<string, unknown>> = [];
+    const cursor = tempCollection
+      .find({}, { projection: { _bulkRunId: 0 } })
+      .sort({ _id: 1 })
+      .skip(offset)
+      .limit(FLUSH_BATCH_SIZE);
+
+    for await (const doc of cursor) {
+      rawDocs.push(doc as Record<string, unknown>);
+    }
+
+    if (rawDocs.length === 0) break;
+
+    const docs = rawDocs.map(({ _id, ...rest }) => rest);
+
+    const parquet = await buildParquetFromBatches({
+      filenameBase: `backfill-${entity}`,
+      streamBatches: async insertBatch => {
+        const parquetBatchSize = 5000;
+        for (let j = 0; j < docs.length; j += parquetBatchSize) {
+          await insertBatch(docs.slice(j, j + parquetBatchSize));
+        }
+      },
+    });
+
+    const isFirstBatch = i === 0;
+    await cdcAdapter.loadStagingFromParquet!(
+      parquet.filePath,
+      cdcLayout,
+      flowId,
+      { stagingSuffix: "backfill_staging", skipDrop: !isFirstBatch },
+    );
+
+    offset += rawDocs.length;
+    totalFlushed += rawDocs.length;
+    batchNum++;
+
+    const pct = Math.round((totalFlushed / totalCount) * 100);
+    logger?.log(
+      "info",
+      `📦 ${entity} flush batch ${batchNum}/${totalBatches} — ${rawDocs.length.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}, ${pct}%)`,
+      {
+        entity,
+        batch: batchNum,
+        totalBatches,
+        batchRows: rawDocs.length,
+        totalFlushed,
+        totalCount,
+      },
+    );
+  }
+
+  // All batches staged — now safe to clear temp collection
   await tempCollection.deleteMany({});
 
-  logger?.log("info", "Flushed bulk buffer to staging via Parquet", {
-    entity,
-    rowsFlushed: count,
-  });
+  logger?.log(
+    "info",
+    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows, ${batchNum} batch${batchNum > 1 ? "es" : ""})`,
+    { entity, totalFlushed, batches: batchNum },
+  );
 }
 
 export async function performBulkFlush(

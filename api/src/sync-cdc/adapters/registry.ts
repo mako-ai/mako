@@ -40,7 +40,7 @@ export interface CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string },
+    options?: { stagingSuffix?: string; skipDrop?: boolean },
   ): Promise<{ loaded: number }>;
   mergeFromStaging?(
     layout: CdcEntityLayout,
