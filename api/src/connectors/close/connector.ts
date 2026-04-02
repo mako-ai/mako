@@ -921,7 +921,7 @@ export class CloseConnector extends BaseConnector {
     // Date-window cursor: "before" boundary for descending pagination.
     // Close's Search API ignores _skip — we use native cursor tokens for
     // page-to-page navigation and date-based windowing to avoid the 10k limit.
-    let dateWindowCursor: string | null = state?.metadata?.cursor ?? null;
+    const dateWindowCursor: string | null = state?.metadata?.cursor ?? null;
 
     const objectType = this.getSearchObjectType(entity);
 
@@ -1082,6 +1082,18 @@ export class CloseConnector extends BaseConnector {
       fieldsMap[objectType] = activityFields;
     }
 
+    // Forward-scanning ASC date windows avoid the non-deterministic row drops
+    // that occur with DESC sort + cursor resets.  Close's Search API cursor is
+    // unstable under DESC sort: resetting the cursor mid-window can silently
+    // skip records.  Small ASC windows (7 days) stay well under the ~10k cursor
+    // limit and produce deterministic, gap-free results.
+    const WINDOW_DAYS = 7;
+
+    let windowStart: string | null =
+      state?.metadata?.windowStart ?? dateWindowCursor ?? null;
+    let windowEnd: string | null = state?.metadata?.windowEnd ?? null;
+    let pageCursor: string | null = state?.metadata?.pageCursor ?? null;
+
     if (!state && onProgress) {
       try {
         const countResp = await api.post("/data/search/", {
@@ -1098,41 +1110,78 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
-    let pageCursor: string | null = state?.metadata?.pageCursor ?? null;
-    let windowRecords: number = state?.metadata?.windowRecords ?? 0;
-    let lastSeenDateCreated: string | null = null;
-    const WINDOW_SIZE = 8000;
-
-    while (iterations < maxIterations) {
-      try {
-        const queries: any[] = [
-          { type: "object_type", object_type: objectType },
-        ];
-        if (dateWindowCursor) {
-          queries.push({
-            type: "field_condition",
+    // Resolve the date range on first invocation
+    if (!windowStart) {
+      const oldestResp = await api.post("/data/search/", {
+        query: { type: "object_type", object_type: objectType },
+        _limit: 1,
+        sort: [
+          {
+            direction: "asc",
             field: {
-              type: "regular_field",
               object_type: objectType,
+              type: "regular_field",
               field_name: "date_created",
             },
-            condition: {
-              type: "moment_range",
-              on_or_after: null,
-              before: {
-                type: "fixed_utc",
-                value: dateWindowCursor,
-              },
-            },
-          });
-        }
+          },
+        ],
+        _fields: { [objectType]: ["id", "date_created"] },
+      });
+      const oldestRow = oldestResp.data?.data?.[0];
+      if (!oldestRow) {
+        return {
+          totalProcessed: recordCount,
+          hasMore: false,
+          iterationsInChunk: 0,
+        };
+      }
+      windowStart = new Date(oldestRow.date_created).toISOString();
+    }
 
+    // Upper bound: far-future sentinel so the last window captures everything
+    const upperBound = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    if (!windowEnd) {
+      windowEnd = new Date(
+        new Date(windowStart).getTime() + WINDOW_DAYS * 24 * 60 * 60 * 1000,
+      ).toISOString();
+    }
+
+    while (iterations < maxIterations) {
+      if (new Date(windowStart).getTime() >= new Date(upperBound).getTime()) {
+        return {
+          totalProcessed: recordCount,
+          hasMore: false,
+          iterationsInChunk: iterations,
+          metadata: { windowStart, windowEnd, pageCursor: null },
+        };
+      }
+
+      try {
         const body: any = {
-          query: { type: "and", queries },
+          query: {
+            type: "and",
+            queries: [
+              { type: "object_type", object_type: objectType },
+              {
+                type: "field_condition",
+                field: {
+                  type: "regular_field",
+                  object_type: objectType,
+                  field_name: "date_created",
+                },
+                condition: {
+                  type: "moment_range",
+                  on_or_after: { type: "fixed_utc", value: windowStart },
+                  before: { type: "fixed_utc", value: windowEnd },
+                },
+              },
+            ],
+          },
           _limit: batchSize,
           sort: [
             {
-              direction: "desc",
+              direction: "asc",
               field: {
                 object_type: objectType,
                 type: "regular_field",
@@ -1141,6 +1190,7 @@ export class CloseConnector extends BaseConnector {
             },
           ],
         };
+
         if (
           objectType === "lead" ||
           objectType === "contact" ||
@@ -1161,56 +1211,26 @@ export class CloseConnector extends BaseConnector {
         const data = response.data.data || [];
         pageCursor = response.data.cursor || null;
 
+        if (data.length > 0) {
+          const records =
+            entity === "leads" ? this.normalizeLeadBatch(data) : data;
+          await onBatch(records);
+          recordCount += records.length;
+          if (onProgress) onProgress(recordCount, undefined);
+        }
+
         if (data.length === 0 || !pageCursor) {
-          if (data.length > 0) {
-            const records =
-              entity === "leads" ? this.normalizeLeadBatch(data) : data;
-            await onBatch(records);
-            recordCount += records.length;
-            if (onProgress) onProgress(recordCount, undefined);
-          }
-          return {
-            totalProcessed: recordCount,
-            hasMore: false,
-            iterationsInChunk: iterations + 1,
-            metadata: {
-              cursor: dateWindowCursor,
-              pageCursor,
-              windowRecords,
-            },
-          };
-        }
-
-        const records =
-          entity === "leads" ? this.normalizeLeadBatch(data) : data;
-        await onBatch(records);
-        recordCount += records.length;
-        windowRecords += data.length;
-
-        const firstDateCreated = data[0].date_created;
-        lastSeenDateCreated = data[data.length - 1].date_created;
-
-        // Proactive window reset: bump firstDateCreated by 1ms so the
-        // exclusive "before" boundary still includes records sharing the
-        // exact same timestamp that the cursor hadn't reached yet.
-        // Only reset when the batch spans multiple dates — if all records
-        // share one timestamp (cluster), keep the cursor going.
-        if (
-          windowRecords >= WINDOW_SIZE &&
-          firstDateCreated &&
-          firstDateCreated !== dateWindowCursor &&
-          firstDateCreated !== lastSeenDateCreated
-        ) {
-          const bumped = new Date(
-            new Date(firstDateCreated).getTime() + 1,
+          // Window exhausted — advance to the next window
+          windowStart = windowEnd;
+          windowEnd = new Date(
+            new Date(windowStart).getTime() + WINDOW_DAYS * 24 * 60 * 60 * 1000,
           ).toISOString();
-          dateWindowCursor = bumped;
           pageCursor = null;
-          windowRecords = 0;
-        }
 
-        if (onProgress) {
-          onProgress(recordCount, undefined);
+          if (data.length === 0) {
+            // Empty window — skip ahead without counting as an iteration
+            continue;
+          }
         }
 
         iterations++;
@@ -1237,19 +1257,20 @@ export class CloseConnector extends BaseConnector {
           error.response?.status === 400 &&
           error.response?.data?.["field-errors"]?.cursor
         ) {
+          // Cursor expired / limit reached inside a window — shrink window
+          // to half its current span and retry from the same windowStart.
           this.emitSyncLog(
             "info",
-            "Close cursor limit reached, resetting date window",
-            { entity, recordsFetched: recordCount, windowRecords },
+            "Close cursor limit reached, halving date window",
+            { entity, recordsFetched: recordCount, windowStart, windowEnd },
           );
-          if (lastSeenDateCreated && lastSeenDateCreated !== dateWindowCursor) {
-            const bumped = new Date(
-              new Date(lastSeenDateCreated).getTime() + 1,
-            ).toISOString();
-            dateWindowCursor = bumped;
-          }
+          const currentSpan =
+            new Date(windowEnd).getTime() - new Date(windowStart).getTime();
+          const halfSpan = Math.max(currentSpan / 2, 24 * 60 * 60 * 1000);
+          windowEnd = new Date(
+            new Date(windowStart).getTime() + halfSpan,
+          ).toISOString();
           pageCursor = null;
-          windowRecords = 0;
         } else {
           throw error;
         }
@@ -1260,7 +1281,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { cursor: dateWindowCursor, pageCursor, windowRecords },
+      metadata: { windowStart, windowEnd, pageCursor },
     };
   }
 
