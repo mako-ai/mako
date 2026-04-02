@@ -11,6 +11,8 @@ import {
   performSync,
   performSyncChunk,
   performBulkFlush,
+  performPrepareStaging,
+  getTempCollectionCount,
   performStagingMerge,
   performStagingCleanup,
   SyncLogger,
@@ -1433,6 +1435,94 @@ export const flowFunction = inngest.createFunction(
               });
             }
           }
+          const useBulkPath = isCdcEnabled && destinationType === "bigquery";
+          let flushIndex = 0;
+          let bulkSyncOptions: Record<string, unknown> | undefined;
+
+          if (useBulkPath) {
+            const flowTableDest = (flow as any).tableDestination;
+            const bulkEntityLayout = ((flow as any).entityLayouts || []).find(
+              (l: any) =>
+                l.entity === entity || l.entity === entity.split(":")[0],
+            );
+            const bulkPartitioning = bulkEntityLayout?.partitionField
+              ? {
+                  type: "time" as const,
+                  field: bulkEntityLayout.partitionField,
+                  granularity: bulkEntityLayout.partitionGranularity || "day",
+                  requirePartitionFilter:
+                    flowTableDest?.partitioning?.requirePartitionFilter,
+                }
+              : flowTableDest?.partitioning?.enabled
+                ? {
+                    type: flowTableDest.partitioning.type || "time",
+                    field:
+                      flowTableDest.partitioning.type === "ingestion"
+                        ? "_syncedAt"
+                        : flowTableDest.partitioning.field || "_syncedAt",
+                    granularity:
+                      flowTableDest.partitioning.granularity || "day",
+                    requirePartitionFilter:
+                      flowTableDest.partitioning.requirePartitionFilter,
+                  }
+                : undefined;
+            const bulkClustering = bulkEntityLayout?.clusterFields?.length
+              ? { fields: bulkEntityLayout.clusterFields }
+              : flowTableDest?.clustering?.enabled &&
+                  flowTableDest.clustering.fields?.length
+                ? { fields: flowTableDest.clustering.fields }
+                : undefined;
+
+            const bulkLogger: SyncLogger = {
+              log: (level: string, message: string, metadata?: any) => {
+                const logData = { flowId, entity, executionId, ...metadata };
+                switch (level) {
+                  case "info":
+                    logger.info(message, logData);
+                    void appendExecutionLog("info", message, logData);
+                    break;
+                  case "warn":
+                    logger.warn(message, logData);
+                    void appendExecutionLog("warn", message, logData);
+                    break;
+                  case "error":
+                    logger.error(message, logData);
+                    void appendExecutionLog("error", message, logData);
+                    break;
+                  default:
+                    logger.debug(message, logData);
+                    break;
+                }
+              },
+            };
+
+            bulkSyncOptions = {
+              dataSourceId: dataSourceId.toString(),
+              destinationId: flow.destinationDatabaseId.toString(),
+              destinationDatabaseName: flow.destinationDatabaseName,
+              flowId: flowId.toString(),
+              workspaceId: flow.workspaceId.toString(),
+              syncEngine: (flow as any).syncEngine,
+              entity,
+              isIncremental: flow.syncMode === "incremental",
+              tableDestination: flowTableDest,
+              deleteMode: (flow as any).deleteMode,
+              entityPartitioning: bulkPartitioning,
+              entityClustering: bulkClustering,
+              logger: bulkLogger,
+            };
+
+            await step.run(`prepare-staging-${safeEntityStepId}`, async () => {
+              await touchHeartbeat(executionId);
+              void appendExecutionLog(
+                "info",
+                `Preparing staging table for ${entity} (dropping if exists)`,
+                { entity },
+              );
+              await performPrepareStaging(bulkSyncOptions as any);
+            });
+          }
+
           let chunkIndex = 0;
           let completed = false;
 
@@ -1666,8 +1756,49 @@ export const flowFunction = inngest.createFunction(
             }
             chunkIndex++;
 
+            if (useBulkPath && bulkSyncOptions && !completed) {
+              const tempCount = await getTempCollectionCount(
+                flowId.toString(),
+                entity,
+              );
+              if (tempCount >= 25_000) {
+                logger.info(
+                  `Temp buffer reached ${tempCount} rows, flushing batch ${flushIndex}`,
+                  { flowId, entity, tempCount, flushIndex },
+                );
+                await step.run(
+                  `flush-batch-${safeEntityStepId}-${flushIndex}`,
+                  async () => {
+                    await touchHeartbeat(executionId);
+                    void appendExecutionLog(
+                      "info",
+                      `Flushing ${entity} batch ${flushIndex} to staging (${tempCount} rows in temp)`,
+                      { entity, flushIndex, tempCount },
+                    );
+                    try {
+                      await performBulkFlush(bulkSyncOptions as any);
+                    } catch (err) {
+                      const msg =
+                        err instanceof Error ? err.message : String(err);
+                      await appendExecutionLog(
+                        "error",
+                        `Failed to flush ${entity} batch ${flushIndex}: ${msg}`,
+                        { entity, flushIndex },
+                      );
+                      throw err;
+                    }
+                    void appendExecutionLog(
+                      "info",
+                      `${entity} batch ${flushIndex} flushed to staging`,
+                      { entity, flushIndex },
+                    );
+                  },
+                );
+                flushIndex++;
+              }
+            }
+
             if (chunkIndex > 1000) {
-              // Safety limit to prevent infinite loops
               throw new Error(
                 `Too many chunks (${chunkIndex}) for entity ${entity}. Possible infinite loop.`,
               );
@@ -1680,106 +1811,37 @@ export const flowFunction = inngest.createFunction(
             totalChunks: chunkIndex,
           });
 
-          const useBulkPath = isCdcEnabled && destinationType === "bigquery";
-          if (useBulkPath) {
-            const flowTableDest = (flow as any).tableDestination;
-            const bulkEntityLayout = ((flow as any).entityLayouts || []).find(
-              (l: any) =>
-                l.entity === entity || l.entity === entity.split(":")[0],
-            );
-            const bulkPartitioning = bulkEntityLayout?.partitionField
-              ? {
-                  type: "time" as const,
-                  field: bulkEntityLayout.partitionField,
-                  granularity: bulkEntityLayout.partitionGranularity || "day",
-                  requirePartitionFilter:
-                    flowTableDest?.partitioning?.requirePartitionFilter,
-                }
-              : flowTableDest?.partitioning?.enabled
-                ? {
-                    type: flowTableDest.partitioning.type || "time",
-                    field:
-                      flowTableDest.partitioning.type === "ingestion"
-                        ? "_syncedAt"
-                        : flowTableDest.partitioning.field || "_syncedAt",
-                    granularity:
-                      flowTableDest.partitioning.granularity || "day",
-                    requirePartitionFilter:
-                      flowTableDest.partitioning.requirePartitionFilter,
-                  }
-                : undefined;
-            const bulkClustering = bulkEntityLayout?.clusterFields?.length
-              ? { fields: bulkEntityLayout.clusterFields }
-              : flowTableDest?.clustering?.enabled &&
-                  flowTableDest.clustering.fields?.length
-                ? { fields: flowTableDest.clustering.fields }
-                : undefined;
-
-            const bulkLogger: SyncLogger = {
-              log: (level: string, message: string, metadata?: any) => {
-                const logData = { flowId, entity, executionId, ...metadata };
-                switch (level) {
-                  case "info":
-                    logger.info(message, logData);
-                    void appendExecutionLog("info", message, logData);
-                    break;
-                  case "warn":
-                    logger.warn(message, logData);
-                    void appendExecutionLog("warn", message, logData);
-                    break;
-                  case "error":
-                    logger.error(message, logData);
-                    void appendExecutionLog("error", message, logData);
-                    break;
-                  default:
-                    logger.debug(message, logData);
-                    break;
-                }
+          if (useBulkPath && bulkSyncOptions) {
+            logger.info(
+              `Flushing ${entity} remaining buffer to BigQuery staging`,
+              {
+                flowId,
+                entity,
+                flushIndex,
               },
-            };
-
-            const bulkSyncOptions = {
-              dataSourceId: dataSourceId.toString(),
-              destinationId: flow.destinationDatabaseId.toString(),
-              destinationDatabaseName: flow.destinationDatabaseName,
-              flowId: flowId.toString(),
-              workspaceId: flow.workspaceId.toString(),
-              syncEngine: (flow as any).syncEngine,
-              entity,
-              isIncremental: flow.syncMode === "incremental",
-              tableDestination: flowTableDest,
-              deleteMode: (flow as any).deleteMode,
-              entityPartitioning: bulkPartitioning,
-              entityClustering: bulkClustering,
-              logger: bulkLogger,
-            };
-
-            logger.info(`Flushing ${entity} bulk buffer to BigQuery staging`, {
-              flowId,
-              entity,
-            });
+            );
             try {
               await step.run(`flush-final-${safeEntityStepId}`, async () => {
                 await touchHeartbeat(executionId);
                 void appendExecutionLog(
                   "info",
-                  `Flushing ${entity} buffer to BigQuery staging via Parquet`,
+                  `Flushing ${entity} remaining buffer to BigQuery staging via Parquet`,
                   { entity },
                 );
                 try {
-                  await performBulkFlush(bulkSyncOptions);
+                  await performBulkFlush(bulkSyncOptions as any);
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
                   await appendExecutionLog(
                     "error",
-                    `Failed to flush ${entity} buffer to staging: ${msg}`,
+                    `Failed to flush ${entity} remaining buffer to staging: ${msg}`,
                     { entity },
                   );
                   throw err;
                 }
                 void appendExecutionLog(
                   "info",
-                  `${entity} buffer flushed to staging table`,
+                  `${entity} remaining buffer flushed to staging table`,
                   { entity },
                 );
               });
@@ -1805,7 +1867,7 @@ export const flowFunction = inngest.createFunction(
                   { entity },
                 );
                 try {
-                  await performStagingMerge(bulkSyncOptions);
+                  await performStagingMerge(bulkSyncOptions as any);
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
                   await appendExecutionLog(
@@ -1837,7 +1899,7 @@ export const flowFunction = inngest.createFunction(
             await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
               await touchHeartbeat(executionId);
               try {
-                await performStagingCleanup(bulkSyncOptions);
+                await performStagingCleanup(bulkSyncOptions as any);
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
                 void appendExecutionLog(

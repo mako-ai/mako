@@ -553,6 +553,20 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     await this.dropStagingTable(stagingTable);
   }
 
+  async prepareStaging(
+    layout: CdcEntityLayout,
+    flowId: string,
+    options?: { stagingSuffix?: string },
+  ): Promise<void> {
+    await this.ensureDataset();
+    const stagingTable = this.getStagingTableName(
+      layout.tableName,
+      flowId,
+      options?.stagingSuffix,
+    );
+    await this.dropStagingTable(stagingTable).catch(() => undefined);
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
