@@ -55,17 +55,18 @@ export const DashboardDataSourceSchema = z.object({
   rowLimit: z.number().optional(),
   cache: z
     .object({
-      lastRefreshedAt: z.string().optional(),
-      rowCount: z.number().optional(),
-      byteSize: z.number().optional(),
-      parquetArtifactKey: z.string().optional(),
-      parquetVersion: z.string().optional(),
-      parquetBuiltAt: z.string().optional(),
+      lastRefreshedAt: z.string().nullable().optional(),
+      rowCount: z.number().nullable().optional(),
+      byteSize: z.number().nullable().optional(),
+      parquetArtifactKey: z.string().nullable().optional(),
+      parquetVersion: z.string().nullable().optional(),
+      parquetBuiltAt: z.string().nullable().optional(),
       parquetBuildStatus: z
         .enum(["missing", "building", "ready", "error"])
+        .nullable()
         .optional(),
-      parquetLastError: z.string().optional(),
-      parquetUrl: z.string().optional(),
+      parquetLastError: z.string().nullable().optional(),
+      parquetUrl: z.string().nullable().optional(),
     })
     .optional(),
   computedColumns: z

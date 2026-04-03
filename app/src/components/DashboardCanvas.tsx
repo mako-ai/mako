@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -13,6 +13,8 @@ import {
   DialogContentText,
   DialogActions,
   Button,
+  Snackbar,
+  Alert,
 } from "@mui/material";
 import {
   RefreshCw,
@@ -108,6 +110,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [showEventLog, setShowEventLog] = useState(false);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const isMaterializationBuilding = (dashboard?.dataSources || []).some(
     ds => ds.cache?.parquetBuildStatus === "building",
@@ -136,12 +139,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     if (workspaceId) void refreshDashboardCommand(workspaceId, dashboardId);
   }, [workspaceId, dashboardId]);
 
-  const handleReloadData = useCallback(() => {
-    if (workspaceId) {
-      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
-    }
-  }, [workspaceId, dashboardId]);
-
   const dataFreshness = useMemo(() => {
     if (!dashboard || dashboard.dataSources.length === 0) return null;
     const ttl = dashboard.materializationSchedule?.dataFreshnessTtlMs;
@@ -168,6 +165,19 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         : `${hours} hour${hours !== 1 ? "s" : ""} ago`;
     return { ageMs, label };
   }, [dashboard]);
+
+  const [freshnessDismissed, setFreshnessDismissed] = useState(false);
+
+  useEffect(() => {
+    setFreshnessDismissed(false);
+  }, [dataFreshness?.label]);
+
+  const handleReloadData = useCallback(() => {
+    if (workspaceId) {
+      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
+    }
+    setFreshnessDismissed(true);
+  }, [workspaceId, dashboardId]);
 
   const recentEventLogCount = Math.min(
     runtimeSession?.eventLog.length ?? 0,
@@ -365,11 +375,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   }
                   onClick={async () => {
                     if (!workspaceId || !dashboardId) return;
-                    const saved = await saveDashboardAction(
+                    const result = await saveDashboardAction(
                       workspaceId,
                       dashboardId,
                     );
-                    if (!saved) return;
+                    if (!result.ok) {
+                      if (result.error) setSaveError(result.error);
+                      return;
+                    }
                     void materializeDashboardAction(workspaceId, dashboardId, {
                       force: true,
                     });
@@ -412,7 +425,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         workspaceId={workspaceId}
         runtimeSession={runtimeSession}
         isRuntimeInitializing={isRuntimeInitializing}
-        isMaterializationBuilding={isMaterializationBuilding}
         showEventLog={showEventLog}
         lockError={lockError}
         isEditMode={isEditMode}
@@ -422,7 +434,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         onForceEditMode={handleForceEditMode}
         onEditModeToggle={handleEditModeToggle}
         onReloadData={handleReloadData}
-        dataFreshness={dataFreshness}
+        dataFreshness={freshnessDismissed ? null : dataFreshness}
       />
 
       {/* Content area */}
@@ -528,6 +540,21 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={!!saveError}
+        autoHideDuration={8000}
+        onClose={() => setSaveError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert
+          onClose={() => setSaveError(null)}
+          severity="error"
+          sx={{ width: "100%" }}
+        >
+          {saveError}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

@@ -161,7 +161,10 @@ interface DashboardStoreState {
   openDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
   reloadDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
   closeDashboard: (dashboardId: string) => void;
-  saveDashboard: (workspaceId: string, dashboardId: string) => Promise<boolean>;
+  saveDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   resolveConflict: (
     resolution: "discard" | "overwrite",
     workspaceId: string,
@@ -465,7 +468,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
       saveDashboard: async (workspaceId: string, dashboardId: string) => {
         const dashboard = get().openDashboards[dashboardId];
-        if (!dashboard) return false;
+        if (!dashboard) return { ok: false, error: "Dashboard not loaded" };
         try {
           const payload = {
             widgets: dashboard.widgets,
@@ -494,7 +497,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
               }
             });
           }
-          return true;
+          return { ok: true };
         } catch (err: any) {
           const status = err?.response?.status ?? err?.status;
           if (
@@ -512,8 +515,13 @@ export const useDashboardStore = create<DashboardStoreState>()(
                 ),
               };
             });
+            return { ok: false };
           }
-          return false;
+          const msg =
+            err?.response?.data?.error ??
+            err?.message ??
+            "Failed to save dashboard";
+          return { ok: false, error: msg };
         }
       },
 

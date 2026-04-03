@@ -586,7 +586,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
         $set: updateFields,
         $inc: { version: 1 },
       },
-      { new: true, runValidators: true },
+      { new: true },
     );
 
     if (!updated) {
@@ -620,7 +620,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       ) &&
       isDashboardMaterializationEnabled(updated.materializationSchedule)
     ) {
-      await queueDashboardArtifactRefresh({
+      void queueDashboardArtifactRefresh({
         dashboardId: updated._id.toString(),
         triggerType: "dashboard_update",
       }).catch(() => undefined);
@@ -778,7 +778,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
         $set: validatedBody,
         $inc: { version: 1 },
       },
-      { new: true, runValidators: true },
+      { new: true },
     );
 
     if (!dashboard) {
@@ -814,7 +814,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       ) &&
       isDashboardMaterializationEnabled(dashboard.materializationSchedule)
     ) {
-      await queueDashboardArtifactRefresh({
+      void queueDashboardArtifactRefresh({
         dashboardId: dashboard._id.toString(),
         triggerType: "dashboard_update",
       }).catch(() => undefined);

@@ -133,10 +133,10 @@ export function useDashboardEditSession({
   const handleExitEditSave = useCallback(async () => {
     if (!workspaceId || !dashboardId) return;
     setExitEditConfirmOpen(false);
-    const saved = await useDashboardStore
+    const result = await useDashboardStore
       .getState()
       .saveDashboard(workspaceId, dashboardId);
-    if (saved) {
+    if (result.ok) {
       void exitEditModeAction(workspaceId, dashboardId);
     }
   }, [workspaceId, dashboardId]);

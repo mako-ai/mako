@@ -31,7 +31,6 @@ interface DashboardRuntimeChromeProps {
   workspaceId?: string;
   runtimeSession: DashboardSessionRuntimeState | null;
   isRuntimeInitializing: boolean;
-  isMaterializationBuilding: boolean;
   showEventLog: boolean;
   lockError: string | null;
   isEditMode: boolean;
@@ -50,7 +49,6 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
   workspaceId,
   runtimeSession,
   isRuntimeInitializing,
-  isMaterializationBuilding,
   showEventLog,
   lockError,
   isEditMode,
@@ -201,14 +199,9 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
       {dataFreshness && (
         <Alert
           severity="warning"
-          sx={{ borderRadius: 0 }}
+          sx={{ borderRadius: 0, py: 0, ".MuiAlert-message": { py: 0.75 } }}
           action={
-            <Button
-              color="inherit"
-              size="small"
-              onClick={onReloadData}
-              disabled={isMaterializationBuilding}
-            >
+            <Button color="inherit" size="small" onClick={onReloadData}>
               Refresh now
             </Button>
           }
