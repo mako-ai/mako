@@ -610,6 +610,10 @@ export async function executeDashboardAgentTool(
         sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
         loadPath: result.loadPath,
         recovered: result.recovered,
+        ...(result.recovered && {
+          recoveredAllDataSources: true,
+          hint: "A WASM crash was detected and the DuckDB instance was recreated. All data sources were automatically re-materialized.",
+        }),
       };
     } catch (error) {
       const message =

@@ -16,6 +16,7 @@
     "prepare": "if command -v tsc >/dev/null 2>&1; then tsc; fi"
   },
   "dependencies": {
+    "nanoid": "^5.1.7",
     "zod": "^4.2.1"
   },
   "devDependencies": {

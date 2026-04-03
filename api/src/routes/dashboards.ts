@@ -13,6 +13,8 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
+  sanitizeTableRef,
+  buildTableRef,
 } from "@mako/schemas";
 import { hydrateDashboardArtifactUrls } from "../services/dashboard-cache.service";
 import { buildDashboardDataSourceVersion } from "../services/dashboard-artifact-rebuild.service";
@@ -29,17 +31,6 @@ const logger = loggers.api("dashboards");
 const app = new Hono();
 
 const DASHBOARD_QUERY_LANGUAGES = new Set(["sql", "javascript", "mongodb"]);
-
-function sanitizeTableRef(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+/, "") || "ds_table";
-}
-
-function buildTableRef(name?: string): string {
-  const base = name
-    ? sanitizeTableRef(name.toLowerCase().replace(/\s+/g, "_")).slice(0, 40)
-    : "ds";
-  return sanitizeTableRef(`${base}_${nanoid(8)}`);
-}
 
 async function normalizeDashboardDataSources(
   workspaceId: string,

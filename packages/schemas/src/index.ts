@@ -27,3 +27,5 @@ export {
   getTemplate,
   type ChartTemplate,
 } from "./chart-templates";
+
+export { sanitizeTableRef, buildTableRef } from "./table-ref";

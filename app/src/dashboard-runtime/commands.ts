@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { buildTableRef } from "@mako/schemas";
 import { apiClient } from "../lib/api-client";
 import type { ConsoleContentResponse } from "../lib/api-types";
 import {
@@ -29,17 +30,6 @@ import type {
   DashboardQueryDefinition,
   DashboardWidget,
 } from "./types";
-
-function sanitizeTableRef(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+/, "") || "ds_table";
-}
-
-function buildTableRef(name?: string): string {
-  const base = name
-    ? sanitizeTableRef(name.toLowerCase().replace(/\s+/g, "_")).slice(0, 40)
-    : "ds";
-  return sanitizeTableRef(`${base}_${nanoid(8)}`);
-}
 
 function resolveActiveDashboardId(): string {
   const id = useDashboardStore.getState().activeDashboardId;
@@ -410,6 +400,9 @@ export async function runDashboardDataSource(options: {
         `Data source ${options.dataSourceId} not found after session recovery`,
       );
     }
+
+    // Re-materialize all data sources since the DuckDB instance was destroyed.
+    // The target data source is loaded first, then remaining ones in parallel.
     await materializeDashboardDataSource({
       workspaceId: options.workspaceId,
       dashboard: freshDashboard,
@@ -417,6 +410,23 @@ export async function runDashboardDataSource(options: {
       force: true,
       skipParquet: true,
     });
+
+    const otherDataSources = freshDashboard.dataSources.filter(
+      ds => ds.id !== options.dataSourceId,
+    );
+    if (otherDataSources.length > 0) {
+      await Promise.allSettled(
+        otherDataSources.map(ds =>
+          materializeDashboardDataSource({
+            workspaceId: options.workspaceId,
+            dashboard: freshDashboard,
+            dataSource: ds,
+            force: true,
+            skipParquet: true,
+          }),
+        ),
+      );
+    }
   }
 
   const resolvedDashboard = getDashboardOrThrow(options.dashboardId);
