@@ -157,6 +157,13 @@ export class CloseConnector extends BaseConnector {
       );
     }
 
+    if (entity === "custom_objects") {
+      return this.fetchCustomFieldsViaList(
+        "custom_object",
+        "/custom_field/custom_object_type/",
+      );
+    }
+
     const objectType =
       CloseConnector.ENTITY_TO_CUSTOM_FIELD_OBJECT_TYPE[entity];
     if (!objectType) return [];
@@ -394,6 +401,28 @@ export class CloseConnector extends BaseConnector {
     return Array.from(ids);
   }
 
+  /**
+   * Flatten nested `custom` object into `custom_<cfId>` columns so that
+   * webhook payloads (nested object) match backfill payloads (flat keys via
+   * `_fields=custom.cf_xxx`).
+   */
+  private static flattenCustomFields(record: Record<string, unknown>): void {
+    if (
+      record.custom &&
+      typeof record.custom === "object" &&
+      !Array.isArray(record.custom)
+    ) {
+      const customObj = record.custom as Record<string, unknown>;
+      for (const [cfKey, cfValue] of Object.entries(customObj)) {
+        if (!/^cf_[A-Za-z0-9]+$/.test(cfKey)) continue;
+        const flatKey = `custom_${cfKey}`;
+        if (!(flatKey in record)) {
+          record[flatKey] = cfValue;
+        }
+      }
+    }
+  }
+
   private normalizeLeadRecord(
     record: Record<string, unknown>,
   ): Record<string, unknown> {
@@ -408,25 +437,7 @@ export class CloseConnector extends BaseConnector {
       }
     }
 
-    // Flatten nested `custom` object into individual `custom_<cfId>` columns
-    // so that webhook payloads (which carry a nested object) produce the same
-    // flat column structure as backfill payloads (which use _fields=custom.cf_xxx).
-    if (
-      normalized.custom &&
-      typeof normalized.custom === "object" &&
-      !Array.isArray(normalized.custom)
-    ) {
-      const customObj = normalized.custom as Record<string, unknown>;
-      for (const [cfKey, cfValue] of Object.entries(customObj)) {
-        if (!/^cf_[A-Za-z0-9]+$/.test(cfKey)) {
-          continue;
-        }
-        const flatKey = `custom_${cfKey}`;
-        if (!(flatKey in normalized)) {
-          normalized[flatKey] = cfValue;
-        }
-      }
-    }
+    CloseConnector.flattenCustomFields(normalized);
 
     const contactIds = this.extractLeadContactIds(record);
     if (contactIds.length > 0) {
@@ -2046,12 +2057,12 @@ export class CloseConnector extends BaseConnector {
     }
 
     return records.map(record => {
-      const payload =
-        record.entity === "leads"
-          ? this.normalizeLeadRecord(
-              (record.payload || {}) as Record<string, unknown>,
-            )
-          : record.payload;
+      let payload = (record.payload || {}) as Record<string, unknown>;
+      if (record.entity === "leads") {
+        payload = this.normalizeLeadRecord(payload);
+      } else if (record.entity === "custom_objects") {
+        CloseConnector.flattenCustomFields(payload);
+      }
       return {
         ...record,
         payload,
@@ -2074,12 +2085,12 @@ export class CloseConnector extends BaseConnector {
       return null;
     }
 
-    const payload =
-      entity === "leads"
-        ? this.normalizeLeadRecord(
-            (normalized.payload || {}) as Record<string, unknown>,
-          )
-        : normalized.payload;
+    let payload = (normalized.payload || {}) as Record<string, unknown>;
+    if (entity === "leads") {
+      payload = this.normalizeLeadRecord(payload);
+    } else if (entity === "custom_objects") {
+      CloseConnector.flattenCustomFields(payload);
+    }
 
     return {
       ...normalized,
