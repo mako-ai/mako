@@ -2544,7 +2544,7 @@ const DashboardSchema = new Schema<IDashboard>(
           parquetBuiltAt: { type: Date },
           parquetBuildStatus: {
             type: String,
-            enum: ["missing", "queued", "building", "ready", "error"],
+            enum: ["missing", "queued", "building", "ready", "error", null],
           },
           parquetLastError: { type: String },
         },

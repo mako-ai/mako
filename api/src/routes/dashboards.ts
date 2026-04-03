@@ -586,7 +586,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
         $set: updateFields,
         $inc: { version: 1 },
       },
-      { new: true },
+      { new: true, runValidators: true },
     );
 
     if (!updated) {
@@ -778,7 +778,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
         $set: validatedBody,
         $inc: { version: 1 },
       },
-      { new: true },
+      { new: true, runValidators: true },
     );
 
     if (!dashboard) {

@@ -126,6 +126,14 @@ export async function executeDashboardAgentTool(
           s.activeDashboardId = dashboardId;
         });
       }
+      const consoleStore = useConsoleStore.getState();
+      const existingTab = Object.values(consoleStore.tabs).find(
+        (t: any) =>
+          t.kind === "dashboard" && t.metadata?.dashboardId === dashboardId,
+      );
+      if (existingTab) {
+        consoleStore.setActiveTab((existingTab as any).id);
+      }
       return {
         success: true,
         dashboardId,
