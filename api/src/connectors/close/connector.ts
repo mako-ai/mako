@@ -1183,8 +1183,7 @@ export class CloseConnector extends BaseConnector {
       }
 
       try {
-        const secondarySortField =
-          objectType === "lead" ? "display_name" : "id";
+        const secondarySortField = "date_updated";
         const body: any = {
           query: {
             negate: false,
