@@ -446,7 +446,25 @@ async function loadDashboardDataSourceWithFallback(options: {
   // WIP/edit mode (skipParquet): prefer NDJSON (stable) over Arrow.
   // Viewer/published mode: prefer parquet artifact, then Arrow, then NDJSON.
   if (skipParquet) {
-    const ndjsonResult = await tryNdjson().catch(() => null as number | null);
+    const ndjsonResult = await tryNdjson().catch(async error => {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isFatalWasm =
+        msg.includes("memory access out of bounds") ||
+        msg.toLowerCase().includes("out of memory");
+      if (isFatalWasm) throw error;
+      console.warn(`NDJSON stream failed for "${dataSource.name}"`, error);
+      appendRuntimeLog(
+        dashboardId,
+        "warn",
+        `NDJSON stream failed for "${dataSource.name}"`,
+        {
+          dataSourceId: dataSource.id,
+          error: msg,
+        },
+      );
+      await dropTable(session.db, targetTableRef).catch(() => undefined);
+      return null as number | null;
+    });
     if (ndjsonResult != null) return ndjsonResult;
     const arrowResult = await tryArrow();
     if (arrowResult != null) return arrowResult;
