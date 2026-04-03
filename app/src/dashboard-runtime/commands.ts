@@ -16,7 +16,6 @@ import {
   syncDashboardRuntime,
 } from "./gateway";
 import {
-  disposeDashboardSession,
   ensureMosaicInstance,
   getMosaicInstance,
 } from "./session-registry";
@@ -388,7 +387,7 @@ export async function runDashboardDataSource(options: {
       throw error;
     }
 
-    await disposeDashboardSession(options.dashboardId);
+    await disposeDashboardRuntime(options.dashboardId);
     recovered = true;
 
     const freshDashboard = getDashboardOrThrow(options.dashboardId);
