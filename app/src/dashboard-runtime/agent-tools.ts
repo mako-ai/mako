@@ -475,6 +475,12 @@ export async function executeDashboardAgentTool(
             "startLine and endLine are required for patch action. Use get_dashboard_state to see the current query code.",
         };
       }
+      if (typeof input.code !== "string") {
+        return {
+          success: false,
+          error: "code is required for patch action.",
+        };
+      }
     }
 
     const existingCode = existing.query.code ?? "";

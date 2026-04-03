@@ -62,7 +62,7 @@ export const DashboardDataSourceSchema = z.object({
       parquetVersion: z.string().nullable().optional(),
       parquetBuiltAt: z.string().nullable().optional(),
       parquetBuildStatus: z
-        .enum(["missing", "building", "ready", "error"])
+        .enum(["missing", "queued", "building", "ready", "error"])
         .nullable()
         .optional(),
       parquetLastError: z.string().nullable().optional(),
