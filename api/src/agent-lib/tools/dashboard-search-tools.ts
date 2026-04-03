@@ -60,10 +60,19 @@ export const createDashboardSearchTools = (workspaceId: string) => ({
     }),
     execute: async ({ query, limit }: { query: string; limit?: number }) => {
       try {
-        return await searchDashboardsByQuery(query, workspaceId, limit || 5);
+        const results = await searchDashboardsByQuery(
+          query,
+          workspaceId,
+          limit || 5,
+        );
+        return {
+          success: true as const,
+          dashboards: results,
+          message: `Found ${results.length} dashboard(s) matching "${query}"`,
+        };
       } catch (error) {
         return {
-          success: false,
+          success: false as const,
           error:
             error instanceof Error
               ? error.message

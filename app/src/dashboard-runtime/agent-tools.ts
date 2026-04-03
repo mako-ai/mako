@@ -62,14 +62,19 @@ async function waitForWidgetRenderResult(
 const DASHBOARD_ID_REQUIRED_ERROR =
   "dashboardId is required. Use list_open_dashboards to get available dashboard IDs.";
 
-function requireDashboardId(input: Record<string, unknown>): {
-  dashboardId: string;
-  workspaceId: string;
-} | null {
-  if (typeof input.dashboardId !== "string") return null;
+function requireDashboardId(input: Record<string, unknown>):
+  | { dashboardId: string; workspaceId: string; error?: undefined }
+  | { error: string; dashboardId?: undefined; workspaceId?: undefined } {
+  if (typeof input.dashboardId !== "string") {
+    return { error: DASHBOARD_ID_REQUIRED_ERROR };
+  }
   const store = useDashboardStore.getState();
   const dashboard = store.openDashboards[input.dashboardId];
-  if (!dashboard) return null;
+  if (!dashboard) {
+    return {
+      error: `Dashboard ${input.dashboardId} is not open. Use open_dashboard first.`,
+    };
+  }
   return {
     dashboardId: input.dashboardId,
     workspaceId: dashboard.workspaceId,
@@ -334,8 +339,8 @@ export async function executeDashboardAgentTool(
     toolName === "import_console_as_data_source"
   ) {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
 
     if (typeof input.consoleId === "string") {
@@ -384,8 +389,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "create_data_source") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
 
     if (typeof input.name !== "string") {
@@ -450,8 +455,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "update_data_source_query") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
 
     if (typeof input.dataSourceId !== "string") {
@@ -604,8 +609,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "run_data_source_query") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
 
     if (typeof input.dataSourceId !== "string") {
@@ -725,8 +730,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "get_data_preview" || toolName === "preview_data_source") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
     if (typeof input.dataSourceId !== "string") {
       return { success: false, error: "dataSourceId is required" };
@@ -758,8 +763,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "add_widget") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
 
     if (input.vegaLiteSpec !== undefined) {
@@ -894,8 +899,8 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "widgetId is required" };
     }
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
     const targetDashboard =
       useDashboardStore.getState().openDashboards[ctx.dashboardId];
@@ -1069,8 +1074,8 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "widgetId is required" };
     }
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
     removeDashboardWidget(input.widgetId, ctx.dashboardId);
     return { success: true };
@@ -1078,8 +1083,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "add_global_filter") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
     const activeDashboard =
       useDashboardStore.getState().openDashboards[ctx.dashboardId];
@@ -1100,8 +1105,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "remove_global_filter") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
     useDashboardStore
       .getState()
@@ -1111,8 +1116,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "link_tables") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
     const relationship = {
       id: nanoid(),
@@ -1126,8 +1131,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "set_time_dimension") {
     const ctx = requireDashboardId(input);
-    if (!ctx) {
-      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    if (ctx.error) {
+      return { success: false, error: ctx.error };
     }
     if (
       typeof input.dataSourceId !== "string" ||
