@@ -10,6 +10,8 @@ export {
   GlobalFilterSchema,
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
+  getWidgetSizeDefaults,
+  deriveResponsiveLayouts,
   type WidgetLayout,
   type DashboardQueryLanguage,
   type DashboardQueryDefinition,

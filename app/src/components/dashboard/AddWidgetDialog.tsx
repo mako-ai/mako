@@ -22,6 +22,7 @@ import {
   type DashboardWidget,
 } from "../../store/dashboardStore";
 import { executeDashboardSql } from "../../dashboard-runtime/commands";
+import { getWidgetSizeDefaults, deriveResponsiveLayouts } from "@mako/schemas";
 
 interface AddWidgetDialogProps {
   open: boolean;
@@ -29,14 +30,19 @@ interface AddWidgetDialogProps {
   dashboardId?: string;
 }
 
-const defaultLayouts: Record<
-  DashboardWidget["type"],
-  DashboardWidget["layouts"]
-> = {
-  chart: { lg: { x: 0, y: 0, w: 6, h: 4 } },
-  kpi: { lg: { x: 0, y: 0, w: 3, h: 2 } },
-  table: { lg: { x: 0, y: 0, w: 12, h: 5 } },
-};
+function buildDefaultLayouts(
+  type: DashboardWidget["type"],
+): DashboardWidget["layouts"] {
+  const d = getWidgetSizeDefaults(type);
+  return deriveResponsiveLayouts({
+    x: 0,
+    y: 0,
+    w: d.w,
+    h: d.h,
+    minW: d.minW,
+    minH: d.minH,
+  });
+}
 
 export default function AddWidgetDialog({
   open,
@@ -128,7 +134,7 @@ export default function AddWidgetDialog({
             }
           : undefined,
       crossFilter: { enabled: true },
-      layouts: defaultLayouts[widgetType],
+      layouts: buildDefaultLayouts(widgetType),
     };
 
     if (dashboardId) store.addWidget(dashboardId, widget);

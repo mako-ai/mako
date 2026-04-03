@@ -22,7 +22,12 @@ import {
   validateVegaSpec,
 } from "./validation";
 import { selectWidgetRuntime } from "./selectors";
-import { getAllTemplates, getTemplate } from "@mako/schemas";
+import {
+  getAllTemplates,
+  getTemplate,
+  getWidgetSizeDefaults,
+  deriveResponsiveLayouts,
+} from "@mako/schemas";
 
 /**
  * Poll the runtime store for widget render status after adding/modifying a
@@ -781,17 +786,42 @@ export async function executeDashboardAgentTool(
       };
     }
 
+    const widgetType = input.type as "chart" | "kpi" | "table";
+    const vegaSpec = input.vegaLiteSpec as Record<string, unknown> | undefined;
+    const vegaMark =
+      typeof vegaSpec?.mark === "string"
+        ? vegaSpec.mark
+        : ((vegaSpec?.mark as Record<string, unknown> | undefined)?.type as
+            | string
+            | undefined);
+    const sizeDefaults = getWidgetSizeDefaults(widgetType, vegaMark);
+
+    const rawLayouts = input.layouts as DashboardWidget["layouts"];
+    const lg = rawLayouts?.lg ?? {
+      x: 0,
+      y: 0,
+      w: sizeDefaults.w,
+      h: sizeDefaults.h,
+    };
+    const clampedLg = {
+      ...lg,
+      w: Math.max(lg.w, sizeDefaults.minW),
+      h: Math.max(lg.h, sizeDefaults.minH),
+      minW: sizeDefaults.minW,
+      minH: sizeDefaults.minH,
+    };
+
     const widget: DashboardWidget = {
       id: nanoid(),
       title: input.title as string | undefined,
-      type: input.type as "chart" | "kpi" | "table",
+      type: widgetType,
       dataSourceId: input.dataSourceId as string,
       localSql: input.localSql as string,
-      vegaLiteSpec: input.vegaLiteSpec as Record<string, unknown> | undefined,
+      vegaLiteSpec: vegaSpec,
       kpiConfig: input.kpiConfig as DashboardWidget["kpiConfig"],
       tableConfig: input.tableConfig as DashboardWidget["tableConfig"],
       crossFilter: { enabled: true },
-      layouts: input.layouts as DashboardWidget["layouts"],
+      layouts: deriveResponsiveLayouts(clampedLg),
     };
     const crossFilterValidation = validateCrossFilterWidgetSql({
       sql: widget.localSql,

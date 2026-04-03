@@ -118,12 +118,23 @@ When creating chart widgets:
 
 ### Layout Guidelines
 
-Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Standard sizes:
-- Full width chart: { lg: { x: 0, y: 0, w: 12, h: 4 } }
-- Half width chart: { lg: { x: 0, y: 0, w: 6, h: 4 } }
-- Third width chart: { lg: { x: 0, y: 0, w: 4, h: 4 } }
+Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Smaller breakpoints (md/sm/xs) are auto-derived — you only need to provide \`lg\`.
+
+**IMPORTANT — Minimum sizes are enforced. Widgets smaller than the minimums below will be automatically enlarged:**
+- Charts (line, bar, area, point, etc.): minimum w: 4, h: 3
+- Donut/pie charts (arc mark): minimum w: 3, h: 3
+- KPI cards: minimum w: 2, h: 2
+- Data tables: minimum w: 4, h: 3
+
+**Recommended sizes (use these as defaults):**
+- Line / bar / area chart (full width): { lg: { x: 0, y: 0, w: 12, h: 5 } }
+- Line / bar / area chart (half width): { lg: { x: 0, y: 0, w: 6, h: 5 } }
+- Donut / pie chart: { lg: { x: 0, y: 0, w: 4, h: 4 } }
+- Horizontal bar / ranking: { lg: { x: 0, y: 0, w: 6, h: 5 } }
 - KPI card: { lg: { x: 0, y: 0, w: 3, h: 2 } }
 - Data table: { lg: { x: 0, y: 0, w: 12, h: 5 } }
+
+**Never use w: 1 or h: 1 — these produce unreadable widgets.** Charts should always have h >= 4 for readability. Prefer full-width (w: 12) for time-series charts and tables.
 
 Stack widgets vertically by incrementing the y value. Avoid overlapping layouts.
 
@@ -145,7 +156,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 8, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 8, h: 5 } }
 \`\`\`
 
 **Bar chart (weekly counts):**
@@ -162,7 +173,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 12, h: 5 } }
 \`\`\`
 
 **Grouped/stacked bar (category breakdown):**
@@ -181,7 +192,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 12, h: 5 } }
 \`\`\`
 
 **Multi-series line chart (one line per category):**
@@ -200,7 +211,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 12, h: 5 } }
 \`\`\`
 
 **Horizontal bar (ranking / funnel):**
@@ -218,7 +229,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 6, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 6, h: 5 } }
 \`\`\`
 
 **KPI card:**
