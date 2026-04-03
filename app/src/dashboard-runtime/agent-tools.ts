@@ -924,9 +924,37 @@ export async function executeDashboardAgentTool(
     }
     if (input.layouts !== undefined) {
       const existingLayouts = targetWidget.layouts;
-      changes.layouts = existingLayouts
-        ? { ...existingLayouts, ...input.layouts }
-        : input.layouts;
+      const mergedLayouts = (
+        existingLayouts
+          ? { ...existingLayouts, ...(input.layouts as DashboardWidget["layouts"]) }
+          : (input.layouts as DashboardWidget["layouts"])
+      ) as DashboardWidget["layouts"];
+
+      const effectiveSpec = (changes.vegaLiteSpec ?? targetWidget.vegaLiteSpec) as
+        | Record<string, unknown>
+        | undefined;
+      const vegaMark =
+        typeof effectiveSpec?.mark === "string"
+          ? effectiveSpec.mark
+          : ((effectiveSpec?.mark as Record<string, unknown> | undefined)?.type as
+              | string
+              | undefined);
+      const sizeDefaults = getWidgetSizeDefaults(targetWidget.type, vegaMark);
+
+      const lg = mergedLayouts?.lg ?? {
+        x: 0,
+        y: 0,
+        w: sizeDefaults.w,
+        h: sizeDefaults.h,
+      };
+      const clampedLg = {
+        ...lg,
+        w: Math.max(lg.w, sizeDefaults.minW),
+        h: Math.max(lg.h, sizeDefaults.minH),
+        minW: sizeDefaults.minW,
+        minH: sizeDefaults.minH,
+      };
+      changes.layouts = deriveResponsiveLayouts(clampedLg);
     }
     if (changes.vegaLiteSpec !== undefined) {
       const specValidation = await validateVegaSpec(changes.vegaLiteSpec);
