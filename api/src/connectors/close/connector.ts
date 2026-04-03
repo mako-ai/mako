@@ -1108,7 +1108,14 @@ export class CloseConnector extends BaseConnector {
     if (!state && onProgress) {
       try {
         const countResp = await api.post("/data/search/", {
-          query: { type: "object_type", object_type: objectType },
+          query: {
+            negate: false,
+            type: "and",
+            queries: [
+              { negate: false, type: "object_type", object_type: objectType },
+              { negate: false, type: "match_all" },
+            ],
+          },
           include_counts: true,
           results_limit: 0,
         });
@@ -1124,7 +1131,14 @@ export class CloseConnector extends BaseConnector {
     // Resolve the date range on first invocation
     if (!windowStart) {
       const oldestResp = await api.post("/data/search/", {
-        query: { type: "object_type", object_type: objectType },
+        query: {
+          negate: false,
+          type: "and",
+          queries: [
+            { negate: false, type: "object_type", object_type: objectType },
+            { negate: false, type: "match_all" },
+          ],
+        },
         _limit: 1,
         sort: [
           {
@@ -1169,11 +1183,18 @@ export class CloseConnector extends BaseConnector {
       }
 
       try {
+        const secondarySortField =
+          objectType === "lead" ? "display_name" : "id";
         const body: any = {
           query: {
+            negate: false,
             type: "and",
             queries: [
-              { type: "object_type", object_type: objectType },
+              {
+                negate: false,
+                type: "object_type",
+                object_type: objectType,
+              },
               {
                 type: "field_condition",
                 field: {
@@ -1197,6 +1218,14 @@ export class CloseConnector extends BaseConnector {
                 object_type: objectType,
                 type: "regular_field",
                 field_name: "date_created",
+              },
+            },
+            {
+              direction: "asc",
+              field: {
+                object_type: objectType,
+                type: "regular_field",
+                field_name: secondarySortField,
               },
             },
           ],
