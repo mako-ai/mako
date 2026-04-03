@@ -112,9 +112,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     useState<DashboardWidget | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const isMaterializationBuilding = (dashboard?.dataSources || []).some(
-    ds => ds.cache?.parquetBuildStatus === "building",
-  );
   const queryGeneration = runtimeSession?.queryGeneration ?? 0;
 
   const handleExportPng = useCallback(async () => {
@@ -290,13 +287,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                 label="Reload data"
                 size="small"
                 variant="outlined"
-                onClick={
-                  isMaterializationBuilding ? undefined : handleReloadData
-                }
-                sx={{
-                  cursor: isMaterializationBuilding ? "default" : "pointer",
-                }}
-                disabled={isMaterializationBuilding}
+                onClick={handleReloadData}
+                sx={{ cursor: "pointer" }}
               />
             </Tooltip>
 
