@@ -373,6 +373,11 @@ async function loadDashboardDataSourceWithFallback(options: {
       );
       return totalRows ?? loadedRowCount;
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isFatalWasm =
+        msg.includes("memory access out of bounds") ||
+        msg.toLowerCase().includes("out of memory");
+      if (isFatalWasm) throw error;
       console.warn(`Arrow stream failed for "${dataSource.name}"`, error);
       appendRuntimeLog(
         dashboardId,
@@ -380,7 +385,7 @@ async function loadDashboardDataSourceWithFallback(options: {
         `Arrow stream failed for "${dataSource.name}"`,
         {
           dataSourceId: dataSource.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: msg,
         },
       );
       await dropTable(session.db, targetTableRef).catch(() => undefined);
