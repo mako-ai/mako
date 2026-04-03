@@ -14,7 +14,11 @@ import {
   removeDashboardDataSourceRuntime,
   syncDashboardRuntime,
 } from "./gateway";
-import { ensureMosaicInstance, getMosaicInstance } from "./session-registry";
+import {
+  disposeDashboardSession,
+  ensureMosaicInstance,
+  getMosaicInstance,
+} from "./session-registry";
 import { selectDataSourceRuntime, selectWidgetRuntime } from "./selectors";
 import { dashboardRuntimeEvents } from "./events";
 import { useDashboardRuntimeStore } from "./store";
@@ -30,8 +34,11 @@ function sanitizeTableRef(value: string): string {
   return value.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+/, "") || "ds_table";
 }
 
-function buildTableRef(): string {
-  return sanitizeTableRef(`ds_${nanoid()}`);
+function buildTableRef(name?: string): string {
+  const base = name
+    ? sanitizeTableRef(name.toLowerCase().replace(/\s+/g, "_")).slice(0, 40)
+    : "ds";
+  return sanitizeTableRef(`${base}_${nanoid(8)}`);
 }
 
 function resolveActiveDashboardId(): string {
@@ -225,7 +232,7 @@ export function buildDashboardDataSource(input: {
   return {
     id: nanoid(),
     name: input.name,
-    tableRef: buildTableRef(),
+    tableRef: buildTableRef(input.name),
     query: input.query,
     origin: input.origin,
     timeDimension: input.timeDimension,
@@ -342,8 +349,99 @@ export async function updateDashboardDataSourceQuery(options: {
         force: true,
         skipParquet: true,
       });
+
+      const mosaicInstance = getMosaicInstance(updatedDashboard._id);
+      if (mosaicInstance) {
+        try {
+          mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+        } catch {
+          // best-effort cache clear
+        }
+      }
+      useDashboardRuntimeStore
+        .getState()
+        .dispatch(
+          dashboardRuntimeEvents.bumpQueryGeneration(updatedDashboard._id),
+        );
     }
   }
+}
+
+export async function runDashboardDataSource(options: {
+  workspaceId: string;
+  dashboardId: string;
+  dataSourceId: string;
+}): Promise<{ loadPath: string | null; recovered: boolean }> {
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  const dataSource = dashboard.dataSources.find(
+    ds => ds.id === options.dataSourceId,
+  );
+  if (!dataSource) {
+    throw new Error(`Data source ${options.dataSourceId} not found`);
+  }
+
+  let recovered = false;
+  try {
+    await materializeDashboardDataSource({
+      workspaceId: options.workspaceId,
+      dashboard,
+      dataSource,
+      force: true,
+      skipParquet: true,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const isFatalWasm =
+      msg.includes("memory access out of bounds") ||
+      msg.toLowerCase().includes("out of memory");
+    if (!isFatalWasm) {
+      throw error;
+    }
+
+    await disposeDashboardSession(options.dashboardId);
+    recovered = true;
+
+    const freshDashboard = getDashboardOrThrow(options.dashboardId);
+    const freshDs = freshDashboard.dataSources.find(
+      ds => ds.id === options.dataSourceId,
+    );
+    if (!freshDs) {
+      throw new Error(
+        `Data source ${options.dataSourceId} not found after session recovery`,
+      );
+    }
+    await materializeDashboardDataSource({
+      workspaceId: options.workspaceId,
+      dashboard: freshDashboard,
+      dataSource: freshDs,
+      force: true,
+      skipParquet: true,
+    });
+  }
+
+  const resolvedDashboard = getDashboardOrThrow(options.dashboardId);
+  const mosaicInstance = getMosaicInstance(resolvedDashboard._id);
+  if (mosaicInstance) {
+    try {
+      mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+    } catch {
+      // best-effort cache clear
+    }
+  }
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(
+      dashboardRuntimeEvents.bumpQueryGeneration(resolvedDashboard._id),
+    );
+
+  const runtime = selectDataSourceRuntime(
+    options.dashboardId,
+    options.dataSourceId,
+  );
+  return {
+    loadPath: (runtime as any)?.diagnostics?.loadPath ?? null,
+    recovered,
+  };
 }
 
 export async function removeDashboardDataSource(options: {

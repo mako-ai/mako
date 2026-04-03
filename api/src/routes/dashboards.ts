@@ -34,6 +34,13 @@ function sanitizeTableRef(value: string): string {
   return value.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+/, "") || "ds_table";
 }
 
+function buildTableRef(name?: string): string {
+  const base = name
+    ? sanitizeTableRef(name.toLowerCase().replace(/\s+/g, "_")).slice(0, 40)
+    : "ds";
+  return sanitizeTableRef(`${base}_${nanoid(8)}`);
+}
+
 async function normalizeDashboardDataSources(
   workspaceId: string,
   inputDataSources: unknown,
@@ -118,11 +125,10 @@ async function normalizeDashboardDataSources(
         return {
           id,
           name: ds.name.trim(),
-          tableRef: sanitizeTableRef(
+          tableRef:
             typeof ds.tableRef === "string" && ds.tableRef.trim()
-              ? ds.tableRef.trim()
-              : `ds_${nanoid()}`,
-          ),
+              ? sanitizeTableRef(ds.tableRef.trim())
+              : buildTableRef(ds.name?.trim()),
           query: {
             connectionId: new Types.ObjectId(String(ds.query.connectionId)),
             language: ds.query.language,

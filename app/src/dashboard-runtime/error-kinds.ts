@@ -41,5 +41,13 @@ export function classifySourceError(message: string): DashboardErrorKind {
   ) {
     return "source_sql_syntax";
   }
+  if (
+    normalized.includes("memory access out of bounds") ||
+    normalized.includes("out of memory") ||
+    normalized.includes("unreachable executed") ||
+    normalized.includes("all stream loading paths failed")
+  ) {
+    return "materialization_failed";
+  }
   return "source_sql_runtime";
 }

@@ -3,6 +3,7 @@ import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import { clientDashboardTools } from "../../agent-lib/tools/dashboard-tools-client";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
+import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 
@@ -26,6 +27,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   const flowTools = createFlowTools(workspaceId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
+  const dashboardSearchTools = createDashboardSearchTools(workspaceId);
 
   const {
     list_connections: _flowListConnections,
@@ -55,6 +57,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...flowUniqueTools,
       ...selfDirectiveTools,
       ...consoleSearchTools,
+      ...dashboardSearchTools,
     } as Record<string, unknown>,
   };
 }

@@ -6,6 +6,7 @@ import {
   importConsoleAsDashboardDataSource,
   previewDashboardQuery,
   removeDashboardWidget,
+  runDashboardDataSource,
   updateDashboardDataSourceQuery,
   updateDashboardWidget,
 } from "./commands";
@@ -53,21 +54,21 @@ async function waitForWidgetRenderResult(
   return { renderError: null, renderErrorKind: null };
 }
 
-export interface DashboardAgentContext {
-  dashboardId?: string;
-  workspaceId?: string;
-}
+const DASHBOARD_ID_REQUIRED_ERROR =
+  "dashboardId is required. Use list_open_dashboards to get available dashboard IDs.";
 
-function getActiveContext(
-  pinned?: DashboardAgentContext,
-): { dashboardId: string; workspaceId: string } | null {
-  const state = useDashboardStore.getState();
-  const dashboardId = pinned?.dashboardId ?? state.activeDashboardId;
-  if (!dashboardId) return null;
-  const workspaceId =
-    pinned?.workspaceId ?? state.openDashboards[dashboardId]?.workspaceId;
-  if (!workspaceId) return null;
-  return { dashboardId, workspaceId };
+function requireDashboardId(input: Record<string, unknown>): {
+  dashboardId: string;
+  workspaceId: string;
+} | null {
+  if (typeof input.dashboardId !== "string") return null;
+  const store = useDashboardStore.getState();
+  const dashboard = store.openDashboards[input.dashboardId];
+  if (!dashboard) return null;
+  return {
+    dashboardId: input.dashboardId,
+    workspaceId: dashboard.workspaceId,
+  };
 }
 
 const READ_ONLY_TOOLS = new Set([
@@ -77,19 +78,111 @@ const READ_ONLY_TOOLS = new Set([
   "suggest_charts",
   "get_chart_templates",
   "get_chart_template",
+  "list_open_dashboards",
+  "open_dashboard",
 ]);
 
-const EDIT_MODE_EXEMPT_TOOLS = new Set(["enter_edit_mode", "create_dashboard"]);
+const EDIT_MODE_EXEMPT_TOOLS = new Set([
+  "enter_edit_mode",
+  "create_dashboard",
+  "list_open_dashboards",
+  "open_dashboard",
+]);
 
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
-  pinnedContext?: DashboardAgentContext,
 ): Promise<Record<string, unknown> | null> {
+  if (toolName === "list_open_dashboards") {
+    const store = useDashboardStore.getState();
+    const dashboards = Object.values(store.openDashboards).map((d: any) => ({
+      id: d._id,
+      title: d.title,
+      description: d.description || null,
+      dataSourceCount: d.dataSources?.length ?? 0,
+      widgetCount: d.widgets?.length ?? 0,
+      isActive: d._id === store.activeDashboardId,
+      isEditing: !!store.editingDashboards[d._id],
+    }));
+    return {
+      success: true,
+      dashboards,
+      message: `Found ${dashboards.length} open dashboard(s)`,
+    };
+  }
+
+  if (toolName === "open_dashboard") {
+    const dashboardId =
+      typeof input.dashboardId === "string" ? input.dashboardId : null;
+    if (!dashboardId) {
+      return { success: false, error: "dashboardId is required." };
+    }
+
+    const store = useDashboardStore.getState();
+    const existing = store.openDashboards[dashboardId];
+    if (existing) {
+      if (store.activeDashboardId !== dashboardId) {
+        useDashboardStore.setState(s => {
+          s.activeDashboardId = dashboardId;
+        });
+      }
+      return {
+        success: true,
+        dashboardId,
+        title: (existing as any).title,
+        message: `Dashboard "${(existing as any).title}" is already open — switched to it.`,
+      };
+    }
+
+    const workspaceId = useUIStore.getState().currentWorkspaceId;
+    if (!workspaceId) {
+      return { success: false, error: "No active workspace" };
+    }
+
+    try {
+      await store.openDashboard(workspaceId, dashboardId);
+      const dashboard =
+        useDashboardStore.getState().openDashboards[dashboardId];
+      if (!dashboard) {
+        return {
+          success: false,
+          error: `Dashboard ${dashboardId} not found or access denied.`,
+        };
+      }
+
+      const consoleStore = useConsoleStore.getState();
+      const existingTab = Object.values(consoleStore.tabs).find(
+        (t: any) =>
+          t.kind === "dashboard" && t.metadata?.dashboardId === dashboardId,
+      );
+      if (!existingTab) {
+        const tabId = consoleStore.openTab({
+          title: (dashboard as any).title,
+          content: "",
+          kind: "dashboard",
+          metadata: { dashboardId },
+        });
+        consoleStore.setActiveTab(tabId);
+      } else {
+        consoleStore.setActiveTab((existingTab as any).id);
+      }
+      useUIStore.getState().setLeftPane("dashboards");
+
+      return {
+        success: true,
+        dashboardId,
+        title: (dashboard as any).title,
+        message: `Dashboard "${(dashboard as any).title}" opened successfully.`,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to open dashboard";
+      return { success: false, error: message };
+    }
+  }
+
   if (toolName === "create_dashboard") {
-    const ctx = getActiveContext(pinnedContext);
-    const workspaceId =
-      ctx?.workspaceId ?? useUIStore.getState().currentWorkspaceId;
+    const workspaceId = useUIStore.getState().currentWorkspaceId;
     if (!workspaceId || typeof workspaceId !== "string") {
       return { success: false, error: "No active workspace" };
     }
@@ -149,21 +242,21 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "enter_edit_mode") {
-    const ctx = getActiveContext(pinnedContext);
-    const targetDashboardId =
-      typeof input.dashboardId === "string"
-        ? input.dashboardId
-        : ctx?.dashboardId;
-    if (!targetDashboardId) {
-      return { success: false, error: "No active dashboard" };
+    const dashboardId =
+      typeof input.dashboardId === "string" ? input.dashboardId : null;
+    if (!dashboardId) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     const store = useDashboardStore.getState();
-    const dashboard = store.openDashboards[targetDashboardId];
+    const dashboard = store.openDashboards[dashboardId];
     if (!dashboard) {
-      return { success: false, error: "Dashboard not found" };
+      return {
+        success: false,
+        error: `Dashboard ${dashboardId} is not open. Use open_dashboard first.`,
+      };
     }
-    const targetWorkspaceId = dashboard.workspaceId || ctx?.workspaceId;
-    if (!targetWorkspaceId) {
+    const workspaceId = dashboard.workspaceId;
+    if (!workspaceId) {
       return { success: false, error: "No workspace found for dashboard" };
     }
     if (dashboard.readOnly === true) {
@@ -172,14 +265,11 @@ export async function executeDashboardAgentTool(
         error: "This dashboard is read-only. You cannot enter edit mode.",
       };
     }
-    if (store.editingDashboards[targetDashboardId]) {
+    if (store.editingDashboards[dashboardId]) {
       return { success: true, alreadyEditing: true };
     }
 
-    const result = await store.enterEditMode(
-      targetWorkspaceId,
-      targetDashboardId,
-    );
+    const result = await store.enterEditMode(workspaceId, dashboardId);
     if (result.ok) {
       return { success: true };
     }
@@ -187,7 +277,7 @@ export async function executeDashboardAgentTool(
     const lockedBy = result.lockedBy ?? "Another user";
     const userApproved = await new Promise<boolean>(resolve => {
       useDashboardStore.getState().setLockConflictPrompt({
-        dashboardId: targetDashboardId,
+        dashboardId,
         lockedBy,
         resolve,
       });
@@ -203,7 +293,7 @@ export async function executeDashboardAgentTool(
 
     const forceResult = await useDashboardStore
       .getState()
-      .enterEditMode(targetWorkspaceId, targetDashboardId, { force: true });
+      .enterEditMode(workspaceId, dashboardId, { force: true });
     if (forceResult.ok) {
       return { success: true, forcedFrom: lockedBy };
     }
@@ -214,15 +304,9 @@ export async function executeDashboardAgentTool(
   }
 
   if (!READ_ONLY_TOOLS.has(toolName) && !EDIT_MODE_EXEMPT_TOOLS.has(toolName)) {
-    const ctx = getActiveContext(pinnedContext);
-    const targetDashboardId =
-      typeof input.dashboardId === "string"
-        ? input.dashboardId
-        : ctx?.dashboardId;
-    if (
-      targetDashboardId &&
-      !useDashboardStore.getState().isEditMode(targetDashboardId)
-    ) {
+    const dashboardId =
+      typeof input.dashboardId === "string" ? input.dashboardId : null;
+    if (dashboardId && !useDashboardStore.getState().isEditMode(dashboardId)) {
       return {
         success: false,
         error:
@@ -236,9 +320,9 @@ export async function executeDashboardAgentTool(
     toolName === "add_data_source" ||
     toolName === "import_console_as_data_source"
   ) {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (typeof input.consoleId === "string") {
@@ -286,9 +370,9 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "create_data_source") {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (typeof input.name !== "string") {
@@ -352,9 +436,9 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "update_data_source_query") {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (typeof input.dataSourceId !== "string") {
@@ -370,17 +454,70 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "Data source not found" };
     }
 
+    const action = typeof input.action === "string" ? input.action : "replace";
+
+    if (action === "patch") {
+      if (
+        typeof input.startLine !== "number" ||
+        typeof input.endLine !== "number"
+      ) {
+        return {
+          success: false,
+          error:
+            "startLine and endLine are required for patch action. Use get_dashboard_state to see the current query code.",
+        };
+      }
+    }
+
+    const existingCode = existing.query.code ?? "";
+    let resolvedCode = existingCode;
+
+    if (typeof input.code === "string") {
+      switch (action) {
+        case "patch": {
+          const lines = existingCode.split("\n");
+          const startLine = Math.max(
+            1,
+            Math.min(input.startLine as number, lines.length),
+          );
+          const endLine = Math.max(
+            startLine,
+            Math.min(input.endLine as number, lines.length),
+          );
+          const before = lines.slice(0, startLine - 1);
+          const after = lines.slice(endLine);
+          const patchLines = input.code.split("\n");
+          resolvedCode = [...before, ...patchLines, ...after].join("\n");
+          break;
+        }
+        case "append": {
+          resolvedCode =
+            existingCode +
+            (existingCode.endsWith("\n") ? "" : "\n") +
+            input.code;
+          break;
+        }
+        case "replace":
+        default:
+          resolvedCode = input.code;
+          break;
+      }
+    }
+
     const nextLanguage = (
       typeof input.language === "string"
         ? input.language
         : existing.query.language
     ) as DashboardDataSource["query"]["language"];
 
+    const shouldRun = input.run === true;
+
     try {
       await updateDashboardDataSourceQuery({
         workspaceId: ctx.workspaceId,
         dataSourceId: input.dataSourceId,
         dashboardId: ctx.dashboardId,
+        rematerialize: shouldRun,
         changes: {
           name: typeof input.name === "string" ? input.name : existing.name,
           timeDimension:
@@ -398,8 +535,7 @@ export async function executeDashboardAgentTool(
                 ? input.connectionId
                 : existing.query.connectionId,
             language: nextLanguage,
-            code:
-              typeof input.code === "string" ? input.code : existing.query.code,
+            code: resolvedCode,
             databaseId:
               typeof input.databaseId === "string"
                 ? input.databaseId
@@ -419,6 +555,7 @@ export async function executeDashboardAgentTool(
       return {
         success: true,
         dataSourceId: input.dataSourceId,
+        state: shouldRun ? "loaded" : "definition_updated",
         rowCount: runtimeSource?.rowCount ?? null,
         schema: runtimeSource?.columns ?? [],
         sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
@@ -428,6 +565,49 @@ export async function executeDashboardAgentTool(
         error instanceof Error
           ? error.message
           : "Failed to update data source query";
+      return {
+        success: false,
+        error: message,
+        errorKind: classifySourceError(message),
+      };
+    }
+  }
+
+  if (toolName === "run_data_source_query") {
+    const ctx = requireDashboardId(input);
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    }
+
+    if (typeof input.dataSourceId !== "string") {
+      return { success: false, error: "dataSourceId is required" };
+    }
+
+    try {
+      const result = await runDashboardDataSource({
+        workspaceId: ctx.workspaceId,
+        dashboardId: ctx.dashboardId,
+        dataSourceId: input.dataSourceId,
+      });
+
+      const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
+      const runtimeSource = snapshot.dataSources.find(
+        ds => ds.id === input.dataSourceId,
+      );
+      return {
+        success: true,
+        dataSourceId: input.dataSourceId,
+        rowCount: runtimeSource?.rowCount ?? null,
+        schema: runtimeSource?.columns ?? [],
+        sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
+        loadPath: result.loadPath,
+        recovered: result.recovered,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to run data source query";
       return {
         success: false,
         error: message,
@@ -455,12 +635,12 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "get_dashboard_state") {
-    const ctx = getActiveContext(pinnedContext);
-    const resolvedId =
-      typeof input.dashboardId === "string"
-        ? input.dashboardId
-        : ctx?.dashboardId;
-    const snapshot = getDashboardStateSnapshot(resolvedId);
+    const dashboardId =
+      typeof input.dashboardId === "string" ? input.dashboardId : null;
+    if (!dashboardId) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    }
+    const snapshot = getDashboardStateSnapshot(dashboardId);
 
     const SAMPLE_ROW_LIMIT = 5;
 
@@ -511,16 +691,19 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "get_data_preview" || toolName === "preview_data_source") {
+    const ctx = requireDashboardId(input);
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    }
     if (typeof input.dataSourceId !== "string") {
       return { success: false, error: "dataSourceId is required" };
     }
 
-    const ctx = getActiveContext(pinnedContext);
     try {
       const result = await previewDashboardQuery({
         dataSourceId: input.dataSourceId,
         sql: typeof input.sql === "string" ? input.sql : undefined,
-        dashboardId: ctx?.dashboardId,
+        dashboardId: ctx.dashboardId,
       });
 
       return {
@@ -541,9 +724,9 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "add_widget") {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (input.vegaLiteSpec !== undefined) {
@@ -594,7 +777,7 @@ export async function executeDashboardAgentTool(
       };
     }
 
-    addDashboardWidget(widget);
+    addDashboardWidget(widget, ctx.dashboardId);
 
     try {
       const result = await previewDashboardQuery({
@@ -652,18 +835,17 @@ export async function executeDashboardAgentTool(
     if (typeof input.widgetId !== "string") {
       return { success: false, error: "widgetId is required" };
     }
-    const ctx = getActiveContext(pinnedContext);
-    const targetDashboardId =
-      typeof input.dashboardId === "string"
-        ? input.dashboardId
-        : ctx?.dashboardId;
-    if (!targetDashboardId) {
-      return { success: false, error: "No target dashboard" };
+    const ctx = requireDashboardId(input);
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     const targetDashboard =
-      useDashboardStore.getState().openDashboards[targetDashboardId];
+      useDashboardStore.getState().openDashboards[ctx.dashboardId];
     if (!targetDashboard) {
-      return { success: false, error: "Dashboard not found" };
+      return {
+        success: false,
+        error: `Dashboard ${ctx.dashboardId} is not open. Use open_dashboard first.`,
+      };
     }
     const targetWidget = targetDashboard.widgets.find(
       w => w.id === input.widgetId,
@@ -700,7 +882,7 @@ export async function executeDashboardAgentTool(
     }
     if (changes.localSql !== undefined) {
       const queryValidation = await validateDuckDBQuery({
-        dashboardId: targetDashboardId,
+        dashboardId: ctx.dashboardId,
         dataSourceId: targetWidget.dataSourceId,
         sql: String(changes.localSql),
       });
@@ -729,12 +911,12 @@ export async function executeDashboardAgentTool(
     updateDashboardWidget(
       input.widgetId,
       changes as Partial<DashboardWidget>,
-      targetDashboardId,
+      ctx.dashboardId,
     );
 
     try {
       const dashboard =
-        useDashboardStore.getState().openDashboards[targetDashboardId];
+        useDashboardStore.getState().openDashboards[ctx.dashboardId];
       const widget = dashboard?.widgets.find(w => w.id === input.widgetId);
       if (!widget) {
         return {
@@ -744,7 +926,7 @@ export async function executeDashboardAgentTool(
         };
       }
       const result = await previewDashboardQuery({
-        dashboardId: targetDashboardId,
+        dashboardId: ctx.dashboardId,
         dataSourceId: widget.dataSourceId,
         sql: widget.localSql,
       });
@@ -753,7 +935,7 @@ export async function executeDashboardAgentTool(
         widget.type === "chart" &&
         (changes.vegaLiteSpec || widget.vegaLiteSpec);
       const renderResult = isChartWithSpec
-        ? await waitForWidgetRenderResult(targetDashboardId, widget.id)
+        ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id)
         : null;
 
       if (renderResult?.renderError) {
@@ -800,22 +982,18 @@ export async function executeDashboardAgentTool(
     if (typeof input.widgetId !== "string") {
       return { success: false, error: "widgetId is required" };
     }
-    const ctx = getActiveContext(pinnedContext);
-    const targetDashboardId =
-      typeof input.dashboardId === "string"
-        ? input.dashboardId
-        : ctx?.dashboardId;
-    if (!targetDashboardId) {
-      return { success: false, error: "No target dashboard" };
+    const ctx = requireDashboardId(input);
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
-    removeDashboardWidget(input.widgetId, targetDashboardId);
+    removeDashboardWidget(input.widgetId, ctx.dashboardId);
     return { success: true };
   }
 
   if (toolName === "add_global_filter") {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     const activeDashboard =
       useDashboardStore.getState().openDashboards[ctx.dashboardId];
@@ -835,9 +1013,9 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "remove_global_filter") {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     useDashboardStore
       .getState()
@@ -846,9 +1024,9 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "link_tables") {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     const relationship = {
       id: nanoid(),
@@ -861,9 +1039,9 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "set_time_dimension") {
-    const ctx = getActiveContext(pinnedContext);
+    const ctx = requireDashboardId(input);
     if (!ctx) {
-      return { success: false, error: "No active dashboard" };
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     if (
       typeof input.dataSourceId !== "string" ||

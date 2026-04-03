@@ -275,8 +275,8 @@ async function loadDashboardDataSourceWithFallback(options: {
     ? undefined
     : getParquetArtifactUrl(dataSource);
 
-  // Try parquet artifact first (download into in-memory table).
-  if (parquetUrl) {
+  const tryParquet = async (): Promise<number | null> => {
+    if (!parquetUrl) return null;
     try {
       runtimeStore.dispatch(
         dashboardRuntimeEvents.updateDatasourceDiagnostics(
@@ -289,7 +289,7 @@ async function loadDashboardDataSourceWithFallback(options: {
           },
         ),
       );
-      const parquetRows = await loadParquetArtifactIntoTable({
+      return await loadParquetArtifactIntoTable({
         session,
         parquetUrl,
         targetTableRef,
@@ -306,7 +306,6 @@ async function loadDashboardDataSourceWithFallback(options: {
           });
         },
       });
-      return parquetRows;
     } catch (error) {
       console.warn(
         `Parquet artifact load failed for "${dataSource.name}", falling back to streamed export`,
@@ -322,17 +321,80 @@ async function loadDashboardDataSourceWithFallback(options: {
         },
       );
       await dropTable(session.db, targetTableRef).catch(() => undefined);
+      return null;
     }
-  }
+  };
 
-  // Try Arrow IPC stream.
-  try {
+  const tryArrow = async (): Promise<number | null> => {
+    try {
+      runtimeStore.dispatch(
+        dashboardRuntimeEvents.updateDatasourceDiagnostics(
+          dashboardId,
+          dataSource.id,
+          {
+            loadPath: "arrow_stream",
+            resolvedMode: runtimeContext,
+          },
+        ),
+      );
+      const response = await fetchDashboardExport(
+        workspaceId,
+        dashboardId,
+        dataSource,
+        "arrow",
+      );
+      const totalBytes = parseNumericHeader(response.headers, "Content-Length");
+      const totalRows = parseNumericHeader(response.headers, "X-Row-Count");
+
+      const loadedRowCount = await loadArrowStreamTable(
+        session.db,
+        targetTableRef,
+        response.body,
+        {
+          onProgress: bytesLoaded => {
+            const estimatedRows = estimateRowsFromBytes(
+              bytesLoaded,
+              totalBytes,
+              totalRows,
+            );
+            if (estimatedRows == null) return;
+            dispatchLoadProgress({
+              runtimeStore,
+              dashboardId,
+              dataSourceId: dataSource.id,
+              onRowsLoaded,
+              rowsLoaded: estimatedRows ?? 0,
+              bytesLoaded,
+              totalBytes: totalBytes ?? null,
+              preserveExistingData: options.preserveExistingData,
+            });
+          },
+        },
+      );
+      return totalRows ?? loadedRowCount;
+    } catch (error) {
+      console.warn(`Arrow stream failed for "${dataSource.name}"`, error);
+      appendRuntimeLog(
+        dashboardId,
+        "warn",
+        `Arrow stream failed for "${dataSource.name}"`,
+        {
+          dataSourceId: dataSource.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      await dropTable(session.db, targetTableRef).catch(() => undefined);
+      return null;
+    }
+  };
+
+  const tryNdjson = async (): Promise<number> => {
     runtimeStore.dispatch(
       dashboardRuntimeEvents.updateDatasourceDiagnostics(
         dashboardId,
         dataSource.id,
         {
-          loadPath: "arrow_stream",
+          loadPath: "ndjson_stream",
           resolvedMode: runtimeContext,
         },
       ),
@@ -341,112 +403,61 @@ async function loadDashboardDataSourceWithFallback(options: {
       workspaceId,
       dashboardId,
       dataSource,
-      "arrow",
+      "ndjson",
     );
     const totalBytes = parseNumericHeader(response.headers, "Content-Length");
-    const totalRows = parseNumericHeader(response.headers, "X-Row-Count");
-
-    const loadedRowCount = await loadArrowStreamTable(
+    let ndjsonBytesLoaded = 0;
+    let ndjsonRowsLoaded = 0;
+    const trackedBody = trackStreamProgress(response.body, bytesLoaded => {
+      ndjsonBytesLoaded = bytesLoaded;
+      dispatchLoadProgress({
+        runtimeStore,
+        dashboardId,
+        dataSourceId: dataSource.id,
+        onRowsLoaded,
+        rowsLoaded: ndjsonRowsLoaded,
+        bytesLoaded,
+        totalBytes: totalBytes ?? null,
+        preserveExistingData: options.preserveExistingData,
+      });
+    });
+    return await loadNdjsonStreamTable(
       session.db,
       targetTableRef,
-      response.body,
+      trackedBody,
       {
-        onProgress: bytesLoaded => {
-          const estimatedRows = estimateRowsFromBytes(
-            bytesLoaded,
-            totalBytes,
-            totalRows,
-          );
-          if (estimatedRows == null) {
-            return;
-          }
-
+        onProgress: loaded => {
+          ndjsonRowsLoaded = loaded;
           dispatchLoadProgress({
             runtimeStore,
             dashboardId,
             dataSourceId: dataSource.id,
             onRowsLoaded,
-            rowsLoaded: estimatedRows ?? 0,
-            bytesLoaded,
+            rowsLoaded: loaded,
+            bytesLoaded: ndjsonBytesLoaded,
             totalBytes: totalBytes ?? null,
             preserveExistingData: options.preserveExistingData,
           });
         },
       },
     );
+  };
 
-    return totalRows ?? loadedRowCount;
-  } catch (error) {
-    console.warn(
-      `Arrow stream failed for "${dataSource.name}", falling back to NDJSON`,
-      error,
-    );
-    appendRuntimeLog(
-      dashboardId,
-      "warn",
-      `Arrow stream failed for "${dataSource.name}", falling back to NDJSON`,
-      {
-        dataSourceId: dataSource.id,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    );
-    await dropTable(session.db, targetTableRef).catch(() => undefined);
+  // WIP/edit mode (skipParquet): prefer NDJSON (stable) over Arrow.
+  // Viewer/published mode: prefer parquet artifact, then Arrow, then NDJSON.
+  if (skipParquet) {
+    const ndjsonResult = await tryNdjson().catch(() => null as number | null);
+    if (ndjsonResult != null) return ndjsonResult;
+    const arrowResult = await tryArrow();
+    if (arrowResult != null) return arrowResult;
+    throw new Error(`All stream loading paths failed for "${dataSource.name}"`);
   }
 
-  // Final fallback: NDJSON stream.
-  runtimeStore.dispatch(
-    dashboardRuntimeEvents.updateDatasourceDiagnostics(
-      dashboardId,
-      dataSource.id,
-      {
-        loadPath: "ndjson_stream",
-        resolvedMode: runtimeContext,
-      },
-    ),
-  );
-  const response = await fetchDashboardExport(
-    workspaceId,
-    dashboardId,
-    dataSource,
-    "ndjson",
-  );
-  const totalBytes = parseNumericHeader(response.headers, "Content-Length");
-  let ndjsonBytesLoaded = 0;
-  let ndjsonRowsLoaded = 0;
-  const trackedBody = trackStreamProgress(response.body, bytesLoaded => {
-    ndjsonBytesLoaded = bytesLoaded;
-    dispatchLoadProgress({
-      runtimeStore,
-      dashboardId,
-      dataSourceId: dataSource.id,
-      onRowsLoaded,
-      rowsLoaded: ndjsonRowsLoaded,
-      bytesLoaded,
-      totalBytes: totalBytes ?? null,
-      preserveExistingData: options.preserveExistingData,
-    });
-  });
-  const loadedRows = await loadNdjsonStreamTable(
-    session.db,
-    targetTableRef,
-    trackedBody,
-    {
-      onProgress: loaded => {
-        ndjsonRowsLoaded = loaded;
-        dispatchLoadProgress({
-          runtimeStore,
-          dashboardId,
-          dataSourceId: dataSource.id,
-          onRowsLoaded,
-          rowsLoaded: loaded,
-          bytesLoaded: ndjsonBytesLoaded,
-          totalBytes: totalBytes ?? null,
-          preserveExistingData: options.preserveExistingData,
-        });
-      },
-    },
-  );
-  return loadedRows;
+  const parquetResult = await tryParquet();
+  if (parquetResult != null) return parquetResult;
+  const arrowResult = await tryArrow();
+  if (arrowResult != null) return arrowResult;
+  return await tryNdjson();
 }
 
 function resolveSqlBindings(
