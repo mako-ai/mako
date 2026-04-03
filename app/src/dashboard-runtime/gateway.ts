@@ -451,12 +451,14 @@ async function loadDashboardDataSourceWithFallback(options: {
   // WIP/edit mode (skipParquet): prefer NDJSON (stable) over Arrow.
   // Viewer/published mode: prefer parquet artifact, then Arrow, then NDJSON.
   if (skipParquet) {
+    let ndjsonError: string | undefined;
     const ndjsonResult = await tryNdjson().catch(async error => {
       const msg = error instanceof Error ? error.message : String(error);
       const isFatalWasm =
         msg.includes("memory access out of bounds") ||
         msg.toLowerCase().includes("out of memory");
       if (isFatalWasm) throw error;
+      ndjsonError = msg;
       console.warn(`NDJSON stream failed for "${dataSource.name}"`, error);
       appendRuntimeLog(
         dashboardId,
@@ -473,7 +475,9 @@ async function loadDashboardDataSourceWithFallback(options: {
     if (ndjsonResult != null) return ndjsonResult;
     const arrowResult = await tryArrow();
     if (arrowResult != null) return arrowResult;
-    throw new Error(`All stream loading paths failed for "${dataSource.name}"`);
+    throw new Error(
+      `All stream loading paths failed for "${dataSource.name}": ${ndjsonError ?? "unknown error"}`,
+    );
   }
 
   const parquetResult = await tryParquet();

@@ -562,17 +562,27 @@ export async function executeDashboardAgentTool(
         },
       });
 
-      const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
-      const runtimeSource = snapshot.dataSources.find(
-        ds => ds.id === input.dataSourceId,
-      );
+      if (shouldRun) {
+        const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
+        const runtimeSource = snapshot.dataSources.find(
+          ds => ds.id === input.dataSourceId,
+        );
+        return {
+          success: true,
+          dataSourceId: input.dataSourceId,
+          state: "loaded" as const,
+          rowCount: runtimeSource?.rowCount ?? null,
+          schema: runtimeSource?.columns ?? [],
+          sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
+        };
+      }
       return {
         success: true,
         dataSourceId: input.dataSourceId,
-        state: shouldRun ? "loaded" : "definition_updated",
-        rowCount: runtimeSource?.rowCount ?? null,
-        schema: runtimeSource?.columns ?? [],
-        sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
+        state: "definition_updated" as const,
+        rowCount: null,
+        schema: [],
+        sampleRows: [],
       };
     } catch (error) {
       const message =
