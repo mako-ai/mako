@@ -447,6 +447,19 @@ export const CUSTOM_OBJECT_TYPE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   ...MAKO_SYSTEM_FIELDS,
 };
 
+export const CUSTOM_OBJECT_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  id: { type: "string", required: true },
+  name: s(),
+  organization_id: s(),
+  lead_id: s(),
+  created_by: s(),
+  updated_by: s(),
+  custom_object_type_id: s(),
+  date_created: ts(),
+  date_updated: ts(),
+  ...MAKO_SYSTEM_FIELDS,
+};
+
 export const LEAD_STATUS_SCHEMA: Record<string, ConnectorFieldSchema> = {
   id: { type: "string", required: true },
   label: s(),
@@ -495,6 +508,7 @@ export const CORE_ENTITY_SCHEMA_MAP: Record<
   custom_fields: CUSTOM_FIELD_SCHEMA,
   custom_activity_types: CUSTOM_ACTIVITY_TYPE_SCHEMA,
   custom_object_types: CUSTOM_OBJECT_TYPE_SCHEMA,
+  custom_objects: CUSTOM_OBJECT_SCHEMA,
   lead_statuses: LEAD_STATUS_SCHEMA,
   opportunity_statuses: OPPORTUNITY_STATUS_SCHEMA,
 };
