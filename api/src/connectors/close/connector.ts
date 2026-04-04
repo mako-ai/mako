@@ -1279,9 +1279,35 @@ export class CloseConnector extends BaseConnector {
           pageCursor = null;
 
           if (data.length === 0) {
-            // Empty window — skip ahead without counting as an iteration,
-            // but still respect rate limits to avoid rapid-fire 429s
-            await this.sleep(rateLimitDelay);
+            // Empty window — binary-search forward to skip large gaps
+            // efficiently instead of probing one 7-day window at a time.
+            const nextStart = await this.findNextNonEmptyWindow(
+              api,
+              objectType,
+              windowStart,
+              upperBound,
+              WINDOW_DAYS,
+              rateLimitDelay,
+            );
+            if (!nextStart) {
+              // No more data until upperBound — done
+              return {
+                totalProcessed: recordCount,
+                hasMore: false,
+                iterationsInChunk: iterations,
+                metadata: {
+                  windowStart,
+                  windowEnd,
+                  pageCursor: null,
+                  lastSeenDateCreated,
+                },
+              };
+            }
+            windowStart = nextStart;
+            windowEnd = new Date(
+              new Date(windowStart).getTime() +
+                WINDOW_DAYS * 24 * 60 * 60 * 1000,
+            ).toISOString();
             continue;
           }
         }
@@ -1354,6 +1380,112 @@ export class CloseConnector extends BaseConnector {
       iterationsInChunk: iterations,
       metadata: { windowStart, windowEnd, pageCursor, lastSeenDateCreated },
     };
+  }
+
+  /**
+   * Binary-search forward to find the start of the next non-empty date region.
+   * Instead of scanning hundreds of 7-day empty windows one-by-one (each
+   * costing an API request), this narrows the gap in ~log2(gapDays/windowDays)
+   * lightweight `_limit: 1` probes.
+   *
+   * Returns the ISO timestamp of the start of the first window-aligned region
+   * that contains data, or `null` if the entire range up to `upperBound` is
+   * empty.
+   */
+  private async findNextNonEmptyWindow(
+    api: AxiosInstance,
+    objectType: string,
+    gapStart: string,
+    upperBound: string,
+    windowDays: number,
+    rateLimitDelay: number,
+  ): Promise<string | null> {
+    let lo = new Date(gapStart).getTime();
+    let hi = new Date(upperBound).getTime();
+    const windowMs = windowDays * 24 * 60 * 60 * 1000;
+
+    if (lo >= hi) return null;
+
+    // First check: is there ANY data in [lo, hi) at all?
+    const anyData = await this.probeSearchRange(
+      api,
+      objectType,
+      new Date(lo).toISOString(),
+      new Date(hi).toISOString(),
+      rateLimitDelay,
+    );
+    if (!anyData) return null;
+
+    // Binary search: invariant — data exists somewhere in [lo, hi)
+    while (hi - lo > windowMs) {
+      const mid = lo + Math.floor((hi - lo) / 2);
+      const hasDataInLeft = await this.probeSearchRange(
+        api,
+        objectType,
+        new Date(lo).toISOString(),
+        new Date(mid).toISOString(),
+        rateLimitDelay,
+      );
+
+      if (hasDataInLeft) {
+        hi = mid;
+      } else {
+        lo = mid;
+      }
+    }
+
+    return new Date(lo).toISOString();
+  }
+
+  /** Returns true if at least one record exists in [rangeStart, rangeEnd). */
+  private async probeSearchRange(
+    api: AxiosInstance,
+    objectType: string,
+    rangeStart: string,
+    rangeEnd: string,
+    rateLimitDelay: number,
+  ): Promise<boolean> {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        const resp = await api.post("/data/search/", {
+          query: {
+            negate: false,
+            type: "and",
+            queries: [
+              { negate: false, type: "object_type", object_type: objectType },
+              {
+                type: "field_condition",
+                field: {
+                  type: "regular_field",
+                  object_type: objectType,
+                  field_name: "date_created",
+                },
+                condition: {
+                  type: "moment_range",
+                  on_or_after: { type: "fixed_utc", value: rangeStart },
+                  before: { type: "fixed_utc", value: rangeEnd },
+                },
+              },
+            ],
+          },
+          _limit: 1,
+          _fields: { [objectType]: ["id"] },
+        });
+
+        await this.sleep(rateLimitDelay);
+        return (resp.data?.data?.length ?? 0) > 0;
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "5",
+          );
+          await this.sleep(retryAfter * 1000);
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
