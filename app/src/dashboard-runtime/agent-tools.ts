@@ -92,7 +92,14 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
+  fallbackDashboardId?: string | null,
 ): Promise<Record<string, unknown> | null> {
+  if (
+    fallbackDashboardId &&
+    typeof input.dashboardId !== "string"
+  ) {
+    input = { ...input, dashboardId: fallbackDashboardId };
+  }
   if (toolName === "list_open_dashboards") {
     const store = useDashboardStore.getState();
     const dashboards = Object.values(store.openDashboards).map((d: any) => ({
@@ -314,7 +321,10 @@ export async function executeDashboardAgentTool(
   if (!READ_ONLY_TOOLS.has(toolName) && !EDIT_MODE_EXEMPT_TOOLS.has(toolName)) {
     const dashboardId =
       typeof input.dashboardId === "string" ? input.dashboardId : null;
-    if (dashboardId && !useDashboardStore.getState().isEditMode(dashboardId)) {
+    if (!dashboardId) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    }
+    if (!useDashboardStore.getState().isEditMode(dashboardId)) {
       return {
         success: false,
         error:

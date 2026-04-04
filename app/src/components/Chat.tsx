@@ -1732,6 +1732,7 @@ const Chat: React.FC<ChatProps> = ({
           const dashboardToolOutput = await executeDashboardAgentTool(
             toolName,
             input,
+            capturedDashboardIdRef.current,
           );
 
           if (dashboardToolOutput !== null) {
