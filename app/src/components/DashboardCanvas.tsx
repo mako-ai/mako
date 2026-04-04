@@ -185,7 +185,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     void applyFreshMaterializationCommand({
       workspaceId,
       dashboardId,
-    });
+    }).catch(() => undefined);
   }, [
     dashboardId,
     isEditMode,
@@ -406,7 +406,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                     void materializeDashboardInBackgroundCommand({
                       workspaceId,
                       dashboardId,
-                    });
+                    }).catch(() => undefined);
                   }}
                 >
                   <Save size={16} />
