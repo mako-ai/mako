@@ -1104,6 +1104,8 @@ export class CloseConnector extends BaseConnector {
       state?.metadata?.windowStart ?? dateWindowCursor ?? null;
     let windowEnd: string | null = state?.metadata?.windowEnd ?? null;
     let pageCursor: string | null = state?.metadata?.pageCursor ?? null;
+    let lastSeenDateCreated: string | null =
+      state?.metadata?.lastSeenDateCreated ?? null;
 
     if (!state && onProgress) {
       try {
@@ -1173,12 +1175,17 @@ export class CloseConnector extends BaseConnector {
     }
 
     while (iterations < maxIterations) {
-      if (new Date(windowStart).getTime() >= new Date(upperBound).getTime()) {
+      if (new Date(windowStart!).getTime() >= new Date(upperBound).getTime()) {
         return {
           totalProcessed: recordCount,
           hasMore: false,
           iterationsInChunk: iterations,
-          metadata: { windowStart, windowEnd, pageCursor: null },
+          metadata: {
+            windowStart,
+            windowEnd,
+            pageCursor: null,
+            lastSeenDateCreated,
+          },
         };
       }
 
@@ -1256,6 +1263,11 @@ export class CloseConnector extends BaseConnector {
           await onBatch(records);
           recordCount += records.length;
           if (onProgress) onProgress(recordCount, undefined);
+
+          const lastRow = data[data.length - 1];
+          if (lastRow?.date_created) {
+            lastSeenDateCreated = lastRow.date_created;
+          }
         }
 
         if (data.length === 0 || !pageCursor) {
@@ -1296,19 +1308,37 @@ export class CloseConnector extends BaseConnector {
           error.response?.status === 400 &&
           error.response?.data?.["field-errors"]?.cursor
         ) {
-          // Cursor expired / limit reached inside a window — shrink window
-          // to half its current span and retry from the same windowStart.
-          this.emitSyncLog(
-            "info",
-            "Close cursor limit reached, halving date window",
-            { entity, recordsFetched: recordCount, windowStart, windowEnd },
-          );
-          const currentSpan =
-            new Date(windowEnd).getTime() - new Date(windowStart).getTime();
-          const halfSpan = Math.max(currentSpan / 2, 24 * 60 * 60 * 1000);
-          windowEnd = new Date(
-            new Date(windowStart).getTime() + halfSpan,
-          ).toISOString();
+          // Cursor expired / limit reached inside a window.
+          // Advance windowStart to the last successfully fetched date_created
+          // so we don't re-emit rows already sent via onBatch.
+          // If we haven't fetched anything yet in this window, halve the span.
+          if (lastSeenDateCreated) {
+            this.emitSyncLog(
+              "info",
+              "Close cursor limit reached, advancing past fetched rows",
+              {
+                entity,
+                recordsFetched: recordCount,
+                windowStart,
+                windowEnd,
+                advancingTo: lastSeenDateCreated,
+              },
+            );
+            windowStart = lastSeenDateCreated;
+            lastSeenDateCreated = null;
+          } else {
+            this.emitSyncLog(
+              "info",
+              "Close cursor limit reached, halving date window",
+              { entity, recordsFetched: recordCount, windowStart, windowEnd },
+            );
+            const currentSpan =
+              new Date(windowEnd!).getTime() - new Date(windowStart!).getTime();
+            const halfSpan = Math.max(currentSpan / 2, 24 * 60 * 60 * 1000);
+            windowEnd = new Date(
+              new Date(windowStart!).getTime() + halfSpan,
+            ).toISOString();
+          }
           pageCursor = null;
         } else {
           throw error;
@@ -1320,7 +1350,7 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { windowStart, windowEnd, pageCursor },
+      metadata: { windowStart, windowEnd, pageCursor, lastSeenDateCreated },
     };
   }
 
