@@ -65,7 +65,6 @@ describe("dashboard runtime contract", () => {
   it("treats published artifact freshness as part of the viewer load version", () => {
     const viewerV1 = buildDataSourceLoadVersion({
       dataSource: baseDashboard.dataSources[0],
-      runtimeContext: "viewer",
       skipParquet: false,
     });
 
@@ -78,13 +77,11 @@ describe("dashboard runtime contract", () => {
           parquetUrl: "https://example.com/orders-v2.parquet",
         },
       },
-      runtimeContext: "viewer",
       skipParquet: false,
     });
 
     const draftV1 = buildDataSourceLoadVersion({
       dataSource: baseDashboard.dataSources[0],
-      runtimeContext: "builder",
       skipParquet: true,
     });
 
@@ -97,15 +94,14 @@ describe("dashboard runtime contract", () => {
           parquetUrl: "https://example.com/orders-v2.parquet",
         },
       },
-      runtimeContext: "builder",
       skipParquet: true,
     });
 
     expect(
-      resolveActiveSource({ runtimeContext: "viewer", skipParquet: false }),
+      resolveActiveSource({ skipParquet: false }),
     ).toBe("published_artifact");
     expect(
-      resolveActiveSource({ runtimeContext: "builder", skipParquet: true }),
+      resolveActiveSource({ skipParquet: true }),
     ).toBe("draft_stream");
     expect(viewerV2).not.toBe(viewerV1);
     expect(draftV2).toBe(draftV1);

@@ -71,7 +71,6 @@ function buildDashboardExportPayload(
 type DashboardRuntimeContext = "builder" | "viewer";
 
 export function resolveActiveSource(options: {
-  runtimeContext: DashboardRuntimeContext;
   skipParquet: boolean;
 }): DashboardDataSourceActiveSource {
   if (options.skipParquet) {
@@ -82,7 +81,6 @@ export function resolveActiveSource(options: {
 
 export function buildDataSourceLoadVersion(options: {
   dataSource: DashboardDataSource;
-  runtimeContext: DashboardRuntimeContext;
   skipParquet: boolean;
 }): string {
   const definitionVersion = buildDataSourceDefinitionVersion(
@@ -100,7 +98,7 @@ export function buildDataSourceLoadVersion(options: {
 
   const cache = (options.dataSource.cache || {}) as {
     parquetVersion?: string;
-    parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+    parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
     parquetUrl?: string;
   };
 
@@ -824,13 +822,12 @@ export async function materializeDashboardDataSource(options: {
   const definitionVersion = buildDataSourceDefinitionVersion(dataSource);
   const loadVersion = buildDataSourceLoadVersion({
     dataSource,
-    runtimeContext,
     skipParquet,
   });
-  const activeSource = resolveActiveSource({ runtimeContext, skipParquet });
+  const activeSource = resolveActiveSource({ skipParquet });
   const cachedVersion = session.dataSourceVersions.get(dataSource.id);
   const cache = (dataSource.cache || {}) as {
-    parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+    parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
     parquetVersion?: string;
     parquetBuiltAt?: string;
   };
