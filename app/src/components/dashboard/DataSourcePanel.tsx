@@ -347,6 +347,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
         await updateDashboardDataSourceQuery({
           workspaceId,
           dataSourceId: editingDataSourceId,
+          rematerialize: true,
           changes: {
             name: directName.trim(),
             query: {

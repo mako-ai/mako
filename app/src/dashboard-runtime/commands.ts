@@ -322,7 +322,7 @@ export async function updateDashboardDataSourceQuery(options: {
   const dashboard = getDashboardOrThrow(options.dashboardId);
   store.updateDataSource(dashboard._id, options.dataSourceId, options.changes);
 
-  if (options.rematerialize !== false) {
+  if (options.rematerialize === true) {
     const updatedDashboard = getDashboardOrThrow(dashboard._id);
     const dataSource = updatedDashboard.dataSources.find(
       ds => ds.id === options.dataSourceId,

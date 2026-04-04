@@ -167,13 +167,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   useEffect(() => {
     setFreshnessDismissed(false);
-  }, [dataFreshness?.label]);
+  }, [dataFreshness?.ageMs]);
 
-  const handleReloadData = useCallback(() => {
+  const handleReloadData = useCallback(async () => {
     if (workspaceId) {
-      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
+      setFreshnessDismissed(true);
+      try {
+        await reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
+      } catch {
+        setFreshnessDismissed(false);
+      }
     }
-    setFreshnessDismissed(true);
   }, [workspaceId, dashboardId]);
 
   const recentEventLogCount = Math.min(
