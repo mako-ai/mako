@@ -395,18 +395,26 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   }
                   onClick={async () => {
                     if (!workspaceId || !dashboardId) return;
-                    const result = await saveDashboardAction(
-                      workspaceId,
-                      dashboardId,
-                    );
-                    if (!result.ok) {
-                      if (result.error) setSaveError(result.error);
-                      return;
+                    try {
+                      const result = await saveDashboardAction(
+                        workspaceId,
+                        dashboardId,
+                      );
+                      if (!result.ok) {
+                        if (result.error) setSaveError(result.error);
+                        return;
+                      }
+                      void materializeDashboardInBackgroundCommand({
+                        workspaceId,
+                        dashboardId,
+                      }).catch(() => undefined);
+                    } catch (err) {
+                      setSaveError(
+                        err instanceof Error
+                          ? err.message
+                          : "Failed to save dashboard",
+                      );
                     }
-                    void materializeDashboardInBackgroundCommand({
-                      workspaceId,
-                      dashboardId,
-                    }).catch(() => undefined);
                   }}
                 >
                   <Save size={16} />

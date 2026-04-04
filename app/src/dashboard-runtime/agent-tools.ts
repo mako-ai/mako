@@ -89,12 +89,37 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
   "open_dashboard",
 ]);
 
+const DASHBOARD_TOOLS = new Set([
+  "list_open_dashboards",
+  "open_dashboard",
+  "create_dashboard",
+  "enter_edit_mode",
+  "add_data_source",
+  "import_console_as_data_source",
+  "create_data_source",
+  "update_data_source_query",
+  "run_data_source_query",
+  "get_chart_templates",
+  "get_chart_template",
+  "get_dashboard_state",
+  "get_data_preview",
+  "preview_data_source",
+  "add_widget",
+  "modify_widget",
+  "remove_widget",
+  "add_global_filter",
+  "remove_global_filter",
+  "link_tables",
+  "set_time_dimension",
+]);
+
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
   fallbackDashboardId?: string | null,
 ): Promise<Record<string, unknown> | null> {
   if (
+    DASHBOARD_TOOLS.has(toolName) &&
     fallbackDashboardId &&
     typeof input.dashboardId !== "string"
   ) {
@@ -500,14 +525,22 @@ export async function executeDashboardAgentTool(
       switch (action) {
         case "patch": {
           const lines = existingCode.split("\n");
-          const startLine = Math.max(
-            1,
-            Math.min(input.startLine as number, lines.length),
-          );
-          const endLine = Math.max(
-            startLine,
-            Math.min(input.endLine as number, lines.length),
-          );
+          const rawStart = input.startLine as number;
+          const rawEnd = input.endLine as number;
+          if (rawStart < 1 || rawStart > lines.length) {
+            return {
+              success: false,
+              error: `startLine ${rawStart} is out of range — the query only has ${lines.length} line(s). Use get_dashboard_state to see the current query code.`,
+            };
+          }
+          if (rawEnd < rawStart || rawEnd > lines.length) {
+            return {
+              success: false,
+              error: `endLine ${rawEnd} is out of range — the query only has ${lines.length} line(s) and startLine is ${rawStart}. Use get_dashboard_state to see the current query code.`,
+            };
+          }
+          const startLine = rawStart;
+          const endLine = rawEnd;
           const before = lines.slice(0, startLine - 1);
           const after = lines.slice(endLine);
           const patchLines = input.code.split("\n");
