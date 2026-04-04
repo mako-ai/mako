@@ -643,6 +643,7 @@ async function loadDashboardDataSourceWithFallback(options: {
     const msg = error instanceof Error ? error.message : String(error);
     const isFatalWasm =
       msg.includes("memory access out of bounds") ||
+      msg.includes("unreachable executed") ||
       msg.toLowerCase().includes("out of memory");
     if (isFatalWasm) throw error;
     console.warn(`NDJSON stream failed for "${dataSource.name}"`, error);

@@ -171,7 +171,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     setFreshnessDismissed(false);
   }, [dataFreshness?.ageMs]);
 
-  const handleReloadData = useCallback(async () => {
   useEffect(() => {
     if (
       !workspaceId ||
