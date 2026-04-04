@@ -22,12 +22,7 @@ import {
   validateVegaSpec,
 } from "./validation";
 import { selectWidgetRuntime } from "./selectors";
-import {
-  getAllTemplates,
-  getTemplate,
-  getWidgetSizeDefaults,
-  deriveResponsiveLayouts,
-} from "@mako/schemas";
+import { getAllTemplates, getTemplate } from "@mako/schemas";
 
 /**
  * Poll the runtime store for widget render status after adding/modifying a
@@ -62,21 +57,14 @@ async function waitForWidgetRenderResult(
 const DASHBOARD_ID_REQUIRED_ERROR =
   "dashboardId is required. Use list_open_dashboards to get available dashboard IDs.";
 
-function requireDashboardId(
-  input: Record<string, unknown>,
-):
-  | { dashboardId: string; workspaceId: string; error?: undefined }
-  | { error: string; dashboardId?: undefined; workspaceId?: undefined } {
-  if (typeof input.dashboardId !== "string") {
-    return { error: DASHBOARD_ID_REQUIRED_ERROR };
-  }
+function requireDashboardId(input: Record<string, unknown>): {
+  dashboardId: string;
+  workspaceId: string;
+} | null {
+  if (typeof input.dashboardId !== "string") return null;
   const store = useDashboardStore.getState();
   const dashboard = store.openDashboards[input.dashboardId];
-  if (!dashboard) {
-    return {
-      error: `Dashboard ${input.dashboardId} is not open. Use open_dashboard first.`,
-    };
-  }
+  if (!dashboard) return null;
   return {
     dashboardId: input.dashboardId,
     workspaceId: dashboard.workspaceId,
@@ -341,8 +329,8 @@ export async function executeDashboardAgentTool(
     toolName === "import_console_as_data_source"
   ) {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (typeof input.consoleId === "string") {
@@ -391,8 +379,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "create_data_source") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (typeof input.name !== "string") {
@@ -457,8 +445,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "update_data_source_query") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (typeof input.dataSourceId !== "string") {
@@ -611,8 +599,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "run_data_source_query") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (typeof input.dataSourceId !== "string") {
@@ -732,8 +720,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "get_data_preview" || toolName === "preview_data_source") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     if (typeof input.dataSourceId !== "string") {
       return { success: false, error: "dataSourceId is required" };
@@ -765,8 +753,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "add_widget") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
 
     if (input.vegaLiteSpec !== undefined) {
@@ -793,42 +781,17 @@ export async function executeDashboardAgentTool(
       };
     }
 
-    const widgetType = input.type as "chart" | "kpi" | "table";
-    const vegaSpec = input.vegaLiteSpec as Record<string, unknown> | undefined;
-    const vegaMark =
-      typeof vegaSpec?.mark === "string"
-        ? vegaSpec.mark
-        : ((vegaSpec?.mark as Record<string, unknown> | undefined)?.type as
-            | string
-            | undefined);
-    const sizeDefaults = getWidgetSizeDefaults(widgetType, vegaMark);
-
-    const rawLayouts = input.layouts as DashboardWidget["layouts"];
-    const lg = rawLayouts?.lg ?? {
-      x: 0,
-      y: 0,
-      w: sizeDefaults.w,
-      h: sizeDefaults.h,
-    };
-    const clampedLg = {
-      ...lg,
-      w: Math.max(lg.w, sizeDefaults.minW),
-      h: Math.max(lg.h, sizeDefaults.minH),
-      minW: sizeDefaults.minW,
-      minH: sizeDefaults.minH,
-    };
-
     const widget: DashboardWidget = {
       id: nanoid(),
       title: input.title as string | undefined,
-      type: widgetType,
+      type: input.type as "chart" | "kpi" | "table",
       dataSourceId: input.dataSourceId as string,
       localSql: input.localSql as string,
-      vegaLiteSpec: vegaSpec,
+      vegaLiteSpec: input.vegaLiteSpec as Record<string, unknown> | undefined,
       kpiConfig: input.kpiConfig as DashboardWidget["kpiConfig"],
       tableConfig: input.tableConfig as DashboardWidget["tableConfig"],
       crossFilter: { enabled: true },
-      layouts: deriveResponsiveLayouts(clampedLg),
+      layouts: input.layouts as DashboardWidget["layouts"],
     };
     const crossFilterValidation = validateCrossFilterWidgetSql({
       sql: widget.localSql,
@@ -901,8 +864,8 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "widgetId is required" };
     }
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     const targetDashboard =
       useDashboardStore.getState().openDashboards[ctx.dashboardId];
@@ -931,38 +894,9 @@ export async function executeDashboardAgentTool(
     }
     if (input.layouts !== undefined) {
       const existingLayouts = targetWidget.layouts;
-      const mergedLayouts = (
-        existingLayouts
-          ? {
-              ...existingLayouts,
-              ...(input.layouts as DashboardWidget["layouts"]),
-            }
-          : (input.layouts as DashboardWidget["layouts"])
-      ) as DashboardWidget["layouts"];
-
-      const effectiveSpec = (changes.vegaLiteSpec ??
-        targetWidget.vegaLiteSpec) as Record<string, unknown> | undefined;
-      const vegaMark =
-        typeof effectiveSpec?.mark === "string"
-          ? effectiveSpec.mark
-          : ((effectiveSpec?.mark as Record<string, unknown> | undefined)
-              ?.type as string | undefined);
-      const sizeDefaults = getWidgetSizeDefaults(targetWidget.type, vegaMark);
-
-      const lg = mergedLayouts?.lg ?? {
-        x: 0,
-        y: 0,
-        w: sizeDefaults.w,
-        h: sizeDefaults.h,
-      };
-      const clampedLg = {
-        ...lg,
-        w: Math.max(lg.w, sizeDefaults.minW),
-        h: Math.max(lg.h, sizeDefaults.minH),
-        minW: sizeDefaults.minW,
-        minH: sizeDefaults.minH,
-      };
-      changes.layouts = deriveResponsiveLayouts(clampedLg);
+      changes.layouts = existingLayouts
+        ? { ...existingLayouts, ...input.layouts }
+        : input.layouts;
     }
     if (changes.vegaLiteSpec !== undefined) {
       const specValidation = await validateVegaSpec(changes.vegaLiteSpec);
@@ -1077,8 +1011,8 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "widgetId is required" };
     }
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     removeDashboardWidget(input.widgetId, ctx.dashboardId);
     return { success: true };
@@ -1086,8 +1020,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "add_global_filter") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     const activeDashboard =
       useDashboardStore.getState().openDashboards[ctx.dashboardId];
@@ -1108,8 +1042,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "remove_global_filter") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     useDashboardStore
       .getState()
@@ -1119,8 +1053,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "link_tables") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     const relationship = {
       id: nanoid(),
@@ -1134,8 +1068,8 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "set_time_dimension") {
     const ctx = requireDashboardId(input);
-    if (ctx.error) {
-      return { success: false, error: ctx.error };
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     }
     if (
       typeof input.dataSourceId !== "string" ||

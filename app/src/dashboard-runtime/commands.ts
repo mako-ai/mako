@@ -15,10 +15,7 @@ import {
   removeDashboardDataSourceRuntime,
   syncDashboardRuntime,
 } from "./gateway";
-import {
-  ensureMosaicInstance,
-  getMosaicInstance,
-} from "./session-registry";
+import { ensureMosaicInstance, getMosaicInstance } from "./session-registry";
 import { selectDataSourceRuntime, selectWidgetRuntime } from "./selectors";
 import { dashboardRuntimeEvents } from "./events";
 import { useDashboardRuntimeStore } from "./store";
