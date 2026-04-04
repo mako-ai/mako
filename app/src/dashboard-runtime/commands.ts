@@ -414,6 +414,8 @@ export async function runDashboardDataSource(options: {
     recovered = true;
 
     const freshDashboard = getDashboardOrThrow(options.dashboardId);
+    await activateDashboardRuntime(freshDashboard);
+
     const freshDs = freshDashboard.dataSources.find(
       ds => ds.id === options.dataSourceId,
     );
