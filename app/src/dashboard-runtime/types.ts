@@ -27,7 +27,12 @@ export interface DashboardDataSource
         parquetArtifactKey?: string;
         parquetVersion?: string;
         parquetBuiltAt?: string;
-        parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+        parquetBuildStatus?:
+          | "missing"
+          | "queued"
+          | "building"
+          | "ready"
+          | "error";
         parquetLastError?: string;
         parquetUrl?: string;
       })
@@ -110,7 +115,7 @@ export interface DashboardDataSourceRuntimeState {
   resolvedMode?: "builder" | "viewer";
   artifactUrl?: string | null;
   loadDurationMs?: number | null;
-  materializationStatus?: "missing" | "building" | "ready" | "error";
+  materializationStatus?: "missing" | "queued" | "building" | "ready" | "error";
   materializationVersion?: string | null;
   materializedAt?: string | null;
   storageBackend?: "filesystem" | "gcs" | "s3" | null;

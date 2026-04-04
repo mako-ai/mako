@@ -544,7 +544,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
 
   const dataSources = dashboard?.dataSources ?? [];
   const hasBuildingMaterialization = dataSources.some(
-    dataSource => dataSource.cache?.parquetBuildStatus === "building",
+    dataSource =>
+      dataSource.cache?.parquetBuildStatus === "building" ||
+      dataSource.cache?.parquetBuildStatus === "queued",
   );
 
   const showAddPanel = addMode !== null || editingDataSourceId !== null;
@@ -890,6 +892,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               const chipProps = status ? STATUS_CHIP_PROPS[status] : null;
               const materializationStatus =
                 ds.cache?.parquetBuildStatus || "missing";
+              const materializationPending =
+                materializationStatus === "queued" ||
+                materializationStatus === "building";
               const materializedAt = formatRelativeTime(
                 ds.cache?.parquetBuiltAt,
               );
@@ -920,6 +925,15 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     icon={<CheckCircle2 size={14} />}
                     label="Materialized"
                     color="success"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                ) : materializationStatus === "queued" ? (
+                  <Chip
+                    icon={<LoaderCircle size={14} />}
+                    label="Queued"
+                    color="warning"
                     size="small"
                     variant="outlined"
                     sx={{ height: 22, fontSize: "0.7rem" }}
@@ -983,10 +997,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     <IconButton
                       size="small"
                       onClick={() => handleRefreshDataSource(ds.id)}
-                      disabled={
-                        status === "loading" ||
-                        materializationStatus === "building"
-                      }
+                      disabled={status === "loading" || materializationPending}
                       sx={{ p: 0.5 }}
                     >
                       {status === "loading" ? (
@@ -1109,12 +1120,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     <Button
                       size="small"
                       variant="text"
-                      disabled={
-                        status === "loading" ||
-                        materializationStatus === "building"
-                      }
+                      disabled={status === "loading" || materializationPending}
                       startIcon={
-                        materializationStatus === "building" ? (
+                        materializationPending ? (
                           <CircularProgress size={12} />
                         ) : (
                           <RefreshCw size={12} />

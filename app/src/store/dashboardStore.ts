@@ -43,7 +43,7 @@ export interface DashboardConflict {
 export interface DashboardDataSourceMaterializationStatus {
   dataSourceId: string;
   name: string;
-  status: "missing" | "building" | "ready" | "error";
+  status: "missing" | "queued" | "building" | "ready" | "error";
   version: string | null;
   format: "parquet";
   storageBackend: "filesystem" | "gcs" | "s3";
@@ -59,7 +59,7 @@ export interface DashboardDataSourceMaterializationStatus {
 export interface DashboardMaterializationStatus {
   dashboardId: string;
   workspaceId: string;
-  status: "missing" | "building" | "ready" | "error";
+  status: "missing" | "queued" | "building" | "ready" | "error";
   lastRefreshedAt: string | null;
   allReady: boolean;
   anyBuilding: boolean;
