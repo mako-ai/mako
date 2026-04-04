@@ -62,7 +62,9 @@ async function waitForWidgetRenderResult(
 const DASHBOARD_ID_REQUIRED_ERROR =
   "dashboardId is required. Use list_open_dashboards to get available dashboard IDs.";
 
-function requireDashboardId(input: Record<string, unknown>):
+function requireDashboardId(
+  input: Record<string, unknown>,
+):
   | { dashboardId: string; workspaceId: string; error?: undefined }
   | { error: string; dashboardId?: undefined; workspaceId?: undefined } {
   if (typeof input.dashboardId !== "string") {
@@ -931,19 +933,20 @@ export async function executeDashboardAgentTool(
       const existingLayouts = targetWidget.layouts;
       const mergedLayouts = (
         existingLayouts
-          ? { ...existingLayouts, ...(input.layouts as DashboardWidget["layouts"]) }
+          ? {
+              ...existingLayouts,
+              ...(input.layouts as DashboardWidget["layouts"]),
+            }
           : (input.layouts as DashboardWidget["layouts"])
       ) as DashboardWidget["layouts"];
 
-      const effectiveSpec = (changes.vegaLiteSpec ?? targetWidget.vegaLiteSpec) as
-        | Record<string, unknown>
-        | undefined;
+      const effectiveSpec = (changes.vegaLiteSpec ??
+        targetWidget.vegaLiteSpec) as Record<string, unknown> | undefined;
       const vegaMark =
         typeof effectiveSpec?.mark === "string"
           ? effectiveSpec.mark
-          : ((effectiveSpec?.mark as Record<string, unknown> | undefined)?.type as
-              | string
-              | undefined);
+          : ((effectiveSpec?.mark as Record<string, unknown> | undefined)
+              ?.type as string | undefined);
       const sizeDefaults = getWidgetSizeDefaults(targetWidget.type, vegaMark);
 
       const lg = mergedLayouts?.lg ?? {
