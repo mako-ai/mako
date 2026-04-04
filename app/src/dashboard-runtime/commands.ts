@@ -74,6 +74,19 @@ function syncRuntimeMaterializationStatus(
   }
 }
 
+export function shouldAutoApplyFreshMaterialization(
+  dashboardId: string,
+): boolean {
+  const session = useDashboardRuntimeStore.getState().sessions[dashboardId];
+  if (!session) {
+    return false;
+  }
+
+  return !Object.values(session.dataSources).some(
+    dataSource => dataSource.activeSource === "draft_stream",
+  );
+}
+
 async function fetchAndSyncMaterializationStatus(
   workspaceId: string,
   dashboardId: string,
@@ -180,7 +193,19 @@ export async function activateDashboardSession(
       void waitForDashboardMaterialization({
         workspaceId,
         dashboardId: dashboard._id,
-      });
+      })
+        .then(async result => {
+          if (!result || !shouldAutoApplyFreshMaterialization(dashboard._id)) {
+            return;
+          }
+
+          await applyDashboardMaterializedData({
+            workspaceId,
+            dashboardId: dashboard._id,
+            runtimeContext: "viewer",
+          });
+        })
+        .catch(() => undefined);
     }
   }
   await activateDashboardRuntime(dashboard, runtimeContext);
@@ -446,7 +471,7 @@ export async function runDashboardDataSource(options: {
     options.dataSourceId,
   );
   return {
-    loadPath: (runtime as any)?.diagnostics?.loadPath ?? null,
+    loadPath: runtime?.loadPath ?? null,
     recovered,
   };
 }
@@ -517,6 +542,31 @@ export async function reloadDashboardDataSourcesCommand(
   });
 }
 
+export async function materializeDashboardInBackgroundCommand(options: {
+  workspaceId: string;
+  dashboardId?: string;
+}): Promise<void> {
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  await useDashboardStore
+    .getState()
+    .materializeDashboard(options.workspaceId, dashboard._id, {
+      force: true,
+    });
+  const status = await waitForDashboardMaterialization({
+    workspaceId: options.workspaceId,
+    dashboardId: dashboard._id,
+  });
+  if (!status || !shouldAutoApplyFreshMaterialization(dashboard._id)) {
+    return;
+  }
+
+  await applyDashboardMaterializedData({
+    workspaceId: options.workspaceId,
+    dashboardId: dashboard._id,
+    runtimeContext: "viewer",
+  });
+}
+
 export async function applyFreshMaterializationCommand(options: {
   workspaceId: string;
   dashboardId?: string;
@@ -576,6 +626,16 @@ export function getDashboardStateSnapshot(dashboardId?: string) {
         rowsLoaded: runtime?.rowsLoaded || 0,
         rowCount: runtime?.rowCount,
         error: runtime?.error || null,
+        activeSource: runtime?.activeSource ?? null,
+        loadPath: runtime?.loadPath ?? null,
+        loadingMessage: runtime?.loadingMessage ?? null,
+        resolvedMode: runtime?.resolvedMode ?? null,
+        artifactUrl: runtime?.artifactUrl ?? null,
+        loadDurationMs: runtime?.loadDurationMs ?? null,
+        materializationStatus: runtime?.materializationStatus ?? null,
+        materializationVersion: runtime?.materializationVersion ?? null,
+        materializedAt: runtime?.materializedAt ?? null,
+        storageBackend: runtime?.storageBackend ?? null,
         columns: runtime?.schema || [],
         sampleRows: runtime?.sampleRows || [],
       };

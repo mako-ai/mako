@@ -87,6 +87,10 @@ export interface DashboardRuntimeColumn {
   sampleValues?: unknown[];
 }
 
+export type DashboardDataSourceActiveSource =
+  | "draft_stream"
+  | "published_artifact";
+
 export interface DashboardDataSourceRuntimeState {
   dataSourceId: string;
   tableRef: string;
@@ -100,7 +104,9 @@ export interface DashboardDataSourceRuntimeState {
   schema: DashboardRuntimeColumn[];
   sampleRows: Record<string, unknown>[];
   error: string | null;
+  activeSource?: DashboardDataSourceActiveSource | null;
   loadPath?: "memory" | "arrow_stream" | "ndjson_stream" | null;
+  loadingMessage?: string | null;
   resolvedMode?: "builder" | "viewer";
   artifactUrl?: string | null;
   loadDurationMs?: number | null;
@@ -276,7 +282,9 @@ export type DashboardRuntimeEvent =
       diagnostics: Partial<
         Pick<
           DashboardDataSourceRuntimeState,
+          | "activeSource"
           | "loadPath"
+          | "loadingMessage"
           | "resolvedMode"
           | "artifactUrl"
           | "loadDurationMs"

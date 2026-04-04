@@ -571,18 +571,33 @@ export async function executeDashboardAgentTool(
           success: true,
           dataSourceId: input.dataSourceId,
           state: "loaded" as const,
+          runtimeState: "fresh" as const,
+          activeSource: runtimeSource?.activeSource ?? "draft_stream",
+          loadPath: runtimeSource?.loadPath ?? null,
+          nextRecommendedTool: null,
           rowCount: runtimeSource?.rowCount ?? null,
           schema: runtimeSource?.columns ?? [],
           sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
+          message: `Updated "${existing.name}" and loaded fresh draft-stream data into DuckDB.`,
         };
       }
+      const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
+      const runtimeSource = snapshot.dataSources.find(
+        ds => ds.id === input.dataSourceId,
+      );
       return {
         success: true,
         dataSourceId: input.dataSourceId,
         state: "definition_updated" as const,
+        runtimeState: "stale" as const,
+        activeSource: runtimeSource?.activeSource ?? null,
+        loadPath: runtimeSource?.loadPath ?? null,
+        nextRecommendedTool: "run_data_source_query" as const,
         rowCount: null,
         schema: [],
         sampleRows: [],
+        message:
+          "Definition saved only. The dashboard is still using the previously loaded data until run_data_source_query is called.",
       };
     } catch (error) {
       const message =
@@ -591,6 +606,8 @@ export async function executeDashboardAgentTool(
           : "Failed to update data source query";
       return {
         success: false,
+        state: shouldRun ? ("execution_failed" as const) : undefined,
+        runtimeState: shouldRun ? ("stale" as const) : undefined,
         error: message,
         errorKind: classifySourceError(message),
       };
@@ -621,11 +638,15 @@ export async function executeDashboardAgentTool(
       return {
         success: true,
         dataSourceId: input.dataSourceId,
+        state: "loaded" as const,
+        runtimeState: "fresh" as const,
+        activeSource: runtimeSource?.activeSource ?? "draft_stream",
         rowCount: runtimeSource?.rowCount ?? null,
         schema: runtimeSource?.columns ?? [],
         sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
         loadPath: result.loadPath,
         recovered: result.recovered,
+        nextRecommendedTool: null,
         ...(result.recovered && {
           recoveredAllDataSources: true,
           hint: "A WASM crash was detected and the DuckDB instance was recreated. All data sources were automatically re-materialized.",

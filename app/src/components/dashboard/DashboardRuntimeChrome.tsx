@@ -25,6 +25,27 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function summarizeLoadingLabel(options: {
+  sourceNames: string[];
+  loadingMessages: string[];
+}): string {
+  const { sourceNames, loadingMessages } = options;
+  if (sourceNames.length === 1) {
+    return loadingMessages[0]
+      ? `${sourceNames[0]}: ${loadingMessages[0]}`
+      : `Loading ${sourceNames[0]}`;
+  }
+
+  const uniqueMessages = Array.from(
+    new Set(loadingMessages.filter(message => Boolean(message))),
+  );
+  if (uniqueMessages.length === 1) {
+    return `Loading ${sourceNames.length} data sources: ${uniqueMessages[0]}`;
+  }
+
+  return `Loading ${sourceNames.length} data sources`;
+}
+
 interface DashboardRuntimeChromeProps {
   dashboard: Dashboard;
   dashboardId?: string;
@@ -99,10 +120,13 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
     }
 
     return {
-      label:
-        loadingSources.length === 1
-          ? `Loading ${loadingSources[0].name}`
-          : `Loading ${loadingSources.length} data sources`,
+      label: summarizeLoadingLabel({
+        sourceNames: loadingSources.map(source => source.name),
+        loadingMessages: loadingSources.map(
+          source =>
+            runtimeSession?.dataSources[source.id]?.loadingMessage || "",
+        ),
+      }),
       rowsLoaded: loadingSources.reduce(
         (sum, ds) =>
           sum + (runtimeSession?.dataSources[ds.id]?.rowsLoaded || 0),
@@ -289,8 +313,9 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
           }}
         >
           <Typography variant="caption" sx={{ display: "block" }}>
-            Refreshing data sources in the background. The dashboard is using
-            the previous materialized snapshot until fresh data is ready.
+            {isEditMode
+              ? "Building a fresh published artifact in the background. Edit mode keeps the currently loaded draft/view data until you leave edit mode or rerun a source."
+              : "Refreshing data sources in the background. The dashboard is using the previous materialized snapshot until fresh data is ready."}
           </Typography>
         </Box>
       )}
@@ -310,19 +335,23 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
           }}
         >
           <Typography variant="caption" sx={{ display: "block" }}>
-            Fresh materialized data is available.
+            {isEditMode
+              ? "A fresh published artifact is ready. Viewer mode will pick it up automatically."
+              : "Fresh materialized data is available."}
           </Typography>
-          <Chip
-            size="small"
-            label="Update now"
-            onClick={() =>
-              void applyFreshMaterializationCommand({
-                workspaceId,
-                dashboardId,
-              })
-            }
-            sx={{ cursor: "pointer", backgroundColor: "background.paper" }}
-          />
+          {!isEditMode && (
+            <Chip
+              size="small"
+              label="Update now"
+              onClick={() =>
+                void applyFreshMaterializationCommand({
+                  workspaceId,
+                  dashboardId,
+                })
+              }
+              sx={{ cursor: "pointer", backgroundColor: "background.paper" }}
+            />
+          )}
         </Box>
       )}
       {showEventLog && recentEventLog.length > 0 && (

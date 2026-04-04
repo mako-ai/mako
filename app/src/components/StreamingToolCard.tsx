@@ -395,6 +395,16 @@ function getOutputSummary(output: unknown): string | null {
     return err.length > 50 ? err.slice(0, 50) + "…" : err;
   }
 
+  if (o.state === "definition_updated") {
+    return "Definition saved only";
+  }
+  if (o.state === "loaded") {
+    if (typeof o.rowCount === "number") {
+      return `${o.rowCount} row${o.rowCount !== 1 ? "s" : ""}`;
+    }
+    return "Fresh data loaded";
+  }
+
   if (Array.isArray(o.data)) {
     return `${o.data.length} row${o.data.length !== 1 ? "s" : ""}`;
   }

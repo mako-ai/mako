@@ -106,6 +106,24 @@ function formatBytes(value?: number): string | null {
   return `${value} B`;
 }
 
+function formatLoadingStatus(options: {
+  loadingMessage?: string | null;
+  rowsLoaded: number;
+  bytesLoaded?: number;
+  totalBytes?: number | null;
+}): string {
+  const baseMessage =
+    options.loadingMessage ||
+    (options.rowsLoaded > 0
+      ? `${options.rowsLoaded.toLocaleString()} rows loaded`
+      : "Preparing stream");
+  const byteProgress =
+    options.totalBytes != null && options.totalBytes > 0
+      ? `${formatBytes(options.bytesLoaded) ?? "0 B"} / ${formatBytes(options.totalBytes) ?? "0 B"}`
+      : null;
+  return [baseMessage, byteProgress].filter(Boolean).join(" · ");
+}
+
 function formatAbsoluteTime(value?: string): string | null {
   if (!value) return null;
   const date = new Date(value);
@@ -877,11 +895,17 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               );
               const sizeLabel = formatBytes(ds.cache?.byteSize);
               const diagnostics = [
+                runtimeDataSource?.activeSource
+                  ? `source: ${runtimeDataSource.activeSource}`
+                  : null,
                 runtimeDataSource?.resolvedMode
                   ? `mode: ${runtimeDataSource.resolvedMode}`
                   : null,
                 runtimeDataSource?.loadPath
                   ? `path: ${runtimeDataSource.loadPath}`
+                  : null,
+                runtimeDataSource?.materializationVersion
+                  ? `artifact: ${runtimeDataSource.materializationVersion}`
                   : null,
                 runtimeDataSource?.loadDurationMs
                   ? `load: ${Math.round(runtimeDataSource.loadDurationMs)} ms`
@@ -1033,9 +1057,12 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                       sx={{ display: "block", mt: 0.5, lineHeight: 1.4 }}
                     >
                       {status === "loading"
-                        ? loadedRows > 0
-                          ? `${loadedRows.toLocaleString()} rows loaded...`
-                          : "Starting stream..."
+                        ? formatLoadingStatus({
+                            loadingMessage: runtimeDataSource?.loadingMessage,
+                            rowsLoaded: loadedRows,
+                            bytesLoaded: runtimeDataSource?.bytesLoaded,
+                            totalBytes: runtimeDataSource?.totalBytes,
+                          })
                         : status === "error"
                           ? errorMessage || "Failed to load data source"
                           : statsSegments.join(" · ")}

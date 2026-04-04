@@ -49,8 +49,8 @@ Before making any changes to a dashboard, you MUST call \`enter_edit_mode\` with
 * \`create_dashboard\` — Create a brand new empty dashboard. After creation, use \`create_data_source\` to add data. Use when the user explicitly asks to create a NEW dashboard, or when the request is unrelated to any existing dashboard.
 * \`create_data_source\` — Create a dashboard-local data source directly from a connection and query definition. Requires \`dashboardId\`.
 * \`import_console_as_data_source\` — Import a saved console by value into a dashboard. Requires \`dashboardId\`.
-* \`update_data_source_query\` — Modify an existing data source's query definition. By default only saves the definition (no execution). Set \`run: true\` to immediately stream results into DuckDB, or call \`run_data_source_query\` separately. Supports \`action\`: 'replace' (default, full code replacement), 'patch' (line-range edit via startLine/endLine — preferred for small changes), 'append' (add to end). Non-code fields are always shallow-merged.
-* \`run_data_source_query\` — Execute a data source query and stream results into DuckDB. Use after \`update_data_source_query\` to load fresh data. Automatically recovers if DuckDB crashes. Requires \`dashboardId\`.
+* \`update_data_source_query\` — Modify an existing data source's query definition. By default this only saves the definition; it does NOT rerun the query. Set \`run: true\` to immediately execute it and stream fresh draft data into DuckDB, or call \`run_data_source_query\` separately. Supports \`action\`: 'replace' (default, full code replacement), 'patch' (line-range edit via startLine/endLine — preferred for small changes), 'append' (add to end). Non-code fields are always shallow-merged.
+* \`run_data_source_query\` — Execute a data source query and stream fresh draft data into DuckDB. Use after \`update_data_source_query\` whenever the tool response says the definition was saved only or recommends another run. Automatically recovers if DuckDB crashes. Requires \`dashboardId\`.
 * \`get_dashboard_state\` — Read the full dashboard spec and data source schemas. Requires \`dashboardId\`.
 * \`preview_data_source\` — Run a SQL query against local DuckDB data. Requires \`dashboardId\`.
 * \`suggest_charts\` — Analyze data and suggest 3-5 chart configurations. Requires \`dashboardId\`.
@@ -272,11 +272,15 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
 3. Use \`add_widget\` with the \`dashboardId\` to add charts, KPIs, or tables.
 
 **Modifying data source queries:**
-1. Call \`update_data_source_query\` with the new code (\`run\` defaults to false — only saves the definition).
-2. Call \`run_data_source_query\` to stream the updated query into DuckDB and refresh all widgets.
-3. You can edit the query multiple times before running — each edit is instant and safe.
-4. Only use \`run: true\` on \`update_data_source_query\` for quick one-shot changes on small result sets.
-5. If \`run_data_source_query\` returns \`errorKind: "materialization_failed"\`, do NOT modify the SQL — the query itself is fine. The issue is a browser memory limit. Try again, or simplify the query to return fewer columns/rows.
+1. Call \`update_data_source_query\` with the new code. Unless \`run: true\`, this only updates the definition.
+2. Inspect the tool response carefully:
+   - \`state: "definition_updated"\` means the dashboard is still on previously loaded data.
+   - \`nextRecommendedTool: "run_data_source_query"\` means you should run it if the user expects fresh data now.
+   - \`state: "loaded"\` means fresh data was actually streamed into DuckDB.
+3. Call \`run_data_source_query\` after definition-only edits whenever the user expects the dashboard to refresh from the new query.
+4. You can edit the query multiple times before running — each edit is instant and safe.
+5. Only use \`run: true\` on \`update_data_source_query\` for quick one-shot changes on small result sets.
+6. If \`run_data_source_query\` returns \`errorKind: "materialization_failed"\`, do NOT modify the SQL — the query itself is fine. The issue is a browser memory limit. Try again, or simplify the query to return fewer columns/rows.
 
 **General guidelines:**
 - **Always pass \`dashboardId\` explicitly** — never assume which dashboard the user means. Use \`list_open_dashboards\` to confirm.
@@ -354,6 +358,8 @@ export function buildDashboardRuntimeContext(context: AgentContext): string {
     for (const ds of dataSources) {
       const statusParts: string[] = [];
       if (ds.status) statusParts.push(ds.status);
+      if (ds.activeSource) statusParts.push(`source=${ds.activeSource}`);
+      if (ds.loadPath) statusParts.push(`path=${ds.loadPath}`);
       if (ds.rowsLoaded) {
         statusParts.push(`${ds.rowsLoaded.toLocaleString()} rows`);
       }

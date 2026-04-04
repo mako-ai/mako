@@ -145,7 +145,9 @@ export const dashboardRuntimeEvents = {
     diagnostics: Partial<
       Pick<
         DashboardDataSourceRuntimeState,
+        | "activeSource"
         | "loadPath"
+        | "loadingMessage"
         | "resolvedMode"
         | "artifactUrl"
         | "loadDurationMs"

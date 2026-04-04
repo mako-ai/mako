@@ -37,8 +37,11 @@ import {
 import { useTheme } from "../contexts/ThemeContext";
 import { useAuth } from "../contexts/auth-context";
 import {
+  applyFreshMaterializationCommand,
+  materializeDashboardInBackgroundCommand,
   refreshDashboardCommand,
   reloadDashboardDataSourcesCommand,
+  shouldAutoApplyFreshMaterialization,
 } from "../dashboard-runtime/commands";
 import { useDashboardSession } from "../hooks/useDashboardSession";
 import { useDashboardEditSession } from "../hooks/useDashboardEditSession";
@@ -54,7 +57,6 @@ type ViewMode = "canvas" | "code";
 
 const {
   saveDashboard: saveDashboardAction,
-  materializeDashboard: materializeDashboardAction,
   undo: undoAction,
   redo: redoAction,
 } = useDashboardStore.getState();
@@ -168,6 +170,29 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   useEffect(() => {
     setFreshnessDismissed(false);
   }, [dataFreshness?.ageMs]);
+
+  const handleReloadData = useCallback(async () => {
+  useEffect(() => {
+    if (
+      !workspaceId ||
+      !dashboardId ||
+      isEditMode ||
+      !runtimeSession?.freshDataAvailable ||
+      !shouldAutoApplyFreshMaterialization(dashboardId)
+    ) {
+      return;
+    }
+
+    void applyFreshMaterializationCommand({
+      workspaceId,
+      dashboardId,
+    });
+  }, [
+    dashboardId,
+    isEditMode,
+    runtimeSession?.freshDataAvailable,
+    workspaceId,
+  ]);
 
   const handleReloadData = useCallback(async () => {
     if (workspaceId) {
@@ -379,8 +404,9 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                       if (result.error) setSaveError(result.error);
                       return;
                     }
-                    void materializeDashboardAction(workspaceId, dashboardId, {
-                      force: true,
+                    void materializeDashboardInBackgroundCommand({
+                      workspaceId,
+                      dashboardId,
                     });
                   }}
                 >

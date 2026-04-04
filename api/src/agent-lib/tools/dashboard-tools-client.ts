@@ -227,8 +227,8 @@ const updateDataSourceQuerySchema = z.object({
     .boolean()
     .default(false)
     .describe(
-      "If true, immediately stream the updated query into DuckDB after saving. " +
-        "If false (default), only saves the query definition — call run_data_source_query separately to load data.",
+      "If true, immediately execute the updated query and stream fresh draft data into DuckDB after saving. " +
+        "If false (default), only saves the query definition. The dashboard keeps using the previously loaded data until run_data_source_query is called.",
     ),
 });
 
@@ -312,12 +312,13 @@ export const clientDashboardTools = {
     description:
       "Modify an existing dashboard-local data source query definition. " +
       "By default only saves the definition (no execution). Set run=true to immediately " +
-      "stream results into DuckDB, or call run_data_source_query separately afterward. " +
+      "execute the query and stream fresh draft data into DuckDB, or call run_data_source_query separately afterward. " +
       "Supports three edit modes via the 'action' field: " +
       "'replace' (default — full code replacement), " +
       "'patch' (replace a specific line range — requires startLine/endLine, preferred for small edits), " +
       "'append' (add lines to the end of the existing code). " +
       "Non-code fields (name, connectionId, language, etc.) are always shallow-merged regardless of action. " +
+      "When run=false, treat the response as definition_saved_only and use the returned nextRecommendedTool if you need fresh data. " +
       "IMPORTANT for 'patch': line numbers are 1-indexed and inclusive; do NOT include line number prefixes in your code content.",
     inputSchema: updateDataSourceQuerySchema,
   },
@@ -348,7 +349,7 @@ export const clientDashboardTools = {
   get_dashboard_state: {
     description:
       "Get the full dashboard definition: widgets (with layouts, vegaLiteSpec, localSql, kpiConfig), " +
-      "data sources (with query code, column schemas, runtime status), cross-filter config, " +
+      "data sources (with query code, column schemas, runtime status, active source, load path, and materialization diagnostics), cross-filter config, " +
       "global filters, relationships, and materialization schedule. " +
       "Also includes truncated sample rows and widget snapshots.",
     inputSchema: getDashboardStateSchema,
