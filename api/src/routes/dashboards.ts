@@ -13,6 +13,8 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
+  sanitizeTableRef,
+  buildTableRef,
 } from "@mako/schemas";
 import { hydrateDashboardArtifactUrls } from "../services/dashboard-cache.service";
 import { buildDashboardDataSourceVersion } from "../services/dashboard-artifact-rebuild.service";
@@ -29,10 +31,6 @@ const logger = loggers.api("dashboards");
 const app = new Hono();
 
 const DASHBOARD_QUERY_LANGUAGES = new Set(["sql", "javascript", "mongodb"]);
-
-function sanitizeTableRef(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+/, "") || "ds_table";
-}
 
 async function normalizeDashboardDataSources(
   workspaceId: string,
@@ -118,11 +116,10 @@ async function normalizeDashboardDataSources(
         return {
           id,
           name: ds.name.trim(),
-          tableRef: sanitizeTableRef(
+          tableRef:
             typeof ds.tableRef === "string" && ds.tableRef.trim()
-              ? ds.tableRef.trim()
-              : `ds_${nanoid()}`,
-          ),
+              ? sanitizeTableRef(ds.tableRef.trim())
+              : buildTableRef(ds.name?.trim()),
           query: {
             connectionId: new Types.ObjectId(String(ds.query.connectionId)),
             language: ds.query.language,
@@ -614,7 +611,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       ) &&
       isDashboardMaterializationEnabled(updated.materializationSchedule)
     ) {
-      await queueDashboardArtifactRefresh({
+      void queueDashboardArtifactRefresh({
         dashboardId: updated._id.toString(),
         triggerType: "dashboard_update",
       }).catch(() => undefined);
@@ -808,7 +805,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       ) &&
       isDashboardMaterializationEnabled(dashboard.materializationSchedule)
     ) {
-      await queueDashboardArtifactRefresh({
+      void queueDashboardArtifactRefresh({
         dashboardId: dashboard._id.toString(),
         triggerType: "dashboard_update",
       }).catch(() => undefined);

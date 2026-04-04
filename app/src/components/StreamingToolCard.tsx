@@ -168,6 +168,23 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   },
 
   // ── Dashboard ────────────────────────────────────────────
+  list_open_dashboards: {
+    getLabel: () => "Listing open dashboards",
+    icon: <List size={ICON_SIZE} />,
+  },
+  search_dashboards: {
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query
+        ? `Searching dashboards: "${query}"`
+        : "Searching dashboards";
+    },
+    icon: <Search size={ICON_SIZE} />,
+  },
+  open_dashboard: {
+    getLabel: () => "Opening dashboard",
+    icon: <ExternalLink size={ICON_SIZE} />,
+  },
   create_dashboard: {
     getLabel: input => {
       const title = (input as Record<string, unknown>)?.title;
@@ -201,9 +218,21 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     preview: { field: "code", language: "sql" },
   },
   update_data_source_query: {
-    getLabel: () => "Updating data source query",
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      const action = inp?.action;
+      const run = inp?.run === true;
+      const suffix = run ? "" : " (definition only)";
+      if (action === "patch") return `Patching data source query${suffix}`;
+      if (action === "append") return `Appending to data source query${suffix}`;
+      return `Updating data source query${suffix}`;
+    },
     icon: <Pencil size={ICON_SIZE} />,
     preview: { field: "code", language: "sql" },
+  },
+  run_data_source_query: {
+    getLabel: () => "Running data source query",
+    icon: <Play size={ICON_SIZE} />,
   },
   import_console_as_data_source: {
     getLabel: () => "Importing console as data source",
@@ -364,6 +393,16 @@ function getOutputSummary(output: unknown): string | null {
           ? String((raw as { message: unknown }).message)
           : "Failed";
     return err.length > 50 ? err.slice(0, 50) + "…" : err;
+  }
+
+  if (o.state === "definition_updated") {
+    return "Definition saved only";
+  }
+  if (o.state === "loaded") {
+    if (typeof o.rowCount === "number") {
+      return `${o.rowCount} row${o.rowCount !== 1 ? "s" : ""}`;
+    }
+    return "Fresh data loaded";
   }
 
   if (Array.isArray(o.data)) {

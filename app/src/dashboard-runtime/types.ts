@@ -27,7 +27,12 @@ export interface DashboardDataSource
         parquetArtifactKey?: string;
         parquetVersion?: string;
         parquetBuiltAt?: string;
-        parquetBuildStatus?: "missing" | "building" | "ready" | "error";
+        parquetBuildStatus?:
+          | "missing"
+          | "queued"
+          | "building"
+          | "ready"
+          | "error";
         parquetLastError?: string;
         parquetUrl?: string;
       })
@@ -87,6 +92,10 @@ export interface DashboardRuntimeColumn {
   sampleValues?: unknown[];
 }
 
+export type DashboardDataSourceActiveSource =
+  | "draft_stream"
+  | "published_artifact";
+
 export interface DashboardDataSourceRuntimeState {
   dataSourceId: string;
   tableRef: string;
@@ -100,11 +109,13 @@ export interface DashboardDataSourceRuntimeState {
   schema: DashboardRuntimeColumn[];
   sampleRows: Record<string, unknown>[];
   error: string | null;
+  activeSource?: DashboardDataSourceActiveSource | null;
   loadPath?: "memory" | "arrow_stream" | "ndjson_stream" | null;
+  loadingMessage?: string | null;
   resolvedMode?: "builder" | "viewer";
   artifactUrl?: string | null;
   loadDurationMs?: number | null;
-  materializationStatus?: "missing" | "building" | "ready" | "error";
+  materializationStatus?: "missing" | "queued" | "building" | "ready" | "error";
   materializationVersion?: string | null;
   materializedAt?: string | null;
   storageBackend?: "filesystem" | "gcs" | "s3" | null;
@@ -276,7 +287,9 @@ export type DashboardRuntimeEvent =
       diagnostics: Partial<
         Pick<
           DashboardDataSourceRuntimeState,
+          | "activeSource"
           | "loadPath"
+          | "loadingMessage"
           | "resolvedMode"
           | "artifactUrl"
           | "loadDurationMs"

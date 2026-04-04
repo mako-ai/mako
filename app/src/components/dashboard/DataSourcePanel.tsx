@@ -106,6 +106,24 @@ function formatBytes(value?: number): string | null {
   return `${value} B`;
 }
 
+function formatLoadingStatus(options: {
+  loadingMessage?: string | null;
+  rowsLoaded: number;
+  bytesLoaded?: number;
+  totalBytes?: number | null;
+}): string {
+  const baseMessage =
+    options.loadingMessage ||
+    (options.rowsLoaded > 0
+      ? `${options.rowsLoaded.toLocaleString()} rows loaded`
+      : "Preparing stream");
+  const byteProgress =
+    options.totalBytes != null && options.totalBytes > 0
+      ? `${formatBytes(options.bytesLoaded) ?? "0 B"} / ${formatBytes(options.totalBytes) ?? "0 B"}`
+      : null;
+  return [baseMessage, byteProgress].filter(Boolean).join(" · ");
+}
+
 function formatAbsoluteTime(value?: string): string | null {
   if (!value) return null;
   const date = new Date(value);
@@ -347,6 +365,8 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
         await updateDashboardDataSourceQuery({
           workspaceId,
           dataSourceId: editingDataSourceId,
+          dashboardId,
+          rematerialize: true,
           changes: {
             name: directName.trim(),
             query: {
@@ -525,7 +545,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
 
   const dataSources = dashboard?.dataSources ?? [];
   const hasBuildingMaterialization = dataSources.some(
-    dataSource => dataSource.cache?.parquetBuildStatus === "building",
+    dataSource =>
+      dataSource.cache?.parquetBuildStatus === "building" ||
+      dataSource.cache?.parquetBuildStatus === "queued",
   );
 
   const showAddPanel = addMode !== null || editingDataSourceId !== null;
@@ -871,16 +893,25 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               const chipProps = status ? STATUS_CHIP_PROPS[status] : null;
               const materializationStatus =
                 ds.cache?.parquetBuildStatus || "missing";
+              const materializationPending =
+                materializationStatus === "queued" ||
+                materializationStatus === "building";
               const materializedAt = formatRelativeTime(
                 ds.cache?.parquetBuiltAt,
               );
               const sizeLabel = formatBytes(ds.cache?.byteSize);
               const diagnostics = [
+                runtimeDataSource?.activeSource
+                  ? `source: ${runtimeDataSource.activeSource}`
+                  : null,
                 runtimeDataSource?.resolvedMode
                   ? `mode: ${runtimeDataSource.resolvedMode}`
                   : null,
                 runtimeDataSource?.loadPath
                   ? `path: ${runtimeDataSource.loadPath}`
+                  : null,
+                runtimeDataSource?.materializationVersion
+                  ? `artifact: ${runtimeDataSource.materializationVersion}`
                   : null,
                 runtimeDataSource?.loadDurationMs
                   ? `load: ${Math.round(runtimeDataSource.loadDurationMs)} ms`
@@ -895,6 +926,15 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     icon={<CheckCircle2 size={14} />}
                     label="Materialized"
                     color="success"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                ) : materializationStatus === "queued" ? (
+                  <Chip
+                    icon={<LoaderCircle size={14} />}
+                    label="Queued"
+                    color="warning"
                     size="small"
                     variant="outlined"
                     sx={{ height: 22, fontSize: "0.7rem" }}
@@ -958,10 +998,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     <IconButton
                       size="small"
                       onClick={() => handleRefreshDataSource(ds.id)}
-                      disabled={
-                        status === "loading" ||
-                        materializationStatus === "building"
-                      }
+                      disabled={status === "loading" || materializationPending}
                       sx={{ p: 0.5 }}
                     >
                       {status === "loading" ? (
@@ -1032,9 +1069,12 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                       sx={{ display: "block", mt: 0.5, lineHeight: 1.4 }}
                     >
                       {status === "loading"
-                        ? loadedRows > 0
-                          ? `${loadedRows.toLocaleString()} rows loaded...`
-                          : "Starting stream..."
+                        ? formatLoadingStatus({
+                            loadingMessage: runtimeDataSource?.loadingMessage,
+                            rowsLoaded: loadedRows,
+                            bytesLoaded: runtimeDataSource?.bytesLoaded,
+                            totalBytes: runtimeDataSource?.totalBytes,
+                          })
                         : status === "error"
                           ? errorMessage || "Failed to load data source"
                           : statsSegments.join(" · ")}
@@ -1081,12 +1121,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     <Button
                       size="small"
                       variant="text"
-                      disabled={
-                        status === "loading" ||
-                        materializationStatus === "building"
-                      }
+                      disabled={status === "loading" || materializationPending}
                       startIcon={
-                        materializationStatus === "building" ? (
+                        materializationPending ? (
                           <CircularProgress size={12} />
                         ) : (
                           <RefreshCw size={12} />

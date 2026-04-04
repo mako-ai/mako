@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -13,6 +13,8 @@ import {
   DialogContentText,
   DialogActions,
   Button,
+  Snackbar,
+  Alert,
 } from "@mui/material";
 import {
   RefreshCw,
@@ -35,8 +37,11 @@ import {
 import { useTheme } from "../contexts/ThemeContext";
 import { useAuth } from "../contexts/auth-context";
 import {
+  applyFreshMaterializationCommand,
+  materializeDashboardInBackgroundCommand,
   refreshDashboardCommand,
   reloadDashboardDataSourcesCommand,
+  shouldAutoApplyFreshMaterialization,
 } from "../dashboard-runtime/commands";
 import { useDashboardSession } from "../hooks/useDashboardSession";
 import { useDashboardEditSession } from "../hooks/useDashboardEditSession";
@@ -52,7 +57,6 @@ type ViewMode = "canvas" | "code";
 
 const {
   saveDashboard: saveDashboardAction,
-  materializeDashboard: materializeDashboardAction,
   undo: undoAction,
   redo: redoAction,
 } = useDashboardStore.getState();
@@ -108,10 +112,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [showEventLog, setShowEventLog] = useState(false);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const isMaterializationBuilding = (dashboard?.dataSources || []).some(
-    ds => ds.cache?.parquetBuildStatus === "building",
-  );
   const queryGeneration = runtimeSession?.queryGeneration ?? 0;
 
   const handleExportPng = useCallback(async () => {
@@ -134,12 +136,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
   const handleRefresh = useCallback(() => {
     if (workspaceId) void refreshDashboardCommand(workspaceId, dashboardId);
-  }, [workspaceId, dashboardId]);
-
-  const handleReloadData = useCallback(() => {
-    if (workspaceId) {
-      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
-    }
   }, [workspaceId, dashboardId]);
 
   const dataFreshness = useMemo(() => {
@@ -168,6 +164,45 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         : `${hours} hour${hours !== 1 ? "s" : ""} ago`;
     return { ageMs, label };
   }, [dashboard]);
+
+  const [freshnessDismissed, setFreshnessDismissed] = useState(false);
+
+  useEffect(() => {
+    setFreshnessDismissed(false);
+  }, [dataFreshness?.ageMs]);
+
+  useEffect(() => {
+    if (
+      !workspaceId ||
+      !dashboardId ||
+      isEditMode ||
+      !runtimeSession?.freshDataAvailable ||
+      !shouldAutoApplyFreshMaterialization(dashboardId)
+    ) {
+      return;
+    }
+
+    void applyFreshMaterializationCommand({
+      workspaceId,
+      dashboardId,
+    }).catch(() => undefined);
+  }, [
+    dashboardId,
+    isEditMode,
+    runtimeSession?.freshDataAvailable,
+    workspaceId,
+  ]);
+
+  const handleReloadData = useCallback(async () => {
+    if (workspaceId) {
+      setFreshnessDismissed(true);
+      try {
+        await reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
+      } catch {
+        setFreshnessDismissed(false);
+      }
+    }
+  }, [workspaceId, dashboardId]);
 
   const recentEventLogCount = Math.min(
     runtimeSession?.eventLog.length ?? 0,
@@ -280,13 +315,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                 label="Reload data"
                 size="small"
                 variant="outlined"
-                onClick={
-                  isMaterializationBuilding ? undefined : handleReloadData
-                }
-                sx={{
-                  cursor: isMaterializationBuilding ? "default" : "pointer",
-                }}
-                disabled={isMaterializationBuilding}
+                onClick={handleReloadData}
+                sx={{ cursor: "pointer" }}
               />
             </Tooltip>
 
@@ -365,14 +395,26 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   }
                   onClick={async () => {
                     if (!workspaceId || !dashboardId) return;
-                    const saved = await saveDashboardAction(
-                      workspaceId,
-                      dashboardId,
-                    );
-                    if (!saved) return;
-                    void materializeDashboardAction(workspaceId, dashboardId, {
-                      force: true,
-                    });
+                    try {
+                      const result = await saveDashboardAction(
+                        workspaceId,
+                        dashboardId,
+                      );
+                      if (!result.ok) {
+                        if (result.error) setSaveError(result.error);
+                        return;
+                      }
+                      void materializeDashboardInBackgroundCommand({
+                        workspaceId,
+                        dashboardId,
+                      }).catch(() => undefined);
+                    } catch (err) {
+                      setSaveError(
+                        err instanceof Error
+                          ? err.message
+                          : "Failed to save dashboard",
+                      );
+                    }
                   }}
                 >
                   <Save size={16} />
@@ -412,7 +454,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         workspaceId={workspaceId}
         runtimeSession={runtimeSession}
         isRuntimeInitializing={isRuntimeInitializing}
-        isMaterializationBuilding={isMaterializationBuilding}
         showEventLog={showEventLog}
         lockError={lockError}
         isEditMode={isEditMode}
@@ -422,7 +463,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         onForceEditMode={handleForceEditMode}
         onEditModeToggle={handleEditModeToggle}
         onReloadData={handleReloadData}
-        dataFreshness={dataFreshness}
+        dataFreshness={freshnessDismissed ? null : dataFreshness}
       />
 
       {/* Content area */}
@@ -528,6 +569,21 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={!!saveError}
+        autoHideDuration={8000}
+        onClose={() => setSaveError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert
+          onClose={() => setSaveError(null)}
+          severity="error"
+          sx={{ width: "100%" }}
+        >
+          {saveError}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

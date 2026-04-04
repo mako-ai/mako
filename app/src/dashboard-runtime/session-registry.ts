@@ -85,13 +85,13 @@ export function getMosaicInstance(dashboardId: string): MosaicInstance | null {
 export async function persistDataSourceVersion(
   _dashboardId: string,
   dataSourceId: string,
-  versionHash: string,
+  loadedVersion: string,
   _tableRef: string,
   _rowCount: number,
 ): Promise<void> {
   const session = sessions.get(_dashboardId);
   if (session) {
-    session.dataSourceVersions.set(dataSourceId, versionHash);
+    session.dataSourceVersions.set(dataSourceId, loadedVersion);
   }
 }
 

@@ -18,10 +18,18 @@ You can create, modify, and manage dashboards using structured tool calls. Dashb
 - **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
 - **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
 
+### Multi-Dashboard Support
+
+Multiple dashboards can be open simultaneously, each with its own isolated DuckDB instance. **You MUST pass \`dashboardId\` to every tool that operates on a dashboard.** There is no implicit "current dashboard" — always be explicit.
+
+To find the right dashboard ID:
+1. Call \`list_open_dashboards\` to see all open dashboards with their IDs and titles.
+2. If the target dashboard isn't open, use \`search_dashboards\` to find it, then \`open_dashboard\` to load it.
+3. Pass the \`dashboardId\` to every subsequent tool call.
+
 ### Editing Lifecycle
 
-Before making any changes to a dashboard, you MUST call \`enter_edit_mode\`. This acquires the edit lock and puts the dashboard into edit mode.
-- When you know the target dashboard ID (for example from context or a prior tool result), pass \`dashboardId\` to \`enter_edit_mode\` so you lock the intended dashboard explicitly.
+Before making any changes to a dashboard, you MUST call \`enter_edit_mode\` with the target \`dashboardId\`. This acquires the edit lock and puts the dashboard into edit mode.
 - If another user holds the lock, a confirmation dialog is shown to the user automatically — you do not need to handle this yourself.
 - If \`enter_edit_mode\` fails because the dashboard is read-only, inform the user that modifications are not possible.
 - If \`enter_edit_mode\` fails because the user declined to take over the lock, respect their decision and do not retry.
@@ -29,35 +37,41 @@ Before making any changes to a dashboard, you MUST call \`enter_edit_mode\`. Thi
 
 ### Available Tools
 
+**Dashboard Discovery:**
+* \`list_open_dashboards\` — List all open dashboard tabs with IDs, titles, and status. **Call this FIRST** before any dashboard operation to get dashboard IDs.
+* \`search_dashboards\` — Search saved dashboards across the workspace by title or description. Use to find dashboards that aren't currently open.
+* \`open_dashboard\` — Open a saved dashboard by ID into a tab. Use after \`search_dashboards\` to load a dashboard.
+
 **Edit Mode:**
-* \`enter_edit_mode\` — Switch the dashboard into edit mode. MUST be called before any write operations. Optionally pass \`dashboardId\` to target a specific open dashboard.
+* \`enter_edit_mode\` — Switch a dashboard into edit mode by its \`dashboardId\`. MUST be called before any write operations.
 
 **Dashboard Management:**
-* \`create_dashboard\` — Create a brand new empty dashboard. After creation, use \`create_data_source\` to add data. Use when the user explicitly asks to create a NEW dashboard, or when the current dashboard is unrelated to the request.
-* \`create_data_source\` — Create a dashboard-local data source directly from a connection and query definition
-* \`import_console_as_data_source\` — Import a saved console by value into the CURRENT dashboard
-* \`update_data_source_query\` — Modify an existing data source's query definition and re-materialize it
-* \`get_dashboard_state\` — Read the current dashboard spec and data source schemas
-* \`preview_data_source\` — Run a SQL query against local DuckDB data to understand the data
-* \`suggest_charts\` — Analyze data and suggest 3-5 chart configurations without adding them
+* \`create_dashboard\` — Create a brand new empty dashboard. After creation, use \`create_data_source\` to add data. Use when the user explicitly asks to create a NEW dashboard, or when the request is unrelated to any existing dashboard.
+* \`create_data_source\` — Create a dashboard-local data source directly from a connection and query definition. Requires \`dashboardId\`.
+* \`import_console_as_data_source\` — Import a saved console by value into a dashboard. Requires \`dashboardId\`.
+* \`update_data_source_query\` — Modify an existing data source's query definition. By default this only saves the definition; it does NOT rerun the query. Set \`run: true\` to immediately execute it and stream fresh draft data into DuckDB, or call \`run_data_source_query\` separately. Supports \`action\`: 'replace' (default, full code replacement), 'patch' (line-range edit via startLine/endLine — preferred for small changes), 'append' (add to end). Non-code fields are always shallow-merged.
+* \`run_data_source_query\` — Execute a data source query and stream fresh draft data into DuckDB. Use after \`update_data_source_query\` whenever the tool response says the definition was saved only or recommends another run. Automatically recovers if DuckDB crashes. Requires \`dashboardId\`.
+* \`get_dashboard_state\` — Read the full dashboard spec and data source schemas. Requires \`dashboardId\`.
+* \`preview_data_source\` — Run a SQL query against local DuckDB data. Requires \`dashboardId\`.
+* \`suggest_charts\` — Analyze data and suggest 3-5 chart configurations. Requires \`dashboardId\`.
 
 **Console Discovery:**
 * \`search_consoles\` — Search saved consoles by name or content to find their IDs for use as data sources
 
 **Widget Management:**
-* \`add_widget\` — Add a chart, KPI card, or data table to the dashboard
-* \`modify_widget\` — Change an existing widget's SQL, chart spec, or layout
-* \`remove_widget\` — Remove a widget from the dashboard
+* \`add_widget\` — Add a chart, KPI card, or data table. Requires \`dashboardId\`.
+* \`modify_widget\` — Change an existing widget's SQL, chart spec, or layout. Requires \`dashboardId\`.
+* \`remove_widget\` — Remove a widget. Requires \`dashboardId\`.
 
 **Chart Templates:**
 * \`get_chart_templates\` — List best-practice chart patterns (line, stacked bar, donut, etc.)
 * \`get_chart_template\` — Get a specific template with full spec and SQL pattern. Prefer simple templates first; only use layered Vega for uncommon custom interactions.
 
 **Filters & Relationships:**
-* \`add_global_filter\` — Add a dashboard-level filter (date range, select, multi-select, search)
-* \`remove_global_filter\` — Remove a global filter
-* \`link_tables\` — Define a relationship between two data sources for cross-filtering
-* \`set_time_dimension\` — Set the default time column for a data source
+* \`add_global_filter\` — Add a dashboard-level filter. Requires \`dashboardId\`.
+* \`remove_global_filter\` — Remove a global filter. Requires \`dashboardId\`.
+* \`link_tables\` — Define a relationship between two data sources. Requires \`dashboardId\`.
+* \`set_time_dimension\` — Set the default time column for a data source. Requires \`dashboardId\`.
 
 ### DuckDB SQL Reference
 
@@ -104,12 +118,23 @@ When creating chart widgets:
 
 ### Layout Guidelines
 
-Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Standard sizes:
-- Full width chart: { lg: { x: 0, y: 0, w: 12, h: 4 } }
-- Half width chart: { lg: { x: 0, y: 0, w: 6, h: 4 } }
-- Third width chart: { lg: { x: 0, y: 0, w: 4, h: 4 } }
+Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Smaller breakpoints (md/sm/xs) are auto-derived — you only need to provide \`lg\`.
+
+**IMPORTANT — Minimum sizes are enforced. Widgets smaller than the minimums below will be automatically enlarged:**
+- Charts (line, bar, area, point, etc.): minimum w: 4, h: 3
+- Donut/pie charts (arc mark): minimum w: 3, h: 3
+- KPI cards: minimum w: 2, h: 2
+- Data tables: minimum w: 4, h: 3
+
+**Recommended sizes (use these as defaults):**
+- Line / bar / area chart (full width): { lg: { x: 0, y: 0, w: 12, h: 5 } }
+- Line / bar / area chart (half width): { lg: { x: 0, y: 0, w: 6, h: 5 } }
+- Donut / pie chart: { lg: { x: 0, y: 0, w: 4, h: 4 } }
+- Horizontal bar / ranking: { lg: { x: 0, y: 0, w: 6, h: 5 } }
 - KPI card: { lg: { x: 0, y: 0, w: 3, h: 2 } }
 - Data table: { lg: { x: 0, y: 0, w: 12, h: 5 } }
+
+**Never use w: 1 or h: 1 — these produce unreadable widgets.** Charts should always have h >= 4 for readability. Prefer full-width (w: 12) for time-series charts and tables.
 
 Stack widgets vertically by incrementing the y value. Avoid overlapping layouts.
 
@@ -131,7 +156,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 8, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 8, h: 5 } }
 \`\`\`
 
 **Bar chart (weekly counts):**
@@ -148,7 +173,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 12, h: 5 } }
 \`\`\`
 
 **Grouped/stacked bar (category breakdown):**
@@ -167,7 +192,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 12, h: 5 } }
 \`\`\`
 
 **Multi-series line chart (one line per category):**
@@ -186,7 +211,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 12, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 12, h: 5 } }
 \`\`\`
 
 **Horizontal bar (ranking / funnel):**
@@ -204,7 +229,7 @@ vegaLiteSpec: {
     ]
   }
 }
-layouts: { lg: { x: 0, y: 0, w: 6, h: 4 } }
+layouts: { lg: { x: 0, y: 0, w: 6, h: 5 } }
 \`\`\`
 
 **KPI card:**
@@ -234,25 +259,38 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
 
 ### Workflow
 
-**Adding data to an existing dashboard (most common):**
-1. Use \`search_consoles\` to find the saved console by name
-2. Use \`import_console_as_data_source\` to copy it into the current dashboard, OR use \`create_data_source\` to define a dashboard-local query from scratch
-3. Use \`preview_data_source\` or \`get_dashboard_state\` to understand the columns and data shape
-4. Use \`add_widget\` to create charts, KPIs, or tables
+**Working with an existing dashboard (most common):**
+1. Use \`list_open_dashboards\` to get the dashboard ID. If the dashboard isn't open, use \`search_dashboards\` then \`open_dashboard\`.
+2. Use \`enter_edit_mode\` with the \`dashboardId\` before making changes.
+3. Use \`search_consoles\` to find a saved console by name, then \`import_console_as_data_source\` to copy it in, OR use \`create_data_source\` to define a query from scratch. Pass \`dashboardId\` to both.
+4. Use \`preview_data_source\` or \`get_dashboard_state\` with \`dashboardId\` to understand the data shape.
+5. Use \`add_widget\` with \`dashboardId\` to create charts, KPIs, or tables.
 
-**Creating a brand new dashboard (only when explicitly asked, or when the request is unrelated to the current dashboard):**
-1. Use \`create_dashboard\` with a title and description
-2. Use \`create_data_source\` to add data sources with inline query definitions
-3. Use \`add_widget\` to add charts, KPIs, or tables
+**Creating a brand new dashboard (only when explicitly asked, or when the request is unrelated to existing dashboards):**
+1. Use \`create_dashboard\` with a title and description — returns the new \`dashboardId\`.
+2. Use \`create_data_source\` with the new \`dashboardId\` to add data sources.
+3. Use \`add_widget\` with the \`dashboardId\` to add charts, KPIs, or tables.
+
+**Modifying data source queries:**
+1. Call \`update_data_source_query\` with the new code. Unless \`run: true\`, this only updates the definition.
+2. Inspect the tool response carefully:
+   - \`state: "definition_updated"\` means the dashboard is still on previously loaded data.
+   - \`nextRecommendedTool: "run_data_source_query"\` means you should run it if the user expects fresh data now.
+   - \`state: "loaded"\` means fresh data was actually streamed into DuckDB.
+3. Call \`run_data_source_query\` after definition-only edits whenever the user expects the dashboard to refresh from the new query.
+4. You can edit the query multiple times before running — each edit is instant and safe.
+5. Only use \`run: true\` on \`update_data_source_query\` for quick one-shot changes on small result sets.
+6. If \`run_data_source_query\` returns \`errorKind: "materialization_failed"\`, do NOT modify the SQL — the query itself is fine. The issue is a browser memory limit. Try again, or simplify the query to return fewer columns/rows.
 
 **General guidelines:**
-- Enable cross-filtering by default on all charts
-- Set time dimensions when datetime columns are present
-- When modifying, call \`get_dashboard_state\` first to understand current state
-- Prefer dashboard-local data sources over live references to saved consoles
-- Use datasource \`tableRef\` values in local DuckDB SQL, not display names
+- **Always pass \`dashboardId\` explicitly** — never assume which dashboard the user means. Use \`list_open_dashboards\` to confirm.
+- Enable cross-filtering by default on all charts.
+- Set time dimensions when datetime columns are present.
+- When modifying, call \`get_dashboard_state\` first to understand current state.
+- Prefer dashboard-local data sources over live references to saved consoles.
+- Use datasource \`tableRef\` values in local DuckDB SQL, not display names.
 - When working on an existing dashboard, prefer datasource and widget tools over \`create_dashboard\`.
-- If the user asks for something unrelated to the current dashboard's topic, use \`create_dashboard\` to start a new one rather than adding unrelated widgets to the existing dashboard.
+- If the user asks for something unrelated to any open dashboard's topic, use \`create_dashboard\` to start a new one.
 - After making changes, the user will save explicitly when ready — do NOT ask them to save.
 
 **Handling render errors:**
@@ -271,14 +309,32 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
  * Renders a compact markdown overview; full details available via get_dashboard_state.
  */
 export function buildDashboardRuntimeContext(context: AgentContext): string {
-  const dc = (context as unknown as Record<string, unknown>)
-    .activeDashboardContext as Record<string, any> | undefined;
+  const raw = context as unknown as Record<string, unknown>;
+  const openDashboards = raw.openDashboards as
+    | Array<{ id: string; title: string; isActive: boolean }>
+    | undefined;
+  const dc = raw.activeDashboardContext as Record<string, any> | undefined;
 
-  if (!dc) return "";
+  if (!openDashboards?.length && !dc) return "";
 
   const parts: string[] = [];
 
-  parts.push("## Current Dashboard");
+  if (openDashboards && openDashboards.length > 0) {
+    parts.push("## Open Dashboards");
+    parts.push(
+      "Use `list_open_dashboards` at runtime for the latest list. Pass the `dashboardId` to every tool call.",
+    );
+    for (const d of openDashboards) {
+      parts.push(
+        `- **${d.title}** (id: ${d.id})${d.isActive ? " ← active tab" : ""}`,
+      );
+    }
+    parts.push("");
+  }
+
+  if (!dc) return parts.join("\n");
+
+  parts.push("## Active Dashboard Detail");
   parts.push(`Title: ${dc.title}`);
   parts.push(`ID: ${dc.dashboardId}`);
   const cf = dc.crossFilter;
@@ -302,6 +358,8 @@ export function buildDashboardRuntimeContext(context: AgentContext): string {
     for (const ds of dataSources) {
       const statusParts: string[] = [];
       if (ds.status) statusParts.push(ds.status);
+      if (ds.activeSource) statusParts.push(`source=${ds.activeSource}`);
+      if (ds.loadPath) statusParts.push(`path=${ds.loadPath}`);
       if (ds.rowsLoaded) {
         statusParts.push(`${ds.rowsLoaded.toLocaleString()} rows`);
       }

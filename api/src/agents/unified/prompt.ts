@@ -165,9 +165,26 @@ function buildConsoleContext(context: AgentContext): string[] {
 
 function buildDashboardContext(context: AgentContext): string[] {
   const parts: string[] = [];
+  const raw = context as unknown as Record<string, unknown>;
+  const openDashboards = raw.openDashboards as
+    | Array<{ id: string; title: string; isActive: boolean }>
+    | undefined;
   const dashboard = context.activeDashboardContext;
 
-  parts.push("### Active Dashboard");
+  if (openDashboards && openDashboards.length > 0) {
+    parts.push("### Open Dashboards");
+    parts.push(
+      "Use `list_open_dashboards` to get the latest list. Pass `dashboardId` to every dashboard tool call.",
+    );
+    for (const d of openDashboards) {
+      parts.push(
+        `- **${d.title}** (id: ${d.id})${d.isActive ? " ← active tab" : ""}`,
+      );
+    }
+    parts.push("");
+  }
+
+  parts.push("### Active Dashboard Detail");
   if (!dashboard) {
     parts.push("No active dashboard context is available.");
     return parts;
@@ -358,7 +375,11 @@ export function buildCurrentScreenContext(context: AgentContext): string {
   sections.push(...buildConsoleContext(context));
   sections.push("");
 
-  if (context.activeDashboardContext) {
+  const rawCtx = context as unknown as Record<string, unknown>;
+  if (
+    context.activeDashboardContext ||
+    (rawCtx.openDashboards as unknown[] | undefined)?.length
+  ) {
     sections.push(...buildDashboardContext(context));
     sections.push("");
   }

@@ -14,6 +14,7 @@ import type {
   Dashboard,
   DashboardSessionRuntimeState,
 } from "../../dashboard-runtime/types";
+import { getWidgetSizeDefaults, deriveResponsiveLayouts } from "@mako/schemas";
 import WidgetContainer from "../widgets/WidgetContainer";
 import MosaicChart from "../widgets/MosaicChart";
 import MosaicKpiCard from "../widgets/MosaicKpiCard";
@@ -26,7 +27,20 @@ const {
 } = useDashboardStore.getState();
 
 function resolveWidgetLayout(widget: DashboardWidget) {
-  const fallback = { x: 0, y: 0, w: 6, h: 4, minW: 1, minH: 1 };
+  const vegaMark =
+    typeof widget.vegaLiteSpec?.mark === "string"
+      ? widget.vegaLiteSpec.mark
+      : ((widget.vegaLiteSpec?.mark as Record<string, unknown> | undefined)
+          ?.type as string | undefined);
+  const sizeDefaults = getWidgetSizeDefaults(widget.type, vegaMark);
+  const fallback = {
+    x: 0,
+    y: 0,
+    w: sizeDefaults.w,
+    h: sizeDefaults.h,
+    minW: sizeDefaults.minW,
+    minH: sizeDefaults.minH,
+  };
   const candidate = (widget as any).layout ?? (widget as any).layouts?.lg;
   if (!candidate || typeof candidate !== "object") return fallback;
   return {
@@ -152,31 +166,51 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
       const items: GridItem[] = [];
       for (const w of widgets) {
         const wAny = w as any;
-        const bpLayout =
+        const vegaMark =
+          typeof w.vegaLiteSpec?.mark === "string"
+            ? w.vegaLiteSpec.mark
+            : ((w.vegaLiteSpec?.mark as Record<string, unknown> | undefined)
+                ?.type as string | undefined);
+        const sizeDefaults = getWidgetSizeDefaults(w.type, vegaMark);
+
+        let bpLayout =
           w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
+
+        if (!bpLayout && w.layouts?.lg) {
+          const lgWithMins = {
+            ...w.layouts.lg,
+            minW: w.layouts.lg.minW ?? sizeDefaults.minW,
+            minH: w.layouts.lg.minH ?? sizeDefaults.minH,
+          };
+          bpLayout = deriveResponsiveLayouts(lgWithMins)[bp];
+        }
+
         if (!bpLayout) continue;
         items.push({
           i: w.id,
           x: bpLayout.x ?? 0,
           y: bpLayout.y ?? 0,
-          w: bpLayout.w ?? 6,
-          h: bpLayout.h ?? 4,
-          minW: bpLayout.minW || 1,
-          minH: bpLayout.minH || 1,
+          w: bpLayout.w ?? sizeDefaults.w,
+          h: bpLayout.h ?? sizeDefaults.h,
+          minW: bpLayout.minW ?? sizeDefaults.minW,
+          minH: bpLayout.minH ?? sizeDefaults.minH,
         });
       }
       if (items.length > 0) result[bp] = items;
     }
     if (!result.lg) {
-      result.lg = widgets.map(w => ({
-        i: w.id,
-        x: 0,
-        y: 0,
-        w: 6,
-        h: 4,
-        minW: 1,
-        minH: 1,
-      }));
+      result.lg = widgets.map(w => {
+        const sd = getWidgetSizeDefaults(w.type);
+        return {
+          i: w.id,
+          x: 0,
+          y: 0,
+          w: sd.w,
+          h: sd.h,
+          minW: sd.minW,
+          minH: sd.minH,
+        };
+      });
     }
     return result;
   }, [widgets]);
@@ -309,7 +343,10 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   }
 
   return (
-    <Box ref={gridContainerRef} sx={{ height: "100%" }}>
+    <Box
+      ref={gridContainerRef}
+      sx={{ height: "100%", pb: isEditMode ? "120px" : 0 }}
+    >
       <ResponsiveGridLayout
         className="layout"
         width={gridWidth || 800}

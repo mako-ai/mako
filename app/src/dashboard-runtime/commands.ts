@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { buildTableRef } from "@mako/schemas";
 import { apiClient } from "../lib/api-client";
 import type { ConsoleContentResponse } from "../lib/api-types";
 import {
@@ -25,14 +26,6 @@ import type {
   DashboardQueryDefinition,
   DashboardWidget,
 } from "./types";
-
-function sanitizeTableRef(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+/, "") || "ds_table";
-}
-
-function buildTableRef(): string {
-  return sanitizeTableRef(`ds_${nanoid()}`);
-}
 
 function resolveActiveDashboardId(): string {
   const id = useDashboardStore.getState().activeDashboardId;
@@ -79,6 +72,19 @@ function syncRuntimeMaterializationStatus(
       ),
     );
   }
+}
+
+export function shouldAutoApplyFreshMaterialization(
+  dashboardId: string,
+): boolean {
+  const session = useDashboardRuntimeStore.getState().sessions[dashboardId];
+  if (!session) {
+    return false;
+  }
+
+  return !Object.values(session.dataSources).some(
+    dataSource => dataSource.activeSource === "draft_stream",
+  );
 }
 
 async function fetchAndSyncMaterializationStatus(
@@ -187,7 +193,19 @@ export async function activateDashboardSession(
       void waitForDashboardMaterialization({
         workspaceId,
         dashboardId: dashboard._id,
-      });
+      })
+        .then(async result => {
+          if (!result || !shouldAutoApplyFreshMaterialization(dashboard._id)) {
+            return;
+          }
+
+          await applyDashboardMaterializedData({
+            workspaceId,
+            dashboardId: dashboard._id,
+            runtimeContext: "viewer",
+          });
+        })
+        .catch(() => undefined);
     }
   }
   await activateDashboardRuntime(dashboard, runtimeContext);
@@ -225,7 +243,7 @@ export function buildDashboardDataSource(input: {
   return {
     id: nanoid(),
     name: input.name,
-    tableRef: buildTableRef(),
+    tableRef: buildTableRef(input.name),
     query: input.query,
     origin: input.origin,
     timeDimension: input.timeDimension,
@@ -329,7 +347,7 @@ export async function updateDashboardDataSourceQuery(options: {
   const dashboard = getDashboardOrThrow(options.dashboardId);
   store.updateDataSource(dashboard._id, options.dataSourceId, options.changes);
 
-  if (options.rematerialize !== false) {
+  if (options.rematerialize === true) {
     const updatedDashboard = getDashboardOrThrow(dashboard._id);
     const dataSource = updatedDashboard.dataSources.find(
       ds => ds.id === options.dataSourceId,
@@ -342,8 +360,122 @@ export async function updateDashboardDataSourceQuery(options: {
         force: true,
         skipParquet: true,
       });
+
+      const mosaicInstance = getMosaicInstance(updatedDashboard._id);
+      if (mosaicInstance) {
+        try {
+          mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+        } catch {
+          // best-effort cache clear
+        }
+      }
+      useDashboardRuntimeStore
+        .getState()
+        .dispatch(
+          dashboardRuntimeEvents.bumpQueryGeneration(updatedDashboard._id),
+        );
     }
   }
+}
+
+export async function runDashboardDataSource(options: {
+  workspaceId: string;
+  dashboardId: string;
+  dataSourceId: string;
+}): Promise<{ loadPath: string | null; recovered: boolean }> {
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  const dataSource = dashboard.dataSources.find(
+    ds => ds.id === options.dataSourceId,
+  );
+  if (!dataSource) {
+    throw new Error(`Data source ${options.dataSourceId} not found`);
+  }
+
+  let recovered = false;
+  try {
+    await materializeDashboardDataSource({
+      workspaceId: options.workspaceId,
+      dashboard,
+      dataSource,
+      force: true,
+      skipParquet: true,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const isFatalWasm =
+      msg.includes("memory access out of bounds") ||
+      msg.includes("unreachable executed") ||
+      msg.toLowerCase().includes("out of memory");
+    if (!isFatalWasm) {
+      throw error;
+    }
+
+    await disposeDashboardRuntime(options.dashboardId);
+    recovered = true;
+
+    const freshDashboard = getDashboardOrThrow(options.dashboardId);
+    await activateDashboardRuntime(freshDashboard);
+
+    const freshDs = freshDashboard.dataSources.find(
+      ds => ds.id === options.dataSourceId,
+    );
+    if (!freshDs) {
+      throw new Error(
+        `Data source ${options.dataSourceId} not found after session recovery`,
+      );
+    }
+
+    // Re-materialize all data sources since the DuckDB instance was destroyed.
+    // The target data source is loaded first, then remaining ones in parallel.
+    await materializeDashboardDataSource({
+      workspaceId: options.workspaceId,
+      dashboard: freshDashboard,
+      dataSource: freshDs,
+      force: true,
+      skipParquet: true,
+    });
+
+    const otherDataSources = freshDashboard.dataSources.filter(
+      ds => ds.id !== options.dataSourceId,
+    );
+    if (otherDataSources.length > 0) {
+      await Promise.allSettled(
+        otherDataSources.map(ds =>
+          materializeDashboardDataSource({
+            workspaceId: options.workspaceId,
+            dashboard: freshDashboard,
+            dataSource: ds,
+            force: true,
+            skipParquet: true,
+          }),
+        ),
+      );
+    }
+  }
+
+  const resolvedDashboard = getDashboardOrThrow(options.dashboardId);
+  const mosaicInstance = getMosaicInstance(resolvedDashboard._id);
+  if (mosaicInstance) {
+    try {
+      mosaicInstance.coordinator.clear?.({ clients: false, cache: true });
+    } catch {
+      // best-effort cache clear
+    }
+  }
+  useDashboardRuntimeStore
+    .getState()
+    .dispatch(
+      dashboardRuntimeEvents.bumpQueryGeneration(resolvedDashboard._id),
+    );
+
+  const runtime = selectDataSourceRuntime(
+    options.dashboardId,
+    options.dataSourceId,
+  );
+  return {
+    loadPath: runtime?.loadPath ?? null,
+    recovered,
+  };
 }
 
 export async function removeDashboardDataSource(options: {
@@ -412,6 +544,31 @@ export async function reloadDashboardDataSourcesCommand(
   });
 }
 
+export async function materializeDashboardInBackgroundCommand(options: {
+  workspaceId: string;
+  dashboardId?: string;
+}): Promise<void> {
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  await useDashboardStore
+    .getState()
+    .materializeDashboard(options.workspaceId, dashboard._id, {
+      force: true,
+    });
+  const status = await waitForDashboardMaterialization({
+    workspaceId: options.workspaceId,
+    dashboardId: dashboard._id,
+  });
+  if (!status || !shouldAutoApplyFreshMaterialization(dashboard._id)) {
+    return;
+  }
+
+  await applyDashboardMaterializedData({
+    workspaceId: options.workspaceId,
+    dashboardId: dashboard._id,
+    runtimeContext: "viewer",
+  });
+}
+
 export async function applyFreshMaterializationCommand(options: {
   workspaceId: string;
   dashboardId?: string;
@@ -471,6 +628,16 @@ export function getDashboardStateSnapshot(dashboardId?: string) {
         rowsLoaded: runtime?.rowsLoaded || 0,
         rowCount: runtime?.rowCount,
         error: runtime?.error || null,
+        activeSource: runtime?.activeSource ?? null,
+        loadPath: runtime?.loadPath ?? null,
+        loadingMessage: runtime?.loadingMessage ?? null,
+        resolvedMode: runtime?.resolvedMode ?? null,
+        artifactUrl: runtime?.artifactUrl ?? null,
+        loadDurationMs: runtime?.loadDurationMs ?? null,
+        materializationStatus: runtime?.materializationStatus ?? null,
+        materializationVersion: runtime?.materializationVersion ?? null,
+        materializedAt: runtime?.materializedAt ?? null,
+        storageBackend: runtime?.storageBackend ?? null,
         columns: runtime?.schema || [],
         sampleRows: runtime?.sampleRows || [],
       };

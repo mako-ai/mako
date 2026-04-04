@@ -62,9 +62,10 @@ export const DashboardDataSourceSchema = z.object({
       parquetVersion: z.string().optional(),
       parquetBuiltAt: z.string().optional(),
       parquetBuildStatus: z
-        .enum(["missing", "building", "ready", "error"])
+        .enum(["missing", "queued", "building", "ready", "error"])
+        .nullable()
         .optional(),
-      parquetLastError: z.string().optional(),
+      parquetLastError: z.string().nullable().optional(),
       parquetUrl: z.string().optional(),
     })
     .optional(),
@@ -190,6 +191,50 @@ export type DashboardDefinition = z.infer<typeof DashboardDefinitionSchema>;
 
 const DEFAULT_LAYOUT: WidgetLayout = { x: 0, y: 0, w: 6, h: 4 };
 
+const BREAKPOINT_COLS = { lg: 12, md: 10, sm: 6, xs: 4 } as const;
+
+/**
+ * Returns recommended size and enforced minimums for a widget based on its
+ * type and (for charts) the Vega-Lite mark type.
+ */
+export function getWidgetSizeDefaults(
+  type: "chart" | "kpi" | "table",
+  vegaMark?: string,
+): { w: number; h: number; minW: number; minH: number } {
+  if (type === "kpi") return { w: 3, h: 2, minW: 2, minH: 2 };
+  if (type === "table") return { w: 12, h: 5, minW: 4, minH: 3 };
+  if (vegaMark === "arc") return { w: 4, h: 4, minW: 3, minH: 3 };
+  return { w: 12, h: 5, minW: 4, minH: 3 };
+}
+
+/**
+ * Derive `md`, `sm`, and `xs` layouts from an `lg` layout by proportionally
+ * scaling widths to match each breakpoint's column count.
+ */
+export function deriveResponsiveLayouts(
+  lgLayout: WidgetLayout,
+): DashboardWidget["layouts"] {
+  const derive = (cols: number): WidgetLayout => {
+    const scale = cols / BREAKPOINT_COLS.lg;
+    const minW = lgLayout.minW ?? 2;
+    const w = Math.min(Math.max(Math.round(lgLayout.w * scale), minW), cols);
+    return {
+      x: Math.min(Math.round(lgLayout.x * scale), cols - w),
+      y: lgLayout.y,
+      w,
+      h: lgLayout.h,
+      ...(lgLayout.minW != null ? { minW: Math.min(lgLayout.minW, cols) } : {}),
+      ...(lgLayout.minH != null ? { minH: lgLayout.minH } : {}),
+    };
+  };
+  return {
+    lg: lgLayout,
+    md: derive(BREAKPOINT_COLS.md),
+    sm: derive(BREAKPOINT_COLS.sm),
+    xs: derive(BREAKPOINT_COLS.xs),
+  };
+}
+
 function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
   if (!raw) return { ...DEFAULT_LAYOUT };
   return {
@@ -204,7 +249,8 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
 
 /**
  * Normalize a widget that may have legacy `layout` (single) or new `layouts`
- * (per-breakpoint). Returns a widget guaranteed to have `layouts.lg`.
+ * (per-breakpoint). Returns a widget guaranteed to have `layouts.lg` and
+ * derived `md`/`sm`/`xs` breakpoints when they are missing.
  * Handles missing, partial, and corrupted data gracefully.
  */
 export function normalizeWidgetLayouts<T extends Record<string, unknown>>(
@@ -215,15 +261,23 @@ export function normalizeWidgetLayouts<T extends Record<string, unknown>>(
   if (w.layouts && typeof w.layouts === "object" && !Array.isArray(w.layouts)) {
     const raw = w.layouts as Record<string, unknown>;
     if (raw.lg && typeof raw.lg === "object") {
+      const lg = safeLayout(raw.lg as Record<string, unknown>);
+      const derived = deriveResponsiveLayouts(lg);
       const result: DashboardWidget["layouts"] = {
-        lg: safeLayout(raw.lg as Record<string, unknown>),
+        lg,
+        md:
+          raw.md && typeof raw.md === "object"
+            ? safeLayout(raw.md as Record<string, unknown>)
+            : derived.md,
+        sm:
+          raw.sm && typeof raw.sm === "object"
+            ? safeLayout(raw.sm as Record<string, unknown>)
+            : derived.sm,
+        xs:
+          raw.xs && typeof raw.xs === "object"
+            ? safeLayout(raw.xs as Record<string, unknown>)
+            : derived.xs,
       };
-      if (raw.md && typeof raw.md === "object")
-        result.md = safeLayout(raw.md as Record<string, unknown>);
-      if (raw.sm && typeof raw.sm === "object")
-        result.sm = safeLayout(raw.sm as Record<string, unknown>);
-      if (raw.xs && typeof raw.xs === "object")
-        result.xs = safeLayout(raw.xs as Record<string, unknown>);
       return { ...widget, layouts: result };
     }
     const firstBp = (["md", "sm", "xs"] as const).find(
@@ -232,16 +286,19 @@ export function normalizeWidgetLayouts<T extends Record<string, unknown>>(
     const lg = firstBp
       ? safeLayout(raw[firstBp] as Record<string, unknown>)
       : safeLayout(undefined);
-    return { ...widget, layouts: { lg } };
+    return { ...widget, layouts: deriveResponsiveLayouts(lg) };
   }
 
   if (w.layout && typeof w.layout === "object" && !Array.isArray(w.layout)) {
     const lg = safeLayout(w.layout as Record<string, unknown>);
     const { layout: _removed, ...rest } = widget;
-    return { ...rest, layouts: { lg } } as T & {
+    return { ...rest, layouts: deriveResponsiveLayouts(lg) } as T & {
       layouts: DashboardWidget["layouts"];
     };
   }
 
-  return { ...widget, layouts: { lg: { ...DEFAULT_LAYOUT } } };
+  return {
+    ...widget,
+    layouts: deriveResponsiveLayouts({ ...DEFAULT_LAYOUT }),
+  };
 }

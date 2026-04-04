@@ -10,6 +10,8 @@ export {
   GlobalFilterSchema,
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
+  getWidgetSizeDefaults,
+  deriveResponsiveLayouts,
   type WidgetLayout,
   type DashboardQueryLanguage,
   type DashboardQueryDefinition,
@@ -27,3 +29,5 @@ export {
   getTemplate,
   type ChartTemplate,
 } from "./chart-templates";
+
+export { sanitizeTableRef, buildTableRef } from "./table-ref";

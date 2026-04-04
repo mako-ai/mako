@@ -47,7 +47,9 @@ function ensureDataSourceState(
       schema: [],
       sampleRows: [],
       error: null,
+      activeSource: null,
       loadPath: null,
+      loadingMessage: null,
       resolvedMode: undefined,
       artifactUrl: null,
       loadDurationMs: null,
@@ -220,6 +222,7 @@ export function reduceDashboardRuntimeEvent(
         dataSource.sampleRows = [];
       }
       dataSource.error = null;
+      dataSource.loadingMessage = "Preparing data source load";
       appendLog(session, {
         timestamp: Date.now(),
         level: "info",
@@ -251,6 +254,7 @@ export function reduceDashboardRuntimeEvent(
       dataSource.schema = event.schema;
       dataSource.sampleRows = event.sampleRows;
       dataSource.error = null;
+      dataSource.loadingMessage = null;
       appendLog(session, {
         timestamp: Date.now(),
         level: "info",
@@ -272,6 +276,7 @@ export function reduceDashboardRuntimeEvent(
       }
       dataSource.rowsLoaded = event.rowsLoaded;
       dataSource.error = event.error;
+      dataSource.loadingMessage = null;
       dataSource.loadDurationMs =
         event.loadDurationMs ?? dataSource.loadDurationMs;
       if (!(event.preserveExistingData && dataSource.status === "ready")) {

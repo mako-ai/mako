@@ -57,10 +57,7 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
-import {
-  executeDashboardAgentTool,
-  type DashboardAgentContext,
-} from "../dashboard-runtime/agent-tools";
+import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
 import { useDashboardStore } from "../store/dashboardStore";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
@@ -893,7 +890,8 @@ const Chat: React.FC<ChatProps> = ({
   // This prevents the race condition where user switches consoles while agent is thinking
   const capturedConsoleIdRef = useRef<string | null>(null);
 
-  // Pin dashboard ID at submit time to prevent drift if user switches dashboards mid-turn
+  // Ref to capture the active dashboard ID at submit time so switching tabs mid-turn
+  // doesn't cause the agent to read context from a different dashboard
   const capturedDashboardIdRef = useRef<string | null>(null);
 
   // Function to fetch sessions - defined before useChat so it can be used in onFinish
@@ -1037,14 +1035,9 @@ const Chat: React.FC<ChatProps> = ({
             tabKind: activeTab?.kind,
             flowType: activeTab?.metadata?.flowType,
             flowFormState,
-            // Dashboard context — pass full snapshot using the pinned ID from
-            // submit time to avoid drift if the user switches dashboards mid-turn.
             ...(() => {
               try {
-                const snapshot = getDashboardStateSnapshot(
-                  capturedDashboardIdRef.current ?? undefined,
-                );
-                if (!snapshot) return {};
+                const dashboardStore = useDashboardStore.getState();
                 const connectionById = new Map(
                   workspaceConnections.map(connection => [
                     connection.id,
@@ -1052,7 +1045,32 @@ const Chat: React.FC<ChatProps> = ({
                   ]),
                 );
                 const SAMPLE_LIMIT = 3;
+
+                const pinnedDashboardId =
+                  capturedDashboardIdRef.current ??
+                  dashboardStore.activeDashboardId;
+
+                const openDashboardsList = Object.values(
+                  dashboardStore.openDashboards,
+                ).map((d: any) => ({
+                  id: d._id,
+                  title: d.title,
+                  isActive: d._id === pinnedDashboardId,
+                }));
+
+                if (openDashboardsList.length === 0) return {};
+
+                const activeId = pinnedDashboardId;
+                const snapshot = activeId
+                  ? getDashboardStateSnapshot(activeId)
+                  : null;
+
+                if (!snapshot) {
+                  return { openDashboards: openDashboardsList };
+                }
+
                 return {
+                  openDashboards: openDashboardsList,
                   activeDashboardContext: {
                     dashboardId: snapshot._id,
                     title: snapshot.title,
@@ -1711,14 +1729,10 @@ const Chat: React.FC<ChatProps> = ({
 
         // --- Dashboard tools (client-side) ---
         try {
-          const pinnedDashboard: DashboardAgentContext | undefined =
-            capturedDashboardIdRef.current
-              ? { dashboardId: capturedDashboardIdRef.current }
-              : undefined;
           const dashboardToolOutput = await executeDashboardAgentTool(
             toolName,
             input,
-            pinnedDashboard,
+            capturedDashboardIdRef.current,
           );
 
           if (dashboardToolOutput !== null) {
@@ -2327,7 +2341,7 @@ const Chat: React.FC<ChatProps> = ({
     (text: string) => {
       capturedConsoleIdRef.current = activeConsoleIdRef.current;
       capturedDashboardIdRef.current =
-        useDashboardStore.getState().activeDashboardId;
+        useDashboardStore.getState().activeDashboardId ?? null;
       const store = useConsoleStore.getState();
       const currentTabs = Object.values(store.tabs);
       const activeConsole = currentTabs.find(t => t.id === store.activeTabId);
@@ -2563,6 +2577,8 @@ const Chat: React.FC<ChatProps> = ({
                 onClick={() => {
                   // Submit the suggestion immediately
                   capturedConsoleIdRef.current = activeConsoleId;
+                  capturedDashboardIdRef.current =
+                    useDashboardStore.getState().activeDashboardId ?? null;
                   trackEvent("ai_chat_message_sent", {
                     model: selectedModelId,
                     has_context: false,

@@ -147,6 +147,9 @@ const suggestChartsSchema = z.object({
 });
 
 const importConsoleAsDataSourceSchema = z.object({
+  dashboardId: z
+    .string()
+    .describe("Dashboard ID to import the data source into"),
   consoleId: z
     .string()
     .describe("ID of the saved console to import into the dashboard"),
@@ -165,6 +168,7 @@ const importConsoleAsDataSourceSchema = z.object({
 });
 
 const createDataSourceSchema = z.object({
+  dashboardId: z.string().describe("Dashboard ID to add the data source to"),
   name: z.string().describe("Dashboard-local data source name"),
   connectionId: z
     .string()
@@ -186,17 +190,53 @@ const createDataSourceSchema = z.object({
 const updateDataSourceQuerySchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
   dataSourceId: z.string().describe("Dashboard data source ID"),
+  action: z
+    .enum(["replace", "patch", "append"])
+    .default("replace")
+    .describe(
+      "How to modify the code field. 'replace' overwrites the full query, " +
+        "'patch' replaces a line range (requires startLine/endLine), " +
+        "'append' adds lines at the end. Only affects the code field; " +
+        "other fields (name, connectionId, etc.) are always shallow-merged.",
+    ),
   name: z.string().optional().describe("Updated display name"),
   connectionId: z.string().optional().describe("Updated connection ID"),
   language: z
     .enum(["sql", "javascript", "mongodb"])
     .optional()
     .describe("Updated query language"),
-  code: z.string().optional().describe("Updated query text/code"),
+  code: z
+    .string()
+    .optional()
+    .describe("Query text/code (interpretation depends on action)"),
   databaseId: z.string().optional().describe("Updated sub-database ID"),
   databaseName: z.string().optional().describe("Updated database name"),
   timeDimension: z.string().optional().describe("Updated default time column"),
   rowLimit: z.number().optional().describe("Updated row limit"),
+  startLine: z
+    .number()
+    .optional()
+    .describe("Starting line for patch action (1-indexed, required for patch)"),
+  endLine: z
+    .number()
+    .optional()
+    .describe(
+      "Ending line for patch action (1-indexed, inclusive, required for patch)",
+    ),
+  run: z
+    .boolean()
+    .default(false)
+    .describe(
+      "If true, immediately execute the updated query and stream fresh draft data into DuckDB after saving. " +
+        "If false (default), only saves the query definition. The dashboard keeps using the previously loaded data until run_data_source_query is called.",
+    ),
+});
+
+const runDataSourceQuerySchema = z.object({
+  dashboardId: z.string().describe("Dashboard ID"),
+  dataSourceId: z
+    .string()
+    .describe("Data source ID to execute and load into DuckDB"),
 });
 
 const createDashboardSchema = z.object({
@@ -214,31 +254,45 @@ const previewDataSourceSchema = z.object({
 });
 
 export const clientDashboardTools = {
+  list_open_dashboards: {
+    description:
+      "List all open dashboard tabs. Returns each dashboard's id, title, description, " +
+      "data source count, widget count, and isActive flag. " +
+      "Call this FIRST to get dashboard IDs before using any other dashboard tool.",
+    inputSchema: z.object({}),
+  },
+  open_dashboard: {
+    description:
+      "Open a saved dashboard by its ID. Use after search_dashboards to load a found dashboard " +
+      "into a tab. The dashboard will be fetched, its data sources materialized into DuckDB, " +
+      "and it will appear as an open tab. Returns the dashboardId to use with other tools.",
+    inputSchema: z.object({
+      dashboardId: z.string().describe("Dashboard ID to open"),
+    }),
+  },
   enter_edit_mode: {
     description:
-      "Switch the dashboard into edit mode by acquiring the edit lock. " +
+      "Switch a dashboard into edit mode by acquiring the edit lock. " +
       "MUST be called before any write operations (add_widget, modify_widget, etc). " +
       "If another user holds the lock, a confirmation dialog is shown to the user — " +
-      "the tool blocks until they approve or reject the force-acquire. " +
-      "Optionally pass dashboardId to target a specific open dashboard instead of the current active tab.",
+      "the tool blocks until they approve or reject the force-acquire.",
     inputSchema: z.object({
       dashboardId: z
         .string()
-        .optional()
         .describe(
-          "Optional dashboard ID to enter edit mode for (must be currently open in the client)",
+          "Dashboard ID to enter edit mode for (must be currently open)",
         ),
     }),
   },
   create_dashboard: {
     description:
       "Create a new empty dashboard. After creation, use create_data_source to add data sources " +
-      "and add_widget to add charts, KPIs, or tables.",
+      "and add_widget to add charts, KPIs, or tables. Returns the new dashboardId.",
     inputSchema: createDashboardSchema,
   },
   import_console_as_data_source: {
     description:
-      "Import a saved console into the current dashboard by value. " +
+      "Import a saved console into a dashboard by value. " +
       "This duplicates the console's query definition into a dashboard-local data source and materializes it into DuckDB. " +
       "Use search_consoles first to find the console ID.",
     inputSchema: importConsoleAsDataSourceSchema,
@@ -256,8 +310,24 @@ export const clientDashboardTools = {
   },
   update_data_source_query: {
     description:
-      "Modify an existing dashboard-local data source query definition and re-materialize it.",
+      "Modify an existing dashboard-local data source query definition. " +
+      "By default only saves the definition (no execution). Set run=true to immediately " +
+      "execute the query and stream fresh draft data into DuckDB, or call run_data_source_query separately afterward. " +
+      "Supports three edit modes via the 'action' field: " +
+      "'replace' (default — full code replacement), " +
+      "'patch' (replace a specific line range — requires startLine/endLine, preferred for small edits), " +
+      "'append' (add lines to the end of the existing code). " +
+      "Non-code fields (name, connectionId, language, etc.) are always shallow-merged regardless of action. " +
+      "When run=false, treat the response as definition_saved_only and use the returned nextRecommendedTool if you need fresh data. " +
+      "IMPORTANT for 'patch': line numbers are 1-indexed and inclusive; do NOT include line number prefixes in your code content.",
     inputSchema: updateDataSourceQuerySchema,
+  },
+  run_data_source_query: {
+    description:
+      "Execute a data source query and stream the results into DuckDB WASM. " +
+      "Use after update_data_source_query to load fresh data, or to reload an existing source. " +
+      "Streams via NDJSON for stability. Automatically recovers if DuckDB WASM crashes.",
+    inputSchema: runDataSourceQuerySchema,
   },
   add_widget: {
     description:
@@ -279,7 +349,7 @@ export const clientDashboardTools = {
   get_dashboard_state: {
     description:
       "Get the full dashboard definition: widgets (with layouts, vegaLiteSpec, localSql, kpiConfig), " +
-      "data sources (with query code, column schemas, runtime status), cross-filter config, " +
+      "data sources (with query code, column schemas, runtime status, active source, load path, and materialization diagnostics), cross-filter config, " +
       "global filters, relationships, and materialization schedule. " +
       "Also includes truncated sample rows and widget snapshots.",
     inputSchema: getDashboardStateSchema,
