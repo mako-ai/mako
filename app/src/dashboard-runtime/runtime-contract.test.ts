@@ -97,12 +97,10 @@ describe("dashboard runtime contract", () => {
       skipParquet: true,
     });
 
-    expect(
-      resolveActiveSource({ skipParquet: false }),
-    ).toBe("published_artifact");
-    expect(
-      resolveActiveSource({ skipParquet: true }),
-    ).toBe("draft_stream");
+    expect(resolveActiveSource({ skipParquet: false })).toBe(
+      "published_artifact",
+    );
+    expect(resolveActiveSource({ skipParquet: true })).toBe("draft_stream");
     expect(viewerV2).not.toBe(viewerV1);
     expect(draftV2).toBe(draftV1);
   });

@@ -223,9 +223,7 @@ export function deriveResponsiveLayouts(
       y: lgLayout.y,
       w,
       h: lgLayout.h,
-      ...(lgLayout.minW != null
-        ? { minW: Math.min(lgLayout.minW, cols) }
-        : {}),
+      ...(lgLayout.minW != null ? { minW: Math.min(lgLayout.minW, cols) } : {}),
       ...(lgLayout.minH != null ? { minH: lgLayout.minH } : {}),
     };
   };
