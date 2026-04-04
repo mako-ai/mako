@@ -1279,7 +1279,9 @@ export class CloseConnector extends BaseConnector {
           pageCursor = null;
 
           if (data.length === 0) {
-            // Empty window — skip ahead without counting as an iteration
+            // Empty window — skip ahead without counting as an iteration,
+            // but still respect rate limits to avoid rapid-fire 429s
+            await this.sleep(rateLimitDelay);
             continue;
           }
         }
