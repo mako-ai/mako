@@ -25,21 +25,74 @@ const log = loggers.sync("cdc.backfill");
 
 const STALE_HEARTBEAT_MS = 10 * 60 * 1000; // 10 minutes
 
+const CANCEL_WAIT_POLL_MS = 1000;
+const CANCEL_WAIT_TIMEOUT_MS = 30_000;
+
 async function assertCanStartBackfill(
   workspaceId: string,
   flowId: string,
 ): Promise<void> {
   await abandonStaleExecutions(workspaceId, flowId);
-  const running = await FlowExecution.exists({
-    workspaceId: new Types.ObjectId(workspaceId),
-    flowId: new Types.ObjectId(flowId),
+
+  const workspaceObjectId = new Types.ObjectId(workspaceId);
+  const flowObjectId = new Types.ObjectId(flowId);
+
+  const running = await FlowExecution.findOne({
+    workspaceId: workspaceObjectId,
+    flowId: flowObjectId,
     status: "running",
-  });
-  if (running) {
+  })
+    .sort({ startedAt: -1 })
+    .lean();
+
+  if (!running) return;
+
+  // If the backfill was paused (or cancelled), an Inngest cancel is already
+  // in-flight.  Wait for the worker to finish rather than rejecting — the
+  // user expects reset-entity / resume to work immediately after pause.
+  const flow = await Flow.findById(flowId)
+    .select("backfillState.status")
+    .lean();
+  const isPendingCancel =
+    flow?.backfillState?.status === "paused" ||
+    flow?.backfillState?.status === "error" ||
+    flow?.backfillState?.status === "completed" ||
+    flow?.backfillState?.status === "idle";
+
+  if (!isPendingCancel) {
     throw new Error(
       "Cannot start backfill while an execution is still running",
     );
   }
+
+  // Send cancel (idempotent) and poll until the execution finishes
+  log.info("Waiting for previous execution to finish before starting", {
+    flowId,
+    executionId: running._id?.toString(),
+    backfillStatus: flow?.backfillState?.status,
+  });
+
+  await inngest.send({
+    name: "flow.cancel",
+    data: {
+      flowId,
+      executionId: running._id?.toString(),
+    },
+  });
+
+  const deadline = Date.now() + CANCEL_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, CANCEL_WAIT_POLL_MS));
+    const still = await FlowExecution.exists({
+      _id: running._id,
+      status: "running",
+    });
+    if (!still) return;
+  }
+
+  throw new Error(
+    "Timed out waiting for previous execution to finish (30s). Try again shortly.",
+  );
 }
 
 async function abandonStaleExecutions(
