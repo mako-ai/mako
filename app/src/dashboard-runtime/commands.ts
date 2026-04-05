@@ -42,6 +42,22 @@ function getDashboardOrThrow(dashboardId?: string): Dashboard {
   return dashboard;
 }
 
+function remountWidgetsForDataSource(
+  dashboardId: string,
+  dataSourceId: string,
+): void {
+  const dashboard = useDashboardStore.getState().openDashboards[dashboardId];
+  if (!dashboard) return;
+  const runtimeStore = useDashboardRuntimeStore.getState();
+  for (const widget of dashboard.widgets) {
+    if (widget.dataSourceId === dataSourceId) {
+      runtimeStore.dispatch(
+        dashboardRuntimeEvents.bumpWidgetRefresh(dashboardId, widget.id),
+      );
+    }
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -374,6 +390,7 @@ export async function updateDashboardDataSourceQuery(options: {
         .dispatch(
           dashboardRuntimeEvents.bumpQueryGeneration(updatedDashboard._id),
         );
+      remountWidgetsForDataSource(updatedDashboard._id, options.dataSourceId);
     }
   }
 }
@@ -467,6 +484,7 @@ export async function runDashboardDataSource(options: {
     .dispatch(
       dashboardRuntimeEvents.bumpQueryGeneration(resolvedDashboard._id),
     );
+  remountWidgetsForDataSource(resolvedDashboard._id, options.dataSourceId);
 
   const runtime = selectDataSourceRuntime(
     options.dashboardId,
